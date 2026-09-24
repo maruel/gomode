@@ -1,0 +1,5 @@
+The inline mic, mic_off, call_end, and close icon paths in
+web/src/VoiceOverlay.tsx are from Google Material Symbols
+(https://fonts.google.com/icons), distributed under the Apache License 2.0.
+
+Copyright Google LLC.

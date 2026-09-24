@@ -1,0 +1,60 @@
+# Verify and test Go Mode on pushes and pull requests.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Verify and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/setup@v2
+        with:
+          runtime: node@24
+          cache: true
+          install: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Install browser dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Android SDK packages
+        run: make android-sdk
+      - name: Verify
+        run: make verify
+      - name: Test
+        run: make test
+      - name: Race tests
+        run: make test-race
+      - name: Check generated SDKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          make generate-sdks
+          status="$(git status --porcelain)"
+          if [[ -n "$status" ]]; then
+            echo 'Generated SDKs differ from the committed files:' >&2
+            echo "$status" >&2
+            exit 1
+          fi
+      - name: Upload Android test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-unit-test-results
+          path: |
+            android/gomode/build/reports/tests/
+            sdk/halo/build/reports/tests/
+          if-no-files-found: ignore
+          retention-days: 7

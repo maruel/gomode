@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
+    "strict": true,
+    "skipLibCheck": true,
+    "allowArbitraryExtensions": true,
+    "types": ["node", "@testing-library/jest-dom"],
+    "noEmit": true
+  },
+  "include": ["src", "../sdk/mcp/ts/v1", "../sdk/oauth/ts/v1", "../sdk/voicegateway/ts/v1"]
+}

@@ -1,0 +1,56 @@
+{
+  "name": "@maruel/gomode",
+  "version": "0.1.0",
+  "packageManager": "pnpm@12.5.1",
+  "private": false,
+  "type": "module",
+  "files": [
+    "NOTICE",
+    "web/src",
+    "!web/src/*.test.ts",
+    "!web/src/*.test.tsx",
+    "!web/src/AGENTS.md",
+    "sdk/mcp/ts",
+    "sdk/oauth/ts",
+    "sdk/voicegateway/ts",
+    "sdk/gomode/ts"
+  ],
+  "exports": {
+    "./web/HostMode": "./web/src/HostMode.tsx",
+    "./web/McpClient": "./web/src/McpClient.ts",
+    "./web/ServiceItems": "./web/src/ServiceItems.ts",
+    "./web/VoiceOverlay": "./web/src/VoiceOverlay.tsx",
+    "./web/VoiceSession": "./web/src/VoiceSession.ts",
+    "./web/notifications": "./web/src/notifications.ts",
+    "./sdk/mcp/*": "./sdk/mcp/ts/v1/*",
+    "./sdk/oauth/*": "./sdk/oauth/ts/v1/*",
+    "./sdk/gomode/*": "./sdk/gomode/ts/v1/*",
+    "./sdk/voicegateway/*": "./sdk/voicegateway/ts/v1/*"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p web/tsconfig.json",
+    "test": "NODE_OPTIONS=--no-experimental-webstorage tsx --test --conditions=browser --test-force-exit --import ./web/tests/setup-dom.ts 'web/src/**/*.test.ts' 'web/src/**/*.test.tsx'"
+  },
+  "peerDependencies": {
+    "@solidjs/router": "^1.0.0",
+    "solid-js": "^1.9.0"
+  },
+  "devDependencies": {
+    "@babel/core": "7.28.5",
+    "@babel/preset-typescript": "7.28.5",
+    "@solidjs/router": "1.0.0",
+    "@solidjs/testing-library": "0.8.10",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/user-event": "14.6.7",
+    "@types/babel__core": "7.20.5",
+    "@types/jsdom": "30.0.0",
+    "@types/node": "26.5.1",
+    "@vitest/expect": "5.0.0",
+    "@vitest/spy": "5.0.0",
+    "babel-preset-solid": "1.9.15",
+    "jsdom": "30.0.1",
+    "solid-js": "1.9.15",
+    "tsx": "4.23.13",
+    "typescript": "6.0.3"
+  }
+}

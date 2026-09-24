@@ -1,0 +1,15 @@
+/android/.gradle/
+/android/build/
+/android/gomode/build/
+/android/local.properties
+/coverage.html
+/coverage.out
+/go.work
+/go.work.sum
+/sdk/gomode/kotlin/build/
+/sdk/halo/build/
+/sdk/mcp/kotlin/build/
+/sdk/oauth/kotlin/build/
+/sdk/voicegateway/kotlin/build/
+__pycache__/
+node_modules/
