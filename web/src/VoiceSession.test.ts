@@ -1,6 +1,6 @@
 // Tests for the browser voice gateway session manager.
 
-import { beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect, vi } from "../tests/expect";
 
 import {
@@ -10,17 +10,11 @@ import {
   summarizeSDPCandidates,
   VoiceSession,
   configureVoiceGateway,
-  voiceGatewayApi,
   voiceToolDeclarations,
 } from "./VoiceSession";
 import { mcpClient } from "./McpClient";
 
-// Spies on the voicegateway API client and the MCP client object replace the former module mocks.
-const sdkMocks = {
-  voiceRTCOffer: vi.spyOn(voiceGatewayApi, "voiceRTCOffer"),
-  diagnoseVoiceRTC: vi.spyOn(voiceGatewayApi, "diagnoseVoiceRTC"),
-  closeVoiceRTC: vi.spyOn(voiceGatewayApi, "closeVoiceRTC"),
-};
+// MCP calls are spied on; gateway signaling is exercised through fetch.
 const mcpMocks = {
   mcpCallTool: vi.spyOn(mcpClient, "callTool"),
   mcpListTools: vi.spyOn(mcpClient, "listTools"),
@@ -28,9 +22,11 @@ const mcpMocks = {
   mcpServerInstructions: vi.spyOn(mcpClient, "serverInstructions"),
 };
 import {
+  MessageKindError,
   MessageKindToolCall,
   VoiceRTCConnectivityIssueUDPUnreachable,
   VoiceRTCConnectivitySideNetwork,
+  type VoiceRTCAnswerResp,
   type VoiceRTCDiagnosticsResp,
 } from "../../sdk/voicegateway/ts/v1/types.gen";
 
@@ -141,17 +137,53 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+const originalFetch = globalThis.fetch;
+let closeRequests: Array<{ url: string; authorization: string | null }> = [];
+let offerRequests: Array<{ url: string; authorization: string | null; body: unknown }> = [];
+let diagnosticRequests: Array<{ url: string; authorization: string | null }> = [];
+let offerResponse: Promise<Response> | null = null;
+let diagnosticResponse: VoiceRTCDiagnosticsResp | null = null;
+
+function serviceToken(subject: string, serial: number): string {
+  const claims = { serviceKind: "caic", serviceInstanceID: "home", backendOrigin: "https://caic.example.com", sub: subject };
+  return `${btoa(JSON.stringify(claims)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "")}.${serial}`;
+}
+
+function oauthToken(subject: string, serial: number): string {
+  const encode = (value: unknown) => btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  return `${encode({ alg: "ES256", kid: "test-key", typ: "at+jwt" })}.${encode({ iss: "https://caic.example.com", sub: subject, aud: "voice-gateway", scope: "voice.session", serial })}.signature-${serial}`;
+}
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
+
 beforeEach(() => {
+  closeRequests = [];
+  offerRequests = [];
+  diagnosticRequests = [];
+  offerResponse = null;
+  diagnosticResponse = null;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const authorization = new Headers(init?.headers).get("Authorization");
+    if (url.endsWith("/voice/rtc/offer")) {
+      offerRequests.push({ url, authorization, body: JSON.parse(String(init?.body)) });
+      return offerResponse ?? new Response(JSON.stringify({ sdp: "answer-sdp", sessionID: "session-1" }));
+    }
+    if (url.endsWith("/diagnostics")) {
+      diagnosticRequests.push({ url, authorization });
+      return new Response(JSON.stringify(diagnosticResponse ?? {}));
+    }
+    closeRequests.push({ url: String(input), authorization: new Headers(init?.headers).get("Authorization") });
+    return new Response(JSON.stringify({ status: "closed" }));
+  };
   configureVoiceGateway("/", null);
   FakePeerConnection.completeICE = true;
   FakePeerConnection.reflexiveCandidateDelayMs = null;
   FakePeerConnection.last = null;
   FakePeerConnection.instances = [];
   FakePeerConnection.dataChannels = [];
-  sdkMocks.closeVoiceRTC.mockReset();
-  sdkMocks.diagnoseVoiceRTC.mockReset();
-  sdkMocks.voiceRTCOffer.mockReset();
-  sdkMocks.voiceRTCOffer.mockResolvedValue({ sdp: "answer-sdp", sessionID: "session-1" });
   mcpMocks.mcpCallTool.mockReset();
   mcpMocks.mcpListTools.mockReset();
   mcpMocks.mcpListTools.mockResolvedValue([]);
@@ -207,7 +239,7 @@ describe("VoiceSession", () => {
     await connecting;
 
     expect(FakePeerConnection.instances).toHaveLength(0);
-    expect(sdkMocks.voiceRTCOffer).not.toHaveBeenCalled();
+    expect(offerRequests).toHaveLength(0);
     expect(session.state.connectStatus).toBeNull();
     expect(session.state.error).toBeNull();
   });
@@ -225,54 +257,62 @@ describe("VoiceSession", () => {
     await connecting;
 
     expect(stop).toHaveBeenCalledOnce();
-    expect(sdkMocks.voiceRTCOffer).not.toHaveBeenCalled();
+    expect(offerRequests).toHaveLength(0);
     expect(session.state.connectStatus).toBeNull();
     expect(session.state.error).toBeNull();
   });
 
   it("ignores a late signaling response and stale data-channel events", async () => {
-    const offer = deferred<Awaited<ReturnType<typeof voiceGatewayApi.voiceRTCOffer>>>();
-    sdkMocks.voiceRTCOffer.mockReturnValue(offer.promise);
-    sdkMocks.closeVoiceRTC.mockResolvedValue({ status: "closed" });
+    const offer = deferred<VoiceRTCAnswerResp>();
+    offerResponse = offer.promise.then((answer) => new Response(JSON.stringify(answer)));
     const session = new VoiceSession();
 
     const connecting = session.connect();
-    await vi.waitFor(() => expect(sdkMocks.voiceRTCOffer).toHaveBeenCalled());
+    await vi.waitFor(() => expect(offerRequests).toHaveLength(1));
     session.disconnect();
     offer.resolve({ sdp: "answer-sdp", sessionID: "late-session" });
     await connecting;
     FakePeerConnection.dataChannels[0]?.onopen?.();
 
-    expect(sdkMocks.closeVoiceRTC).toHaveBeenCalledWith("late-session", {});
+    await vi.waitFor(() => expect(closeRequests).toEqual([
+      { url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/late-session`, authorization: null },
+    ]));
     expect(FakePeerConnection.dataChannels[0]?.send).not.toHaveBeenCalled();
     expect(session.state.connectStatus).toBeNull();
     expect(session.state.listening).toBe(false);
     expect(session.state.error).toBeNull();
   });
 
-  it("uses the offer token to close a late external session without restoring UI on failure", async () => {
+  it("refreshes the token for a late external session close without restoring UI on failure", async () => {
+    let issued = 0;
     configureVoiceGateway("https://voice.example.com", async () => ({
       kind: "caic",
       instanceID: "home",
       baseURL: "https://caic.example.com",
-      token: "offer-token",
+      token: serviceToken("user-1", ++issued),
     }));
-    const offer = deferred<Awaited<ReturnType<typeof voiceGatewayApi.voiceRTCOffer>>>();
-    sdkMocks.voiceRTCOffer.mockReturnValue(offer.promise);
-    sdkMocks.closeVoiceRTC.mockRejectedValue(new Error("gateway unavailable"));
+    const offer = deferred<VoiceRTCAnswerResp>();
+    offerResponse = offer.promise.then((answer) => new Response(JSON.stringify(answer)));
+    const fetchOffer = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      if (String(input).endsWith("/voice/rtc/offer")) return fetchOffer(input, init);
+      closeRequests.push({ url: String(input), authorization: new Headers(init?.headers).get("Authorization") });
+      return new Response(JSON.stringify({ error: { code: "UNAVAILABLE", message: "gateway unavailable" } }), { status: 503 });
+    };
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const session = new VoiceSession();
 
     try {
       const connecting = session.connect();
-      await vi.waitFor(() => expect(sdkMocks.voiceRTCOffer).toHaveBeenCalled());
+      await vi.waitFor(() => expect(offerRequests).toHaveLength(1));
       session.disconnect();
       offer.resolve({ sdp: "answer-sdp", sessionID: "late-external-session" });
       await connecting;
 
-      expect(sdkMocks.closeVoiceRTC).toHaveBeenCalledWith("late-external-session", {
-        Authorization: "Bearer offer-token",
-      });
+      await vi.waitFor(() => expect(closeRequests).toEqual([{
+        url: "https://voice.example.com/api/voicegateway/v1/voice/rtc/late-external-session",
+        authorization: `Bearer ${serviceToken("user-1", 2)}`,
+      }]));
       await vi.waitFor(() => expect(warn).toHaveBeenCalled());
       expect(session.state.connectStatus).toBeNull();
       expect(session.state.error).toBeNull();
@@ -387,28 +427,200 @@ describe("VoiceSession", () => {
 
     await session.connect();
 
-    expect(sdkMocks.voiceRTCOffer).toHaveBeenCalledWith({
+    expect(offerRequests[0]?.body).toEqual({
       sdp: "v=0\r\na=candidate:1 1 udp 2130706431 192.0.2.2 50000 typ host\r\n",
     });
   });
 
   it("includes host-issued authorization for an external gateway", async () => {
+    let issued = 0;
     const service = {
       kind: "caic",
       instanceID: "home",
       baseURL: "https://caic.example.com",
-      token: "scoped-token",
+      token: serviceToken("user-1", 1),
     };
-    configureVoiceGateway("https://voice.example.com", async () => service);
+    configureVoiceGateway("https://voice.example.com", async () => ({ ...service, token: serviceToken("user-1", ++issued) }));
     const session = new VoiceSession();
 
     await session.connect();
 
-    expect(sdkMocks.voiceRTCOffer).toHaveBeenCalledWith({
+    expect(offerRequests[0]?.body).toEqual({
       sdp: "v=0\r\na=candidate:1 1 udp 2130706431 192.0.2.2 50000 typ host\r\n",
       service,
     });
     session.disconnect();
+    await vi.waitFor(() => expect(closeRequests).toEqual([{
+      url: "https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1",
+      authorization: `Bearer ${serviceToken("user-1", 2)}`,
+    }]));
+  });
+
+  it("refreshes an OAuth access token by issuer and subject", async () => {
+    let issued = 0;
+    const service = {
+      kind: "caic",
+      instanceID: "home",
+      baseURL: "https://caic.example.com",
+      token: oauthToken("user-1", 1),
+    };
+    configureVoiceGateway("https://voice.example.com", async () => ({ ...service, token: oauthToken("user-1", ++issued) }));
+    const session = new VoiceSession();
+
+    await session.connect();
+    session.disconnect();
+
+    await vi.waitFor(() => expect(closeRequests).toEqual([{
+      url: "https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1",
+      authorization: `Bearer ${oauthToken("user-1", 2)}`,
+    }]));
+  });
+
+  it("attempts close with the offer token if refresh fails", async () => {
+    let issued = false;
+    configureVoiceGateway("https://voice.example.com", async () => {
+      if (issued) throw new Error("token endpoint unavailable");
+      issued = true;
+      return { kind: "caic", instanceID: "home", baseURL: "https://caic.example.com", token: serviceToken("user-1", 1) };
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const session = new VoiceSession();
+    try {
+      await session.connect();
+      session.disconnect();
+
+      await vi.waitFor(() => expect(closeRequests).toEqual([{
+        url: "https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1",
+        authorization: `Bearer ${serviceToken("user-1", 1)}`,
+      }]));
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("keeps the offer gateway and account when configuration changes before close", async () => {
+    let issued = 0;
+    configureVoiceGateway("https://old-voice.example.com", async () => ({
+      kind: "caic", instanceID: "home", baseURL: "https://caic.example.com",
+      token: serviceToken(++issued === 1 ? "user-1" : "user-2", issued),
+    }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const session = new VoiceSession();
+    try {
+      await session.connect();
+      configureVoiceGateway("https://new-voice.example.com", async () => ({
+        kind: "caic", instanceID: "home", baseURL: "https://caic.example.com", token: serviceToken("user-2", 3),
+      }));
+      session.disconnect();
+
+      await vi.waitFor(() => expect(closeRequests).toEqual([{
+        url: "https://old-voice.example.com/api/voicegateway/v1/voice/rtc/session-1",
+        authorization: `Bearer ${serviceToken("user-1", 1)}`,
+      }]));
+      expect(warn).toHaveBeenCalledWith("Voice gateway authorization changed identity; using offer token");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("sends the offer to the captured gateway when token issuance is pending", async () => {
+    const authorization = deferred<{ kind: string; instanceID: string; baseURL: string; token: string }>();
+    const oldProvider = vi.fn(() => authorization.promise);
+    configureVoiceGateway("https://old-voice.example.com", oldProvider);
+    const session = new VoiceSession();
+
+    const connecting = session.connect();
+    await vi.waitFor(() => expect(oldProvider).toHaveBeenCalledOnce());
+    configureVoiceGateway("https://new-voice.example.com", async () => ({
+      kind: "caic", instanceID: "home", baseURL: "https://caic.example.com", token: serviceToken("user-2", 2),
+    }));
+    const service = {
+      kind: "caic", instanceID: "home", baseURL: "https://caic.example.com", token: serviceToken("user-1", 1),
+    };
+    authorization.resolve(service);
+    await connecting;
+
+    expect(offerRequests).toEqual([{
+      url: "https://old-voice.example.com/api/voicegateway/v1/voice/rtc/offer",
+      authorization: null,
+      body: { sdp: "v=0\r\na=candidate:1 1 udp 2130706431 192.0.2.2 50000 typ host\r\n", service },
+    }]);
+    session.disconnect();
+  });
+
+  it("keeps the offer gateway and account for a late response after reconfiguration", async () => {
+    let issued = 0;
+    configureVoiceGateway("https://old-voice.example.com", async () => ({
+      kind: "caic", instanceID: "home", baseURL: "https://caic.example.com",
+      token: serviceToken(++issued === 1 ? "user-1" : "user-2", issued),
+    }));
+    const offer = deferred<VoiceRTCAnswerResp>();
+    offerResponse = offer.promise.then((answer) => new Response(JSON.stringify(answer)));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const session = new VoiceSession();
+    try {
+      const connecting = session.connect();
+      await vi.waitFor(() => expect(offerRequests).toHaveLength(1));
+      session.disconnect();
+      configureVoiceGateway("https://new-voice.example.com", async () => ({
+        kind: "caic", instanceID: "home", baseURL: "https://caic.example.com", token: serviceToken("user-2", 3),
+      }));
+      offer.resolve({ sdp: "answer-sdp", sessionID: "late-session" });
+      await connecting;
+
+      await vi.waitFor(() => expect(closeRequests).toEqual([{
+        url: "https://old-voice.example.com/api/voicegateway/v1/voice/rtc/late-session",
+        authorization: `Bearer ${serviceToken("user-1", 1)}`,
+      }]));
+      expect(warn).toHaveBeenCalledWith("Voice gateway authorization changed identity; using offer token");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("closes a same-origin gateway session on disconnect only once", async () => {
+    const session = new VoiceSession();
+    await session.connect();
+
+    session.disconnect();
+    session.disconnect();
+
+    await vi.waitFor(() => expect(closeRequests).toEqual([{
+      url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/session-1`, authorization: null,
+    }]));
+  });
+
+  it("leaves same-origin close authentication to the gateway fetch wrapper", async () => {
+    let token: string | null = "host-token";
+    configureVoiceGateway("/", null, () => token);
+    const session = new VoiceSession();
+    await session.connect();
+    token = "refreshed-token";
+
+    session.disconnect();
+
+    expect(offerRequests[0]?.body).toEqual({
+      sdp: "v=0\r\na=candidate:1 1 udp 2130706431 192.0.2.2 50000 typ host\r\n",
+    });
+    await vi.waitFor(() => expect(closeRequests).toEqual([{
+      url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/session-1`,
+      authorization: "Bearer refreshed-token",
+    }]));
+  });
+
+  it("closes the gateway session when the voice protocol reports an error", async () => {
+    const session = new VoiceSession();
+    await session.connect();
+
+    FakePeerConnection.dataChannels[0]?.onmessage?.(
+      new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindError, message: "session failed" }) }),
+    );
+
+    await vi.waitFor(() => expect(closeRequests).toEqual([{
+      url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/session-1`, authorization: null,
+    }]));
+    expect(session.state.error).toBe("session failed");
   });
 
   it("refreshes host authorization for standalone diagnostics", async () => {
@@ -417,16 +629,20 @@ describe("VoiceSession", () => {
       kind: "caic",
       instanceID: "home",
       baseURL: "https://caic.example.com",
-      token: `token-${++issue}`,
+      token: serviceToken("user-1", ++issue),
     }));
-    sdkMocks.diagnoseVoiceRTC.mockResolvedValue({} as VoiceRTCDiagnosticsResp);
+    diagnosticResponse = {} as VoiceRTCDiagnosticsResp;
     const session = new VoiceSession();
 
     await session.connect();
+    configureVoiceGateway("https://new-voice.example.com", async () => ({
+      kind: "caic", instanceID: "home", baseURL: "https://caic.example.com", token: serviceToken("user-2", 3),
+    }));
     triggerIceState("closed");
 
-    await vi.waitFor(() => expect(sdkMocks.diagnoseVoiceRTC).toHaveBeenCalled());
-    expect(sdkMocks.diagnoseVoiceRTC.mock.calls[0]?.[2]).toEqual({ Authorization: "Bearer token-2" });
+    await vi.waitFor(() => expect(diagnosticRequests).toHaveLength(1));
+    expect(diagnosticRequests[0]?.authorization).toBe(`Bearer ${serviceToken("user-1", 2)}`);
+    expect(diagnosticRequests[0]?.url).toBe("https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1/diagnostics");
     session.disconnect();
   });
 
@@ -456,7 +672,7 @@ describe("VoiceSession", () => {
     await session.connect();
     FakePeerConnection.dataChannels[0]?.onopen?.();
 
-    expect(sdkMocks.voiceRTCOffer).toHaveBeenCalled();
+    expect(offerRequests).toHaveLength(1);
     const sent = FakePeerConnection.dataChannels[0]?.send.mock.calls[0]?.[0];
     expect(JSON.parse(sent as string).context.text).toBe("No visible service items.");
   });
@@ -470,12 +686,12 @@ describe("VoiceSession", () => {
     try {
       const connect = session.connect();
       await vi.advanceTimersByTimeAsync(49);
-      expect(sdkMocks.voiceRTCOffer).not.toHaveBeenCalled();
+      expect(offerRequests).toHaveLength(0);
 
       await vi.advanceTimersByTimeAsync(1);
       await connect;
 
-      expect(sdkMocks.voiceRTCOffer).toHaveBeenCalledWith({
+      expect(offerRequests[0]?.body).toEqual({
         sdp: "v=0\r\na=candidate:1 1 udp 2130706431 192.0.2.2 50000 typ host\r\na=candidate:2 1 udp 1694498815 203.0.113.2 50000 typ srflx raddr 192.0.2.2 rport 50000\r\n",
       });
       expect(FakePeerConnection.last?.iceGatheringState).toBe("gathering");
@@ -487,22 +703,18 @@ describe("VoiceSession", () => {
 
   it("does not start setup timeout before signaling completes", async () => {
     vi.useFakeTimers();
-    let resolveOffer: (value: { sdp: string; sessionID: string }) => void = () => {};
-    sdkMocks.voiceRTCOffer.mockReturnValue(
-      new Promise((resolve) => {
-        resolveOffer = resolve;
-      }),
-    );
+    const offer = deferred<VoiceRTCAnswerResp>();
+    offerResponse = offer.promise.then((answer) => new Response(JSON.stringify(answer)));
     const session = new VoiceSession();
 
     try {
       const connect = session.connect();
-      await vi.waitFor(() => expect(sdkMocks.voiceRTCOffer).toHaveBeenCalled());
+      await vi.waitFor(() => expect(offerRequests).toHaveLength(1));
 
       await vi.advanceTimersByTimeAsync(15_000);
 
       expect(session.state.error).toBeNull();
-      resolveOffer({ sdp: "answer-sdp", sessionID: "session-1" });
+      offer.resolve({ sdp: "answer-sdp", sessionID: "session-1" });
       await connect;
     } finally {
       session.disconnect();
@@ -532,6 +744,9 @@ describe("voice network recovery", () => {
       triggerIceState("failed");
       await vi.advanceTimersByTimeAsync(0);
       await vi.waitFor(() => expect(FakePeerConnection.dataChannels).toHaveLength(2));
+      expect(closeRequests).toContainEqual({
+        url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/session-1`, authorization: null,
+      });
       FakePeerConnection.dataChannels[1]?.onopen?.();
 
       const firstSetup = FakePeerConnection.dataChannels[0]?.send.mock.calls[0]?.[0];

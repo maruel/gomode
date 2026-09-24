@@ -111,6 +111,12 @@
   color: var(--color-danger);
 }
 
+.errorDetail {
+  display: block;
+  font-size: 0.8em;
+  overflow-wrap: anywhere;
+}
+
 .micIconError {
   color: var(--color-danger);
 }

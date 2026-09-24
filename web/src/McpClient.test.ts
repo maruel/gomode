@@ -48,4 +48,30 @@ describe("configureMcpClient", () => {
     expect(() => configureMcpClient("/\\example.com/mcp", "host")).toThrow();
     expect(() => configureMcpClient("relative/mcp", "host")).toThrow();
   });
+
+  it("adds the current bearer token to discovery and JSON-RPC requests", async () => {
+    let token = "first";
+    configureMcpClient("/api/v1/gomode/mcp", "mddb-frontend", () => token);
+    const methods: string[] = [];
+    const authorizations: string[] = [];
+    globalThis.fetch = async (_input, init) => {
+      methods.push(new Headers(init?.headers).get("Mcp-Method") ?? "");
+      authorizations.push(new Headers(init?.headers).get("Authorization") ?? "");
+      const method = JSON.parse(String(init?.body)).method as string;
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: method === "server/discover" ? { instructions: "Read nodes" } : { tools: [] } }));
+    };
+
+    expect(await mcpClient.serverInstructions()).toBe("Read nodes");
+    token = "second";
+    expect(await mcpClient.listTools()).toEqual([]);
+    expect(methods).toEqual(["server/discover", "tools/list"]);
+    expect(authorizations).toEqual(["Bearer first", "Bearer second"]);
+  });
+
+  it("surfaces HTTP authorization failures before reading a JSON-RPC result", async () => {
+    configureMcpClient("/api/v1/gomode/mcp", "mddb-frontend", () => "expired");
+    globalThis.fetch = async () => new Response("Unauthorized", { status: 401 });
+
+    await expect(mcpClient.listTools()).rejects.toThrow("MCP tools/list returned HTTP 401");
+  });
 });

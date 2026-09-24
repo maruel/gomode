@@ -1078,6 +1078,25 @@ func (s *Server) issueTokenResponse(user oauth.User, resource, scope, grantID, r
 	return oauth.TokenResponse{AccessToken: accessToken, TokenType: tokenType, ExpiresIn: int64(s.accessTokenTTL.Seconds()), RefreshToken: refreshToken, Scope: scope}, nil
 }
 
+// IssueNarrowToken signs a short-lived access token for user with an explicit
+// audience and scope. Hosts use it for host-authenticated, narrow capabilities
+// (such as the voice gateway) that are not the server's protected resource. The
+// token carries no grant, so it cannot be refreshed or introspected as a client
+// grant, and this server's own BearerAuth rejects it because its audience
+// differs from the configured protected resource.
+func (s *Server) IssueNarrowToken(user oauth.User, audience, scope string, ttl time.Duration) (string, error) {
+	if user.ID == "" {
+		return "", errors.New("oauth: token subject is required")
+	}
+	if audience == "" {
+		return "", errors.New("oauth: token audience is required")
+	}
+	if scope == "" {
+		return "", errors.New("oauth: token scope is required")
+	}
+	return s.tokens.IssueAccessTokenTTL(s.issuer, user, audience, scope, "", "", ttl)
+}
+
 func (s *Server) writeTokenResponse(w http.ResponseWriter, response *oauth.TokenResponse) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")

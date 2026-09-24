@@ -1,6 +1,6 @@
 // Voice overlay component: persistent bottom panel with mic button and voice controls.
 
-import { createEffect, createSignal, For, Show, onCleanup, onMount, type JSX } from "solid-js";
+import { createEffect, createSignal, For, Show, onCleanup, onMount, type Accessor, type JSX } from "solid-js";
 
 import { voiceSession } from "./VoiceSession";
 import type { VoiceState, TranscriptEntry } from "./VoiceSession";
@@ -47,21 +47,112 @@ const BAR_DURATIONS = [80, 40, 120];
 const BAR_MIN_H = 3;
 const BAR_MAX_H = 20;
 
-export default function VoiceOverlay() {
+/** Host-provided text for the browser voice controls. */
+export interface VoiceOverlayMessages {
+  assistant: string;
+  cancel: string;
+  cancelConnection: string;
+  clearTranscript: string;
+  connect: string;
+  connectionFailed: string;
+  endSession: string;
+  listening: string;
+  microphone: string;
+  mute: string;
+  muted: string;
+  reconnecting: string;
+  retry: string;
+  signaling: string;
+  speaker: string;
+  speaking: string;
+  transcript: string;
+  transcriptPlaceholder: string;
+  unmute: string;
+  voiceAssistant: string;
+  waitingForServer: string;
+  settingUpWebRTC: string;
+  you: string;
+}
+
+export const defaultVoiceOverlayMessages: VoiceOverlayMessages = {
+  assistant: "Assistant:",
+  cancel: "Cancel",
+  cancelConnection: "Cancel connection",
+  clearTranscript: "Clear transcript",
+  connect: "Connect voice assistant",
+  connectionFailed: "Voice connection failed",
+  endSession: "End voice session",
+  listening: "Listening…",
+  microphone: "Microphone",
+  mute: "Mute",
+  muted: "Muted",
+  reconnecting: "Reconnecting…",
+  retry: "Retry",
+  signaling: "Signaling…",
+  speaker: "Speaker",
+  speaking: "Speaking…",
+  transcript: "Transcript",
+  transcriptPlaceholder: "Transcript will appear here…",
+  unmute: "Unmute",
+  voiceAssistant: "Voice assistant",
+  waitingForServer: "Waiting for server…",
+  settingUpWebRTC: "Setting up WebRTC…",
+  you: "You:",
+};
+
+function localizedStatus(status: string, phase: VoiceState["connectPhase"], messages: VoiceOverlayMessages, hasCustomMessages: boolean): string {
+  if (!hasCustomMessages) return status;
+  switch (phase) {
+    case "setup":
+      return messages.settingUpWebRTC;
+    case "waiting":
+      return messages.waitingForServer;
+    case "signaling":
+      return messages.signaling;
+    case "reconnecting":
+      return messages.reconnecting;
+    default:
+      return messages.reconnecting;
+  }
+}
+
+function safeErrorDetail(error: string): string {
+  return error
+    .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/([?&](?:access_token|token|api_key|password)=)[^&#\s]+/gi, "$1[redacted]")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .trim()
+    .slice(0, 500);
+}
+
+export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | Accessor<VoiceOverlayMessages> }) {
   const session = voiceSession;
+  const messages = () => {
+    const value = props.messages;
+    return (typeof value === "function" ? value() : value) ?? defaultVoiceOverlayMessages;
+  };
 
   let panelRef: HTMLDivElement | undefined; // eslint-disable-line no-unassigned-vars -- assigned by SolidJS ref
   const [spacerHeight, setSpacerHeight] = createSignal(0);
   onMount(() => {
     const observer = new ResizeObserver(([entry]) => {
+      if (!entry) return;
       setSpacerHeight(entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height);
     });
     if (panelRef) observer.observe(panelRef);
     onCleanup(() => observer.disconnect());
   });
 
-  // Suppress browser notifications while voice is connected.
-  createEffect(() => notifications.setVoiceActive(session.state.connected));
+  // Suppress browser notifications while voice mode is active.
+  createEffect(() =>
+    notifications.setVoiceActive(
+      session.state.connected ||
+        session.state.connectStatus !== null ||
+        session.state.listening ||
+        session.state.speaking,
+    ),
+  );
+  onCleanup(() => notifications.setVoiceActive(false));
 
   // No onCleanup disconnect — the singleton voice session survives component remounts.
   // Only explicit user action or page unload (beforeunload handler) disconnects.
@@ -114,7 +205,7 @@ export default function VoiceOverlay() {
   return (
     <>
       <div class={styles.spacer} style={{ "--spacer-height": `${spacerHeight()}px` }} aria-hidden="true" />
-      <div class={styles.panel} ref={panelRef} role="region" aria-label="Voice assistant" data-testid="voice-overlay">
+      <div class={styles.panel} ref={panelRef} role="region" aria-label={messages().voiceAssistant} data-testid="voice-overlay">
         <div class={styles.panelInner}>
           {/* Idle state: mic button right-aligned */}
           <Show when={!isActive()}>
@@ -123,8 +214,8 @@ export default function VoiceOverlay() {
                 type="button"
                 class={styles.micButton}
                 onClick={() => handleMicClick()}
-                title="Connect voice assistant"
-                aria-label="Connect voice assistant"
+                title={messages().connect}
+                aria-label={messages().connect}
               >
                 <MicIcon width="1.1em" height="1.1em" />
               </button>
@@ -132,13 +223,13 @@ export default function VoiceOverlay() {
           </Show>
 
           <Show when={session.state.error !== null && session.state.error} keyed>
-            {(err) => <ErrorPanel error={err} onRetry={() => handleMicClick()} />}
+            {(err) => <ErrorPanel error={err} messages={messages} hasCustomMessages={props.messages !== undefined} onRetry={() => handleMicClick()} />}
           </Show>
           <Show
             when={session.state.error === null && session.state.connectStatus !== null && session.state.connectStatus}
             keyed
           >
-            {(status) => <ConnectingPanel status={status} onDisconnect={() => session.disconnect()} />}
+            {(status) => <ConnectingPanel status={status} phase={session.state.connectPhase} messages={messages} hasCustomMessages={props.messages !== undefined} onDisconnect={() => session.disconnect()} />}
           </Show>
           <Show
             when={
@@ -149,6 +240,7 @@ export default function VoiceOverlay() {
           >
             <ActivePanel
               state={session.state}
+              messages={messages}
               onDisconnect={() => session.disconnect()}
               onToggleMute={() => session.toggleMute()}
               onSelectInput={(id) => {
@@ -168,17 +260,17 @@ export default function VoiceOverlay() {
 
 // Sub-panels
 
-function ConnectingPanel(props: { status: string; onDisconnect: () => void }) {
+function ConnectingPanel(props: { status: string; phase: VoiceState["connectPhase"]; messages: Accessor<VoiceOverlayMessages>; hasCustomMessages: boolean; onDisconnect: () => void }) {
   return (
     <div class={`${styles.row} ${styles.statusConnecting}`}>
       <MicIcon width="1.1em" height="1.1em" />
-      <span class={styles.statusText}>{props.status}</span>
+      <span class={styles.statusText}>{localizedStatus(props.status, props.phase, props.messages(), props.hasCustomMessages)}</span>
       <button
         type="button"
         class={styles.iconButton}
         onClick={() => props.onDisconnect()}
-        title="Cancel"
-        aria-label="Cancel connection"
+        title={props.messages().cancel}
+        aria-label={props.messages().cancelConnection}
       >
         <CloseIcon width="1.1em" height="1.1em" />
       </button>
@@ -186,17 +278,20 @@ function ConnectingPanel(props: { status: string; onDisconnect: () => void }) {
   );
 }
 
-function ErrorPanel(props: { error: string; onRetry: () => void }) {
+function ErrorPanel(props: { error: string; messages: Accessor<VoiceOverlayMessages>; hasCustomMessages: boolean; onRetry: () => void }) {
   return (
     <div class={styles.row}>
       <MicIcon width="1.1em" height="1.1em" class={styles.micIconError} />
-      <span class={styles.statusError}>{props.error}</span>
+      <span class={styles.statusError}>
+        {props.hasCustomMessages ? props.messages().connectionFailed : props.error}
+        {props.hasCustomMessages && <small class={styles.errorDetail}>{safeErrorDetail(props.error)}</small>}
+      </span>
       <button
         type="button"
         class={`${styles.actionButton} ${styles.actionButtonPrimary}`}
         onClick={() => props.onRetry()}
       >
-        Retry
+        {props.messages().retry}
       </button>
     </div>
   );
@@ -204,6 +299,7 @@ function ErrorPanel(props: { error: string; onRetry: () => void }) {
 
 function ActivePanel(props: {
   state: VoiceState;
+  messages: Accessor<VoiceOverlayMessages>;
   onDisconnect: () => void;
   onToggleMute: () => void;
   onSelectInput: (id: string) => void;
@@ -212,9 +308,9 @@ function ActivePanel(props: {
 }) {
   const statusText = () => {
     if (props.state.activeTool !== null) return props.state.activeTool;
-    if (props.state.muted && !props.state.speaking) return "Muted";
-    if (props.state.speaking) return "Speaking…";
-    return "Listening…";
+    if (props.state.muted && !props.state.speaking) return props.messages().muted;
+    if (props.state.speaking) return props.messages().speaking;
+    return props.messages().listening;
   };
 
   const statusClass = () =>
@@ -229,8 +325,8 @@ function ActivePanel(props: {
           type="button"
           class={`${styles.iconButton}${props.state.muted ? " " + styles.iconButtonMuted : ""}`}
           onClick={() => props.onToggleMute()}
-          title={props.state.muted ? "Unmute" : "Mute"}
-          aria-label={props.state.muted ? "Unmute" : "Mute"}
+          title={props.state.muted ? props.messages().unmute : props.messages().mute}
+          aria-label={props.state.muted ? props.messages().unmute : props.messages().mute}
         >
           <Show when={props.state.muted} fallback={<MicIcon width="1.1em" height="1.1em" />}>
             <MicOffIcon width="1.1em" height="1.1em" />
@@ -240,8 +336,8 @@ function ActivePanel(props: {
           type="button"
           class={`${styles.iconButton} ${styles.iconButtonEnd}`}
           onClick={() => props.onDisconnect()}
-          title="End voice session"
-          aria-label="End voice session"
+          title={props.messages().endSession}
+          aria-label={props.messages().endSession}
         >
           <CallEndIcon width="1.1em" height="1.1em" />
         </button>
@@ -252,11 +348,12 @@ function ActivePanel(props: {
           outputs={props.state.audioOutputs}
           selectedInputId={props.state.selectedInputId}
           selectedOutputId={props.state.selectedOutputId}
+          messages={props.messages}
           onSelectInput={props.onSelectInput}
           onSelectOutput={props.onSelectOutput}
         />
       )}
-      <TranscriptLog transcript={props.state.transcript} onClear={() => props.onClearTranscript()} />
+      <TranscriptLog transcript={props.state.transcript} messages={props.messages} onClear={() => props.onClearTranscript()} />
     </>
   );
 }
@@ -268,6 +365,7 @@ function AudioDevicePicker(props: {
   outputs: Array<{ deviceId: string; label: string }>;
   selectedInputId: string;
   selectedOutputId: string;
+  messages: Accessor<VoiceOverlayMessages>;
   onSelectInput: (id: string) => void;
   onSelectOutput: (id: string) => void;
 }) {
@@ -278,7 +376,7 @@ function AudioDevicePicker(props: {
           class={styles.deviceSelect}
           value={props.selectedInputId}
           onChange={(e) => props.onSelectInput(e.currentTarget.value)}
-          aria-label="Microphone"
+          aria-label={props.messages().microphone}
         >
           <For each={props.inputs}>{(d) => <option value={d.deviceId}>🎤 {d.label}</option>}</For>
         </select>
@@ -288,7 +386,7 @@ function AudioDevicePicker(props: {
           class={styles.deviceSelect}
           value={props.selectedOutputId}
           onChange={(e) => props.onSelectOutput(e.currentTarget.value)}
-          aria-label="Speaker"
+          aria-label={props.messages().speaker}
         >
           <For each={props.outputs}>{(d) => <option value={d.deviceId}>🔊 {d.label}</option>}</For>
         </select>
@@ -319,7 +417,7 @@ function MicLevelBars(barProps: { micLevel: number }) {
 
 // Transcript log
 
-function TranscriptLog(props: { transcript: TranscriptEntry[]; onClear: () => void }) {
+function TranscriptLog(props: { transcript: TranscriptEntry[]; messages: Accessor<VoiceOverlayMessages>; onClear: () => void }) {
   let listRef: HTMLDivElement | undefined;
 
   // Auto-scroll to bottom when transcript changes.
@@ -337,13 +435,13 @@ function TranscriptLog(props: { transcript: TranscriptEntry[]; onClear: () => vo
     <>
       <Show when={props.transcript.length > 0}>
         <div class={styles.rowLabel}>
-          <span class={styles.transcriptLabel}>Transcript</span>
+          <span class={styles.transcriptLabel}>{props.messages().transcript}</span>
           <button
             type="button"
             class={styles.clearButton}
             onClick={() => props.onClear()}
-            title="Clear transcript"
-            aria-label="Clear transcript"
+            title={props.messages().clearTranscript}
+            aria-label={props.messages().clearTranscript}
           >
             ×
           </button>
@@ -358,7 +456,7 @@ function TranscriptLog(props: { transcript: TranscriptEntry[]; onClear: () => vo
             {(entry) => (
               <div class={styles.transcriptEntry}>
                 <span class={entry.speaker === "user" ? styles.transcriptLabelUser : styles.transcriptLabelAssistant}>
-                  {entry.speaker === "user" ? "You:" : "Assistant:"}
+                  {entry.speaker === "user" ? props.messages().you : props.messages().assistant}
                 </span>
                 {entry.text}
               </div>
@@ -367,7 +465,7 @@ function TranscriptLog(props: { transcript: TranscriptEntry[]; onClear: () => vo
         </div>
       </Show>
       <Show when={props.transcript.length === 0}>
-        <p class={styles.transcriptPlaceholder}>Transcript will appear here…</p>
+        <p class={styles.transcriptPlaceholder}>{props.messages().transcriptPlaceholder}</p>
       </Show>
     </>
   );

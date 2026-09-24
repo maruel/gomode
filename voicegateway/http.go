@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/maruel/gomode"
+	"github.com/maruel/gomode/oauth/oauthverify"
 	voiceapi "github.com/maruel/gomode/voicegateway/api"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
@@ -51,10 +52,25 @@ func NewEmbeddedHandler(bridge MediaBridgeProvider) http.Handler {
 }
 
 func newHandler(cfg *Config, bridge MediaBridgeProvider, requireServiceAuth, includeHealth bool) http.Handler {
+	return newHandlerWithVerifier(cfg, bridge, requireServiceAuth, includeHealth, nil)
+}
+
+// newHandlerWithVerifier is newHandler with an optional OAuth verifier, letting
+// tests control the discovery clock and cache lifetimes.
+func newHandlerWithVerifier(cfg *Config, bridge MediaBridgeProvider, requireServiceAuth, includeHealth bool, verifier *oauthverify.Verifier) http.Handler {
 	h := &handler{
 		cfg:                cfg,
 		bridge:             bridge,
 		requireServiceAuth: requireServiceAuth,
+		verifier:           verifier,
+	}
+	if h.verifier == nil && cfg != nil {
+		for _, issuer := range cfg.TrustedIssuers {
+			if issuer.OAuth {
+				h.verifier = oauthverify.New(nil)
+				break
+			}
+		}
 	}
 	mux := http.NewServeMux()
 	if includeHealth {
@@ -96,6 +112,7 @@ type handler struct {
 	cfg                *Config
 	bridge             MediaBridgeProvider
 	requireServiceAuth bool
+	verifier           *oauthverify.Verifier
 	sessions           sync.Map // session ID to serviceSessionIdentity
 }
 
@@ -127,12 +144,12 @@ func (h *handler) handleOffer(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, err.Error())
 			return
 		}
-		claims, err := verifyServiceToken(h.cfg, *req.Service)
+		verified, err := h.verifyServiceToken(r.Context(), *req.Service)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, err.Error())
 			return
 		}
-		identity = serviceSessionIdentity{claims.ServiceKind, claims.ServiceInstanceID, claims.BackendOrigin, claims.Subject}
+		identity = verified
 	}
 	bridge := h.mediaBridge()
 	if bridge == nil {
@@ -211,22 +228,17 @@ func (h *handler) authorizeSession(w http.ResponseWriter, r *http.Request, sessi
 		return false
 	}
 	identity := bound.(serviceSessionIdentity)
-	for _, issuer := range h.cfg.TrustedIssuers {
-		if issuer.Service != identity.kind || strings.TrimRight(issuer.Issuer, "/") != strings.TrimRight(identity.origin, "/") {
-			continue
-		}
-		key, err := gomode.ParseServiceSigningPublicKey(issuer.PublicKey)
-		if err != nil {
-			break
-		}
-		claims, err := gomode.VerifyServiceScopedToken(token, key, gomode.ScopedTokenAudience)
-		if err == nil && hasVoiceSessionCapability(claims) && claims.ServiceKind == identity.kind && claims.ServiceInstanceID == identity.instanceID && claims.BackendOrigin == identity.origin && claims.Subject == identity.subject {
-			return true
-		}
-		break
+	verified, err := h.verifyServiceToken(r.Context(), voicev1.ServiceAuthorization{
+		Kind:       identity.kind,
+		InstanceID: identity.instanceID,
+		BaseURL:    identity.origin,
+		Token:      token,
+	})
+	if err != nil || verified != identity {
+		writeError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, "token does not authorize voice session")
+		return false
 	}
-	writeError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, "token does not authorize voice session")
-	return false
+	return true
 }
 
 func unavailableVoiceRTCDiagnostics(sessionID string, client *voicev1.VoiceRTCClientDiagnostics) voicev1.VoiceRTCDiagnosticsResp {
@@ -282,34 +294,61 @@ func isNilMediaBridge(bridge MediaBridge) bool {
 	}
 }
 
-func verifyServiceToken(cfg *Config, s voicev1.ServiceAuthorization) (*gomode.ScopedTokenClaims, error) {
-	for _, issuer := range cfg.TrustedIssuers {
+// verifyServiceToken validates a service authorization and returns the identity
+// it authorizes. It selects the token form from the matching trusted issuer:
+// OAuth access token verification through discovery and JWKS, or the
+// transitional scoped Ed25519 token.
+func (h *handler) verifyServiceToken(ctx context.Context, s voicev1.ServiceAuthorization) (serviceSessionIdentity, error) {
+	for _, issuer := range h.cfg.TrustedIssuers {
 		if issuer.Service != s.Kind || strings.TrimRight(issuer.Issuer, "/") != strings.TrimRight(s.BaseURL, "/") {
 			continue
 		}
+		if issuer.OAuth {
+			return h.verifyOAuthToken(ctx, issuer, s)
+		}
 		publicKey, err := gomode.ParseServiceSigningPublicKey(issuer.PublicKey)
 		if err != nil {
-			return nil, err
+			return serviceSessionIdentity{}, err
 		}
 		claims, err := gomode.VerifyServiceScopedToken(s.Token, publicKey, gomode.ScopedTokenAudience)
 		if err != nil {
-			return nil, err
+			return serviceSessionIdentity{}, err
 		}
 		if claims.ServiceKind != s.Kind {
-			return nil, errors.New("scoped token service kind does not match request")
+			return serviceSessionIdentity{}, errors.New("scoped token service kind does not match request")
 		}
 		if claims.ServiceInstanceID != s.InstanceID {
-			return nil, errors.New("scoped token service instance does not match request")
+			return serviceSessionIdentity{}, errors.New("scoped token service instance does not match request")
 		}
-		if strings.TrimRight(claims.BackendOrigin, "/") != strings.TrimRight(s.BaseURL, "/") {
-			return nil, errors.New("scoped token backend origin does not match request")
+		origin := strings.TrimRight(s.BaseURL, "/")
+		if strings.TrimRight(claims.BackendOrigin, "/") != origin {
+			return serviceSessionIdentity{}, errors.New("scoped token backend origin does not match request")
 		}
 		if !hasVoiceSessionCapability(claims) {
-			return nil, errors.New("scoped token lacks voice.session capability")
+			return serviceSessionIdentity{}, errors.New("scoped token lacks voice.session capability")
 		}
-		return claims, nil
+		return serviceSessionIdentity{kind: claims.ServiceKind, instanceID: claims.ServiceInstanceID, origin: origin, subject: claims.Subject}, nil
 	}
-	return nil, errors.New("no trusted issuer configured for service")
+	return serviceSessionIdentity{}, errors.New("no trusted issuer configured for service")
+}
+
+// verifyOAuthToken verifies a standard OAuth access token for the matching
+// issuer. The subject comes from the verified token; the service kind,
+// instance, and origin come from the host's authorization envelope because
+// standard access tokens do not carry host-instance claims.
+func (h *handler) verifyOAuthToken(ctx context.Context, issuer TrustedIssuerConfig, s voicev1.ServiceAuthorization) (serviceSessionIdentity, error) {
+	if h.verifier == nil {
+		return serviceSessionIdentity{}, errors.New("oauth token verifier is not configured")
+	}
+	origin := strings.TrimRight(issuer.Issuer, "/")
+	claims, err := h.verifier.Verify(ctx, s.Token, origin, issuer.OAuthAudience(), issuer.OAuthScope())
+	if err != nil {
+		return serviceSessionIdentity{}, err
+	}
+	if claims.Subject == "" {
+		return serviceSessionIdentity{}, errors.New("oauth token has no subject")
+	}
+	return serviceSessionIdentity{kind: s.Kind, instanceID: s.InstanceID, origin: origin, subject: claims.Subject}, nil
 }
 
 func hasVoiceSessionCapability(claims *gomode.ScopedTokenClaims) bool {

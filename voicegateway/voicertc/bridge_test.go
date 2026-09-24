@@ -22,6 +22,35 @@ import (
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
+func TestBridgeSetOnSessionClosed(t *testing.T) {
+	t.Parallel()
+	backend := &fakeBackendConnector{}
+	b := &Bridge{
+		backend: backend,
+		sessions: map[string]*session{
+			"first":  {id: "first", cancel: func() {}},
+			"second": {id: "second", cancel: func() {}},
+		},
+	}
+	closed := make(map[string]int)
+	b.SetOnSessionClosed(func(id string) {
+		if b.HasSession(id) {
+			t.Errorf("callback observed active session %q", id)
+		}
+		closed[id]++
+	})
+
+	b.Close("first")
+	b.Close("first")
+	if b.HasSession("first") || !b.HasSession("second") {
+		t.Fatalf("unexpected active sessions after Close")
+	}
+	b.CloseAll(t.Context())
+	if b.HasSession("second") || closed["first"] != 1 || closed["second"] != 1 {
+		t.Fatalf("closed callbacks = %v, want one per session", closed)
+	}
+}
+
 func TestClassifyVoiceRTCConnectivity(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

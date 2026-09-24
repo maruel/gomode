@@ -292,8 +292,18 @@ func (s *AccessTokenService) RotateKeyWithAlg(alg string) (string, error) {
 	return kid, nil
 }
 
-// IssueAccessToken signs a JWT access token for user.
+// IssueAccessToken signs a JWT access token for user using the service TTL.
 func (s *AccessTokenService) IssueAccessToken(issuer string, user oauth.User, audience, scope, grantID, clientID string) (string, error) {
+	return s.IssueAccessTokenTTL(issuer, user, audience, scope, grantID, clientID, s.ttl)
+}
+
+// IssueAccessTokenTTL signs a JWT access token for user with an explicit TTL.
+// It supports narrow, short-lived tokens for host capabilities that are not the
+// configured protected resource.
+func (s *AccessTokenService) IssueAccessTokenTTL(issuer string, user oauth.User, audience, scope, grantID, clientID string, ttl time.Duration) (string, error) {
+	if ttl <= 0 {
+		return "", errors.New("oauth: access token TTL must be positive")
+	}
 	now := time.Now()
 	jti, err := randomToken()
 	if err != nil {
@@ -309,7 +319,7 @@ func (s *AccessTokenService) IssueAccessToken(issuer string, user oauth.User, au
 		Scope:    scope,
 		GrantID:  grantID,
 		Type:     accessTokenType,
-	}, now, now.Add(s.ttl))
+	}, now, now.Add(ttl))
 }
 
 // IssueDPoPAccessToken signs a DPoP-bound JWT access token with cnf.jkt.

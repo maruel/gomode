@@ -27,5 +27,5 @@ benchmark, Android, and maintenance targets. `make android-check` runs the full
 Android build, lint, unit test, and coverage gate.
 
 See [the server library guide](docs/SERVER_LIBRARY.md) for the host boundary
-and [the extraction plan](docs/PLAN_EXTRACTION.md) for the current adoption
-work across caic and mddb.
+and [the Go Mode plan](docs/PLAN_GOMODE.md) for remaining work across caic,
+mddb, and the shared clients.

@@ -49,8 +49,10 @@ A host backend owns:
 - token issuance policy for external gateway mode
 
 An external gateway accepts an offer only when its `service` block contains a
-host-signed token with the `voice.session` capability. The gateway binds the
-returned session ID to the token's service, instance, origin, and subject.
+host-signed token that authorizes voice: either the transitional Ed25519 scoped
+token with the `voice.session` capability or a standard OAuth 2.0 access token
+with the `voice-gateway` audience and `voice.session` scope. The gateway binds
+the returned session ID to the token's service, instance, origin, and subject.
 Diagnostics and close requests require a current `Authorization: Bearer <token>`
 header for that same identity. Hosts should issue short-lived tokens on demand;
 clients fetch a fresh token when requesting diagnostics.

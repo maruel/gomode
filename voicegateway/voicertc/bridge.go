@@ -64,8 +64,9 @@ type Bridge struct {
 	advertisedEndpoints []udpCandidate
 	udpMappingError     string
 
-	sessionsMu sync.Mutex
-	sessions   map[string]*session
+	sessionsMu      sync.Mutex
+	sessions        map[string]*session
+	onSessionClosed func(string)
 }
 
 // NewBridge creates a Bridge that multiplexes WebRTC traffic through a single
@@ -335,10 +336,14 @@ func (b *Bridge) HandleOffer(ctx context.Context, sdpOffer string) (sdpAnswer, s
 	// Background cleanup.
 	go func() {
 		defer func() {
-			b.sessionsMu.Lock()
-			delete(b.sessions, sess.id)
-			b.sessionsMu.Unlock()
-			sess.close()
+			closed, callback := b.removeSession(sess.id)
+			if closed == nil {
+				return
+			}
+			closed.close()
+			if callback != nil {
+				callback(sess.id)
+			}
 			slog.InfoContext(sessionCtx, "voicertc: session cleaned up", "session", sess.id)
 		}()
 
@@ -358,6 +363,33 @@ func (b *Bridge) HandleOffer(ctx context.Context, sdpOffer string) (sdpAnswer, s
 	}
 	registered = true
 	return b.rewriteMappedCandidatePort(localDesc.SDP), sess.id, nil
+}
+
+// SetOnSessionClosed registers a callback for every session removed from this
+// bridge. The callback runs outside the session lock after resources close.
+func (b *Bridge) SetOnSessionClosed(callback func(string)) {
+	b.sessionsMu.Lock()
+	b.onSessionClosed = callback
+	b.sessionsMu.Unlock()
+}
+
+// HasSession reports whether the bridge still owns the session ID.
+func (b *Bridge) HasSession(sessionID string) bool {
+	b.sessionsMu.Lock()
+	_, ok := b.sessions[sessionID]
+	b.sessionsMu.Unlock()
+	return ok
+}
+
+func (b *Bridge) removeSession(sessionID string) (*session, func(string)) {
+	b.sessionsMu.Lock()
+	sess := b.sessions[sessionID]
+	if sess != nil {
+		delete(b.sessions, sessionID)
+	}
+	callback := b.onSessionClosed
+	b.sessionsMu.Unlock()
+	return sess, callback
 }
 
 // DiagnoseVoiceRTC returns structured connectivity diagnostics for a session.
@@ -380,15 +412,13 @@ func (b *Bridge) DiagnoseVoiceRTC(_ context.Context, sessionID string, client *v
 
 // Close tears down a session by ID. No-op if not found.
 func (b *Bridge) Close(sessionID string) {
-	b.sessionsMu.Lock()
-	sess, ok := b.sessions[sessionID]
-	if ok {
-		delete(b.sessions, sessionID)
-	}
-	b.sessionsMu.Unlock()
-	if ok {
+	sess, callback := b.removeSession(sessionID)
+	if sess != nil {
 		sess.cancel()
 		sess.close()
+		if callback != nil {
+			callback(sessionID)
+		}
 	}
 }
 
@@ -400,10 +430,14 @@ func (b *Bridge) CloseAll(ctx context.Context) {
 		sessions = append(sessions, s)
 	}
 	b.sessions = make(map[string]*session)
+	callback := b.onSessionClosed
 	b.sessionsMu.Unlock()
 	for _, s := range sessions {
 		s.cancel()
 		s.close()
+		if callback != nil {
+			callback(s.id)
+		}
 	}
 	b.setupMu.Lock()
 	upnpMapping := b.upnpMapping

@@ -5,9 +5,14 @@ import { createApiClient as createMcpApiClient } from "../../sdk/mcp/ts/v1/api.g
 const MCP_PROTOCOL_VERSION = "2026-07-28";
 let mcpEndpoint: string | null = null;
 let clientName = "gomode-web";
+let bearerTokenProvider: (() => string | null | Promise<string | null>) | null = null;
 
 /** Configure the MCP endpoint advertised by the current Go Mode host. */
-export function configureMcpClient(endpoint: string, name: string): void {
+export function configureMcpClient(
+  endpoint: string,
+  name: string,
+  tokenProvider?: () => string | null | Promise<string | null>,
+): void {
   if (
     endpoint.includes("\\") ||
     endpoint.startsWith("//") ||
@@ -22,7 +27,15 @@ export function configureMcpClient(endpoint: string, name: string): void {
   // A path keeps host cookies under fetch's default same-origin credential policy.
   mcpEndpoint = `${url.pathname}${url.search}`;
   clientName = name;
+  bearerTokenProvider = tokenProvider ?? null;
   _toolCache.clear();
+}
+
+async function authenticatedFetch(path: string, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  const token = await bearerTokenProvider?.();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return fetch(path, { ...init, headers });
 }
 
 function endpoint(): string {
@@ -61,7 +74,7 @@ async function mcpRequest(
   };
   if (opts.name !== undefined) headers["Mcp-Name"] = opts.name;
 
-  const resp = await fetch(endpoint(), {
+  const resp = await authenticatedFetch(endpoint(), {
     method: "POST",
     headers,
     body: JSON.stringify({
@@ -71,6 +84,7 @@ async function mcpRequest(
       params: { ...params, _meta: mcpMeta() },
     }),
   });
+  if (!resp.ok) throw new Error(`MCP ${method} returned HTTP ${resp.status}`);
   const rpc = (await resp.json()) as {
     result?: unknown;
     error?: { code: number; message: string };
@@ -97,7 +111,7 @@ export interface McpToolDescriptor {
 }
 
 async function mcpServerInstructions(): Promise<string> {
-  const api = createMcpApiClient((path, init) => fetch(`${endpoint()}${path}`, init));
+  const api = createMcpApiClient((path, init) => authenticatedFetch(`${endpoint()}${path}`, init));
   return api.serverInstructions();
 }
 

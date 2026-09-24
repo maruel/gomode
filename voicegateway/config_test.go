@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/maruel/gomode"
 )
 
 func TestLoadConfig(t *testing.T) {
@@ -241,6 +243,56 @@ func TestConfigValidate(t *testing.T) {
 			t.Fatal("expected error")
 		}
 		if !strings.Contains(err.Error(), "trusted_issuers[0].public_key") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("accepts oauth issuer with defaults", func(t *testing.T) {
+		t.Parallel()
+		cfg := DefaultConfig()
+		cfg.TrustedIssuers = []TrustedIssuerConfig{{
+			Service: "caic",
+			Issuer:  "https://caic.example.com",
+			OAuth:   true,
+		}}
+		if err := cfg.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.TrustedIssuers[0].OAuthAudience(); got != gomode.ScopedTokenAudience {
+			t.Errorf("OAuthAudience = %q, want %q", got, gomode.ScopedTokenAudience)
+		}
+		if got := cfg.TrustedIssuers[0].OAuthScope(); got != DefaultVoiceScope {
+			t.Errorf("OAuthScope = %q, want %q", got, DefaultVoiceScope)
+		}
+	})
+
+	t.Run("rejects issuer with neither token form", func(t *testing.T) {
+		t.Parallel()
+		cfg := DefaultConfig()
+		cfg.TrustedIssuers = []TrustedIssuerConfig{{Service: "caic", Issuer: "https://caic.example.com"}}
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "trusted_issuers[0].public_key or trusted_issuers[0].oauth is required") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("rejects issuer with two token forms", func(t *testing.T) {
+		t.Parallel()
+		cfg := DefaultConfig()
+		cfg.TrustedIssuers = []TrustedIssuerConfig{{
+			Service:   "caic",
+			Issuer:    "https://caic.example.com",
+			PublicKey: newTestPublicKey(t),
+			OAuth:     true,
+		}}
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "public_key and trusted_issuers[0].oauth are mutually exclusive") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})

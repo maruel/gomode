@@ -159,7 +159,15 @@ type LocalStackLLMConfig struct {
 	Model    string `toml:"model"`
 }
 
-// TrustedIssuerConfig configures a service backend trusted to issue scoped tokens.
+// DefaultVoiceScope is the OAuth scope a gateway requires on an OAuth access
+// token that authorizes a voice session.
+const DefaultVoiceScope = "voice.session"
+
+// TrustedIssuerConfig configures a service backend trusted to issue tokens.
+//
+// Exactly one of PublicKey or OAuth selects the token form. PublicKey verifies
+// the transitional scoped Ed25519 token. OAuth verifies a standard OAuth 2.0
+// access token through issuer metadata discovery and its published JWKS.
 type TrustedIssuerConfig struct {
 	// Service is the service kind allowed to issue tokens, for example "caic" or "mddb".
 	Service string `toml:"service"`
@@ -167,10 +175,34 @@ type TrustedIssuerConfig struct {
 	//
 	// It must match the service authorization base URL and the token backend origin.
 	Issuer string `toml:"issuer"`
-	// PublicKey is the imported Ed25519 public key used to verify tokens from issuer.
+	// PublicKey is the imported Ed25519 public key used to verify scoped tokens from issuer.
 	//
 	// The expected format is the value returned by gomode.EncodeServiceSigningPublicKey.
 	PublicKey string `toml:"public_key"`
+	// OAuth enables OAuth 2.0 access token verification through discovery and JWKS.
+	OAuth bool `toml:"oauth"`
+	// Audience is the required OAuth token audience. It defaults to
+	// gomode.ScopedTokenAudience when empty.
+	Audience string `toml:"audience"`
+	// Scope is the OAuth scope a token must carry. It defaults to
+	// DefaultVoiceScope when empty.
+	Scope string `toml:"scope"`
+}
+
+// OAuthAudience returns the audience an OAuth token from this issuer must carry.
+func (c TrustedIssuerConfig) OAuthAudience() string {
+	if c.Audience == "" {
+		return gomode.ScopedTokenAudience
+	}
+	return c.Audience
+}
+
+// OAuthScope returns the scope an OAuth token from this issuer must carry.
+func (c TrustedIssuerConfig) OAuthScope() string {
+	if c.Scope == "" {
+		return DefaultVoiceScope
+	}
+	return c.Scope
 }
 
 func isKnownBackend(backendID string) bool {
@@ -206,10 +238,15 @@ func validateTrustedIssuer(i int, issuer TrustedIssuerConfig) error {
 	} else {
 		errs = append(errs, validateBaseURL(prefix+".issuer", issuer.Issuer))
 	}
-	if issuer.PublicKey == "" {
-		errs = append(errs, fmt.Errorf("%s.public_key is required", prefix))
-	} else if _, err := gomode.ParseServiceSigningPublicKey(issuer.PublicKey); err != nil {
-		errs = append(errs, fmt.Errorf("%s.public_key: %w", prefix, err))
+	switch {
+	case issuer.PublicKey == "" && !issuer.OAuth:
+		errs = append(errs, fmt.Errorf("%s.public_key or %s.oauth is required", prefix, prefix))
+	case issuer.PublicKey != "" && issuer.OAuth:
+		errs = append(errs, fmt.Errorf("%s.public_key and %s.oauth are mutually exclusive", prefix, prefix))
+	case !issuer.OAuth:
+		if _, err := gomode.ParseServiceSigningPublicKey(issuer.PublicKey); err != nil {
+			errs = append(errs, fmt.Errorf("%s.public_key: %w", prefix, err))
+		}
 	}
 	return errors.Join(errs...)
 }

@@ -45,20 +45,128 @@ const HANG_UP_TOOL_NAME = "hang_up";
 export const MAX_RECOVERY_CONTEXT_CHARS = 8000;
 
 let gatewayBaseURL: string | null = null;
-let serviceAuthorizationProvider: (() => Promise<ServiceAuthorization>) | null = null;
+type ServiceAuthorizationProvider = () => Promise<ServiceAuthorization>;
+let serviceAuthorizationProvider: ServiceAuthorizationProvider | null = null;
+let gatewayBearerTokenProvider: (() => string | null | Promise<string | null>) | null = null;
 
 /** Configure a gateway origin and an optional host-issued scoped-token provider. */
-export function configureVoiceGateway(baseURL: string, provider: (() => Promise<ServiceAuthorization>) | null): void {
+export function configureVoiceGateway(
+  baseURL: string,
+  provider: ServiceAuthorizationProvider | null,
+  tokenProvider?: () => string | null | Promise<string | null>,
+): void {
   const u = new URL(baseURL, window.location.origin);
   if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("Voice gateway URL must use HTTP or HTTPS");
   gatewayBaseURL = u.origin;
   serviceAuthorizationProvider = provider;
+  gatewayBearerTokenProvider = tokenProvider ?? null;
 }
 
-// Late-bound fetch so tests can stub globalThis.fetch (the network seam).
+type BearerTokenProvider = () => string | null | Promise<string | null>;
+
+async function gatewayFetch(origin: string, bearerProvider: BearerTokenProvider | null, path: string, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers);
+  if (origin === window.location.origin && !headers.has("Authorization")) {
+    const token = await bearerProvider?.();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+  }
+  return fetch(new URL(path, origin).toString(), { ...init, headers });
+}
+
+// Late-bound API for callers outside VoiceSession; session operations use a pinned client.
 export const voiceGatewayApi = voicegatewaySDK.createApiClient((path, init) =>
-  fetch(gatewayBaseURL === null ? path : new URL(path, gatewayBaseURL).toString(), init),
+  gatewayFetch(gatewayBaseURL ?? window.location.origin, gatewayBearerTokenProvider, path, init),
 );
+
+interface GatewaySnapshot {
+  origin: string;
+  serviceProvider: ServiceAuthorizationProvider | null;
+  bearerProvider: BearerTokenProvider | null;
+  api: ReturnType<typeof voicegatewaySDK.createApiClient>;
+}
+
+function gatewaySnapshot(): GatewaySnapshot {
+  const origin = gatewayBaseURL ?? window.location.origin;
+  const serviceProvider = serviceAuthorizationProvider;
+  const bearerProvider = gatewayBearerTokenProvider;
+  return {
+    origin,
+    serviceProvider,
+    bearerProvider,
+    api: voicegatewaySDK.createApiClient((path, init) => gatewayFetch(origin, bearerProvider, path, init)),
+  };
+}
+
+function stripTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+/** Resolves the token subject used to detect an identity change across token refreshes. */
+function scopedTokenSubject(service: ServiceAuthorization): string | null {
+  const token = service.token;
+  const parts = token.split(".");
+  const payload = parts.length === 2 ? parts[0] : parts.length === 3 ? parts[1] : undefined;
+  if (!payload) return null;
+  try {
+    const binary = atob(payload.replace(/-/g, "+").replace(/_/g, "/"));
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    const claims: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (typeof claims !== "object" || claims === null) return null;
+    const fields = claims as Record<string, unknown>;
+    if (typeof fields.sub !== "string" || fields.sub === "") return null;
+    if (typeof fields.serviceKind === "string" || typeof fields.serviceInstanceID === "string" || typeof fields.backendOrigin === "string") {
+      // Transitional scoped Ed25519 token: bind every service claim.
+      if (
+        fields.serviceKind !== service.kind ||
+        fields.serviceInstanceID !== service.instanceID ||
+        fields.backendOrigin !== service.baseURL
+      ) return null;
+      return fields.sub;
+    }
+    // OAuth access token: bind the issuer to the service base URL.
+    if (typeof fields.iss === "string" && stripTrailingSlash(fields.iss) === stripTrailingSlash(service.baseURL)) return fields.sub;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function sameServiceIdentity(offer: ServiceAuthorization, refreshed: ServiceAuthorization): boolean {
+  const subject = scopedTokenSubject(offer);
+  return (
+    subject !== null &&
+    scopedTokenSubject(refreshed) === subject &&
+    offer.kind === refreshed.kind &&
+    offer.instanceID === refreshed.instanceID &&
+    offer.baseURL === refreshed.baseURL
+  );
+}
+
+async function closeVoiceGatewaySession(
+  snapshot: GatewaySnapshot,
+  sessionID: string,
+  offerService: ServiceAuthorization | null,
+): Promise<void> {
+  const token = await refreshedServiceToken(snapshot, offerService);
+  const headers: Record<string, string> = token === null ? {} : { Authorization: `Bearer ${token}` };
+  await snapshot.api.closeVoiceRTC(sessionID, headers);
+}
+
+async function refreshedServiceToken(snapshot: GatewaySnapshot, offerService: ServiceAuthorization | null): Promise<string | null> {
+  if (offerService !== null && snapshot.serviceProvider !== null) {
+    try {
+      const refreshed = await snapshot.serviceProvider();
+      if (sameServiceIdentity(offerService, refreshed)) {
+        return refreshed.token;
+      } else {
+        console.warn("Voice gateway authorization changed identity; using offer token");
+      }
+    } catch (error: unknown) {
+      console.warn("Could not refresh voice gateway authorization", error);
+    }
+  }
+  return offerService?.token ?? null;
+}
 
 /**
  * Voice-local tool declarations, kept outside the service MCP tool set.
@@ -102,6 +210,7 @@ export interface AudioDevice {
 
 export interface VoiceState {
   connectStatus: string | null;
+  connectPhase: "setup" | "waiting" | "signaling" | "reconnecting" | null;
   connected: boolean;
   listening: boolean;
   speaking: boolean;
@@ -130,6 +239,8 @@ export class VoiceSession {
   private _pc: RTCPeerConnection | null = null;
   private _dc: RTCDataChannel | null = null;
   private _rtcSessionID: string | null = null;
+  private _rtcGatewaySnapshot: GatewaySnapshot | null = null;
+  private _rtcOfferService: ServiceAuthorization | null = null;
   private _lastOfferSDP = "";
   private _lastAnswerSDP = "";
   private _audioContext: AudioContext | null = null;
@@ -150,6 +261,7 @@ export class VoiceSession {
   constructor() {
     const [state, setState] = createStore<VoiceState>({
       connectStatus: null,
+      connectPhase: null,
       connected: false,
       listening: false,
       speaking: false,
@@ -250,8 +362,8 @@ export class VoiceSession {
             if (this._pc !== pc) return;
             analyser.getByteTimeDomainData(buf);
             let sumSq = 0;
-            for (let i = 0; i < buf.length; i++) {
-              const v = (buf[i] - 128) / 128;
+            for (const sample of buf) {
+              const v = (sample - 128) / 128;
               sumSq += v * v;
             }
             const rms = Math.sqrt(sumSq / buf.length);
@@ -305,7 +417,7 @@ export class VoiceSession {
       this._recoveryContext = "";
       this._clearTranscript();
     }
-    this._setStatus("Setting up WebRTC…");
+    this._setStatus("setup", "Setting up WebRTC…");
 
     try {
       const [systemInstruction, mcpTools, serviceItemsText] = await Promise.all([
@@ -354,8 +466,8 @@ export class VoiceSession {
           if (!this._pc || this._pc !== pc) return;
           analyser.getByteTimeDomainData(buf);
           let sumSq = 0;
-          for (let i = 0; i < buf.length; i++) {
-            const v = (buf[i] - 128) / 128;
+          for (const sample of buf) {
+            const v = (sample - 128) / 128;
             sumSq += v * v;
           }
           const rms = Math.sqrt(sumSq / buf.length);
@@ -375,7 +487,7 @@ export class VoiceSession {
         if (attempt !== this._connectionAttempt || this._pc !== pc) return;
         const audio = new Audio();
         this._speakerAudio = audio;
-        audio.srcObject = evt.streams[0];
+        audio.srcObject = evt.streams[0] ?? new MediaStream([evt.track]);
         if (outId && "setSinkId" in audio) {
           void (
             audio as HTMLAudioElement & {
@@ -404,7 +516,7 @@ export class VoiceSession {
       dc.onopen = () => {
         if (attempt !== this._connectionAttempt || this._dc !== dc) return;
         this._reconnectAttempts = 0;
-        this._setStatus("Waiting for server…");
+        this._setStatus("waiting", "Waiting for server…");
         this._sendSetup(mcpTools, systemInstruction, serviceContext);
       };
 
@@ -434,22 +546,25 @@ export class VoiceSession {
       };
 
       // SDP offer/answer exchange.
-      this._setStatus("Signaling…");
+      this._setStatus("signaling", "Signaling…");
       const offer = await pc.createOffer();
       if (attempt !== this._connectionAttempt) return;
       const offerSDP = await completeLocalOffer(pc, offer);
       if (attempt !== this._connectionAttempt) return;
       this._lastOfferSDP = offerSDP;
-      const service = serviceAuthorizationProvider === null ? null : await serviceAuthorizationProvider();
+      const snapshot = gatewaySnapshot();
+      const service = snapshot.serviceProvider === null ? null : await snapshot.serviceProvider();
       if (attempt !== this._connectionAttempt) return;
-      const resp = await voiceGatewayApi.voiceRTCOffer(service === null ? { sdp: offerSDP } : { sdp: offerSDP, service });
+      const request = service === null ? { sdp: offerSDP } : { sdp: offerSDP, service };
+      const resp = await snapshot.api.voiceRTCOffer(request);
       if (attempt !== this._connectionAttempt) {
-        void voiceGatewayApi
-          .closeVoiceRTC(resp.sessionID, service === null ? {} : { Authorization: `Bearer ${service.token}` })
+        void closeVoiceGatewaySession(snapshot, resp.sessionID, service)
           .catch((error: unknown) => console.warn("Could not close cancelled voice session", error));
         return;
       }
       this._rtcSessionID = resp.sessionID;
+      this._rtcGatewaySnapshot = snapshot;
+      this._rtcOfferService = service;
       this._lastAnswerSDP = resp.sdp;
       await pc.setRemoteDescription({ type: "answer", sdp: resp.sdp });
       if (attempt !== this._connectionAttempt) return;
@@ -485,6 +600,7 @@ export class VoiceSession {
       s.speaking = false;
       s.muted = false;
       s.connectStatus = null;
+      s.connectPhase = null;
       s.activeTool = null;
       s.micLevel = 0;
       s.transcript = s.transcript.map((e) => ({ ...e, final: true }));
@@ -535,17 +651,28 @@ export class VoiceSession {
 
   /** Release WebRTC transport and audio resources. */
   private _releaseAll(): void {
+    const sessionID = this._rtcSessionID;
+    const snapshot = this._rtcGatewaySnapshot;
+    const service = this._rtcOfferService;
+    this._rtcSessionID = null;
+    this._rtcGatewaySnapshot = null;
+    this._rtcOfferService = null;
     this._dc?.close();
     this._dc = null;
     this._pc?.close();
     this._pc = null;
-    this._rtcSessionID = null;
     this._releaseAudio();
+    if (sessionID !== null && snapshot !== null) {
+      void closeVoiceGatewaySession(snapshot, sessionID, service).catch((error: unknown) => {
+        console.warn("Could not close voice gateway session", error);
+      });
+    }
   }
 
-  private _setStatus(status: string): void {
+  private _setStatus(phase: Exclude<VoiceState["connectPhase"], null>, status: string): void {
     this._update((s) => {
       s.connectStatus = status;
+      s.connectPhase = phase;
       s.error = null;
     });
   }
@@ -560,7 +687,7 @@ export class VoiceSession {
       if (delay !== 0) return;
       clearTimeout(this._reconnectTimer);
     }
-    this._setStatus(`${reason}; reconnecting…`);
+    this._setStatus("reconnecting", `${reason}; reconnecting…`);
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
       if (!this._reconnectEnabled) return;
@@ -593,17 +720,18 @@ export class VoiceSession {
       return;
     }
     const sessionID = this._rtcSessionID;
-    if (!sessionID) {
+    const snapshot = this._rtcGatewaySnapshot;
+    if (!sessionID || snapshot === null) {
       this._setError(fallback);
       return;
     }
     try {
-      const service = serviceAuthorizationProvider === null ? null : await serviceAuthorizationProvider();
+      const token = await refreshedServiceToken(snapshot, this._rtcOfferService);
       if (this._pc !== pc) return;
-      const diagnostics = await voiceGatewayApi.diagnoseVoiceRTC(
+      const diagnostics = await snapshot.api.diagnoseVoiceRTC(
         sessionID,
         { client: this._clientDiagnostics(pc) },
-        service === null ? {} : { Authorization: `Bearer ${service.token}` },
+        token === null ? {} : { Authorization: `Bearer ${token}` },
       );
       if (this._pc !== pc) return;
       logVoiceRTCDiagnostics(diagnostics, this._lastOfferSDP, this._lastAnswerSDP);
@@ -633,6 +761,7 @@ export class VoiceSession {
     this._releaseAll();
     this._update((s) => {
       s.connectStatus = null;
+      s.connectPhase = null;
       s.connected = false;
       s.listening = false;
       s.speaking = false;
@@ -683,6 +812,7 @@ export class VoiceSession {
       }
       this._update((s) => {
         s.connectStatus = null;
+        s.connectPhase = null;
         s.connected = true;
         s.error = null;
       });

@@ -90,21 +90,44 @@ Roles are separate:
 - **Go Mode**: token contract. Defines claims and audience.
 - **Gateway**: resource server. Verifies tokens and serves media.
 
-Current transitional token:
+Each `[[trusted_issuers]]` entry selects one token form. The gateway supports
+both so hosts and external gateway operators can migrate at their own pace.
 
-- ed25519 scoped token
-- static `TrustedIssuers` key list in gateway config
+Transitional scoped token (`public_key`):
+
+- Ed25519 scoped token
+- static public key in gateway config
 - claims bind service kind, service instance, backend origin, subject,
   capabilities, audience, and expiry
 
-Final shared-gateway token:
+Standard OAuth access token (`oauth = true`):
 
-- OAuth JWT with `aud=voice-gateway`
+- OAuth 2.0 JWT with `aud=voice-gateway` (the required audience defaults to
+  `gomode.ScopedTokenAudience` and can be overridden per issuer)
 - short expiry
-- narrow voice scopes
-- issuer origin allowlist in gateway config
-- JWKS discovery through `/.well-known/oauth-authorization-server`
-- local verification with cached keys
+- narrow voice scope `voice.session` (overridable per issuer)
+- issuer origin allowlist in gateway config; a token whose `iss` is not on the
+  allowlist is rejected before any network fetch
+- JWKS discovery through `/.well-known/oauth-authorization-server`, with local
+  verification against cached keys and a refresh when a token names an unknown
+  key (rotation)
+
+For an OAuth issuer, the verified token supplies the session subject; the
+service kind, instance, and origin come from the host's service authorization
+envelope, which must match the configured issuer. The OAuth token is otherwise
+opaque to the host and is rejected by the host's own API because its audience
+differs.
+
+Example configuration:
+
+```toml
+[[trusted_issuers]]
+service = "caic"
+issuer = "https://caic.example.com"
+oauth = true
+# audience = "voice-gateway"  # default
+# scope = "voice.session"     # default
+```
 
 This is issuer federation, not user SSO. The gateway verifies tokens from trusted
 hosts; it does not authenticate users.
