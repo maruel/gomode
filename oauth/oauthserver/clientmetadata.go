@@ -348,7 +348,7 @@ func parseClientMetadata(clientID string, body []byte) (Client, error) {
 	if _, present := fields["grant_types"]; !present {
 		grants = []string{oauth.GrantAuthorizationCode}
 	}
-	validatedGrants, code, err := validateClientMetadata(document.ClientName, document.RedirectURIs, oauth.TokenEndpointAuthNone, grants, false)
+	validatedGrants, code, err := validateClientMetadata(document.ClientName, document.RedirectURIs, method, grants, false)
 	if err != nil {
 		return Client{}, fmt.Errorf("%s: %w", code, err)
 	}

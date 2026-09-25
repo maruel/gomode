@@ -30,6 +30,8 @@ type User struct {
 }
 
 // BearerClaims holds verified bearer-token identity and authorization claims.
+// User is the zero value for machine-to-machine tokens issued by the
+// client-credentials grant, whose subject is the OAuth client itself.
 type BearerClaims struct {
 	User         User
 	Subject      string

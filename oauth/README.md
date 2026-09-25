@@ -9,6 +9,10 @@ Implements: RFC 6749 (Authorization Framework), 6750 (Bearer Token Usage),
 9126 (Pushed Authorization Requests), 9207 (Issuer Identification),
 9449 (DPoP), 9700 (Security BCP), and the Client ID Metadata Document
 Internet-Draft (client identifiers backed by HTTPS metadata documents).
+The client-credentials grant (RFC 6749 §4.4) supports only confidential
+clients authenticating with private_key_jwt (RFC 7523) assertions; the
+server issues no shared secrets. It backs the official MCP OAuth Client
+Credentials extension (`io.modelcontextprotocol/oauth-client-credentials`).
 
 Not implemented: RFC 8693 (Token Exchange). Mint audience-scoped tokens at
 the authorization endpoint via the `resource` parameter (RFC 8707) instead.

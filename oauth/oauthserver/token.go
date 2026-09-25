@@ -26,6 +26,11 @@ const (
 	accessTokenType      = "access_token"
 	accessTokenHeaderTyp = "at+jwt"
 	tokenClockSkew       = time.Minute
+	// clientCredentialsTokenType marks machine-to-machine access tokens issued
+	// by the client-credentials grant (RFC 6749 §4.4). Their subject is the
+	// OAuth client itself, so verification skips the user-session lookup that
+	// user-delegated access tokens require.
+	clientCredentialsTokenType = "client_credentials_token"
 )
 
 // signingKey holds a private key and its JWS algorithm identifier.
@@ -343,6 +348,36 @@ func (s *AccessTokenService) IssueDPoPAccessToken(issuer string, user oauth.User
 	}, now, now.Add(s.ttl))
 }
 
+// IssueClientCredentialsAccessToken signs a machine-to-machine JWT access
+// token for an OAuth client authenticated with the client-credentials grant.
+// The subject is the client ID, not a user, so the token carries no username
+// and no session applies. A non-empty dpopJKT binds the token to the client's
+// DPoP key (RFC 9449).
+func (s *AccessTokenService) IssueClientCredentialsAccessToken(issuer, clientID, audience, scope, grantID, dpopJKT string) (string, error) {
+	if clientID == "" {
+		return "", errors.New("oauth: client ID is required")
+	}
+	now := time.Now()
+	jti, err := randomToken()
+	if err != nil {
+		return "", fmt.Errorf("generate access token ID: %w", err)
+	}
+	claims := &oauth.AccessTokenClaims{
+		Issuer:   issuer,
+		Subject:  clientID,
+		Audience: audience,
+		ClientID: clientID,
+		JWTID:    jti,
+		Scope:    scope,
+		GrantID:  grantID,
+		Type:     clientCredentialsTokenType,
+	}
+	if dpopJKT != "" {
+		claims.Confirmation = &oauth.TokenConfirmation{JKT: dpopJKT}
+	}
+	return s.issueAccessTokenAt(claims, now, now.Add(s.ttl))
+}
+
 // IssueRegistrationAccessToken issues a JWT for client registration management (RFC 7592).
 // It remains valid for the durable registration's practical lifetime; deleting
 // the registration or retiring the signing key ends its authority.
@@ -390,6 +425,21 @@ func (s *AccessTokenService) VerifyAccessToken(token, issuer, audience string, n
 		clientID = cid
 	} else {
 		clientID = claims.ClientID
+	}
+	if claims.Type == clientCredentialsTokenType {
+		if claims.Subject != claims.ClientID {
+			return nil, errors.New("client-credentials token subject must be the client")
+		}
+		return &oauth.BearerClaims{
+			Subject:      claims.Subject,
+			Issuer:       claims.Issuer,
+			Audience:     claims.Audience,
+			Scopes:       strings.Fields(claims.Scope),
+			Iat:          claims.IssuedAt,
+			Exp:          claims.Expiry,
+			ClientID:     clientID,
+			Confirmation: claims.Confirmation,
+		}, nil
 	}
 	if session == nil {
 		return nil, errors.New("user lookup callback is required")
@@ -494,7 +544,7 @@ func (s *AccessTokenService) verifyClaims(token, issuer, audience string, now ti
 	if claims.Audience != audience {
 		return nil, errors.New("invalid token audience")
 	}
-	if claims.Type != accessTokenType {
+	if claims.Type != accessTokenType && claims.Type != clientCredentialsTokenType {
 		return nil, errors.New("invalid token type")
 	}
 	if claims.Subject == "" || claims.ClientID == "" || claims.JWTID == "" || claims.IssuedAt == 0 || claims.Expiry <= claims.IssuedAt {

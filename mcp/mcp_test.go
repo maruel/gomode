@@ -70,6 +70,45 @@ func TestHandlerOptionalRegistry(t *testing.T) {
 	}
 }
 
+// TestHandlerOAuthClientCredentialsExtension checks that the official OAuth
+// Client Credentials extension is advertised in server/discover capabilities
+// only when the handler opts in.
+func TestHandlerOAuthClientCredentialsExtension(t *testing.T) {
+	t.Parallel()
+	discoverCapabilities := func(h *Handler) map[string]any {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", strings.NewReader(nativeMCPRequestJSON(string(MethodServerDiscover), "")))
+		req.Header.Set("Mcp-Protocol-Version", ProtocolVersion)
+		req.Header.Set("Mcp-Method", string(MethodServerDiscover))
+		w := httptest.NewRecorder()
+		h.HandleMCP(w, req)
+		var response JSONRPCResponse
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		result, ok := response.Result.(map[string]any)
+		if !ok {
+			t.Fatalf("discover result = %T", response.Result)
+		}
+		capabilities, ok := result["capabilities"].(map[string]any)
+		if !ok {
+			t.Fatalf("capabilities missing: %#v", result)
+		}
+		return capabilities
+	}
+	h := &Handler{Registry: &subscriptionTestRegistry{}}
+	if extensions, present := discoverCapabilities(h)["extensions"]; present {
+		t.Fatalf("opt-out extensions advertised: %#v", extensions)
+	}
+	h.OAuthClientCredentials = true
+	extensions, ok := discoverCapabilities(h)["extensions"].(map[string]any)
+	if !ok {
+		t.Fatal("opt-in extensions missing")
+	}
+	if settings, ok := extensions[OAuthClientCredentialsExtension].(map[string]any); !ok || len(settings) != 0 {
+		t.Fatalf("extension settings = %#v, want empty object", extensions[OAuthClientCredentialsExtension])
+	}
+}
+
 // TestHandlerHandleMCP swaps the process-global slog default to capture
 // logMCPFailure output, so it must run serially: a parallel sibling that emits a
 // failure log would pollute the captured buffer and race on it. Running in the

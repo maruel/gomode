@@ -511,7 +511,7 @@ func (s *Server) handleOAuthMetadata(w http.ResponseWriter, r *http.Request) {
 		RegistrationEndpoint:                   issuer + "/oauth/register",
 		RevocationEndpoint:                     issuer + "/oauth/revoke",
 		ResponseTypesSupported:                 []string{oauth.ResponseTypeCode},
-		GrantTypesSupported:                    []string{oauth.GrantAuthorizationCode, oauth.GrantRefreshToken, oauth.GrantDeviceCode},
+		GrantTypesSupported:                    []string{oauth.GrantAuthorizationCode, oauth.GrantRefreshToken, oauth.GrantDeviceCode, oauth.GrantClientCredentials},
 		CodeChallengeMethodsSupported:          []string{oauth.CodeChallengeS256},
 		TokenEndpointAuthMethodsSupported:      []string{oauth.TokenEndpointAuthNone},
 		RevocationEndpointAuthMethodsSupported: []string{oauth.TokenEndpointAuthNone},
@@ -851,6 +851,12 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	// are correctly reported as expired_token rather than invalid_grant.
 	if r.PostForm.Get("grant_type") == "urn:ietf:params:oauth:grant-type:device_code" {
 		s.handleOAuthDeviceCodeToken(w, r, binding, client)
+		return
+	}
+
+	// RFC 6749 §4.4 client_credentials grant: no durable state to prune.
+	if r.PostForm.Get("grant_type") == oauth.GrantClientCredentials {
+		s.handleOAuthClientCredentialsToken(w, r, binding, client)
 		return
 	}
 
@@ -1559,6 +1565,10 @@ func (s *Server) handleOAuthRegister(w http.ResponseWriter, r *http.Request) {
 		oauth.WriteError(w, http.StatusBadRequest, "invalid_client_metadata", "token_endpoint_auth_method must not be null or empty")
 		return
 	}
+	if method != oauth.TokenEndpointAuthNone {
+		oauth.WriteError(w, http.StatusBadRequest, "invalid_client_metadata", "only public clients are supported")
+		return
+	}
 	requestedGrantTypes := req.GrantTypes
 	if _, present := fields["grant_types"]; !present {
 		requestedGrantTypes = []string{oauth.GrantAuthorizationCode}
@@ -1713,6 +1723,11 @@ func (s *Server) handleOAuthRegisterUpdate(w http.ResponseWriter, r *http.Reques
 	}
 	_, grantsUpdated := fields["grant_types"]
 	legacyGrantSentinel := !grantsUpdated && len(client.GrantTypes) == 0
+	if client.TokenEndpointAuthMethod != oauth.TokenEndpointAuthNone {
+		s.mu.Unlock()
+		oauth.WriteError(w, http.StatusBadRequest, "invalid_client_metadata", "only public clients are supported")
+		return
+	}
 	grantTypes, errorCode, validationErr := validateClientMetadata(client.Name, client.RedirectURIs, client.TokenEndpointAuthMethod, client.GrantTypes, legacyGrantSentinel)
 	if validationErr != nil {
 		s.mu.Unlock()
@@ -1867,10 +1882,24 @@ func validateClientMetadata(name string, redirectURIs []string, authMethod strin
 	if !utf8.ValidString(name) || len(name) > maxOAuthClientName || strings.IndexFunc(name, unicode.IsControl) >= 0 {
 		return nil, "invalid_client_metadata", errors.New("client_name is invalid or too long")
 	}
-	if authMethod != oauth.TokenEndpointAuthNone {
+	switch authMethod {
+	case oauth.TokenEndpointAuthNone, oauth.TokenEndpointAuthPrivateKeyJWT:
+	default:
 		return nil, "invalid_client_metadata", errors.New("only public clients are supported")
 	}
-	if len(redirectURIs) == 0 || len(redirectURIs) > maxOAuthRedirectURIs {
+	// Dynamic registration callers reject confidential clients before calling;
+	// client ID metadata documents may legitimately authenticate with
+	// private_key_jwt. Client credentials additionally require it below.
+	onlyClientCredentials := len(requestedGrantTypes) > 0
+	for _, grantType := range requestedGrantTypes {
+		if grantType != oauth.GrantClientCredentials {
+			onlyClientCredentials = false
+			break
+		}
+	}
+	// Machine-to-machine clients never redirect; redirect_uris is optional
+	// when every requested grant is client_credentials (RFC 7591 §2.1).
+	if !onlyClientCredentials && (len(redirectURIs) == 0 || len(redirectURIs) > maxOAuthRedirectURIs) {
 		return nil, "invalid_redirect_uri", fmt.Errorf("redirect_uris must contain between 1 and %d entries", maxOAuthRedirectURIs)
 	}
 	seenRedirects := make(map[string]struct{}, len(redirectURIs))
@@ -1893,7 +1922,7 @@ func validateClientMetadata(name string, redirectURIs []string, authMethod strin
 	seenGrants := make(map[string]struct{}, len(grantTypes))
 	for _, grantType := range grantTypes {
 		switch grantType {
-		case oauth.GrantAuthorizationCode, oauth.GrantRefreshToken, oauth.GrantDeviceCode:
+		case oauth.GrantAuthorizationCode, oauth.GrantRefreshToken, oauth.GrantDeviceCode, oauth.GrantClientCredentials:
 		default:
 			return nil, "invalid_client_metadata", fmt.Errorf("unsupported grant_type: %s", grantType)
 		}
@@ -1907,6 +1936,14 @@ func validateClientMetadata(name string, redirectURIs []string, authMethod strin
 		_, deviceCode := seenGrants[oauth.GrantDeviceCode]
 		if !authorizationCode && !deviceCode {
 			return nil, "invalid_client_metadata", errors.New("refresh_token requires authorization_code or device_code")
+		}
+	}
+	if _, clientCredentials := seenGrants[oauth.GrantClientCredentials]; clientCredentials {
+		if _, refresh := seenGrants[oauth.GrantRefreshToken]; refresh {
+			return nil, "invalid_client_metadata", errors.New("client_credentials must not be combined with refresh_token")
+		}
+		if authMethod != oauth.TokenEndpointAuthPrivateKeyJWT {
+			return nil, "invalid_client_metadata", errors.New("client_credentials requires private_key_jwt client authentication")
 		}
 	}
 	return grantTypes, "", nil
@@ -2624,6 +2661,99 @@ func (s *Server) handleOAuthDeviceCodeToken(w http.ResponseWriter, r *http.Reque
 		oauth.WriteError(w, http.StatusBadRequest, "invalid_grant", "invalid device_code")
 		return
 	}
+	s.writeTokenResponse(w, &response)
+}
+
+// handleOAuthClientCredentialsToken implements the OAuth 2.0 client-credentials
+// grant (RFC 6749 §4.4), the authorization backend of the official MCP OAuth
+// Client Credentials extension. Only confidential clients authenticating with
+// private_key_jwt (RFC 7523) assertions are supported; the server issues no
+// shared secrets. The response carries no refresh token and the resulting
+// access token's subject is the client itself, not a user.
+func (s *Server) handleOAuthClientCredentialsToken(w http.ResponseWriter, r *http.Request, binding dpopBinding, client Client) { //nolint:gocritic // Immutable proof values are passed together to preserve their binding.
+	dpopJKT := binding.jkt
+	if client.TokenEndpointAuthMethod != oauth.TokenEndpointAuthPrivateKeyJWT {
+		oauth.WriteError(w, http.StatusBadRequest, "unauthorized_client", "client_credentials requires a confidential client")
+		return
+	}
+	if !clientSupportsGrant(&client, oauth.GrantClientCredentials) {
+		oauth.WriteError(w, http.StatusBadRequest, "unauthorized_client", "client is not registered for the client_credentials grant")
+		return
+	}
+	if resource := r.PostForm.Get("resource"); resource != "" && resource != s.resourceURL {
+		oauth.WriteError(w, http.StatusBadRequest, "invalid_target", "resource mismatch")
+		return
+	}
+	scope, err := s.normalizeScope(r.PostForm.Get("scope"))
+	if err != nil {
+		oauth.WriteError(w, http.StatusBadRequest, "invalid_scope", err.Error())
+		return
+	}
+	grantID, err := randomToken()
+	if err != nil {
+		slog.WarnContext(r.Context(), "generate client-credentials grant id", "err", err)
+		oauth.WriteError(w, http.StatusInternalServerError, "server_error", "could not issue token")
+		return
+	}
+	now := time.Now()
+	// The grant outlives the access token it issued, giving the client a
+	// revocation handle for the token's whole lifetime.
+	grant := Grant{ID: grantID, ClientID: client.ID, Resource: s.resourceURL, Scope: scope, CreatedAt: now, ExpiresAt: now.Add(s.refreshTokenTTL)}
+	accessToken, err := s.tokens.IssueClientCredentialsAccessToken(s.issuer, client.ID, s.resourceURL, scope, grantID, dpopJKT)
+	if err != nil {
+		slog.WarnContext(r.Context(), "sign client-credentials access token", "err", err)
+		oauth.WriteError(w, http.StatusInternalServerError, "server_error", "could not issue access token")
+		return
+	}
+	response := oauth.TokenResponse{AccessToken: accessToken, TokenType: oauth.TokenTypeBearer, ExpiresIn: int64(s.accessTokenTTL.Seconds()), Scope: scope}
+	if dpopJKT != "" {
+		response.TokenType = DPoPTokenType
+	}
+	stored := false
+	proofRejected := false
+	s.mu.Lock()
+	err = s.state.transact(func(next *storeFile) bool {
+		currentClient := client
+		if client.Provenance != ClientProvenanceMetadata {
+			var found bool
+			currentClient, found = next.Clients[client.ID]
+			if !found {
+				return false
+			}
+		}
+		if currentClient.ID != client.ID || !clientSupportsGrant(&currentClient, oauth.GrantClientCredentials) {
+			return false
+		}
+		if binding.jkt != "" {
+			if !reserveDPoPBinding(next, binding, now) {
+				proofRejected = true
+				return false
+			}
+		}
+		grant.ClientName = clientDisplayName(&currentClient)
+		next.Grants[grant.ID] = grant
+		stored = true
+		return true
+	})
+	s.mu.Unlock()
+	if err != nil {
+		slog.WarnContext(r.Context(), "record client-credentials grant", "err", err)
+		oauth.WriteError(w, http.StatusInternalServerError, "server_error", "could not issue token")
+		return
+	}
+	if proofRejected {
+		s.writeInvalidDPoPProof(w, r, "dpop proof has already been used")
+		return
+	}
+	if !stored {
+		oauth.WriteError(w, http.StatusBadRequest, "unauthorized_client", "client is not registered for the client_credentials grant")
+		return
+	}
+	s.recordAudit(r, "", "oauth/token", client.ID, "allow", "issued", map[string]any{
+		"grantID":  grantID,
+		"resource": s.resourceURL,
+		"scope":    scope,
+	})
 	s.writeTokenResponse(w, &response)
 }
 

@@ -41,6 +41,11 @@ const (
 
 	// SkillsExtension identifies the official MCP Skills extension.
 	SkillsExtension = "io.modelcontextprotocol/skills"
+
+	// OAuthClientCredentialsExtension identifies the official MCP OAuth
+	// Client Credentials extension. Its authorization backend is the OAuth 2.0
+	// client-credentials grant (RFC 6749 §4.4) in the oauthserver package.
+	OAuthClientCredentialsExtension = "io.modelcontextprotocol/oauth-client-credentials"
 )
 
 // ErrorCode is a JSON-RPC error code used by MCP responses.
@@ -61,7 +66,7 @@ const (
 type Method string
 
 // Official MCP extensions are negotiated through the capabilities.extensions map.
-// caic currently implements only Skills:
+// caic currently implements Skills and OAuth Client Credentials:
 //
 //   - MCP Apps (io.modelcontextprotocol/ui):
 //     https://modelcontextprotocol.io/extensions/apps/overview
@@ -134,6 +139,13 @@ const (
 type Handler struct {
 	Registry   Registry
 	ServerInfo Implementation
+	// OAuthClientCredentials advertises the official
+	// io.modelcontextprotocol/oauth-client-credentials extension in the
+	// server/discover capabilities (SEP-2133). Set it when the host's
+	// authorization server accepts OAuth 2.0 client-credentials grants
+	// (RFC 6749 §4.4), letting machine-to-machine clients skip interactive
+	// user authorization.
+	OAuthClientCredentials bool
 }
 
 // HandleMCP handles one MCP HTTP request, dispatching to caic's native
@@ -387,8 +399,15 @@ func (h *Handler) capabilities() Capabilities {
 		capabilities.Resources.Subscribe = true
 		capabilities.Resources.ListChanged = true
 	}
-	if _, ok := h.Registry.(SkillsRegistry); ok {
-		capabilities.Extensions = Extensions{SkillsExtension: json.RawMessage(`{}`)}
+	_, skills := h.Registry.(SkillsRegistry)
+	if skills || h.OAuthClientCredentials {
+		capabilities.Extensions = Extensions{}
+	}
+	if skills {
+		capabilities.Extensions[SkillsExtension] = json.RawMessage(`{}`)
+	}
+	if h.OAuthClientCredentials {
+		capabilities.Extensions[OAuthClientCredentialsExtension] = json.RawMessage(`{}`)
 	}
 	return capabilities
 }

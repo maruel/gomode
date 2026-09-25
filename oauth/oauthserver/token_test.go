@@ -717,3 +717,64 @@ func newTestAccessTokenService(t *testing.T, kid string) *AccessTokenService {
 	}
 	return svc
 }
+
+func TestIssueClientCredentialsAccessToken(t *testing.T) {
+	t.Parallel()
+
+	const (
+		issuer   = "https://caic.example.com"
+		audience = "https://caic.example.com/resource"
+		scope    = "read write"
+	)
+	_, jwk := testDPoPRSAKeyPair(t)
+
+	t.Run("bearer token verifies without a session", func(t *testing.T) {
+		t.Parallel()
+		svc := newTestAccessTokenService(t, "kid-m2m")
+		token, err := svc.IssueClientCredentialsAccessToken(issuer, "test-client-1", audience, scope, "grant-1", "")
+		if err != nil {
+			t.Fatalf("IssueClientCredentialsAccessToken: %v", err)
+		}
+		touched := ""
+		claims, err := svc.VerifyAccessToken(token, issuer, audience, time.Now(), func(grantID string, _ time.Time) (bool, string, error) {
+			touched = grantID
+			return true, "test-client-1", nil
+		}, nil)
+		if err != nil {
+			t.Fatalf("VerifyAccessToken: %v", err)
+		}
+		if touched != "grant-1" || claims.Subject != "test-client-1" || claims.ClientID != "test-client-1" || claims.User != (oauth.User{}) || strings.Join(claims.Scopes, " ") != scope {
+			t.Fatalf("claims = %+v", claims)
+		}
+	})
+
+	t.Run("dpop token binds the confirmation claim", func(t *testing.T) {
+		t.Parallel()
+		svc := newTestAccessTokenService(t, "kid-m2m-dpop")
+		jkt, err := JWKThumbprint(jwk)
+		if err != nil {
+			t.Fatalf("JWKThumbprint: %v", err)
+		}
+		token, err := svc.IssueClientCredentialsAccessToken(issuer, "test-client-1", audience, scope, "grant-2", jkt)
+		if err != nil {
+			t.Fatalf("IssueClientCredentialsAccessToken: %v", err)
+		}
+		claims, err := svc.VerifyAccessToken(token, issuer, audience, time.Now(), func(string, time.Time) (bool, string, error) {
+			return true, "test-client-1", nil
+		}, nil)
+		if err != nil {
+			t.Fatalf("VerifyAccessToken: %v", err)
+		}
+		if claims.Confirmation == nil || claims.Confirmation.JKT != jkt {
+			t.Fatalf("confirmation = %+v", claims.Confirmation)
+		}
+	})
+
+	t.Run("empty client ID is rejected", func(t *testing.T) {
+		t.Parallel()
+		svc := newTestAccessTokenService(t, "kid-m2m-empty")
+		if _, err := svc.IssueClientCredentialsAccessToken(issuer, "", audience, scope, "", ""); err == nil {
+			t.Fatal("empty client ID unexpectedly accepted")
+		}
+	})
+}
