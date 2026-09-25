@@ -75,3 +75,71 @@ describe("configureMcpClient", () => {
     await expect(mcpClient.listTools()).rejects.toThrow("MCP tools/list returned HTTP 401");
   });
 });
+
+describe("subscribeResources", () => {
+  it("streams resource notifications to the host", async () => {
+    configureMcpClient("/api/v1/gomode/mcp", "mddb-frontend");
+    let init: RequestInit | undefined;
+    const encoder = new TextEncoder();
+    globalThis.fetch = async (_input, options) => {
+      init = options;
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode(": keepalive\n\n"));
+            controller.enqueue(
+              encoder.encode(
+                'data: {"jsonrpc":"2.0","method":"notifications/resources/updated","params":{"uri":"mddb://node/1"}}\n\n',
+              ),
+            );
+            controller.close();
+          },
+        }),
+        { status: 200 },
+      );
+    };
+
+    let ready = false;
+    let resolveUpdate: (notification: { uri?: string; listChanged?: boolean }) => void = () => {};
+    const received = new Promise<{ uri?: string; listChanged?: boolean }>((resolve) => {
+      resolveUpdate = resolve;
+    });
+    const subscription = mcpClient.subscribeResources(
+      {
+        resourceSubscriptions: ["mddb://node/1"],
+        resourcesListChanged: true,
+        onReady: () => {
+          ready = true;
+        },
+      },
+      resolveUpdate,
+    );
+
+    expect(await received).toEqual({ uri: "mddb://node/1" });
+    subscription.close();
+    expect(ready).toBe(true);
+    const headers = new Headers(init?.headers);
+    expect(headers.get("Mcp-Method")).toBe("subscriptions/listen");
+    expect(headers.get("Accept")).toBe("text/event-stream");
+    const body = JSON.parse(String(init?.body));
+    expect(body.params.notifications).toEqual({
+      resourceSubscriptions: ["mddb://node/1"],
+      resourcesListChanged: true,
+    });
+  });
+
+  it("closes active subscriptions when the host is reconfigured", async () => {
+    configureMcpClient("/api/v1/gomode/mcp", "first");
+    let captured: AbortSignal | null | undefined;
+    globalThis.fetch = async (_input, options) => {
+      captured = options?.signal;
+      return new Response(new ReadableStream({ start() {} }), { status: 200 });
+    };
+    mcpClient.subscribeResources({ resourcesListChanged: true }, () => {});
+    // Let the subscription reach its fetch before reconfiguring.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(captured?.aborted).toBe(false);
+    configureMcpClient("/api/v1/gomode/mcp", "second");
+    expect(captured?.aborted).toBe(true);
+  });
+});

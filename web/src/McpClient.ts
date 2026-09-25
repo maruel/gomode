@@ -1,6 +1,7 @@
 // MCP JSON-RPC client for server guidance, tools, and resources used by browser Go Mode.
 
 import { createApiClient as createMcpApiClient } from "../../sdk/mcp/ts/v1/api.gen";
+import { readMcpNotificationStream } from "./McpEvents";
 
 const MCP_PROTOCOL_VERSION = "2026-07-28";
 let mcpEndpoint: string | null = null;
@@ -28,6 +29,8 @@ export function configureMcpClient(
   mcpEndpoint = `${url.pathname}${url.search}`;
   clientName = name;
   bearerTokenProvider = tokenProvider ?? null;
+  for (const subscription of _subscriptions) subscription.close();
+  _subscriptions.clear();
   _toolCache.clear();
 }
 
@@ -58,6 +61,7 @@ function mcpMeta() {
 
 let _idCounter = 0;
 let _toolCache = new Map<string, McpToolDescriptor>();
+const _subscriptions = new Set<McpResourceSubscription>();
 
 async function mcpRequest(
   method: string,
@@ -215,10 +219,127 @@ function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The four MCP operations VoiceSession uses, as one object so tests can spy on it. */
+/** A change reported by an MCP resource subscription. */
+export interface McpResourceNotification {
+  /** Resource URI whose contents may have changed; unset for a list change. */
+  uri?: string;
+  /** True when the resource list itself may have changed. */
+  listChanged?: boolean;
+}
+
+/** Host options for an MCP resource subscription. */
+export interface McpSubscribeOptions {
+  /** Resource URIs to watch for content changes. */
+  resourceSubscriptions?: string[];
+  /** Also report resource list changes. */
+  resourcesListChanged?: boolean;
+  /** Called once after the server acknowledges the subscription. */
+  onReady?: () => void;
+  /** Called when the stream fails; the client retries until closed. */
+  onError?: (error: unknown) => void;
+}
+
+/** A live MCP resource subscription. Close it to stop listening. */
+export interface McpResourceSubscription {
+  close(): void;
+}
+
+/** Delay before retrying a dropped subscription stream. */
+const MCP_SUBSCRIPTION_RETRY_MS = 2000;
+
+/**
+ * Subscribes to resource changes so a host learns when a document it cares about
+ * changes, instead of discovering it by overwriting a concurrent edit. The
+ * server holds the stream open; a dropped stream is retried until close().
+ */
+function subscribeMcpResources(
+  options: McpSubscribeOptions,
+  onNotification: (notification: McpResourceNotification) => void,
+): McpResourceSubscription {
+  const filter: JsonObject = {};
+  if (options.resourceSubscriptions !== undefined && options.resourceSubscriptions.length > 0) {
+    filter.resourceSubscriptions = options.resourceSubscriptions;
+  }
+  if (options.resourcesListChanged) filter.resourcesListChanged = true;
+
+  let closed = false;
+  let controller: AbortController | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const report = (notification: McpResourceNotification): void => {
+    try {
+      onNotification(notification);
+    } catch {
+      // A host callback must not tear down the stream.
+    }
+  };
+
+  const scheduleRetry = (error: unknown): void => {
+    if (closed) return;
+    options.onError?.(error);
+    retryTimer = setTimeout(() => void run(), MCP_SUBSCRIPTION_RETRY_MS);
+  };
+
+  const run = async (): Promise<void> => {
+    if (closed) return;
+    controller = new AbortController();
+    try {
+      const resp = await authenticatedFetch(endpoint(), {
+        method: "POST",
+        headers: {
+          Accept: "text/event-stream",
+          "Content-Type": "application/json",
+          "Mcp-Protocol-Version": MCP_PROTOCOL_VERSION,
+          "Mcp-Method": "subscriptions/listen",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: ++_idCounter,
+          method: "subscriptions/listen",
+          params: { notifications: filter, _meta: mcpMeta() },
+        }),
+        signal: controller.signal,
+      });
+      if (!resp.ok || resp.body === null) {
+        scheduleRetry(new Error(`MCP subscriptions/listen returned HTTP ${resp.status}`));
+        return;
+      }
+      options.onReady?.();
+      await readMcpNotificationStream(resp.body, (notification) => {
+        if (notification.method === "notifications/resources/list_changed") {
+          report({ listChanged: true });
+          return;
+        }
+        if (notification.method === "notifications/resources/updated") {
+          const uri = notification.params?.uri;
+          report({ uri: typeof uri === "string" ? uri : undefined });
+        }
+      });
+      scheduleRetry(new Error("MCP subscription stream ended"));
+    } catch (error) {
+      scheduleRetry(error);
+    }
+  };
+
+  const subscription: McpResourceSubscription = {
+    close(): void {
+      if (closed) return;
+      closed = true;
+      _subscriptions.delete(subscription);
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
+      controller?.abort();
+    },
+  };
+  _subscriptions.add(subscription);
+  void run();
+  return subscription;
+}
+
+/** The MCP operations VoiceSession uses, as one object so tests can spy on it. */
 export const mcpClient = {
   serverInstructions: mcpServerInstructions,
   listTools: mcpListTools,
   readAdvertisedTextResource: mcpReadAdvertisedTextResource,
   callTool: mcpCallTool,
+  subscribeResources: subscribeMcpResources,
 };
