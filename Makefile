@@ -68,7 +68,7 @@ git-hooks:
 
 test: android-sdk
 	@go test ./...
-	@pnpm test
+	@pnpm --silent test
 	@cd android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet
 
 # The Opus codec is deliberately disabled in race builds, so skip the two

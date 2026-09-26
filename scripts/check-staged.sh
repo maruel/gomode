@@ -34,6 +34,10 @@ while IFS= read -r -d '' file; do
   eslint.config.js | package.json | .github/workflows/*.yml)
     format_files+=("$file")
     ;;
+  scripts/quiet-test-reporter.mjs)
+    format_files+=("$file")
+    eslint_files+=("$file")
+    ;;
   *.py) python_files+=("$file") ;;
   esac
 done < <(git diff --cached --name-only --diff-filter=ACMR -z)

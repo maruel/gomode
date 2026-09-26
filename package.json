@@ -28,14 +28,14 @@
     "./sdk/voicegateway/*": "./sdk/voicegateway/ts/v1/*"
   },
   "scripts": {
-    "format": "prettier --write web/src web/tests eslint.config.js package.json .github/workflows",
-    "format:check": "prettier --check web/src web/tests eslint.config.js package.json .github/workflows",
-    "lint:check": "eslint --max-warnings 0 web/src web/tests",
-    "lint:fix": "eslint web/src web/tests --fix",
+    "format": "prettier --write web/src web/tests scripts/quiet-test-reporter.mjs eslint.config.js package.json .github/workflows",
+    "format:check": "prettier --check web/src web/tests scripts/quiet-test-reporter.mjs eslint.config.js package.json .github/workflows",
+    "lint:check": "eslint --max-warnings 0 web/src web/tests scripts/quiet-test-reporter.mjs",
+    "lint:fix": "eslint web/src web/tests scripts/quiet-test-reporter.mjs --fix",
     "hooks:install": "scripts/install-git-hooks.sh",
     "prepare": "pnpm --silent hooks:install",
     "typecheck": "tsc --noEmit -p web/tsconfig.json",
-    "test": "NODE_OPTIONS=--no-experimental-webstorage tsx --test --conditions=browser --test-force-exit --import ./web/tests/setup-dom.ts 'web/src/**/*.test.ts' 'web/src/**/*.test.tsx'"
+    "test": "NODE_OPTIONS=--no-experimental-webstorage tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts 'web/src/**/*.test.ts' 'web/src/**/*.test.tsx'"
   },
   "peerDependencies": {
     "@solidjs/router": "^1.0.0",

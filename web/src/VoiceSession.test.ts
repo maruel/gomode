@@ -709,23 +709,28 @@ describe("VoiceSession", () => {
       token: serviceToken("user-1", ++issue),
     }));
     diagnosticResponse = {} as VoiceRTCDiagnosticsResp;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const session = new VoiceSession();
+    try {
+      await session.connect();
+      configureVoiceGateway("https://new-voice.example.com", async () => ({
+        kind: "caic",
+        instanceID: "home",
+        baseURL: "https://caic.example.com",
+        token: serviceToken("user-2", 3),
+      }));
+      triggerIceState("closed");
 
-    await session.connect();
-    configureVoiceGateway("https://new-voice.example.com", async () => ({
-      kind: "caic",
-      instanceID: "home",
-      baseURL: "https://caic.example.com",
-      token: serviceToken("user-2", 3),
-    }));
-    triggerIceState("closed");
-
-    await vi.waitFor(() => expect(diagnosticRequests).toHaveLength(1));
-    expect(diagnosticRequests[0]?.authorization).toBe(`Bearer ${serviceToken("user-1", 2)}`);
-    expect(diagnosticRequests[0]?.url).toBe(
-      "https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1/diagnostics",
-    );
-    session.disconnect();
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledWith("Voice RTC diagnostics", expect.any(Object)));
+      expect(diagnosticRequests).toHaveLength(1);
+      expect(diagnosticRequests[0]?.authorization).toBe(`Bearer ${serviceToken("user-1", 2)}`);
+      expect(diagnosticRequests[0]?.url).toBe(
+        "https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1/diagnostics",
+      );
+    } finally {
+      session.disconnect();
+      warn.mockRestore();
+    }
   });
 
   it("includes the current bounded service items in session setup", async () => {
