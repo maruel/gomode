@@ -1,0 +1,7 @@
+# Generated SDKs and tool outputs are not hand formatted.
+sdk
+android
+node_modules
+pnpm-lock.yaml
+AGENTS.md
+CLAUDE.md

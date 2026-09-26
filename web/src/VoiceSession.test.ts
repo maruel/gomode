@@ -145,12 +145,18 @@ let offerResponse: Promise<Response> | null = null;
 let diagnosticResponse: VoiceRTCDiagnosticsResp | null = null;
 
 function serviceToken(subject: string, serial: number): string {
-  const claims = { serviceKind: "caic", serviceInstanceID: "home", backendOrigin: "https://caic.example.com", sub: subject };
+  const claims = {
+    serviceKind: "caic",
+    serviceInstanceID: "home",
+    backendOrigin: "https://caic.example.com",
+    sub: subject,
+  };
   return `${btoa(JSON.stringify(claims)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "")}.${serial}`;
 }
 
 function oauthToken(subject: string, serial: number): string {
-  const encode = (value: unknown) => btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  const encode = (value: unknown) =>
+    btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
   return `${encode({ alg: "ES256", kid: "test-key", typ: "at+jwt" })}.${encode({ iss: "https://caic.example.com", sub: subject, aud: "voice-gateway", scope: "voice.session", serial })}.signature-${serial}`;
 }
 
@@ -274,9 +280,11 @@ describe("VoiceSession", () => {
     await connecting;
     FakePeerConnection.dataChannels[0]?.onopen?.();
 
-    await vi.waitFor(() => expect(closeRequests).toEqual([
-      { url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/late-session`, authorization: null },
-    ]));
+    await vi.waitFor(() =>
+      expect(closeRequests).toEqual([
+        { url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/late-session`, authorization: null },
+      ]),
+    );
     expect(FakePeerConnection.dataChannels[0]?.send).not.toHaveBeenCalled();
     expect(session.state.connectStatus).toBeNull();
     expect(session.state.listening).toBe(false);
@@ -297,7 +305,9 @@ describe("VoiceSession", () => {
     globalThis.fetch = async (input, init) => {
       if (String(input).endsWith("/voice/rtc/offer")) return fetchOffer(input, init);
       closeRequests.push({ url: String(input), authorization: new Headers(init?.headers).get("Authorization") });
-      return new Response(JSON.stringify({ error: { code: "UNAVAILABLE", message: "gateway unavailable" } }), { status: 503 });
+      return new Response(JSON.stringify({ error: { code: "UNAVAILABLE", message: "gateway unavailable" } }), {
+        status: 503,
+      });
     };
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const session = new VoiceSession();
@@ -309,10 +319,14 @@ describe("VoiceSession", () => {
       offer.resolve({ sdp: "answer-sdp", sessionID: "late-external-session" });
       await connecting;
 
-      await vi.waitFor(() => expect(closeRequests).toEqual([{
-        url: "https://voice.example.com/api/voicegateway/v1/voice/rtc/late-external-session",
-        authorization: `Bearer ${serviceToken("user-1", 2)}`,
-      }]));
+      await vi.waitFor(() =>
+        expect(closeRequests).toEqual([
+          {
+            url: "https://voice.example.com/api/voicegateway/v1/voice/rtc/late-external-session",
+            authorization: `Bearer ${serviceToken("user-1", 2)}`,
+          },
+        ]),
+      );
       await vi.waitFor(() => expect(warn).toHaveBeenCalled());
       expect(session.state.connectStatus).toBeNull();
       expect(session.state.error).toBeNull();
@@ -440,7 +454,10 @@ describe("VoiceSession", () => {
       baseURL: "https://caic.example.com",
       token: serviceToken("user-1", 1),
     };
-    configureVoiceGateway("https://voice.example.com", async () => ({ ...service, token: serviceToken("user-1", ++issued) }));
+    configureVoiceGateway("https://voice.example.com", async () => ({
+      ...service,
+      token: serviceToken("user-1", ++issued),
+    }));
     const session = new VoiceSession();
 
     await session.connect();
@@ -450,10 +467,14 @@ describe("VoiceSession", () => {
       service,
     });
     session.disconnect();
-    await vi.waitFor(() => expect(closeRequests).toEqual([{
-      url: "https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1",
-      authorization: `Bearer ${serviceToken("user-1", 2)}`,
-    }]));
+    await vi.waitFor(() =>
+      expect(closeRequests).toEqual([
+        {
+          url: "https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1",
+          authorization: `Bearer ${serviceToken("user-1", 2)}`,
+        },
+      ]),
+    );
   });
 
   it("refreshes an OAuth access token by issuer and subject", async () => {
@@ -464,16 +485,23 @@ describe("VoiceSession", () => {
       baseURL: "https://caic.example.com",
       token: oauthToken("user-1", 1),
     };
-    configureVoiceGateway("https://voice.example.com", async () => ({ ...service, token: oauthToken("user-1", ++issued) }));
+    configureVoiceGateway("https://voice.example.com", async () => ({
+      ...service,
+      token: oauthToken("user-1", ++issued),
+    }));
     const session = new VoiceSession();
 
     await session.connect();
     session.disconnect();
 
-    await vi.waitFor(() => expect(closeRequests).toEqual([{
-      url: "https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1",
-      authorization: `Bearer ${oauthToken("user-1", 2)}`,
-    }]));
+    await vi.waitFor(() =>
+      expect(closeRequests).toEqual([
+        {
+          url: "https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1",
+          authorization: `Bearer ${oauthToken("user-1", 2)}`,
+        },
+      ]),
+    );
   });
 
   it("attempts close with the offer token if refresh fails", async () => {
@@ -481,7 +509,12 @@ describe("VoiceSession", () => {
     configureVoiceGateway("https://voice.example.com", async () => {
       if (issued) throw new Error("token endpoint unavailable");
       issued = true;
-      return { kind: "caic", instanceID: "home", baseURL: "https://caic.example.com", token: serviceToken("user-1", 1) };
+      return {
+        kind: "caic",
+        instanceID: "home",
+        baseURL: "https://caic.example.com",
+        token: serviceToken("user-1", 1),
+      };
     });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const session = new VoiceSession();
@@ -489,10 +522,14 @@ describe("VoiceSession", () => {
       await session.connect();
       session.disconnect();
 
-      await vi.waitFor(() => expect(closeRequests).toEqual([{
-        url: "https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1",
-        authorization: `Bearer ${serviceToken("user-1", 1)}`,
-      }]));
+      await vi.waitFor(() =>
+        expect(closeRequests).toEqual([
+          {
+            url: "https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1",
+            authorization: `Bearer ${serviceToken("user-1", 1)}`,
+          },
+        ]),
+      );
       expect(warn).toHaveBeenCalled();
     } finally {
       warn.mockRestore();
@@ -502,7 +539,9 @@ describe("VoiceSession", () => {
   it("keeps the offer gateway and account when configuration changes before close", async () => {
     let issued = 0;
     configureVoiceGateway("https://old-voice.example.com", async () => ({
-      kind: "caic", instanceID: "home", baseURL: "https://caic.example.com",
+      kind: "caic",
+      instanceID: "home",
+      baseURL: "https://caic.example.com",
       token: serviceToken(++issued === 1 ? "user-1" : "user-2", issued),
     }));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -510,14 +549,21 @@ describe("VoiceSession", () => {
     try {
       await session.connect();
       configureVoiceGateway("https://new-voice.example.com", async () => ({
-        kind: "caic", instanceID: "home", baseURL: "https://caic.example.com", token: serviceToken("user-2", 3),
+        kind: "caic",
+        instanceID: "home",
+        baseURL: "https://caic.example.com",
+        token: serviceToken("user-2", 3),
       }));
       session.disconnect();
 
-      await vi.waitFor(() => expect(closeRequests).toEqual([{
-        url: "https://old-voice.example.com/api/voicegateway/v1/voice/rtc/session-1",
-        authorization: `Bearer ${serviceToken("user-1", 1)}`,
-      }]));
+      await vi.waitFor(() =>
+        expect(closeRequests).toEqual([
+          {
+            url: "https://old-voice.example.com/api/voicegateway/v1/voice/rtc/session-1",
+            authorization: `Bearer ${serviceToken("user-1", 1)}`,
+          },
+        ]),
+      );
       expect(warn).toHaveBeenCalledWith("Voice gateway authorization changed identity; using offer token");
     } finally {
       warn.mockRestore();
@@ -533,26 +579,36 @@ describe("VoiceSession", () => {
     const connecting = session.connect();
     await vi.waitFor(() => expect(oldProvider).toHaveBeenCalledOnce());
     configureVoiceGateway("https://new-voice.example.com", async () => ({
-      kind: "caic", instanceID: "home", baseURL: "https://caic.example.com", token: serviceToken("user-2", 2),
+      kind: "caic",
+      instanceID: "home",
+      baseURL: "https://caic.example.com",
+      token: serviceToken("user-2", 2),
     }));
     const service = {
-      kind: "caic", instanceID: "home", baseURL: "https://caic.example.com", token: serviceToken("user-1", 1),
+      kind: "caic",
+      instanceID: "home",
+      baseURL: "https://caic.example.com",
+      token: serviceToken("user-1", 1),
     };
     authorization.resolve(service);
     await connecting;
 
-    expect(offerRequests).toEqual([{
-      url: "https://old-voice.example.com/api/voicegateway/v1/voice/rtc/offer",
-      authorization: null,
-      body: { sdp: "v=0\r\na=candidate:1 1 udp 2130706431 192.0.2.2 50000 typ host\r\n", service },
-    }]);
+    expect(offerRequests).toEqual([
+      {
+        url: "https://old-voice.example.com/api/voicegateway/v1/voice/rtc/offer",
+        authorization: null,
+        body: { sdp: "v=0\r\na=candidate:1 1 udp 2130706431 192.0.2.2 50000 typ host\r\n", service },
+      },
+    ]);
     session.disconnect();
   });
 
   it("keeps the offer gateway and account for a late response after reconfiguration", async () => {
     let issued = 0;
     configureVoiceGateway("https://old-voice.example.com", async () => ({
-      kind: "caic", instanceID: "home", baseURL: "https://caic.example.com",
+      kind: "caic",
+      instanceID: "home",
+      baseURL: "https://caic.example.com",
       token: serviceToken(++issued === 1 ? "user-1" : "user-2", issued),
     }));
     const offer = deferred<VoiceRTCAnswerResp>();
@@ -564,15 +620,22 @@ describe("VoiceSession", () => {
       await vi.waitFor(() => expect(offerRequests).toHaveLength(1));
       session.disconnect();
       configureVoiceGateway("https://new-voice.example.com", async () => ({
-        kind: "caic", instanceID: "home", baseURL: "https://caic.example.com", token: serviceToken("user-2", 3),
+        kind: "caic",
+        instanceID: "home",
+        baseURL: "https://caic.example.com",
+        token: serviceToken("user-2", 3),
       }));
       offer.resolve({ sdp: "answer-sdp", sessionID: "late-session" });
       await connecting;
 
-      await vi.waitFor(() => expect(closeRequests).toEqual([{
-        url: "https://old-voice.example.com/api/voicegateway/v1/voice/rtc/late-session",
-        authorization: `Bearer ${serviceToken("user-1", 1)}`,
-      }]));
+      await vi.waitFor(() =>
+        expect(closeRequests).toEqual([
+          {
+            url: "https://old-voice.example.com/api/voicegateway/v1/voice/rtc/late-session",
+            authorization: `Bearer ${serviceToken("user-1", 1)}`,
+          },
+        ]),
+      );
       expect(warn).toHaveBeenCalledWith("Voice gateway authorization changed identity; using offer token");
     } finally {
       warn.mockRestore();
@@ -586,9 +649,14 @@ describe("VoiceSession", () => {
     session.disconnect();
     session.disconnect();
 
-    await vi.waitFor(() => expect(closeRequests).toEqual([{
-      url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/session-1`, authorization: null,
-    }]));
+    await vi.waitFor(() =>
+      expect(closeRequests).toEqual([
+        {
+          url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/session-1`,
+          authorization: null,
+        },
+      ]),
+    );
   });
 
   it("leaves same-origin close authentication to the gateway fetch wrapper", async () => {
@@ -603,10 +671,14 @@ describe("VoiceSession", () => {
     expect(offerRequests[0]?.body).toEqual({
       sdp: "v=0\r\na=candidate:1 1 udp 2130706431 192.0.2.2 50000 typ host\r\n",
     });
-    await vi.waitFor(() => expect(closeRequests).toEqual([{
-      url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/session-1`,
-      authorization: "Bearer refreshed-token",
-    }]));
+    await vi.waitFor(() =>
+      expect(closeRequests).toEqual([
+        {
+          url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/session-1`,
+          authorization: "Bearer refreshed-token",
+        },
+      ]),
+    );
   });
 
   it("closes the gateway session when the voice protocol reports an error", async () => {
@@ -617,9 +689,14 @@ describe("VoiceSession", () => {
       new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindError, message: "session failed" }) }),
     );
 
-    await vi.waitFor(() => expect(closeRequests).toEqual([{
-      url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/session-1`, authorization: null,
-    }]));
+    await vi.waitFor(() =>
+      expect(closeRequests).toEqual([
+        {
+          url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/session-1`,
+          authorization: null,
+        },
+      ]),
+    );
     expect(session.state.error).toBe("session failed");
   });
 
@@ -636,13 +713,18 @@ describe("VoiceSession", () => {
 
     await session.connect();
     configureVoiceGateway("https://new-voice.example.com", async () => ({
-      kind: "caic", instanceID: "home", baseURL: "https://caic.example.com", token: serviceToken("user-2", 3),
+      kind: "caic",
+      instanceID: "home",
+      baseURL: "https://caic.example.com",
+      token: serviceToken("user-2", 3),
     }));
     triggerIceState("closed");
 
     await vi.waitFor(() => expect(diagnosticRequests).toHaveLength(1));
     expect(diagnosticRequests[0]?.authorization).toBe(`Bearer ${serviceToken("user-1", 2)}`);
-    expect(diagnosticRequests[0]?.url).toBe("https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1/diagnostics");
+    expect(diagnosticRequests[0]?.url).toBe(
+      "https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1/diagnostics",
+    );
     session.disconnect();
   });
 
@@ -745,7 +827,8 @@ describe("voice network recovery", () => {
       await vi.advanceTimersByTimeAsync(0);
       await vi.waitFor(() => expect(FakePeerConnection.dataChannels).toHaveLength(2));
       expect(closeRequests).toContainEqual({
-        url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/session-1`, authorization: null,
+        url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/session-1`,
+        authorization: null,
       });
       FakePeerConnection.dataChannels[1]?.onopen?.();
 

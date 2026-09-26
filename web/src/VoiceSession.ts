@@ -64,7 +64,12 @@ export function configureVoiceGateway(
 
 type BearerTokenProvider = () => string | null | Promise<string | null>;
 
-async function gatewayFetch(origin: string, bearerProvider: BearerTokenProvider | null, path: string, init?: RequestInit): Promise<Response> {
+async function gatewayFetch(
+  origin: string,
+  bearerProvider: BearerTokenProvider | null,
+  path: string,
+  init?: RequestInit,
+): Promise<Response> {
   const headers = new Headers(init?.headers);
   if (origin === window.location.origin && !headers.has("Authorization")) {
     const token = await bearerProvider?.();
@@ -114,17 +119,23 @@ function scopedTokenSubject(service: ServiceAuthorization): string | null {
     if (typeof claims !== "object" || claims === null) return null;
     const fields = claims as Record<string, unknown>;
     if (typeof fields.sub !== "string" || fields.sub === "") return null;
-    if (typeof fields.serviceKind === "string" || typeof fields.serviceInstanceID === "string" || typeof fields.backendOrigin === "string") {
+    if (
+      typeof fields.serviceKind === "string" ||
+      typeof fields.serviceInstanceID === "string" ||
+      typeof fields.backendOrigin === "string"
+    ) {
       // Transitional scoped Ed25519 token: bind every service claim.
       if (
         fields.serviceKind !== service.kind ||
         fields.serviceInstanceID !== service.instanceID ||
         fields.backendOrigin !== service.baseURL
-      ) return null;
+      )
+        return null;
       return fields.sub;
     }
     // OAuth access token: bind the issuer to the service base URL.
-    if (typeof fields.iss === "string" && stripTrailingSlash(fields.iss) === stripTrailingSlash(service.baseURL)) return fields.sub;
+    if (typeof fields.iss === "string" && stripTrailingSlash(fields.iss) === stripTrailingSlash(service.baseURL))
+      return fields.sub;
     return null;
   } catch {
     return null;
@@ -152,7 +163,10 @@ async function closeVoiceGatewaySession(
   await snapshot.api.closeVoiceRTC(sessionID, headers);
 }
 
-async function refreshedServiceToken(snapshot: GatewaySnapshot, offerService: ServiceAuthorization | null): Promise<string | null> {
+async function refreshedServiceToken(
+  snapshot: GatewaySnapshot,
+  offerService: ServiceAuthorization | null,
+): Promise<string | null> {
   if (offerService !== null && snapshot.serviceProvider !== null) {
     try {
       const refreshed = await snapshot.serviceProvider();
@@ -558,8 +572,9 @@ export class VoiceSession {
       const request = service === null ? { sdp: offerSDP } : { sdp: offerSDP, service };
       const resp = await snapshot.api.voiceRTCOffer(request);
       if (attempt !== this._connectionAttempt) {
-        void closeVoiceGatewaySession(snapshot, resp.sessionID, service)
-          .catch((error: unknown) => console.warn("Could not close cancelled voice session", error));
+        void closeVoiceGatewaySession(snapshot, resp.sessionID, service).catch((error: unknown) =>
+          console.warn("Could not close cancelled voice session", error),
+        );
         return;
       }
       this._rtcSessionID = resp.sessionID;

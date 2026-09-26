@@ -15,10 +15,10 @@ export type ErrorCode =
 /**
  * Supported values.
  */
-export const ErrorCodeBadRequest: ErrorCode = "BAD_REQUEST";
-export const ErrorCodeVoiceBridgeUnavailable: ErrorCode = "VOICE_BRIDGE_UNAVAILABLE";
-export const ErrorCodeUnauthorized: ErrorCode = "UNAUTHORIZED";
-export const ErrorCodeVoiceOfferFailed: ErrorCode = "VOICE_OFFER_FAILED";
+export const ErrorCodeBadRequest = "BAD_REQUEST";
+export const ErrorCodeVoiceBridgeUnavailable = "VOICE_BRIDGE_UNAVAILABLE";
+export const ErrorCodeUnauthorized = "UNAUTHORIZED";
+export const ErrorCodeVoiceOfferFailed = "VOICE_OFFER_FAILED";
 
 export type InterruptSource =
   | "user"
@@ -26,8 +26,8 @@ export type InterruptSource =
 /**
  * Supported values.
  */
-export const InterruptSourceUser: InterruptSource = "user";
-export const InterruptSourceTool: InterruptSource = "tool";
+export const InterruptSourceUser = "user";
+export const InterruptSourceTool = "tool";
 
 export type MessageKind =
   | "session.setup"
@@ -47,20 +47,20 @@ export type MessageKind =
 /**
  * Supported values.
  */
-export const MessageKindSessionSetup: MessageKind = "session.setup";
-export const MessageKindContextUpdate: MessageKind = "context.update";
-export const MessageKindUserMessage: MessageKind = "user.message";
-export const MessageKindToolResult: MessageKind = "tool.result";
-export const MessageKindTurnCancel: MessageKind = "turn.cancel";
-export const MessageKindSessionClose: MessageKind = "session.close";
-export const MessageKindSessionReady: MessageKind = "session.ready";
-export const MessageKindTranscriptDelta: MessageKind = "transcript.delta";
-export const MessageKindAssistantTextDelta: MessageKind = "assistant.text.delta";
-export const MessageKindSpeechStarted: MessageKind = "speech.started";
-export const MessageKindSpeechEnded: MessageKind = "speech.ended";
-export const MessageKindToolCall: MessageKind = "tool.call";
-export const MessageKindInterrupted: MessageKind = "interrupted";
-export const MessageKindError: MessageKind = "error";
+export const MessageKindSessionSetup = "session.setup";
+export const MessageKindContextUpdate = "context.update";
+export const MessageKindUserMessage = "user.message";
+export const MessageKindToolResult = "tool.result";
+export const MessageKindTurnCancel = "turn.cancel";
+export const MessageKindSessionClose = "session.close";
+export const MessageKindSessionReady = "session.ready";
+export const MessageKindTranscriptDelta = "transcript.delta";
+export const MessageKindAssistantTextDelta = "assistant.text.delta";
+export const MessageKindSpeechStarted = "speech.started";
+export const MessageKindSpeechEnded = "speech.ended";
+export const MessageKindToolCall = "tool.call";
+export const MessageKindInterrupted = "interrupted";
+export const MessageKindError = "error";
 
 export type Speaker =
   | "user"
@@ -68,8 +68,8 @@ export type Speaker =
 /**
  * Supported values.
  */
-export const SpeakerUser: Speaker = "user";
-export const SpeakerAssistant: Speaker = "assistant";
+export const SpeakerUser = "user";
+export const SpeakerAssistant = "assistant";
 
 export type VoiceRTCConnectionState =
   | "new"
@@ -81,12 +81,12 @@ export type VoiceRTCConnectionState =
 /**
  * Supported values.
  */
-export const VoiceRTCConnectionStateNew: VoiceRTCConnectionState = "new";
-export const VoiceRTCConnectionStateConnecting: VoiceRTCConnectionState = "connecting";
-export const VoiceRTCConnectionStateConnected: VoiceRTCConnectionState = "connected";
-export const VoiceRTCConnectionStateDisconnected: VoiceRTCConnectionState = "disconnected";
-export const VoiceRTCConnectionStateFailed: VoiceRTCConnectionState = "failed";
-export const VoiceRTCConnectionStateClosed: VoiceRTCConnectionState = "closed";
+export const VoiceRTCConnectionStateNew = "new";
+export const VoiceRTCConnectionStateConnecting = "connecting";
+export const VoiceRTCConnectionStateConnected = "connected";
+export const VoiceRTCConnectionStateDisconnected = "disconnected";
+export const VoiceRTCConnectionStateFailed = "failed";
+export const VoiceRTCConnectionStateClosed = "closed";
 
 export type VoiceRTCConnectivityIssue =
   | "none"
@@ -101,15 +101,15 @@ export type VoiceRTCConnectivityIssue =
 /**
  * Supported values.
  */
-export const VoiceRTCConnectivityIssueNone: VoiceRTCConnectivityIssue = "none";
-export const VoiceRTCConnectivityIssueVoiceBridgeUnavailable: VoiceRTCConnectivityIssue = "voice_bridge_unavailable";
-export const VoiceRTCConnectivityIssueServerSessionMissing: VoiceRTCConnectivityIssue = "server_session_missing";
-export const VoiceRTCConnectivityIssueServerICEFailed: VoiceRTCConnectivityIssue = "server_ice_failed";
-export const VoiceRTCConnectivityIssueUDPUnreachable: VoiceRTCConnectivityIssue = "udp_unreachable";
-export const VoiceRTCConnectivityIssueDataChannelNotOpen: VoiceRTCConnectivityIssue = "data_channel_not_open";
-export const VoiceRTCConnectivityIssueVoiceBackendConnecting: VoiceRTCConnectivityIssue = "voice_backend_connecting";
-export const VoiceRTCConnectivityIssueSessionReadyNotDelivered: VoiceRTCConnectivityIssue = "session_ready_not_delivered";
-export const VoiceRTCConnectivityIssueUnknownTimeout: VoiceRTCConnectivityIssue = "unknown_timeout";
+export const VoiceRTCConnectivityIssueNone = "none";
+export const VoiceRTCConnectivityIssueVoiceBridgeUnavailable = "voice_bridge_unavailable";
+export const VoiceRTCConnectivityIssueServerSessionMissing = "server_session_missing";
+export const VoiceRTCConnectivityIssueServerICEFailed = "server_ice_failed";
+export const VoiceRTCConnectivityIssueUDPUnreachable = "udp_unreachable";
+export const VoiceRTCConnectivityIssueDataChannelNotOpen = "data_channel_not_open";
+export const VoiceRTCConnectivityIssueVoiceBackendConnecting = "voice_backend_connecting";
+export const VoiceRTCConnectivityIssueSessionReadyNotDelivered = "session_ready_not_delivered";
+export const VoiceRTCConnectivityIssueUnknownTimeout = "unknown_timeout";
 
 export type VoiceRTCConnectivitySide =
   | "none"
@@ -120,11 +120,11 @@ export type VoiceRTCConnectivitySide =
 /**
  * Supported values.
  */
-export const VoiceRTCConnectivitySideNone: VoiceRTCConnectivitySide = "none";
-export const VoiceRTCConnectivitySideServer: VoiceRTCConnectivitySide = "server";
-export const VoiceRTCConnectivitySideClient: VoiceRTCConnectivitySide = "client";
-export const VoiceRTCConnectivitySideNetwork: VoiceRTCConnectivitySide = "network";
-export const VoiceRTCConnectivitySideUnknown: VoiceRTCConnectivitySide = "unknown";
+export const VoiceRTCConnectivitySideNone = "none";
+export const VoiceRTCConnectivitySideServer = "server";
+export const VoiceRTCConnectivitySideClient = "client";
+export const VoiceRTCConnectivitySideNetwork = "network";
+export const VoiceRTCConnectivitySideUnknown = "unknown";
 
 export type VoiceRTCDataChannelState =
   | "new"
@@ -135,11 +135,11 @@ export type VoiceRTCDataChannelState =
 /**
  * Supported values.
  */
-export const VoiceRTCDataChannelStateNew: VoiceRTCDataChannelState = "new";
-export const VoiceRTCDataChannelStateConnecting: VoiceRTCDataChannelState = "connecting";
-export const VoiceRTCDataChannelStateOpen: VoiceRTCDataChannelState = "open";
-export const VoiceRTCDataChannelStateClosing: VoiceRTCDataChannelState = "closing";
-export const VoiceRTCDataChannelStateClosed: VoiceRTCDataChannelState = "closed";
+export const VoiceRTCDataChannelStateNew = "new";
+export const VoiceRTCDataChannelStateConnecting = "connecting";
+export const VoiceRTCDataChannelStateOpen = "open";
+export const VoiceRTCDataChannelStateClosing = "closing";
+export const VoiceRTCDataChannelStateClosed = "closed";
 
 export type VoiceRTCICEConnectionState =
   | "new"
@@ -152,13 +152,13 @@ export type VoiceRTCICEConnectionState =
 /**
  * Supported values.
  */
-export const VoiceRTCICEConnectionStateNew: VoiceRTCICEConnectionState = "new";
-export const VoiceRTCICEConnectionStateChecking: VoiceRTCICEConnectionState = "checking";
-export const VoiceRTCICEConnectionStateConnected: VoiceRTCICEConnectionState = "connected";
-export const VoiceRTCICEConnectionStateCompleted: VoiceRTCICEConnectionState = "completed";
-export const VoiceRTCICEConnectionStateDisconnected: VoiceRTCICEConnectionState = "disconnected";
-export const VoiceRTCICEConnectionStateFailed: VoiceRTCICEConnectionState = "failed";
-export const VoiceRTCICEConnectionStateClosed: VoiceRTCICEConnectionState = "closed";
+export const VoiceRTCICEConnectionStateNew = "new";
+export const VoiceRTCICEConnectionStateChecking = "checking";
+export const VoiceRTCICEConnectionStateConnected = "connected";
+export const VoiceRTCICEConnectionStateCompleted = "completed";
+export const VoiceRTCICEConnectionStateDisconnected = "disconnected";
+export const VoiceRTCICEConnectionStateFailed = "failed";
+export const VoiceRTCICEConnectionStateClosed = "closed";
 
 export type VoiceRTCICEGatheringState =
   | "new"
@@ -167,9 +167,9 @@ export type VoiceRTCICEGatheringState =
 /**
  * Supported values.
  */
-export const VoiceRTCICEGatheringStateNew: VoiceRTCICEGatheringState = "new";
-export const VoiceRTCICEGatheringStateGathering: VoiceRTCICEGatheringState = "gathering";
-export const VoiceRTCICEGatheringStateComplete: VoiceRTCICEGatheringState = "complete";
+export const VoiceRTCICEGatheringStateNew = "new";
+export const VoiceRTCICEGatheringStateGathering = "gathering";
+export const VoiceRTCICEGatheringStateComplete = "complete";
 
 export type VoiceRTCSignalingState =
   | "stable"
@@ -181,12 +181,12 @@ export type VoiceRTCSignalingState =
 /**
  * Supported values.
  */
-export const VoiceRTCSignalingStateStable: VoiceRTCSignalingState = "stable";
-export const VoiceRTCSignalingStateHaveLocalOffer: VoiceRTCSignalingState = "have-local-offer";
-export const VoiceRTCSignalingStateHaveRemoteOffer: VoiceRTCSignalingState = "have-remote-offer";
-export const VoiceRTCSignalingStateHaveLocalPranswer: VoiceRTCSignalingState = "have-local-pranswer";
-export const VoiceRTCSignalingStateHaveRemotePranswer: VoiceRTCSignalingState = "have-remote-pranswer";
-export const VoiceRTCSignalingStateClosed: VoiceRTCSignalingState = "closed";
+export const VoiceRTCSignalingStateStable = "stable";
+export const VoiceRTCSignalingStateHaveLocalOffer = "have-local-offer";
+export const VoiceRTCSignalingStateHaveRemoteOffer = "have-remote-offer";
+export const VoiceRTCSignalingStateHaveLocalPranswer = "have-local-pranswer";
+export const VoiceRTCSignalingStateHaveRemotePranswer = "have-remote-pranswer";
+export const VoiceRTCSignalingStateClosed = "closed";
 
 /** ServiceAuthorization identifies the host and carries its scoped gateway token. */
 export interface ServiceAuthorization {

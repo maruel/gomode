@@ -1,13 +1,22 @@
 # Build and verification targets for the standalone Go Mode contracts and shell.
 .DEFAULT_GOAL := help
-.PHONY: help build fix verify test test-race android-check android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-push android-e2e generate-sdks refresh-generated benchmark coverage test-smoke-voice upgrade
+.PHONY: help build fix verify test test-race android-check android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-push android-e2e generate-sdks refresh-generated benchmark coverage test-smoke-voice upgrade git-hooks tools
+
+RUFF_VERSION=0.16.8
+UV_BIN := $(shell uv tool dir --bin 2>/dev/null)
+export PATH := $(if $(UV_BIN),$(UV_BIN):)$(PATH)
+
+tools:
+	@command -v uv >/dev/null 2>&1 || { echo 'uv is required to install Ruff; see https://docs.astral.sh/uv/' >&2; exit 1; }
+	@ruff --version 2>/dev/null | grep -Fqw "$(RUFF_VERSION)" || uv tool install --force --quiet ruff==$(RUFF_VERSION)
 
 help:
 	@echo 'Go Mode - standalone contracts and shell'
 	@echo ''
 	@echo 'Available targets:'
 	@printf '  %-27s - %s\n' 'make fix' 'Format Go and Android code'
-	@printf '  %-27s - %s\n' 'make verify' 'Check Go, browser, and Android code'
+	@printf '  %-27s - %s\n' 'make verify' 'Check Go, browser, Python, shell, and Android code'
+	@printf '  %-27s - %s\n' 'make git-hooks' 'Install versioned Git hooks'
 	@printf '  %-27s - %s\n' 'make test' 'Run Go, browser, and Android unit tests'
 	@printf '  %-27s - %s\n' 'make test-race' 'Run race-safe voice gateway concurrency tests'
 	@printf '  %-27s - %s\n' 'make build' 'Build Go packages and Android app and SDKs'
@@ -25,20 +34,37 @@ help:
 	@printf '  %-27s - %s\n' 'make refresh-generated' 'Regenerate SDKs and AGENTS file indexes'
 	@printf '  %-27s - %s\n' 'make upgrade' 'Upgrade Go and pnpm dependencies'
 
-fix: android-sdk
-	@goimports -w .
+fix: tools android-sdk
+	@go tool golangci-lint fmt
+	@pnpm --silent lint:fix
+	@pnpm --silent format
+	@ruff check --quiet --fix scripts
+	@ruff format --quiet scripts
+	@go tool shfmt -w scripts/check-staged.sh scripts/install-git-hooks.sh scripts/hooks/*
 	@cd android && ./gradlew :gomode:ktlintFormat :halo-sdk:ktlintFormat --quiet
 	@python3 scripts/update_agents_file_index.py
 
-verify: android-sdk
+verify: tools android-sdk
 	@go test -run '^$$' ./...
 	@go test -race -run '^$$' ./voicegateway/voicertc
 	@go vet ./...
+	@go tool golangci-lint run ./...
+	@go mod tidy -diff
 	@go build ./...
+	@pnpm --silent format:check
+	@pnpm --silent lint:check
 	@pnpm typecheck
+	@ruff check --quiet scripts
+	@ruff format --check --quiet scripts
+	@files=$$(git ls-files '*.sh' 'scripts/hooks/*'); [ -z "$$files" ] || { out=$$(go tool shfmt -l $$files) || exit; [ -z "$$out" ] || { echo "Shell files need shfmt:" >&2; echo "$$out" >&2; exit 1; }; }
+	@python3 scripts/lint_binaries.py
 	@cd android && ./gradlew :gomode:ktlintCheck :halo-sdk:ktlintCheck :gomode:detekt :gomode:lintDebug --quiet
 	@cd android && ./gradlew :oauth-sdk:assemble --quiet
 	@python3 scripts/update_agents_file_index.py --check
+	@git diff --check
+
+git-hooks:
+	@./scripts/install-git-hooks.sh
 
 test: android-sdk
 	@go test ./...

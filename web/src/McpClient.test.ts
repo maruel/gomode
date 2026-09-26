@@ -25,7 +25,9 @@ describe("configureMcpClient", () => {
     expect(await mcpClient.listTools()).toEqual([]);
     expect(url).toBe("/api/v1/gomode/mcp");
     expect(new Headers(init?.headers).get("Mcp-Method")).toBe("tools/list");
-    expect(JSON.parse(String(init?.body)).params._meta["io.modelcontextprotocol/clientInfo"].name).toBe("mddb-frontend");
+    expect(JSON.parse(String(init?.body)).params._meta["io.modelcontextprotocol/clientInfo"].name).toBe(
+      "mddb-frontend",
+    );
   });
 
   it("accepts an absolute endpoint on the frontend origin", async () => {
@@ -58,7 +60,13 @@ describe("configureMcpClient", () => {
       methods.push(new Headers(init?.headers).get("Mcp-Method") ?? "");
       authorizations.push(new Headers(init?.headers).get("Authorization") ?? "");
       const method = JSON.parse(String(init?.body)).method as string;
-      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: method === "server/discover" ? { instructions: "Read nodes" } : { tools: [] } }));
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: method === "server/discover" ? { instructions: "Read nodes" } : { tools: [] },
+        }),
+      );
     };
 
     expect(await mcpClient.serverInstructions()).toBe("Read nodes");

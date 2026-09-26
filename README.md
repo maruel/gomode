@@ -1,5 +1,7 @@
 # Go Mode
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/maruel/gomode.svg)](https://pkg.go.dev/github.com/maruel/gomode)
+
 Go Mode provides a reusable host contract and a native Android shell for
 backend-hosted web applications. The repository contains the Go discovery
 handler, MCP and OAuth 2.1 transports, WebRTC voice gateway, generated API
@@ -21,11 +23,4 @@ to a host through `/.well-known/gomode.json` and renders its web frontend.
 - `android/gomode/`: native WebView, voice, notifications, settings, and Halo
   shell.
 
-Run `make generate-sdks` after changing protocol DTOs or routes, then
-`make fix`, `make verify`, `make test`, and `make test-race`. Run `make` to list build, coverage,
-benchmark, Android, and maintenance targets. `make android-check` runs the full
-Android build, lint, unit test, and coverage gate.
-
-See [the server library guide](docs/SERVER_LIBRARY.md) for the host boundary
-and [the Go Mode plan](docs/PLAN_GOMODE.md) for remaining work across caic,
-mddb, and the shared clients.
+See [the server library guide](docs/SERVER_LIBRARY.md) to integrate a host.

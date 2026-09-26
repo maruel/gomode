@@ -1,0 +1,52 @@
+# Static Go analysis and formatting for the standalone Go Mode repository.
+version: "2"
+run:
+  tests: true
+linters:
+  enable:
+    - asciicheck
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - errcheck
+    - errorlint
+    - gocritic
+    - gosec
+    - ineffassign
+    - misspell
+    - nilerr
+    - nilnil
+    - prealloc
+    - revive
+    - staticcheck
+    - unconvert
+    - unused
+    - whitespace
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+  exclusions:
+    generated: lax
+    rules:
+      # These JWK helpers still use coordinate APIs deprecated by Go 1.27.
+      # Keep staticcheck active elsewhere until the conversion is modernized.
+      - path: oauth/oauthverify/oauthverify\.go$
+        linters: [staticcheck]
+        text: SA1019|QF1008
+      - path: oauth/oauthverify/oauthverify_test\.go$
+        linters: [staticcheck]
+        text: SA1019
+      - path: voicegateway/oauth_http_test\.go$
+        linters: [staticcheck]
+        text: SA1019
+      - path: (.+)\.go$
+        text: should have a package comment
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true

@@ -14,5 +14,7 @@ with `make generate-sdks` after DTO or route changes. `make android-check`
 builds the Android app and SDKs, compiles instrumented tests, and runs lint,
 unit tests, and coverage.
 
+Mandatory: Run `make git-hooks` to install git hooks before making any change.
+
 The TypeScript package `@maruel/gomode` exports source for Solid/Vite hosts.
 Keep `web/src` host neutral and configure its MCP endpoint in each host.

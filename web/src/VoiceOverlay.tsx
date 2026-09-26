@@ -100,7 +100,12 @@ export const defaultVoiceOverlayMessages: VoiceOverlayMessages = {
   you: "You:",
 };
 
-function localizedStatus(status: string, phase: VoiceState["connectPhase"], messages: VoiceOverlayMessages, hasCustomMessages: boolean): string {
+function localizedStatus(
+  status: string,
+  phase: VoiceState["connectPhase"],
+  messages: VoiceOverlayMessages,
+  hasCustomMessages: boolean,
+): string {
   if (!hasCustomMessages) return status;
   switch (phase) {
     case "setup":
@@ -117,12 +122,15 @@ function localizedStatus(status: string, phase: VoiceState["connectPhase"], mess
 }
 
 function safeErrorDetail(error: string): string {
-  return error
-    .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
-    .replace(/([?&](?:access_token|token|api_key|password)=)[^&#\s]+/gi, "$1[redacted]")
-    .replace(/[\u0000-\u001f\u007f]+/g, " ")
-    .trim()
-    .slice(0, 500);
+  return (
+    error
+      .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
+      .replace(/([?&](?:access_token|token|api_key|password)=)[^&#\s]+/gi, "$1[redacted]")
+      // eslint-disable-next-line no-control-regex -- Control characters are deliberately removed from errors.
+      .replace(/[\u0000-\u001f\u007f]+/g, " ")
+      .trim()
+      .slice(0, 500)
+  );
 }
 
 export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | Accessor<VoiceOverlayMessages> }) {
@@ -132,7 +140,7 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
     return (typeof value === "function" ? value() : value) ?? defaultVoiceOverlayMessages;
   };
 
-  let panelRef: HTMLDivElement | undefined; // eslint-disable-line no-unassigned-vars -- assigned by SolidJS ref
+  let panelRef: HTMLDivElement | undefined;
   const [spacerHeight, setSpacerHeight] = createSignal(0);
   onMount(() => {
     const observer = new ResizeObserver(([entry]) => {
@@ -205,7 +213,13 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
   return (
     <>
       <div class={styles.spacer} style={{ "--spacer-height": `${spacerHeight()}px` }} aria-hidden="true" />
-      <div class={styles.panel} ref={panelRef} role="region" aria-label={messages().voiceAssistant} data-testid="voice-overlay">
+      <div
+        class={styles.panel}
+        ref={panelRef}
+        role="region"
+        aria-label={messages().voiceAssistant}
+        data-testid="voice-overlay"
+      >
         <div class={styles.panelInner}>
           {/* Idle state: mic button right-aligned */}
           <Show when={!isActive()}>
@@ -223,13 +237,28 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
           </Show>
 
           <Show when={session.state.error !== null && session.state.error} keyed>
-            {(err) => <ErrorPanel error={err} messages={messages} hasCustomMessages={props.messages !== undefined} onRetry={() => handleMicClick()} />}
+            {(err) => (
+              <ErrorPanel
+                error={err}
+                messages={messages}
+                hasCustomMessages={props.messages !== undefined}
+                onRetry={() => handleMicClick()}
+              />
+            )}
           </Show>
           <Show
             when={session.state.error === null && session.state.connectStatus !== null && session.state.connectStatus}
             keyed
           >
-            {(status) => <ConnectingPanel status={status} phase={session.state.connectPhase} messages={messages} hasCustomMessages={props.messages !== undefined} onDisconnect={() => session.disconnect()} />}
+            {(status) => (
+              <ConnectingPanel
+                status={status}
+                phase={session.state.connectPhase}
+                messages={messages}
+                hasCustomMessages={props.messages !== undefined}
+                onDisconnect={() => session.disconnect()}
+              />
+            )}
           </Show>
           <Show
             when={
@@ -260,11 +289,19 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
 
 // Sub-panels
 
-function ConnectingPanel(props: { status: string; phase: VoiceState["connectPhase"]; messages: Accessor<VoiceOverlayMessages>; hasCustomMessages: boolean; onDisconnect: () => void }) {
+function ConnectingPanel(props: {
+  status: string;
+  phase: VoiceState["connectPhase"];
+  messages: Accessor<VoiceOverlayMessages>;
+  hasCustomMessages: boolean;
+  onDisconnect: () => void;
+}) {
   return (
     <div class={`${styles.row} ${styles.statusConnecting}`}>
       <MicIcon width="1.1em" height="1.1em" />
-      <span class={styles.statusText}>{localizedStatus(props.status, props.phase, props.messages(), props.hasCustomMessages)}</span>
+      <span class={styles.statusText}>
+        {localizedStatus(props.status, props.phase, props.messages(), props.hasCustomMessages)}
+      </span>
       <button
         type="button"
         class={styles.iconButton}
@@ -278,7 +315,12 @@ function ConnectingPanel(props: { status: string; phase: VoiceState["connectPhas
   );
 }
 
-function ErrorPanel(props: { error: string; messages: Accessor<VoiceOverlayMessages>; hasCustomMessages: boolean; onRetry: () => void }) {
+function ErrorPanel(props: {
+  error: string;
+  messages: Accessor<VoiceOverlayMessages>;
+  hasCustomMessages: boolean;
+  onRetry: () => void;
+}) {
   return (
     <div class={styles.row}>
       <MicIcon width="1.1em" height="1.1em" class={styles.micIconError} />
@@ -353,7 +395,11 @@ function ActivePanel(props: {
           onSelectOutput={props.onSelectOutput}
         />
       )}
-      <TranscriptLog transcript={props.state.transcript} messages={props.messages} onClear={() => props.onClearTranscript()} />
+      <TranscriptLog
+        transcript={props.state.transcript}
+        messages={props.messages}
+        onClear={() => props.onClearTranscript()}
+      />
     </>
   );
 }
@@ -417,7 +463,11 @@ function MicLevelBars(barProps: { micLevel: number }) {
 
 // Transcript log
 
-function TranscriptLog(props: { transcript: TranscriptEntry[]; messages: Accessor<VoiceOverlayMessages>; onClear: () => void }) {
+function TranscriptLog(props: {
+  transcript: TranscriptEntry[];
+  messages: Accessor<VoiceOverlayMessages>;
+  onClear: () => void;
+}) {
   let listRef: HTMLDivElement | undefined;
 
   // Auto-scroll to bottom when transcript changes.

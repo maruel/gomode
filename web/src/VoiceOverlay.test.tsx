@@ -87,12 +87,22 @@ describe("VoiceOverlay connection", () => {
       connectionFailed: "Connexion vocale échouée",
       reconnecting: "Reconnexion…",
     };
-    voiceSession.setState((s) => ({ ...s, connectStatus: "ICE failed; reconnecting…", connectPhase: "reconnecting", error: null }));
+    voiceSession.setState((s) => ({
+      ...s,
+      connectStatus: "ICE failed; reconnecting…",
+      connectPhase: "reconnecting",
+      error: null,
+    }));
     render(() => <VoiceOverlay messages={() => messages} />);
     expect(screen.getByText("Reconnexion…")).toBeInTheDocument();
     expect(screen.queryByText(/ICE failed/)).toBeNull();
 
-    voiceSession.setState((s) => ({ ...s, connectStatus: null, connectPhase: null, error: "HTTP 401 Bearer secret-token" }));
+    voiceSession.setState((s) => ({
+      ...s,
+      connectStatus: null,
+      connectPhase: null,
+      error: "HTTP 401 Bearer secret-token",
+    }));
     expect(screen.getByText("Connexion vocale échouée")).toBeInTheDocument();
     expect(screen.getByText("HTTP 401 Bearer [redacted]")).toBeInTheDocument();
     expect(screen.queryByText(/secret-token/)).toBeNull();

@@ -12,8 +12,8 @@ export type CacheScope =
 /**
  * Supported values.
  */
-export const CacheScopePublic: CacheScope = "public";
-export const CacheScopePrivate: CacheScope = "private";
+export const CacheScopePublic = "public";
+export const CacheScopePrivate = "private";
 
 export type ContentType =
   | "audio"
@@ -24,11 +24,11 @@ export type ContentType =
 /**
  * Supported values.
  */
-export const ContentTypeAudio: ContentType = "audio";
-export const ContentTypeImage: ContentType = "image";
-export const ContentTypeResource: ContentType = "resource";
-export const ContentTypeResourceLink: ContentType = "resource_link";
-export const ContentTypeText: ContentType = "text";
+export const ContentTypeAudio = "audio";
+export const ContentTypeImage = "image";
+export const ContentTypeResource = "resource";
+export const ContentTypeResourceLink = "resource_link";
+export const ContentTypeText = "text";
 
 export type Method =
   | "server/discover"
@@ -43,15 +43,15 @@ export type Method =
 /**
  * Supported values.
  */
-export const MethodServerDiscover: Method = "server/discover";
-export const MethodToolsList: Method = "tools/list";
-export const MethodToolsCall: Method = "tools/call";
-export const MethodResourcesList: Method = "resources/list";
-export const MethodResourcesRead: Method = "resources/read";
-export const MethodResourceTemplatesList: Method = "resources/templates/list";
-export const MethodSkillsGet: Method = "skills/get";
-export const MethodSkillsList: Method = "skills/list";
-export const MethodSubscriptionsListen: Method = "subscriptions/listen";
+export const MethodServerDiscover = "server/discover";
+export const MethodToolsList = "tools/list";
+export const MethodToolsCall = "tools/call";
+export const MethodResourcesList = "resources/list";
+export const MethodResourcesRead = "resources/read";
+export const MethodResourceTemplatesList = "resources/templates/list";
+export const MethodSkillsGet = "skills/get";
+export const MethodSkillsList = "skills/list";
+export const MethodSubscriptionsListen = "subscriptions/listen";
 
 export type NotificationMethod =
   | "notifications/subscriptions/acknowledged"
@@ -61,17 +61,17 @@ export type NotificationMethod =
 /**
  * Supported values.
  */
-export const NotificationMethodSubscriptionsAcknowledged: NotificationMethod = "notifications/subscriptions/acknowledged";
-export const NotificationMethodSubscriptionsInitialState: NotificationMethod = "notifications/subscriptions/initial_state";
-export const NotificationMethodResourcesListChanged: NotificationMethod = "notifications/resources/list_changed";
-export const NotificationMethodResourcesUpdated: NotificationMethod = "notifications/resources/updated";
+export const NotificationMethodSubscriptionsAcknowledged = "notifications/subscriptions/acknowledged";
+export const NotificationMethodSubscriptionsInitialState = "notifications/subscriptions/initial_state";
+export const NotificationMethodResourcesListChanged = "notifications/resources/list_changed";
+export const NotificationMethodResourcesUpdated = "notifications/resources/updated";
 
 export type ResultType =
   | "complete";
 /**
  * Supported values.
  */
-export const ResultTypeComplete: ResultType = "complete";
+export const ResultTypeComplete = "complete";
 
 export type Role =
   | "user"
@@ -79,8 +79,8 @@ export type Role =
 /**
  * Supported values.
  */
-export const RoleUser: Role = "user";
-export const RoleAssistant: Role = "assistant";
+export const RoleUser = "user";
+export const RoleAssistant = "assistant";
 
 /** JSONRPCRequest is a JSON-RPC request that expects a response. */
 export interface JSONRPCRequest {

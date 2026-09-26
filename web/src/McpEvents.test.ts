@@ -35,10 +35,7 @@ describe("readMcpNotificationStream", () => {
   it("reassembles a frame split across chunks", async () => {
     const seen: McpNotification[] = [];
     await readMcpNotificationStream(
-      streamOf([
-        'data: {"jsonrpc":"2.0","method":"notifications/resources/upd',
-        'ated","params":{"uri":"x"}}\n\n',
-      ]),
+      streamOf(['data: {"jsonrpc":"2.0","method":"notifications/resources/upd', 'ated","params":{"uri":"x"}}\n\n']),
       (notification) => seen.push(notification),
     );
     expect(seen.map((notification) => notification.params?.uri)).toEqual(["x"]);
@@ -47,7 +44,7 @@ describe("readMcpNotificationStream", () => {
   it("skips frames that are not JSON-RPC notifications", async () => {
     const seen: McpNotification[] = [];
     await readMcpNotificationStream(
-      streamOf(['data: not json\n\n', 'data: {"jsonrpc":"2.0","id":1,"result":{}}\n\n', ": keepalive\n\n"]),
+      streamOf(["data: not json\n\n", 'data: {"jsonrpc":"2.0","id":1,"result":{}}\n\n', ": keepalive\n\n"]),
       (notification) => seen.push(notification),
     );
     expect(seen).toEqual([]);

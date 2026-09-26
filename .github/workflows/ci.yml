@@ -27,12 +27,22 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v6
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - name: Install browser dependencies
         run: pnpm install --frozen-lockfile
       - name: Install Android SDK packages
         run: make android-sdk
       - name: Verify
         run: make verify
+      - name: Check that verification leaves the worktree clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$(git status --porcelain)"
+          if [[ -n "$status" ]]; then
+            printf '%s\n' 'Verification changed tracked files:' "$status" >&2
+            exit 1
+          fi
       - name: Test
         run: make test
       - name: Race tests
