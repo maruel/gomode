@@ -4,6 +4,7 @@ package com.fghbuild.gomode
 import android.app.Instrumentation.ActivityResult
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Rect
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -24,9 +25,17 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
     fun webShellLoadsHostedFrontendAndHandlesSpaBack() {
         openWebShell()
         waitForHostedFrontend()
-        waitForDom("frontend fills viewport") {
-            "document.querySelector('#app > div')?.getBoundingClientRect().height > window.innerHeight * 0.5"
-        }
+        waitForDom("hosted frontend is visible") { "isVisible('#app > div')" }
+        val webView = waitForWebView()
+        val fillsViewport =
+            composeRule.runOnUiThread {
+                val visibleBounds = Rect()
+                val windowBounds = composeRule.activity.window.decorView
+                webView.getGlobalVisibleRect(visibleBounds) &&
+                    visibleBounds.width() > windowBounds.width / 2 &&
+                    visibleBounds.height() > windowBounds.height / 2
+            }
+        assertTrue("Hosted WebView does not fill the activity viewport", fillsViewport)
 
         executeDom("push SPA route") {
             """
