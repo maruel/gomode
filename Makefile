@@ -41,7 +41,7 @@ fix: tools android-sdk
 	@ruff check --quiet --fix scripts
 	@ruff format --quiet scripts
 	@go tool shfmt -w scripts/check-staged.sh scripts/install-git-hooks.sh scripts/hooks/*
-	@cd android && ./gradlew :gomode:ktlintFormat :halo-sdk:ktlintFormat --quiet
+	@cd ./android && ./gradlew :gomode:ktlintFormat :halo-sdk:ktlintFormat --quiet
 	@python3 scripts/update_agents_file_index.py
 
 verify: tools android-sdk
@@ -58,8 +58,8 @@ verify: tools android-sdk
 	@ruff format --check --quiet scripts
 	@files=$$(git ls-files '*.sh' 'scripts/hooks/*'); [ -z "$$files" ] || { out=$$(go tool shfmt -l $$files) || exit; [ -z "$$out" ] || { echo "Shell files need shfmt:" >&2; echo "$$out" >&2; exit 1; }; }
 	@python3 scripts/lint_binaries.py
-	@cd android && ./gradlew :gomode:ktlintCheck :halo-sdk:ktlintCheck :gomode:detekt :gomode:lintDebug --quiet
-	@cd android && ./gradlew :oauth-sdk:assemble --quiet
+	@cd ./android && ./gradlew :gomode:ktlintCheck :halo-sdk:ktlintCheck :gomode:detekt :gomode:lintDebug --quiet
+	@cd ./android && ./gradlew :oauth-sdk:assemble --quiet
 	@python3 scripts/update_agents_file_index.py --check
 	@git diff --check
 
@@ -69,7 +69,7 @@ git-hooks:
 test: android-sdk
 	@go test ./...
 	@pnpm --silent test
-	@cd android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet
+	@cd ./android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet
 
 # The Opus codec is deliberately disabled in race builds, so skip the two
 # tests that require it while running the rest of the voice gateway suite.
@@ -78,7 +78,7 @@ test-race:
 
 build: android-sdk
 	@go build ./...
-	@cd android && ./gradlew :gomode:assembleDebug :halo-sdk:assembleDebug :gomode-sdk:assemble :mcp-sdk:assemble :oauth-sdk:assemble :voicegateway-sdk:assemble --quiet
+	@cd ./android && ./gradlew :gomode:assembleDebug :halo-sdk:assembleDebug :gomode-sdk:assemble :mcp-sdk:assemble :oauth-sdk:assemble :voicegateway-sdk:assemble --quiet
 
 # Benchmarks exercise the Go request paths; the browser package has no benchmark suite.
 benchmark:
@@ -98,10 +98,10 @@ upgrade:
 	@go get -u ./...
 	@go mod tidy
 	@pnpm update --latest
-	@cd android && ./gradlew --no-daemon dependencyUpdates -Drevision=release
+	@cd ./android && ./gradlew --no-daemon dependencyUpdates -Drevision=release
 
 android-check: android-sdk
-	@cd android && ./gradlew :gomode:assembleDebug :halo-sdk:assembleDebug :gomode-sdk:assemble :mcp-sdk:assemble :oauth-sdk:assemble :voicegateway-sdk:assemble :gomode:assembleDebugAndroidTest :halo-sdk:assembleDebugAndroidTest :gomode:detekt :halo-sdk:detekt :gomode:ktlintCheck :halo-sdk:ktlintCheck :gomode:lintDebug :halo-sdk:lintDebug :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest :gomode:createDebugUnitTestCoverageReport :halo-sdk:createDebugUnitTestCoverageReport --quiet
+	@cd ./android && ./gradlew :gomode:assembleDebug :halo-sdk:assembleDebug :gomode-sdk:assemble :mcp-sdk:assemble :oauth-sdk:assemble :voicegateway-sdk:assemble :gomode:assembleDebugAndroidTest :halo-sdk:assembleDebugAndroidTest :gomode:detekt :halo-sdk:detekt :gomode:ktlintCheck :halo-sdk:ktlintCheck :gomode:lintDebug :halo-sdk:lintDebug :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest :gomode:createDebugUnitTestCoverageReport :halo-sdk:createDebugUnitTestCoverageReport --quiet
 
 generate-sdks:
 	@go run ./cmd/gen-sdk
