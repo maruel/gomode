@@ -1,6 +1,6 @@
 # Build and verification targets for the standalone Go Mode contracts and shell.
 .DEFAULT_GOAL := help
-.PHONY: help build fix verify test test-race android-check android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-push-gomode android-e2e generate-sdks refresh-generated benchmark coverage test-smoke-voice upgrade
+.PHONY: help build fix verify test test-race android-check android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-push android-e2e generate-sdks refresh-generated benchmark coverage test-smoke-voice upgrade
 
 help:
 	@echo 'Go Mode - standalone contracts and shell'
@@ -16,7 +16,7 @@ help:
 	@printf '  %-27s - %s\n' 'make test-smoke-voice' 'Run local WebRTC audio smoke test (needs audio setup)'
 	@printf '  %-27s - %s\n' 'make android-check' 'Run Android lint, builds, unit tests, and coverage'
 	@printf '  %-27s - %s\n' 'make android-e2e' 'Run Android instrumented tests on an emulator'
-	@printf '  %-27s - %s\n' 'make android-push-gomode' 'Build and install Go Mode on connected devices'
+	@printf '  %-27s - %s\n' 'make android-push' 'Build and install Go Mode on connected devices'
 	@printf '  %-27s - %s\n' 'make android-setup-emulator' 'Install emulator image and create the test AVD'
 	@printf '  %-27s - %s\n' 'make android-start-emulator' 'Start or reuse the Android emulator'
 	@printf '  %-27s - %s\n' 'make android-stop-emulator' 'Stop the Android emulator'
@@ -99,7 +99,7 @@ android-stop-emulator:
 	@python3 scripts/android_stop_emulator.py
 
 # Slow: compiles, checks, installs, and launches the app on a connected device.
-android-push-gomode: android-check
+android-push: android-check
 	@python3 scripts/android_push.py
 
 # Slow: starts or reuses an emulator and runs shell behavior on a hosted fixture.
