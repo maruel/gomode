@@ -6,9 +6,21 @@ RUFF_VERSION=0.16.8
 UV_BIN := $(shell uv tool dir --bin 2>/dev/null)
 export PATH := $(if $(UV_BIN),$(UV_BIN):)$(PATH)
 
+# Read-only verification lanes. Each command is passed through two shells, so
+# keep single quotes out of these values.
+VERIFY_GO = go test -run=^$$ ./... && go test -race -run=^$$ ./voicegateway/voicertc && go vet ./... && go tool golangci-lint run ./... && go mod tidy -diff && go build ./...
+VERIFY_PY = ruff check --quiet scripts && ruff format --check --quiet scripts
+VERIFY_SH = files=$$(git ls-files "*.sh" "scripts/hooks/*"); [ -z "$$files" ] || { out=$$(go tool shfmt -l $$files) || exit; [ -z "$$out" ] || { echo "Shell files need shfmt:" >&2; echo "$$out" >&2; exit 1; }; }
+VERIFY_MISC = python3 scripts/lint_binaries.py && python3 scripts/update_agents_file_index.py --check && git diff --check
+VERIFY_ANDROID = cd ./android && ./gradlew :gomode:ktlintCheck :halo-sdk:ktlintCheck :gomode:detekt :gomode:lintDebug :oauth-sdk:assemble --quiet
+
 tools:
 	@command -v uv >/dev/null 2>&1 || { echo 'uv is required to install Ruff; see https://docs.astral.sh/uv/' >&2; exit 1; }
 	@ruff --version 2>/dev/null | grep -Fqw "$(RUFF_VERSION)" || uv tool install --force --quiet ruff==$(RUFF_VERSION)
+
+node_modules/.stamp: package.json pnpm-lock.yaml
+	@pnpm install --frozen-lockfile --silent
+	@touch $@
 
 help:
 	@echo 'Go Mode - standalone contracts and shell'
@@ -34,7 +46,7 @@ help:
 	@printf '  %-27s - %s\n' 'make refresh-generated' 'Regenerate SDKs and AGENTS file indexes'
 	@printf '  %-27s - %s\n' 'make upgrade' 'Upgrade Go and pnpm dependencies'
 
-fix: tools android-sdk
+fix: tools android-sdk node_modules/.stamp
 	@go tool golangci-lint fmt
 	@pnpm --silent lint:fix
 	@pnpm --silent format
@@ -44,32 +56,14 @@ fix: tools android-sdk
 	@cd ./android && ./gradlew :gomode:ktlintFormat :halo-sdk:ktlintFormat --quiet
 	@python3 scripts/update_agents_file_index.py
 
-verify: tools android-sdk
-	@go test -run '^$$' ./...
-	@go test -race -run '^$$' ./voicegateway/voicertc
-	@go vet ./...
-	@go tool golangci-lint run ./...
-	@go mod tidy -diff
-	@go build ./...
-	@pnpm --silent format:check
-	@pnpm --silent lint:check
-	@pnpm typecheck
-	@ruff check --quiet scripts
-	@ruff format --check --quiet scripts
-	@files=$$(git ls-files '*.sh' 'scripts/hooks/*'); [ -z "$$files" ] || { out=$$(go tool shfmt -l $$files) || exit; [ -z "$$out" ] || { echo "Shell files need shfmt:" >&2; echo "$$out" >&2; exit 1; }; }
-	@python3 scripts/lint_binaries.py
-	@cd ./android && ./gradlew :gomode:ktlintCheck :halo-sdk:ktlintCheck :gomode:detekt :gomode:lintDebug --quiet
-	@cd ./android && ./gradlew :oauth-sdk:assemble --quiet
-	@python3 scripts/update_agents_file_index.py --check
-	@git diff --check
+verify: tools android-sdk node_modules/.stamp
+	@./scripts/run-concurrently.sh go,format,lint,ts,python,shell,misc,android '$(VERIFY_GO)' 'pnpm --silent format:check' 'pnpm --silent lint:check' 'pnpm typecheck' '$(VERIFY_PY)' '$(VERIFY_SH)' '$(VERIFY_MISC)' '$(VERIFY_ANDROID)'
 
 git-hooks:
 	@./scripts/install-git-hooks.sh
 
-test: android-sdk
-	@go test ./...
-	@pnpm --silent test
-	@cd ./android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet
+test: android-sdk node_modules/.stamp
+	@./scripts/run-concurrently.sh go,browser,android 'go test ./...' 'pnpm --silent test' 'cd ./android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet'
 
 # The Opus codec is deliberately disabled in race builds, so skip the two
 # tests that require it while running the rest of the voice gateway suite.
