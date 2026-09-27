@@ -3,7 +3,6 @@ package com.fghbuild.gomode
 
 import android.os.Environment
 import androidx.compose.ui.test.onAllNodesWithTag
-import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -71,7 +70,6 @@ class GoModeDocumentationScreenshotsTest : GoModeE2eTestBase() {
         val detailPrompt = "Fix token expiry bug in auth middleware"
         submitPromptThroughHostedUi(detailPrompt)
         waitForText("Fixed the token validation bug", GOMODE_LOAD_TIMEOUT_MS)
-        waitForAttentionText("$detailPrompt needs attention")
         takeHostedScreenshot("gomode-task-detail")
         navigateHostedHome()
 
@@ -79,7 +77,6 @@ class GoModeDocumentationScreenshotsTest : GoModeE2eTestBase() {
         submitPromptThroughHostedUi(planPrompt)
         waitForTestId("clear-and-execute-plan", GOMODE_LOAD_TIMEOUT_MS)
         waitForTestId("plan-content")
-        waitForAttentionText("2 items need attention")
         takeHostedScreenshot("gomode-task-plan", fitPlanMessages = true)
         navigateHostedHome()
 
@@ -87,7 +84,6 @@ class GoModeDocumentationScreenshotsTest : GoModeE2eTestBase() {
         submitPromptThroughHostedUi(askPrompt)
         waitForText("Which approach should I use?", GOMODE_LOAD_TIMEOUT_MS)
         waitForTestId("ask-option-In-memory (sync.Map)")
-        waitForAttentionText("3 items need attention")
         takeHostedScreenshot("gomode-task-ask")
         tapDomElement(TASK_DETAIL_PROMPT_SELECTOR)
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { isImeVisible() }
@@ -112,12 +108,6 @@ class GoModeDocumentationScreenshotsTest : GoModeE2eTestBase() {
             }
         }
         takeHostedScreenshot("gomode-task-list", waitForTaskMetadata = false)
-    }
-
-    private fun waitForAttentionText(text: String) {
-        composeRule.waitUntil(GOMODE_LOAD_TIMEOUT_MS) {
-            composeRule.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()
-        }
     }
 
     private fun fitHostedPlanMessages() {

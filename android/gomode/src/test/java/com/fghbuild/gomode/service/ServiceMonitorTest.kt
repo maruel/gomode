@@ -139,8 +139,13 @@ class ServiceMonitorTest {
             val state = monitor.state.value
             assertEquals("https://service.test/api/service/v1/mcp", endpointURL)
             assertEquals("2026-07-28", protocolVersion)
-            assertEquals(1, state.attentionCount)
-            assertEquals("Review plan needs attention", state.notificationText)
+            assertEquals(
+                "Review plan",
+                state.snapshot
+                    ?.items
+                    ?.last()
+                    ?.title,
+            )
             monitor.stop()
         }
 
@@ -193,24 +198,32 @@ class ServiceMonitorTest {
                     enqueueReadResult(
                         """{"items":[{"id":"i1","title":"Build feature","state":"awaiting input","needsAttention":true}]}""",
                     )
-                    enqueueNotificationReadResult("[]")
+                    enqueueNotificationReadResult(
+                        """[{"id":"event-0","title":"Older item","body":"Already present."}]""",
+                    )
                     enqueueReadResult(
                         """{"items":[{"id":"i1","title":"Build feature","state":"awaiting input","needsAttention":true}]}""",
                     )
                     enqueueNotificationReadResult(
-                        """[{"id":"event-1","title":"Item ready","body":"Build feature needs your input."}]""",
+                        """[{"id":"event-0","title":"Older item","body":"Already present."},""" +
+                            """{"id":"event-1","title":"Item ready","body":"Build feature needs your input."}]""",
                     )
                     enqueueReadResult(
                         """{"items":[{"id":"i1","title":"Build feature","state":"awaiting input","needsAttention":true}]}""",
                     )
                     enqueueNotificationReadResult(
-                        """[{"id":"event-1","title":"Item ready","body":"Build feature needs your input."}]""",
+                        """[{"id":"event-0","title":"Older item","body":"Already present."},""" +
+                            """{"id":"event-1","title":"Item ready","body":"Build feature needs your input."}]""",
                     )
                 }
             val monitor = ServiceMonitor(this) { _, _ -> client }
 
             monitor.start("https://service.test", serviceSettings())
             advanceUntilIdle()
+            assertTrue(
+                monitor.state.value.notifications
+                    .isEmpty(),
+            )
             client.emit(resourceUpdated(GOMODE_NOTIFICATIONS_RESOURCE_URI))
             advanceUntilIdle()
             assertEquals(
@@ -465,7 +478,6 @@ class ServiceMonitorTest {
             advanceUntilIdle()
 
             assertNull(monitor.state.value.snapshot)
-            assertNull(monitor.state.value.notificationText)
             assertTrue(client.subscriptionFilters.isEmpty())
             monitor.stop()
         }

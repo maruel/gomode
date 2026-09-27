@@ -1,11 +1,10 @@
-// Instrumented smoke coverage for the Go Mode WebView shell and native service monitoring.
+// Instrumented smoke coverage for the Go Mode WebView shell.
 package com.fghbuild.gomode
 
 import android.app.Instrumentation.ActivityResult
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Rect
-import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
@@ -70,21 +69,6 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
     }
 
     @Test
-    fun nativeServiceAttentionFollowsGenericMcpItemUpdates() {
-        openWebShell()
-        waitForHostedCaicFrontend()
-
-        val initialAttentionText = serviceAttentionText()
-        submitAttentionUpdateItem(promptSuffix = "alpha")
-        submitAttentionUpdateItem(promptSuffix = "beta")
-
-        composeRule.waitUntil(GOMODE_LOAD_TIMEOUT_MS) {
-            serviceAttentionShowsCountChangedFrom(initialAttentionText)
-        }
-        assertTrue(serviceAttentionShowsCountChangedFrom(initialAttentionText))
-    }
-
-    @Test
     fun hostedFrontendPlanAskAndMultiTurnFlowsWorkThroughWebViewDom() {
         openWebShell()
         waitForHostedCaicFrontend()
@@ -144,27 +128,6 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         assertEquals("com.fghbuild.gomode", context.packageName)
     }
 
-    private fun submitAttentionUpdateItem(promptSuffix: String) {
-        val prompt = "FAKE_ATTENTION_UPDATE gomode e2e $promptSuffix"
-        submitPromptThroughHostedUi(prompt)
-        waitForText(ATTENTION_RUNNING_TEXT, GOMODE_LOAD_TIMEOUT_MS)
-        waitForText(ATTENTION_RESULT_TEXT, GOMODE_LOAD_TIMEOUT_MS)
-    }
-
-    private fun serviceAttentionShowsCountChangedFrom(initialText: String?): Boolean {
-        val text = serviceAttentionText()
-        return !text.isNullOrBlank() && text != initialText && ATTENTION_COUNT_NUMBER_PATTERN.containsMatchIn(text)
-    }
-
-    private fun serviceAttentionText(): String? =
-        composeRule
-            .onAllNodesWithTag("gomode-service-attention")
-            .fetchSemanticsNodes()
-            .firstOrNull()
-            ?.config
-            ?.get(SemanticsProperties.Text)
-            ?.joinToString(separator = "") { it.text }
-
     private fun loadHostedExternalLinkTestPage() {
         loadHostedHtml(EXTERNAL_LINK_TEST_PAGE)
     }
@@ -182,10 +145,7 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
     companion object {
         private const val SPA_BACK_TEST_PATH = "/gomode-e2e-route"
         private const val SQL_JOKE_PREFIX = "A SQL query walks into a bar"
-        private const val ATTENTION_RUNNING_TEXT = "Monitoring update is running before attention is required."
-        private const val ATTENTION_RESULT_TEXT = "Monitoring update requires attention now"
         private const val JS_TIMEOUT_MS = 5_000L
-        private val ATTENTION_COUNT_NUMBER_PATTERN = Regex("""\d+""")
         private const val EXTERNAL_LINK_URL = "https://example.com/gomode-external-link"
         private val EXTERNAL_LINK_TEST_PAGE =
             """

@@ -36,7 +36,7 @@ class VoicePanelTest {
                     onSelectDevice = {},
                     onClearTranscript = {},
                     onOpenSettings = {},
-                    serviceAttentionText = null,
+                    serviceStatusText = null,
                 )
             }
         }

@@ -60,7 +60,6 @@ import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.ui.web.WebShellScreen
 import com.fghbuild.gomode.voice.McpClient
 import com.fghbuild.gomode.voice.VoicePanel
-import com.fghbuild.gomode.voice.VoiceService
 import com.fghbuild.gomode.voice.VoiceSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -232,10 +231,6 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
         serviceMonitor.start(activeURL, ready.settings)
     }
 
-    LaunchedEffect(serviceMonitorState.notificationText) {
-        VoiceService.setServiceNotificationText(serviceMonitorState.notificationText)
-    }
-
     LaunchedEffect(serviceMonitorState.notifications) {
         val notifications = serviceMonitorState.notifications
         // Voice mode already announced these events; do not post duplicate native alerts.
@@ -341,9 +336,7 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
                     onSelectDevice = { voiceSession.selectAudioDevice(it) },
                     onClearTranscript = { voiceSession.clearTranscript() },
                     onOpenSettings = { activeNativeScreen = NativeScreen.Settings },
-                    serviceAttentionText =
-                        serviceMonitorState.notificationText
-                            ?: serviceMonitorState.error?.let { "Service updates are reconnecting." },
+                    serviceStatusText = serviceMonitorState.error?.let { "Service updates are reconnecting." },
                     modifier = Modifier.fillMaxWidth(),
                 )
             }

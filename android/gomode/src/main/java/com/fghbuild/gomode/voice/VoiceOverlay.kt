@@ -1,4 +1,4 @@
-// Full-width bottom shell panel composable: settings, voice controls, attention, and transcript display.
+// Full-width bottom shell panel composable: settings, voice controls, status, and transcript display.
 package com.fghbuild.gomode.voice
 
 import androidx.compose.animation.core.RepeatMode
@@ -80,7 +80,7 @@ fun VoicePanel(
     onSelectDevice: (Int) -> Unit,
     onClearTranscript: () -> Unit,
     onOpenSettings: () -> Unit,
-    serviceAttentionText: String?,
+    serviceStatusText: String?,
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -121,13 +121,13 @@ fun VoicePanel(
                     ConnectingPanel("Starting audio…", onOpenSettings)
                 }
             }
-            ServiceAttentionLabel(serviceAttentionText)
+            ServiceStatusLabel(serviceStatusText)
         }
     }
 }
 
 @Composable
-private fun ServiceAttentionLabel(text: String?) {
+private fun ServiceStatusLabel(text: String?) {
     if (text == null) return
     Text(
         text = text,
@@ -137,7 +137,7 @@ private fun ServiceAttentionLabel(text: String?) {
             Modifier
                 .fillMaxWidth()
                 .padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
-                .testTag("gomode-service-attention"),
+                .testTag("gomode-service-status"),
     )
 }
 

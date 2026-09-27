@@ -1,4 +1,4 @@
-// ServiceMonitor turns MCP resources into native attention, service notification, and voice context state.
+// ServiceMonitor turns MCP resources into service notifications and voice context state.
 package com.fghbuild.gomode.service
 
 import com.fghbuild.gomode.sdk.v1.Settings
@@ -50,13 +50,7 @@ data class ServiceMonitorState(
     val snapshot: ServiceMonitoringSnapshot? = null,
     val notifications: List<ServiceNotification> = emptyList(),
     val error: String? = null,
-) {
-    val attentionCount: Int
-        get() = snapshot?.attentionCount ?: 0
-
-    val notificationText: String?
-        get() = snapshot?.notificationText
-}
+)
 
 class ServiceMonitor(
     private val scope: CoroutineScope,
@@ -124,7 +118,7 @@ class ServiceMonitor(
     }
 
     private suspend fun monitorOnce(client: ServiceResourceClient): MonitorRunResult {
-        var plan = refreshPlan(client) ?: return MonitorRunResult.Disabled
+        var plan = refreshPlan(client, publishEvents = false) ?: return MonitorRunResult.Disabled
         val resourcesCapability = client.serverDiscover().capabilities.resources
         val notifications = subscriptionFilter(plan, resourcesCapability) ?: return MonitorRunResult.Static
         val initial = InitialStateWindow()
@@ -147,7 +141,7 @@ class ServiceMonitor(
                     if (initial.consumeInitialListChanged()) {
                         plan = refreshPlanAfterLeadingListChanged(client, plan) ?: return@collect
                     } else {
-                        plan = refreshPlan(client) ?: return@collect
+                        plan = refreshPlan(client, publishEvents = true) ?: return@collect
                     }
                 }
             }
@@ -155,13 +149,16 @@ class ServiceMonitor(
         return MonitorRunResult.Retry
     }
 
-    private suspend fun refreshPlan(client: ServiceResourceClient): ServiceMonitoringPlan? {
+    private suspend fun refreshPlan(
+        client: ServiceResourceClient,
+        publishEvents: Boolean,
+    ): ServiceMonitoringPlan? {
         val plan = serviceMonitoringPlan(client.listResources())
         if (plan == null) {
             _state.value = ServiceMonitorState()
             return null
         }
-        refreshSnapshot(client, plan)
+        refreshSnapshot(client, plan, publishEvents)
         return plan
     }
 
@@ -179,7 +176,7 @@ class ServiceMonitor(
             return null
         }
         if (newPlan != plan) {
-            refreshSnapshot(client, newPlan)
+            refreshSnapshot(client, newPlan, publishEvents = false)
         }
         return newPlan
     }
@@ -187,13 +184,14 @@ class ServiceMonitor(
     private suspend fun refreshSnapshot(
         client: ServiceResourceClient,
         plan: ServiceMonitoringPlan,
+        publishEvents: Boolean = true,
     ) {
         val readResults = plan.resourceURIs.associateWith { uri -> client.readResource(uri) }
         val snapshot = serviceMonitoringSnapshot(readResults, plan)
         _state.value =
             ServiceMonitorState(
                 snapshot = snapshot,
-                notifications = serviceNotifications(readResults, plan),
+                notifications = serviceNotifications(readResults, plan).takeIf { publishEvents }.orEmpty(),
             )
     }
 
@@ -213,10 +211,10 @@ class ServiceMonitor(
                 )
             }
         val snapshot = serviceMonitoringSnapshot(readResults, plan)
+        serviceNotifications(readResults, plan)
         _state.value =
             ServiceMonitorState(
                 snapshot = snapshot,
-                notifications = serviceNotifications(readResults, plan),
             )
     }
 }

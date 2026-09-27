@@ -27,20 +27,6 @@ data class ServiceMonitoringSnapshot(
     val moreItemsHint: String? = null,
     val omittedItemCount: Int = 0,
 ) {
-    val attentionItems: List<ServiceItemSummary>
-        get() = items.filter { it.needsAttention }
-
-    val attentionCount: Int
-        get() = attentionItems.size
-
-    val notificationText: String?
-        get() =
-            when (attentionCount) {
-                0 -> null
-                1 -> "${attentionItems.single().title} needs attention"
-                else -> "$attentionCount items need attention"
-            }
-
     val voiceContext: String
         get() {
             // Android owns this bounded session baseline; see the canonical contract in
