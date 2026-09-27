@@ -6,8 +6,12 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Rect
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
@@ -66,6 +70,29 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
             composeRule.onAllNodesWithTag("gomode-web-shell").fetchSemanticsNodes().isNotEmpty()
         }
+    }
+
+    @StandaloneHostedFixture
+    @Test
+    fun settingsCanAddAndEditServicesWithoutSwitchingTheActiveService() {
+        openWebShell()
+        composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
+        composeRule.onNodeWithTag("gomode-add-service").performClick()
+        composeRule.onNodeWithTag("gomode-service-label").performTextReplacement("Second")
+        composeRule.onNodeWithTag("gomode-service-url").performTextReplacement(baseUrl)
+        composeRule.onNodeWithTag("gomode-save-service").performClick()
+        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+            composeRule.onAllNodesWithTag("gomode-web-shell").fetchSemanticsNodes().isNotEmpty()
+        }
+
+        composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
+        composeRule.onAllNodesWithText("Edit").onFirst().performClick()
+        composeRule.onNodeWithTag("gomode-service-label").performTextReplacement("First renamed")
+        composeRule.onNodeWithTag("gomode-save-service").performClick()
+
+        composeRule.onNodeWithText("First renamed").assertExists()
+        composeRule.onNodeWithText("Second").assertExists()
+        composeRule.onNodeWithText("Active").assertExists()
     }
 
     @Test

@@ -62,45 +62,46 @@ class SettingsRepository(
                 )
             }.stateIn(scope, SharingStarted.Eagerly, SettingsState())
 
-    suspend fun saveActiveService(
+    suspend fun addService(
         label: String,
         url: String,
     ): String {
         val normalizedURL = normalizeURL(url)
-        var savedId = ""
+        val id = UUID.randomUUID().toString()
         dataStore.edit { prefs ->
             val services = decodeServices(prefs)
-            val activeId = prefs[Keys.ACTIVE_SERVICE_ID] ?: services.firstOrNull()?.id ?: ""
-            val activeExists = services.any { it.id == activeId }
-
-            if (activeExists) {
-                savedId = activeId
-                prefs[Keys.SERVICES] =
-                    json.encodeToString(
-                        services.map { service ->
-                            if (service.id == activeId) {
-                                service.copy(
-                                    label = label.ifBlank { service.label.ifBlank { DEFAULT_SERVICE_LABEL } },
-                                    url = normalizedURL,
-                                )
-                            } else {
-                                service
-                            }
-                        },
-                    )
-            } else {
-                savedId = UUID.randomUUID().toString()
-                val service =
-                    ServiceInstance(
-                        id = savedId,
-                        label = label.ifBlank { DEFAULT_SERVICE_LABEL },
-                        url = normalizedURL,
-                    )
-                prefs[Keys.SERVICES] = json.encodeToString(services + service)
-                prefs[Keys.ACTIVE_SERVICE_ID] = savedId
-            }
+            val service =
+                ServiceInstance(
+                    id = id,
+                    label = label.ifBlank { DEFAULT_SERVICE_LABEL },
+                    url = normalizedURL,
+                )
+            prefs[Keys.SERVICES] = json.encodeToString(services + service)
+            prefs[Keys.ACTIVE_SERVICE_ID] = id
         }
-        return savedId
+        return id
+    }
+
+    suspend fun updateService(
+        id: String,
+        label: String,
+        url: String,
+    ) {
+        val normalizedURL = normalizeURL(url)
+        dataStore.edit { prefs ->
+            val services = decodeServices(prefs)
+            require(services.any { it.id == id }) { "Unknown service ID: $id" }
+            prefs[Keys.SERVICES] =
+                json.encodeToString(
+                    services.map { service ->
+                        if (service.id == id) {
+                            service.copy(label = label.ifBlank { DEFAULT_SERVICE_LABEL }, url = normalizedURL)
+                        } else {
+                            service
+                        }
+                    },
+                )
+        }
     }
 
     suspend fun switchService(id: String) {

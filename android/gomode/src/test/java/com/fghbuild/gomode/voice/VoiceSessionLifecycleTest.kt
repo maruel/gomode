@@ -62,7 +62,7 @@ class VoiceSessionLifecycleTest {
             server.start()
             try {
                 val settings = SettingsRepository(InMemoryPreferencesDataStore())
-                settings.saveActiveService(label = "old", url = server.url("/").toString())
+                settings.addService(label = "old", url = server.url("/").toString())
                 settings.settings.first { it.activeServiceURL.isNotBlank() }
                 val session = VoiceSession(RuntimeEnvironment.getApplication(), settings)
 
@@ -95,13 +95,13 @@ class VoiceSessionLifecycleTest {
             newServer.start()
             try {
                 val settings = SettingsRepository(InMemoryPreferencesDataStore())
-                settings.saveActiveService(label = "old", url = oldServer.url("/").toString())
+                settings.addService(label = "old", url = oldServer.url("/").toString())
                 settings.settings.first { it.activeServiceURL == oldServer.url("/").toString().trimEnd('/') }
                 val session = VoiceSession(RuntimeEnvironment.getApplication(), settings)
                 session.connect()
                 assertEquals(true, oldStarted.await(5, TimeUnit.SECONDS))
 
-                settings.saveActiveService(label = "new", url = newServer.url("/").toString())
+                settings.addService(label = "new", url = newServer.url("/").toString())
                 settings.settings.first { it.activeServiceURL == newServer.url("/").toString().trimEnd('/') }
                 session.connect()
                 assertEquals(true, newStarted.await(5, TimeUnit.SECONDS))

@@ -1,22 +1,20 @@
-// Native settings fallback for configuring the active Go Mode service instance.
+// Native settings screen for adding, selecting, and editing Go Mode services.
 package com.fghbuild.gomode.ui.settings
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
@@ -24,13 +22,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -38,6 +38,7 @@ import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     settings: SettingsState,
@@ -46,21 +47,29 @@ fun SettingsScreen(
     onOpenHalo: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    val activeService = settings.services.firstOrNull { it.id == settings.activeServiceId }
-    val initialLabel = activeService?.label ?: SettingsRepository.DEFAULT_SERVICE_LABEL
-    var label by remember { mutableStateOf(initialLabel) }
-    var url by remember { mutableStateOf(settings.activeServiceURL) }
+    var editingServiceId by remember { mutableStateOf<String?>(null) }
+    var showEditor by remember { mutableStateOf(settings.services.isEmpty()) }
+    var label by remember { mutableStateOf("") }
+    var url by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(settings.activeServiceId, settings.activeServiceURL) {
-        val active = settings.services.firstOrNull { it.id == settings.activeServiceId }
-        label = active?.label ?: SettingsRepository.DEFAULT_SERVICE_LABEL
-        url = settings.activeServiceURL
-    }
 
     BackHandler(enabled = settings.activeServiceURL.isNotBlank(), onBack = onDone)
 
-    Scaffold(contentWindowInsets = WindowInsets(0, 0, 0, 0)) { padding ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Go Mode") },
+                actions = {
+                    if (settings.activeServiceURL.isNotBlank()) {
+                        TextButton(onClick = onDone, modifier = Modifier.testTag("gomode-done-settings")) {
+                            Text("Done")
+                        }
+                    }
+                },
+            )
+        },
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+    ) { padding ->
         Column(
             modifier =
                 Modifier
@@ -71,75 +80,114 @@ fun SettingsScreen(
                     .testTag("gomode-settings"),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Text("Go Mode", style = MaterialTheme.typography.headlineMedium)
-            Text(
-                "Configure a backend-hosted frontend.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            OutlinedTextField(
-                value = label,
-                onValueChange = { label = it },
-                modifier = Modifier.fillMaxWidth().testTag("gomode-service-label"),
-                singleLine = true,
-                label = { Text("Service label") },
-            )
-            OutlinedTextField(
-                value = url,
-                onValueChange = {
-                    url = it
-                    error = null
-                },
-                modifier = Modifier.fillMaxWidth().testTag("gomode-service-url"),
-                singleLine = true,
-                label = { Text("Server URL") },
-                supportingText = error?.let { { Text(it) } },
-                isError = error != null,
-            )
-            Row {
-                Button(
-                    onClick = {
-                        val normalized = SettingsRepository.normalizeURL(url)
-                        if (!hasSupportedScheme(normalized)) {
-                            error = "Use an http:// or https:// URL."
-                            return@Button
-                        }
-                        scope.launch {
-                            settingsRepository.saveActiveService(label = label, url = normalized)
-                            onDone()
-                        }
-                    },
-                    modifier = Modifier.testTag("gomode-save-service"),
-                ) {
-                    Text("Load")
-                }
-                Spacer(Modifier.width(12.dp))
-                if (settings.activeServiceURL.isNotBlank()) {
-                    Button(
-                        onClick = onDone,
-                        modifier = Modifier.testTag("gomode-cancel-settings"),
-                    ) {
-                        Text("Cancel")
-                    }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
             if (settings.services.isNotEmpty()) {
-                Text("Configured services", style = MaterialTheme.typography.titleMedium)
-                settings.services.forEach { service ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Services", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                     Button(
                         onClick = {
-                            scope.launch {
-                                settingsRepository.switchService(service.id)
-                                onDone()
+                            editingServiceId = null
+                            label = ""
+                            url = ""
+                            error = null
+                            showEditor = true
+                        },
+                        modifier = Modifier.testTag("gomode-add-service"),
+                    ) {
+                        Text("Add new service")
+                    }
+                }
+                settings.services.forEach { service ->
+                    ListItem(
+                        headlineContent = { Text(service.label.ifBlank { service.url }) },
+                        supportingContent = { Text(service.url) },
+                        trailingContent = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (service.id == settings.activeServiceId) {
+                                    Text("Active", style = MaterialTheme.typography.labelMedium)
+                                } else {
+                                    TextButton(
+                                        onClick = {
+                                            scope.launch {
+                                                settingsRepository.switchService(service.id)
+                                                onDone()
+                                            }
+                                        },
+                                        modifier = Modifier.testTag("gomode-service-${service.id}"),
+                                    ) {
+                                        Text("Use")
+                                    }
+                                }
+                                TextButton(
+                                    onClick = {
+                                        editingServiceId = service.id
+                                        label = service.label
+                                        url = service.url
+                                        error = null
+                                        showEditor = true
+                                    },
+                                    modifier = Modifier.testTag("gomode-edit-service-${service.id}"),
+                                ) {
+                                    Text("Edit")
+                                }
                             }
                         },
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .testTag("gomode-service-${service.id}"),
+                    )
+                }
+            }
+            if (showEditor) {
+                Text(
+                    if (editingServiceId == null) "Add new service" else "Edit service",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                OutlinedTextField(
+                    value = label,
+                    onValueChange = { label = it },
+                    modifier = Modifier.fillMaxWidth().testTag("gomode-service-label"),
+                    singleLine = true,
+                    label = { Text("Alias") },
+                )
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = {
+                        url = it
+                        error = null
+                    },
+                    modifier = Modifier.fillMaxWidth().testTag("gomode-service-url"),
+                    singleLine = true,
+                    label = { Text("Server URL") },
+                    supportingText = error?.let { { Text(it) } },
+                    isError = error != null,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Button(
+                        onClick = {
+                            val normalized = SettingsRepository.normalizeURL(url)
+                            if (!hasSupportedScheme(normalized)) {
+                                error = "Use an http:// or https:// URL."
+                                return@Button
+                            }
+                            scope.launch {
+                                val id = editingServiceId
+                                if (id == null) {
+                                    settingsRepository.addService(label = label, url = normalized)
+                                    onDone()
+                                } else {
+                                    settingsRepository.updateService(id = id, label = label, url = normalized)
+                                    showEditor = false
+                                }
+                            }
+                        },
+                        modifier = Modifier.testTag("gomode-save-service"),
                     ) {
-                        Text(service.label.ifBlank { service.url })
+                        Text(if (editingServiceId == null) "Add service" else "Save changes")
+                    }
+                    if (settings.services.isNotEmpty()) {
+                        TextButton(
+                            onClick = { showEditor = false },
+                            modifier = Modifier.testTag("gomode-cancel-edit"),
+                        ) {
+                            Text("Cancel")
+                        }
                     }
                 }
             }

@@ -74,10 +74,10 @@ class SettingsRepositoryTest {
         }
 
     @Test
-    fun `saveActiveService creates active web service`() =
+    fun `addService creates active web service`() =
         runBlocking {
             val repo = createRepo()
-            val id = repo.saveActiveService(label = "Local", url = "http://localhost:2242/")
+            val id = repo.addService(label = "Local", url = "http://localhost:2242/")
             val state = repo.awaitSettings("activeServiceURL non-blank") { it.activeServiceURL.isNotBlank() }
 
             assertEquals(id, state.activeServiceId)
@@ -87,27 +87,28 @@ class SettingsRepositoryTest {
         }
 
     @Test
-    fun `saveActiveService updates active service`() =
+    fun `updateService edits existing service without switching active service`() =
         runBlocking {
             val repo = createRepo()
-            val id = repo.saveActiveService(label = "Local", url = "http://localhost:2242")
-            repo.saveActiveService(label = "Home", url = "https://example.com/")
+            val firstId = repo.addService(label = "Local", url = "http://localhost:2242")
+            val secondId = repo.addService(label = "Remote", url = "https://remote.example.com")
+            repo.updateService(id = firstId, label = "Home", url = "https://example.com/")
             val state =
-                repo.awaitSettings("activeServiceURL == https://example.com") {
-                    it.activeServiceURL ==
-                        "https://example.com"
+                repo.awaitSettings("first service updated") {
+                    it.services.firstOrNull()?.url == "https://example.com"
                 }
 
-            assertEquals(id, state.activeServiceId)
-            assertEquals(1, state.services.size)
-            assertEquals("Home", state.services.single().label)
+            assertEquals(secondId, state.activeServiceId)
+            assertEquals("https://remote.example.com", state.activeServiceURL)
+            assertEquals(listOf(firstId, secondId), state.services.map { it.id })
+            assertEquals("Home", state.services.first().label)
         }
 
     @Test
     fun `switchService ignores unknown service id`() =
         runBlocking {
             val repo = createRepo()
-            val id = repo.saveActiveService(label = "Local", url = "http://localhost:2242")
+            val id = repo.addService(label = "Local", url = "http://localhost:2242")
             repo.switchService("missing")
             val state = repo.awaitSettings("activeServiceId == $id") { it.activeServiceId == id }
 
