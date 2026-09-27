@@ -58,6 +58,16 @@ abstract class GoModeE2eTestBase {
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
             hasNodeWithTag("gomode-web-shell")
         }
+        waitForSettingsButton()
+    }
+
+    // The settings button sits in the voice panel, which the shell hides while the soft
+    // keyboard is closing. That IME dismissal races the "gomode-web-shell" tag appearing,
+    // so callers that need to click the settings button must wait for it separately.
+    protected fun waitForSettingsButton() {
+        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+            hasNodeWithTag("gomode-web-open-settings")
+        }
     }
 
     protected fun waitForHostedFrontend() {

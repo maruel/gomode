@@ -84,6 +84,7 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
             composeRule.onAllNodesWithTag("gomode-web-shell").fetchSemanticsNodes().isNotEmpty()
         }
+        waitForSettingsButton()
 
         composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
         composeRule.onAllNodesWithText("Edit").onFirst().performClick()
