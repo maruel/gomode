@@ -1,3 +1,6 @@
 # Workspace package configuration and approved build dependencies.
 allowBuilds:
   esbuild: true
+minimumReleaseAge: 11520
+minimumReleaseAgeIgnoreMissingTime: false
+minimumReleaseAgeStrict: true
