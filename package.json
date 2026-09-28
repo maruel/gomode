@@ -28,8 +28,7 @@
     "./sdk/voicegateway/*": "./sdk/voicegateway/ts/v1/*"
   },
   "scripts": {
-    "hooks:install": "scripts/install-git-hooks.sh",
-    "prepare": "pnpm --silent hooks:install",
+    "prepare": "scripts/install-git-hooks.sh",
     "typecheck": "tsc --noEmit -p web/tsconfig.json",
     "test": "NODE_OPTIONS=--no-experimental-webstorage tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts 'web/src/**/*.test.ts' 'web/src/**/*.test.tsx'"
   },
