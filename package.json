@@ -28,10 +28,6 @@
     "./sdk/voicegateway/*": "./sdk/voicegateway/ts/v1/*"
   },
   "scripts": {
-    "format": "prettier --write --log-level warn web/src web/tests scripts/quiet-test-reporter.mjs eslint.config.js package.json .github/workflows",
-    "format:check": "prettier --check --log-level warn web/src web/tests scripts/quiet-test-reporter.mjs eslint.config.js package.json .github/workflows",
-    "lint:check": "eslint --max-warnings 0 web/src web/tests scripts/quiet-test-reporter.mjs",
-    "lint:fix": "eslint web/src web/tests scripts/quiet-test-reporter.mjs --fix",
     "hooks:install": "scripts/install-git-hooks.sh",
     "prepare": "pnpm --silent hooks:install",
     "typecheck": "tsc --noEmit -p web/tsconfig.json",
