@@ -87,9 +87,7 @@ def _find_tool(name: str, sdk_root: str) -> str | None:
 
 def _running_avd_serial(adb: str) -> str | None:
     """Return the serial of the running gomode_test AVD, if present."""
-    devices = subprocess.run(
-        [adb, "devices"], capture_output=True, check=True, text=True
-    )
+    devices = subprocess.run([adb, "devices"], capture_output=True, check=True, text=True)
     for line in devices.stdout.splitlines()[1:]:
         serial, separator, state = line.partition("\t")
         if separator == "" or state != "device" or not serial.startswith("emulator-"):
@@ -107,9 +105,7 @@ def _running_avd_serial(adb: str) -> str | None:
 
 def _avd_process_running() -> bool:
     """Detect an emulator process before adb knows its AVD identity."""
-    result = subprocess.run(
-        ["ps", "-eo", "args="], capture_output=True, check=True, text=True
-    )
+    result = subprocess.run(["ps", "-eo", "args="], capture_output=True, check=True, text=True)
     for line in result.stdout.splitlines():
         try:
             args = shlex.split(line)
@@ -120,10 +116,7 @@ def _avd_process_running() -> bool:
         executable = pathlib.Path(args[0]).name
         if "emulator" not in executable and not executable.startswith("qemu-system"):
             continue
-        if any(
-            args[index : index + 2] == ["-avd", AVD_NAME]
-            for index in range(len(args) - 1)
-        ):
+        if any(args[index : index + 2] == ["-avd", AVD_NAME] for index in range(len(args) - 1)):
             return True
     return False
 
@@ -161,9 +154,7 @@ def _emulator_exited(proc: subprocess.Popen, log_path: str) -> str | None:
     return f"Emulator exited with code {rc} before adb could connect.{log_tail}"
 
 
-def _wait_for_device(
-    adb: str, emulator_proc: subprocess.Popen, log_path: str, timeout: int = 180
-) -> int:
+def _wait_for_device(adb: str, emulator_proc: subprocess.Popen, log_path: str, timeout: int = 180) -> int:
     """Wait for an adb device to become ready and finish booting.
 
     Also monitors the emulator process so we can fail fast if it exits
@@ -194,9 +185,7 @@ def _wait_for_device(
     return 1
 
 
-def _wait_for_boot(
-    adb: str, emulator_proc: subprocess.Popen, log_path: str, deadline: float
-) -> int:
+def _wait_for_boot(adb: str, emulator_proc: subprocess.Popen, log_path: str, deadline: float) -> int:
     """Wait until the device's boot animation completes."""
     while time.monotonic() < deadline:
         msg = _emulator_exited(emulator_proc, log_path)
@@ -306,9 +295,7 @@ def _start(args: argparse.Namespace) -> int:
             )
             return 0
         if len(serials) == 1:
-            print(
-                f"Reusing connected Android device ({serials[0]})...", file=sys.stderr
-            )
+            print(f"Reusing connected Android device ({serials[0]})...", file=sys.stderr)
             return 0
         if len(serials) > 1:
             print(
@@ -343,9 +330,7 @@ def _start(args: argparse.Namespace) -> int:
 
     if args.reuse_connected_device:
         setup_script = pathlib.Path(__file__).with_name("android_sdk.py")
-        result = subprocess.run(
-            [sys.executable, str(setup_script), "setup-emulator"], check=False
-        )
+        result = subprocess.run([sys.executable, str(setup_script), "setup-emulator"], check=False)
         if result.returncode != 0:
             return result.returncode
 

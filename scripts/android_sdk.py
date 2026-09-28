@@ -46,9 +46,7 @@ def find_sdkmanager() -> tuple[str, str] | None:
     """Find sdkmanager and return it with its SDK root."""
     for root in _common_sdk_roots():
         sdk_root = os.path.abspath(os.path.expanduser(root))
-        candidate = os.path.join(
-            sdk_root, "cmdline-tools", "latest", "bin", "sdkmanager"
-        )
+        candidate = os.path.join(sdk_root, "cmdline-tools", "latest", "bin", "sdkmanager")
         if os.path.isfile(candidate):
             return candidate, sdk_root
     path = shutil.which("sdkmanager")
@@ -57,10 +55,7 @@ def find_sdkmanager() -> tuple[str, str] | None:
         bin_dir = os.path.dirname(resolved)
         tools_dir = os.path.dirname(bin_dir)
         cmdline_dir = os.path.dirname(tools_dir)
-        if (
-            os.path.basename(bin_dir) == "bin"
-            and os.path.basename(cmdline_dir) == "cmdline-tools"
-        ):
+        if os.path.basename(bin_dir) == "bin" and os.path.basename(cmdline_dir) == "cmdline-tools":
             return path, os.path.dirname(cmdline_dir)
         for variable in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
             root = os.environ.get(variable)
@@ -130,9 +125,7 @@ def _download_cmdline_tools(sdk_root: str) -> str:
     try:
         print(f"Downloading {url} ...", file=sys.stderr)
         urllib.request.urlretrieve(url, zip_path)
-        with tempfile.TemporaryDirectory(
-            prefix="cmdline-tools-extract-"
-        ) as extract_dir:
+        with tempfile.TemporaryDirectory(prefix="cmdline-tools-extract-") as extract_dir:
             with zipfile.ZipFile(zip_path, "r") as zip_file:
                 zip_file.extractall(extract_dir)
             inner = os.path.join(extract_dir, "cmdline-tools")
@@ -197,9 +190,7 @@ def _install_package(sdkmanager: str, sdk_root: str, package: str) -> int:
     return 1
 
 
-def _install_missing_packages(
-    sdkmanager: str, sdk_root: str, packages: dict[str, str]
-) -> int:
+def _install_missing_packages(sdkmanager: str, sdk_root: str, packages: dict[str, str]) -> int:
     """Install SDK packages whose package directories are missing."""
     for package, package_dir in packages.items():
         if (
@@ -261,9 +252,7 @@ def _create_avd(sdkmanager: str, sdk_root: str) -> int:
 
     avd_home = os.environ.get(
         "ANDROID_AVD_HOME",
-        os.path.join(
-            os.environ.get("ANDROID_SDK_HOME", os.path.expanduser("~/.android")), "avd"
-        ),
+        os.path.join(os.environ.get("ANDROID_SDK_HOME", os.path.expanduser("~/.android")), "avd"),
     )
     os.makedirs(avd_home, exist_ok=True)
     avd_path = os.path.join(avd_home, f"{AVD_NAME}.avd")
@@ -366,9 +355,7 @@ def _ensure_sdkmanager() -> tuple[str, str]:
 
 def _configure_gradle_sdk(sdk_root: str) -> None:
     """Keep Gradle's SDK path aligned with the SDK selected by this command."""
-    properties = (
-        pathlib.Path(__file__).resolve().parent.parent / "android" / "local.properties"
-    )
+    properties = pathlib.Path(__file__).resolve().parent.parent / "android" / "local.properties"
     original = properties.read_text(encoding="utf-8") if properties.exists() else ""
     lines = original.splitlines(keepends=True)
     updated: list[str] = []
@@ -424,9 +411,7 @@ def _command_setup_emulator() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subcommands = parser.add_subparsers(dest="command", required=True)
-    subcommands.add_parser(
-        "check", help="install SDK packages required by android-check"
-    )
+    subcommands.add_parser("check", help="install SDK packages required by android-check")
     subcommands.add_parser(
         "setup-emulator",
         help="install emulator packages and create the Go Mode test AVD",

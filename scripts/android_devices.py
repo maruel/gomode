@@ -23,15 +23,11 @@ def adb_path() -> str:
     path = shutil.which("adb")
     if path:
         return path
-    raise RuntimeError(
-        "Android adb not found; set ANDROID_HOME or run make android-sdk"
-    )
+    raise RuntimeError("Android adb not found; set ANDROID_HOME or run make android-sdk")
 
 
 def ready_device_serials(adb: str) -> list[str]:
-    result = subprocess.run(
-        [adb, "devices"], check=True, capture_output=True, text=True
-    )
+    result = subprocess.run([adb, "devices"], check=True, capture_output=True, text=True)
     serials: list[str] = []
     for line in result.stdout.splitlines()[1:]:
         serial, separator, state = line.partition("\t")
@@ -48,7 +44,5 @@ def selected_device_serial(adb: str) -> str:
             raise RuntimeError(f"ANDROID_SERIAL device is not ready: {requested}")
         return requested
     if len(ready) != 1:
-        raise RuntimeError(
-            f"Expected one ready Android device, found {len(ready)}; set ANDROID_SERIAL"
-        )
+        raise RuntimeError(f"Expected one ready Android device, found {len(ready)}; set ANDROID_SERIAL")
     return ready[0]

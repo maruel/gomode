@@ -55,9 +55,7 @@ def has_executable_preamble(path: str) -> bool:
     with open(path, "rb") as f:
         first_line = f.readline()
     # Go generator files use this shell/Go polyglot preamble to run with go run.
-    return first_line.startswith(
-        (b"#!/", b"///usr/bin/true; exec /usr/bin/env go run ")
-    )
+    return first_line.startswith((b"#!/", b"///usr/bin/true; exec /usr/bin/env go run "))
 
 
 def tracked_files() -> list[str]:
@@ -71,10 +69,7 @@ def main() -> int:
     unexpected_binaries: list[str] = []
     unexpected_executables: list[str] = []
     for path in tracked_files():
-        if (
-            is_binary(path)
-            and os.path.splitext(path)[1].lower() not in ALLOWED_BINARY_EXTENSIONS
-        ):
+        if is_binary(path) and os.path.splitext(path)[1].lower() not in ALLOWED_BINARY_EXTENSIONS:
             unexpected_binaries.append(path)
         if (
             is_executable(path)
@@ -91,9 +86,7 @@ def main() -> int:
             "Executable files without a shebang, Go launcher preamble, or allowed extension:",
             file=sys.stderr,
         )
-        print(
-            *(f"  {path}" for path in unexpected_executables), sep="\n", file=sys.stderr
-        )
+        print(*(f"  {path}" for path in unexpected_executables), sep="\n", file=sys.stderr)
     return int(bool(unexpected_binaries or unexpected_executables))
 
 

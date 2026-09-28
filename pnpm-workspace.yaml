@@ -1,2 +1,3 @@
+# Workspace package configuration and approved build dependencies.
 allowBuilds:
   esbuild: true

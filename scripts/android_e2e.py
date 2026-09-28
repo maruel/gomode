@@ -85,9 +85,7 @@ def main() -> int:
                 check=False,
             ).returncode
         finally:
-            subprocess.run(
-                [adb, "-s", serial, "reverse", "--remove", reverse], check=False
-            )
+            subprocess.run([adb, "-s", serial, "reverse", "--remove", reverse], check=False)
     finally:
         server.shutdown()
         server.server_close()
