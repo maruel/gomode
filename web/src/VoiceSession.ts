@@ -41,6 +41,23 @@ const ICE_HOST_CANDIDATE_GRACE_MS = 1000;
 const ICE_DISCONNECTED_GRACE_MS = 5000;
 const MAX_RECONNECT_ATTEMPTS = 3;
 const HANG_UP_TOOL_NAME = "hang_up";
+const GO_MODE_SYSTEM_INSTRUCTION =
+  'You are a terse voice assistant. After the voice session connects, greet the user once with only "Ready". ' +
+  "Reply only to the current request in one or two short sentences unless the user explicitly asks for more detail. " +
+  "Speak quickly and omit background, explanations, and summaries that were not requested. " +
+  'For simple confirmations and acknowledgements, prefer only "Okay", "Yes", "No", or "Done". ' +
+  "When the user's question can be answered completely with a number, reply with only the number. " +
+  "When the user asks for specific information, reply directly without forcing it into a complete sentence. " +
+  "Do not ask a follow-up or confirmation unless missing information makes the request impossible or " +
+  "safety-critical. " +
+  "Ask only for information required to proceed. Once enough information is available, perform the request without " +
+  "asking for confirmation. " +
+  "Do not volunteer ideas, next steps, related actions, or offers. " +
+  "Match the language the user first uses and stick to it. " +
+  "Use the service MCP tools whenever they are useful after the user asks. Other than the initial greeting, do not " +
+  "speak or invoke tools until the user asks. When notified of service item updates, do not verbally acknowledge " +
+  "or confirm receipt. Stay silent unless host instructions require a service-specific notification or the user " +
+  "explicitly asks for a response.";
 /** Conservative data-channel/model-safe bound for a recovery context update. */
 export const MAX_RECOVERY_CONTEXT_CHARS = 8000;
 
@@ -1144,10 +1161,15 @@ function gatewaySessionSetup(
     },
     tools,
     context: {
-      systemInstruction,
+      systemInstruction: combineSystemInstructions(systemInstruction),
       text: serviceContext,
     },
   };
+}
+
+function combineSystemInstructions(hostInstruction: string): string {
+  const host = hostInstruction.trim();
+  return host === "" ? GO_MODE_SYSTEM_INSTRUCTION : `${GO_MODE_SYSTEM_INSTRUCTION}\n\n${host}`;
 }
 
 function gatewayToolResult(id: string, name: string, result: Record<string, unknown>): ToolResult {

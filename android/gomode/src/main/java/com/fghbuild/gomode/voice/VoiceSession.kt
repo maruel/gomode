@@ -377,7 +377,7 @@ class VoiceSession(
                             bearerTokenProvider = mcpCredentials::bearerForRequest,
                         )
                     mcpClient = client
-                    val systemInstruction = client.serverInstructions().ifBlank { FALLBACK_SYSTEM_INSTRUCTION }
+                    val systemInstruction = client.serverInstructions()
                     if (!ownsAttempt(attempt)) return@launch
                     val tools = client.listTools()
                     if (!ownsAttempt(attempt)) return@launch
@@ -1361,10 +1361,6 @@ class VoiceSession(
     private fun cookieFor(url: String): String? = CookieManager.getInstance().getCookie(url)
 
     companion object {
-        private const val FALLBACK_SYSTEM_INSTRUCTION =
-            "You are a concise voice assistant for a Go Mode service running in an Android shell. " +
-                "Use the service MCP tools whenever they are useful. Always speak fast and keep answers short."
-
         fun resolveServiceURL(
             baseURL: String,
             advertisedURL: String,
@@ -1473,10 +1469,31 @@ internal fun gatewaySessionSetup(
     tools = tools,
     context =
         com.caic.voicegateway.sdk.v1.Context(
-            systemInstruction = systemInstruction,
+            systemInstruction = combineSystemInstructions(systemInstruction),
             text = serviceContextText,
         ),
 )
+
+private const val GO_MODE_SYSTEM_INSTRUCTION =
+    "You are a terse voice assistant. After the voice session connects, greet the user once with only \"Ready\". " +
+        "Reply only to the current request in one or two short sentences unless the user explicitly asks for more " +
+        "detail. Speak quickly and omit background, explanations, and summaries that were not requested. " +
+        "For simple confirmations and acknowledgements, prefer only \"Okay\", \"Yes\", \"No\", or \"Done\". " +
+        "When the user's question can be answered completely with a number, reply with only the number. " +
+        "When the user asks for specific information, reply directly without forcing it into a complete sentence. " +
+        "Do not ask a follow-up or confirmation unless missing information makes the request impossible or " +
+        "safety-critical. Ask only for information required to proceed. Once enough information is available, " +
+        "perform the request without asking for confirmation. Do not volunteer ideas, next steps, related actions, " +
+        "or offers. Match the language the user first uses and stick to it. Use the service MCP tools whenever " +
+        "they are useful after the user asks. Other than the initial greeting, do not speak or invoke tools until " +
+        "the user asks. " +
+        "When notified of service item updates, do not verbally acknowledge or confirm receipt. Stay silent unless " +
+        "host instructions require a service-specific notification or the user explicitly asks for a response."
+
+private fun combineSystemInstructions(hostInstruction: String): String {
+    val host = hostInstruction.trim()
+    return if (host.isEmpty()) GO_MODE_SYSTEM_INSTRUCTION else "$GO_MODE_SYSTEM_INSTRUCTION\n\n$host"
+}
 
 /**
  * Append a transcription chunk to the log.

@@ -743,13 +743,30 @@ describe("VoiceSession", () => {
     FakePeerConnection.dataChannels[0]?.onopen?.();
 
     const sent = FakePeerConnection.dataChannels[0]?.send.mock.calls[0]?.[0];
-    expect(JSON.parse(sent as string)).toMatchObject({
+    const setup = JSON.parse(sent as string);
+    expect(setup).toMatchObject({
       kind: "session.setup",
-      context: {
-        systemInstruction: "instructions",
-        text: "Current service items:\n- Item #1: Build feature (running)",
-      },
+      context: { text: "Current service items:\n- Item #1: Build feature (running)" },
     });
+    expect(setup.context.systemInstruction).toContain('only "Ready"');
+    expect(setup.context.systemInstruction).toContain('"Done"');
+    expect(setup.context.systemInstruction).toContain("answered completely with a number");
+    expect(setup.context.systemInstruction).toContain("first uses and stick to it");
+    expect(setup.context.systemInstruction).toContain("service item updates");
+    expect(setup.context.systemInstruction).toMatch(/\n\ninstructions$/);
+  });
+
+  it("uses the Go Mode instruction when the host has no instructions", async () => {
+    mcpMocks.mcpServerInstructions.mockResolvedValueOnce("");
+    const session = new VoiceSession();
+
+    await session.connect();
+    FakePeerConnection.dataChannels[0]?.onopen?.();
+
+    const sent = FakePeerConnection.dataChannels[0]?.send.mock.calls[0]?.[0];
+    const instruction = JSON.parse(sent as string).context.systemInstruction;
+    expect(instruction).not.toBe("");
+    expect(instruction).not.toContain("\n\n");
   });
 
   it("starts with an empty baseline when service-item loading fails", async () => {

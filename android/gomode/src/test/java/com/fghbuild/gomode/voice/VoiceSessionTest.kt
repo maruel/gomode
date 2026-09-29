@@ -80,16 +80,36 @@ class VoiceSessionTest {
     }
 
     @Test
-    fun sessionSetupCarriesTheCapturedServiceBaseline() {
+    fun sessionSetupLayersHostInstructionsAfterTheGoModeInstruction() {
         val setup =
             gatewaySessionSetup(
                 tools = emptyList(),
                 systemInstruction = "system prompt",
                 serviceContextText = "Current service items:\n- Build (running)",
             )
+        val instruction = requireNotNull(setup.context.systemInstruction)
 
-        assertEquals("system prompt", setup.context.systemInstruction)
+        assertTrue(instruction.endsWith("\n\nsystem prompt"))
+        assertTrue(instruction.contains("only \"Ready\""))
+        assertTrue(instruction.contains("\"Done\""))
+        assertTrue(instruction.contains("answered completely with a number"))
+        assertTrue(instruction.contains("first uses and stick to it"))
+        assertTrue(instruction.contains("service item updates"))
         assertEquals("Current service items:\n- Build (running)", setup.context.text)
+    }
+
+    @Test
+    fun sessionSetupUsesTheGoModeInstructionWithoutHostInstructions() {
+        val setup =
+            gatewaySessionSetup(
+                tools = emptyList(),
+                systemInstruction = "",
+                serviceContextText = "",
+            )
+        val instruction = requireNotNull(setup.context.systemInstruction)
+
+        assertTrue(instruction.isNotBlank())
+        assertFalse(instruction.contains("\n\n"))
     }
 
     @Test
