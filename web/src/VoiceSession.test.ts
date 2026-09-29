@@ -23,6 +23,7 @@ const mcpMocks = {
 };
 import {
   MessageKindError,
+  MessageKindSessionReady,
   MessageKindToolCall,
   VoiceRTCConnectivityIssueUDPUnreachable,
   VoiceRTCConnectivitySideNetwork,
@@ -372,12 +373,40 @@ describe("VoiceSession", () => {
       ]),
     ).toThrow('MCP tool "hang_up" conflicts with the reserved voice command.');
 
-    const session = new VoiceSession();
+    const chime = {
+      prepare: vi.fn(),
+      playConnected: vi.fn(),
+      playDisconnected: vi.fn(),
+    };
+    const session = new VoiceSession(chime);
     await session.connect();
-    dispatchToolCall(FakePeerConnection.dataChannels[0], "hang-up-1", "hang_up");
+    const channel = FakePeerConnection.dataChannels[0];
+    channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindSessionReady }) }));
+    dispatchToolCall(channel, "hang-up-1", "hang_up");
 
     expect(mcpMocks.mcpCallTool).not.toHaveBeenCalled();
+    expect(chime.playDisconnected).toHaveBeenCalledOnce();
     expect(session.state.connected).toBe(false);
+  });
+
+  it("chimes once when voice mode connects and disconnects", async () => {
+    const chime = {
+      prepare: vi.fn(),
+      playConnected: vi.fn(),
+      playDisconnected: vi.fn(),
+    };
+    const session = new VoiceSession(chime);
+
+    await session.connect();
+    const channel = FakePeerConnection.dataChannels[0];
+    channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindSessionReady }) }));
+    channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindSessionReady }) }));
+    session.disconnect();
+    session.disconnect();
+
+    expect(chime.prepare).toHaveBeenCalledOnce();
+    expect(chime.playConnected).toHaveBeenCalledOnce();
+    expect(chime.playDisconnected).toHaveBeenCalledOnce();
   });
 
   it("sends an MCP result through its originating voice connection", async () => {

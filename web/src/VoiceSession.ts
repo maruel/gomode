@@ -31,6 +31,7 @@ import {
 
 import { mcpClient, type McpToolDescriptor } from "./McpClient";
 import { GO_MODE_ITEMS_RESOURCE_URI, initialServiceContext } from "./ServiceItems";
+import { WebAudioVoiceChime, type VoiceChimePlayer } from "./VoiceChime";
 
 // Constants
 
@@ -288,8 +289,10 @@ export class VoiceSession {
   private _reconnectAttempts = 0;
   private _recoveryContext = "";
   private _connectionAttempt = 0;
+  private _voiceModeActive = false;
+  private readonly _chime: VoiceChimePlayer;
 
-  constructor() {
+  constructor(chime?: VoiceChimePlayer) {
     const [state, setState] = createStore<VoiceState>({
       connectStatus: null,
       connectPhase: null,
@@ -308,6 +311,7 @@ export class VoiceSession {
     });
     this.state = state;
     this.setState = setState as (fn: (s: VoiceState) => VoiceState) => void;
+    this._chime = chime ?? new WebAudioVoiceChime();
   }
 
   // -----------------------------------------------------------------------
@@ -427,8 +431,14 @@ export class VoiceSession {
     }
   }
 
+  /** Unlock chime playback while a browser user-activation event is still active. */
+  prepareAudio(): void {
+    this._chime.prepare();
+  }
+
   /** Start a new voice session via WebRTC data channel through the host backend. */
   async connect(): Promise<void> {
+    this.prepareAudio();
     this._reconnectEnabled = true;
     await this._connect(false);
   }
@@ -613,6 +623,7 @@ export class VoiceSession {
   }
 
   disconnect(): void {
+    this._leaveVoiceMode();
     this._connectionAttempt++;
     this._reconnectEnabled = false;
     if (this._reconnectTimer !== null) {
@@ -789,6 +800,7 @@ export class VoiceSession {
   }
 
   private _setError(message: string): void {
+    this._leaveVoiceMode();
     this._connectionAttempt++;
     this._releaseAll();
     this._update((s) => {
@@ -799,6 +811,12 @@ export class VoiceSession {
       s.speaking = false;
       s.error = message;
     });
+  }
+
+  private _leaveVoiceMode(): void {
+    if (!this._voiceModeActive) return;
+    this._voiceModeActive = false;
+    this._chime.playDisconnected();
   }
 
   private _clearTranscript(): void {
@@ -848,6 +866,10 @@ export class VoiceSession {
         s.connected = true;
         s.error = null;
       });
+      if (!this._voiceModeActive) {
+        this._voiceModeActive = true;
+        this._chime.playConnected();
+      }
       if (this._recoveryContext !== "") {
         this._send(JSON.stringify(gatewayContextUpdate(this._recoveryContext)));
         this._recoveryContext = "";

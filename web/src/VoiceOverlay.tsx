@@ -180,6 +180,9 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
     if (session.state.connected || session.state.connectStatus !== null) {
       session.disconnect();
     } else {
+      // Browser audio must be unlocked synchronously while the click or key event
+      // still carries user activation. Device enumeration yields before connect().
+      session.prepareAudio();
       await session.enumerateDevices();
       void session.connect();
     }

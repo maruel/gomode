@@ -172,6 +172,7 @@ class VoiceSession(
     private val settingsRepository: SettingsRepository,
     private val settingsClient: ServiceSettingsClient = ServiceSettingsClient(),
     private val bearerTokenFor: (String) -> String? = { null },
+    voiceChimePlayer: VoiceChimePlayer = AndroidVoiceChime(),
 ) {
     private val audioManager = appContext.getSystemService(AudioManager::class.java)
     private val json =
@@ -197,6 +198,8 @@ class VoiceSession(
     private var signalingJob: Job? = null
     private val attemptGeneration = AtomicLong()
     private val recoveryPolicy = VoiceRecoveryPolicy(MAX_RECONNECT_ATTEMPTS)
+    private val voiceModeChime = VoiceModeChime(voiceChimePlayer)
+    private var disconnectAudioAttempt: Long? = null
     private var recoveryContext = ""
     private val micEnergySamples = mutableMapOf<String, MicEnergySample>()
 
@@ -228,7 +231,8 @@ class VoiceSession(
     private var lastSignalingState: String? = null
 
     fun setError(message: String) {
-        invalidateAttempt()
+        val attempt = invalidateAttempt()
+        val deferAudioRelease = deferDisconnectAudio(attempt)
         reconnectJob?.cancel()
         reconnectJob = null
         setupTimeoutJob?.cancel()
@@ -242,7 +246,7 @@ class VoiceSession(
         voiceTokenEndpointURL = null
         mcpClient = null
         mcpTools = emptyList()
-        abandonAudioFocus()
+        if (!deferAudioRelease) finishDisconnectAudio(attempt)
         VoiceService.stop(appContext)
         _state.update {
             it.copy(
@@ -280,7 +284,10 @@ class VoiceSession(
         reconnectJob = null
         usableICECandidateWaiter?.cancel()
         usableICECandidateWaiter = null
+        disconnectAudioAttempt = null
         releaseTransport()
+        clearCommunicationDevice()
+        abandonAudioFocus()
         closePeerConnection()
         rtcSessionID = null
         voiceTokenEndpointURL = null
@@ -922,7 +929,6 @@ class VoiceSession(
         stopMicLevelMonitoring()
         unregisterDeviceCallback()
         unregisterScoReceiver()
-        clearCommunicationDevice()
         dataChannel?.close()
         dataChannel?.dispose()
         dataChannel = null
@@ -940,7 +946,8 @@ class VoiceSession(
     }
 
     fun disconnect() {
-        invalidateAttempt()
+        val attempt = invalidateAttempt()
+        val deferAudioRelease = deferDisconnectAudio(attempt)
         reconnectJob?.cancel()
         reconnectJob = null
         recoveryPolicy.reset()
@@ -951,7 +958,7 @@ class VoiceSession(
         setupTimeoutJob?.cancel()
         setupTimeoutJob = null
         releaseTransport()
-        abandonAudioFocus()
+        if (!deferAudioRelease) finishDisconnectAudio(attempt)
         VoiceService.stop(appContext)
         closePeerConnection()
         rtcSessionID = null
@@ -960,6 +967,25 @@ class VoiceSession(
         mcpTools = emptyList()
         // Preserve transcript so the user can review it after disconnecting.
         _state.value = VoiceState(transcript = _state.value.transcript.map { it.copy(final = true) })
+    }
+
+    private fun finishDisconnectAudio(attempt: Long) {
+        if (!ownsAttempt(attempt)) return
+        clearCommunicationDevice()
+        abandonAudioFocus()
+    }
+
+    private fun deferDisconnectAudio(attempt: Long): Boolean {
+        val chimeAlreadyPlaying = disconnectAudioAttempt != null
+        disconnectAudioAttempt = attempt
+        val chimeStarted = voiceModeChime.disconnected(::finishPendingDisconnectAudio)
+        return chimeStarted || chimeAlreadyPlaying
+    }
+
+    private fun finishPendingDisconnectAudio() {
+        val attempt = disconnectAudioAttempt ?: return
+        disconnectAudioAttempt = null
+        finishDisconnectAudio(attempt)
     }
 
     fun clearTranscript() {
@@ -1035,6 +1061,7 @@ class VoiceSession(
                             error = null,
                         )
                     }
+                    voiceModeChime.connected()
                     if (recoveryContext.isNotEmpty()) {
                         send(json.encodeToString(ContextUpdate.serializer(), gatewayContextUpdate(recoveryContext)))
                         recoveryContext = ""

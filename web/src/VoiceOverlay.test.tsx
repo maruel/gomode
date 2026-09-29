@@ -12,6 +12,8 @@ import { voiceSession } from "./VoiceSession";
 
 const connectMock = vi.spyOn(voiceSession, "connect").mockResolvedValue(undefined as never);
 const disconnectMock = vi.spyOn(voiceSession, "disconnect");
+const enumerateDevicesMock = vi.spyOn(voiceSession, "enumerateDevices").mockResolvedValue();
+const prepareAudioMock = vi.spyOn(voiceSession, "prepareAudio").mockImplementation(() => {});
 const setVoiceActiveMock = vi.spyOn(notifications, "setVoiceActive");
 
 beforeEach(() => {
@@ -33,6 +35,29 @@ describe("VoiceOverlay connection", () => {
     const user = userEvent.setup();
     render(() => <VoiceOverlay />);
     await user.click(screen.getByRole("button", { name: /voice/i }));
+    expect(connectMock).toHaveBeenCalledOnce();
+  });
+
+  it("unlocks chime audio before asynchronous device enumeration", async () => {
+    let finishEnumeration: () => void = () => {
+      throw new Error("Device enumeration did not start");
+    };
+    enumerateDevicesMock.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishEnumeration = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    render(() => <VoiceOverlay />);
+
+    const click = user.click(screen.getByRole("button", { name: /voice/i }));
+    await waitFor(() => expect(prepareAudioMock).toHaveBeenCalledOnce());
+
+    expect(enumerateDevicesMock).toHaveBeenCalledOnce();
+    expect(connectMock).not.toHaveBeenCalled();
+    finishEnumeration();
+    await click;
     expect(connectMock).toHaveBeenCalledOnce();
   });
 
