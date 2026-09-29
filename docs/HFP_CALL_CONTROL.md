@@ -1,147 +1,105 @@
 # Car HFP Call Control
 
-Go Mode voice sessions must register with Android Telecom as self-managed audio
-calls so car head units and Bluetooth HFP devices can control them. In
-particular, a car's hang-up control must request a call disconnect through
-Telecom, not be inferred from Bluetooth SCO audio teardown.
+Go Mode voice sessions register with Android Telecom as self-managed audio
+calls. A car or headset hang-up then requests a Telecom disconnect. Go Mode does
+not infer hang-up from Bluetooth SCO teardown. Phases:
+[PLAN_GOMODE.md](PLAN_GOMODE.md).
 
 ## Decision
 
-Use AndroidX Core-Telecom (`androidx.core:core-telecom`) for every active Go
-Mode voice session. Core-Telecom provides one API over the legacy
-`ConnectionService` path used on older supported devices and newer Telecom
-transactional APIs. Go Mode has `minSdk = 33`, so Core-Telecom is available on
-every supported Android version.
+Use AndroidX Core-Telecom (`androidx.core:core-telecom`) for every active voice
+session. It wraps the legacy `ConnectionService` path and the newer
+transactional APIs, and supports `minSdk = 33`. Go Mode keeps its voice overlay
+and does not become the default dialer. Android provides Bluetooth HFP,
+automotive, audio-route, and call-concurrency integration.
 
-This is intentionally a self-managed calling integration. Go Mode keeps its
-voice overlay rather than becoming the default dialer, while Android provides
-Bluetooth HFP, automotive, audio-route, and call-concurrency integration.
-
-Do not use a `MediaSession` or Bluetooth/SCO broadcasts as the primary
-hang-up mechanism. They represent media buttons and audio-routing state, not a
-reliable HFP call-control contract.
+`MediaSession` and SCO broadcasts are not the hang-up mechanism. They report
+media buttons and audio routing, not HFP call control.
 
 ## Call Lifecycle
 
-```text
-User starts voice
-  -> CallsManager adds an outgoing audio call named "Go Mode Voice"
-  -> VoiceSession establishes the WebRTC session
-  -> Telecom call becomes active only when voice is ready
-
-Car/headset end-call action
-  -> Telecom calls the registered disconnect callback
-  -> VoiceSession disconnects WebRTC, stops microphone capture, and clears UI state
-  -> Telecom call is reported disconnected and released
-
-User ends voice in the Go Mode overlay
-  -> VoiceSession requests a local Telecom disconnect
-  -> The same teardown path runs exactly once
+```mermaid
+sequenceDiagram
+    participant U as User / car
+    participant T as Telecom adapter
+    participant V as VoiceSession
+    U->>T: start voice
+    T->>T: add outgoing audio call "Go Mode Voice"
+    T->>V: start WebRTC session
+    V-->>T: voice ready
+    T->>T: set call active
+    alt car or headset hang-up
+        U->>T: Telecom disconnect callback
+    else overlay End voice
+        U->>V: end voice
+        V->>T: local disconnect
+    end
+    T->>V: teardown (runs once)
+    V-->>T: disconnected, call released
 ```
 
-The session must have one teardown owner. Both the overlay and Telecom invoke
-that owner, which makes duplicated or late callbacks harmless. A user-selected
-end call is local; WebRTC/server failure is remote or error termination.
+One teardown owner serves the overlay and Telecom, so duplicate or late
+callbacks are harmless. A user hang-up is a local disconnect. A WebRTC or server
+failure is a remote or error disconnect.
 
-## Integration Boundaries
+## Telecom Adapter
 
-### Telecom adapter
+The adapter owns `CallsManager`, registration, one active `CallControlScope`,
+and the mapping from Telecom callbacks to the voice lifecycle.
 
-Introduce a focused Go Mode adapter that owns `CallsManager`, registration, a
-single active `CallControlScope`, and the mapping between Telecom callbacks and
-the voice-session lifecycle.
+- Register capabilities during app setup, never during a call.
+- Declare `MANAGE_OWN_CALLS`.
+- Add an outgoing audio-only call with non-sensitive display metadata and an
+  app-owned URI scheme.
+- Expose four operations to `VoiceSession`: start the call, set it active, end
+  it locally, and react to a Telecom disconnect.
+- Show a rejected or unavailable Telecom call as a voice setup error.
 
-- Register app capabilities during app setup, never while a call is active.
-- Declare `MANAGE_OWN_CALLS` in the manifest.
-- Create an outgoing, audio-only call with non-sensitive display metadata such
-  as `Go Mode Voice` and a stable app-owned URI scheme.
-- Expose only lifecycle operations to `VoiceSession`: start the platform call,
-  mark it active, end it locally, and react to a Telecom-requested disconnect.
-- Surface a rejected or unavailable Telecom call as a visible voice setup
-  error. Do not silently claim that Bluetooth hang-up is supported.
+## VoiceSession
 
-### VoiceSession
+`VoiceSession` keeps the WebRTC gateway, transcript, and MCP tools. Once
+Telecom owns the call, SCO loss is not a hang-up.
 
-`VoiceSession` remains responsible for the WebRTC gateway, transcript, and
-MCP tools. It must not independently decide that SCO disconnection is a user
-hang-up once Telecom owns the call.
+- Start the Telecom call before or with WebRTC setup.
+- Set the call active after the voice data channel is ready.
+- On a Telecom disconnect, run the teardown and report completion.
+- On an overlay disconnect, request a local Telecom disconnect.
+- Treat WebRTC errors as call failure. Recovery runs only while the call is
+  active.
 
-- Start the Telecom call before, or while, WebRTC setup begins.
-- Mark the call active only after the voice data channel/session is ready.
-- On a Telecom disconnect request, perform the existing voice teardown and
-  report completion back to Telecom.
-- On a local overlay disconnect, request Telecom local disconnect and run the
-  common teardown path.
-- Treat WebRTC errors as a call failure; preserve the current recovery policy
-  only while the Telecom call is still active.
+## Audio Routing
 
-### Audio routing
+Telecom owns communication routing and concurrency for an active call. The
+endpoint picker uses Core-Telecom endpoints instead of
+`AudioManager.setCommunicationDevice()`. The current `AudioDeviceCallback` and
+SCO receiver in `VoiceSession.kt` stay only as diagnostics and as the fallback
+for devices without `PackageManager.FEATURE_TELECOM`. They never end a
+Telecom-managed call, and the fallback does not promise car hang-up.
 
-Telecom owns communication audio routing and concurrency for an active call.
-Adapt the voice endpoint picker to use Core-Telecom call endpoints instead of
-direct `AudioManager.setCommunicationDevice()` requests.
-
-The existing `AudioDeviceCallback` and SCO broadcast can remain temporarily as
-diagnostics or a non-Telecom fallback, but neither may end a Telecom-managed
-call. Remove the SCO receiver after call-end behavior is verified on supported
-devices. This avoids treating route loss, which may be transient, as a user
-intent to hang up.
-
-The initial integration does not support hold. When Telecom requires the voice
-call to yield to a cellular or another VoIP call, it should disconnect Go Mode
-voice. Add hold/resume only after the voice gateway can preserve an active
-conversation across a deliberate pause.
-
-## Implementation Phases
-
-### Phase 1 — Telecom registration and visible call lifecycle
-
-Add Core-Telecom, the self-managed-calls permission, and the Telecom adapter.
-Create a single outgoing audio call for an attempted voice session, surface
-registration/add-call failures, and mark the platform call active only after
-voice setup succeeds.
-
-### Phase 2 — Authoritative hang-up callback
-
-Route the Core-Telecom disconnect callback into the idempotent `VoiceSession`
-teardown. Route the overlay's End voice control through a local Telecom
-disconnect. Ensure WebRTC failure and manual disconnect report distinct,
-accurate disconnect causes.
-
-### Phase 3 — Telecom endpoint routing
-
-Replace direct audio-device selection, focus handling, and SCO-based hang-up
-detection for Telecom-managed calls with Core-Telecom endpoint state. Retain a
-clearly labelled non-Telecom fallback only for devices without
-`PackageManager.FEATURE_TELECOM`; that fallback cannot promise car hang-up
-control.
+There is no hold. When Telecom yields to a cellular or VoIP call, Go Mode voice
+disconnects.
 
 ## Verification
 
-Automated tests must cover the adapter's lifecycle mapping: successful setup,
-Telecom rejection, car-initiated disconnect, overlay-initiated disconnect,
-WebRTC failure, and duplicate disconnect callbacks. Use a fake adapter at the
-natural Telecom boundary; do not simulate a car through Bluetooth broadcasts.
+Unit tests use a fake adapter at the Telecom boundary and cover: setup success,
+Telecom rejection, car disconnect, overlay disconnect, WebRTC failure, and
+duplicate disconnect callbacks. Do not simulate a car with Bluetooth broadcasts.
 
-Physical-device acceptance is required because head-unit HFP implementations
-vary. Test at least a Bluetooth headset and the target car head unit:
+HFP implementations vary, and an emulator cannot validate them. On a Bluetooth
+headset and the target car head unit:
 
-1. Start voice and confirm that the device exposes a Go Mode call.
-2. Press the car/headset hang-up control and confirm that WebRTC, microphone,
-   foreground call state, and the Go Mode overlay all end promptly.
-3. End voice from the overlay and confirm that the remote call UI clears.
-4. Switch between car Bluetooth, speaker, and wired/USB endpoints while voice
-   remains active.
-5. Receive or place a cellular call while Go Mode voice is active and confirm
-   the documented no-hold behavior.
+1. Start voice. The device shows a Go Mode call.
+2. Press hang-up. WebRTC, microphone, foreground call state, and overlay end.
+3. End voice from the overlay. The remote call UI clears.
+4. Switch between car Bluetooth, speaker, and wired or USB endpoints during
+   voice.
+5. Receive or place a cellular call during voice. Voice disconnects.
 
-Capture `GoModeVoiceSession`, Telecom, and Bluetooth logs for failures. An
-Android emulator cannot validate physical HFP behavior.
+Capture `GoModeVoiceSession`, Telecom, and Bluetooth logs for failures.
 
 ## References
 
 - [Core-Telecom guide](https://developer.android.com/develop/connectivity/telecom/voip-app/telecom)
-- [CallsManager reference](https://developer.android.com/reference/androidx/core/telecom/CallsManager)
-- [ConnectionService reference](https://developer.android.com/reference/android/telecom/ConnectionService)
-- [Connection disconnect callback](https://developer.android.com/reference/android/telecom/Connection#onDisconnect())
+- [CallsManager](https://developer.android.com/reference/androidx/core/telecom/CallsManager)
+- [ConnectionService](https://developer.android.com/reference/android/telecom/ConnectionService)
 - [Audio Manager self-managed call guide](https://developer.android.com/develop/connectivity/bluetooth/ble-audio/audio-manager)

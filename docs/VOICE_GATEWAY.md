@@ -1,196 +1,110 @@
 # Go Mode Voice Gateway
 
-The voice gateway is the service-neutral voice contract for Go Mode clients. The
-client-visible protocol is not Gemini Live, Gemini Bidi, local stack, Parakeet,
-Gemma, Qwen, or any other provider/runtime.
+The voice gateway gives Go Mode clients one service-neutral voice contract.
+Clients never see Gemini, the local stack, or any other provider or runtime.
 
 ## Public Contract
 
-Public surface:
+- HTTP signaling under `/api/voicegateway/v1/voice/rtc/...`: offer,
+  diagnostics, and close
+- WebRTC RTP Opus for microphone and assistant audio
+- the `voice-gateway` data channel, carrying UTF-8 JSON messages from
+  `voicegateway/api/v1`
 
-- HTTP signaling under `/api/voicegateway/v1/...`
-- WebRTC microphone RTP Opus from client to gateway
-- WebRTC assistant RTP Opus from gateway to client
-- data channel label `voice-gateway`
-- UTF-8 JSON data-channel messages from `gomode/voicegateway/api/v1`
+The signaling route version selects the data-channel schema. The generated
+reference is [`sdk/voicegateway/API.md`](../sdk/voicegateway/API.md).
 
-The HTTP signaling route version selects the data-channel schema before the
-session starts.
+## Responsibilities
 
-## Responsibility Split
-
-The gateway owns:
-
-- HTTP signaling
-- WebRTC session management
-- media conversion
-- provider/runtime transport
-- ASR/LLM/TTS orchestration for local stack
-- turn state
-- interruption handling
-- provider-specific tool schema conversion
+The gateway owns signaling, WebRTC sessions, media conversion, provider
+transport, local-stack orchestration, turn state, interruption, and
+provider-specific tool schema conversion.
 
 The client owns:
 
-- microphone permission and capture
-- audio output routing
-- local service tool execution for active SKILL.md skills
-- returning tool results over the data channel
-- session close and user cancellation intent
-- the bounded service-context baseline sent in `session.setup.context.text`
-- reconnect refresh, later service-item diffing, and context buffering
+- microphone permission, capture, and output routing
+- tool execution for active skills, and tool results
+- session close and user cancellation
+- the bounded service context in `session.setup.context.text`
+- reconnect refresh, service-item diffing, and context buffering
 
-The host owns:
+The host owns auth, SKILL.md files, MCP tools, product APIs, hosted frontend
+content, voice token issuance, and the service-item projection.
 
-- product auth
-- SKILL.md files and MCP tool manifests
-- product APIs
-- hosted frontend content
-- voice token issuance policy
-- authoritative service-item projection and continuation guidance
+The gateway treats context as opaque client text. It reads no service MCP
+resource and keeps no service state across sessions. Service-item ownership:
+[ANDROID_SHELL.md](ANDROID_SHELL.md#service-item-voice-context-ownership).
 
-The gateway treats setup and update context as opaque client-authored text. It
-does not read service MCP resources, interpret service items, diff snapshots, or
-retain service-specific state across sessions. The canonical service-item
-ownership contract is in [`ANDROID_SHELL.md`](ANDROID_SHELL.md#service-item-voice-context-ownership).
+## Deployment
 
-## Deployment Modes
+**Embedded:** the host mounts `voicegateway.NewEmbeddedHandler`, and the RTC
+routes use the host's session auth. The manifest advertises URL `/`;
+`authRequired` follows the host's auth policy.
 
-### Embedded Gateway
+**External:** `cmd/voice-gateway` runs as a separate process. It has no login
+UI and holds no host credentials. It verifies short-lived host-issued tokens
+and brokers media. Use it for shared deployments, separate scaling, or local
+model isolation.
 
-The host process mounts the voice gateway handlers. RTC routes ride the host's
-existing session auth. The discovery manifest usually advertises URL `/` and
-sets gateway `authRequired` false.
-
-Use embedded mode for single-host deployments and development.
-
-### NAT traversal
-
-The gateway uses one UDP port for WebRTC ICE. At startup, it requests a UPnP
-IGD port mapping for the selected UDP port and advertises the router's external
-IPv4 address in ICE when that succeeds. This works with
-`server.webrtc_udp_port = 0`: the gateway listens on an OS-assigned UDP port and
-maps that selected port. UPnP does not replace TURN; clients can still fail
-behind networks that block UDP or when the server is behind double NAT.
-
-### External Gateway
-
-A separate process serves the voice gateway. It has no login UI and holds no
-host session credentials. It verifies short-lived host-issued voice tokens and
-brokers media.
-
-Use external mode for shared gateway deployments, separate scaling, or local
-model runtime isolation.
+**NAT traversal:** the gateway uses one UDP port for ICE. At startup it
+requests a UPnP IGD mapping for that port, including an OS-assigned port from
+`server.webrtc_udp_port = 0`, and advertises the router's external IPv4
+address on success. UPnP does not replace TURN: UDP-blocking networks and
+double NAT still fail.
 
 ## Authorization
 
-Roles are separate:
+The host is the authorization server; it authenticates users and mints voice
+tokens. Go Mode defines the claims and audience. The gateway is the resource
+server; it verifies tokens and does not authenticate users.
 
-- **Host**: authorization server. Authenticates users and mints voice tokens.
-- **Go Mode**: token contract. Defines claims and audience.
-- **Gateway**: resource server. Verifies tokens and serves media.
+The offer's `service` block carries the token. Each `[[trusted_issuers]]`
+entry selects one form:
 
-Each `[[trusted_issuers]]` entry selects one token form. The gateway supports
-both so hosts and external gateway operators can migrate at their own pace.
-
-Transitional scoped token (`public_key`):
-
-- Ed25519 scoped token
-- static public key in gateway config
-- claims bind service kind, service instance, backend origin, subject,
-  capabilities, audience, and expiry
-
-Standard OAuth access token (`oauth = true`):
-
-- OAuth 2.0 JWT with `aud=voice-gateway` (the required audience defaults to
-  `gomode.ScopedTokenAudience` and can be overridden per issuer)
-- short expiry
-- narrow voice scope `voice.session` (overridable per issuer)
-- issuer origin allowlist in gateway config; a token whose `iss` is not on the
-  allowlist is rejected before any network fetch
-- JWKS discovery through `/.well-known/oauth-authorization-server`, with local
-  verification against cached keys and a refresh when a token names an unknown
-  key (rotation)
-
-For an OAuth issuer, the verified token supplies the session subject; the
-service kind, instance, and origin come from the host's service authorization
-envelope, which must match the configured issuer. The OAuth token is otherwise
-opaque to the host and is rejected by the host's own API because its audience
-differs.
-
-Example configuration:
+- **Scoped token** (`public_key`, transitional): Ed25519, verified with a
+  static public key. Claims bind service kind, instance, backend origin,
+  subject, capabilities (`voice.session`), audience, and expiry.
+- **OAuth access token** (`oauth = true`): a short-lived JWT with audience
+  `voice-gateway` and scope `voice.session`, both overridable per issuer. The
+  gateway rejects an `iss` outside the allowlist before any fetch. It discovers
+  JWKS through `/.well-known/oauth-authorization-server`, verifies against
+  cached keys, and refreshes on an unknown key ID. The token supplies the
+  subject. The service authorization envelope supplies service kind, instance,
+  and origin, and must match the issuer. The host's own API rejects the token
+  because of its audience.
 
 ```toml
 [[trusted_issuers]]
 service = "caic"
 issuer = "https://caic.example.com"
 oauth = true
-# audience = "voice-gateway"  # default
-# scope = "voice.session"     # default
 ```
 
-This is issuer federation, not user SSO. The gateway verifies tokens from trusted
-hosts; it does not authenticate users.
+The gateway binds each session ID to the token's service, instance, origin, and
+subject. Diagnostics and close require a current `Authorization: Bearer` token
+for the same identity. Hosts issue short-lived tokens on demand, and clients
+fetch a fresh token before diagnostics.
 
-## Data Channel Messages
+## Data Channel
 
-Client to gateway:
+| Direction | Kinds |
+|---|---|
+| client → gateway | `session.setup`, `context.update`, `user.message`, `tool.result`, `turn.cancel`, `session.close` |
+| gateway → client | `session.ready`, `transcript.delta`, `assistant.text.delta`, `speech.started`, `speech.ended`, `tool.call`, `interrupted`, `error` |
 
-```json
-{"kind":"session.setup","voice":{"name":"...","language":"en"},"tools":[...],"context":{...}}
-{"kind":"context.update","context":{...}}
-{"kind":"tool.result","id":"call-id","name":"tasks_list","result":{}}
-{"kind":"turn.cancel","reason":"user_interruption"}
-{"kind":"session.close"}
-```
+The client builds `session.setup.tools` from active SKILL.md frontmatter: MCP
+servers and their tool allowlists. The gateway receives only provider-neutral
+declarations and results; it fetches no skill file and calls no service MCP
+endpoint. Provider messages stay inside backend adapters.
 
-Gateway to client:
+## Backends
 
-```json
-{"kind":"session.ready"}
-{"kind":"transcript.delta","speaker":"user","text":"..."}
-{"kind":"assistant.text.delta","text":"..."}
-{"kind":"speech.started","speaker":"assistant"}
-{"kind":"speech.ended","speaker":"assistant"}
-{"kind":"tool.call","id":"call-id","name":"tasks_list","args":{}}
-{"kind":"interrupted","source":"user"}
-{"kind":"error","message":"...","recoverable":true}
-```
+Each instance runs one `backend`:
 
-The client builds `tools` from active SKILL.md frontmatter: each active skill
-selects one or more MCP servers and an explicit tool allowlist. The gateway sees
-only provider-neutral tool declarations and tool results; it does not fetch skill
-files or call service MCP endpoints.
+- `gemini-live`: full duplex. The top-level `model` key defaults to
+  `voicegateway.DefaultGeminiModel`; bare IDs get the `models/` prefix. Setup
+  rules: [`voicegateway/voicertc/AGENTS.md`](../voicegateway/voicertc/AGENTS.md).
+- `local-stack`: half-duplex ASR, LLM, and TTS:
+  [VOICE_LOCAL_STACK.md](VOICE_LOCAL_STACK.md).
 
-Provider-specific messages stay inside gateway adapters.
-
-## Backend Adapters
-
-The gateway has one configured backend per instance:
-
-- `gemini-live`: full-duplex hosted backend
-- `local-stack`: half-duplex local ASR + LLM + TTS orchestration
-
-Clients select a gateway by URL, not by provider name. A host that offers more
-than one backend advertises or chooses among multiple gateway URLs outside the
-v1 voice session protocol.
-
-The `gemini-live` backend reads the top-level `model` config key
-(`voicegateway.DefaultGeminiModel` when unset). Bare model IDs such as
-`gemini-3.8-live` are qualified with the `models/` prefix for the wire. The
-setup shape is model-specific; see `gomode/voicegateway/voicertc/AGENTS.md` for
-the upgrade rules and sources.
-
-Local stack runtime details live in `gomode/docs/VOICE_LOCAL_STACK.md`.
-
-## Tests Needed
-
-- signaling request validation
-- data-channel DTO validation
-- token verification success and failure cases
-- embedded mode without voice token
-- external mode with required token
-- WebRTC bridge media setup
-- tool call and tool result round trip
-- interruption cancels active work
-- backend adapter errors become recoverable protocol errors where possible
+Clients select a backend by gateway URL, not by provider name.

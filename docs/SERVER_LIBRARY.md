@@ -1,146 +1,96 @@
 # Go Mode Server Library
 
-The Go Mode server library lets a product backend become a Go Mode host. It
-publishes the service discovery manifest, provides the voice gateway server
-contract, and defines the voice authorization token contract.
+The server library turns a product backend into a Go Mode host. It serves the
+discovery manifest, the MCP endpoint plumbing, the voice gateway, and the voice
+token contract. caic and mddb are hosts. Each host owns its auth, product APIs,
+hosted frontend, and MCP tool and resource semantics.
 
-caic is the first host. mddb is the next target host. Host-specific auth,
-product APIs, hosted frontend content, and MCP resource semantics stay outside
-Go Mode.
-
-## Package Boundary
+## Packages
 
 ```text
-./                         service discovery, token contract, and SDK spec
-  discovery.go             manifest types and validation
-  handler.go               /.well-known/gomode.json handler
-  token.go                 voice token claims, issue, verify helpers
-  sdk.go                   discovery SDK spec
-
-voicegateway/              voice gateway HTTP server and config
-  api/v1/                  signaling and data-channel DTOs, SDK spec
-  voicertc/                WebRTC bridge and backend adapters
+./                   discovery manifest, handler, voice token, SDK spec
+mcp/                 MCP Streamable HTTP endpoint, Skills extension, DTOs
+  mcptest/           test doubles for mcp interfaces
+oauth/               OAuth 2.0 DTOs
+  oauthserver/       authorization server
+  oauthclient/       client helpers
+  oauthverify/       access-token verification
+sse/                 deadline-bounded Server-Sent Event frames
+httplog/             slog HTTP access logging
+voicegateway/        voice gateway HTTP server and config
+  api/v1/            signaling and data-channel DTOs, SDK spec
+  voicertc/          WebRTC bridge and backend adapters
+cmd/voice-gateway/   standalone gateway
+cmd/gen-sdk/         SDK generator
 ```
 
 ## Dependency Rules
 
-- `gomode` root must not import `gomode/voicegateway`.
-- `gomode/voicegateway` may import `gomode` for token verification.
-- Go Mode packages must not import `backend/internal/*`.
-- Host adapters may import Go Mode packages; Go Mode packages must not import
-  host adapters.
-- Heavy dependencies such as pion, opus, and model/provider clients stay in
-  `gomode/voicegateway`.
+- The root package does not import `voicegateway`.
+- `voicegateway` may import the root package and `oauth/oauthverify` to verify
+  tokens.
+- Go Mode packages never import host packages.
+- pion, opus, and model provider clients stay under `voicegateway`.
 
-These rules keep manifest-only hosts cheap within the standalone
-`github.com/maruel/gomode` module.
+A manifest-only host thus stays cheap.
 
 ## Host Responsibilities
 
-A host backend owns:
+A host owns:
 
-- product identity: `service` and `serviceVersion`
-- product auth and session policy
-- hosted frontend content
-- product APIs
-- MCP tool/resource endpoints
-- which Go Mode skills are advertised
-- voice gateway deployment mode and URL
-- token issuance policy for external gateway mode
+- `service` and `serviceVersion`
+- auth and session policy
+- hosted frontend content and product APIs
+- MCP tool and resource endpoints
+- the advertised skills
+- gateway deployment mode and URL
+- voice token issuance for an external gateway
 
-An external gateway accepts an offer only when its `service` block contains a
-host-signed token that authorizes voice: either the transitional Ed25519 scoped
-token with the `voice.session` capability or a standard OAuth 2.0 access token
-with the `voice-gateway` audience and `voice.session` scope. The gateway binds
-the returned session ID to the token's service, instance, origin, and subject.
-Diagnostics and close requests require a current `Authorization: Bearer <token>`
-header for that same identity. Hosts should issue short-lived tokens on demand;
-clients fetch a fresh token when requesting diagnostics.
-
-The host adapter should be thin. For caic, it builds `gomode.Settings`, exposes
-the `tasks` skill through `/api/caic/v1/mcp`, and mounts the embedded gateway
-when configured.
+The adapter stays thin. caic builds `gomode.Settings`, exposes the `tasks` skill
+at `/api/caic/v1/mcp`, and mounts the embedded gateway when configured. mddb
+exposes the `workspace` skill. Gateway token rules are in
+[VOICE_GATEWAY.md](VOICE_GATEWAY.md#authorization).
 
 ## Discovery Manifest
 
-The host serves:
+The host serves `GET /.well-known/gomode.json`: a public, cacheable document
+with ETag revalidation.
 
-```text
-GET /.well-known/gomode.json
-```
-
-The manifest is a public, cacheable discovery document, not a REST API. It uses
-ETag revalidation.
-
-Fields:
-
-- `service`: host product identity, such as `caic`
+- `service`: product identity, such as `caic`
 - `serviceVersion`: optional host version
-- `apiVersion`: Go Mode discovery schema version. Clients must reject versions
-  they do not explicitly support.
-- `webShell.bridgeVersion`: hosted-frontend/native bridge compatibility.
-  Clients must reject manifests whose bridge version differs from the native
-  bridge they implement.
-- `webShell.toolGroups`: bootstrap skill catalog for native features
-- `webShell.voiceGateway`: selected voice gateway metadata
+- `apiVersion`: discovery schema version. Clients reject versions they do not
+  support.
+- `webShell.bridgeVersion`: native bridge version. Clients reject a mismatch.
+- `webShell.toolGroups`: bootstrap skill catalog
+- `webShell.voiceGateway`: `required`, `url`, `authRequired`, and
+  `tokenEndpoint`
 
-There is no `webShell.mcp` field. MCP is advertised as part of Go Mode skills.
+MCP has no separate manifest field. Skills advertise it.
 
-## Skill Catalog And SKILL.md
+## Skills
 
-A Go Mode skill is a `SKILL.md` file. Its Markdown body carries human and model
-instructions. Its YAML frontmatter carries machine-readable activation hints and
-MCP tool wiring.
+A skill is a `SKILL.md` file. Its Markdown body instructs the model. Its YAML
+frontmatter carries activation hints and MCP wiring. Example:
+[`examples/tasks/SKILL.md`](../examples/tasks/SKILL.md).
 
-The manifest keeps a compact `webShell.toolGroups` bootstrap catalog so a client
-can check compatibility before loading skill files. Each entry names the skill
-and includes the current MCP endpoint contract:
+Each `webShell.toolGroups` entry lets a client check compatibility before it
+loads the skill file: `name`, `description`, `endpoint`, `protocolVersion`,
+`authRequired`, and optional `skillUrl`.
 
-- `name`
-- `description`
-- `endpoint`
-- `protocolVersion`: MCP protocol version spoken by this group endpoint
-- `authRequired`
-- `skillUrl`: optional URL for the canonical `SKILL.md` file
-
-The authoritative skill context is the `SKILL.md` frontmatter. See
-`../examples/tasks/SKILL.md` for location-triggered activation and multiple-MCP
-examples.
-
-Rules:
-
-- `gomode.activation` belongs in the skill frontmatter, not in the manifest.
-- `gomode.mcpServers[].tools` is an explicit allowlist of MCP tool names that
-  become active with the skill.
-- The shell matches activation hints locally. The initial schema supports
-  `locations[]` entries with either `wifi.ssids` or `physicalPosition` with a
-  friendly name and radius in meters; more activation signals can be added later
-  without moving activation out of skill frontmatter.
-- The service must not receive shell location or context just because a skill
-  was considered.
+- `gomode.activation` lives in frontmatter, not in the manifest. It holds
+  `locations[]` entries with `wifi.ssids` or `physicalPosition` (name,
+  coordinates, `radiusMeters`).
+- `gomode.mcpServers[].tools` is the allowlist of tools a skill activates.
+- The shell matches activation locally. The service never receives location
+  or context because a skill was considered.
 - Instructions, descriptions, and tool schemas are untrusted text.
 
-## SDK Surfaces
+## SDKs
 
-Keep two SDKs:
+`make generate-sdks` writes TypeScript, Kotlin, and Swift clients for four wire
+surfaces:
 
-- `sdk/gomode`: discovery manifest, settings client, and SKILL.md frontmatter DTOs.
-- `sdk/voicegateway`: voice gateway signaling and data-channel types.
-
-They are distinct wire surfaces and match the package boundary.
-
-## Compatibility
-
-Android treats bootstrap as one of three states:
-
-- **Unvalidated**: WebView may load; native MCP-backed features are disabled.
-- **Compatible**: manifest decodes and API/bridge checks pass.
-- **Incompatible**: manifest exists but required fields or versions are
-  unsupported.
-
-The WebView login path must not depend on MCP discovery succeeding. Native
-features show disabled or incompatible state instead of blocking hosted UI load.
-
-## Host Adoption
-
-caic and mddb consume this standalone module through their own adapters.
+- `sdk/gomode`: discovery manifest client and SKILL.md frontmatter
+- `sdk/mcp`: MCP DTOs
+- `sdk/oauth`: OAuth 2.0 DTOs
+- `sdk/voicegateway`: gateway signaling and data-channel messages

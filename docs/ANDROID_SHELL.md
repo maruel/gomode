@@ -1,222 +1,141 @@
 # Go Mode Android Shell
 
-The Android shell is the native half of Go Mode. It hosts a service frontend in a
-WebView and adds native capabilities through service-neutral contracts.
-
-The shell must not import product SDK DTOs, hard-code product REST routes, or
-branch on voice provider names. Product-specific state is accessed through the
-Go Mode manifest and MCP resources.
+The Android shell hosts a service frontend in a WebView and adds native
+features through service-neutral contracts. It imports no product SDK DTO,
+hard-codes no product route, and never branches on a voice provider name.
+Product state reaches it only through the Go Mode manifest and MCP resources.
 
 ## Responsibilities
 
-Android owns:
+The shell owns service URL bootstrap, WebView hosting, bridge compatibility
+checks, microphone permission and audio routing, the WebRTC client, voice tool
+execution, notifications and background monitoring, and skill activation.
 
-- service URL bootstrap
-- WebView hosting
-- native bridge compatibility checks
-- microphone permission and audio routing
-- WebRTC client setup
-- local service tool execution during voice sessions
-- notification and background monitoring behavior
-- local SKILL.md activation policy
-
-The host owns product auth, hosted UI, MCP endpoints, and product resource
-semantics.
+The host owns auth, hosted UI, MCP endpoints, and resource semantics.
 
 ## Bootstrap
 
-1. Load the configured service URL in the WebView.
-2. Fetch `/.well-known/gomode.json` outside the WebView critical path.
-3. Decode and validate Go Mode compatibility.
-4. Enable native MCP-backed features only after compatibility passes.
-5. Retry manifest fetch after page loads, app resume, network recovery, and user
+1. Load the service URL in the WebView.
+2. Fetch `/.well-known/gomode.json` off the WebView critical path.
+3. Decode and check compatibility.
+4. Enable MCP-backed native features only when compatible.
+5. Retry the fetch after page load, app resume, network recovery, and user
    actions that need native features.
 
-States:
+| State | Meaning | Native features |
+|---|---|---|
+| Unvalidated | manifest unavailable or not yet decoded | disabled; WebView loads |
+| Compatible | versions pass; skill catalog and gateway metadata decode | enabled |
+| Incompatible | required fields or versions unsupported | disabled with a visible state |
 
-- **Unvalidated**: manifest is unavailable or not decoded yet. WebView can load;
-  native MCP-backed features are disabled.
-- **Compatible**: manifest is available, API/bridge versions pass, and the
-  skill catalog and voice gateway metadata decode.
-- **Incompatible**: manifest is available but required fields or versions are
-  unsupported.
+Login never depends on MCP discovery.
 
-## Hosted Authentication Lifecycle
+## Hosted Authentication
 
-The WebView exposes `window.gomodeAuth.postMessage(...)` only to the exact active
+The WebView exposes `window.gomodeAuth.postMessage(...)` to the exact active
 service origin through AndroidX WebView's message listener. The shell accepts
-messages only from the main frame while the current page is still on that
-origin. Hosts can send these JSON messages:
+messages only from the main frame while the page stays on that origin.
 
-- `{ "bearerToken": "token" }` supplies an in-memory bearer for native MCP and
-  voice requests and enables native service access after validation.
-  `{ "bearerToken": null }` clears it and pauses native service access.
-- `{ "authChanging": true }` begins a cookie-backed logout or account switch.
-  It immediately disconnects voice and pauses native service monitoring.
-- `{ "authChanged": true, "nativeAccess": true | false }` reports that the
-  cookie-backed identity has settled, without sending a cookie through
-  JavaScript. `nativeAccess` is true only for a confirmed signed-in user or a
-  host with authentication disabled. False keeps native monitoring and voice
-  unavailable on a login screen.
+| Message | Effect |
+|---|---|
+| `{ "bearerToken": "token" }` | stores an in-memory bearer for MCP and voice; enables native access after validation |
+| `{ "bearerToken": null }` | clears the bearer; pauses native access |
+| `{ "authChanging": true }` | disconnects voice and pauses monitoring before logout or account switch |
+| `{ "authChanged": true, "nativeAccess": bool }` | reports a settled cookie-backed identity; `true` only for a confirmed user or a host without auth |
 
-Send `authChanged` after resolving the identity in each newly loaded page. Send
-`authChanging` before starting logout or account replacement, then send
-`authChanged` with the correct `nativeAccess` value only after the cookie/session
-update completes. If the result is
-unknown because the request failed, keep native access paused until the host
-validates the current identity. A 401 from the identity endpoint can settle
-the state as logged out; an unrelated endpoint's 401 must keep access paused.
-Bearer-backed hosts send the new bearer after validating it and clear it before
-logout. The bridge stores no token on disk.
+Hosts send `authChanged` after resolving the identity on each page load. Around
+logout or account replacement, they send `authChanging` first and
+`authChanged` only after the session update completes. When the result is
+unknown, access stays paused until the host validates the identity. A 401 from
+the identity endpoint means logged out; a 401 from another endpoint keeps
+access paused. Bearer hosts send a new bearer after validation and clear it
+before logout. The shell stores no token on disk.
 
-An accepted identity change or navigation away from the trusted origin stops
-native voice and service monitoring in the WebView callback. Monitoring and
-voice stay unavailable while auth is unsettled or the confirmed user lacks
-native access. Monitoring restarts only after a settled signal granting access
-or a validated bearer arrives. Voice MCP requests pin the
+An accepted identity change, or navigation off the trusted origin, stops voice
+and monitoring in the WebView callback. They restart only after a settled
+signal grants access or a validated bearer arrives. Voice MCP requests pin the
 cookie and bearer captured at connection setup and reject a changed credential
-before a tool request can leave the device.
+before a tool request leaves the device.
 
 ## Skills
 
-`webShell.toolGroups` is the bootstrap skill catalog. The canonical skill is a
-`SKILL.md` file. The Markdown body is context for the voice/model session; the
-frontmatter is the machine-readable contract:
+The frontmatter contract is in
+[SERVER_LIBRARY.md](SERVER_LIBRARY.md#skills). The shell uses the first
+`webShell.toolGroups` entry and registers every tool it lists. Progressive
+activation is phase `progressive-skills` of [PLAN_GOMODE.md](PLAN_GOMODE.md).
+Its target behavior:
 
-- `name` and `description`
-- `gomode.activation`: local `locations[]` hints with either `wifi.ssids` or
-  `physicalPosition`; more activation signals can be added later
-- `gomode.mcpServers[]`: MCP endpoint, protocol version, auth policy, and tool
-  allowlist
-
-See `../examples/tasks/SKILL.md` for a complete example with location-triggered
-activation and multiple-MCP data.
-
-Shell behavior:
-
-- Load every skill's `name` and `description` from the manifest at bootstrap.
-- Fetch the skill `SKILL.md` from `skillUrl` when available.
-- Treat `gomode.activation` as local-only state; do not report considered
-  locations to the service.
-- On activation, connect to the skill's MCP endpoint, read `serverInstructions`,
-  call `tools/list`, and register only tools in `gomode.mcpServers[].tools`.
-- Deactivate skills when context no longer matches.
-- Cap concurrently active skills.
-- Namespace or reject colliding tool names.
-- Surface active skills and tools, especially for screen-off voice.
-
-caic currently exposes one `tasks` skill. The shell should still use the catalog
-path so more skills can be added without a manifest contract change.
+- Load each skill's `name` and `description` from the manifest.
+- Fetch `SKILL.md` from `skillUrl` when present.
+- Keep activation state local; never report considered locations.
+- On activation, read the MCP server instructions, call `tools/list`, and
+  register only tools in `gomode.mcpServers[].tools`.
+- Deactivate skills whose context no longer matches.
+- Cap active skills, and resolve colliding tool names deterministically.
+- Show active skills and tools, including during screen-off voice.
 
 ## MCP Client
 
-The Android MCP client should support:
+The shell calls `server/discover`, `tools/list`, `tools/call`,
+`resources/list`, `resources/read`, and POST-based SSE `subscriptions/listen`.
+`server/discover` capabilities decide which features run; unsupported ones are
+skipped.
 
-- `server/discover`
-- `tools/list`
-- `tools/call`
-- `resources/list`
-- `resources/templates/list`
-- `resources/read`
-- POST-based SSE `subscriptions/listen`
-
-Use `server/discover` capabilities as the source of truth. Skip unsupported
-features cleanly.
-
-Subscription events are invalidations. On `notifications/resources/updated`,
-re-read the resource. On `notifications/resources/list_changed`, re-read the
-resource list.
+Subscription events are invalidations:
+`notifications/resources/updated` re-reads the resource, and
+`notifications/resources/list_changed` re-reads the list.
 
 ## Service Status
 
-The shell reads the generic `gomode://items` resource for native status:
+The shell reads the generic `gomode://items` resource:
 
-- `id`: stable service-item identity
-- `reference`: optional host-authored session-facing reference, such as `Task #3`
-- `title`: user-visible item label
-- `state`: optional user-visible status label
-- `needsAttention`: whether the item requires user attention
-- `omittedCount`: number of authoritative items excluded from the bounded resource
-- `moreItemsHint`: host-authored guidance for retrieving omitted or newer detail
+- `id`: stable item identity
+- `reference`: optional session-facing reference, such as `Task #3`
+- `title`: user-visible label
+- `state`: optional user-visible status
+- `needsAttention`: whether the item needs the user
+- `omittedCount`: authoritative items excluded from the bounded resource
+- `moreItemsHint`: host guidance to retrieve omitted or newer items
 
-Hosts map product concepts to this schema. The shell parses only this generic
-resource, maps only the native state it needs, and treats all product text as
-untrusted. It does not import product SDK DTOs or hard-code product HTTP routes.
+Hosts map product concepts to this schema. The shell treats all product text as
+untrusted.
 
 ### Service-item voice context ownership
 
-This is the canonical ownership contract for service-item voice context:
+- The service backend owns the `gomode://items` facts, ordering, attention
+  priority, references, omission metadata, and continuation guidance. It
+  enforces authorization before projection.
+- Each client owns the bounded baseline in its `session.setup`.
+- The gateway only transports that opaque context to the backend. It neither
+  interprets items nor keeps service state.
 
-- The service backend owns the authoritative `gomode://items` facts, ordering,
-  attention priority, stable references, omission metadata, and continuation
-  guidance. Authorization is enforced before projecting the resource.
-- Each Go Mode client owns the compact baseline placed in its particular voice
-  session setup and bounds untrusted resource text.
-- The voice gateway is transport-only. It forwards the client's opaque initial
-  context to the selected model backend and neither interprets service items nor
-  retains service-specific state.
+On reconnect, the client sends the freshest bounded snapshot in the new
+`session.setup`; recovery context does not repeat an older snapshot. A missing
+resource yields an empty baseline.
 
-On reconnect, the client reads or uses the freshest bounded service snapshot in
-the new `session.setup`; conversation recovery context must not duplicate an
-older service snapshot. A missing item resource produces an empty baseline,
-not product-specific fallback behavior in the shell.
-
-Clients seed their voice session from the current service snapshot and deliver
-bounded changes from later snapshots, rather than appending complete state
-repeatedly. Android compares generic service-item changes and resets its
-baseline when the voice session or service identity changes. The caic browser
-frontend derives its own product-specific task updates outside Go Mode. Both
-voice transports buffer updates while the model is speaking.
+Clients seed the session from one snapshot and then send bounded changes, not
+full state. Android diffs generic items and resets its baseline when the voice
+session or service identity changes. The caic browser frontend derives its own
+task updates outside Go Mode. Both buffer updates while the model speaks.
 
 ## Service Notifications
 
-A host may expose `gomode://notifications`, a JSON array of service-authored
-notification events. Each event has a stable `id`, user-visible `title` and
-`body`, plus `occurredAt` and `expiresAt` timestamps. The shell treats these
-fields as untrusted display data, deduplicates by `id`, and publishes them on
-its native alert channel. It does not infer product conditions from other
-product resources.
-
-Hosts update this resource through `notifications/resources/updated`; clients
-re-read it as an invalidation. Hosts own event generation, retention, and
-expiry. The shell owns permission handling and delivery.
+A host may expose `gomode://notifications`: a JSON array of events with `id`,
+`title`, `body`, `occurredAt`, and `expiresAt`. The shell treats the fields as
+untrusted, deduplicates by `id`, and posts them on its alert channel. It infers
+no product condition from other resources. The host owns generation,
+retention, and expiry and signals changes with
+`notifications/resources/updated`. The shell owns permission and delivery.
 
 ## Voice Session Setup
 
-Voice setup uses the manifest, not product constants:
+1. Resolve `webShell.voiceGateway.url` against the service URL.
+2. For an external gateway, fetch a token from `tokenEndpoint`.
+3. Post the offer to the signaling route.
+4. Open the `voice-gateway` data channel.
+5. Declare the active MCP tools plus the native `hang_up` tool.
+6. Read and bound the `gomode://items` baseline.
+7. Send the baseline in `session.setup.context.text` before the first response.
+8. Execute tool calls through the skill's MCP endpoint.
 
-1. Resolve `webShell.voiceGateway.url` relative to the service URL.
-2. If external gateway auth is required, request a token from
-   `webShell.voiceGateway.tokenEndpoint`.
-3. Open the voice gateway signaling route.
-4. Attach the `voice-gateway` data channel.
-5. Merge active service MCP tools with Android-native tools.
-6. Read and bound the current `gomode://items` baseline.
-7. Send that baseline in `session.setup.context.text` before the first response.
-8. Execute service tool calls locally through the active skill MCP endpoint.
-
-The shell must not branch on Gemini, local stack, Parakeet, Qwen, Gemma, or any
-other provider/runtime.
-
-## Tests Needed
-
-Unit tests:
-
-- unavailable manifest leaves shell unvalidated
-- incompatible versions disable native features
-- missing skills disable MCP-backed features
-- `server/discover` capability negotiation
-- `resources/list` and `resources/read` request envelopes
-- POST-based SSE parsing for `subscriptions/listen`
-- resource update notification triggers re-read
-- unsupported resource capabilities disable monitoring cleanly
-
-Android/e2e tests:
-
-- WebView loads in limited mode without valid manifest
-- broken MCP does not block WebView load
-- fake MCP resource listing drives monitoring without product REST routes
-- fake resource update changes native monitoring state
-- voice setup merges service MCP tools with Android-native tools
-- multi-skill activation and deactivation change the active tool set
-- untrusted skill instructions and tool descriptions are handled as data
+Car call control: [HFP_CALL_CONTROL.md](HFP_CALL_CONTROL.md).
