@@ -59,6 +59,6 @@ data and authorization policy stay in the hosts.
 
 ## Later
 
-- mddb semantic search and MCP write tools stay in mddb's `docs/PLAN_MDDB.md`.
+- mddb workspace search stays in mddb's `docs/PLAN_MDDB.md`.
 - Hold/resume for Telecom calls once the gateway preserves a paused
   conversation.
