@@ -46,6 +46,25 @@ func TestKittenTTSAdapter(t *testing.T) {
 		}
 	})
 
+	t.Run("empty audio", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := kittenTTSTestContext(t)
+		t.Cleanup(cancel)
+		a, err := newKittenTTSAdapterWithCommand(ctx, kittenTTSTestCommand("empty"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := a.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
+		chunks, err := collectKittenTTS(ctx, a, "emoji")
+		if err != nil || len(chunks) != 0 {
+			t.Fatalf("chunks = %v, error = %v", chunks, err)
+		}
+	})
+
 	t.Run("concurrent", func(t *testing.T) {
 		t.Parallel()
 		ctx, cancel := kittenTTSTestContext(t)
@@ -147,11 +166,13 @@ func TestKittenTTSAdapterHelperProcess(t *testing.T) { //nolint:paralleltest // 
 	mode := args[len(args)-1]
 	switch mode {
 	case "valid":
-		kittenTTSHelperServe(t, false, false)
+		kittenTTSHelperServe(t, false, false, false)
 	case "concurrent":
-		kittenTTSHelperServe(t, false, true)
+		kittenTTSHelperServe(t, false, true, false)
 	case "error":
-		kittenTTSHelperServe(t, true, false)
+		kittenTTSHelperServe(t, true, false, false)
+	case "empty":
+		kittenTTSHelperServe(t, false, false, true)
 	case "startup-error":
 		fmt.Println(`{"kind":"error","error":"missing model"}`)
 	default:
@@ -173,7 +194,7 @@ func kittenTTSTestCommand(mode string) kittenTTSCommandFactory {
 	}
 }
 
-func kittenTTSHelperServe(t *testing.T, alwaysFail, requireConcurrent bool) {
+func kittenTTSHelperServe(t *testing.T, alwaysFail, requireConcurrent, empty bool) {
 	var active atomic.Int32
 	var maxActive atomic.Int32
 	mux := http.NewServeMux()
@@ -207,6 +228,9 @@ func kittenTTSHelperServe(t *testing.T, alwaysFail, requireConcurrent bool) {
 		}
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.WriteHeader(http.StatusOK)
+		if empty {
+			return
+		}
 		writeKittenTTSStream(w, []byte{1, 2})
 		writeKittenTTSStream(w, []byte{3, 4})
 	})

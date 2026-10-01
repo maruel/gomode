@@ -46,6 +46,23 @@ UI and holds no host credentials. It verifies short-lived host-issued tokens
 and brokers media. Use it for shared deployments, separate scaling, or local
 model isolation.
 
+For a Linux user service, start from
+[`contrib/voice-gateway.service`](../contrib/voice-gateway.service) and
+[`contrib/config.toml`](../contrib/config.toml). Install the binary at
+`~/.local/bin/voice-gateway`, copy the edited config to
+`~/.config/voice-gateway/config.toml`, and install the unit at
+`~/.config/systemd/user/voice-gateway.service`. The gateway stores managed
+models under the user's cache directory. The unit searches `~/.local/bin` and
+`~/.cargo/bin` for `uv`, which KittenTTS requires. If `uv` is installed
+elsewhere, add its directory to the unit's `PATH`. Replace the example trusted
+issuer, then run
+`systemctl --user daemon-reload` and `systemctl --user enable --now voice-gateway`.
+To keep it running after logout, enable lingering for that user. The sample
+binds signaling to loopback for an HTTPS reverse proxy; make its WebRTC UDP
+port reachable to clients. For a root-managed service, use
+`/etc/voice-gateway/config.toml` with an explicit `-config` flag and adapt the
+unit's binary, user, cache, and install paths.
+
 **NAT traversal:** the gateway uses one UDP port for ICE. At startup it
 requests a UPnP IGD mapping for that port, including an OS-assigned port from
 `server.webrtc_udp_port = 0`, and advertises the router's external IPv4

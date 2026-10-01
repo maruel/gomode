@@ -61,5 +61,5 @@ New capabilities that this adapter does not use yet, recorded for future work:
   session is idle.
 - `interimInputTranscription`, low-latency text while the user is speaking.
 
-Keep the model examples in `contrib/voice-gateway-config.toml` and
-`contrib/config.toml` in step with the default.
+Keep the model example in `contrib/config.toml` in step with the
+default.

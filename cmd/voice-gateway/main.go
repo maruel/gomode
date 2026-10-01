@@ -119,9 +119,14 @@ func initLogging(level string) *slog.Logger {
 		ll.Set(slog.LevelError)
 	}
 	l := slog.New(tint.NewTextHandler(colorable.NewColorable(os.Stderr), &tint.Options{
-		Level:      ll,
-		TimeFormat: "15:04:05.000",
-		NoColor:    !isatty.IsTerminal(os.Stderr.Fd()),
+		Level: ll,
+		ReplaceAttr: func(groups []string, attr slog.Attr) slog.Attr {
+			if len(groups) == 0 && attr.Key == slog.TimeKey {
+				return slog.Attr{}
+			}
+			return attr
+		},
+		NoColor: !isatty.IsTerminal(os.Stderr.Fd()),
 	}))
 	slog.SetDefault(l)
 	return l

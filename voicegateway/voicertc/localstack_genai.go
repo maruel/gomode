@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -32,12 +33,19 @@ func localStackBackendForConfig(ctx context.Context, cfg *voicegateway.LocalStac
 	if err != nil {
 		return nil, err
 	}
-	tts, err := newKittenTTSAdapter(ctx)
-	if err != nil {
-		if models.runtime != nil {
-			_ = models.runtime.Close()
+	var tts ttsAdapter
+	var ttsRuntime io.Closer
+	if cfg.TTS.Engine == voicegateway.LocalStackTTSOpenAIAudio {
+		tts = &audioHTTPAdapter{client: http.DefaultClient, remote: cfg.TTS.Remote, model: cfg.TTS.Model, voice: cfg.TTS.Voice}
+	} else {
+		kitten, err := newKittenTTSAdapter(ctx)
+		if err != nil {
+			if models.runtime != nil {
+				_ = models.runtime.Close()
+			}
+			return nil, err
 		}
-		return nil, err
+		tts, ttsRuntime = kitten, kitten
 	}
 	b := newLocalStackBackend(
 		func() vadSegmenter { return &energyVAD{} },
@@ -45,7 +53,7 @@ func localStackBackendForConfig(ctx context.Context, cfg *voicegateway.LocalStac
 		models.llm,
 		tts,
 	)
-	b.runtime = joinClosers(models.runtime, tts)
+	b.runtime = joinClosers(models.runtime, ttsRuntime)
 	return b, nil
 }
 
@@ -68,9 +76,17 @@ func localStackModelsForConfigWithStarter(
 	cfg *voicegateway.LocalStackConfig,
 	start managedLlamaStarter,
 ) (localStackModels, error) {
-	asr, err := resolveLocalStackEndpoint(ctx, "local_stack.asr", cfg.ASR.Provider, cfg.ASR.Remote, cfg.ASR.Model, defaultLocalStackASRModel, start)
-	if err != nil {
-		return localStackModels{}, err
+	var asr localStackEndpoint
+	var asrAdapter asrAdapter
+	if cfg.ASR.Engine == voicegateway.LocalStackASROpenAIAudio || cfg.ASR.Engine == voicegateway.LocalStackASRWhisperCPP {
+		asrAdapter = &audioHTTPAdapter{client: http.DefaultClient, remote: cfg.ASR.Remote, model: cfg.ASR.Model, asrEngine: cfg.ASR.Engine}
+	} else {
+		var err error
+		asr, err = resolveLocalStackEndpoint(ctx, "local_stack.asr", cfg.ASR.Provider, cfg.ASR.Remote, cfg.ASR.Model, defaultLocalStackASRModel, start)
+		if err != nil {
+			return localStackModels{}, err
+		}
+		asrAdapter = &genaiASRAdapter{provider: asr.provider}
 	}
 	llm, err := resolveLocalStackEndpoint(ctx, "local_stack.llm", cfg.LLM.Provider, cfg.LLM.Remote, cfg.LLM.Model, defaultLocalStackLLMModel, start)
 	if err != nil {
@@ -80,7 +96,7 @@ func localStackModelsForConfigWithStarter(
 		return localStackModels{}, err
 	}
 	return localStackModels{
-		asr:     &genaiASRAdapter{provider: asr.provider},
+		asr:     asrAdapter,
 		llm:     &genaiLLMAdapter{provider: llm.provider},
 		runtime: joinClosers(asr.runtime, llm.runtime),
 	}, nil
@@ -202,6 +218,12 @@ type managedLlamaServer interface {
 
 type managedLlamaStarter func(context.Context, string) (managedLlamaServer, error)
 
+var managedLlamaRelease struct {
+	sync.Mutex
+	cache string
+	exe   string
+}
+
 func startManagedLlamaServer(ctx context.Context, model string) (managedLlamaServer, error) {
 	build := llamacppsrv.BuildNumber
 	cache, err := localStackLlamaCacheDir(build)
@@ -211,7 +233,7 @@ func startManagedLlamaServer(ctx context.Context, model string) (managedLlamaSer
 	if err := os.MkdirAll(cache, 0o750); err != nil {
 		return nil, fmt.Errorf("create llama.cpp cache dir: %w", err)
 	}
-	exe, err := llamacppsrv.DownloadRelease(ctx, cache, build)
+	exe, err := managedLlamaExecutable(ctx, cache, build)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +241,7 @@ func startManagedLlamaServer(ctx context.Context, model string) (managedLlamaSer
 	if err != nil {
 		return nil, err
 	}
-	args := []string{"-hf", model, "--no-warmup"}
+	args := []string{"-hf", model, "--no-warmup", "--no-log-timestamps"}
 	slog.InfoContext(ctx, "voicertc: starting managed llama.cpp", "model", model, "build", build, "hostPort", hostPort)
 	logger := slog.NewLogLogger(slog.Default().Handler(), slog.LevelInfo)
 	srv, err := llamacppsrv.New(ctx, exe, "", logger.Writer(), hostPort, 0, args)
@@ -228,6 +250,23 @@ func startManagedLlamaServer(ctx context.Context, model string) (managedLlamaSer
 	}
 	slog.InfoContext(ctx, "voicertc: managed llama.cpp ready", "url", srv.URL())
 	return srv, nil
+}
+
+func managedLlamaExecutable(ctx context.Context, cache string, build int) (string, error) {
+	managedLlamaRelease.Lock()
+	defer managedLlamaRelease.Unlock()
+	if managedLlamaRelease.cache == cache && managedLlamaRelease.exe != "" {
+		return managedLlamaRelease.exe, nil
+	}
+	// DownloadRelease may overwrite the executable even when it is already
+	// running. Reuse the release for both managed model servers in this process.
+	exe, err := llamacppsrv.DownloadRelease(ctx, cache, build)
+	if err != nil {
+		return "", err
+	}
+	managedLlamaRelease.cache = cache
+	managedLlamaRelease.exe = exe
+	return exe, nil
 }
 
 func localStackLlamaHostPort(ctx context.Context) (string, error) {

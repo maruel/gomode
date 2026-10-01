@@ -1,0 +1,43 @@
+# Example standalone voice gateway configuration for a user service.
+# Copy this file to ~/.config/voice-gateway/config.toml. The gateway reads that
+# path by default when XDG_CONFIG_HOME is unset. For a root-managed service,
+# put it at /etc/voice-gateway/config.toml and pass that path with -config.
+# Replace the trusted issuer before accepting clients.
+
+backend = "local-stack"
+
+# For Gemini Live instead, change backend to "gemini-live", set
+# model = "gemini-3.8-live" at the top level, and supply GEMINI_API_KEY.
+
+[server]
+# Put an HTTPS reverse proxy in front of this loopback signaling listener.
+http = "127.0.0.1:3479"
+# The WebRTC UDP port must be reachable by clients (directly or through NAT).
+webrtc_udp_port = 3478
+
+[[trusted_issuers]]
+service = "replace-with-host-service"
+issuer = "https://host.example"
+oauth = true
+
+# The local-stack defaults start separate llama.cpp ASR and LLM servers and
+# a KittenTTS worker. If you select an alternate ASR or TTS engine below,
+# start its server yourself at the configured remote address before using voice.
+# The gateway does not start or check alternate servers at startup. See
+# docs/VOICE_LOCAL_STACK.md for platform-specific choices.
+#
+# [local_stack.asr]
+# engine = "openai-audio"
+# remote = "http://127.0.0.1:8000"
+# model = "mlx-community/parakeet-tdt-0.6b-v3"
+#
+# [local_stack.llm]
+# provider = "llamacpp"
+# remote = "http://127.0.0.1:8080"
+# model = "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"
+#
+# [local_stack.tts]
+# engine = "openai-audio"
+# remote = "http://127.0.0.1:8000"
+# model = "mlx-community/Kokoro-82M-bf16"
+# voice = "af_heart"

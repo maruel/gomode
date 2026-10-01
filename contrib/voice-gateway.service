@@ -1,0 +1,19 @@
+# Example systemd user service for the standalone voice gateway.
+[Unit]
+Description=Go Mode voice gateway
+
+[Service]
+Type=exec
+ExecStartPre=/usr/bin/test -r %h/.config/voice-gateway/config.toml
+ExecStart=%h/.local/bin/voice-gateway -config %h/.config/voice-gateway/config.toml
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin
+# The current gateway catches SIGINT to close sessions before exiting.
+KillSignal=SIGINT
+TimeoutStopSec=30s
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

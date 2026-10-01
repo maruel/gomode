@@ -18,7 +18,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 )
@@ -120,28 +119,8 @@ func (a *kittenTTSAdapter) synthesize(ctx context.Context, text string) iter.Seq
 			yield(nil, fmt.Errorf("KittenTTS HTTP status %s: %s", httpResp.Status, strings.TrimSpace(string(body))))
 			return
 		}
-		var pending []byte
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := httpResp.Body.Read(buf)
-			if n > 0 {
-				pcm := make([]byte, len(pending)+n)
-				copy(pcm, pending)
-				copy(pcm[len(pending):], buf[:n])
-				evenLen := len(pcm) - len(pcm)%2
-				pending = append(pending[:0], pcm[evenLen:]...)
-				if evenLen > 0 && !yield(slices.Clone(pcm[:evenLen]), nil) {
-					return
-				}
-			}
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					if len(pending) > 0 {
-						yield(nil, errors.New("KittenTTS returned odd PCM byte count"))
-					}
-					return
-				}
-				yield(nil, fmt.Errorf("read KittenTTS PCM stream: %w", err))
+		for pcm, err := range pcmChunks(httpResp.Body) {
+			if !yield(pcm, err) {
 				return
 			}
 		}

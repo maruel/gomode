@@ -172,6 +172,72 @@ model = "gemma-local"
 	})
 }
 
+func TestLocalStackAudioEngines(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "audio.toml")
+	content := `backend = "local-stack"
+[local_stack.asr]
+engine = "openai-audio"
+remote = "http://127.0.0.1:8000"
+model = "mlx-community/parakeet-tdt-0.6b-v3"
+[local_stack.tts]
+engine = "openai-audio"
+remote = "http://127.0.0.1:8000"
+model = "mlx-community/Kokoro-82M-bf16"
+voice = "af_heart"
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LocalStack.TTS.Model != "mlx-community/Kokoro-82M-bf16" {
+		t.Fatalf("TTS model = %q", cfg.LocalStack.TTS.Model)
+	}
+	for _, tc := range []struct {
+		name string
+		edit func(*Config)
+		want string
+	}{
+		{"ASR remote", func(c *Config) { c.LocalStack.ASR.Remote = "" }, "local_stack.asr.remote"},
+		{"ASR model", func(c *Config) { c.LocalStack.ASR.Model = "" }, "local_stack.asr.model"},
+		{"ASR engine", func(c *Config) { c.LocalStack.ASR.Engine = "unknown" }, "local_stack.asr.engine"},
+		{"ASR provider", func(c *Config) { c.LocalStack.ASR.Provider = "llamacpp" }, "local_stack.asr.provider"},
+		{"TTS voice", func(c *Config) { c.LocalStack.TTS.Voice = "" }, "local_stack.tts"},
+		{"TTS URL", func(c *Config) { c.LocalStack.TTS.Remote = "bad" }, "local_stack.tts.remote"},
+		{"TTS engine", func(c *Config) { c.LocalStack.TTS.Engine = "unknown" }, "local_stack.tts.engine"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := cfg
+			tc.edit(&bad)
+			if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %s", err, tc.want)
+			}
+		})
+	}
+	whisper := cfg
+	whisper.LocalStack.ASR.Engine = LocalStackASRWhisperCPP
+	whisper.LocalStack.ASR.Model = ""
+	if err := whisper.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	whisper.LocalStack.ASR.Model = "ignored"
+	if err := whisper.Validate(); err == nil || !strings.Contains(err.Error(), "local_stack.asr.model") {
+		t.Fatalf("whisper model error = %v", err)
+	}
+	genai := cfg
+	genai.LocalStack.ASR.Engine = LocalStackASRGenAI
+	genai.LocalStack.ASR.Provider = "unknown"
+	if err := genai.Validate(); err == nil || !strings.Contains(err.Error(), "local_stack.asr.provider") {
+		t.Fatalf("genai provider error = %v", err)
+	}
+}
+
 func TestConfigValidate(t *testing.T) {
 	t.Parallel()
 	t.Run("valid default", func(t *testing.T) {

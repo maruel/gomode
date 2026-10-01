@@ -134,29 +134,101 @@ type ServerConfig struct {
 type LocalStackConfig struct {
 	ASR LocalStackASRConfig `toml:"asr"`
 	LLM LocalStackLLMConfig `toml:"llm"`
+	TTS LocalStackTTSConfig `toml:"tts"`
 }
 
 func (c *LocalStackConfig) validate() error {
 	return errors.Join(
-		validateLocalStackProvider("local_stack.asr", c.ASR.Provider, c.ASR.Remote),
+		validateLocalStackASR(c.ASR),
 		validateBaseURL("local_stack.asr.remote", c.ASR.Remote),
 		validateLocalStackProvider("local_stack.llm", c.LLM.Provider, c.LLM.Remote),
 		validateBaseURL("local_stack.llm.remote", c.LLM.Remote),
+		validateLocalStackTTS(c.TTS),
 	)
 }
 
 // LocalStackASRConfig configures the local ASR (speech-to-text) adapter.
 type LocalStackASRConfig struct {
-	Provider string `toml:"provider"`
-	Remote   string `toml:"remote"`
-	Model    string `toml:"model"`
+	Engine   LocalStackASREngine `toml:"engine"`
+	Provider string              `toml:"provider"`
+	Remote   string              `toml:"remote"`
+	Model    string              `toml:"model"`
 }
+
+// LocalStackASREngine selects how utterances are transcribed.
+type LocalStackASREngine string
+
+const (
+	// LocalStackASRGenAI uses a registered genai provider (managed llama.cpp by default).
+	LocalStackASRGenAI LocalStackASREngine = "genai"
+	// LocalStackASROpenAIAudio uses an OpenAI-compatible transcription endpoint.
+	LocalStackASROpenAIAudio LocalStackASREngine = "openai-audio"
+	// LocalStackASRWhisperCPP uses whisper.cpp's inference endpoint.
+	LocalStackASRWhisperCPP LocalStackASREngine = "whispercpp"
+)
 
 // LocalStackLLMConfig configures the local LLM adapter.
 type LocalStackLLMConfig struct {
 	Provider string `toml:"provider"`
 	Remote   string `toml:"remote"`
 	Model    string `toml:"model"`
+}
+
+// LocalStackTTSConfig selects a speech synthesis engine. The default is managed KittenTTS.
+type LocalStackTTSConfig struct {
+	Engine LocalStackTTSEngine `toml:"engine"`
+	Remote string              `toml:"remote"`
+	Model  string              `toml:"model"`
+	Voice  string              `toml:"voice"`
+}
+
+// LocalStackTTSEngine selects how assistant text is synthesized.
+type LocalStackTTSEngine string
+
+const (
+	// LocalStackTTSKittenTTS runs the managed KittenTTS worker.
+	LocalStackTTSKittenTTS LocalStackTTSEngine = "kittentts"
+	// LocalStackTTSOpenAIAudio uses an OpenAI-compatible speech endpoint.
+	LocalStackTTSOpenAIAudio LocalStackTTSEngine = "openai-audio"
+)
+
+func validateLocalStackASR(c LocalStackASRConfig) error {
+	switch c.Engine {
+	case "", LocalStackASRGenAI:
+		return validateLocalStackProvider("local_stack.asr", c.Provider, c.Remote)
+	case LocalStackASROpenAIAudio, LocalStackASRWhisperCPP:
+		if c.Provider != "" {
+			return errors.New("local_stack.asr.provider is only used with the genai engine")
+		}
+		if c.Remote == "" {
+			return fmt.Errorf("local_stack.asr.remote is required for %s", c.Engine)
+		}
+		if c.Engine == LocalStackASROpenAIAudio && c.Model == "" {
+			return errors.New("local_stack.asr.model is required for openai-audio")
+		}
+		if c.Engine == LocalStackASRWhisperCPP && c.Model != "" {
+			return errors.New("local_stack.asr.model is set on the whisper.cpp server, not in the gateway")
+		}
+		return nil
+	default:
+		return fmt.Errorf("local_stack.asr.engine %q is not supported", c.Engine)
+	}
+}
+
+func validateLocalStackTTS(c LocalStackTTSConfig) error {
+	switch c.Engine {
+	case "", LocalStackTTSKittenTTS:
+		if c.Remote != "" || c.Model != "" || c.Voice != "" {
+			return errors.New("local_stack.tts.engine must be openai-audio when remote, model, or voice is set")
+		}
+	case LocalStackTTSOpenAIAudio:
+		if c.Remote == "" || c.Model == "" || c.Voice == "" {
+			return errors.New("local_stack.tts.remote, model, and voice are required for openai-audio")
+		}
+	default:
+		return fmt.Errorf("local_stack.tts.engine %q is not supported", c.Engine)
+	}
+	return validateBaseURL("local_stack.tts.remote", c.Remote)
 }
 
 // DefaultVoiceScope is the OAuth scope a gateway requires on an OAuth access
