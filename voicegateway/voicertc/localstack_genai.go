@@ -378,6 +378,9 @@ type genaiConversation struct {
 	tools             []genai.ToolDef
 	initErr           error
 	nextToolID        int
+	// unanswered is the user text of the last message when its generation
+	// failed or was cancelled before a reply. It is empty otherwise.
+	unanswered string
 }
 
 func (c *genaiConversation) user(ctx context.Context, text string) (llmStep, error) {
@@ -386,6 +389,14 @@ func (c *genaiConversation) user(ctx context.Context, text string) (llmStep, err
 		c.mu.Unlock()
 		return llmStep{}, c.initErr
 	}
+	if c.unanswered != "" {
+		// genai requires alternating roles. Keep what the user said in the
+		// interrupted turn, such as the first half of a sentence the VAD split
+		// at a pause, and drop only the reply that never completed.
+		text = c.unanswered + "\n" + text
+		c.messages = c.messages[:len(c.messages)-1]
+	}
+	c.unanswered = text
 	c.messages = append(c.messages, genai.NewTextMessage(c.userText(text)))
 	return c.startGenerationLocked(ctx, true), nil
 }
@@ -442,6 +453,7 @@ func (c *genaiConversation) startGenerationLocked(ctx context.Context, allowTool
 			}
 			reply := c.toReplyLocked(&res.Message)
 			c.messages = append(c.messages, res.Message)
+			c.unanswered = ""
 			return reply, nil
 		},
 	}

@@ -139,6 +139,10 @@ sealed interface MessageKind {
         override val value = "tool.call"
     }
     @Serializable
+    data object TurnStatus : MessageKind {
+        override val value = "turn.status"
+    }
+    @Serializable
     data object Interrupted : MessageKind {
         override val value = "interrupted"
     }
@@ -168,6 +172,7 @@ object MessageKindSerializer : KSerializer<MessageKind> {
             "speech.started" -> MessageKind.SpeechStarted
             "speech.ended" -> MessageKind.SpeechEnded
             "tool.call" -> MessageKind.ToolCall
+            "turn.status" -> MessageKind.TurnStatus
             "interrupted" -> MessageKind.Interrupted
             "error" -> MessageKind.Error
             else -> MessageKind.Other(v)
@@ -199,6 +204,39 @@ object SpeakerSerializer : KSerializer<Speaker> {
             "user" -> Speaker.User
             "assistant" -> Speaker.Assistant
             else -> Speaker.Other(v)
+        }
+    }
+}
+
+@Serializable(with = TurnStateSerializer::class)
+sealed interface TurnState {
+    val value: String
+    @Serializable
+    data object Idle : TurnState {
+        override val value = "idle"
+    }
+    @Serializable
+    data object Thinking : TurnState {
+        override val value = "thinking"
+    }
+    @Serializable
+    data object Transcribing : TurnState {
+        override val value = "transcribing"
+    }
+    @Serializable
+    data class Other(override val value: String) : TurnState
+}
+
+object TurnStateSerializer : KSerializer<TurnState> {
+    override val descriptor = PrimitiveSerialDescriptor("TurnState", PrimitiveKind.STRING)
+    override fun serialize(encoder: Encoder, value: TurnState) = encoder.encodeString(value.value)
+    override fun deserialize(decoder: Decoder): TurnState {
+        val v = decoder.decodeString()
+        return when (v) {
+            "idle" -> TurnState.Idle
+            "thinking" -> TurnState.Thinking
+            "transcribing" -> TurnState.Transcribing
+            else -> TurnState.Other(v)
         }
     }
 }
@@ -807,6 +845,23 @@ data class ToolCall(
     val name: String,
     /** Args is the JSON argument object for the requested tool. */
     val args: JsonElement,
+)
+
+/**
+ * TurnStatus is a gateway message that reports work on the current turn.
+ *
+ * Backends that cannot observe their own progress never send it. Speech
+ * output and tool calls take display precedence over the reported state.
+ */
+@Serializable
+data class TurnStatus(
+    /** Kind is "turn.status". */
+    val kind: MessageKind,
+    /**
+     * State is the gateway work in progress; idle ends the turn, including
+     * one that produced no speech.
+     */
+    val state: TurnState,
 )
 
 /** Interrupted is a gateway message that reports an interruption. */

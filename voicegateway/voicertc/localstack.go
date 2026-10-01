@@ -278,12 +278,24 @@ func (s *localStackSession) close() error {
 	return nil
 }
 
-func (s *localStackSession) clearTurnCancel(generation int) {
+// reportTurnState sends state unless a newer turn superseded generation. It
+// sends under the lock so a superseded turn cannot overwrite a newer state.
+func (s *localStackSession) reportTurnState(generation int, state voicev1.TurnState) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.turnGeneration == generation {
+		s.emit(&voicev1.TurnStatus{Kind: voicev1.MessageKindTurnStatus, State: state})
+	}
+}
+
+// finishTurn releases the turn and reports idle unless a newer turn started.
+func (s *localStackSession) finishTurn(generation int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.turnGeneration == generation {
 		s.turnCancel = nil
+		s.emit(&voicev1.TurnStatus{Kind: voicev1.MessageKindTurnStatus, State: voicev1.TurnStateIdle})
 	}
-	s.mu.Unlock()
 }
 
 func (s *localStackSession) startUserMessage(ctx context.Context, text string) {
@@ -305,8 +317,8 @@ func (s *localStackSession) startUserMessage(ctx context.Context, text string) {
 		return
 	}
 	go func() {
-		defer s.clearTurnCancel(generation)
-		s.handleUserText(turnCtx, conv, text)
+		defer s.finishTurn(generation)
+		s.handleUserText(turnCtx, generation, conv, text)
 	}()
 }
 
@@ -330,13 +342,14 @@ func (s *localStackSession) startTurn(ctx context.Context, utterance []byte) {
 	case <-s.toolResults:
 	default:
 	}
+	s.reportTurnState(generation, voicev1.TurnStateTranscribing)
 	go func() {
-		s.runTurn(turnCtx, conv, utterance)
-		s.clearTurnCancel(generation)
+		defer s.finishTurn(generation)
+		s.runTurn(turnCtx, generation, conv, utterance)
 	}()
 }
 
-func (s *localStackSession) runTurn(ctx context.Context, conv llmConversation, utterance []byte) {
+func (s *localStackSession) runTurn(ctx context.Context, generation int, conv llmConversation, utterance []byte) {
 	text, err := s.asr.transcribe(ctx, utterance)
 	if err != nil {
 		s.warnTurn("asr", err)
@@ -346,10 +359,11 @@ func (s *localStackSession) runTurn(ctx context.Context, conv llmConversation, u
 		return
 	}
 	s.emit(&voicev1.TranscriptDelta{Kind: voicev1.MessageKindTranscriptDelta, Speaker: voicev1.SpeakerUser, Text: text})
-	s.handleUserText(ctx, conv, text)
+	s.handleUserText(ctx, generation, conv, text)
 }
 
-func (s *localStackSession) handleUserText(ctx context.Context, conv llmConversation, text string) {
+func (s *localStackSession) handleUserText(ctx context.Context, generation int, conv llmConversation, text string) {
+	s.reportTurnState(generation, voicev1.TurnStateThinking)
 	step, err := conv.user(ctx, text)
 	if err != nil {
 		s.warnTurn("llm", err)

@@ -25,6 +25,9 @@ import {
   MessageKindError,
   MessageKindSessionReady,
   MessageKindToolCall,
+  MessageKindTurnStatus,
+  TurnStateIdle,
+  TurnStateThinking,
   VoiceRTCConnectivityIssueUDPUnreachable,
   VoiceRTCConnectivitySideNetwork,
   type VoiceRTCAnswerResp,
@@ -387,6 +390,20 @@ describe("VoiceSession", () => {
     expect(mcpMocks.mcpCallTool).not.toHaveBeenCalled();
     expect(chime.playDisconnected).toHaveBeenCalledOnce();
     expect(session.state.connected).toBe(false);
+  });
+
+  it("tracks gateway turn status until disconnect", async () => {
+    const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
+    await session.connect();
+    const channel = FakePeerConnection.dataChannels[0];
+    channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindSessionReady }) }));
+    channel?.onmessage?.(
+      new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindTurnStatus, state: TurnStateThinking }) }),
+    );
+    await vi.waitFor(() => expect(session.state.turnState).toBe(TurnStateThinking));
+
+    session.disconnect();
+    expect(session.state.turnState).toBe(TurnStateIdle);
   });
 
   it("chimes once when voice mode connects and disconnects", async () => {

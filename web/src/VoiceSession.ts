@@ -13,6 +13,8 @@ import {
   type ToolResult,
   type ToolCall,
   type TranscriptDelta,
+  type TurnState,
+  type TurnStatus,
   type VoiceRTCClientDiagnostics,
   type VoiceRTCDiagnosticsResp,
   MessageKindContextUpdate,
@@ -26,6 +28,8 @@ import {
   MessageKindToolCall,
   MessageKindToolResult,
   MessageKindTranscriptDelta,
+  MessageKindTurnStatus,
+  TurnStateIdle,
   type ServiceAuthorization,
 } from "../../sdk/voicegateway/ts/v1/types.gen";
 
@@ -248,6 +252,8 @@ export interface VoiceState {
   speaking: boolean;
   muted: boolean;
   activeTool: string | null;
+  /** Gateway work before assistant output; idle when the gateway does not report any. */
+  turnState: TurnState;
   transcript: TranscriptEntry[];
   micLevel: number;
   error: string | null;
@@ -301,6 +307,7 @@ export class VoiceSession {
       speaking: false,
       muted: false,
       activeTool: null,
+      turnState: TurnStateIdle,
       transcript: [],
       micLevel: 0,
       error: null,
@@ -645,6 +652,7 @@ export class VoiceSession {
       s.connectStatus = null;
       s.connectPhase = null;
       s.activeTool = null;
+      s.turnState = TurnStateIdle;
       s.micLevel = 0;
       s.transcript = s.transcript.map((e) => ({ ...e, final: true }));
     });
@@ -739,6 +747,7 @@ export class VoiceSession {
       this._update((s) => {
         s.speaking = false;
         s.activeTool = null;
+        s.turnState = TurnStateIdle;
       });
       this._recoveryContext = buildRecoveryContext(this.state.transcript);
       void this._connect(true);
@@ -909,6 +918,14 @@ export class VoiceSession {
       this._update((s) => {
         s.speaking = false;
         s.activeTool = null;
+      });
+      return;
+    }
+
+    if (env.kind === MessageKindTurnStatus) {
+      const msg = JSON.parse(text) as TurnStatus;
+      this._update((s) => {
+        s.turnState = msg.state;
       });
       return;
     }

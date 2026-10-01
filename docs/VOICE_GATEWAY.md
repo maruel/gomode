@@ -110,7 +110,12 @@ fetch a fresh token before diagnostics.
 | Direction | Kinds |
 |---|---|
 | client → gateway | `session.setup`, `context.update`, `user.message`, `tool.result`, `turn.cancel`, `session.close` |
-| gateway → client | `session.ready`, `transcript.delta`, `assistant.text.delta`, `speech.started`, `speech.ended`, `tool.call`, `interrupted`, `error` |
+| gateway → client | `session.ready`, `transcript.delta`, `assistant.text.delta`, `speech.started`, `speech.ended`, `tool.call`, `turn.status`, `interrupted`, `error` |
+
+`turn.status` reports gateway work before assistant output: `transcribing`,
+`thinking`, then `idle` when the turn ends, including a turn with no reply.
+Only backends that observe their own stages send it; clients treat its absence
+as `idle`. Clients show an active tool first, then speech, then the turn state.
 
 The client builds `session.setup.tools` from active SKILL.md frontmatter: MCP
 servers and their tool allowlists. The gateway receives only provider-neutral

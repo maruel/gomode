@@ -30,6 +30,11 @@ flowchart LR
 - The selected TTS engine takes one request per fragment and streams PCM for
   each. Its 24 kHz mono S16LE output needs no resampling.
 - Barge-in cancels the active turn and clears buffered assistant audio.
+- `turn.status` reports `transcribing` at end of speech, `thinking` before
+  generation, and `idle` when the turn ends. A turn superseded by newer speech
+  reports nothing, so its late end cannot clear the newer turn's state.
+- An interrupted turn keeps its user text: the next utterance joins it in one
+  user message, since genai requires alternating roles.
 - The bridge drains assistant PCM at realtime from an unbounded buffer, so TTS
   can queue audio ahead of playback.
 - Logs report TTS first audio per fragment, buffer depth, and first assistant

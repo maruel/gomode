@@ -132,6 +132,86 @@ func TestLocalStackSession(t *testing.T) {
 		}
 	})
 
+	t.Run("turn status", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalStackBackend(
+			func() vadSegmenter { return &energyVAD{} },
+			placeholderASR{}, placeholderLLM{}, placeholderTTS{},
+		)
+		sink := &captureSink{}
+		sess, err := backend.connect(t.Context(), "status", sink)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = sess.close() })
+		setup := mustJSON(t, voicev1.SessionSetup{
+			Kind:  voicev1.MessageKindSessionSetup,
+			Tools: []voicev1.ToolDeclaration{{Name: "tasks_list", Description: "List tasks", Parameters: json.RawMessage(`{}`)}},
+		})
+		if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
+			t.Fatal(err)
+		}
+		mustAcceptMic(t, sess, loudPCM(200))
+		mustAcceptMic(t, sess, silencePCM(vadSilenceHangoverMS+vadFrameMS))
+		waitForKind(t, sink, voicev1.MessageKindToolCall)
+		call := decodeToolCall(t, sink)
+		result := mustJSON(t, voicev1.ToolResult{Kind: voicev1.MessageKindToolResult, ID: call.ID, Name: call.Name, Result: json.RawMessage(`{}`)})
+		if err := sess.acceptClientMessage(t.Context(), result); err != nil {
+			t.Fatal(err)
+		}
+		waitForTurnStates(t, sink, 3)
+
+		want := []voicev1.TurnState{voicev1.TurnStateTranscribing, voicev1.TurnStateThinking, voicev1.TurnStateIdle}
+		if got := sink.turnStates(); !slices.Equal(got, want) {
+			t.Fatalf("turn states = %v, want %v", got, want)
+		}
+		kinds := sink.kinds()
+		if first, transcript := slices.Index(kinds, voicev1.MessageKindTurnStatus), slices.Index(kinds, voicev1.MessageKindTranscriptDelta); first > transcript {
+			t.Fatalf("kinds = %v, want transcribing before the user transcript", kinds)
+		}
+		if kinds[len(kinds)-1] != voicev1.MessageKindTurnStatus || !slices.Contains(kinds, voicev1.MessageKindSpeechEnded) {
+			t.Fatalf("kinds = %v, want idle after speech ends", kinds)
+		}
+	})
+
+	t.Run("superseded turn keeps newer status", func(t *testing.T) {
+		t.Parallel()
+		llm := &blockingLLM{finished: make(chan struct{}, 2)}
+		backend := newLocalStackBackend(
+			func() vadSegmenter { return &energyVAD{} },
+			placeholderASR{}, llm, placeholderTTS{},
+		)
+		sink := &captureSink{}
+		sess, err := backend.connect(t.Context(), "superseded", sink)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = sess.close() })
+		if err := sess.acceptClientMessage(t.Context(), mustJSON(t, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})); err != nil {
+			t.Fatal(err)
+		}
+		for i, text := range []string{"one", "two"} {
+			if err := sess.acceptClientMessage(t.Context(), mustJSON(t, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: text})); err != nil {
+				t.Fatal(err)
+			}
+			waitForTurnStates(t, sink, i+1)
+		}
+		// The first turn ends after the second started; it must not report idle.
+		<-llm.finished
+		time.Sleep(100 * time.Millisecond)
+		if got := sink.turnStates(); !slices.Equal(got, []voicev1.TurnState{voicev1.TurnStateThinking, voicev1.TurnStateThinking}) {
+			t.Fatalf("turn states after superseded turn ended = %v, want two thinking", got)
+		}
+		if err := sess.acceptClientMessage(t.Context(), mustJSON(t, voicev1.TurnCancel{Kind: voicev1.MessageKindTurnCancel})); err != nil {
+			t.Fatal(err)
+		}
+		waitForTurnStates(t, sink, 3)
+		want := []voicev1.TurnState{voicev1.TurnStateThinking, voicev1.TurnStateThinking, voicev1.TurnStateIdle}
+		if got := sink.turnStates(); !slices.Equal(got, want) {
+			t.Fatalf("turn states = %v, want %v", got, want)
+		}
+	})
+
 	t.Run("setup includes initial context", func(t *testing.T) {
 		t.Parallel()
 		conv := &fakeConversation{}
@@ -465,76 +545,109 @@ func TestGenaiToolDefs(t *testing.T) {
 
 func TestGenaiConversation(t *testing.T) {
 	t.Parallel()
-	p := &fakeGenAIProvider{}
-	conv := (&genaiLLMAdapter{provider: p}).newConversation("Answer briefly.", []voicev1.ToolDeclaration{{
-		Name:        "tasks_list",
-		Description: "List tasks",
-		Parameters:  json.RawMessage(`{"type":"object"}`),
-	}})
-	conv.addContext("Project: caic")
+	t.Run("toolResult", func(t *testing.T) {
+		t.Parallel()
+		p := &fakeGenAIProvider{}
+		conv := (&genaiLLMAdapter{provider: p}).newConversation("Answer briefly.", []voicev1.ToolDeclaration{{
+			Name:        "tasks_list",
+			Description: "List tasks",
+			Parameters:  json.RawMessage(`{"type":"object"}`),
+		}})
+		conv.addContext("Project: caic")
 
-	step, err := conv.user(t.Context(), "What is next?")
-	if err != nil {
-		t.Fatal(err)
-	}
-	reply, deltas := finishLLMStep(t, step)
-	if len(deltas) != 0 {
-		t.Fatalf("initial text deltas = %#v, want none before tool call", deltas)
-	}
-	if reply.toolCall == nil {
-		t.Fatal("toolCall = nil, want tool call")
-	}
-	if reply.toolCall.id == "" {
-		t.Fatal("toolCall.id is empty")
-	}
-	if reply.toolCall.name != "tasks_list" {
-		t.Errorf("toolCall.name = %q, want tasks_list", reply.toolCall.name)
-	}
-	if string(reply.toolCall.args) != `{"limit":1}` {
-		t.Errorf("toolCall.args = %s, want limit argument", reply.toolCall.args)
-	}
-	callID := reply.toolCall.id
+		step, err := conv.user(t.Context(), "What is next?")
+		if err != nil {
+			t.Fatal(err)
+		}
+		reply, deltas := finishLLMStep(t, step)
+		if len(deltas) != 0 {
+			t.Fatalf("initial text deltas = %#v, want none before tool call", deltas)
+		}
+		if reply.toolCall == nil {
+			t.Fatal("toolCall = nil, want tool call")
+		}
+		if reply.toolCall.id == "" {
+			t.Fatal("toolCall.id is empty")
+		}
+		if reply.toolCall.name != "tasks_list" {
+			t.Errorf("toolCall.name = %q, want tasks_list", reply.toolCall.name)
+		}
+		if string(reply.toolCall.args) != `{"limit":1}` {
+			t.Errorf("toolCall.args = %s, want limit argument", reply.toolCall.args)
+		}
+		callID := reply.toolCall.id
 
-	step, err = conv.toolResult(t.Context(), reply.toolCall.id, reply.toolCall.name, json.RawMessage(`{"tasks":[]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	reply, deltas = finishLLMStep(t, step)
-	if want := []string{"Done."}; !slices.Equal(deltas, want) {
-		t.Fatalf("post-tool text deltas = %#v, want %#v", deltas, want)
-	}
-	if reply.text != "Done." {
-		t.Errorf("reply.text = %q, want Done.", reply.text)
-	}
+		step, err = conv.toolResult(t.Context(), reply.toolCall.id, reply.toolCall.name, json.RawMessage(`{"tasks":[]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		reply, deltas = finishLLMStep(t, step)
+		if want := []string{"Done."}; !slices.Equal(deltas, want) {
+			t.Fatalf("post-tool text deltas = %#v, want %#v", deltas, want)
+		}
+		if reply.text != "Done." {
+			t.Errorf("reply.text = %q, want Done.", reply.text)
+		}
 
-	calls := p.callsSnapshot()
-	if len(calls) != 2 {
-		t.Fatalf("calls = %d, want 2", len(calls))
-	}
-	if got := calls[0].messages[0].String(); got != "Current context:\nProject: caic\n\nUser said:\nWhat is next?" {
-		t.Errorf("first user message = %q", got)
-	}
-	if len(calls[1].messages) != 3 {
-		t.Fatalf("second call messages = %d, want user, assistant tool call, tool result", len(calls[1].messages))
-	}
-	if got := calls[1].messages[1].Replies[0].ToolCall.ID; got != callID {
-		t.Errorf("assistant history tool call ID = %q, want %q", got, callID)
-	}
-	if len(calls[1].messages[2].ToolCallResults) != 1 {
-		t.Fatalf("second call last message = %#v, want tool result", calls[1].messages[2])
-	}
-	if calls[1].messages[2].ToolCallResults[0].Result != `{"tasks":[]}` {
-		t.Errorf("tool result = %q, want JSON object", calls[1].messages[2].ToolCallResults[0].Result)
-	}
-	if !calls[0].hasSystemPrompt("Answer briefly.") {
-		t.Fatal("missing system prompt option")
-	}
-	if !calls[0].hasTools() {
-		t.Fatal("missing tools option")
-	}
-	if !calls[1].hasTools() {
-		t.Fatal("post-tool generation omitted tools")
-	}
+		calls := p.callsSnapshot()
+		if len(calls) != 2 {
+			t.Fatalf("calls = %d, want 2", len(calls))
+		}
+		if got := calls[0].messages[0].String(); got != "Current context:\nProject: caic\n\nUser said:\nWhat is next?" {
+			t.Errorf("first user message = %q", got)
+		}
+		if len(calls[1].messages) != 3 {
+			t.Fatalf("second call messages = %d, want user, assistant tool call, tool result", len(calls[1].messages))
+		}
+		if got := calls[1].messages[1].Replies[0].ToolCall.ID; got != callID {
+			t.Errorf("assistant history tool call ID = %q, want %q", got, callID)
+		}
+		if len(calls[1].messages[2].ToolCallResults) != 1 {
+			t.Fatalf("second call last message = %#v, want tool result", calls[1].messages[2])
+		}
+		if calls[1].messages[2].ToolCallResults[0].Result != `{"tasks":[]}` {
+			t.Errorf("tool result = %q, want JSON object", calls[1].messages[2].ToolCallResults[0].Result)
+		}
+		if !calls[0].hasSystemPrompt("Answer briefly.") {
+			t.Fatal("missing system prompt option")
+		}
+		if !calls[0].hasTools() {
+			t.Fatal("missing tools option")
+		}
+		if !calls[1].hasTools() {
+			t.Fatal("post-tool generation omitted tools")
+		}
+	})
+	t.Run("user after unanswered user", func(t *testing.T) {
+		t.Parallel()
+		// A new utterance cancels the turn in flight, as when speech interrupts
+		// a client greeting or the VAD splits a sentence at a pause.
+		p := &fakeGenAIProvider{}
+		conv := (&genaiLLMAdapter{provider: p}).newConversation("Answer briefly.", nil)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		step, err := conv.user(ctx, "Set a timer")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range step.text {
+		}
+		if _, err := step.finish(); !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled finish error = %v, want context.Canceled", err)
+		}
+
+		step, err = conv.user(t.Context(), "for five minutes.")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reply, _ := finishLLMStep(t, step); reply.text != "Done." {
+			t.Errorf("reply.text = %q, want Done.", reply.text)
+		}
+		calls := p.callsSnapshot()
+		if got := calls[len(calls)-1].messages; len(got) != 1 || got[0].String() != "Set a timer\nfor five minutes." {
+			t.Fatalf("history = %#v, want one user message with both utterances", got)
+		}
+	})
 }
 
 func finishLLMStep(t *testing.T, step llmStep) (reply llmReply, deltas []string) {
@@ -747,6 +860,23 @@ func (c *captureSink) assistantText() string {
 	return out.String()
 }
 
+func (c *captureSink) turnStates() []voicev1.TurnState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var states []voicev1.TurnState
+	for _, m := range c.msgs {
+		var msg voicev1.TurnStatus
+		if json.Unmarshal(m, &msg) == nil && msg.Kind == voicev1.MessageKindTurnStatus {
+			states = append(states, msg.State)
+		}
+	}
+	return states
+}
+
+func waitForTurnStates(t *testing.T, sink *captureSink, count int) {
+	waitForKindCount(t, sink, voicev1.MessageKindTurnStatus, count)
+}
+
 func decodeToolCall(t *testing.T, sink *captureSink) voicev1.ToolCall {
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
@@ -840,6 +970,28 @@ func (echoConv) toolResult(context.Context, string, string, json.RawMessage) (ll
 }
 
 func (echoConv) addContext(string) {}
+
+// blockingLLM generates until its turn is cancelled and reports each end.
+type blockingLLM struct{ finished chan struct{} }
+
+func (l *blockingLLM) newConversation(string, []voicev1.ToolDeclaration) llmConversation { return l }
+
+func (l *blockingLLM) user(ctx context.Context, _ string) (llmStep, error) {
+	return llmStep{
+		text: func(func(string) bool) {},
+		finish: func() (llmReply, error) {
+			<-ctx.Done()
+			l.finished <- struct{}{}
+			return llmReply{}, ctx.Err()
+		},
+	}, nil
+}
+
+func (l *blockingLLM) toolResult(ctx context.Context, _, _ string, _ json.RawMessage) (llmStep, error) {
+	return l.user(ctx, "")
+}
+
+func (l *blockingLLM) addContext(string) {}
 
 type longTTS struct{ ms int }
 
@@ -1012,7 +1164,7 @@ func (p *fakeGenAIProvider) Scoreboard() scoreboard.Score { return scoreboard.Sc
 
 func (p *fakeGenAIProvider) HTTPClient() *http.Client { return nil }
 
-func (p *fakeGenAIProvider) GenStream(_ context.Context, msgs genai.Messages, opts ...genai.GenOption) (fragmentsSeq iter.Seq[genai.Reply], finish func() (genai.Result, error)) {
+func (p *fakeGenAIProvider) GenStream(ctx context.Context, msgs genai.Messages, opts ...genai.GenOption) (fragmentsSeq iter.Seq[genai.Reply], finish func() (genai.Result, error)) {
 	p.mu.Lock()
 	p.calls = append(p.calls, fakeGenAICall{
 		messages: append(genai.Messages(nil), msgs...),
@@ -1035,6 +1187,13 @@ func (p *fakeGenAIProvider) GenStream(_ context.Context, msgs genai.Messages, op
 				}
 			}
 		}, func() (genai.Result, error) {
+			// Real providers reject invalid histories and stop on cancellation.
+			if err := msgs.Validate(); err != nil {
+				return genai.Result{}, err
+			}
+			if err := ctx.Err(); err != nil {
+				return genai.Result{}, err
+			}
 			return genai.Result{Replies: replies}, nil
 		}
 }

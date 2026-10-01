@@ -326,9 +326,24 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 		Context: voicev1.Context{SystemInstruction: "You are a terse voice assistant. Call set_timer whenever the user asks for a timer. After the tool result, confirm in one short sentence."},
 	})
 
+	// web/src/VoiceSession.ts greets on session.ready, so the spoken request
+	// is the second user turn, as it is in caic.
+	sendVoiceRTCJSON(ctx, t, s.dc, &voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "Say exactly one word: Ready"})
+	data := waitForVoiceRTCMessage(ctx, t, s.messages, s.signalErrs, voicev1.MessageKindAssistantTextDelta)
+	var greeting voicev1.AssistantTextDelta
+	if err := json.Unmarshal(data, &greeting); err != nil {
+		t.Fatal(err)
+	}
+	if smokeWords(greeting.Text) != "ready" {
+		t.Fatalf("greeting = %q, want Ready", greeting.Text)
+	}
+	waitForVoiceRTCMessage(ctx, t, s.messages, s.signalErrs, voicev1.MessageKindSpeechEnded)
+	waitForSmokeTurnState(ctx, t, s, voicev1.TurnStateIdle)
+
 	turn := time.Now()
 	writePCM24MicAudio(ctx, t, s.micTrack, speech)
-	data := waitForVoiceRTCMessage(ctx, t, s.messages, s.signalErrs, voicev1.MessageKindTranscriptDelta)
+	waitForSmokeTurnState(ctx, t, s, voicev1.TurnStateTranscribing)
+	data = waitForVoiceRTCMessage(ctx, t, s.messages, s.signalErrs, voicev1.MessageKindTranscriptDelta)
 	var transcript voicev1.TranscriptDelta
 	if err := json.Unmarshal(data, &transcript); err != nil {
 		t.Fatal(err)
@@ -337,6 +352,7 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 		t.Fatalf("user transcript = %+v, want user saying set a timer for five minutes", transcript)
 	}
 	t.Logf("user transcript after %s: %s", smokeElapsed(turn), transcript.Text)
+	waitForSmokeTurnState(ctx, t, s, voicev1.TurnStateThinking)
 
 	data = waitForVoiceRTCMessage(ctx, t, s.messages, s.signalErrs, voicev1.MessageKindToolCall)
 	var call voicev1.ToolCall
@@ -383,12 +399,26 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 		t.Fatal(ctx.Err())
 	}
 
+	waitForSmokeTurnState(ctx, t, s, voicev1.TurnStateIdle)
+
 	var closed voicev1.StatusResp
 	if err := smokeGatewayCall(ctx, http.MethodPost, api+"/rtc/"+s.sessionID, service.Token, nil, &closed); err != nil {
 		t.Fatal(err)
 	}
 	if closed.Status != "closed" || bridge.HasSession(s.sessionID) {
 		t.Fatalf("close status = %q, bridge has session = %t; want closed and removed", closed.Status, bridge.HasSession(s.sessionID))
+	}
+}
+
+// waitForSmokeTurnState requires the next turn.status message to report want.
+func waitForSmokeTurnState(ctx context.Context, t *testing.T, s *voiceRTCTestSession, want voicev1.TurnState) {
+	data := waitForVoiceRTCMessage(ctx, t, s.messages, s.signalErrs, voicev1.MessageKindTurnStatus)
+	var status voicev1.TurnStatus
+	if err := json.Unmarshal(data, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.State != want {
+		t.Fatalf("turn state = %q, want %q", status.State, want)
 	}
 }
 

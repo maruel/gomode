@@ -34,6 +34,7 @@ func SDKAPI() apispec.Config[voiceapi.ErrorCode] {
 			reflect.TypeFor[SpeechStarted](),
 			reflect.TypeFor[SpeechEnded](),
 			reflect.TypeFor[ToolCall](),
+			reflect.TypeFor[TurnStatus](),
 			reflect.TypeFor[Interrupted](),
 			reflect.TypeFor[Error](),
 		},

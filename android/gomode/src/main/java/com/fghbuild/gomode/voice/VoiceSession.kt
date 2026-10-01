@@ -25,6 +25,8 @@ import com.caic.voicegateway.sdk.v1.ToolCall
 import com.caic.voicegateway.sdk.v1.ToolDeclaration
 import com.caic.voicegateway.sdk.v1.ToolResult
 import com.caic.voicegateway.sdk.v1.TranscriptDelta
+import com.caic.voicegateway.sdk.v1.TurnState
+import com.caic.voicegateway.sdk.v1.TurnStatus
 import com.caic.voicegateway.sdk.v1.UserMessage
 import com.caic.voicegateway.sdk.v1.VoiceConfig
 import com.caic.voicegateway.sdk.v1.VoiceRTCClientDiagnostics
@@ -254,6 +256,7 @@ class VoiceSession(
                 connected = false,
                 listening = false,
                 speaking = false,
+                turnState = TurnState.Idle,
                 error = message,
                 errorId = it.errorId + 1,
             )
@@ -745,7 +748,7 @@ class VoiceSession(
                 reconnectJob = null
                 if (peerConnection === pc && recoveryPolicy.beginScheduledRecovery()) {
                     speakerActive = false
-                    _state.update { it.copy(speaking = false) }
+                    _state.update { it.copy(speaking = false, turnState = TurnState.Idle) }
                     recoveryContext = buildNetworkRecoveryContext(_state.value.transcript)
                     connect(preserveTranscript = true)
                 }
@@ -1094,6 +1097,11 @@ class VoiceSession(
                     speakerActive = false
                     flushPendingNotifications()
                     _state.update { it.copy(speaking = false, activeTool = null) }
+                }
+
+                MessageKind.TurnStatus -> {
+                    val msg = json.decodeFromString(TurnStatus.serializer(), text)
+                    _state.update { it.copy(turnState = msg.state) }
                 }
 
                 MessageKind.ToolCall -> {
@@ -1447,6 +1455,8 @@ data class VoiceState(
     val speaking: Boolean = false,
     val muted: Boolean = false,
     val activeTool: String? = null,
+    /** Gateway work before assistant output; idle when the gateway does not report any. */
+    val turnState: TurnState = TurnState.Idle,
     val error: String? = null,
     val errorId: Long = 0,
     /** Conversation transcript log; each entry is one speaker turn. */

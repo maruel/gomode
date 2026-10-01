@@ -42,6 +42,7 @@ export type MessageKind =
   | "speech.started"
   | "speech.ended"
   | "tool.call"
+  | "turn.status"
   | "interrupted"
   | "error";
 /**
@@ -59,6 +60,7 @@ export const MessageKindAssistantTextDelta = "assistant.text.delta";
 export const MessageKindSpeechStarted = "speech.started";
 export const MessageKindSpeechEnded = "speech.ended";
 export const MessageKindToolCall = "tool.call";
+export const MessageKindTurnStatus = "turn.status";
 export const MessageKindInterrupted = "interrupted";
 export const MessageKindError = "error";
 
@@ -70,6 +72,17 @@ export type Speaker =
  */
 export const SpeakerUser = "user";
 export const SpeakerAssistant = "assistant";
+
+export type TurnState =
+  | "idle"
+  | "thinking"
+  | "transcribing";
+/**
+ * Supported values.
+ */
+export const TurnStateIdle = "idle";
+export const TurnStateThinking = "thinking";
+export const TurnStateTranscribing = "transcribing";
 
 export type VoiceRTCConnectionState =
   | "new"
@@ -440,6 +453,22 @@ export interface ToolCall {
   name: string;
   /** Args is the JSON argument object for the requested tool. */
   args: any /* json.RawMessage */;
+}
+
+/**
+ * TurnStatus is a gateway message that reports work on the current turn.
+ *
+ * Backends that cannot observe their own progress never send it. Speech
+ * output and tool calls take display precedence over the reported state.
+ */
+export interface TurnStatus {
+  /** Kind is "turn.status". */
+  kind: MessageKind;
+  /**
+   * State is the gateway work in progress; idle ends the turn, including
+   * one that produced no speech.
+   */
+  state: TurnState;
 }
 
 /** Interrupted is a gateway message that reports an interruption. */

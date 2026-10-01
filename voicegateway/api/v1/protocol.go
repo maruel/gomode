@@ -32,6 +32,8 @@ const (
 	MessageKindSpeechEnded MessageKind = "speech.ended"
 	// MessageKindToolCall asks the client to execute a tool.
 	MessageKindToolCall MessageKind = "tool.call"
+	// MessageKindTurnStatus reports gateway work on the current turn.
+	MessageKindTurnStatus MessageKind = "turn.status"
 	// MessageKindInterrupted reports an interruption.
 	MessageKindInterrupted MessageKind = "interrupted"
 	// MessageKindError reports a gateway error.
@@ -56,6 +58,18 @@ const (
 	InterruptSourceUser InterruptSource = "user"
 	// InterruptSourceTool means tool execution was cancelled.
 	InterruptSourceTool InterruptSource = "tool"
+)
+
+// TurnState identifies the gateway work that precedes assistant output.
+type TurnState string
+
+const (
+	// TurnStateIdle means the gateway has no turn in progress.
+	TurnStateIdle TurnState = "idle"
+	// TurnStateThinking means the assistant is generating a response.
+	TurnStateThinking TurnState = "thinking"
+	// TurnStateTranscribing means the gateway is converting user speech to text.
+	TurnStateTranscribing TurnState = "transcribing"
 )
 
 // MessageEnvelope carries the kind used to dispatch data-channel messages.
@@ -196,6 +210,18 @@ type SpeechEnded struct {
 	Kind MessageKind `json:"kind"`
 	// Speaker identifies whose speech output ended.
 	Speaker Speaker `json:"speaker"`
+}
+
+// TurnStatus is a gateway message that reports work on the current turn.
+//
+// Backends that cannot observe their own progress never send it. Speech
+// output and tool calls take display precedence over the reported state.
+type TurnStatus struct {
+	// Kind is "turn.status".
+	Kind MessageKind `json:"kind"`
+	// State is the gateway work in progress; idle ends the turn, including
+	// one that produced no speech.
+	State TurnState `json:"state"`
 }
 
 // Interrupted is a gateway message that reports an interruption.

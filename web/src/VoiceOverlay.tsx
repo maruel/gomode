@@ -2,6 +2,7 @@
 
 import { createEffect, createSignal, For, Show, onCleanup, onMount, type Accessor, type JSX } from "solid-js";
 
+import { TurnStateThinking, TurnStateTranscribing } from "../../sdk/voicegateway/ts/v1/types.gen";
 import { voiceSession } from "./VoiceSession";
 import type { VoiceState, TranscriptEntry } from "./VoiceSession";
 import { notifications } from "./notifications";
@@ -65,6 +66,8 @@ export interface VoiceOverlayMessages {
   signaling: string;
   speaker: string;
   speaking: string;
+  thinking: string;
+  transcribing: string;
   transcript: string;
   transcriptPlaceholder: string;
   unmute: string;
@@ -91,6 +94,8 @@ export const defaultVoiceOverlayMessages: VoiceOverlayMessages = {
   signaling: "Signaling…",
   speaker: "Speaker",
   speaking: "Speaking…",
+  thinking: "Thinking…",
+  transcribing: "Transcribing…",
   transcript: "Transcript",
   transcriptPlaceholder: "Transcript will appear here…",
   unmute: "Unmute",
@@ -351,15 +356,27 @@ function ActivePanel(props: {
   onSelectOutput: (id: string) => void;
   onClearTranscript: () => void;
 }) {
+  // Gateway work outranks muting: a muted user still waits for the reply.
+  const busyText = () => {
+    if (props.state.turnState === TurnStateTranscribing) return props.messages().transcribing;
+    if (props.state.turnState === TurnStateThinking) return props.messages().thinking;
+    return null;
+  };
+
   const statusText = () => {
     if (props.state.activeTool !== null) return props.state.activeTool;
-    if (props.state.muted && !props.state.speaking) return props.messages().muted;
     if (props.state.speaking) return props.messages().speaking;
+    const busy = busyText();
+    if (busy !== null) return busy;
+    if (props.state.muted) return props.messages().muted;
     return props.messages().listening;
   };
 
-  const statusClass = () =>
-    props.state.activeTool !== null ? `${styles.statusText} ${styles.statusTool}` : styles.statusText;
+  const statusClass = () => {
+    if (props.state.activeTool !== null) return `${styles.statusText} ${styles.statusTool}`;
+    if (!props.state.speaking && busyText() !== null) return `${styles.statusText} ${styles.statusBusy}`;
+    return styles.statusText;
+  };
 
   return (
     <>

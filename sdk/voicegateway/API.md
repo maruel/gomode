@@ -72,6 +72,7 @@ MessageKind identifies a voice gateway WebRTC data-channel message.
 | `speech.started` | MessageKindSpeechStarted reports that speech output started. |
 | `speech.ended` | MessageKindSpeechEnded reports that speech output ended. |
 | `tool.call` | MessageKindToolCall asks the client to execute a tool. |
+| `turn.status` | MessageKindTurnStatus reports gateway work on the current turn. |
 | `interrupted` | MessageKindInterrupted reports an interruption. |
 | `error` | MessageKindError reports a gateway error. |
 
@@ -83,6 +84,16 @@ Speaker identifies a transcript or speech speaker.
 |-------|-------------|
 | `user` | SpeakerUser is the human speaker. |
 | `assistant` | SpeakerAssistant is the assistant speaker. |
+
+### TurnState
+
+TurnState identifies the gateway work that precedes assistant output.
+
+| Value | Description |
+|-------|-------------|
+| `idle` | TurnStateIdle means the gateway has no turn in progress. |
+| `thinking` | TurnStateThinking means the assistant is generating a response. |
+| `transcribing` | TurnStateTranscribing means the gateway is converting user speech to text. |
 
 ### VoiceRTCConnectionState
 
@@ -436,6 +447,19 @@ ToolCall is a gateway message that asks the client to execute a tool.
 | `id` | `string` | ID uniquely identifies this tool call for the matching tool.result. | yes |
 | `name` | `string` | Name is the requested tool name. | yes |
 | `args` | `JSONValue` | Args is the JSON argument object for the requested tool. | yes |
+
+### TurnStatus
+
+TurnStatus is a gateway message that reports work on the current turn.
+
+Backends that cannot observe their own progress never send it. Speech
+output and tool calls take display precedence over the reported state.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `kind` | `MessageKind` | Kind is "turn.status". | yes |
+| `state` | `TurnState` | State is the gateway work in progress; idle ends the turn, including
+one that produced no speech. | yes |
 
 ### Interrupted
 

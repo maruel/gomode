@@ -98,6 +98,7 @@ public struct MessageKind: Codable, Equatable, Hashable {
     public static let SpeechStarted = MessageKind("speech.started")
     public static let SpeechEnded = MessageKind("speech.ended")
     public static let ToolCall = MessageKind("tool.call")
+    public static let TurnStatus = MessageKind("turn.status")
     public static let Interrupted = MessageKind("interrupted")
     public static let Error = MessageKind("error")
 
@@ -123,6 +124,28 @@ public struct Speaker: Codable, Equatable, Hashable {
     public static let Assistant = Speaker("assistant")
 
     public static func other(_ value: String) -> Speaker { Speaker(value) }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        value = try c.decode(String.self)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(value)
+    }
+}
+
+public struct TurnState: Codable, Equatable, Hashable {
+    public let value: String
+
+    public init(_ value: String) { self.value = value }
+
+    public static let Idle = TurnState("idle")
+    public static let Thinking = TurnState("thinking")
+    public static let Transcribing = TurnState("transcribing")
+
+    public static func other(_ value: String) -> TurnState { TurnState(value) }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
@@ -561,6 +584,18 @@ public struct ToolCall: Codable {
     public let name: String
     /// Args is the JSON argument object for the requested tool.
     public let args: JSONValue
+}
+
+/// TurnStatus is a gateway message that reports work on the current turn.
+///
+/// Backends that cannot observe their own progress never send it. Speech
+/// output and tool calls take display precedence over the reported state.
+public struct TurnStatus: Codable {
+    /// Kind is "turn.status".
+    public let kind: MessageKind
+    /// State is the gateway work in progress; idle ends the turn, including
+    /// one that produced no speech.
+    public let state: TurnState
 }
 
 /// Interrupted is a gateway message that reports an interruption.

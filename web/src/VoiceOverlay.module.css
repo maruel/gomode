@@ -102,6 +102,10 @@
   animation: pulse 1s ease-in-out infinite alternate;
 }
 
+.statusBusy {
+  animation: pulse 1s ease-in-out infinite alternate;
+}
+
 .statusTool {
   color: var(--color-plan);
 }
@@ -128,6 +132,13 @@
 
   to {
     opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .statusConnecting,
+  .statusBusy {
+    animation: none;
   }
 }
 

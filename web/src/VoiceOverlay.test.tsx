@@ -6,6 +6,7 @@ import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { createSignal } from "solid-js";
 
+import { TurnStateIdle, TurnStateThinking, TurnStateTranscribing } from "../../sdk/voicegateway/ts/v1/types.gen";
 import VoiceOverlay, { defaultVoiceOverlayMessages, type VoiceOverlayMessages } from "./VoiceOverlay";
 import { notifications } from "./notifications";
 import { voiceSession } from "./VoiceSession";
@@ -26,8 +27,28 @@ beforeEach(() => {
     error: null,
     listening: false,
     speaking: false,
+    muted: false,
+    activeTool: null,
+    turnState: TurnStateIdle,
     transcript: [],
   }));
+});
+
+describe("VoiceOverlay status", () => {
+  it("shows gateway work behind speech and ahead of muting", () => {
+    voiceSession.setState((s) => ({ ...s, connected: true, muted: true, turnState: TurnStateTranscribing }));
+    render(() => <VoiceOverlay />);
+    expect(screen.getByText("Transcribing…")).toBeInTheDocument();
+
+    voiceSession.setState((s) => ({ ...s, turnState: TurnStateThinking }));
+    expect(screen.getByText("Thinking…")).toBeInTheDocument();
+
+    voiceSession.setState((s) => ({ ...s, speaking: true }));
+    expect(screen.getByText("Speaking…")).toBeInTheDocument();
+
+    voiceSession.setState((s) => ({ ...s, speaking: false, turnState: TurnStateIdle }));
+    expect(screen.getByText("Muted")).toBeInTheDocument();
+  });
 });
 
 describe("VoiceOverlay connection", () => {

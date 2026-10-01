@@ -60,6 +60,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import com.caic.voicegateway.sdk.v1.TurnState
 
 private const val PULSE_MIN_ALPHA = 0.5f
 private const val PULSE_MAX_ALPHA = 1.0f
@@ -254,18 +255,12 @@ private fun ActivePanel(
             SettingsButton(onOpenSettings)
             MicLevelIndicator(micLevel = voiceState.micLevel)
 
-            val statusText =
-                when {
-                    voiceState.activeTool != null -> voiceState.activeTool!!
-                    voiceState.muted && !voiceState.speaking -> "Muted"
-                    voiceState.speaking -> "Speaking…"
-                    else -> "Listening…"
-                }
+            val activeTool = voiceState.activeTool
             Text(
-                text = statusText,
+                text = activeTool ?: voiceStatusText(voiceState),
                 style = MaterialTheme.typography.bodyMedium,
                 color =
-                    if (voiceState.activeTool != null) {
+                    if (activeTool != null) {
                         MaterialTheme.colorScheme.tertiary
                     } else {
                         MaterialTheme.colorScheme.onSurface
@@ -474,3 +469,16 @@ private fun MicLevelIndicator(micLevel: Float = 0f) {
         }
     }
 }
+
+/**
+ * Returns the status line when no tool runs. Speech outranks gateway work, and gateway work outranks muting
+ * because a muted user still waits for the reply.
+ */
+internal fun voiceStatusText(state: VoiceState): String =
+    when {
+        state.speaking -> "Speaking…"
+        state.turnState == TurnState.Transcribing -> "Transcribing…"
+        state.turnState == TurnState.Thinking -> "Thinking…"
+        state.muted -> "Muted"
+        else -> "Listening…"
+    }
