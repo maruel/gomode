@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -119,6 +120,40 @@ func TestKittenTTSAdapter(t *testing.T) {
 		}
 	})
 
+	t.Run("Close", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := kittenTTSTestContext(t)
+		t.Cleanup(cancel)
+		// The launcher runs the worker as a grandchild, as uv run does.
+		a, err := newKittenTTSAdapterWithCommand(ctx, kittenTTSTestCommand("launcher"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		endpoint := a.baseURL + kittenTTSSynthesize
+		if err := a.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(`{}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				if ctx.Err() != nil {
+					t.Fatal("worker still serves after Close")
+				}
+				return
+			}
+			if err := resp.Body.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if !sleepCtx(ctx, 10*time.Millisecond) {
+				t.Fatal("worker still serves after Close")
+			}
+		}
+	})
+
 	t.Run("startup error", func(t *testing.T) {
 		t.Parallel()
 		ctx, cancel := kittenTTSTestContext(t)
@@ -173,6 +208,13 @@ func TestKittenTTSAdapterHelperProcess(t *testing.T) { //nolint:paralleltest // 
 		kittenTTSHelperServe(t, true, false, false)
 	case "empty":
 		kittenTTSHelperServe(t, false, false, true)
+	case "launcher":
+		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=TestKittenTTSAdapterHelperProcess", "--", "valid") //nolint:gosec // test helper executes this test binary.
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "worker: %v\n", err)
+			os.Exit(1)
+		}
 	case "startup-error":
 		fmt.Println(`{"kind":"error","error":"missing model"}`)
 	default:
@@ -195,6 +237,11 @@ func kittenTTSTestCommand(mode string) kittenTTSCommandFactory {
 }
 
 func kittenTTSHelperServe(t *testing.T, alwaysFail, requireConcurrent, empty bool) {
+	// Mirror kittentts.py: exit once the adapter closes stdin.
+	go func() {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(0)
+	}()
 	var active atomic.Int32
 	var maxActive atomic.Int32
 	mux := http.NewServeMux()

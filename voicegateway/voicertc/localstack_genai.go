@@ -336,7 +336,22 @@ func (a *genaiASRAdapter) transcribe(ctx context.Context, pcm []byte) (string, e
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(res.String()), nil
+	return parseASRTranscript(res.String()), nil
+}
+
+// parseASRTranscript returns the spoken text from raw ASR model output.
+//
+// Qwen3-ASR prefixes its transcript with detected-language metadata:
+// "language English<asr_text>Hello." or "language None<asr_text>" for audio
+// without speech. Output without the tag is plain text, which keeps other ASR
+// models working. This follows parse_asr_output in
+// https://github.com/QwenLM/Qwen3-ASR/blob/main/qwen_asr/inference/utils.py.
+func parseASRTranscript(raw string) string {
+	_, text, ok := strings.Cut(raw, "<asr_text>")
+	if !ok {
+		return strings.TrimSpace(raw)
+	}
+	return strings.TrimSpace(text)
 }
 
 type genaiLLMAdapter struct {

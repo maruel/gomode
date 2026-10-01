@@ -45,8 +45,12 @@ type kittenTTSAdapter struct {
 	baseURL       string
 	processCancel context.CancelFunc
 	cmd           *exec.Cmd
-	stdout        *bufio.Reader
-	wait          chan error
+	// stdin is the worker's lifeline. The worker exits when it reads EOF,
+	// which happens when the adapter closes it or the gateway process dies.
+	// Killing the uv launcher alone would orphan its Python child.
+	stdin  io.Closer
+	stdout *bufio.Reader
+	wait   chan error
 }
 
 func newKittenTTSAdapter(ctx context.Context) (*kittenTTSAdapter, error) {
@@ -137,6 +141,11 @@ func (a *kittenTTSAdapter) ensureStartedLocked(ctx context.Context) error {
 		cancel()
 		return err
 	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		cancel()
+		return fmt.Errorf("open KittenTTS stdin: %w", err)
+	}
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
@@ -153,6 +162,7 @@ func (a *kittenTTSAdapter) ensureStartedLocked(ctx context.Context) error {
 	}
 	a.processCancel = cancel
 	a.cmd = cmd
+	a.stdin = stdin
 	a.stdout = bufio.NewReader(stdoutPipe)
 	go logKittenTTSOutput(ctx, "stderr", stderrPipe)
 
@@ -241,6 +251,12 @@ func (a *kittenTTSAdapter) stop() error {
 
 func (a *kittenTTSAdapter) stopLocked() error {
 	var errs []error
+	if a.stdin != nil {
+		// exec.Cmd.StdinPipe closes once, so the close in Wait is harmless.
+		if err := a.stdin.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close KittenTTS stdin: %w", err))
+		}
+	}
 	if a.cmd != nil && a.cmd.Process != nil {
 		if err := a.cmd.Process.Kill(); err != nil && !strings.Contains(err.Error(), "process already finished") {
 			errs = append(errs, err)
@@ -260,6 +276,7 @@ func (a *kittenTTSAdapter) stopLocked() error {
 	a.processCancel = nil
 	a.cmd = nil
 	a.baseURL = ""
+	a.stdin = nil
 	a.stdout = nil
 	a.wait = nil
 	return errors.Join(errs...)

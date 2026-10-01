@@ -3,7 +3,9 @@
 
 import argparse
 import json
+import os
 import sys
+import threading
 import traceback
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -104,6 +106,13 @@ def write_control(message: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
+def exit_on_stdin_eof() -> None:
+    # The gateway holds stdin open. EOF means it closed the worker or died, and
+    # killing the uv launcher does not reach this process.
+    sys.stdin.buffer.read()
+    os._exit(0)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the caic KittenTTS HTTP worker.")
     parser.add_argument("--cache-dir", required=True, help="Directory for Hugging Face model cache.")
@@ -112,6 +121,7 @@ def main() -> int:
     Handler.model = KittenTTS("KittenML/kitten-tts-mini-0.8", cache_dir=args.cache_dir, backend="cpu")
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     host, port = server.server_address
+    threading.Thread(target=exit_on_stdin_eof, daemon=True).start()
     write_control({"kind": "ready", "url": f"http://{host}:{port}", "voices": Handler.model.available_voices})
     try:
         server.serve_forever()

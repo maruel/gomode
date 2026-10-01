@@ -84,6 +84,8 @@ func TestVoiceRTCLocalStackPlaceholders(t *testing.T) {
 }
 
 type voiceRTCTestSession struct {
+	sessionID         string
+	dc                *webrtc.DataChannel
 	micTrack          *webrtc.TrackLocalStaticSample
 	messages          <-chan voiceRTCMessage
 	signalErrs        <-chan error
@@ -96,12 +98,24 @@ type voiceRTCMessage struct {
 	data []byte
 }
 
+// voiceRTCOffer exchanges a client SDP offer for the gateway answer and session ID.
+type voiceRTCOffer func(ctx context.Context, sdp string) (sdpAnswer, sessionID string, err error)
+
 func newVoiceRTCTestSession(ctx context.Context, t *testing.T, backend backendConnector) *voiceRTCTestSession {
 	bridge, err := newBridgeWithBackend(ctx, backend, 0, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { bridge.CloseAll(ctx) })
+	return connectVoiceRTCClient(ctx, t, bridge.HandleOffer, &voicev1.SessionSetup{
+		Kind:  voicev1.MessageKindSessionSetup,
+		Voice: voicev1.VoiceConfig{Name: "local", Language: "en"},
+	})
+}
 
+// connectVoiceRTCClient opens a client peer connection through offer, sends
+// setup, and returns once the gateway reports session.ready.
+func connectVoiceRTCClient(ctx context.Context, t *testing.T, offer voiceRTCOffer, setup *voicev1.SessionSetup) *voiceRTCTestSession {
 	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +125,6 @@ func newVoiceRTCTestSession(ctx context.Context, t *testing.T, backend backendCo
 			t.Fatal(err)
 		}
 	})
-	t.Cleanup(func() { bridge.CloseAll(ctx) })
 
 	remoteAudioEnergy := make(chan float64, 1)
 	mediaErrs := make(chan error, 1)
@@ -163,12 +176,12 @@ func newVoiceRTCTestSession(ctx context.Context, t *testing.T, backend backendCo
 		}
 	})
 
-	offer, err := pc.CreateOffer(nil)
+	localOffer, err := pc.CreateOffer(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	gatherDone := webrtc.GatheringCompletePromise(pc)
-	if err := pc.SetLocalDescription(offer); err != nil {
+	if err := pc.SetLocalDescription(localOffer); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -181,7 +194,7 @@ func newVoiceRTCTestSession(ctx context.Context, t *testing.T, backend backendCo
 	if localDesc == nil {
 		t.Fatal("missing local description")
 	}
-	answerSDP, sessionID, err := bridge.HandleOffer(ctx, localDesc.SDP)
+	answerSDP, sessionID, err := offer(ctx, localDesc.SDP)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,12 +206,11 @@ func newVoiceRTCTestSession(ctx context.Context, t *testing.T, backend backendCo
 	}
 
 	waitForVoiceRTCOpen(ctx, t, dcOpen, signalErrs)
-	sendVoiceRTCJSON(ctx, t, dc, voicev1.SessionSetup{
-		Kind:  voicev1.MessageKindSessionSetup,
-		Voice: voicev1.VoiceConfig{Name: "local", Language: "en"},
-	})
+	sendVoiceRTCJSON(ctx, t, dc, setup)
 	waitForVoiceRTCMessage(ctx, t, messages, signalErrs, voicev1.MessageKindSessionReady)
 	return &voiceRTCTestSession{
+		sessionID:         sessionID,
+		dc:                dc,
 		micTrack:          micTrack,
 		messages:          messages,
 		signalErrs:        signalErrs,
@@ -280,7 +292,7 @@ func waitForVoiceRTCMessage(
 		select {
 		case msg := <-messages:
 			if msg.kind == voicev1.MessageKindError {
-				t.Fatal("gateway returned error")
+				t.Fatalf("gateway returned error while waiting for %s: %s", want, msg.data)
 			}
 			if msg.kind == want {
 				return msg.data

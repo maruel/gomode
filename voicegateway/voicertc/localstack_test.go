@@ -609,26 +609,51 @@ func TestLocalStackModelsForConfigRequiresProviderWithRemote(t *testing.T) {
 
 func TestGenaiASRAdapter(t *testing.T) {
 	t.Parallel()
-	p := &fakeASRProvider{}
-	text, err := (&genaiASRAdapter{provider: p}).transcribe(t.Context(), []byte{1, 0, 2, 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if text != "hello world" {
-		t.Errorf("text = %q, want hello world", text)
-	}
-	if p.mimeType != "audio/wav" {
-		t.Errorf("mimeType = %q, want audio/wav", p.mimeType)
-	}
-	if string(p.wav[:4]) != "RIFF" || string(p.wav[8:12]) != "WAVE" {
-		t.Fatalf("wav header = %q/%q, want RIFF/WAVE", p.wav[:4], p.wav[8:12])
-	}
-	if got := binary.LittleEndian.Uint32(p.wav[24:]); got != micSampleRate {
-		t.Errorf("wav sample rate = %d, want %d", got, micSampleRate)
-	}
-	if got := binary.LittleEndian.Uint32(p.wav[40:]); got != 4 {
-		t.Errorf("wav data size = %d, want 4", got)
-	}
+	t.Run("WAV request", func(t *testing.T) {
+		t.Parallel()
+		p := &fakeASRProvider{reply: "hello world"}
+		text, err := (&genaiASRAdapter{provider: p}).transcribe(t.Context(), []byte{1, 0, 2, 0})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if text != "hello world" {
+			t.Errorf("text = %q, want hello world", text)
+		}
+		if p.mimeType != "audio/wav" {
+			t.Errorf("mimeType = %q, want audio/wav", p.mimeType)
+		}
+		if string(p.wav[:4]) != "RIFF" || string(p.wav[8:12]) != "WAVE" {
+			t.Fatalf("wav header = %q/%q, want RIFF/WAVE", p.wav[:4], p.wav[8:12])
+		}
+		if got := binary.LittleEndian.Uint32(p.wav[24:]); got != micSampleRate {
+			t.Errorf("wav sample rate = %d, want %d", got, micSampleRate)
+		}
+		if got := binary.LittleEndian.Uint32(p.wav[40:]); got != 4 {
+			t.Errorf("wav data size = %d, want 4", got)
+		}
+	})
+	t.Run("transcript", func(t *testing.T) {
+		t.Parallel()
+		// Raw outputs follow the formats parse_asr_output accepts in
+		// QwenLM/Qwen3-ASR qwen_asr/inference/utils.py.
+		for _, tc := range []struct{ name, reply, want string }{
+			{"Qwen3-ASR tag", "language English<asr_text>Set a timer.", "Set a timer."},
+			{"Qwen3-ASR metadata lines", "language English\n\n<asr_text> Set a timer. \n", "Set a timer."},
+			{"Qwen3-ASR no speech", "language None<asr_text>", ""},
+			{"plain text", " Set a timer.\n", "Set a timer."},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				text, err := (&genaiASRAdapter{provider: &fakeASRProvider{reply: tc.reply}}).transcribe(t.Context(), []byte{1, 0})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if text != tc.want {
+					t.Errorf("text = %q, want %q", text, tc.want)
+				}
+			})
+		}
+	})
 }
 
 // --- test doubles and helpers ---
@@ -1035,6 +1060,7 @@ func (s *fakeManagedLlamaServer) Close() error {
 type fakeASRProvider struct {
 	base.NotImplemented
 
+	reply    string
 	mimeType string
 	wav      []byte
 }
@@ -1059,5 +1085,5 @@ func (p *fakeASRProvider) GenSync(_ context.Context, msgs genai.Messages, _ ...g
 	}
 	p.mimeType = mimeType
 	p.wav = data
-	return genai.Result{Replies: []genai.Reply{{Text: "hello world"}}}, nil
+	return genai.Result{Replies: []genai.Reply{{Text: p.reply}}}, nil
 }

@@ -121,13 +121,20 @@ output sample rate before using it.
 ## Smoke Test
 
 ```sh
-go test -tags=smoke -run TestSmokeVoiceRTCLocalAudio -v -timeout 15m ./voicegateway/voicertc/
+make test-smoke
 ```
 
-The test uses a fresh `XDG_CACHE_HOME`, so every run includes cold setup. It
-checks TTS, ASR, LLM, managed tool calls, and full WebRTC turns. Linux CPU runs
-prove wiring and audio-path correctness only; latency and quality need the
-target Mac. Do not measure RSS.
+The `smoke` build tag keeps these tests out of `make test` and CI;
+`make verify` still lints them. Each test runs with its own `HOME` and XDG
+directories, so it never reads or writes host configuration or caches, and
+every run includes cold llama.cpp, uv, and KittenTTS setup. Only `HF_HOME`
+stays on the host, defaulting to `~/.cache/huggingface`, so runs reuse
+downloaded models. `TestSmokeVoiceRTCLocalAudio` checks TTS, ASR, LLM, managed
+tool calls, and full WebRTC turns. `TestSmokeVoiceGatewayToolCall` serves the gateway HTTP API with
+the default local stack, speaks "Set a timer for five minutes." over WebRTC,
+answers the `set_timer` tool call, and closes the session through the API.
+Linux CPU runs prove wiring and audio-path correctness only; latency and
+quality need the target Mac. Do not measure RSS.
 
 ## Further alternatives
 

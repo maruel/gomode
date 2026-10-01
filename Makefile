@@ -1,6 +1,6 @@
 # Build and verification targets for the standalone Go Mode contracts and shell.
 .DEFAULT_GOAL := help
-.PHONY: help build fix verify test test-race android-check android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-push android-e2e generate-sdks refresh-generated benchmark coverage test-smoke-voice upgrade git-hooks tools
+.PHONY: help build fix verify test test-race android-check android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-push android-e2e generate-sdks refresh-generated benchmark coverage test-smoke upgrade git-hooks tools
 
 RUFF_VERSION=0.16.8
 UV_BIN := $(shell uv tool dir --bin 2>/dev/null)
@@ -34,7 +34,7 @@ help:
 	@printf '  %-27s - %s\n' 'make build' 'Build Go packages and Android app and SDKs'
 	@printf '  %-27s - %s\n' 'make benchmark' 'Run Go benchmarks'
 	@printf '  %-27s - %s\n' 'make coverage' 'Generate Go coverage report'
-	@printf '  %-27s - %s\n' 'make test-smoke-voice' 'Run local WebRTC audio smoke test (needs audio setup)'
+	@printf '  %-27s - %s\n' 'make test-smoke' 'Run local model voice smoke tests (slow, downloads models)'
 	@printf '  %-27s - %s\n' 'make android-check' 'Run Android lint, builds, unit tests, and coverage'
 	@printf '  %-27s - %s\n' 'make android-e2e' 'Run Android instrumented tests on an emulator'
 	@printf '  %-27s - %s\n' 'make android-push' 'Build and install Go Mode on connected devices'
@@ -84,10 +84,10 @@ coverage:
 	@go tool cover -func=coverage.out | tail -1
 	@go tool cover -html=coverage.out -o coverage.html
 
-# Slow: sends live audio through a local WebRTC loopback and needs the voice
-# gateway's audio setup.
-test-smoke-voice:
-	@go test -tags=smoke -run TestSmokeVoiceRTCLocalAudio -v -timeout 15m ./voicegateway/voicertc/
+# Slow: starts local ASR, LLM, and TTS models and sends spoken audio through
+# the voice gateway over WebRTC. The smoke build tag keeps it out of make test.
+test-smoke:
+	@go test -tags=smoke -run '^TestSmoke' -v -timeout 30m ./voicegateway/voicertc/
 
 upgrade:
 	@go get -u ./...

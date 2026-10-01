@@ -1,4 +1,4 @@
-// Smoke test for managed local-stack ASR, LLM, and TTS voice sessions.
+// Smoke tests for managed local-stack voice sessions and gateway tool calls.
 
 // Copyright 2026 Marc-Antoine Ruel. All Rights Reserved. Use of this
 // source code is governed by the Apache v2 license that can be found in the
@@ -11,9 +11,18 @@ package voicertc
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -23,13 +32,15 @@ import (
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 
+	"github.com/maruel/gomode"
+	"github.com/maruel/gomode/voicegateway"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
 // TestSmokeVoiceRTCLocalAudio verifies the managed local-stack ASR, LLM, and
 // TTS paths with direct queries, managed tool calls, and WebRTC turns.
 func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	isolateSmokeHost(t)
 	runtimeCtx, runtimeCancel := context.WithCancel(context.WithoutCancel(t.Context()))
 	t.Cleanup(runtimeCancel)
 	root := t
@@ -40,7 +51,6 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 	var llm *genaiLLMAdapter
 
 	t.Run("Audio", func(t *testing.T) {
-
 		t.Run("TTS", func(t *testing.T) {
 			startup := time.Now()
 			adapter, err := newKittenTTSAdapter(runtimeCtx)
@@ -97,21 +107,10 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if strings.TrimSpace(text) == "" {
-				t.Fatal("ASR returned empty transcript")
-			}
-			normalized := strings.ToLower(text)
-			normalized = strings.Map(func(r rune) rune {
-				if r >= 'a' && r <= 'z' {
-					return r
-				}
-				return ' '
-			}, normalized)
-			normalized = strings.Join(strings.Fields(normalized), " ")
-			if !strings.Contains(normalized, "i love bananas") {
+			if smokeWords(text) != "i love bananas" {
 				t.Fatalf("ASR transcript = %q, want %q", text, "I love bananas")
 			}
-			t.Logf("ASR transcript: %s", strings.TrimSpace(text))
+			t.Logf("ASR transcript: %s", text)
 		})
 	})
 
@@ -206,10 +205,10 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 		if err := json.Unmarshal(data, &transcript); err != nil {
 			t.Fatal(err)
 		}
-		if transcript.Speaker != voicev1.SpeakerUser || strings.TrimSpace(transcript.Text) == "" {
-			t.Fatalf("user transcript = %+v, want non-empty user transcript", transcript)
+		if transcript.Speaker != voicev1.SpeakerUser || smokeWords(transcript.Text) != "i love bananas" {
+			t.Fatalf("user transcript = %+v, want user saying I love bananas", transcript)
 		}
-		t.Logf("full WebRTC user transcript: %s", strings.TrimSpace(transcript.Text))
+		t.Logf("full WebRTC user transcript: %s", transcript.Text)
 
 		data = waitForVoiceRTCMessage(ctx, t, s.messages, s.signalErrs, voicev1.MessageKindAssistantTextDelta)
 		var assistant voicev1.AssistantTextDelta
@@ -236,6 +235,245 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 		}
 		t.Logf("full WebRTC turn to audible RTP latency: %s", smokeElapsed(turn))
 	})
+}
+
+// TestSmokeVoiceGatewayToolCall serves the standalone gateway API over HTTP
+// with the default local stack, speaks a request that needs a client tool
+// through WebRTC, and answers the resulting tool call.
+func TestSmokeVoiceGatewayToolCall(t *testing.T) {
+	isolateSmokeHost(t)
+	runtimeCtx, runtimeCancel := context.WithCancel(context.WithoutCancel(t.Context()))
+	t.Cleanup(runtimeCancel)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+	t.Cleanup(cancel)
+
+	// Synthesize the microphone input before the gateway starts its own
+	// KittenTTS worker, so only one worker runs at a time.
+	tts, err := newKittenTTSAdapter(runtimeCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, _, _, err := collectTimedTTSChunks(ctx, tts, "Set a timer for five minutes.")
+	if err := errors.Join(err, tts.Close()); err != nil {
+		t.Fatal(err)
+	}
+	speech := bytes.Join(chunks, nil)
+
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedPublicKey, err := gomode.EncodeServiceSigningPublicKey(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := voicev1.ServiceAuthorization{Kind: "smoke", InstanceID: "local", BaseURL: "https://smoke.example.com"}
+	service.Token, err = gomode.IssueServiceScopedToken(&gomode.ScopedTokenClaims{
+		ServiceKind:       service.Kind,
+		ServiceInstanceID: service.InstanceID,
+		BackendOrigin:     service.BaseURL,
+		Subject:           "smoke-user",
+		Capabilities:      []string{voicegateway.DefaultVoiceScope},
+		Audience:          gomode.ScopedTokenAudience,
+		Expiry:            time.Now().Add(time.Hour),
+	}, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := voicegateway.DefaultConfig()
+	cfg.Backend = voicegateway.BackendLocalStack
+	cfg.TrustedIssuers = []voicegateway.TrustedIssuerConfig{{Service: service.Kind, Issuer: service.BaseURL, PublicKey: encodedPublicKey}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	startup := time.Now()
+	bridge, err := NewBridge(runtimeCtx, &cfg, "", cfg.Server.WebRTCUDPPort, t.TempDir())
+	t.Logf("local stack startup: %s", smokeElapsed(startup))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { bridge.CloseAll(runtimeCtx) })
+	handler, err := voicegateway.NewHandler(&cfg, bridge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	api := srv.URL + "/api/voicegateway/v1/voice"
+
+	var health voicegateway.HealthResp
+	if err := smokeGatewayCall(ctx, http.MethodGet, api+"/health", "", nil, &health); err != nil {
+		t.Fatal(err)
+	}
+	if health.Status != "ok" {
+		t.Fatalf("health status = %q, want ok", health.Status)
+	}
+
+	offer := func(ctx context.Context, sdp string) (string, string, error) {
+		var resp voicev1.VoiceRTCAnswerResp
+		err := smokeGatewayCall(ctx, http.MethodPost, api+"/rtc/offer", "", voicev1.VoiceRTCOfferReq{SDP: sdp, Service: &service}, &resp)
+		return resp.SDP, resp.SessionID, err
+	}
+	s := connectVoiceRTCClient(ctx, t, offer, &voicev1.SessionSetup{
+		Kind:  voicev1.MessageKindSessionSetup,
+		Voice: voicev1.VoiceConfig{Name: "local", Language: "en"},
+		Tools: []voicev1.ToolDeclaration{{
+			Name:        "set_timer",
+			Description: "Start a countdown timer.",
+			Parameters:  json.RawMessage(`{"type":"object","properties":{"minutes":{"type":"integer","minimum":1,"description":"Timer duration in minutes."}},"required":["minutes"],"additionalProperties":false}`),
+		}},
+		Context: voicev1.Context{SystemInstruction: "You are a terse voice assistant. Call set_timer whenever the user asks for a timer. After the tool result, confirm in one short sentence."},
+	})
+
+	turn := time.Now()
+	writePCM24MicAudio(ctx, t, s.micTrack, speech)
+	data := waitForVoiceRTCMessage(ctx, t, s.messages, s.signalErrs, voicev1.MessageKindTranscriptDelta)
+	var transcript voicev1.TranscriptDelta
+	if err := json.Unmarshal(data, &transcript); err != nil {
+		t.Fatal(err)
+	}
+	if transcript.Speaker != voicev1.SpeakerUser || smokeWords(transcript.Text) != "set a timer for five minutes" {
+		t.Fatalf("user transcript = %+v, want user saying set a timer for five minutes", transcript)
+	}
+	t.Logf("user transcript after %s: %s", smokeElapsed(turn), transcript.Text)
+
+	data = waitForVoiceRTCMessage(ctx, t, s.messages, s.signalErrs, voicev1.MessageKindToolCall)
+	var call voicev1.ToolCall
+	if err := json.Unmarshal(data, &call); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("tool call after %s: %s %s", smokeElapsed(turn), call.Name, call.Args)
+	if call.Name != "set_timer" || call.ID == "" {
+		t.Fatalf("tool call = %+v, want set_timer with an ID", call)
+	}
+	var args struct {
+		Minutes int `json:"minutes"`
+	}
+	if err := json.Unmarshal(call.Args, &args); err != nil {
+		t.Fatalf("set_timer args %s: %v", call.Args, err)
+	}
+	if args.Minutes != 5 {
+		t.Fatalf("set_timer minutes = %d, want 5", args.Minutes)
+	}
+
+	sendVoiceRTCJSON(ctx, t, s.dc, &voicev1.ToolResult{
+		Kind:   voicev1.MessageKindToolResult,
+		ID:     call.ID,
+		Name:   call.Name,
+		Result: json.RawMessage(`{"status":"started","minutes":5}`),
+	})
+	data = waitForVoiceRTCMessage(ctx, t, s.messages, s.signalErrs, voicev1.MessageKindAssistantTextDelta)
+	var assistant voicev1.AssistantTextDelta
+	if err := json.Unmarshal(data, &assistant); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(assistant.Text) == "" {
+		t.Fatal("assistant text after tool result is empty")
+	}
+	t.Logf("assistant reply after %s: %s", smokeElapsed(turn), assistant.Text)
+	select {
+	case energy := <-s.remoteAudioEnergy:
+		t.Logf("assistant RTP audio energy: %.0f", energy)
+	case err := <-s.mediaErrs:
+		t.Fatal(err)
+	case err := <-s.signalErrs:
+		t.Fatal(err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+
+	var closed voicev1.StatusResp
+	if err := smokeGatewayCall(ctx, http.MethodPost, api+"/rtc/"+s.sessionID, service.Token, nil, &closed); err != nil {
+		t.Fatal(err)
+	}
+	if closed.Status != "closed" || bridge.HasSession(s.sessionID) {
+		t.Fatalf("close status = %q, bridge has session = %t; want closed and removed", closed.Status, bridge.HasSession(s.sessionID))
+	}
+}
+
+// smokeGatewayCall sends an optional JSON body with an optional bearer token
+// and decodes a 200 JSON response into out.
+func smokeGatewayCall(ctx context.Context, method, url, token string, in, out any) error {
+	var body io.Reader
+	if in != nil {
+		data, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return err
+	}
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s %s: %s: %s", method, url, resp.Status, bytes.TrimSpace(data))
+	}
+	return json.Unmarshal(data, out)
+}
+
+// isolateSmokeHost gives the test its own home, cache, configuration, data,
+// and state directories. Managed runtimes, uv, and the gateway then never read
+// or write host files such as the voice gateway configuration or caic caches.
+// Only the Hugging Face cache stays shared, through HF_HOME, so runs reuse
+// multi-gigabyte model downloads.
+func isolateSmokeHost(t *testing.T) {
+	hfHome := os.Getenv("HF_HOME")
+	if hfHome == "" {
+		cache := os.Getenv("XDG_CACHE_HOME")
+		if cache == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cache = filepath.Join(home, ".cache")
+		}
+		hfHome = filepath.Join(cache, "huggingface")
+	}
+	t.Setenv("HF_HOME", hfHome)
+	root := t.TempDir()
+	for _, name := range []string{"HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"} {
+		dir := filepath.Join(root, strings.ToLower(name))
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(name, dir)
+	}
+	// Platforms that ignore these variables, such as Windows, fail here
+	// instead of writing host directories.
+	for _, userDir := range []func() (string, error){os.UserCacheDir, os.UserConfigDir} {
+		dir, err := userDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(dir, root+string(filepath.Separator)) {
+			t.Fatalf("user directory %s is outside the isolated root %s", dir, root)
+		}
+	}
+}
+
+// smokeWords lowercases text and keeps only its words, so transcripts compare
+// independently of punctuation and spacing.
+func smokeWords(text string) string {
+	return strings.Join(strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	}), " ")
 }
 
 func smokeElapsed(start time.Time) time.Duration {
@@ -265,7 +503,8 @@ func verifyManagedLLMToolCall(t *testing.T, provider genai.Provider) {
 			&llamacpp.GenOption{},
 			toolOptions,
 		}
-		messages := genai.Messages{genai.NewTextMessage("Call tasks_list now with limit 1.")}
+		messages := make(genai.Messages, 0, 3)
+		messages = append(messages, genai.NewTextMessage("Call tasks_list now with limit 1."))
 
 		toolCall := time.Now()
 		res, err := genStreamResult(t.Context(), provider, messages, options...)
