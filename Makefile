@@ -99,7 +99,7 @@ android-check: android-sdk
 	@cd ./android && ./gradlew :gomode:assembleDebug :halo-sdk:assembleDebug :gomode-sdk:assemble :mcp-sdk:assemble :oauth-sdk:assemble :voicegateway-sdk:assemble :gomode:assembleDebugAndroidTest :halo-sdk:assembleDebugAndroidTest :gomode:detekt :halo-sdk:detekt :gomode:ktlintCheck :halo-sdk:ktlintCheck :gomode:lintDebug :halo-sdk:lintDebug :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest :gomode:createDebugUnitTestCoverageReport :halo-sdk:createDebugUnitTestCoverageReport --quiet
 
 generate-sdks:
-	@go run ./cmd/gen-sdk
+	@go run ./internal/cmd/gen-sdk
 
 refresh-generated: generate-sdks
 	@python3 scripts/update_agents_file_index.py

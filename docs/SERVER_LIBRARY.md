@@ -21,7 +21,7 @@ voicegateway/        voice gateway HTTP server and config
   api/v1/            signaling and data-channel DTOs, SDK spec
   voicertc/          WebRTC bridge and backend adapters
 cmd/voice-gateway/   standalone gateway
-cmd/gen-sdk/         SDK generator
+internal/cmd/gen-sdk/ SDK generator
 ```
 
 ## Dependency Rules

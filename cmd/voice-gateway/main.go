@@ -13,8 +13,10 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/lmittmann/tint"
 	"github.com/mattn/go-colorable"
 	"github.com/mattn/go-isatty"
@@ -25,8 +27,10 @@ import (
 )
 
 func mainImpl(args []string) error {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
+	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithCancelCause(signalCtx)
+	defer cancel(nil)
 
 	flags := flag.NewFlagSet("voice-gateway", flag.ContinueOnError)
 	configPath := flags.String("config", envDefault("VOICE_GATEWAY_CONFIG", voicegateway.DefaultConfigPath()), "voice gateway config.toml path")
@@ -56,6 +60,15 @@ func mainImpl(args []string) error {
 	if err := validateStandaloneConfig(&cfg); err != nil {
 		return err
 	}
+	watcher, err := startConfigWatch(ctx, *configPath, cancel)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := watcher.Close(); err != nil {
+			log.Warn("close config watcher", "err", err)
+		}
+	}()
 
 	geminiAPIKey := os.Getenv("GEMINI_API_KEY")
 	var bridge *voicertc.Bridge
@@ -68,6 +81,9 @@ func mainImpl(args []string) error {
 		}
 		bridge, err = voicertc.NewBridge(ctx, &cfg, geminiAPIKey, cfg.Server.WebRTCUDPPort, filepath.Join(cacheDir, "voice-gateway"))
 		if err != nil {
+			if ctx.Err() != nil {
+				return context.Cause(ctx)
+			}
 			return err
 		}
 		defer bridge.CloseAll(context.WithoutCancel(ctx))
@@ -92,10 +108,13 @@ func mainImpl(args []string) error {
 	}()
 
 	log.InfoContext(ctx, "voice-gateway", "http", cfg.Server.HTTP, "udp", cfg.Server.WebRTCUDPPort, "config", *configPath)
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
+	}
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
-	return nil
+	return context.Cause(ctx)
 }
 
 func validateStandaloneConfig(cfg *voicegateway.Config) error {
@@ -137,6 +156,55 @@ func envDefault(name, def string) string {
 		return v
 	}
 	return def
+}
+
+var errConfigChanged = errors.New("voice gateway configuration changed; restarting")
+
+func startConfigWatch(ctx context.Context, path string, cancel context.CancelCauseFunc) (*fsnotify.Watcher, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve config path: %w", err)
+	}
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, fmt.Errorf("create config watcher: %w", err)
+	}
+	if err := w.Add(filepath.Dir(absPath)); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, errors.Join(fmt.Errorf("watch config directory: %w", err), w.Close())
+		}
+		// A missing directory leaves the watcher empty, as LoadConfig allows.
+	}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, ok := <-w.Events:
+				if !ok {
+					if ctx.Err() == nil {
+						cancel(errors.New("config watcher closed"))
+					}
+					return
+				}
+				if filepath.Clean(event.Name) != absPath || event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename) == 0 {
+					continue
+				}
+				cancel(errConfigChanged)
+				return
+			case err, ok := <-w.Errors:
+				if !ok {
+					if ctx.Err() == nil {
+						cancel(errors.New("config watcher stopped"))
+					}
+					return
+				}
+				cancel(fmt.Errorf("watch config: %w", err))
+				return
+			}
+		}
+	}()
+	return w, nil
 }
 
 func main() {

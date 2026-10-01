@@ -10,6 +10,7 @@ Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin
 # The current gateway catches SIGINT to close sessions before exiting.
 KillSignal=SIGINT
 TimeoutStopSec=30s
+# Config edits make the gateway exit so systemd starts it with the new config.
 Restart=on-failure
 RestartSec=5s
 UMask=0077
