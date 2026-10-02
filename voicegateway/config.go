@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/maruel/genai/providers"
@@ -27,9 +28,9 @@ const (
 )
 
 // knownBackends is the set of backend IDs the gateway recognizes in config.
-var knownBackends = map[string]struct{}{
-	BackendGeminiLive: {},
-	BackendLocalStack: {},
+var knownBackends = []string{
+	BackendGeminiLive,
+	BackendLocalStack,
 }
 
 // DefaultGeminiModel is the Gemini Live model used when config.model is empty.
@@ -114,7 +115,7 @@ func (c *Config) validate(requireHTTP bool) error {
 	switch {
 	case c.Backend == "":
 		errs = append(errs, errors.New("backend is required"))
-	case !isKnownBackend(c.Backend):
+	case !slices.Contains(knownBackends, c.Backend):
 		errs = append(errs, fmt.Errorf("backend %q is not a known backend", c.Backend))
 	}
 	for i, issuer := range c.TrustedIssuers {
@@ -275,11 +276,6 @@ func (c TrustedIssuerConfig) OAuthScope() string {
 		return DefaultVoiceScope
 	}
 	return c.Scope
-}
-
-func isKnownBackend(backendID string) bool {
-	_, ok := knownBackends[backendID]
-	return ok
 }
 
 // validateLocalStackProvider checks that provider (defaulting to "llamacpp"

@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""Run Go Mode shell tests against a standalone hosted frontend fixture."""
+"""Run Go Mode shell tests against a standalone hosted frontend fixture.
 
+With --voice, serve internal/cmd/android-voice-fixture instead and select tests
+marked @VoiceFixture.
+"""
+
+import argparse
 import http.server
 import json
 import os
 import pathlib
+import socket
 import subprocess
 import sys
 import threading
@@ -29,6 +35,8 @@ PAGE = b"""<!doctype html>
 """
 
 HOSTED_FIXTURE_ANNOTATION = "com.fghbuild.gomode.StandaloneHostedFixture"
+VOICE_FIXTURE_ANNOTATION = "com.fghbuild.gomode.VoiceFixture"
+VOICE_FIXTURE_PACKAGE = "./internal/cmd/android-voice-fixture"
 
 
 class FixtureHandler(http.server.BaseHTTPRequestHandler):
@@ -50,11 +58,30 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+def free_port() -> int:
+    """Return a free TCP port on the loopback interface."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
 def main() -> int:
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    port = server.server_port
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--voice", action="store_true", help="serve the voice gateway fixture")
+    args = parser.parse_args()
+
+    server: http.server.ThreadingHTTPServer | None = None
+    fixture: subprocess.Popen[bytes] | None = None
+    if args.voice:
+        port = free_port()
+        fixture = subprocess.Popen(["go", "run", VOICE_FIXTURE_PACKAGE, "-addr", f"127.0.0.1:{port}"])
+        annotation = VOICE_FIXTURE_ANNOTATION
+    else:
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_port
+        annotation = HOSTED_FIXTURE_ANNOTATION
 
     try:
         adb = adb_path()
@@ -69,7 +96,7 @@ def main() -> int:
         try:
             subprocess.run([adb, "-s", serial, "reverse", reverse, reverse], check=True)
             print(
-                f"Testing Go Mode shell on {serial} with hosted fixture at localhost:{port}",
+                f"Testing Go Mode shell on {serial} with the fixture at localhost:{port}",
                 flush=True,
             )
             return subprocess.run(
@@ -78,7 +105,7 @@ def main() -> int:
                     "--no-daemon",
                     ":gomode:connectedDebugAndroidTest",
                     f"-Pandroid.testInstrumentationRunnerArguments.baseUrl=http://localhost:{port}",
-                    f"-Pandroid.testInstrumentationRunnerArguments.annotation={HOSTED_FIXTURE_ANNOTATION}",
+                    f"-Pandroid.testInstrumentationRunnerArguments.annotation={annotation}",
                 ],
                 cwd="android",
                 env=gradle_env,
@@ -87,8 +114,12 @@ def main() -> int:
         finally:
             subprocess.run([adb, "-s", serial, "reverse", "--remove", reverse], check=False)
     finally:
-        server.shutdown()
-        server.server_close()
+        if fixture is not None:
+            fixture.terminate()
+            fixture.wait(timeout=10)
+        if server is not None:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":

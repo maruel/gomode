@@ -144,4 +144,17 @@ class SettingsRepositoryTest {
     fun `normalizeURL trims whitespace and trailing slash`() {
         assertEquals("http://localhost:2242", SettingsRepository.normalizeURL(" http://localhost:2242/ "))
     }
+
+    @Test
+    fun `voice mode defaults to cloud and persists device`() =
+        runBlocking {
+            val repo = createRepo()
+            val initial = repo.awaitSettings("default voice mode")
+            assertEquals(VoiceMode.CLOUD, initial.voiceMode)
+
+            repo.updateVoiceMode(VoiceMode.DEVICE)
+            val updated = repo.awaitSettings("device voice mode") { it.voiceMode == VoiceMode.DEVICE }
+
+            assertEquals(VoiceMode.DEVICE, updated.voiceMode)
+        }
 }

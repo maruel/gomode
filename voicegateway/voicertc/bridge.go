@@ -26,8 +26,8 @@ import (
 )
 
 const (
-	// idleTimeout closes sessions after 30 minutes of inactivity.
-	idleTimeout = 30 * time.Minute
+	// sessionLifetime caps a session at 30 minutes. Activity does not extend it.
+	sessionLifetime = 30 * time.Minute
 
 	// micSampleRate is the decoded microphone PCM rate.
 	micSampleRate = 16000
@@ -67,6 +67,11 @@ type Bridge struct {
 	sessionsMu      sync.Mutex
 	sessions        map[string]*session
 	onSessionClosed func(string)
+
+	textCtx    context.Context
+	textCancel context.CancelFunc
+	textMu     sync.Mutex
+	textWG     sync.WaitGroup
 }
 
 // NewBridge creates a Bridge that multiplexes WebRTC traffic through a single
@@ -120,6 +125,7 @@ func newBridgeWithBackend(ctx context.Context, backend backendConnector, udpPort
 	voiceNet := newIPv4Net(ctx, candidateIPs)
 	mux := ice.NewUDPMuxDefault(ice.UDPMuxParams{UDPConn: conn, Net: voiceNet})
 	slog.InfoContext(ctx, "voicertc: listening", "udpPort", addr.Port, "hostIP", hostIP)
+	textCtx, textCancel := context.WithCancel(context.WithoutCancel(ctx))
 	return &Bridge{
 		backend:             backend,
 		activityLogDir:      activityLogDir,
@@ -129,6 +135,8 @@ func newBridgeWithBackend(ctx context.Context, backend backendConnector, udpPort
 		advertisedEndpoints: udpCandidates(candidateIPs, addr.Port),
 		udpPort:             addr.Port,
 		sessions:            make(map[string]*session),
+		textCtx:             textCtx,
+		textCancel:          textCancel,
 	}, nil
 }
 
@@ -347,13 +355,13 @@ func (b *Bridge) HandleOffer(ctx context.Context, sdpOffer string) (sdpAnswer, s
 			slog.InfoContext(sessionCtx, "voicertc: session cleaned up", "session", sess.id)
 		}()
 
-		idleTimer := time.NewTimer(idleTimeout)
-		defer idleTimer.Stop()
+		lifetimeTimer := time.NewTimer(sessionLifetime)
+		defer lifetimeTimer.Stop()
 
 		select {
 		case <-sessionCtx.Done():
-		case <-idleTimer.C:
-			slog.InfoContext(sessionCtx, "voicertc: idle timeout", "session", sess.id)
+		case <-lifetimeTimer.C:
+			slog.InfoContext(sessionCtx, "voicertc: session lifetime reached", "session", sess.id)
 		}
 	}()
 
@@ -439,6 +447,25 @@ func (b *Bridge) CloseAll(ctx context.Context) {
 			callback(s.id)
 		}
 	}
+
+	// Cancel text sessions before closing the backend they share. Hold textMu so
+	// a session that is registering cannot Add after this Wait begins.
+	b.textMu.Lock()
+	b.textCancel()
+	b.textMu.Unlock()
+	waited := make(chan struct{})
+	go func() {
+		b.textWG.Wait()
+		close(waited)
+	}()
+	waitCtx, waitCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	select {
+	case <-waited:
+	case <-waitCtx.Done():
+		slog.WarnContext(ctx, "voicertc: text sessions did not stop before shutdown")
+	}
+	waitCancel()
+
 	b.setupMu.Lock()
 	upnpMapping := b.upnpMapping
 	b.upnpMapping = nil

@@ -46,7 +46,9 @@ func (r *Route) CategoryName() string {
 	return strings.ToUpper(p[:1]) + p[1:]
 }
 
-// Routes is the authoritative list of voice gateway API endpoints.
+// Routes lists the voice gateway JSON API endpoints used by the SDK generator.
+// It excludes the WebSocket text-session route, GET
+// /api/voicegateway/v1/voice/text, which carries no JSON request or response body.
 var Routes = []Route{
 	{
 		Name:   "voiceRTCOffer",

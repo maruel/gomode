@@ -26,12 +26,22 @@ data class ServiceInstance(
     val url: String = "",
 )
 
+/** VoiceMode selects where speech recognition and synthesis run. */
+enum class VoiceMode {
+    /** CLOUD sends microphone audio to the gateway and plays gateway audio. */
+    CLOUD,
+
+    /** DEVICE transcribes and speaks on the device and sends only text. */
+    DEVICE,
+}
+
 data class SettingsState(
     val activeServiceURL: String = "",
     val haloAddress: String? = null,
     val haloAutoConnect: Boolean = false,
     val services: List<ServiceInstance> = emptyList(),
     val activeServiceId: String = "",
+    val voiceMode: VoiceMode = VoiceMode.CLOUD,
 )
 
 class SettingsRepository(
@@ -45,6 +55,7 @@ class SettingsRepository(
         val ACTIVE_SERVICE_ID = stringPreferencesKey("ACTIVE_SERVICE_ID")
         val HALO_ADDRESS = stringPreferencesKey("HALO_ADDRESS")
         val HALO_AUTO_CONNECT = booleanPreferencesKey("HALO_AUTO_CONNECT")
+        val VOICE_MODE = stringPreferencesKey("VOICE_MODE")
     }
 
     val settings: StateFlow<SettingsState> =
@@ -59,6 +70,7 @@ class SettingsRepository(
                     haloAutoConnect = prefs[Keys.HALO_AUTO_CONNECT] ?: false,
                     services = services,
                     activeServiceId = active?.id ?: "",
+                    voiceMode = decodeVoiceMode(prefs[Keys.VOICE_MODE]),
                 )
             }.stateIn(scope, SharingStarted.Eagerly, SettingsState())
 
@@ -129,10 +141,19 @@ class SettingsRepository(
         }
     }
 
+    suspend fun updateVoiceMode(mode: VoiceMode) {
+        dataStore.edit { prefs ->
+            prefs[Keys.VOICE_MODE] = mode.name
+        }
+    }
+
     private fun decodeServices(prefs: Preferences): List<ServiceInstance> =
         prefs[Keys.SERVICES]?.let { encoded ->
             runCatching { json.decodeFromString<List<ServiceInstance>>(encoded) }.getOrNull()
         } ?: emptyList()
+
+    private fun decodeVoiceMode(value: String?): VoiceMode =
+        VoiceMode.entries.firstOrNull { it.name == value } ?: VoiceMode.CLOUD
 
     companion object {
         const val DEFAULT_SERVICE_LABEL = "Service"

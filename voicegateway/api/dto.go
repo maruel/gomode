@@ -2,7 +2,10 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
+	"net/http"
 )
 
 // Validatable is implemented by request types that can validate their fields.
@@ -74,4 +77,23 @@ type ErrorDetails struct {
 	Code ErrorCode `json:"code"`
 	// Message is the human-readable error message.
 	Message string `json:"message"`
+}
+
+// WriteJSON writes v as a JSON response with the given HTTP status.
+func WriteJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("json encode", "err", err)
+	}
+}
+
+// WriteError writes a JSON error response with the given HTTP status and code.
+func WriteError(w http.ResponseWriter, status int, code ErrorCode, message string) {
+	WriteJSON(w, status, ErrorResponse{
+		Error: ErrorDetails{
+			Code:    code,
+			Message: message,
+		},
+	})
 }

@@ -5,6 +5,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.Person
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -56,19 +57,36 @@ class VoiceService : Service() {
                 tapIntent,
                 PendingIntent.FLAG_IMMUTABLE,
             )
+        // CallStyle gives the ongoing voice session Telecom's foreground priority
+        // and a call surface with a working hang-up control.
+        val caller =
+            Person
+                .Builder()
+                .setName(getString(R.string.voice_channel_name))
+                .setImportant(true)
+                .build()
+        val hangUpIntent =
+            PendingIntent.getBroadcast(
+                this,
+                1,
+                Intent(ACTION_HANG_UP).setPackage(packageName),
+                PendingIntent.FLAG_IMMUTABLE,
+            )
         return Notification
             .Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_mic)
-            .setContentTitle(getString(R.string.voice_notification_title))
-            .setContentText(getString(R.string.voice_notification_text))
             .setContentIntent(pendingIntent)
             .setOngoing(true)
+            .setStyle(Notification.CallStyle.forOngoingCall(caller, hangUpIntent))
             .build()
     }
 
     companion object {
         private const val CHANNEL_ID = "gomode_voice_session"
         private const val NOTIFICATION_ID = 21
+
+        /** ACTION_HANG_UP is broadcast when the user ends the call from the call surface. */
+        const val ACTION_HANG_UP = "com.fghbuild.gomode.action.VOICE_HANG_UP"
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, VoiceService::class.java))

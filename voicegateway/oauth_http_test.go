@@ -164,7 +164,7 @@ func TestOAuthOffer(t *testing.T) {
 	tiA := newOAuthTestIssuer(t, keyA)
 	tiB := newOAuthTestIssuer(t, keyB)
 	cfg := oauthConfig(t, tiA, tiB)
-	handler, err := NewHandler(&cfg, &fakeMediaBridge{})
+	handler, err := NewHandler(&cfg, &fakeMediaBridge{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestOAuthOfferRejectsUnknownIssuerBeforeFetch(t *testing.T) {
 	key := newOAuthTestKey(t, "key-a")
 	ti := newOAuthTestIssuer(t, key)
 	cfg := oauthConfig(t, ti)
-	handler, err := NewHandler(&cfg, &fakeMediaBridge{})
+	handler, err := NewHandler(&cfg, &fakeMediaBridge{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestOAuthOfferJWKSRotation(t *testing.T) {
 		RefreshCooldown: time.Second,
 	})
 	cfg := oauthConfig(t, ti)
-	handler := newHandlerWithVerifier(&cfg, func() MediaBridge { return &fakeMediaBridge{} }, true, true, verifier)
+	handler := newHandler(&cfg, func() MediaBridge { return &fakeMediaBridge{} }, nil, true, true, verifier)
 
 	old := ti.authorization(t, oldKey, "voice.session", now.Add(time.Minute))
 	if w := offerWithService(t, handler, old); w.Code != http.StatusOK {
@@ -238,7 +238,7 @@ func TestOAuthOfferRejections(t *testing.T) {
 	key := newOAuthTestKey(t, "key-a")
 	ti := newOAuthTestIssuer(t, key)
 	cfg := oauthConfig(t, ti)
-	handler, err := NewHandler(&cfg, &fakeMediaBridge{})
+	handler, err := NewHandler(&cfg, &fakeMediaBridge{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func TestOAuthOfferMixedWithScopedIssuer(t *testing.T) {
 	ti := newOAuthTestIssuer(t, key)
 	cfg, scoped := testServiceAuth(t)
 	cfg.TrustedIssuers = append(cfg.TrustedIssuers, TrustedIssuerConfig{Service: "caic", Issuer: ti.issuer, OAuth: true})
-	handler, err := NewHandler(&cfg, &fakeMediaBridge{})
+	handler, err := NewHandler(&cfg, &fakeMediaBridge{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

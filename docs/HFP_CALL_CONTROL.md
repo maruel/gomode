@@ -16,6 +16,16 @@ automotive, audio-route, and call-concurrency integration.
 `MediaSession` and SCO broadcasts are not the hang-up mechanism. They report
 media buttons and audio routing, not HFP call control.
 
+## Status
+
+`TelecomCallController` implements this design. It registers the app during
+setup, adds an outgoing audio call for each voice session, activates it when the
+transport is ready, and ends it on a Telecom or overlay hang-up. Both voice
+modes use it through `VoiceCallController`. The foreground service posts a
+`Notification.CallStyle`. SCO teardown ends voice only when Telecom does not own
+the call. The endpoint picker still uses `AudioManager`; phase telecom-routing
+replaces it.
+
 ## Call Lifecycle
 
 ```mermaid

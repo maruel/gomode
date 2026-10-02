@@ -13,7 +13,6 @@ import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import android.webkit.CookieManager
 import com.caic.voicegateway.sdk.v1.ApiClient
 import com.caic.voicegateway.sdk.v1.ContextUpdate
 import com.caic.voicegateway.sdk.v1.Error
@@ -41,9 +40,6 @@ import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.service.VoiceTokenClient
 import com.fghbuild.gomode.service.credentialedHTTPClient
-import com.fghbuild.gomode.service.readInitialServiceContext
-import com.fghbuild.gomode.service.resolveServiceURL
-import com.fghbuild.gomode.service.serviceOrigin
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -85,7 +81,7 @@ private const val SETUP_TIMEOUT_MS = 15_000L
 private const val ICE_GATHERING_TIMEOUT_MS = 10_000L
 private const val ICE_DISCONNECTED_GRACE_MS = 5_000L
 private const val MAX_RECONNECT_ATTEMPTS = 3
-private const val HANG_UP_TOOL_NAME = "hang_up"
+internal const val HANG_UP_TOOL_NAME = "hang_up"
 
 /** Conservative data-channel/model-safe bound for a recovery context update. */
 internal const val MAX_RECOVERY_CONTEXT_CHARS = 8_000
@@ -169,13 +165,14 @@ internal class VoiceRecoveryPolicy(
     }
 }
 
-class VoiceSession(
+internal class VoiceSession(
     private val appContext: Context,
     private val settingsRepository: SettingsRepository,
     private val settingsClient: ServiceSettingsClient = ServiceSettingsClient(),
     private val bearerTokenFor: (String) -> String? = { null },
     voiceChimePlayer: VoiceChimePlayer = AndroidVoiceChime(),
-) {
+    private val callController: VoiceCallController = NoopVoiceCallController(),
+) : VoiceSessionController {
     private val audioManager = appContext.getSystemService(AudioManager::class.java)
     private val json =
         Json {
@@ -203,6 +200,9 @@ class VoiceSession(
     private val voiceModeChime = VoiceModeChime(voiceChimePlayer)
     private var disconnectAudioAttempt: Long? = null
     private var recoveryContext = ""
+
+    /** True while Telecom owns the call; SCO teardown is then not a hang-up. */
+    private var telecomCallActive = false
     private val micEnergySamples = mutableMapOf<String, MicEnergySample>()
 
     @Volatile
@@ -214,7 +214,7 @@ class VoiceSession(
     private var audioFocusRequest: AudioFocusRequest? = null
 
     private val _state = MutableStateFlow(VoiceState())
-    val state: StateFlow<VoiceState> = _state.asStateFlow()
+    override val state: StateFlow<VoiceState> = _state.asStateFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -232,7 +232,7 @@ class VoiceSession(
     private var lastIceGatheringState: String? = null
     private var lastSignalingState: String? = null
 
-    fun setError(message: String) {
+    override fun setError(message: String) {
         val attempt = invalidateAttempt()
         val deferAudioRelease = deferDisconnectAudio(attempt)
         reconnectJob?.cancel()
@@ -249,6 +249,8 @@ class VoiceSession(
         mcpClient = null
         mcpTools = emptyList()
         if (!deferAudioRelease) finishDisconnectAudio(attempt)
+        callController.endLocal()
+        telecomCallActive = false
         VoiceService.stop(appContext)
         _state.update {
             it.copy(
@@ -281,7 +283,7 @@ class VoiceSession(
 
     /** Connect via WebRTC data channel through the configured service voice gateway. */
     @Suppress("TooGenericExceptionCaught") // Error boundary: surface all failures to UI.
-    fun connect(preserveTranscript: Boolean = false) {
+    override fun connect(preserveTranscript: Boolean) {
         val attempt = invalidateAttempt()
         reconnectJob?.cancel()
         reconnectJob = null
@@ -306,7 +308,12 @@ class VoiceSession(
             recoveryContext = ""
             clearTranscript()
         }
-        requestAudioFocus()
+        // A recovery connect keeps the self-managed call, and Telecom owns call
+        // audio focus for it. Holding our own request would turn Telecom's
+        // transient gain into a focus loss that tears the session down.
+        if (!telecomCallActive) {
+            requestAudioFocus()
+        }
         VoiceService.start(appContext)
         refreshAvailableDevices()
         registerDeviceCallback()
@@ -316,88 +323,33 @@ class VoiceSession(
         connectJob =
             scope.launch {
                 try {
-                    val settings = settingsRepository.settings.value
-                    if (settings.activeServiceURL.isBlank()) {
-                        setError("Service URL is not configured")
-                        return@launch
-                    }
-                    val serviceSettings = settingsClient.fetch(settings.activeServiceURL)
-                    if (!ownsAttempt(attempt)) return@launch
-                    val voiceGatewayURL = serviceSettings.webShell.voiceGateway.url
-                    if (voiceGatewayURL.isNullOrBlank()) {
-                        setError("Voice is not available for this service")
-                        return@launch
-                    }
-                    // Single active skill today. SKILL.md frontmatter activation across
-                    // the toolGroups catalog (progressive disclosure) is future work;
-                    // see gomode/docs/ANDROID_SHELL.md.
-                    val group = serviceSettings.webShell.toolGroups.firstOrNull()
-                    if (group == null) {
-                        setError("Voice is not available for this service")
-                        return@launch
-                    }
-                    val mcpEndpointURL = resolveServiceURL(settings.activeServiceURL, group.endpoint)
-                    val voiceGatewayEndpointURL = resolveServiceURL(settings.activeServiceURL, voiceGatewayURL)
-                    val externalGateway =
-                        serviceOrigin(voiceGatewayEndpointURL) != serviceOrigin(settings.activeServiceURL)
-                    val tokenEndpoint = serviceSettings.webShell.voiceGateway.tokenEndpoint
-                    if (externalGateway && tokenEndpoint.isNullOrBlank()) {
-                        setError("External voice gateway requires a token endpoint")
-                        return@launch
-                    }
-                    val tokenEndpointURL =
-                        if (externalGateway) {
-                            resolveServiceURL(settings.activeServiceURL, requireNotNull(tokenEndpoint))
-                        } else {
-                            null
+                    val setup =
+                        try {
+                            prepareVoiceSetup(settingsRepository, settingsClient, bearerTokenFor)
+                        } catch (e: VoiceSetupException) {
+                            if (ownsAttempt(attempt)) setError(e.message ?: "Voice setup failed")
+                            return@launch
                         }
-                    if (tokenEndpointURL != null &&
-                        serviceOrigin(tokenEndpointURL) != serviceOrigin(settings.activeServiceURL)
-                    ) {
-                        setError("Voice token endpoint must be hosted by the service")
-                        return@launch
-                    }
-                    voiceTokenEndpointURL = tokenEndpointURL
-                    if (group.authRequired && cookieFor(mcpEndpointURL).isNullOrBlank() &&
-                        bearerTokenFor(mcpEndpointURL).isNullOrBlank()
-                    ) {
-                        setError("Sign in to the hosted service before using voice")
-                        return@launch
-                    }
-                    if (!externalGateway && serviceSettings.webShell.voiceGateway.authRequired == true &&
-                        cookieFor(voiceGatewayEndpointURL).isNullOrBlank() &&
-                        bearerTokenFor(voiceGatewayEndpointURL).isNullOrBlank()
-                    ) {
-                        setError("Sign in to the hosted service before using voice")
-                        return@launch
-                    }
-
-                    val mcpCredentials =
-                        VoiceMcpCredentials(
-                            cookieFor(mcpEndpointURL),
-                            bearerTokenFor(mcpEndpointURL),
-                            { cookieFor(mcpEndpointURL) },
-                            { bearerTokenFor(mcpEndpointURL) },
-                        )
-                    val client =
-                        McpClient(
-                            endpointURL = mcpEndpointURL,
-                            protocolVersion = group.protocolVersion,
-                            cookieProvider = mcpCredentials::cookieForRequest,
-                            bearerTokenProvider = mcpCredentials::bearerForRequest,
-                        )
-                    mcpClient = client
-                    val systemInstruction = client.serverInstructions()
                     if (!ownsAttempt(attempt)) return@launch
-                    val tools = client.listTools()
-                    if (!ownsAttempt(attempt)) return@launch
-                    mcpTools = tools
-                    // Android owns this captured session baseline; see the canonical contract in
-                    // gomode/docs/ANDROID_SHELL.md. connect() repeats the read on recovery.
-                    val serviceContextText = readInitialServiceContext(client)
-                    if (!ownsAttempt(attempt)) return@launch
+                    mcpClient = setup.mcpClient
+                    mcpTools = setup.tools
+                    voiceTokenEndpointURL = setup.tokenEndpointURL
+                    val systemInstruction = setup.systemInstruction
+                    val serviceContextText = setup.serviceContextText
+                    val voiceGatewayEndpointURL = setup.gatewayEndpointURL
+                    val serviceAuth = setup.service
                     val voiceGatewayClient = ApiClient(voiceGatewayEndpointURL, httpClient = credentialedHTTPClient)
-                    val voiceGatewayHeaders = serviceAuthHeaders(voiceGatewayEndpointURL)
+                    val voiceGatewayHeaders = setup.gatewayHeaders
+                    // Recovery keeps the Telecom call; only a fresh connect starts one.
+                    if (!telecomCallActive && callController.isSupported() && !callController.start { disconnect() }) {
+                        setError("Could not start the voice call")
+                        return@launch
+                    }
+                    telecomCallActive = callController.isSupported()
+                    if (telecomCallActive) {
+                        // The self-managed call owns call audio from here on.
+                        abandonAudioFocus()
+                    }
 
                     // Initialize WebRTC factory.
                     if (pcFactory == null) {
@@ -512,14 +464,6 @@ class VoiceSession(
                                                 pc.localDescription?.description
                                                     ?: error("WebRTC local offer SDP unavailable after ICE gathering")
                                             lastOfferSDP = offerSDP
-                                            val serviceAuth =
-                                                tokenEndpointURL?.let { tokenURL ->
-                                                    voiceTokenClient.fetch(
-                                                        tokenURL,
-                                                        cookieFor(tokenURL),
-                                                        bearerTokenFor(tokenURL),
-                                                    )
-                                                }
                                             if (!ownsAttempt(attempt)) return@launch
                                             val resp =
                                                 voiceGatewayClient.voiceRTCOffer(
@@ -917,13 +861,13 @@ class VoiceSession(
         }
 
     /** Toggle microphone mute via the RTP audio track. */
-    fun toggleMute() {
+    override fun toggleMute() {
         muted = !muted
         _state.update { it.copy(muted = muted, micLevel = if (muted) 0f else it.micLevel) }
         localAudioTrack?.setEnabled(!muted)
     }
 
-    fun selectAudioDevice(deviceId: Int) {
+    override fun selectAudioDevice(deviceId: Int) {
         _state.update { it.copy(selectedDeviceId = deviceId) }
         applyCommunicationDevice(deviceId)
     }
@@ -948,7 +892,7 @@ class VoiceSession(
         pc?.dispose()
     }
 
-    fun disconnect() {
+    override fun disconnect() {
         val attempt = invalidateAttempt()
         val deferAudioRelease = deferDisconnectAudio(attempt)
         reconnectJob?.cancel()
@@ -962,6 +906,8 @@ class VoiceSession(
         setupTimeoutJob = null
         releaseTransport()
         if (!deferAudioRelease) finishDisconnectAudio(attempt)
+        callController.endLocal()
+        telecomCallActive = false
         VoiceService.stop(appContext)
         closePeerConnection()
         rtcSessionID = null
@@ -991,16 +937,20 @@ class VoiceSession(
         finishDisconnectAudio(attempt)
     }
 
-    fun clearTranscript() {
+    override fun clearTranscript() {
         _state.update { it.copy(transcript = emptyList()) }
     }
 
-    fun injectText(text: String) {
+    override fun injectText(text: String) {
         if (speakerActive) {
             pendingNotifications.add(text)
             return
         }
         sendClientContent(text)
+    }
+
+    override fun close() {
+        disconnect()
     }
 
     /** Send a message via the WebRTC data channel. */
@@ -1064,6 +1014,7 @@ class VoiceSession(
                             error = null,
                         )
                     }
+                    callController.activate()
                     voiceModeChime.connected()
                     if (recoveryContext.isNotEmpty()) {
                         send(json.encodeToString(ContextUpdate.serializer(), gatewayContextUpdate(recoveryContext)))
@@ -1218,31 +1169,6 @@ class VoiceSession(
         sendOnChannel(originChannel, json.encodeToString(ToolResult.serializer(), gatewayToolResult(id, name, result)))
     }
 
-    private fun gatewayContextUpdate(text: String) =
-        ContextUpdate(
-            kind = MessageKind.ContextUpdate,
-            context =
-                com.caic.voicegateway.sdk.v1
-                    .Context(text = text),
-        )
-
-    private fun gatewayUserMessage(text: String) =
-        UserMessage(
-            kind = MessageKind.UserMessage,
-            text = text,
-        )
-
-    private fun gatewayToolResult(
-        id: String,
-        name: String,
-        result: JsonElement,
-    ) = ToolResult(
-        kind = MessageKind.ToolResult,
-        id = id,
-        name = name,
-        result = result,
-    )
-
     // -----------------------------------------------------------------------
     // Audio device management (transport-agnostic)
     // -----------------------------------------------------------------------
@@ -1292,7 +1218,7 @@ class VoiceSession(
                         selectedId != null && removedDevices?.any {
                             it.id == selectedId && it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
                         } == true
-                    if (lostBt) {
+                    if (lostBt && !telecomCallActive) {
                         Log.i(TAG, "Selected Bluetooth device removed, disconnecting")
                         disconnect()
                     } else {
@@ -1337,7 +1263,7 @@ class VoiceSession(
                         _state.value.availableDevices.any {
                             it.id == selectedId && it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
                         }
-                    if (isBtSco) {
+                    if (isBtSco && !telecomCallActive) {
                         Log.i(TAG, "SCO audio disconnected (HFP hang-up), disconnecting")
                         disconnect()
                     }
@@ -1361,23 +1287,7 @@ class VoiceSession(
 
     /** Request exclusive audio focus so music/podcasts pause while the voice session is active. */
     private fun requestAudioFocus() {
-        val request =
-            AudioFocusRequest
-                .Builder(AudioManager.AUDIOFOCUS_GAIN)
-                .setAudioAttributes(
-                    AudioAttributes
-                        .Builder()
-                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build(),
-                ).setOnAudioFocusChangeListener { focusChange ->
-                    if (focusChange == AudioManager.AUDIOFOCUS_LOSS ||
-                        focusChange == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
-                    ) {
-                        Log.i(TAG, "Audio focus lost (change=$focusChange), disconnecting")
-                        disconnect()
-                    }
-                }.build()
+        val request = voiceAudioFocusRequest { disconnect() }
         audioFocusRequest = request
         audioManager.requestAudioFocus(request)
     }
@@ -1386,14 +1296,6 @@ class VoiceSession(
         audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
         audioFocusRequest = null
     }
-
-    private fun serviceAuthHeaders(url: String): Map<String, String> =
-        buildMap {
-            cookieFor(url)?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
-            bearerTokenFor(url)?.takeIf { it.isNotBlank() }?.let { put("Authorization", "Bearer $it") }
-        }
-
-    private fun cookieFor(url: String): String? = CookieManager.getInstance().getCookie(url)
 
     companion object {
         fun resolveServiceURL(
@@ -1527,6 +1429,31 @@ private const val GO_MODE_SYSTEM_INSTRUCTION =
         "When notified of service item updates, do not verbally acknowledge or confirm receipt. Stay silent unless " +
         "host instructions require a service-specific notification or the user explicitly asks for a response."
 
+internal fun gatewayContextUpdate(text: String) =
+    ContextUpdate(
+        kind = MessageKind.ContextUpdate,
+        context =
+            com.caic.voicegateway.sdk.v1
+                .Context(text = text),
+    )
+
+internal fun gatewayUserMessage(text: String) =
+    UserMessage(
+        kind = MessageKind.UserMessage,
+        text = text,
+    )
+
+internal fun gatewayToolResult(
+    id: String,
+    name: String,
+    result: JsonElement,
+) = ToolResult(
+    kind = MessageKind.ToolResult,
+    id = id,
+    name = name,
+    result = result,
+)
+
 private fun combineSystemInstructions(hostInstruction: String): String {
     val host = hostInstruction.trim()
     return if (host.isEmpty()) GO_MODE_SYSTEM_INSTRUCTION else "$GO_MODE_SYSTEM_INSTRUCTION\n\n$host"
@@ -1538,7 +1465,7 @@ private fun combineSystemInstructions(hostInstruction: String): String {
  * chunk onto it (the API streams one word/phrase at a time per message).
  * Otherwise start a new entry.
  */
-private fun List<TranscriptEntry>.appendChunk(
+internal fun List<TranscriptEntry>.appendChunk(
     speaker: TranscriptSpeaker,
     text: String,
 ): List<TranscriptEntry> =
@@ -1565,7 +1492,51 @@ internal class VoiceMcpCredentials(
     fun bearerForRequest(): String? = bearer
 }
 
-private fun errorJson(message: String): JsonElement = JsonObject(mapOf("error" to JsonPrimitive(message)))
+internal fun errorJson(message: String): JsonElement = JsonObject(mapOf("error" to JsonPrimitive(message)))
+
+/** Audio focus outcomes for a live voice session. */
+internal enum class VoiceAudioFocusOutcome {
+    KEEP,
+    DISCONNECT,
+}
+
+/**
+ * voiceAudioFocusOutcome maps an audio focus change to the session action.
+ *
+ * Only a permanent loss ends the session. A transient loss means another party
+ * holds audio for a moment, which a self-managed Telecom call does while it
+ * starts, so the session must survive it.
+ */
+internal fun voiceAudioFocusOutcome(change: Int): VoiceAudioFocusOutcome =
+    when (change) {
+        AudioManager.AUDIOFOCUS_LOSS -> VoiceAudioFocusOutcome.DISCONNECT
+        else -> VoiceAudioFocusOutcome.KEEP
+    }
+
+/** voiceAudioFocusRequest builds the session's audio focus request. */
+internal fun voiceAudioFocusRequest(onDisconnect: () -> Unit): AudioFocusRequest =
+    AudioFocusRequest
+        .Builder(AudioManager.AUDIOFOCUS_GAIN)
+        .setAudioAttributes(
+            AudioAttributes
+                .Builder()
+                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build(),
+        ).setOnAudioFocusChangeListener { change ->
+            when (voiceAudioFocusOutcome(change)) {
+                VoiceAudioFocusOutcome.DISCONNECT -> {
+                    Log.i(TAG, "Audio focus lost (change=$change), disconnecting")
+                    onDisconnect()
+                }
+
+                VoiceAudioFocusOutcome.KEEP -> {
+                    if (change != AudioManager.AUDIOFOCUS_GAIN) {
+                        Log.i(TAG, "Audio focus held elsewhere (change=$change), keeping the session")
+                    }
+                }
+            }
+        }.build()
 
 @Suppress("CyclomaticComplexMethod") // Simple exhaustive mapping, no logic.
 private fun audioDeviceTypeName(type: Int): String =

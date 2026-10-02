@@ -1070,6 +1070,7 @@ type fakeConversation struct {
 
 	userCount       int
 	toolResultCount int
+	toolResultIDs   []string
 }
 
 func (c *fakeConversation) user(context.Context, string) (llmStep, error) {
@@ -1079,10 +1080,11 @@ func (c *fakeConversation) user(context.Context, string) (llmStep, error) {
 	return newLLMStep(c.userStep.deltas, c.userStep.reply, c.userStep.err), nil
 }
 
-func (c *fakeConversation) toolResult(context.Context, string, string, json.RawMessage) (llmStep, error) {
+func (c *fakeConversation) toolResult(_ context.Context, id, _ string, _ json.RawMessage) (llmStep, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.toolResultCount++
+	c.toolResultIDs = append(c.toolResultIDs, id)
 	if c.toolResultCount <= len(c.toolResultSteps) {
 		step := c.toolResultSteps[c.toolResultCount-1]
 		return newLLMStep(step.deltas, step.reply, step.err), nil
@@ -1112,6 +1114,12 @@ func (c *fakeConversation) toolResultCalls() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.toolResultCount
+}
+
+func (c *fakeConversation) toolResultIDsSnapshot() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.toolResultIDs)
 }
 
 type fixedASR struct{ text string }
@@ -1245,4 +1253,26 @@ func (p *fakeASRProvider) GenSync(_ context.Context, msgs genai.Messages, _ ...g
 	p.mimeType = mimeType
 	p.wav = data
 	return genai.Result{Replies: []genai.Reply{{Text: p.reply}}}, nil
+}
+
+func TestLocalStackSessionClosedRejectsTurns(t *testing.T) {
+	t.Parallel()
+	backend := newLocalStackBackend(nil, nil, fixedConversationLLM{conv: &fakeConversation{}}, nil)
+	sess := backend.newSession(t.Context(), "closed", &captureSink{}, true)
+	setup, err := json.Marshal(voicev1.SessionSetup{
+		Kind:    voicev1.MessageKindSessionSetup,
+		Context: voicev1.Context{SystemInstruction: "be terse"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, ok := sess.beginTurn(t.Context()); ok {
+		t.Fatal("beginTurn() = true after close, want false")
+	}
 }

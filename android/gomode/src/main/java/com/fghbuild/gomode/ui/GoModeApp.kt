@@ -2,6 +2,10 @@
 package com.fghbuild.gomode.ui
 
 import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.webkit.CookieManager
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -44,6 +48,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
+import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.halo.HaloController
 import com.fghbuild.gomode.service.ServiceMonitor
 import com.fghbuild.gomode.service.ServiceMonitoringSnapshot
@@ -58,9 +63,13 @@ import com.fghbuild.gomode.ui.settings.SettingsScreen
 import com.fghbuild.gomode.ui.web.ServiceBearerStore
 import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.ui.web.WebShellScreen
+import com.fghbuild.gomode.voice.DeviceVoiceSession
 import com.fghbuild.gomode.voice.McpClient
+import com.fghbuild.gomode.voice.TelecomCallController
 import com.fghbuild.gomode.voice.VoicePanel
+import com.fghbuild.gomode.voice.VoiceService
 import com.fghbuild.gomode.voice.VoiceSession
+import com.fghbuild.gomode.voice.VoiceSessionController
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerializationException
@@ -122,17 +131,52 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    val voiceSession =
-        remember(settingsRepository, bearerStore) {
-            VoiceSession(
-                context.applicationContext,
-                settingsRepository,
-                settingsClient,
-                bearerTokenFor = bearerStore::tokenFor,
-            )
+    val voiceMode = settings.voiceMode
+    val voiceCallController = remember(context.applicationContext) { TelecomCallController(context.applicationContext) }
+    val voiceSession: VoiceSessionController =
+        remember(settingsRepository, bearerStore, voiceMode, voiceCallController) {
+            when (voiceMode) {
+                VoiceMode.DEVICE -> {
+                    DeviceVoiceSession(
+                        context.applicationContext,
+                        settingsRepository,
+                        settingsClient,
+                        bearerTokenFor = bearerStore::tokenFor,
+                        callController = voiceCallController,
+                    )
+                }
+
+                VoiceMode.CLOUD -> {
+                    VoiceSession(
+                        context.applicationContext,
+                        settingsRepository,
+                        settingsClient,
+                        bearerTokenFor = bearerStore::tokenFor,
+                        callController = voiceCallController,
+                    )
+                }
+            }
         }
     DisposableEffect(voiceSession) {
-        onDispose { voiceSession.disconnect() }
+        onDispose { voiceSession.close() }
+    }
+    DisposableEffect(voiceSession) {
+        val receiver =
+            object : BroadcastReceiver() {
+                override fun onReceive(
+                    context: Context?,
+                    intent: Intent?,
+                ) {
+                    if (intent?.action == VoiceService.ACTION_HANG_UP) voiceSession.disconnect()
+                }
+            }
+        ContextCompat.registerReceiver(
+            context,
+            receiver,
+            IntentFilter(VoiceService.ACTION_HANG_UP),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        onDispose { context.unregisterReceiver(receiver) }
     }
     // Voice is tied to the selected service instance, unlike transient WebView recovery.
     LaunchedEffect(settings.activeServiceId, activeURL, voiceSession) {
@@ -315,6 +359,8 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
                 VoicePanel(
                     voiceState = voiceState,
                     voiceEnabled = voiceAvailable,
+                    voiceMode = voiceMode,
+                    onVoiceModeChange = { mode -> scope.launch { settingsRepository.updateVoiceMode(mode) } },
                     onConnect = {
                         if (bearerStore.authReady.value) {
                             if (ContextCompat.checkSelfPermission(

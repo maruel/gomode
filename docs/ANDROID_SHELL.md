@@ -127,6 +127,23 @@ no product condition from other resources. The host owns generation,
 retention, and expiry and signals changes with
 `notifications/resources/updated`. The shell owns permission and delivery.
 
+## Voice Modes
+
+The shell offers two voice modes, selected in the native voice panel and
+persisted in DataStore:
+
+- **Cloud:** the shell sends microphone audio over WebRTC and plays gateway
+audio. Setup: [Voice Session Setup](#voice-session-setup).
+- **On-device:** `SpeechRecognizer` transcribes and `TextToSpeech` speaks. The
+shell opens a WebSocket to the gateway text route, sends `session.setup` and
+`user.message`, synthesizes `assistant.text.delta`, and executes `tool.call`
+through the skill's MCP endpoint. The gateway sends no audio. Contract:
+[VOICE_GATEWAY.md](VOICE_GATEWAY.md#text-sessions).
+
+Only one mode is active at a time. The gateway keeps its configured voice
+backend, so the web frontend keeps its audio sessions while clients using the
+on-device mode share the same language model.
+
 ## Voice Session Setup
 
 1. Resolve `webShell.voiceGateway.url` against the service URL.

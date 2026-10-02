@@ -89,7 +89,15 @@ func mainImpl(args []string) error {
 		defer bridge.CloseAll(context.WithoutCancel(ctx))
 	}
 
-	handler, err := voicegateway.NewHandler(&cfg, bridge)
+	// Text sessions are additive: a text client drives the same backend while
+	// WebRTC clients keep their audio session. A bridge whose backend has no
+	// language model answers the route with 503.
+	var textSessions voicegateway.TextSessionServer
+	if bridge != nil {
+		textSessions = bridge
+	}
+
+	handler, err := voicegateway.NewHandler(&cfg, bridge, textSessions)
 	if err != nil {
 		return err
 	}

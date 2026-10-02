@@ -10,6 +10,8 @@ Clients never see Gemini, the local stack, or any other provider or runtime.
 - WebRTC RTP Opus for microphone and assistant audio
 - the `voice-gateway` data channel, carrying UTF-8 JSON messages from
   `voicegateway/api/v1`
+- a text WebSocket at `GET /api/voicegateway/v1/voice/text` for sessions where
+  the client performs speech recognition and synthesis
 
 The signaling route version selects the data-channel schema. The generated
 reference is [`sdk/voicegateway/API.md`](../sdk/voicegateway/API.md).
@@ -122,6 +124,20 @@ servers and their tool allowlists. The gateway receives only provider-neutral
 declarations and results; it fetches no skill file and calls no service MCP
 endpoint. Provider messages stay inside backend adapters.
 
+### Text sessions
+
+`GET /api/voicegateway/v1/voice/text` upgrades to a WebSocket that carries the
+same messages as the data channel. The client performs speech recognition and
+synthesis. It sends `user.message` for each transcribed utterance and
+synthesizes `assistant.text.delta` locally. The gateway sends no audio and no
+`speech.started` or `speech.ended`; `turn.status` `thinking` and `idle` bound
+the assistant turn.
+
+A standalone gateway authorizes the handshake with `Authorization: Bearer`
+plus `X-Service-Kind`, `X-Service-Instance`, and `X-Service-Origin` headers
+carrying the same `service` values as the RTC offer. An embedded gateway uses
+host authentication.
+
 ## Backends
 
 Each instance runs one `backend`:
@@ -130,6 +146,8 @@ Each instance runs one `backend`:
   `voicegateway.DefaultGeminiModel`; bare IDs get the `models/` prefix. Setup
   rules: [`voicegateway/voicertc/AGENTS.md`](../voicegateway/voicertc/AGENTS.md).
 - `local-stack`: half-duplex ASR, LLM, and TTS:
-  [VOICE_LOCAL_STACK.md](VOICE_LOCAL_STACK.md).
+  [VOICE_LOCAL_STACK.md](VOICE_LOCAL_STACK.md). It also serves text sessions on
+  the shared WebSocket with the same LLM, so a web frontend keeps its audio
+  sessions while clients that perform their own speech use the text route.
 
 Clients select a backend by gateway URL, not by provider name.

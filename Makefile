@@ -127,3 +127,8 @@ android-push: android-check
 android-e2e:
 	@python3 scripts/android_start_emulator.py --reuse-connected-device
 	@python3 scripts/android_e2e.py
+
+# Slow: runs the device voice session against the local voice gateway fixture.
+android-voice-e2e: android-sdk
+	@python3 scripts/android_start_emulator.py --reuse-connected-device
+	@python3 scripts/android_e2e.py --voice

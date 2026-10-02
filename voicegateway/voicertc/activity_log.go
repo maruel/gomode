@@ -37,7 +37,15 @@ func (l *activityLog) record(source activityLogSource, data []byte) error {
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return fmt.Errorf("decode voice activity message: %w", err)
 	}
-	if !isLoggedVoiceActivity(envelope.Kind) {
+	// Persist only transcript and tool activity.
+	switch envelope.Kind {
+	case voicev1.MessageKindSessionSetup,
+		voicev1.MessageKindUserMessage,
+		voicev1.MessageKindTranscriptDelta,
+		voicev1.MessageKindAssistantTextDelta,
+		voicev1.MessageKindToolCall,
+		voicev1.MessageKindToolResult:
+	default:
 		return nil
 	}
 	record, err := json.Marshal(activityLogRecord{
@@ -83,11 +91,4 @@ type activityLogRecord struct {
 	Source    activityLogSource   `json:"src"`
 	Kind      voicev1.MessageKind `json:"kind"`
 	Message   json.RawMessage     `json:"msg"`
-}
-
-func isLoggedVoiceActivity(kind voicev1.MessageKind) bool {
-	return kind == voicev1.MessageKindSessionSetup ||
-		kind == voicev1.MessageKindTranscriptDelta ||
-		kind == voicev1.MessageKindToolCall ||
-		kind == voicev1.MessageKindToolResult
 }

@@ -29,38 +29,46 @@ type MediaBridge interface {
 // MediaBridgeProvider returns the current WebRTC media transport.
 type MediaBridgeProvider func() MediaBridge
 
+// TextSessionServer serves bidirectional text voice sessions where the client
+// performs speech recognition and synthesis.
+type TextSessionServer interface {
+	// ServeTextSession runs one text session on the HTTP response. It owns the
+	// response and writes its own error response, so the caller only logs a
+	// returned error.
+	ServeTextSession(ctx context.Context, w http.ResponseWriter, r *http.Request) error
+}
+
 // DiagnosticMediaBridge returns structured WebRTC connectivity diagnostics.
 type DiagnosticMediaBridge interface {
 	DiagnoseVoiceRTC(ctx context.Context, sessionID string, client *voicev1.VoiceRTCClientDiagnostics) voicev1.VoiceRTCDiagnosticsResp
 }
 
-// NewHandler returns a reusable voice gateway HTTP handler.
+// NewHandler returns a reusable voice gateway HTTP handler. textSessions may be
+// nil when no backend serves text voice sessions.
 func NewHandler(
 	cfg *Config,
 	bridge MediaBridge,
+	textSessions TextSessionServer,
 ) (http.Handler, error) {
 	if cfg == nil {
 		return nil, errors.New("voice gateway config is required")
 	}
-	return newHandler(cfg, func() MediaBridge { return bridge }, true, true), nil
+	return newHandler(cfg, func() MediaBridge { return bridge }, textSessions, true, true, nil), nil
 }
 
-// NewEmbeddedHandler returns voice gateway RTC routes for a caller that already
-// enforces request authentication before dispatch.
-func NewEmbeddedHandler(bridge MediaBridgeProvider) http.Handler {
-	return newHandler(nil, bridge, false, false)
+// NewEmbeddedHandler returns voice gateway routes for a caller that already
+// enforces request authentication before dispatch. textSessions may be nil.
+func NewEmbeddedHandler(bridge MediaBridgeProvider, textSessions TextSessionServer) http.Handler {
+	return newHandler(nil, bridge, textSessions, false, false, nil)
 }
 
-func newHandler(cfg *Config, bridge MediaBridgeProvider, requireServiceAuth, includeHealth bool) http.Handler {
-	return newHandlerWithVerifier(cfg, bridge, requireServiceAuth, includeHealth, nil)
-}
-
-// newHandlerWithVerifier is newHandler with an optional OAuth verifier, letting
-// tests control the discovery clock and cache lifetimes.
-func newHandlerWithVerifier(cfg *Config, bridge MediaBridgeProvider, requireServiceAuth, includeHealth bool, verifier *oauthverify.Verifier) http.Handler {
+// newHandler builds the route table. verifier is nil in production and set by
+// tests that control the OAuth discovery clock and JWKS cache lifetimes.
+func newHandler(cfg *Config, bridge MediaBridgeProvider, textSessions TextSessionServer, requireServiceAuth, includeHealth bool, verifier *oauthverify.Verifier) http.Handler {
 	h := &handler{
 		cfg:                cfg,
 		bridge:             bridge,
+		textSessions:       textSessions,
 		requireServiceAuth: requireServiceAuth,
 		verifier:           verifier,
 	}
@@ -79,6 +87,7 @@ func newHandlerWithVerifier(cfg *Config, bridge MediaBridgeProvider, requireServ
 	mux.HandleFunc("POST /api/voicegateway/v1/voice/rtc/offer", h.handleOffer)
 	mux.HandleFunc("POST /api/voicegateway/v1/voice/rtc/{sessionID}/diagnostics", h.handleDiagnostics)
 	mux.HandleFunc("POST /api/voicegateway/v1/voice/rtc/{sessionID}", h.handleClose)
+	mux.HandleFunc("GET /api/voicegateway/v1/voice/text", h.handleTextSession)
 	if requireServiceAuth {
 		return allowTrustedIssuerOrigins(cfg, mux)
 	}
@@ -111,6 +120,7 @@ func allowTrustedIssuerOrigins(cfg *Config, next http.Handler) http.Handler {
 type handler struct {
 	cfg                *Config
 	bridge             MediaBridgeProvider
+	textSessions       TextSessionServer
 	requireServiceAuth bool
 	verifier           *oauthverify.Verifier
 	sessions           sync.Map // session ID to serviceSessionIdentity
@@ -121,45 +131,45 @@ type serviceSessionIdentity struct {
 }
 
 func (h *handler) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, HealthResp{Status: "ok"})
+	voiceapi.WriteJSON(w, http.StatusOK, HealthResp{Status: "ok"})
 }
 
 func (h *handler) handleOffer(w http.ResponseWriter, r *http.Request) {
 	var req voicev1.VoiceRTCOfferReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "invalid request body")
+		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "invalid request body")
 		return
 	}
 	if req.SDP == "" {
-		writeError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "sdp is required")
+		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "sdp is required")
 		return
 	}
 	var identity serviceSessionIdentity
 	if h.requireServiceAuth {
 		if req.Service == nil {
-			writeError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "service.kind is required")
+			voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "service.kind is required")
 			return
 		}
 		if err := validateServiceAuthorization(*req.Service); err != nil {
-			writeError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, err.Error())
+			voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, err.Error())
 			return
 		}
 		verified, err := h.verifyServiceToken(r.Context(), *req.Service)
 		if err != nil {
-			writeError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, err.Error())
+			voiceapi.WriteError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, err.Error())
 			return
 		}
 		identity = verified
 	}
 	bridge := h.mediaBridge()
 	if bridge == nil {
-		writeError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "voice bridge unavailable")
+		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "voice bridge unavailable")
 		return
 	}
 	sdpAnswer, sessionID, err := bridge.HandleOffer(r.Context(), req.SDP)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "offer failed", "err", err)
-		writeError(w, http.StatusInternalServerError, voiceapi.CodeVoiceOfferFailed, "offer failed")
+		voiceapi.WriteError(w, http.StatusInternalServerError, voiceapi.CodeVoiceOfferFailed, "offer failed")
 		return
 	}
 	if h.requireServiceAuth {
@@ -168,13 +178,13 @@ func (h *handler) handleOffer(w http.ResponseWriter, r *http.Request) {
 		// identities expire even when a client never calls the close route.
 		time.AfterFunc(6*time.Hour, func() { h.sessions.Delete(sessionID) })
 	}
-	writeJSON(w, http.StatusOK, OfferResp{SDP: sdpAnswer, SessionID: sessionID})
+	voiceapi.WriteJSON(w, http.StatusOK, OfferResp{SDP: sdpAnswer, SessionID: sessionID})
 }
 
 func (h *handler) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("sessionID")
 	if sessionID == "" {
-		writeError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "sessionID is required")
+		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "sessionID is required")
 		return
 	}
 	if !h.authorizeSession(w, r, sessionID) {
@@ -182,22 +192,22 @@ func (h *handler) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	}
 	var req voicev1.VoiceRTCDiagnosticsReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "invalid request body")
+		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "invalid request body")
 		return
 	}
 	bridge := h.mediaBridge()
 	diagnosticBridge, ok := bridge.(DiagnosticMediaBridge)
 	if bridge == nil || !ok {
-		writeJSON(w, http.StatusOK, unavailableVoiceRTCDiagnostics(sessionID, &req.Client))
+		voiceapi.WriteJSON(w, http.StatusOK, unavailableVoiceRTCDiagnostics(sessionID, &req.Client))
 		return
 	}
-	writeJSON(w, http.StatusOK, diagnosticBridge.DiagnoseVoiceRTC(r.Context(), sessionID, &req.Client))
+	voiceapi.WriteJSON(w, http.StatusOK, diagnosticBridge.DiagnoseVoiceRTC(r.Context(), sessionID, &req.Client))
 }
 
 func (h *handler) handleClose(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("sessionID")
 	if sessionID == "" {
-		writeError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "sessionID is required")
+		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "sessionID is required")
 		return
 	}
 	if !h.authorizeSession(w, r, sessionID) {
@@ -205,12 +215,64 @@ func (h *handler) handleClose(w http.ResponseWriter, r *http.Request) {
 	}
 	bridge := h.mediaBridge()
 	if bridge == nil {
-		writeError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "voice bridge unavailable")
+		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "voice bridge unavailable")
 		return
 	}
 	bridge.Close(sessionID)
 	h.sessions.Delete(sessionID)
-	writeJSON(w, http.StatusOK, CloseSessionResp{Status: "closed"})
+	voiceapi.WriteJSON(w, http.StatusOK, CloseSessionResp{Status: "closed"})
+}
+
+func (h *handler) handleTextSession(w http.ResponseWriter, r *http.Request) {
+	if h.requireServiceAuth {
+		auth, err := serviceAuthorizationFromHeaders(r)
+		if err != nil {
+			voiceapi.WriteError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, err.Error())
+			return
+		}
+		if err := validateServiceAuthorization(auth); err != nil {
+			voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, err.Error())
+			return
+		}
+		if _, err := h.verifyServiceToken(r.Context(), auth); err != nil {
+			voiceapi.WriteError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, err.Error())
+			return
+		}
+	}
+	if h.textSessions == nil {
+		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "text voice sessions unavailable")
+		return
+	}
+	// ServeTextSession owns the response and writes its own errors; a returned
+	// error is only for diagnosis.
+	if err := h.textSessions.ServeTextSession(r.Context(), w, r); err != nil {
+		slog.ErrorContext(r.Context(), "text voice session failed", "err", err)
+	}
+}
+
+// bearerToken returns the bearer token from the Authorization header.
+func bearerToken(r *http.Request) (string, bool) {
+	header := r.Header.Get("Authorization")
+	token := strings.TrimPrefix(header, "Bearer ")
+	if token == "" || token == header {
+		return "", false
+	}
+	return token, true
+}
+
+// serviceAuthorizationFromHeaders reads the service authorization a native
+// client presents on the WebSocket handshake.
+func serviceAuthorizationFromHeaders(r *http.Request) (voicev1.ServiceAuthorization, error) {
+	token, ok := bearerToken(r)
+	if !ok {
+		return voicev1.ServiceAuthorization{}, errors.New("bearer token required")
+	}
+	return voicev1.ServiceAuthorization{
+		Kind:       r.Header.Get("X-Service-Kind"),
+		InstanceID: r.Header.Get("X-Service-Instance"),
+		BaseURL:    r.Header.Get("X-Service-Origin"),
+		Token:      token,
+	}, nil
 }
 
 func (h *handler) authorizeSession(w http.ResponseWriter, r *http.Request, sessionID string) bool {
@@ -219,12 +281,12 @@ func (h *handler) authorizeSession(w http.ResponseWriter, r *http.Request, sessi
 	}
 	bound, ok := h.sessions.Load(sessionID)
 	if !ok {
-		writeError(w, http.StatusNotFound, voiceapi.CodeBadRequest, "voice session not found")
+		voiceapi.WriteError(w, http.StatusNotFound, voiceapi.CodeBadRequest, "voice session not found")
 		return false
 	}
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if token == "" || token == r.Header.Get("Authorization") {
-		writeError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, "bearer token required")
+	token, ok := bearerToken(r)
+	if !ok {
+		voiceapi.WriteError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, "bearer token required")
 		return false
 	}
 	identity := bound.(serviceSessionIdentity)
@@ -235,7 +297,7 @@ func (h *handler) authorizeSession(w http.ResponseWriter, r *http.Request, sessi
 		Token:      token,
 	})
 	if err != nil || verified != identity {
-		writeError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, "token does not authorize voice session")
+		voiceapi.WriteError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, "token does not authorize voice session")
 		return false
 	}
 	return true
@@ -381,21 +443,4 @@ func validateServiceAuthorization(s voicev1.ServiceAuthorization) error {
 		return errors.New("service.token is required")
 	}
 	return nil
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		slog.Error("json encode", "err", err)
-	}
-}
-
-func writeError(w http.ResponseWriter, status int, code voiceapi.ErrorCode, message string) {
-	writeJSON(w, status, voiceapi.ErrorResponse{
-		Error: voiceapi.ErrorDetails{
-			Code:    code,
-			Message: message,
-		},
-	})
 }

@@ -116,6 +116,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.core.telecom)
     implementation(libs.androidx.webkit)
     implementation(libs.androidx.credentials)
     implementation(libs.androidx.credentials.play.services.auth)

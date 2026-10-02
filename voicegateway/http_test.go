@@ -53,7 +53,7 @@ func TestNewHandler(t *testing.T) {
 	t.Run("standalone session operations require bound authorization", func(t *testing.T) {
 		t.Parallel()
 		cfg, serviceJSON := testServiceAuth(t)
-		handler, err := NewHandler(&cfg, &fakeMediaBridge{})
+		handler, err := NewHandler(&cfg, &fakeMediaBridge{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -96,7 +96,7 @@ func TestNewHandler(t *testing.T) {
 		t.Parallel()
 		cfg := DefaultConfig()
 		cfg.TrustedIssuers = []TrustedIssuerConfig{{Issuer: "https://caic.example.com"}}
-		handler, err := NewHandler(&cfg, nil)
+		handler, err := NewHandler(&cfg, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -130,7 +130,7 @@ func TestNewHandler(t *testing.T) {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/health", http.NoBody)
 		cfg := DefaultConfig()
-		handler, err := NewHandler(&cfg, nil)
+		handler, err := NewHandler(&cfg, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -152,7 +152,7 @@ func TestNewHandler(t *testing.T) {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/offer", strings.NewReader(`{}`))
 		cfg := DefaultConfig()
-		handler, err := NewHandler(&cfg, nil)
+		handler, err := NewHandler(&cfg, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -165,7 +165,7 @@ func TestNewHandler(t *testing.T) {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/offer", strings.NewReader(`{"sdp":"offer"}`))
 		cfg := DefaultConfig()
-		handler, err := NewHandler(&cfg, nil)
+		handler, err := NewHandler(&cfg, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -204,7 +204,7 @@ func TestNewHandler(t *testing.T) {
 			Issuer:    "https://caic.example.com",
 			PublicKey: encodedPublicKey,
 		}}
-		handler, err := NewHandler(&cfg, nil)
+		handler, err := NewHandler(&cfg, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -216,7 +216,7 @@ func TestNewHandler(t *testing.T) {
 		t.Parallel()
 		cfg, service := testServiceAuth(t)
 		var bridge *fakeMediaBridge
-		handler, err := NewHandler(&cfg, bridge)
+		handler, err := NewHandler(&cfg, bridge, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -237,7 +237,7 @@ func TestNewHandler(t *testing.T) {
 	t.Run("offer succeeds with trusted service", func(t *testing.T) {
 		t.Parallel()
 		cfg, service := testServiceAuth(t)
-		handler, err := NewHandler(&cfg, &fakeMediaBridge{})
+		handler, err := NewHandler(&cfg, &fakeMediaBridge{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -267,7 +267,7 @@ func TestNewHandler(t *testing.T) {
 	t.Run("offer reports a semantic backend failure", func(t *testing.T) {
 		t.Parallel()
 		cfg, service := testServiceAuth(t)
-		handler, err := NewHandler(&cfg, &failingMediaBridge{})
+		handler, err := NewHandler(&cfg, &failingMediaBridge{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -280,7 +280,7 @@ func TestNewHandler(t *testing.T) {
 	t.Run("offer rejects untrusted service", func(t *testing.T) {
 		t.Parallel()
 		cfg := DefaultConfig()
-		handler, err := NewHandler(&cfg, &fakeMediaBridge{})
+		handler, err := NewHandler(&cfg, &fakeMediaBridge{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -293,7 +293,7 @@ func TestNewHandler(t *testing.T) {
 	t.Run("offer rejects token without voice capability", func(t *testing.T) {
 		t.Parallel()
 		cfg, service := testServiceAuth(t, "other")
-		handler, err := NewHandler(&cfg, &fakeMediaBridge{})
+		handler, err := NewHandler(&cfg, &fakeMediaBridge{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -308,7 +308,7 @@ func TestNewEmbeddedHandler(t *testing.T) {
 	t.Parallel()
 	t.Run("offer accepts sdp without service authorization", func(t *testing.T) {
 		t.Parallel()
-		handler := NewEmbeddedHandler(func() MediaBridge { return &fakeMediaBridge{} })
+		handler := NewEmbeddedHandler(func() MediaBridge { return &fakeMediaBridge{} }, nil)
 		w := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/offer", strings.NewReader(`{"sdp":"offer"}`))
 		handler.ServeHTTP(w, req)
@@ -326,7 +326,7 @@ func TestNewEmbeddedHandler(t *testing.T) {
 
 	t.Run("diagnostics returns structured issue", func(t *testing.T) {
 		t.Parallel()
-		handler := NewEmbeddedHandler(func() MediaBridge { return &fakeMediaBridge{} })
+		handler := NewEmbeddedHandler(func() MediaBridge { return &fakeMediaBridge{} }, nil)
 		w := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/session-1/diagnostics", strings.NewReader(`{"client":{"iceConnectionState":"failed"}}`))
 		handler.ServeHTTP(w, req)
@@ -347,7 +347,7 @@ func TestNewEmbeddedHandler(t *testing.T) {
 
 	t.Run("diagnostics reports unavailable bridge", func(t *testing.T) {
 		t.Parallel()
-		handler := NewEmbeddedHandler(func() MediaBridge { return nil })
+		handler := NewEmbeddedHandler(func() MediaBridge { return nil }, nil)
 		w := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/session-1/diagnostics", strings.NewReader(`{}`))
 		handler.ServeHTTP(w, req)
@@ -366,7 +366,7 @@ func TestNewEmbeddedHandler(t *testing.T) {
 	t.Run("close reports unavailable bridge", func(t *testing.T) {
 		t.Parallel()
 
-		handler := NewEmbeddedHandler(func() MediaBridge { return nil })
+		handler := NewEmbeddedHandler(func() MediaBridge { return nil }, nil)
 		w := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/session-1", http.NoBody)
 		handler.ServeHTTP(w, req)
@@ -375,7 +375,7 @@ func TestNewEmbeddedHandler(t *testing.T) {
 
 	t.Run("health is standalone only", func(t *testing.T) {
 		t.Parallel()
-		handler := NewEmbeddedHandler(func() MediaBridge { return &fakeMediaBridge{} })
+		handler := NewEmbeddedHandler(func() MediaBridge { return &fakeMediaBridge{} }, nil)
 		w := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/health", http.NoBody)
 		handler.ServeHTTP(w, req)

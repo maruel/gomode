@@ -294,7 +294,7 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { bridge.CloseAll(runtimeCtx) })
-	handler, err := voicegateway.NewHandler(&cfg, bridge)
+	handler, err := voicegateway.NewHandler(&cfg, bridge, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

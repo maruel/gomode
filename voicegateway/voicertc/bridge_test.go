@@ -25,8 +25,12 @@ import (
 func TestBridgeSetOnSessionClosed(t *testing.T) {
 	t.Parallel()
 	backend := &fakeBackendConnector{}
+	textCtx, textCancel := context.WithCancel(t.Context())
+	t.Cleanup(textCancel)
 	b := &Bridge{
-		backend: backend,
+		backend:    backend,
+		textCtx:    textCtx,
+		textCancel: textCancel,
 		sessions: map[string]*session{
 			"first":  {id: "first", cancel: func() {}},
 			"second": {id: "second", cancel: func() {}},
