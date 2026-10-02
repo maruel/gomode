@@ -143,7 +143,8 @@ func (c *LocalStackConfig) validate() error {
 		validateLocalStackASR(c.ASR),
 		validateBaseURL("local_stack.asr.remote", c.ASR.Remote),
 		validateLocalStackProvider("local_stack.llm", c.LLM.Provider, c.LLM.Remote),
-		validateBaseURL("local_stack.llm.remote", c.LLM.Remote),
+		validateURL("local_stack.llm.remote", c.LLM.Remote, c.LLM.Provider == "openaicompatible"),
+		validateLocalStackLLM(c.LLM),
 		validateLocalStackTTS(c.TTS),
 	)
 }
@@ -173,6 +174,19 @@ type LocalStackLLMConfig struct {
 	Provider string `toml:"provider"`
 	Remote   string `toml:"remote"`
 	Model    string `toml:"model"`
+	// APIKeyName names the environment variable containing the bearer token
+	// for an openaicompatible endpoint. The credential is never stored in TOML.
+	APIKeyName string `toml:"api_key_name"`
+}
+
+func validateLocalStackLLM(c LocalStackLLMConfig) error {
+	if c.Provider == "openaicompatible" && c.Remote == "" {
+		return errors.New("local_stack.llm.remote is required for openaicompatible")
+	}
+	if c.APIKeyName != "" && c.Provider != "openaicompatible" {
+		return errors.New("local_stack.llm.api_key_name requires provider openaicompatible")
+	}
+	return nil
 }
 
 // LocalStackTTSConfig selects a speech synthesis engine. The default is managed KittenTTS.
@@ -320,6 +334,11 @@ func validateTrustedIssuer(i int, issuer TrustedIssuerConfig) error {
 }
 
 func validateBaseURL(name, value string) error {
+	return validateURL(name, value, false)
+}
+
+// validateURL allows a full endpoint path only for providers that consume one.
+func validateURL(name, value string, allowPath bool) error {
 	if value == "" {
 		return nil
 	}
@@ -330,7 +349,7 @@ func validateBaseURL(name, value string) error {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("%s must use http:// or https://, got %q", name, value)
 	}
-	if u.Path != "" && u.Path != "/" {
+	if !allowPath && u.Path != "" && u.Path != "/" {
 		return fmt.Errorf("%s must not contain a path: %q", name, value)
 	}
 	return nil

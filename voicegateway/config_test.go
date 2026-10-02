@@ -14,6 +14,29 @@ import (
 
 func TestLoadConfig(t *testing.T) {
 	t.Parallel()
+	t.Run("RunInfra LLM", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(path, []byte(`backend = "local-stack"
+[local_stack.llm]
+provider = "openaicompatible"
+remote = "https://api.runinfra.ai/v1/chat/completions"
+model = "qwen3-8-27b"
+api_key_name = "RUNINFRA_GATEWAY_KEY"
+`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		if cfg.LocalStack.LLM.APIKeyName != "RUNINFRA_GATEWAY_KEY" {
+			t.Fatalf("APIKeyName = %q", cfg.LocalStack.LLM.APIKeyName)
+		}
+	})
 	t.Run("missing file returns defaults", func(t *testing.T) {
 		t.Parallel()
 		cfg, err := LoadConfig(filepath.Join(t.TempDir(), "config.toml"))
@@ -502,8 +525,31 @@ func TestConfigValidate(t *testing.T) {
 		t.Parallel()
 		cfg := DefaultConfig()
 		cfg.LocalStack.LLM.Provider = "openaicompatible"
+		cfg.LocalStack.LLM.Remote = "http://localhost:8080/v1/chat/completions"
 		if err := cfg.Validate(); err != nil {
 			t.Fatal(err)
+		}
+	})
+
+	t.Run("rejects incompatible LLM settings", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name string
+			llm  LocalStackLLMConfig
+			want string
+		}{
+			{"missing endpoint", LocalStackLLMConfig{Provider: "openaicompatible"}, "local_stack.llm.remote"},
+			{"key with managed llama", LocalStackLLMConfig{APIKeyName: "LLM_KEY"}, "local_stack.llm.api_key_name"},
+			{"path with llama", LocalStackLLMConfig{Provider: "llamacpp", Remote: "http://localhost:8080/v1/chat/completions"}, "must not contain a path"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				cfg := DefaultConfig()
+				cfg.LocalStack.LLM = tc.llm
+				if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("Validate() = %v, want %s", err, tc.want)
+				}
+			})
 		}
 	})
 

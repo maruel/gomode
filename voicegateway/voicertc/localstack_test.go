@@ -7,9 +7,12 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"iter"
 	"math"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -18,6 +21,7 @@ import (
 
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/base"
+	"github.com/maruel/genai/providers/deepseek"
 	"github.com/maruel/genai/scoreboard"
 
 	"github.com/maruel/gomode/voicegateway"
@@ -502,6 +506,26 @@ func TestLocalStackSession(t *testing.T) {
 
 func TestGenaiToolDefs(t *testing.T) {
 	t.Parallel()
+	t.Run("Android hang up empty schema", func(t *testing.T) {
+		t.Parallel()
+		tools, err := genaiToolDefs([]voicev1.ToolDeclaration{{Name: "hang_up", Description: "End the call", Parameters: json.RawMessage(`{}`)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var request deepseek.ChatRequest
+		if err := request.Init(genai.Messages{genai.NewTextMessage("Hello")}, "deepseek-flash", &genai.GenOptionTools{Tools: tools}); err != nil {
+			t.Fatal(err)
+		}
+		var schema struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(request.Tools[0].Function.Parameters, &schema); err != nil {
+			t.Fatal(err)
+		}
+		if schema.Type != "object" {
+			t.Fatalf("hang_up schema type = %q, want object", schema.Type)
+		}
+	})
 
 	t.Run("valid", func(t *testing.T) {
 		t.Parallel()
@@ -527,6 +551,45 @@ func TestGenaiToolDefs(t *testing.T) {
 		}
 		if schema.Type != "object" {
 			t.Errorf("InputSchemaOverride type = %q, want object", schema.Type)
+		}
+	})
+
+	t.Run("implicit object preserves constraints", func(t *testing.T) {
+		t.Parallel()
+		tools, err := genaiToolDefs([]voicev1.ToolDeclaration{{
+			Name: "tasks_list", Description: "List tasks",
+			Parameters: json.RawMessage(`{"properties":{"limit":{"type":"integer","minimum":1}},"required":["limit"],"additionalProperties":false}`),
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var schema struct {
+			Type       string `json:"type"`
+			Properties map[string]struct {
+				Type    string `json:"type"`
+				Minimum int    `json:"minimum"`
+			} `json:"properties"`
+			Required             []string `json:"required"`
+			AdditionalProperties *bool    `json:"additionalProperties"`
+		}
+		if err := json.Unmarshal(tools[0].InputSchemaOverride, &schema); err != nil {
+			t.Fatal(err)
+		}
+		if schema.Type != "object" || schema.Properties["limit"].Type != "integer" || schema.Properties["limit"].Minimum != 1 || !slices.Equal(schema.Required, []string{"limit"}) || schema.AdditionalProperties == nil || *schema.AdditionalProperties {
+			t.Fatalf("normalized schema lost constraints: %+v", schema)
+		}
+	})
+
+	t.Run("invalid parameter schema", func(t *testing.T) {
+		t.Parallel()
+		for _, raw := range []string{`null`, `[]`, `true`, `{"type":null}`, `{"type":"string"}`, `{"type":1}`, `{"type":`} {
+			t.Run(raw, func(t *testing.T) {
+				t.Parallel()
+				_, err := genaiToolDefs([]voicev1.ToolDeclaration{{Name: "hang_up", Description: "End the call", Parameters: json.RawMessage(raw)}})
+				if err == nil || !strings.Contains(err.Error(), "hang_up") {
+					t.Fatalf("error = %v, want named tool schema error", err)
+				}
+			})
 		}
 	})
 
@@ -716,6 +779,89 @@ func TestLocalStackModelsForConfigRequiresProviderWithRemote(t *testing.T) {
 		_, err := localStackModelsForConfigWithStarter(t.Context(), cfg, start)
 		if err == nil || !strings.Contains(err.Error(), "local_stack.llm.provider") {
 			t.Fatalf("err = %v, want local_stack.llm.provider error", err)
+		}
+	})
+}
+
+func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
+	const envName = "GOMODE_TEST_LLM_KEY"
+	// Setenv requires this test and its ancestors to run serially.
+	t.Setenv(envName, "test-llm-key")
+	for _, redirect := range []bool{false, true} {
+		t.Run(fmt.Sprintf("redirect=%t", redirect), func(t *testing.T) {
+			destination := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Error("authenticated request followed redirect to another endpoint")
+			}))
+			t.Cleanup(destination.Close)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/chat/completions" || r.Method != http.MethodPost {
+					t.Errorf("request = %s %s", r.Method, r.URL.Path)
+				}
+				if r.Header.Get("Authorization") != "Bearer test-llm-key" {
+					t.Error("missing bearer authentication")
+				}
+				var body struct {
+					Model  string            `json:"model"`
+					Stream bool              `json:"stream"`
+					Tools  []json.RawMessage `json:"tools"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				if body.Model != "qwen3-8-27b" || !body.Stream {
+					t.Errorf("request body = %+v", body)
+				}
+				if len(body.Tools) != 0 {
+					t.Error("text-only provider received tool declarations")
+				}
+				if redirect {
+					http.Redirect(w, r, destination.URL+"/other", http.StatusTemporaryRedirect)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hello.\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+			}))
+			t.Cleanup(srv.Close)
+			cfg := &voicegateway.LocalStackConfig{
+				ASR: voicegateway.LocalStackASRConfig{Engine: voicegateway.LocalStackASROpenAIAudio, Remote: srv.URL, Model: "asr"},
+				LLM: voicegateway.LocalStackLLMConfig{Provider: "openaicompatible", Remote: srv.URL + "/v1/chat/completions", Model: "qwen3-8-27b", APIKeyName: envName},
+			}
+			models, err := localStackModelsForConfigWithStarter(t.Context(), cfg, func(context.Context, string) (managedLlamaServer, error) {
+				t.Fatal("remote LLM must not start a managed model")
+				return nil, errors.New("unexpected managed model startup")
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			step, err := models.llm.newConversation("Answer briefly.", []voicev1.ToolDeclaration{{Name: "tasks_list", Description: "List tasks"}}).user(t.Context(), "Hi")
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := slices.Collect(step.text)
+			reply, err := step.finish()
+			if redirect {
+				if err == nil || !strings.Contains(err.Error(), "different endpoint") {
+					t.Fatalf("redirect error = %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(text, "") != "Hello." || reply.text != "Hello." {
+				t.Fatalf("text = %v, reply = %+v", text, reply)
+			}
+		})
+	}
+	t.Run("missing key fails before starting models", func(t *testing.T) {
+		t.Setenv(envName, "")
+		cfg := &voicegateway.LocalStackConfig{LLM: voicegateway.LocalStackLLMConfig{Provider: "openaicompatible", Remote: "https://example.com/v1/chat/completions", APIKeyName: envName}}
+		_, err := localStackModelsForConfigWithStarter(t.Context(), cfg, func(context.Context, string) (managedLlamaServer, error) {
+			t.Fatal("missing key must fail before starting a managed model")
+			return nil, errors.New("unexpected managed model startup")
+		})
+		if err == nil || !strings.Contains(err.Error(), envName) {
+			t.Fatalf("missing key error = %v", err)
 		}
 	})
 }
@@ -1168,7 +1314,9 @@ func (p *fakeGenAIProvider) OutputModalities() genai.Modalities {
 	return genai.Modalities{scoreboard.ModalityText}
 }
 
-func (p *fakeGenAIProvider) Scoreboard() scoreboard.Score { return scoreboard.Score{} }
+func (p *fakeGenAIProvider) Scoreboard() scoreboard.Score {
+	return scoreboard.Score{Scenarios: []scoreboard.Scenario{{GenStream: &scoreboard.Functionality{Tools: scoreboard.True}}}}
+}
 
 func (p *fakeGenAIProvider) HTTPClient() *http.Client { return nil }
 

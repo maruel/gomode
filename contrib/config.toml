@@ -36,6 +36,13 @@ oauth = true
 # remote = "http://127.0.0.1:8080"
 # model = "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"
 #
+# For a remote chat completions LLM, replace the LLM table above with:
+# [local_stack.llm]
+# provider = "openaicompatible"
+# remote = "https://api.runinfra.ai/v1/chat/completions"
+# model = "qwen3-8-27b"
+# api_key_name = "RUNINFRA_GATEWAY_KEY" # supply this environment variable
+#
 # [local_stack.tts]
 # engine = "openai-audio"
 # remote = "http://127.0.0.1:8000"

@@ -76,6 +76,16 @@ func localStackModelsForConfigWithStarter(
 	cfg *voicegateway.LocalStackConfig,
 	start managedLlamaStarter,
 ) (localStackModels, error) {
+	var llmOpts []genai.ProviderOption
+	if name := cfg.LLM.APIKeyName; name != "" {
+		key := os.Getenv(name)
+		if key == "" {
+			return localStackModels{}, fmt.Errorf("environment variable %s named by local_stack.llm.api_key_name is empty", name)
+		}
+		llmOpts = append(llmOpts, genai.ProviderOptionTransportWrapper(func(t http.RoundTripper) http.RoundTripper {
+			return &localStackBearerTransport{remote: cfg.LLM.Remote, key: key, transport: t}
+		}))
+	}
 	var asr localStackEndpoint
 	var asrAdapter asrAdapter
 	if cfg.ASR.Engine == voicegateway.LocalStackASROpenAIAudio || cfg.ASR.Engine == voicegateway.LocalStackASRWhisperCPP {
@@ -88,7 +98,7 @@ func localStackModelsForConfigWithStarter(
 		}
 		asrAdapter = &genaiASRAdapter{provider: asr.provider}
 	}
-	llm, err := resolveLocalStackEndpoint(ctx, "local_stack.llm", cfg.LLM.Provider, cfg.LLM.Remote, cfg.LLM.Model, defaultLocalStackLLMModel, start)
+	llm, err := resolveLocalStackEndpoint(ctx, "local_stack.llm", cfg.LLM.Provider, cfg.LLM.Remote, cfg.LLM.Model, defaultLocalStackLLMModel, start, llmOpts...)
 	if err != nil {
 		if asr.runtime != nil {
 			_ = asr.runtime.Close()
@@ -106,7 +116,7 @@ func localStackModelsForConfigWithStarter(
 // configured provider: a managed (or remote) llama.cpp runtime by default, or
 // any provider registered in providers.All when provider names one explicitly.
 // prefix names the config table in error messages, e.g. "local_stack.asr".
-func resolveLocalStackEndpoint(ctx context.Context, prefix, provider, remote, model, defaultModel string, start managedLlamaStarter) (localStackEndpoint, error) {
+func resolveLocalStackEndpoint(ctx context.Context, prefix, provider, remote, model, defaultModel string, start managedLlamaStarter, opts ...genai.ProviderOption) (localStackEndpoint, error) {
 	p := provider
 	if p == "" {
 		if remote != "" {
@@ -117,7 +127,7 @@ func resolveLocalStackEndpoint(ctx context.Context, prefix, provider, remote, mo
 	if p == "llamacpp" {
 		return localStackLlamaEndpoint(ctx, remote, model, defaultModel, start)
 	}
-	return localStackGenAIEndpoint(ctx, p, remote, model)
+	return localStackGenAIEndpoint(ctx, p, remote, model, opts...)
 }
 
 // localStackLlamaEndpoint wires the managed (or remote) llama.cpp runtime. A
@@ -156,12 +166,11 @@ func localStackLlamaEndpoint(ctx context.Context, remote, model, defaultModel st
 // localStackGenAIEndpoint wires any provider registered in providers.All (e.g.
 // ollama, openaicompatible pointed at a local server). We don't manage the
 // provider's process, so ping it at startup to fail fast if it's unreachable.
-func localStackGenAIEndpoint(ctx context.Context, provider, remote, model string) (localStackEndpoint, error) {
+func localStackGenAIEndpoint(ctx context.Context, provider, remote, model string, opts ...genai.ProviderOption) (localStackEndpoint, error) {
 	entry, ok := providers.All[provider]
 	if !ok || entry.Factory == nil {
 		return localStackEndpoint{}, fmt.Errorf("unsupported local stack provider %q", provider)
 	}
-	var opts []genai.ProviderOption
 	if remote != "" {
 		opts = append(opts, genai.ProviderOptionRemote(remote))
 	}
@@ -176,6 +185,23 @@ func localStackGenAIEndpoint(ctx context.Context, provider, remote, model string
 		return localStackEndpoint{}, err
 	}
 	return localStackEndpoint{provider: p}, nil
+}
+
+// localStackBearerTransport confines the credential to the configured endpoint,
+// including when the HTTP client follows a redirect.
+type localStackBearerTransport struct {
+	remote    string
+	key       string
+	transport http.RoundTripper
+}
+
+func (t *localStackBearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.String() != t.remote {
+		return nil, errors.New("refusing to send LLM bearer token to a different endpoint")
+	}
+	r := req.Clone(req.Context())
+	r.Header.Set("Authorization", "Bearer "+t.key)
+	return t.transport.RoundTrip(r)
 }
 
 // joinClosers combines closers into one that closes all of them, joining any
@@ -331,7 +357,6 @@ func (a *genaiASRAdapter) transcribe(ctx context.Context, pcm []byte) (string, e
 	}}
 	res, err := a.provider.GenSync(ctx, genai.Messages{msg},
 		&genai.GenOptionText{SystemPrompt: "You are a speech recognition engine. Return only the spoken words."},
-		&llamacpp.GenOption{},
 	)
 	if err != nil {
 		return "", err
@@ -462,7 +487,6 @@ func (c *genaiConversation) startGenerationLocked(ctx context.Context, allowTool
 func (c *genaiConversation) genOptions(allowTools bool) []genai.GenOption {
 	opts := []genai.GenOption{
 		&genai.GenOptionText{SystemPrompt: c.systemInstruction},
-		&llamacpp.GenOption{},
 	}
 	if allowTools && len(c.tools) != 0 {
 		opts = append(opts, &genai.GenOptionTools{Tools: c.tools})
@@ -512,8 +536,26 @@ func genaiToolDefs(tools []voicev1.ToolDeclaration) ([]genai.ToolDef, error) {
 			var schemaObject map[string]json.RawMessage
 			if err := json.Unmarshal(tools[i].Parameters, &schemaObject); err != nil {
 				errs = append(errs, fmt.Errorf("tool %q parameters: %w", tools[i].Name, err))
+			} else if schemaObject == nil {
+				errs = append(errs, fmt.Errorf("tool %q parameters must be an object schema", tools[i].Name))
 			} else {
-				schema = append(genai.JSONSchema(nil), tools[i].Parameters...)
+				// Android clients send {} for no-argument commands. Function
+				// calling providers require an explicit object parameter type.
+				// TODO: Remove this special case.
+				if rawType, ok := schemaObject["type"]; ok {
+					var typ string
+					if err := json.Unmarshal(rawType, &typ); err != nil || typ != "object" {
+						errs = append(errs, fmt.Errorf("tool %q parameters must have type object", tools[i].Name))
+					}
+				} else {
+					schemaObject["type"] = json.RawMessage(`"object"`)
+				}
+				data, err := json.Marshal(schemaObject)
+				if err != nil {
+					errs = append(errs, fmt.Errorf("tool %q parameters: %w", tools[i].Name, err))
+				} else {
+					schema = data
+				}
 			}
 		}
 		out[i] = genai.ToolDef{

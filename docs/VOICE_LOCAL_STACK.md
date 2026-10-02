@@ -83,6 +83,47 @@ through `uv` and Python 3.12. The gateway does not manage alternate servers;
 start them before starting the gateway. `remote` is a server origin without a
 path. Keep it on loopback to keep microphone audio and speech local.
 
+### Remote chat completions LLM
+
+The LLM can use a remote OpenAI-compatible chat completions endpoint while
+ASR and TTS keep their local defaults. For example, to use RunInfra:
+
+```toml
+[local_stack.llm]
+provider = "openaicompatible"
+remote = "https://api.runinfra.ai/v1/chat/completions"
+model = "qwen3-8-27b"
+api_key_name = "RUNINFRA_GATEWAY_KEY"
+```
+
+For this provider, `remote` is the complete endpoint URL, including its path.
+`api_key_name` names an environment variable containing the bearer token;
+omit it for an unauthenticated endpoint. A named variable must be nonempty
+when the gateway starts. Credentials are confined to that endpoint; redirects
+to a different URL fail. Supply the variable to the gateway process, including
+its systemd service environment when running as a service. Keep the key out
+of the TOML file.
+
+Transcripts, the system instruction, and service-item context are sent to the
+configured LLM endpoint.
+
+The pinned genai `openaicompatible` client currently supports text conversation
+only. The gateway withholds host tools from providers whose streaming
+scoreboard reports no tool support, so the assistant cannot act on service
+items through this provider. Tool calling will be enabled when the client's
+scoreboard declares support.
+
+For DeepSeek with tool calling, use the registered `deepseek` provider instead:
+
+```toml
+[local_stack.llm]
+provider = "deepseek"
+model = "deepseek-flash"
+```
+
+This provider uses its default API endpoint and reads `DEEPSEEK_API_KEY` from
+the gateway process environment. Omit `remote` and `api_key_name`.
+
 ### Alternate speech engines
 
 | Stage | Configuration | Server requirement | Host platform |
