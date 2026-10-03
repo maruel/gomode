@@ -112,3 +112,70 @@ Quality, performance, and latency should be reported as measured dimensions, not
 ## Sources
 
 Primary project and model sources linked in each section. Recent-release checks: [mlx-audio releases](https://github.com/Blaizzy/mlx-audio/releases) (Sep 24 and Sep 28, 2026); [Parakeet Redux model card](https://huggingface.co/moondream/parakeet-redux); [Silero VAD releases](https://github.com/snakers4/silero-vad/releases) (Sep 17, 2026); [Microsoft VibeVoice streaming announcement](https://github.com/microsoft/VibeVoice) (Sep 3, 2026); [mlx-audio's current full voice pipeline](https://github.com/Blaizzy/mlx-audio/blob/main/mlx_audio/sts/voice_pipeline.py). Sources were checked 2026-09-30. Availability, licenses, and performance should be checked again when choosing versions for implementation. The FluidAudio figures are upstream M5 Pro measurements. No performance number here is a measurement from this gateway on the target Mac.
+
+## Whistle and Parakeet follow-up (2026-10-03)
+
+Whistle is available as an opt-in gateway ASR backend; see
+[the configuration](VOICE_LOCAL_STACK.md#optional-whistle-asr). The Python
+worker belongs to genaipy and keeps the model loaded across requests. Its
+small footprint makes it a useful CPU candidate, but Needle distributes the
+native engine as a **prebuilt binary**. The public
+[Needle repository](https://github.com/cactus-compute/needle) supplies Python
+bindings and model tooling; it does not supply the standalone native runtime's
+implementation. This is a material drawback for auditing and source builds.
+The [Whistle model](https://huggingface.co/Cactus-Compute/whistle) covers seven
+languages and processes completed clips, with a 30-second encoder limit.
+The gateway splits longer utterances into windows. A Linux ARM64 fixture check
+produced the expected JFK transcript twice through the managed worker; this is
+neither a microphone-quality evaluation nor an M5 Pro benchmark.
+
+**Parakeet TDT 0.6B v3 is the next candidate to evaluate.** The
+[NVIDIA model card](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) specifies
+600M parameters, 16 kHz mono input, automatic language detection for 25 European
+languages, punctuation and timestamps, and CC BY 4.0 weights. Its resource
+requirements are substantially larger than Whistle's small weight file.
+No local Parakeet latency or accuracy measurement has been performed here.
+
+There are two practical routes:
+
+- **NeMo-Speech.cpp:** NVIDIA's [Apache-2.0 C++ runtime](https://github.com/NVIDIA/NeMo-Speech.cpp)
+  supports Parakeet v3 GGUF and source builds with CPU and Metal backends.
+  Its persistent [HTTP server](https://github.com/NVIDIA/NeMo-Speech.cpp/blob/b809bbb467fb2da2be0042fff5ef1f503828c9cf/docs/server.md)
+  loads each configured model once. The documented multipart WAV
+  [`/v1/audio/transcriptions` API](https://github.com/NVIDIA/NeMo-Speech.cpp/blob/b809bbb467fb2da2be0042fff5ef1f503828c9cf/docs/api.md)
+  returns JSON `text`, matching gomode's existing `openai-audio` ASR adapter.
+  This source-built service is the preferred first experiment given the
+  concern about Whistle's binary distribution. Compatibility is inferred from
+  the inspected protocol; a live gateway run still needs to verify it.
+- **MLX Audio:** the [Parakeet implementation](https://github.com/Blaizzy/mlx-audio/blob/e1b19b9054bf163f5d812221a54fcc346f1890e9/mlx_audio/stt/models/parakeet/parakeet.py)
+  provides an Apple Silicon route, and its server exposes the same HTTP
+  transcription endpoint. `stream=True` processes overlapping windows of
+  already supplied audio (defaults: five seconds with one-second overlap);
+  that alone does not establish continuous microphone streaming or equivalent
+  latency. A Python integration, if needed, belongs in genaipy.
+
+After building NeMo-Speech.cpp with HTTP support and downloading the model,
+this is the proposed experiment, not a validated deployment recipe:
+
+```sh
+hf download nvidia/parakeet-tdt-0.6b-v3 \
+  parakeet-tdt-0.6b-v3.q8_0.gguf --local-dir models
+nemo-speech serve --asr-model models/parakeet-tdt-0.6b-v3.q8_0.gguf
+```
+
+```toml
+[local_stack.asr]
+engine = "openai-audio"
+remote = "http://127.0.0.1:8080"
+model = "parakeet-tdt-0.6b-v3"
+```
+
+The server accepts `model` for client compatibility and uses its loaded model.
+Compare it with Qwen ASR and Whistle on the same command recordings, including
+French, proper names, code vocabulary, noise, silence, and long utterances.
+Record warm latency, peak memory, and transcript errors separately. The
+previous survey's suggestion that Parakeet necessarily needs the NeMo Python
+stack is superseded by this native runtime. Parakeet Redux also now has an
+[MLX Audio route](https://github.com/Blaizzy/mlx-audio/blob/e1b19b9054bf163f5d812221a54fcc346f1890e9/docs/models/stt/parakeet.md);
+its quantized footprint is worth a later comparison, without assuming the
+same accuracy as v3.

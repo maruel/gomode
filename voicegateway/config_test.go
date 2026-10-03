@@ -594,3 +594,16 @@ voice = "Luna"
 		t.Fatalf("managed remote error = %v", err)
 	}
 }
+
+func TestValidateWhistleASR(t *testing.T) {
+	for _, cfg := range []LocalStackASRConfig{{Engine: LocalStackASRWhistle}, {Engine: LocalStackASRWhistle, Model: "/tmp/whistle.cact"}} {
+		if err := validateLocalStackASR(cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, cfg := range []LocalStackASRConfig{{Engine: LocalStackASRWhistle, Remote: "http://localhost:8000"}, {Engine: LocalStackASRWhistle, Provider: "llamacpp"}} {
+		if err := validateLocalStackASR(cfg); err == nil {
+			t.Fatal("accepted incompatible Whistle config")
+		}
+	}
+}

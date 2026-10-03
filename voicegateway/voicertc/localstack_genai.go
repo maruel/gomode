@@ -21,6 +21,7 @@ import (
 
 	"github.com/maruel/genaipy/kittentts"
 	"github.com/maruel/genaipy/speech"
+	"github.com/maruel/genaipy/whistle"
 
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers"
@@ -91,7 +92,15 @@ func localStackModelsForConfigWithStarter(
 	}
 	var asr localStackEndpoint
 	var asrAdapter asrAdapter
-	if cfg.ASR.Engine == voicegateway.LocalStackASROpenAIAudio || cfg.ASR.Engine == voicegateway.LocalStackASRWhisperCPP {
+	switch cfg.ASR.Engine {
+	case voicegateway.LocalStackASRWhistle:
+		w, err := whistle.New(ctx, cfg.ASR.Model)
+		if err != nil {
+			return localStackModels{}, err
+		}
+		asr.runtime = w
+		asrAdapter = &speechASRAdapter{recognizer: w}
+	case voicegateway.LocalStackASROpenAIAudio, voicegateway.LocalStackASRWhisperCPP:
 		protocol := speech.OpenAI
 		if cfg.ASR.Engine == voicegateway.LocalStackASRWhisperCPP {
 			protocol = speech.WhisperCPP
@@ -101,7 +110,7 @@ func localStackModelsForConfigWithStarter(
 			return localStackModels{}, err
 		}
 		asrAdapter = &speechASRAdapter{recognizer: recognizer}
-	} else {
+	default:
 		var err error
 		asr, err = resolveLocalStackEndpoint(ctx, "local_stack.asr", cfg.ASR.Provider, cfg.ASR.Remote, cfg.ASR.Model, defaultLocalStackASRModel, start)
 		if err != nil {

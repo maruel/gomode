@@ -165,6 +165,8 @@ const (
 	LocalStackASRGenAI LocalStackASREngine = "genai"
 	// LocalStackASROpenAIAudio uses an OpenAI-compatible transcription endpoint.
 	LocalStackASROpenAIAudio LocalStackASREngine = "openai-audio"
+	// LocalStackASRWhistle runs the managed Cactus Whistle recognizer.
+	LocalStackASRWhistle LocalStackASREngine = "whistle"
 	// LocalStackASRWhisperCPP uses whisper.cpp's inference endpoint.
 	LocalStackASRWhisperCPP LocalStackASREngine = "whispercpp"
 )
@@ -214,6 +216,11 @@ func validateLocalStackASR(c LocalStackASRConfig) error {
 	switch c.Engine {
 	case "", LocalStackASRGenAI:
 		return validateLocalStackProvider("local_stack.asr", c.Provider, c.Remote)
+	case LocalStackASRWhistle:
+		if c.Provider != "" || c.Remote != "" {
+			return errors.New("local_stack.asr.whistle is managed locally; provider and remote must be empty")
+		}
+		return nil
 	case LocalStackASROpenAIAudio, LocalStackASRWhisperCPP:
 		if c.Provider != "" {
 			return errors.New("local_stack.asr.provider is only used with the genai engine")

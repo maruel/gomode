@@ -202,3 +202,30 @@ Evaluate these after measuring the target hardware:
   ones against the same golden files.
 - Whether browser voice stays a product feature or becomes a debug path.
 - How a host advertises and selects among gateway URLs, one per backend.
+
+### Optional Whistle ASR
+
+To use [Cactus Whistle](https://cactuscompute.com/blog/whistle) instead of the
+managed Qwen ASR model:
+
+```toml
+[local_stack.asr]
+engine = "whistle"
+# Optional local .cact weights; omit to download Cactus-Compute/whistle.
+# model = "/absolute/path/to/whistle.cact"
+```
+
+Leave `provider` and `remote` empty. The gateway needs `uv`; it installs
+`cactus-needle==3.1.0` in an isolated Python 3.12 environment. Needle downloads
+its **prebuilt native engine** and weights into its own cache on first startup.
+This is an optional dependency, separate from genai and llama.cpp; enabling it
+accepts upstream's binary distribution rather than a source-built runtime.
+Telemetry is disabled by the gateway.
+
+Whistle transcribes completed utterances, with automatic language detection
+(English, German, French, Spanish, Italian, Dutch, Polish). It does not stream
+partial transcripts. The worker converts gateway PCM to normalized 16 kHz
+float samples and serializes native calls. Utterances longer than 30 seconds
+are split into consecutive windows; words crossing a boundary may lose
+accuracy. Request cancellation leaves the model available for subsequent turns.
+The existing LLM and TTS configuration continues to apply.
