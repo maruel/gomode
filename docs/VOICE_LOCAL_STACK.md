@@ -78,8 +78,9 @@ backend = "local-stack"
 ASR and LLM each run in their own managed llama.cpp server with independent
 lifetimes by default. ASR `engine = "genai"` uses the existing `provider` key
 to select any registered genai provider. The default TTS is
-`KittenML/kitten-tts-mini-0.8`, started
-through `uv` and Python 3.12. The gateway does not manage alternate servers;
+`KittenML/kitten-tts-2` with the Jasper voice, started
+through `uv` and Python 3.12. Set `local_stack.tts.model` and
+`local_stack.tts.voice` to select a different KittenTTS model or voice. The gateway does not manage alternate servers;
 start them before starting the gateway. `remote` is a server origin without a
 path. Keep it on loopback to keep microphone audio and speech local.
 
@@ -149,8 +150,12 @@ output sample rate before using it.
 
 ## KittenTTS Runtime
 
-- `uv --with` pins a Git revision. The published `kittentts-0.8.1` wheel does
-  not match the worker API.
+- The shared [`genaipy/kittentts`](https://github.com/maruel/genaipy/tree/main/kittentts)
+  runtime owns the Python worker, package pin and model cache. The gateway
+  retains voice session orchestration.
+- The runtime pins the upstream KittenTTS revision and produces 24 kHz mono
+  S16LE PCM. A cancelled synthesis request leaves the worker available for the
+  next utterance; closing the gateway stops it.
 - Python 3.13 fails to build transitive dependencies; use 3.12.
 - The dependency graph can pull large ML packages. KittenTTS stays an external
   process with its caches under the user cache directory, not vendored code.

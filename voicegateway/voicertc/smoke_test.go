@@ -29,6 +29,8 @@ import (
 
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers/llamacpp"
+	"github.com/maruel/genaipy/kittentts"
+	"github.com/maruel/genaipy/speech"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 
@@ -46,14 +48,14 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 	root := t
 
 	var spokenPCM24 []byte
-	var tts *kittenTTSAdapter
-	var asr *genaiASRAdapter
+	var tts *kittentts.Runtime
+	var asr *speechASRAdapter
 	var llm *genaiLLMAdapter
 
 	t.Run("Audio", func(t *testing.T) {
 		t.Run("TTS", func(t *testing.T) {
 			startup := time.Now()
-			adapter, err := newKittenTTSAdapter(runtimeCtx)
+			adapter, err := kittentts.New(runtimeCtx, kittentts.Config{})
 			t.Logf("KittenTTS startup setup time, excluded from latency measurements: %s", smokeElapsed(startup))
 			if err != nil {
 				t.Fatal(err)
@@ -99,7 +101,11 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 					}
 				})
 			}
-			asr = &genaiASRAdapter{provider: endpoint.provider}
+			recognizer, err := speech.NewProviderRecognizer(endpoint.provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			asr = &speechASRAdapter{recognizer: recognizer}
 
 			transcription := time.Now()
 			text, err := asr.transcribe(t.Context(), downsample24to16(spokenPCM24))
@@ -196,7 +202,7 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 		t.Cleanup(cancel)
 		s := newVoiceRTCTestSession(ctx, t, newLocalStackBackend(
 			func() vadSegmenter { return &energyVAD{} },
-			asr, llm, tts,
+			asr, llm, &speechTTSAdapter{synthesizer: tts},
 		))
 		turn := time.Now()
 		writePCM24MicAudio(ctx, t, s.micTrack, spokenPCM24)
@@ -249,7 +255,7 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 
 	// Synthesize the microphone input before the gateway starts its own
 	// KittenTTS worker, so only one worker runs at a time.
-	tts, err := newKittenTTSAdapter(runtimeCtx)
+	tts, err := kittentts.New(runtimeCtx, kittentts.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,11 +610,11 @@ func genAIText(msg *genai.Message) string {
 	return text.String()
 }
 
-func collectTimedTTSChunks(ctx context.Context, tts *kittenTTSAdapter, text string) ([][]byte, time.Duration, time.Duration, error) {
+func collectTimedTTSChunks(ctx context.Context, tts *kittentts.Runtime, text string) ([][]byte, time.Duration, time.Duration, error) {
 	start := time.Now()
 	var firstChunkLatency time.Duration
 	var chunks [][]byte
-	for pcm, err := range tts.synthesize(ctx, text) {
+	for pcm, err := range tts.Synthesize(ctx, text) {
 		if err != nil {
 			return nil, firstChunkLatency, time.Since(start).Round(time.Millisecond), err
 		}

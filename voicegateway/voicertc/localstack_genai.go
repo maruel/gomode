@@ -3,13 +3,13 @@
 package voicertc
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"iter"
+
 	"log/slog"
 	"net"
 	"net/http"
@@ -18,6 +18,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/maruel/genaipy/kittentts"
+	"github.com/maruel/genaipy/speech"
 
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers"
@@ -36,13 +39,17 @@ func localStackBackendForConfig(ctx context.Context, cfg *voicegateway.LocalStac
 	var tts ttsAdapter
 	var ttsRuntime io.Closer
 	if cfg.TTS.Engine == voicegateway.LocalStackTTSOpenAIAudio {
-		tts = &audioHTTPAdapter{client: http.DefaultClient, remote: cfg.TTS.Remote, model: cfg.TTS.Model, voice: cfg.TTS.Voice}
-	} else {
-		kitten, err := newKittenTTSAdapter(ctx)
+		synth, err := speech.NewHTTPSynthesizer(http.DefaultClient, cfg.TTS.Remote, cfg.TTS.Model, cfg.TTS.Voice)
 		if err != nil {
 			return nil, errors.Join(err, models.runtime.Close())
 		}
-		tts, ttsRuntime = kitten, kitten
+		tts = &speechTTSAdapter{synthesizer: synth}
+	} else {
+		kitten, err := kittentts.New(ctx, kittentts.Config{Model: cfg.TTS.Model, Voice: cfg.TTS.Voice})
+		if err != nil {
+			return nil, errors.Join(err, models.runtime.Close())
+		}
+		tts, ttsRuntime = &speechTTSAdapter{synthesizer: kitten}, kitten
 	}
 	b := newLocalStackBackend(
 		func() vadSegmenter { return &energyVAD{} },
@@ -85,14 +92,26 @@ func localStackModelsForConfigWithStarter(
 	var asr localStackEndpoint
 	var asrAdapter asrAdapter
 	if cfg.ASR.Engine == voicegateway.LocalStackASROpenAIAudio || cfg.ASR.Engine == voicegateway.LocalStackASRWhisperCPP {
-		asrAdapter = &audioHTTPAdapter{client: http.DefaultClient, remote: cfg.ASR.Remote, model: cfg.ASR.Model, asrEngine: cfg.ASR.Engine}
+		protocol := speech.OpenAI
+		if cfg.ASR.Engine == voicegateway.LocalStackASRWhisperCPP {
+			protocol = speech.WhisperCPP
+		}
+		recognizer, err := speech.NewHTTPRecognizer(http.DefaultClient, cfg.ASR.Remote, cfg.ASR.Model, protocol)
+		if err != nil {
+			return localStackModels{}, err
+		}
+		asrAdapter = &speechASRAdapter{recognizer: recognizer}
 	} else {
 		var err error
 		asr, err = resolveLocalStackEndpoint(ctx, "local_stack.asr", cfg.ASR.Provider, cfg.ASR.Remote, cfg.ASR.Model, defaultLocalStackASRModel, start)
 		if err != nil {
 			return localStackModels{}, err
 		}
-		asrAdapter = &genaiASRAdapter{provider: asr.provider}
+		recognizer, err := speech.NewProviderRecognizer(asr.provider)
+		if err != nil {
+			return localStackModels{}, errors.Join(err, asr.runtime.Close())
+		}
+		asrAdapter = &speechASRAdapter{recognizer: recognizer}
 	}
 	llm, err := resolveLocalStackEndpoint(ctx, "local_stack.llm", cfg.LLM.Provider, cfg.LLM.Remote, cfg.LLM.Model, defaultLocalStackLLMModel, start, llmOpts...)
 	if err != nil {
@@ -334,41 +353,22 @@ func newLlamaProvider(ctx context.Context, remote, model string) (genai.Provider
 	return p, nil
 }
 
-type genaiASRAdapter struct {
-	provider genai.Provider
+// speechASRAdapter binds the gateway's capture sample rate to a shared recognizer.
+type speechASRAdapter struct {
+	recognizer speech.Recognizer
 }
 
-func (a *genaiASRAdapter) transcribe(ctx context.Context, pcm []byte) (string, error) {
-	if len(pcm) == 0 {
-		return "", nil
-	}
-	wav := pcmS16LEMonoWAV(pcm, micSampleRate)
-	msg := genai.Message{Requests: []genai.Request{
-		{Text: "Transcribe the attached audio. Return only the transcript text, with no commentary."},
-		{Doc: genai.Doc{Filename: "speech.wav", Src: bytes.NewReader(wav)}},
-	}}
-	res, err := a.provider.GenSync(ctx, genai.Messages{msg},
-		&genai.GenOptionText{SystemPrompt: "You are a speech recognition engine. Return only the spoken words."},
-	)
-	if err != nil {
-		return "", err
-	}
-	return parseASRTranscript(res.String()), nil
+func (a *speechASRAdapter) transcribe(ctx context.Context, pcm []byte) (string, error) {
+	return a.recognizer.Transcribe(ctx, pcm, micSampleRate)
 }
 
-// parseASRTranscript returns the spoken text from raw ASR model output.
-//
-// Qwen3-ASR prefixes its transcript with detected-language metadata:
-// "language English<asr_text>Hello." or "language None<asr_text>" for audio
-// without speech. Output without the tag is plain text, which keeps other ASR
-// models working. This follows parse_asr_output in
-// https://github.com/QwenLM/Qwen3-ASR/blob/main/qwen_asr/inference/utils.py.
-func parseASRTranscript(raw string) string {
-	_, text, ok := strings.Cut(raw, "<asr_text>")
-	if !ok {
-		return strings.TrimSpace(raw)
-	}
-	return strings.TrimSpace(text)
+// speechTTSAdapter adapts shared synthesis to the gateway's private boundary.
+type speechTTSAdapter struct {
+	synthesizer speech.Synthesizer
+}
+
+func (a *speechTTSAdapter) synthesize(ctx context.Context, text string) iter.Seq2[[]byte, error] {
+	return a.synthesizer.Synthesize(ctx, text)
 }
 
 type genaiLLMAdapter struct {
@@ -560,31 +560,4 @@ func genaiToolDefs(tools []voicev1.ToolDeclaration) ([]genai.ToolDef, error) {
 		}
 	}
 	return out, errors.Join(errs...)
-}
-
-func pcmS16LEMonoWAV(pcm []byte, sampleRate int) []byte {
-	const (
-		headerSize    = 44
-		audioFormat   = 1
-		channelCount  = 1
-		bitsPerSample = 16
-	)
-	out := make([]byte, headerSize+len(pcm))
-	copy(out[0:], "RIFF")
-	binary.LittleEndian.PutUint32(out[4:], uint32(36+len(pcm))) //nolint:gosec // WAV files are bounded by captured utterance size.
-	copy(out[8:], "WAVE")
-	copy(out[12:], "fmt ")
-	binary.LittleEndian.PutUint32(out[16:], 16)
-	binary.LittleEndian.PutUint16(out[20:], audioFormat)
-	binary.LittleEndian.PutUint16(out[22:], channelCount)
-	binary.LittleEndian.PutUint32(out[24:], uint32(sampleRate)) //nolint:gosec // Sample rate is a small constant.
-	byteRate := sampleRate * channelCount * bitsPerSample / 8
-	binary.LittleEndian.PutUint32(out[28:], uint32(byteRate)) //nolint:gosec // Byte rate is derived from a small sample rate.
-	blockAlign := channelCount * bitsPerSample / 8
-	binary.LittleEndian.PutUint16(out[32:], uint16(blockAlign))
-	binary.LittleEndian.PutUint16(out[34:], bitsPerSample)
-	copy(out[36:], "data")
-	binary.LittleEndian.PutUint32(out[40:], uint32(len(pcm))) //nolint:gosec // WAV files are bounded by captured utterance size.
-	copy(out[44:], pcm)
-	return out
 }

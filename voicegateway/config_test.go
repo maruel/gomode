@@ -566,3 +566,31 @@ func TestConfigValidate(t *testing.T) {
 		}
 	})
 }
+
+func TestLocalStackKittenTTSConfiguration(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "kitten.toml")
+	content := `backend = "local-stack"
+[local_stack.tts]
+engine = "kittentts"
+model = "owner/kitten-tts-2"
+voice = "Luna"
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LocalStack.TTS.Model != "owner/kitten-tts-2" || cfg.LocalStack.TTS.Voice != "Luna" {
+		t.Fatalf("TTS = %#v", cfg.LocalStack.TTS)
+	}
+	cfg.LocalStack.TTS.Remote = "http://127.0.0.1:8000"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "remote") {
+		t.Fatalf("managed remote error = %v", err)
+	}
+}

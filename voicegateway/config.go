@@ -190,6 +190,9 @@ func validateLocalStackLLM(c LocalStackLLMConfig) error {
 }
 
 // LocalStackTTSConfig selects a speech synthesis engine. The default is managed KittenTTS.
+//
+// KittenTTS defaults to the KittenTTS 2 model and Jasper voice when Model and Voice
+// are empty. OpenAI audio requires Remote, Model and Voice.
 type LocalStackTTSConfig struct {
 	Engine LocalStackTTSEngine `toml:"engine"`
 	Remote string              `toml:"remote"`
@@ -233,8 +236,8 @@ func validateLocalStackASR(c LocalStackASRConfig) error {
 func validateLocalStackTTS(c LocalStackTTSConfig) error {
 	switch c.Engine {
 	case "", LocalStackTTSKittenTTS:
-		if c.Remote != "" || c.Model != "" || c.Voice != "" {
-			return errors.New("local_stack.tts.engine must be openai-audio when remote, model, or voice is set")
+		if c.Remote != "" {
+			return errors.New("local_stack.tts.remote requires the openai-audio engine")
 		}
 	case LocalStackTTSOpenAIAudio:
 		if c.Remote == "" || c.Model == "" || c.Voice == "" {

@@ -1,6 +1,6 @@
 module github.com/maruel/gomode
 
-go 1.27.0
+go 1.27.1
 
 require (
 	github.com/coder/websocket v1.8.15
@@ -10,6 +10,7 @@ require (
 	github.com/lmittmann/tint v1.2.0
 	github.com/maruel/apisdkgen v0.1.1
 	github.com/maruel/genai v0.8.2-0.20261003191951-ce29d0a57a60
+	github.com/maruel/genaipy v0.1.1-0.20261003213229-23b21fa9456d
 	github.com/maruel/gopus v0.0.0-20260506115108-4c6355c2de38
 	github.com/mattn/go-colorable v0.1.15
 	github.com/mattn/go-isatty v0.0.22

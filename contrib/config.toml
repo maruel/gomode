@@ -48,3 +48,9 @@ oauth = true
 # remote = "http://127.0.0.1:8000"
 # model = "mlx-community/Kokoro-82M-bf16"
 # voice = "af_heart"
+
+# To select a different managed KittenTTS model and voice instead:
+# [local_stack.tts]
+# engine = "kittentts"
+# model = "KittenML/kitten-tts-2"
+# voice = "Luna"

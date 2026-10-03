@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -91,49 +90,6 @@ type llmAdapter interface {
 // ttsAdapter streams S16LE mono PCM at backendOutputSampleRate from text.
 type ttsAdapter interface {
 	synthesize(ctx context.Context, text string) iter.Seq2[[]byte, error]
-}
-
-// pcmChunks frames a byte stream into even-length 16-bit sample slices.
-// Each yielded slice owns its storage and is safe for the caller to retain.
-func pcmChunks(r io.Reader) iter.Seq2[[]byte, error] {
-	return func(yield func([]byte, error) bool) {
-		var pending byte
-		hasPending := false
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := r.Read(buf)
-			if n > 0 {
-				pcm := make([]byte, n+1)
-				start := 0
-				if hasPending {
-					pcm[0] = pending
-					start = 1
-				}
-				copy(pcm[start:], buf[:n])
-				length := start + n
-				even := length - length%2
-				hasPending = length != even
-				if hasPending {
-					pending = pcm[even]
-				}
-				if even > 0 {
-					if !yield(pcm[:even], nil) {
-						return
-					}
-				}
-			}
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					if hasPending {
-						yield(nil, errors.New("PCM stream returned odd-length audio"))
-					}
-				} else {
-					yield(nil, fmt.Errorf("read PCM stream: %w", err))
-				}
-				return
-			}
-		}
-	}
 }
 
 // localStackBackend is a backendConnector that runs a half-duplex
