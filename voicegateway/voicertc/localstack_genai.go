@@ -23,6 +23,7 @@ import (
 	"github.com/maruel/genai/providers"
 	"github.com/maruel/genai/providers/llamacpp"
 	"github.com/maruel/genai/providers/llamacpp/llamacppsrv"
+	"github.com/maruel/genai/scoreboard"
 
 	"github.com/maruel/gomode/voicegateway"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
@@ -40,10 +41,7 @@ func localStackBackendForConfig(ctx context.Context, cfg *voicegateway.LocalStac
 	} else {
 		kitten, err := newKittenTTSAdapter(ctx)
 		if err != nil {
-			if models.runtime != nil {
-				_ = models.runtime.Close()
-			}
-			return nil, err
+			return nil, errors.Join(err, models.runtime.Close())
 		}
 		tts, ttsRuntime = kitten, kitten
 	}
@@ -63,9 +61,8 @@ type localStackModels struct {
 	runtime io.Closer
 }
 
-// localStackEndpoint is a resolved genai provider plus the managed runtime
-// that backs it, if the gateway started one (nil for remote/registry providers
-// it does not own).
+// localStackEndpoint owns its provider and any managed server. Its runtime
+// closes the provider before the server.
 type localStackEndpoint struct {
 	provider genai.Provider
 	runtime  io.Closer
@@ -100,10 +97,7 @@ func localStackModelsForConfigWithStarter(
 	}
 	llm, err := resolveLocalStackEndpoint(ctx, "local_stack.llm", cfg.LLM.Provider, cfg.LLM.Remote, cfg.LLM.Model, defaultLocalStackLLMModel, start, llmOpts...)
 	if err != nil {
-		if asr.runtime != nil {
-			_ = asr.runtime.Close()
-		}
-		return localStackModels{}, err
+		return localStackModels{}, errors.Join(err, joinClosers(asr.runtime).Close())
 	}
 	return localStackModels{
 		asr:     asrAdapter,
@@ -150,17 +144,14 @@ func localStackLlamaEndpoint(ctx context.Context, remote, model, defaultModel st
 	}
 	p, err := newLlamaProvider(ctx, remote, model)
 	if err != nil {
-		if runtime != nil {
-			_ = runtime.Close()
-		}
-		return localStackEndpoint{}, err
+		return localStackEndpoint{}, errors.Join(err, joinClosers(runtime).Close())
 	}
 	if runtime == nil {
 		if err := pingLocalStackProvider(ctx, p); err != nil {
-			return localStackEndpoint{}, err
+			return localStackEndpoint{}, errors.Join(err, p.Close())
 		}
 	}
-	return localStackEndpoint{provider: p, runtime: runtime}, nil
+	return localStackEndpoint{provider: p, runtime: joinClosers(p, runtime)}, nil
 }
 
 // localStackGenAIEndpoint wires any provider registered in providers.All (e.g.
@@ -182,9 +173,9 @@ func localStackGenAIEndpoint(ctx context.Context, provider, remote, model string
 		return localStackEndpoint{}, fmt.Errorf("create %s provider: %w", provider, err)
 	}
 	if err := pingLocalStackProvider(ctx, p); err != nil {
-		return localStackEndpoint{}, err
+		return localStackEndpoint{}, errors.Join(err, p.Close())
 	}
-	return localStackEndpoint{provider: p}, nil
+	return localStackEndpoint{provider: p, runtime: p}, nil
 }
 
 // localStackBearerTransport confines the credential to the configured endpoint,
@@ -384,6 +375,16 @@ type genaiLLMAdapter struct {
 }
 
 func (a *genaiLLMAdapter) newConversation(systemInstruction string, tools []voicev1.ToolDeclaration) llmConversation {
+	var supportsTools bool
+	for _, s := range a.provider.Scoreboard().Scenarios {
+		if s.GenStream != nil && s.GenStream.Tools != scoreboard.False {
+			supportsTools = true
+			break
+		}
+	}
+	if !supportsTools {
+		tools = nil
+	}
 	defs, err := genaiToolDefs(tools)
 	return &genaiConversation{
 		provider:          a.provider,

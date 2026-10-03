@@ -21,6 +21,7 @@ import (
 
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/base"
+	"github.com/maruel/genai/providers"
 	"github.com/maruel/genai/providers/deepseek"
 	"github.com/maruel/genai/scoreboard"
 
@@ -758,6 +759,105 @@ func TestLocalStackModelsForConfig(t *testing.T) {
 	}
 }
 
+func TestLocalStackProviderCleanup(t *testing.T) {
+	const name = "gomode-test-cleanup"
+	t.Cleanup(func() { delete(providers.All, name) })
+	closeErr := errors.New("provider close failed")
+	pingErr := errors.New("provider ping failed")
+	for _, tc := range []struct {
+		name        string
+		pingErr     error
+		llmProvider string
+	}{
+		{name: "shutdown", llmProvider: name},
+		{name: "ping failure", pingErr: pingErr, llmProvider: name},
+		{name: "LLM initialization failure", llmProvider: "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var created []*cleanupGenAIProvider
+			providers.All[name] = providers.Config{Factory: func(context.Context, ...genai.ProviderOption) (genai.Provider, error) {
+				p := &cleanupGenAIProvider{pingErr: tc.pingErr, closeErr: closeErr}
+				created = append(created, p)
+				return p, nil
+			}}
+			cfg := &voicegateway.LocalStackConfig{
+				ASR: voicegateway.LocalStackASRConfig{Provider: name},
+				LLM: voicegateway.LocalStackLLMConfig{Provider: tc.llmProvider},
+			}
+			models, err := localStackModelsForConfigWithStarter(t.Context(), cfg, nil)
+			if tc.name == "shutdown" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				err = models.runtime.Close()
+			} else if err == nil {
+				t.Fatal("initialization succeeded unexpectedly")
+			}
+			if !errors.Is(err, closeErr) {
+				t.Fatalf("error = %v, want provider close error", err)
+			}
+			if tc.pingErr != nil && !errors.Is(err, pingErr) {
+				t.Fatalf("error = %v, want provider ping error", err)
+			}
+			for _, p := range created {
+				if !p.closed {
+					t.Error("provider was not closed")
+				}
+			}
+		})
+	}
+}
+
+func TestGenaiLLMAdapterFlakyTools(t *testing.T) {
+	t.Parallel()
+	p := &flakyToolsGenAIProvider{}
+	conv := (&genaiLLMAdapter{provider: p}).newConversation("Answer briefly.", []voicev1.ToolDeclaration{{Name: "tasks_list", Description: "List tasks"}})
+	step, err := conv.user(t.Context(), "List tasks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range step.text {
+	}
+	if _, err := step.finish(); err != nil {
+		t.Fatal(err)
+	}
+	calls := p.callsSnapshot()
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(calls))
+	}
+	var tools []genai.ToolDef
+	for _, opt := range calls[0].opts {
+		if opt, ok := opt.(*genai.GenOptionTools); ok {
+			tools = opt.Tools
+		}
+	}
+	if len(tools) != 1 || tools[0].Name != "tasks_list" {
+		t.Fatalf("tools = %v, want tasks_list", tools)
+	}
+}
+
+type flakyToolsGenAIProvider struct {
+	fakeGenAIProvider
+}
+
+func (p *flakyToolsGenAIProvider) Scoreboard() scoreboard.Score {
+	return scoreboard.Score{Scenarios: []scoreboard.Scenario{{GenStream: &scoreboard.Functionality{Tools: scoreboard.Flaky}}}}
+}
+
+type cleanupGenAIProvider struct {
+	fakeGenAIProvider
+	pingErr  error
+	closeErr error
+	closed   bool
+}
+
+func (p *cleanupGenAIProvider) Ping(context.Context) error { return p.pingErr }
+
+func (p *cleanupGenAIProvider) Close() error {
+	p.closed = true
+	return p.closeErr
+}
+
 func TestLocalStackModelsForConfigRequiresProviderWithRemote(t *testing.T) {
 	t.Parallel()
 	start := func(context.Context, string) (managedLlamaServer, error) {
@@ -833,6 +933,11 @@ func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() {
+				if err := models.runtime.Close(); err != nil {
+					t.Error(err)
+				}
+			})
 			step, err := models.llm.newConversation("Answer briefly.", []voicev1.ToolDeclaration{{Name: "tasks_list", Description: "List tasks"}}).user(t.Context(), "Hi")
 			if err != nil {
 				t.Fatal(err)
@@ -1306,6 +1411,8 @@ type fakeGenAIProvider struct {
 	calls []fakeGenAICall
 }
 
+func (p *fakeGenAIProvider) Close() error { return nil }
+
 func (p *fakeGenAIProvider) Name() string { return "fake" }
 
 func (p *fakeGenAIProvider) ModelID() string { return "fake-model" }
@@ -1379,6 +1486,8 @@ type fakeASRProvider struct {
 	mimeType string
 	wav      []byte
 }
+
+func (p *fakeASRProvider) Close() error { return nil }
 
 func (p *fakeASRProvider) Name() string { return "fake-asr" }
 
