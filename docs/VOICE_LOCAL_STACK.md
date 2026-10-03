@@ -6,6 +6,15 @@ half-duplex and needs no API key. It runs on macOS or Linux; macOS is the first
 target. Target-Mac validation is phase `local-voice-quality` of
 [PLAN_GOMODE.md](PLAN_GOMODE.md).
 
+English-only speech models are acceptable for this stack. Multilingual support
+is optional; language coverage alone must not rule out an ASR or TTS candidate.
+Compare candidates on English quality, latency, memory use, and runtime
+availability.
+
+Noncommercial model licenses are acceptable for the owner's current usage.
+Record each model's license in research comparisons; noncommercial terms alone
+do not disqualify a candidate.
+
 ## Turn Flow
 
 ```mermaid

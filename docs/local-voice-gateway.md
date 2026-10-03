@@ -129,7 +129,7 @@ The gateway splits longer utterances into windows. A Linux ARM64 fixture check
 produced the expected JFK transcript twice through the managed worker; this is
 neither a microphone-quality evaluation nor an M5 Pro benchmark.
 
-**Parakeet TDT 0.6B v3 is the next candidate to evaluate.** The
+**Parakeet TDT 0.6B v3 remains a candidate to evaluate.** The
 [NVIDIA model card](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) specifies
 600M parameters, 16 kHz mono input, automatic language detection for 25 European
 languages, punctuation and timestamps, and CC BY 4.0 weights. Its resource
@@ -171,11 +171,183 @@ model = "parakeet-tdt-0.6b-v3"
 ```
 
 The server accepts `model` for client compatibility and uses its loaded model.
-Compare it with Qwen ASR and Whistle on the same command recordings, including
-French, proper names, code vocabulary, noise, silence, and long utterances.
+Compare it with Qwen ASR, Whistle, and Phonon-2 on the same English command
+recordings, including proper names, code vocabulary, noise, silence, and long
+utterances. Multilingual recordings are optional under the
+[stack's language requirements](VOICE_LOCAL_STACK.md).
 Record warm latency, peak memory, and transcript errors separately. The
 previous survey's suggestion that Parakeet necessarily needs the NeMo Python
 stack is superseded by this native runtime. Parakeet Redux also now has an
 [MLX Audio route](https://github.com/Blaizzy/mlx-audio/blob/e1b19b9054bf163f5d812221a54fcc346f1890e9/docs/models/stt/parakeet.md);
 its quantized footprint is worth a later comparison, without assuming the
 same accuracy as v3.
+
+## Phonon-2 assessment (2026-10-03)
+
+**Phonon-2 is a viable English ASR candidate, with a working HTTP integration
+path.** English-only support meets the
+[voice stack's language requirements](VOICE_LOCAL_STACK.md); multilingual
+coverage is optional. It is speech recognition, separate from the gateway's
+conversational LLM and TTS.
+
+### Upstream model and runtime claims
+
+[Fermion's research](https://www.fermionresearch.com/research/phonon-2/) describes
+a five-value, approximately 2.1-bit derivative of Parakeet TDT 0.6B v3. Its
+164 MB download averages 5.21% WER on seven English test sets, compared with
+4.96% for its full-precision teacher and 5.69% for Parakeet Redux in the same
+published table. These are upstream results, not a local quality comparison.
+Fermion reports 174 times realtime on an M5 MacBook Air with MLX; that excludes
+model loading and is transcription throughput, not end-to-end voice-turn
+latency.
+
+The [weights](https://huggingface.co/FermionResearch/Phonon-2) are CC BY 4.0;
+the CLI and runtime package are Apache-2.0. The model is available through
+MLX on Apple Silicon, CPU engines on Linux/Windows, and a separate CUDA
+container. Its small packed download does not imply equally small resident
+memory: the default MLX fast path expands the encoder to 16-bit weights, and
+the CPU fast path uses an int8 encoder alongside the Python/Torch runtime.
+
+### Source availability and streaming
+
+Inspection covered the public
+[Phonon repository at ba0339c](https://github.com/fermionresearch/phonon/tree/ba0339cb01d6103a4c632cfc8c7744c23c1587cb)
+and the [fermion-research 0.2.7 wheel and source archive](https://pypi.org/project/fermion-research/0.2.7/#files).
+The CPU package ships native encoder, matrix-multiply, and TDT decoder
+libraries. Its NOTICE explicitly licenses those kernels under Apache-2.0,
+but no C/C++ sources were present in the inspected repository or source
+archive. The CPU fast path therefore retains the prebuilt-runtime drawback
+identified for Whistle. The MLX model loading and decoding implementation is
+inspectable Python in the package.
+
+The [live WebSocket API](https://www.fermionresearch.com/docs/speech-streaming/)
+accepts 16 kHz mono PCM and emits partial, final, and done messages. Source
+inspection of `fermion/_speech/live.py` shows that each partial re-decodes the
+whole buffered phrase; it does not advance an incremental encoder state.
+The configured first partial starts after 0.35 seconds of speech, later
+partials after another 0.5 seconds, and finalization after 0.7 seconds of
+silence or a 30-second segment cap. Actual delivery also includes inference
+time. Only one live stream is accepted at a time. Gomode's current adapter for completed utterances uses the HTTP endpoint,
+preserving its own VAD timing;
+using these partials would require additional integration.
+
+### Local fixture evaluation
+
+A Linux ARM64 CPU test used `fermion-research==0.2.7`, `torch==2.14.1+cpu`,
+`transformers==5.18.0`, Python 3.12, and four inference threads. The server's
+health response confirmed the native int8 C encoder and C TDT loop were
+loaded, using the NEON i8mm tier. The model archive's pinned SHA-256 was
+`98125795b6dda72f5c6eee9ba33d19815df65dcb18b50a357bf9f73c9935309e`.
+
+| Check | Observed result |
+| --- | --- |
+| First server startup, including initial model download | 18.4 seconds; reported model load was 7.71 seconds |
+| [whisper.cpp JFK fixture](https://github.com/ggml-org/whisper.cpp/blob/master/samples/jfk.wav), 11 seconds | Correct transcript on three requests; HTTP wall times 140, 131, and 132 ms |
+| One second of silence | Empty transcript |
+| JFK fixture repeated four times, 44 seconds | Segmented and transcribed successfully in 596 ms; punctuation varied |
+| Resident process memory after short-clip requests | Approximately 1.47 GiB |
+| Peak resident memory during the evaluation | Approximately 1.65 GiB |
+| Existing genaipy `speech.HTTPRecognizer` | Successfully transcribed the JFK PCM through the real server |
+
+Memory was read from the server process's Linux `/proc` status, including
+Python/Torch and the model. These results exercise loading, the HTTP protocol,
+silence handling, and long-audio segmentation. They do not establish accuracy on command recordings, noisy microphone
+quality, full WebRTC behavior, or M5 Pro
+performance. The JFK clip alone is insufficient to rank ASR quality.
+
+### Gateway experiment and recommendation
+
+The [transcription server](https://www.fermionresearch.com/docs/speech/) loads
+its model once and accepts multipart WAV at `/v1/audio/transcriptions`,
+returning JSON `text`. The existing `openai-audio` ASR adapter can use it;
+no new engine or Python implementation is required for this experiment.
+After installing the appropriate platform dependencies, keep the server
+running:
+
+```sh
+phonon serve --port 8010 --threads 4
+```
+
+```toml
+[local_stack.asr]
+engine = "openai-audio"
+remote = "http://127.0.0.1:8010"
+model = "phonon-2"
+```
+
+The model form field must name the served model; a mismatched name is rejected.
+HTTP audio longer than 35 seconds is split into pause-aligned 25–35-second
+windows by the server. Installation and runtime management remain external
+for this configuration; any future managed Python worker belongs in genaipy.
+
+Include Phonon-2 alongside Qwen ASR, Whistle, and Parakeet in the English
+command-corpus comparison. Measure transcript errors, warm latency, resident
+memory, and endpoint behavior on identical recordings. Its current HTTP
+compatibility makes that comparison straightforward, while NeMo-Speech.cpp
+remains the source-buildable Parakeet option when native source availability
+is the deciding factor.
+
+## Audio8-ASR investigation (2026-10-03)
+
+Audio8-ASR-0.1B is a plausible local candidate, especially for an Apple runtime
+experiment. The [base model card](https://huggingface.co/Edge0/Audio8-ASR-0.1B)
+reports about 104 million decoder parameters and 324 million parameters overall;
+“0.1B” describes the decoder. Its published English seven-split mean WER is
+7.03%. That result and its H200 batch throughput do not establish local CPU
+latency or a quality ranking against Phonon, Whistle, or Parakeet.
+
+The base model and the
+[ONNX package](https://huggingface.co/Edge0/Audio8-ASR-0.1B-onnx-runtime)
+use CC BY-NC 4.0. Noncommercial terms are acceptable for the owner's current
+usage, as recorded in [the stack requirements](VOICE_LOCAL_STACK.md).
+Keep the license visible without excluding the model on that basis.
+
+### Runtime and integration
+
+The inspectable Python runner uses ordinary ONNX Runtime, with INT8 audio and
+INT8/INT4 cached decoder graphs. It offers optional hotword biasing.
+Although the card says Transformers is unnecessary, the pinned dependencies
+and feature extractor import require Transformers; Torch was unnecessary in
+our CPU test. The HTTP endpoint is multipart `/asr` with an `audio` field,
+so the existing gateway ASR adapters cannot use it directly. Any managed
+Python worker would belong in genaipy.
+
+The runner returns a final transcript. Decoder KV caching does not provide
+incremental audio streaming. It truncates input at 30 seconds and caps the
+cached context at 512 tokens, including the output budget. Integration must
+handle these limits explicitly.
+
+The [Apple package](https://huggingface.co/Edge0/Audio8-ASR-0.1B-iOS-ANE)
+provides Swift source, a Core ML audio encoder targeting ANE, and an ONNX INT4
+CPU decoder. Its Swift package supports macOS 15+ and iOS 18+, with a macOS
+CLI. The advertised approximately 200 MB memory footprint is an iPhone result,
+not a Mac measurement. This path merits target-Mac testing; none was performed
+here. Its model assets are precompiled, while the inference orchestration is
+inspectable Swift rather than an opaque vendor engine.
+
+### Local CPU observations
+
+Tested ONNX revision `5b6d058a54853700223dd23cb4fe466b86c8fece` on Linux
+ARM64, Python 3.12, ONNX Runtime 1.22.0, four inference threads, and persistent
+`OnnxCacheAsrEngine` with INT8 audio and decoder graphs. Downloaded graph data
+and weights were checked against their repository LFS SHA-256 hashes. The
+selected assets occupy approximately 769 MB, including FP32 token embeddings.
+
+- Model construction took 0.403 seconds after download. The first 11-second
+  whisper.cpp JFK request took 5.796 seconds; subsequent requests took
+  0.698 and 0.691 seconds and returned the expected words.
+- Resident memory after the short requests was approximately 0.886 GiB;
+  process peak was approximately 1.23 GiB. These include Python and runtime
+  overhead. A one-second silence request returned an empty transcript.
+- A 44-second repeated JFK recording failed with the default output budget:
+  `385 + 128 > 512`. Reducing the budget to 120 allowed completion in a
+  second process, but only the first 30 seconds were transcribed. The result
+  still reported `audio_seconds = 44`, so that field does not confirm that all
+  input was processed.
+
+The measured warm CPU latency is slower than the prior four-thread Phonon-2
+JFK test (approximately 0.13 seconds), while resident memory is lower. Neither
+single-clip test establishes command accuracy. Prioritize Phonon's existing
+HTTP integration for the Linux comparison; retain Audio8's Swift/ANE path as
+a Mac candidate and test an identical English command corpus before choosing.
+No Audio8 backend was implemented during this investigation.
