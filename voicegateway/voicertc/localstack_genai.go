@@ -241,15 +241,15 @@ var managedLlamaRelease struct {
 }
 
 func startManagedLlamaServer(ctx context.Context, model string) (managedLlamaServer, error) {
-	build := llamacppsrv.BuildNumber
-	cache, err := localStackLlamaCacheDir(build)
+	version := llamacppsrv.Version
+	cache, err := localStackLlamaCacheDir()
 	if err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(cache, 0o750); err != nil {
 		return nil, fmt.Errorf("create llama.cpp cache dir: %w", err)
 	}
-	exe, err := managedLlamaExecutable(ctx, cache, build)
+	exe, err := managedLlamaExecutable(ctx, cache, version)
 	if err != nil {
 		return nil, err
 	}
@@ -257,8 +257,10 @@ func startManagedLlamaServer(ctx context.Context, model string) (managedLlamaSer
 	if err != nil {
 		return nil, err
 	}
-	args := []string{"-hf", model, "--no-warmup", "--no-log-timestamps"}
-	slog.InfoContext(ctx, "voicertc: starting managed llama.cpp", "model", model, "build", build, "hostPort", hostPort)
+	// Gateway sessions share each managed server and queue concurrent turns
+	// through one slot. Bound the context to limit KV cache allocation.
+	args := []string{"-hf", model, "--ctx-size", "32768", "--parallel", "1", "--no-warmup", "--no-log-timestamps"}
+	slog.InfoContext(ctx, "voicertc: starting managed llama.cpp", "model", model, "version", version, "hostPort", hostPort)
 	logger := slog.NewLogLogger(slog.Default().Handler(), slog.LevelInfo)
 	srv, err := llamacppsrv.New(ctx, exe, "", logger.Writer(), hostPort, 0, args)
 	if err != nil {
@@ -268,15 +270,15 @@ func startManagedLlamaServer(ctx context.Context, model string) (managedLlamaSer
 	return srv, nil
 }
 
-func managedLlamaExecutable(ctx context.Context, cache string, build int) (string, error) {
+func managedLlamaExecutable(ctx context.Context, cache, version string) (string, error) {
 	managedLlamaRelease.Lock()
 	defer managedLlamaRelease.Unlock()
 	if managedLlamaRelease.cache == cache && managedLlamaRelease.exe != "" {
 		return managedLlamaRelease.exe, nil
 	}
-	// DownloadRelease may overwrite the executable even when it is already
+	// DownloadVersion may overwrite the executable even when it is already
 	// running. Reuse the release for both managed model servers in this process.
-	exe, err := llamacppsrv.DownloadRelease(ctx, cache, build)
+	exe, err := llamacppsrv.DownloadVersion(ctx, cache, version)
 	if err != nil {
 		return "", err
 	}
@@ -303,12 +305,12 @@ func localStackLlamaHostPort(ctx context.Context) (string, error) {
 	return net.JoinHostPort(host, strconv.Itoa(addr.Port)), nil
 }
 
-func localStackLlamaCacheDir(build int) (string, error) {
+func localStackLlamaCacheDir() (string, error) {
 	cacheBase, err := os.UserCacheDir()
 	if err != nil {
 		return "", fmt.Errorf("get user cache dir: %w", err)
 	}
-	return filepath.Join(cacheBase, "caic", "llama-server", strconv.Itoa(build)), nil
+	return filepath.Join(cacheBase, "caic", "llama-server"), nil
 }
 
 const (
