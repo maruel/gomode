@@ -23,7 +23,6 @@ import (
 	"github.com/maruel/genai/providers"
 	"github.com/maruel/genai/providers/llamacpp"
 	"github.com/maruel/genai/providers/llamacpp/llamacppsrv"
-	"github.com/maruel/genai/scoreboard"
 
 	"github.com/maruel/gomode/voicegateway"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
@@ -375,16 +374,6 @@ type genaiLLMAdapter struct {
 }
 
 func (a *genaiLLMAdapter) newConversation(systemInstruction string, tools []voicev1.ToolDeclaration) llmConversation {
-	var supportsTools bool
-	for _, s := range a.provider.Scoreboard().Scenarios {
-		if s.GenStream != nil && s.GenStream.Tools != scoreboard.False {
-			supportsTools = true
-			break
-		}
-	}
-	if !supportsTools {
-		tools = nil
-	}
 	defs, err := genaiToolDefs(tools)
 	return &genaiConversation{
 		provider:          a.provider,
@@ -424,7 +413,7 @@ func (c *genaiConversation) user(ctx context.Context, text string) (llmStep, err
 	}
 	c.unanswered = text
 	c.messages = append(c.messages, genai.NewTextMessage(c.userText(text)))
-	return c.startGenerationLocked(ctx, true), nil
+	return c.startGenerationLocked(ctx), nil
 }
 
 func (c *genaiConversation) toolResult(ctx context.Context, id, name string, result json.RawMessage) (llmStep, error) {
@@ -442,7 +431,7 @@ func (c *genaiConversation) toolResult(ctx context.Context, id, name string, res
 		Name:   name,
 		Result: resultText,
 	}}})
-	return c.startGenerationLocked(ctx, true), nil
+	return c.startGenerationLocked(ctx), nil
 }
 
 func (c *genaiConversation) addContext(text string) {
@@ -458,8 +447,8 @@ func (c *genaiConversation) addContext(text string) {
 	c.contextText += "\n\n" + text
 }
 
-func (c *genaiConversation) startGenerationLocked(ctx context.Context, allowTools bool) llmStep {
-	fragments, finish := c.provider.GenStream(ctx, c.messages, c.genOptions(allowTools)...)
+func (c *genaiConversation) startGenerationLocked(ctx context.Context) llmStep {
+	fragments, finish := c.provider.GenStream(ctx, c.messages, c.genOptions()...)
 	return llmStep{
 		text: func(yield func(string) bool) {
 			for fragment := range fragments {
@@ -485,11 +474,11 @@ func (c *genaiConversation) startGenerationLocked(ctx context.Context, allowTool
 	}
 }
 
-func (c *genaiConversation) genOptions(allowTools bool) []genai.GenOption {
+func (c *genaiConversation) genOptions() []genai.GenOption {
 	opts := []genai.GenOption{
 		&genai.GenOptionText{SystemPrompt: c.systemInstruction},
 	}
-	if allowTools && len(c.tools) != 0 {
+	if len(c.tools) != 0 {
 		opts = append(opts, &genai.GenOptionTools{Tools: c.tools})
 	}
 	return opts

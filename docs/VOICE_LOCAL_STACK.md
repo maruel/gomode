@@ -86,7 +86,8 @@ path. Keep it on loopback to keep microphone audio and speech local.
 ### Remote chat completions LLM
 
 The LLM can use a remote OpenAI-compatible chat completions endpoint while
-ASR and TTS keep their local defaults. For example, to use RunInfra:
+ASR and TTS keep their local defaults. The remote model must support function
+tools. For example, to use RunInfra:
 
 ```toml
 [local_stack.llm]
@@ -107,13 +108,7 @@ of the TOML file.
 Transcripts, the system instruction, and service-item context are sent to the
 configured LLM endpoint.
 
-The pinned genai `openaicompatible` client currently supports text conversation
-only. The gateway withholds host tools from providers whose streaming
-scoreboard reports no tool support, so the assistant cannot act on service
-items through this provider. Tool calling will be enabled when the client's
-scoreboard declares support.
-
-For DeepSeek with tool calling, use the registered `deepseek` provider instead:
+For DeepSeek's native API, use the registered `deepseek` provider:
 
 ```toml
 [local_stack.llm]

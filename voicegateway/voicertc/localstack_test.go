@@ -808,42 +808,6 @@ func TestLocalStackProviderCleanup(t *testing.T) {
 	}
 }
 
-func TestGenaiLLMAdapterFlakyTools(t *testing.T) {
-	t.Parallel()
-	p := &flakyToolsGenAIProvider{}
-	conv := (&genaiLLMAdapter{provider: p}).newConversation("Answer briefly.", []voicev1.ToolDeclaration{{Name: "tasks_list", Description: "List tasks"}})
-	step, err := conv.user(t.Context(), "List tasks")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for range step.text {
-	}
-	if _, err := step.finish(); err != nil {
-		t.Fatal(err)
-	}
-	calls := p.callsSnapshot()
-	if len(calls) != 1 {
-		t.Fatalf("calls = %d, want 1", len(calls))
-	}
-	var tools []genai.ToolDef
-	for _, opt := range calls[0].opts {
-		if opt, ok := opt.(*genai.GenOptionTools); ok {
-			tools = opt.Tools
-		}
-	}
-	if len(tools) != 1 || tools[0].Name != "tasks_list" {
-		t.Fatalf("tools = %v, want tasks_list", tools)
-	}
-}
-
-type flakyToolsGenAIProvider struct {
-	fakeGenAIProvider
-}
-
-func (p *flakyToolsGenAIProvider) Scoreboard() scoreboard.Score {
-	return scoreboard.Score{Scenarios: []scoreboard.Scenario{{GenStream: &scoreboard.Functionality{Tools: scoreboard.Flaky}}}}
-}
-
 type cleanupGenAIProvider struct {
 	fakeGenAIProvider
 	pingErr  error
@@ -901,9 +865,22 @@ func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
 					t.Error("missing bearer authentication")
 				}
 				var body struct {
-					Model  string            `json:"model"`
-					Stream bool              `json:"stream"`
-					Tools  []json.RawMessage `json:"tools"`
+					Model  string `json:"model"`
+					Stream bool   `json:"stream"`
+					Tools  []struct {
+						Type     string `json:"type"`
+						Function struct {
+							Name string `json:"name"`
+						} `json:"function"`
+					} `json:"tools"`
+					Messages []struct {
+						Role       string `json:"role"`
+						Content    string `json:"content"`
+						ToolCallID string `json:"tool_call_id"`
+						ToolCalls  []struct {
+							ID string `json:"id"`
+						} `json:"tool_calls"`
+					} `json:"messages"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					t.Error(err)
@@ -911,15 +888,30 @@ func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
 				if body.Model != "qwen3-8-27b" || !body.Stream {
 					t.Errorf("request body = %+v", body)
 				}
-				if len(body.Tools) != 0 {
-					t.Error("text-only provider received tool declarations")
+				if len(body.Tools) != 1 || body.Tools[0].Type != "function" || body.Tools[0].Function.Name != "tasks_list" {
+					t.Errorf("tool declarations = %+v, want tasks_list function", body.Tools)
 				}
 				if redirect {
 					http.Redirect(w, r, destination.URL+"/other", http.StatusTemporaryRedirect)
 					return
 				}
 				w.Header().Set("Content-Type", "text/event-stream")
-				_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hello.\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+				if len(body.Messages) == 2 {
+					_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"tasks_list\",\"arguments\":\"{\\\"limit\\\":\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"1}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n")
+					return
+				}
+				if len(body.Messages) != 4 {
+					t.Errorf("message count = %d, want system, user, assistant, tool", len(body.Messages))
+				} else {
+					call, result := body.Messages[2], body.Messages[3]
+					if call.Role != "assistant" || len(call.ToolCalls) != 1 || call.ToolCalls[0].ID != "call-1" {
+						t.Errorf("assistant tool call = %+v", call)
+					}
+					if result.Role != "tool" || result.ToolCallID != "call-1" || result.Content != `{"tasks":["Task one"]}` {
+						t.Errorf("tool result = %+v", result)
+					}
+				}
+				_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Task one.\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
 			}))
 			t.Cleanup(srv.Close)
 			cfg := &voicegateway.LocalStackConfig{
@@ -938,7 +930,8 @@ func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			step, err := models.llm.newConversation("Answer briefly.", []voicev1.ToolDeclaration{{Name: "tasks_list", Description: "List tasks"}}).user(t.Context(), "Hi")
+			conv := models.llm.newConversation("Answer briefly.", []voicev1.ToolDeclaration{{Name: "tasks_list", Description: "List tasks"}})
+			step, err := conv.user(t.Context(), "List tasks")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -953,7 +946,19 @@ func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if strings.Join(text, "") != "Hello." || reply.text != "Hello." {
+			if len(text) != 0 || reply.toolCall == nil || reply.toolCall.id != "call-1" || reply.toolCall.name != "tasks_list" || string(reply.toolCall.args) != `{"limit":1}` {
+				t.Fatalf("text = %v, tool reply = %+v", text, reply.toolCall)
+			}
+			step, err = conv.toolResult(t.Context(), reply.toolCall.id, reply.toolCall.name, json.RawMessage(`{"tasks":["Task one"]}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			text = slices.Collect(step.text)
+			reply, err = step.finish()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(text, "") != "Task one." || reply.text != "Task one." || reply.toolCall != nil {
 				t.Fatalf("text = %v, reply = %+v", text, reply)
 			}
 		})
@@ -1421,9 +1426,7 @@ func (p *fakeGenAIProvider) OutputModalities() genai.Modalities {
 	return genai.Modalities{scoreboard.ModalityText}
 }
 
-func (p *fakeGenAIProvider) Scoreboard() scoreboard.Score {
-	return scoreboard.Score{Scenarios: []scoreboard.Scenario{{GenStream: &scoreboard.Functionality{Tools: scoreboard.True}}}}
-}
+func (p *fakeGenAIProvider) Scoreboard() scoreboard.Score { return scoreboard.Score{} }
 
 func (p *fakeGenAIProvider) HTTPClient() *http.Client { return nil }
 
