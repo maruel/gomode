@@ -10,7 +10,7 @@ require (
 	github.com/lmittmann/tint v1.2.0
 	github.com/maruel/apisdkgen v0.1.1
 	github.com/maruel/genai v0.9.0
-	github.com/maruel/genaipy v0.1.1
+	github.com/maruel/genaipy v0.1.2-0.20261004020438-2bdf98e17d98
 	github.com/maruel/gopus v0.1.0
 	github.com/mattn/go-colorable v0.1.15
 	github.com/mattn/go-isatty v0.0.22
