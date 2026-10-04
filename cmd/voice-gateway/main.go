@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"syscall"
 	"time"
@@ -26,7 +27,7 @@ import (
 	"github.com/maruel/gomode/voicegateway/voicertc"
 )
 
-func mainImpl(args []string) error {
+func mainImpl(args []string) (err error) {
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithCancelCause(signalCtx)
@@ -60,15 +61,11 @@ func mainImpl(args []string) error {
 	if err := validateStandaloneConfig(&cfg); err != nil {
 		return err
 	}
-	watcher, err := startConfigWatch(ctx, *configPath, cancel)
+	watcher, err := startRestartWatch(ctx, *configPath, cancel)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := watcher.Close(); err != nil {
-			log.Warn("close config watcher", "err", err)
-		}
-	}()
+	defer func() { err = errors.Join(err, watcher.Close()) }()
 
 	geminiAPIKey := os.Getenv("GEMINI_API_KEY")
 	var bridge *voicertc.Bridge
@@ -166,22 +163,40 @@ func envDefault(name, def string) string {
 	return def
 }
 
-var errConfigChanged = errors.New("voice gateway configuration changed; restarting")
-
-func startConfigWatch(ctx context.Context, path string, cancel context.CancelCauseFunc) (*fsnotify.Watcher, error) {
+// startRestartWatch triggers graceful shutdown after a rebuild or config change.
+// systemd's Restart=always or launchd's KeepAlive restarts the service.
+func startRestartWatch(ctx context.Context, path string, cancel context.CancelCauseFunc) (*fsnotify.Watcher, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve config path: %w", err)
 	}
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("get executable path: %w", err)
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return nil, fmt.Errorf("resolve executable path: %w", err)
+	}
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
-		return nil, fmt.Errorf("create config watcher: %w", err)
+		return nil, fmt.Errorf("create restart watcher: %w", err)
 	}
-	if err := w.Add(filepath.Dir(absPath)); err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, errors.Join(fmt.Errorf("watch config directory: %w", err), w.Close())
+	if err := w.Add(exe); err != nil {
+		return nil, errors.Join(fmt.Errorf("watch executable: %w", err), w.Close())
+	}
+	configTarget := absPath
+	for dir := filepath.Dir(absPath); ; dir = filepath.Dir(dir) {
+		if err := w.Add(dir); err != nil {
+			if !errors.Is(err, os.ErrNotExist) || dir == filepath.Dir(dir) {
+				return nil, errors.Join(fmt.Errorf("watch config directory: %w", err), w.Close())
+			}
+			// Restart when the next missing ancestor appears. The new process
+			// watches the config directory once it exists.
+			configTarget = dir
+			continue
 		}
-		// A missing directory leaves the watcher empty, as LoadConfig allows.
+		break
 	}
 	go func() {
 		for {
@@ -191,23 +206,42 @@ func startConfigWatch(ctx context.Context, path string, cancel context.CancelCau
 			case event, ok := <-w.Events:
 				if !ok {
 					if ctx.Err() == nil {
-						cancel(errors.New("config watcher closed"))
+						cancel(errors.New("restart watcher closed"))
 					}
 					return
 				}
-				if filepath.Clean(event.Name) != absPath || event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename) == 0 {
+				var reason string
+				switch filepath.Clean(event.Name) {
+				case exe:
+					if runtime.GOOS == "darwin" {
+						// macOS reports rename-into-place binary replacement as Create.
+						if !event.Has(fsnotify.Create) {
+							continue
+						}
+					} else if !event.Has(fsnotify.Write) && !event.Has(fsnotify.Chmod) {
+						continue
+					}
+					reason = "executable modified"
+				case configTarget:
+					if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename) == 0 {
+						continue
+					}
+					reason = "config path modified"
+				default:
 					continue
 				}
-				cancel(errConfigChanged)
+				slog.InfoContext(ctx, "shutdown", "reason", reason, "ev", event)
+				// File changes request a successful exit; watcher failures below do not.
+				cancel(nil)
 				return
 			case err, ok := <-w.Errors:
 				if !ok {
 					if ctx.Err() == nil {
-						cancel(errors.New("config watcher stopped"))
+						cancel(errors.New("restart watcher stopped"))
 					}
 					return
 				}
-				cancel(fmt.Errorf("watch config: %w", err))
+				cancel(fmt.Errorf("watch restart: %w", err))
 				return
 			}
 		}
@@ -215,8 +249,25 @@ func startConfigWatch(ctx context.Context, path string, cancel context.CancelCau
 	return w, nil
 }
 
+// isNormalShutdown accepts cancellation only when every error in the tree is
+// cancellation. A joined watcher or cleanup failure must still exit 1.
+func isNormalShutdown(err error) bool {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, e := range joined.Unwrap() {
+			if !isNormalShutdown(e) {
+				return false
+			}
+		}
+		return true
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return isNormalShutdown(wrapped.Unwrap())
+	}
+	return errors.Is(err, context.Canceled)
+}
+
 func main() {
-	if err := mainImpl(os.Args[1:]); err != nil && !errors.Is(err, context.Canceled) {
+	if err := mainImpl(os.Args[1:]); err != nil && !isNormalShutdown(err) {
 		fmt.Fprintf(os.Stderr, "voice-gateway: %v\n", err)
 		os.Exit(1)
 	}

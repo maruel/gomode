@@ -58,10 +58,13 @@ models under the user's cache directory. The unit searches `~/.local/bin` and
 `~/.cargo/bin` for `uv`, which KittenTTS requires. If `uv` is installed
 elsewhere, add its directory to the unit's `PATH`. Replace the example trusted
 issuer, then run `systemctl --user daemon-reload` and
-`systemctl --user enable --now voice-gateway.service`. The gateway watches the
-config directory with fsnotify. On a config edit, it exits and the
-unit's `Restart=on-failure` starts it with the new config. This also detects
-editors that replace the file when saving.
+`systemctl --user enable --now voice-gateway.service`. The gateway watches its
+executable and config directory with fsnotify. On a rebuild or config edit, it
+shuts down gracefully and exits 0. The unit's `Restart=always` starts it again.
+This also detects editors that replace the config file when saving. Watcher
+failures exit 1. For an existing installation, update the unit to
+`Restart=always` and run `systemctl --user daemon-reload` before updating the
+binary.
 To keep it running after logout, enable lingering for that user. The sample
 binds signaling to loopback for an HTTPS reverse proxy; make its WebRTC UDP
 port reachable to clients. For a root-managed service, use
