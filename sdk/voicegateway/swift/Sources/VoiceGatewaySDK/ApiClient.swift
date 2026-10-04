@@ -110,6 +110,10 @@ public final class ApiClient {
     }
 
     // JSON endpoints
+    /// Authorizes a browser text-session upgrade with a short-lived, single-use ticket.
+    public func voiceTextTicket(req: VoiceTextTicketReq, headers: [String: String] = [:]) async throws -> VoiceTextTicketResp {
+        try await request("POST", path: "/api/voicegateway/v1/voice/text/ticket", body: try encoder.encode(req), headers: headers)
+    }
     /// Exchanges a WebRTC SDP offer for an answer, opening a voice gateway session.
     public func voiceRTCOffer(req: VoiceRTCOfferReq, headers: [String: String] = [:]) async throws -> VoiceRTCAnswerResp {
         try await request("POST", path: "/api/voicegateway/v1/voice/rtc/offer", body: try encoder.encode(req), headers: headers)

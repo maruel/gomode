@@ -4,6 +4,7 @@ package voicegateway
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -71,6 +72,7 @@ func newHandler(cfg *Config, bridge MediaBridgeProvider, textSessions TextSessio
 		textSessions:       textSessions,
 		requireServiceAuth: requireServiceAuth,
 		verifier:           verifier,
+		textTickets:        make(map[string]textTicket),
 	}
 	if h.verifier == nil && cfg != nil {
 		for _, issuer := range cfg.TrustedIssuers {
@@ -88,6 +90,8 @@ func newHandler(cfg *Config, bridge MediaBridgeProvider, textSessions TextSessio
 	mux.HandleFunc("POST /api/voicegateway/v1/voice/rtc/{sessionID}/diagnostics", h.handleDiagnostics)
 	mux.HandleFunc("POST /api/voicegateway/v1/voice/rtc/{sessionID}", h.handleClose)
 	mux.HandleFunc("GET /api/voicegateway/v1/voice/text", h.handleTextSession)
+	mux.HandleFunc("GET /api/voicegateway/v1/voice/text/browser", h.handleBrowserTextSession)
+	mux.HandleFunc("POST /api/voicegateway/v1/voice/text/ticket", h.handleTextTicket)
 	if requireServiceAuth {
 		return allowTrustedIssuerOrigins(cfg, mux)
 	}
@@ -124,6 +128,14 @@ type handler struct {
 	requireServiceAuth bool
 	verifier           *oauthverify.Verifier
 	sessions           sync.Map // session ID to serviceSessionIdentity
+
+	textTicketMu sync.Mutex
+	textTickets  map[string]textTicket
+}
+
+type textTicket struct {
+	origin  string
+	expires time.Time
 }
 
 type serviceSessionIdentity struct {
@@ -144,22 +156,9 @@ func (h *handler) handleOffer(w http.ResponseWriter, r *http.Request) {
 		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "sdp is required")
 		return
 	}
-	var identity serviceSessionIdentity
-	if h.requireServiceAuth {
-		if req.Service == nil {
-			voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "service.kind is required")
-			return
-		}
-		if err := validateServiceAuthorization(*req.Service); err != nil {
-			voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, err.Error())
-			return
-		}
-		verified, err := h.verifyServiceToken(r.Context(), *req.Service)
-		if err != nil {
-			voiceapi.WriteError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, err.Error())
-			return
-		}
-		identity = verified
+	identity, ok := h.authorizeService(w, r, req.Service)
+	if !ok {
+		return
 	}
 	bridge := h.mediaBridge()
 	if bridge == nil {
@@ -223,6 +222,86 @@ func (h *handler) handleClose(w http.ResponseWriter, r *http.Request) {
 	voiceapi.WriteJSON(w, http.StatusOK, CloseSessionResp{Status: "closed"})
 }
 
+// handleTextTicket keeps browser WebSocket credentials out of URLs. The JSON
+// request uses the same standalone service authorization as a WebRTC offer.
+func (h *handler) handleTextTicket(w http.ResponseWriter, r *http.Request) {
+	var req voicev1.VoiceTextTicketReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "invalid request body")
+		return
+	}
+	if _, ok := h.authorizeService(w, r, req.Service); !ok {
+		return
+	}
+	origin := r.Header.Get("Origin")
+	if h.requireServiceAuth {
+		u, err := url.Parse(req.Service.BaseURL)
+		if err != nil || (origin != "" && origin != u.Scheme+"://"+u.Host) {
+			voiceapi.WriteError(w, http.StatusForbidden, voiceapi.CodeUnauthorized, "voice origin does not match service")
+			return
+		}
+	}
+	if h.textSessions == nil {
+		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "text voice sessions unavailable")
+		return
+	}
+	now := time.Now()
+	h.textTicketMu.Lock()
+	for ticket, entry := range h.textTickets {
+		if !now.Before(entry.expires) {
+			delete(h.textTickets, ticket)
+		}
+	}
+	if len(h.textTickets) >= 1024 {
+		h.textTicketMu.Unlock()
+		voiceapi.WriteError(w, http.StatusTooManyRequests, voiceapi.CodeBadRequest, "too many pending voice tickets")
+		return
+	}
+	ticket := rand.Text()
+	h.textTickets[ticket] = textTicket{origin: origin, expires: now.Add(30 * time.Second)}
+	h.textTicketMu.Unlock()
+	w.Header().Set("Cache-Control", "no-store")
+	voiceapi.WriteJSON(w, http.StatusOK, voicev1.VoiceTextTicketResp{Ticket: ticket})
+}
+
+// handleBrowserTextSession always requires a ticket, including on embedded
+// gateways. Hosts can expose this redemption route without exempting the native
+// text route from their existing authentication middleware.
+func (h *handler) handleBrowserTextSession(w http.ResponseWriter, r *http.Request) {
+	var ticket string
+	textProtocol := false
+	for _, header := range r.Header.Values("Sec-WebSocket-Protocol") {
+		for protocol := range strings.SplitSeq(header, ",") {
+			protocol = strings.TrimSpace(protocol)
+			if protocol == "gomode.text.v1" {
+				textProtocol = true
+			}
+			if value, ok := strings.CutPrefix(protocol, "gomode.ticket."); ok {
+				if ticket != "" || value == "" {
+					voiceapi.WriteError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, "invalid voice ticket")
+					return
+				}
+				ticket = value
+			}
+		}
+	}
+	h.textTicketMu.Lock()
+	entry, ok := h.textTickets[ticket]
+	delete(h.textTickets, ticket)
+	h.textTicketMu.Unlock()
+	if ticket == "" || !textProtocol || !ok || !time.Now().Before(entry.expires) || entry.origin != r.Header.Get("Origin") {
+		voiceapi.WriteError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, "invalid or expired voice ticket")
+		return
+	}
+	// The issuing authenticated request binds the exact browser origin. The
+	// upgrade has matched it, so the transport's same-origin default check
+	// must not reject an authorized standalone cross-origin gateway.
+	r = r.Clone(r.Context())
+	r.Header.Del("Origin")
+	r.Header.Set("Sec-WebSocket-Protocol", "gomode.text.v1")
+	h.serveTextSession(w, r)
+}
+
 func (h *handler) handleTextSession(w http.ResponseWriter, r *http.Request) {
 	if h.requireServiceAuth {
 		auth, err := serviceAuthorizationFromHeaders(r)
@@ -230,15 +309,14 @@ func (h *handler) handleTextSession(w http.ResponseWriter, r *http.Request) {
 			voiceapi.WriteError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, err.Error())
 			return
 		}
-		if err := validateServiceAuthorization(auth); err != nil {
-			voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, err.Error())
-			return
-		}
-		if _, err := h.verifyServiceToken(r.Context(), auth); err != nil {
-			voiceapi.WriteError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, err.Error())
+		if _, ok := h.authorizeService(w, r, &auth); !ok {
 			return
 		}
 	}
+	h.serveTextSession(w, r)
+}
+
+func (h *handler) serveTextSession(w http.ResponseWriter, r *http.Request) {
 	if h.textSessions == nil {
 		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "text voice sessions unavailable")
 		return
@@ -273,6 +351,26 @@ func serviceAuthorizationFromHeaders(r *http.Request) (voicev1.ServiceAuthorizat
 		BaseURL:    r.Header.Get("X-Service-Origin"),
 		Token:      token,
 	}, nil
+}
+
+func (h *handler) authorizeService(w http.ResponseWriter, r *http.Request, service *voicev1.ServiceAuthorization) (serviceSessionIdentity, bool) {
+	if !h.requireServiceAuth {
+		return serviceSessionIdentity{}, true
+	}
+	if service == nil {
+		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "service.kind is required")
+		return serviceSessionIdentity{}, false
+	}
+	if err := validateServiceAuthorization(*service); err != nil {
+		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, err.Error())
+		return serviceSessionIdentity{}, false
+	}
+	identity, err := h.verifyServiceToken(r.Context(), *service)
+	if err != nil {
+		voiceapi.WriteError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, err.Error())
+		return serviceSessionIdentity{}, false
+	}
+	return identity, true
 }
 
 func (h *handler) authorizeSession(w http.ResponseWriter, r *http.Request, sessionID string) bool {

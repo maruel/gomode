@@ -7,7 +7,6 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
-import com.fghbuild.gomode.data.VoiceMode
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -31,8 +30,6 @@ class VoicePanelTest {
                                 ),
                         ),
                     voiceEnabled = true,
-                    voiceMode = VoiceMode.CLOUD,
-                    onVoiceModeChange = {},
                     onConnect = {},
                     onDisconnect = {},
                     onToggleMute = {},
@@ -47,30 +44,5 @@ class VoicePanelTest {
         assertTrue(composeRule.onAllNodesWithTag("gomode-voice-transcript").fetchSemanticsNodes().isEmpty())
         composeRule.onNodeWithTag("gomode-voice-transcript-toggle").performClick()
         composeRule.onNodeWithTag("gomode-voice-transcript").assertIsDisplayed()
-    }
-
-    @Test
-    fun voiceModeChipsReportSelection() {
-        var selected: VoiceMode? = null
-        composeRule.setContent {
-            MaterialTheme {
-                VoicePanel(
-                    voiceState = VoiceState(),
-                    voiceEnabled = true,
-                    voiceMode = VoiceMode.CLOUD,
-                    onVoiceModeChange = { selected = it },
-                    onConnect = {},
-                    onDisconnect = {},
-                    onToggleMute = {},
-                    onSelectDevice = {},
-                    onClearTranscript = {},
-                    onOpenSettings = {},
-                    serviceStatusText = null,
-                )
-            }
-        }
-
-        composeRule.onNodeWithTag("gomode-voice-mode-device").performClick()
-        assertTrue(selected == VoiceMode.DEVICE)
     }
 }

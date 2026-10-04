@@ -138,6 +138,41 @@ plus `X-Service-Kind`, `X-Service-Instance`, and `X-Service-Origin` headers
 carrying the same `service` values as the RTC offer. An embedded gateway uses
 host authentication.
 
+Browsers cannot send these headers on a WebSocket handshake. They first call
+`POST /api/voicegateway/v1/voice/text/ticket` through the authenticated HTTP
+client, with the same `service` envelope as an RTC offer. The response contains
+a single-use ticket that expires after 30 seconds. They connect to
+`GET /api/voicegateway/v1/voice/text/browser` with WebSocket subprotocols
+`gomode.text.v1` and `gomode.ticket.<ticket>`. The gateway binds the ticket to
+the issuing request's Origin and negotiates only `gomode.text.v1`. Keep tickets
+out of URLs, persistent storage, and request-header logs.
+
+Embedded hosts must authenticate ticket issuance. They may exempt only the
+browser redemption GET from host authentication; the gateway requires its
+ticket. Keep the native text route authenticated. Route issuance and redemption
+to the same gateway instance. Standalone issuance requires the browser Origin
+to match the authorized service origin when an Origin header is present.
+
+### Browser voice settings
+
+The browser overlay's settings icon expands the bottom panel. Settings save
+Cloud voice or Browser speech and a BCP 47 language tag, initially `en-US`.
+An active session locks both settings. Hosts can also import `VoiceSettings`
+from `@maruel/gomode/web/VoiceSettings` for their own settings page.
+
+Cloud voice uses WebRTC. Browser speech uses browser recognition and synthesis
+with a text-capable gateway (`local-stack`). It is not an offline guarantee:
+the browser may send audio to its vendor's recognition service. Browser speech
+uses the browser's default audio devices, not the WebRTC device selectors.
+
+Chromium Android uses single-shot recognition. Other supported browsers use
+continuous recognition. Interim results replace the current hypothesis; only
+final utterances reach the gateway. Recognition pauses during gateway work and
+assistant synthesis. iOS omits connection chimes to reduce recognition stalls.
+Unavailable recognition and startup failures offer Cloud voice or a retry.
+These platform rules follow
+[`textarea/DICTATION.md`](https://github.com/maruel/textarea/blob/97dd5ecaa6831219a9ff74a045efdadb95279efd/DICTATION.md).
+
 ## Backends
 
 Each instance runs one `backend`:

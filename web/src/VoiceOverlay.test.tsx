@@ -33,6 +33,7 @@ beforeEach(() => {
     turnState: TurnStateIdle,
     transcript: [],
     languageTag: "en-US",
+    mode: "cloud",
   }));
 });
 
@@ -53,21 +54,53 @@ describe("VoiceOverlay status", () => {
   });
 });
 
-describe("VoiceOverlay language", () => {
+describe("VoiceOverlay settings", () => {
+  it("expands settings from the compact panel and Escape restores focus", async () => {
+    const user = userEvent.setup();
+    render(() => <VoiceOverlay />);
+    const trigger = screen.getByRole("button", { name: "Voice settings" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    const input = screen.getByRole("textbox", { name: "Voice language (e.g. en-US)" });
+    await user.click(input);
+    fireEvent.keyDown(input, { key: "F4" });
+    expect(connectMock).not.toHaveBeenCalled();
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveFocus();
+  });
+
+  it("keeps settings expanded and disables preferences while connecting", async () => {
+    const user = userEvent.setup();
+    render(() => <VoiceOverlay />);
+    await user.click(screen.getByRole("button", { name: "Voice settings" }));
+    voiceSession.setState((s) => ({ ...s, connectStatus: "Connecting…", connectPhase: "setup" }));
+    expect(screen.getByRole("combobox", { name: "Voice mode" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Voice language (e.g. en-US)" })).toBeDisabled();
+    expect(screen.getByText("End the voice session before changing voice settings.")).toBeInTheDocument();
+  });
+
   it("allows correcting the language after a failed connection", async () => {
     voiceSession.setState((s) => ({ ...s, error: "invalid voice.language" }));
     const user = userEvent.setup();
     render(() => <VoiceOverlay />);
+    await user.click(screen.getByRole("button", { name: "Voice settings" }));
     const input = screen.getByRole("textbox", { name: "Voice language (e.g. en-US)" });
     await user.clear(input);
     await user.type(input, "en-GB");
     await user.click(screen.getByRole("button", { name: "Save language" }));
     expect(voiceSession.state.languageTag).toBe("en-GB");
+    expect(input).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("button", { name: "Voice settings" })).toHaveFocus();
+    expect(screen.queryByRole("region", { name: "Voice settings" })).not.toBeInTheDocument();
   });
 
   it("saves a language and rejects invalid input", async () => {
     const user = userEvent.setup();
     render(() => <VoiceOverlay />);
+    await user.click(screen.getByRole("button", { name: "Voice settings" }));
     const input = screen.getByRole("textbox", { name: "Voice language (e.g. en-US)" });
     await user.clear(input);
     await user.type(input, "fr-CA");
@@ -86,7 +119,7 @@ describe("VoiceOverlay connection", () => {
   it("calls connect() on mic button click", async () => {
     const user = userEvent.setup();
     render(() => <VoiceOverlay />);
-    await user.click(screen.getByRole("button", { name: /voice/i }));
+    await user.click(screen.getByRole("button", { name: "Connect voice assistant" }));
     expect(connectMock).toHaveBeenCalledOnce();
   });
 
@@ -103,7 +136,7 @@ describe("VoiceOverlay connection", () => {
     const user = userEvent.setup();
     render(() => <VoiceOverlay />);
 
-    const click = user.click(screen.getByRole("button", { name: /voice/i }));
+    const click = user.click(screen.getByRole("button", { name: "Connect voice assistant" }));
     await waitFor(() => expect(prepareAudioMock).toHaveBeenCalledOnce());
 
     expect(enumerateDevicesMock).toHaveBeenCalledOnce();

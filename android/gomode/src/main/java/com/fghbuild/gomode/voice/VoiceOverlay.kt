@@ -61,7 +61,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.caic.voicegateway.sdk.v1.TurnState
-import com.fghbuild.gomode.data.VoiceMode
 
 private const val PULSE_MIN_ALPHA = 0.5f
 private const val PULSE_MAX_ALPHA = 1.0f
@@ -76,8 +75,6 @@ private val TranscriptHeight = 220.dp
 fun VoicePanel(
     voiceState: VoiceState,
     voiceEnabled: Boolean,
-    voiceMode: VoiceMode,
-    onVoiceModeChange: (VoiceMode) -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onToggleMute: () -> Unit,
@@ -98,8 +95,6 @@ fun VoicePanel(
                     IdlePanel(
                         onConnect = onConnect,
                         onOpenSettings = onOpenSettings,
-                        voiceMode = voiceMode,
-                        onVoiceModeChange = onVoiceModeChange,
                         voiceEnabled = false,
                     )
                 }
@@ -127,8 +122,6 @@ fun VoicePanel(
                     IdlePanel(
                         onConnect = onConnect,
                         onOpenSettings = onOpenSettings,
-                        voiceMode = voiceMode,
-                        onVoiceModeChange = onVoiceModeChange,
                     )
                 }
             }
@@ -170,74 +163,38 @@ private fun SettingsButton(onOpenSettings: () -> Unit) {
 private fun IdlePanel(
     onConnect: () -> Unit,
     onOpenSettings: () -> Unit,
-    voiceMode: VoiceMode,
-    onVoiceModeChange: (VoiceMode) -> Unit,
     voiceEnabled: Boolean = true,
 ) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .padding(start = 16.dp, top = 0.dp, end = 16.dp, bottom = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            SettingsButton(onOpenSettings)
-            val disabledAlpha = 0.38f
-            val iconAlpha = if (voiceEnabled) 1f else disabledAlpha
-            IconButton(
-                onClick = onConnect,
-                enabled = voiceEnabled,
-                modifier =
-                    Modifier
-                        .size(36.dp)
-                        .border(
-                            width = 1.dp,
-                            color = MaterialTheme.colorScheme.outline.copy(alpha = iconAlpha),
-                            shape = CircleShape,
-                        ).testTag(if (voiceEnabled) "gomode-voice-connect" else "gomode-voice-disabled"),
-            ) {
-                Icon(
-                    Icons.Default.Mic,
-                    contentDescription = if (voiceEnabled) "Connect voice assistant" else "Voice unavailable",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = iconAlpha),
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-        }
-        VoiceModePicker(voiceMode, onVoiceModeChange, enabled = voiceEnabled)
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun VoiceModePicker(
-    mode: VoiceMode,
-    onChange: (VoiceMode) -> Unit,
-    enabled: Boolean,
-) {
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    Row(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
+                .padding(start = 16.dp, top = 0.dp, end = 16.dp, bottom = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        FilterChip(
-            selected = mode == VoiceMode.CLOUD,
-            onClick = { onChange(VoiceMode.CLOUD) },
-            enabled = enabled,
-            label = { Text("Cloud voice", style = MaterialTheme.typography.labelSmall) },
-            modifier = Modifier.testTag("gomode-voice-mode-cloud"),
-        )
-        FilterChip(
-            selected = mode == VoiceMode.DEVICE,
-            onClick = { onChange(VoiceMode.DEVICE) },
-            enabled = enabled,
-            label = { Text("On-device voice", style = MaterialTheme.typography.labelSmall) },
-            modifier = Modifier.testTag("gomode-voice-mode-device"),
-        )
+        SettingsButton(onOpenSettings)
+        val disabledAlpha = 0.38f
+        val iconAlpha = if (voiceEnabled) 1f else disabledAlpha
+        IconButton(
+            onClick = onConnect,
+            enabled = voiceEnabled,
+            modifier =
+                Modifier
+                    .size(36.dp)
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = iconAlpha),
+                        shape = CircleShape,
+                    ).testTag(if (voiceEnabled) "gomode-voice-connect" else "gomode-voice-disabled"),
+        ) {
+            Icon(
+                Icons.Default.Mic,
+                contentDescription = if (voiceEnabled) "Connect voice assistant" else "Voice unavailable",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = iconAlpha),
+                modifier = Modifier.size(20.dp),
+            )
+        }
     }
 }
 

@@ -30,7 +30,7 @@ const (
 // channel. websocket.Accept writes its own HTTP error response when the upgrade
 // fails, so a returned error is for logging only.
 func serveTextSession(ctx context.Context, w http.ResponseWriter, r *http.Request, sessionID, activityLogDir string, backend *localStackBackend) error {
-	conn, err := websocket.Accept(w, r, nil)
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"gomode.text.v1"}})
 	if err != nil {
 		return fmt.Errorf("accept text session: %w", err)
 	}

@@ -129,8 +129,9 @@ retention, and expiry and signals changes with
 
 ## Voice Modes
 
-The shell offers two voice modes, selected in the native voice panel and
-persisted in DataStore:
+The shell offers two voice modes, selected in native Settings beside voice
+language and persisted in DataStore. Mode and language changes are disabled
+while a session connects or remains active:
 
 - **Cloud:** the shell sends microphone audio over WebRTC and plays gateway
 audio. Setup: [Voice Session Setup](#voice-session-setup).

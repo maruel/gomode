@@ -340,6 +340,21 @@ public struct ServiceAuthorization: Codable {
     public let token: String
 }
 
+/// VoiceTextTicketReq authorizes a browser text-session WebSocket upgrade.
+/// Embedded hosts authenticate this HTTP request before dispatch.
+public struct VoiceTextTicketReq: Codable {
+    /// Service authorizes a session on a standalone gateway.
+    public let service: ServiceAuthorization?
+}
+
+/// VoiceTextTicketResp carries a single-use ticket that expires after 30 seconds.
+/// Connect to /api/voicegateway/v1/voice/text/browser with the
+/// gomode.ticket.<ticket> WebSocket subprotocol alongside gomode.text.v1.
+/// Never put it in a URL or store it persistently.
+public struct VoiceTextTicketResp: Codable {
+    public let ticket: String
+}
+
 /// VoiceRTCOfferReq is the request body for POST /api/voicegateway/v1/voice/rtc/offer.
 public struct VoiceRTCOfferReq: Codable {
     /// SDP is the browser/client WebRTC offer session description from RTCSessionDescription.sdp after createOffer and setLocalDescription.

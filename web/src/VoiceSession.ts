@@ -13,11 +13,13 @@ import {
   type ToolResult,
   type ToolCall,
   type TranscriptDelta,
+  type AssistantTextDelta,
   type TurnState,
   type TurnStatus,
   type VoiceRTCClientDiagnostics,
   type VoiceRTCDiagnosticsResp,
   MessageKindContextUpdate,
+  MessageKindAssistantTextDelta,
   MessageKindUserMessage,
   MessageKindError,
   MessageKindInterrupted,
@@ -36,6 +38,7 @@ import {
 import { mcpClient, type McpToolDescriptor } from "./McpClient";
 import { GO_MODE_ITEMS_RESOURCE_URI, initialServiceContext } from "./ServiceItems";
 import { WebAudioVoiceChime, type VoiceChimePlayer } from "./VoiceChime";
+import { BrowserSpeech, browserSpeechAvailable, browserSpeechAvoidsChimes } from "./BrowserSpeech";
 
 // Constants
 
@@ -243,7 +246,15 @@ export interface AudioDevice {
   label: string;
 }
 
+export type VoiceMode = "browser" | "cloud";
+type VoiceChannel = RTCDataChannel | WebSocket;
+
+function voiceChannelOpen(channel: VoiceChannel): boolean {
+  return channel.readyState === "open" || channel.readyState === 1; // WebSocket.OPEN
+}
+
 export interface VoiceState {
+  mode: VoiceMode;
   connectStatus: string | null;
   connectPhase: "setup" | "waiting" | "signaling" | "reconnecting" | null;
   connected: boolean;
@@ -279,6 +290,15 @@ export function normalizeVoiceLanguage(tag: string): string {
   return normalized;
 }
 
+function savedVoiceMode(): VoiceMode {
+  try {
+    return localStorage.getItem("gomode.voiceMode") === "browser" ? "browser" : "cloud";
+  } catch (error) {
+    console.warn("Could not load voice mode; using Cloud voice", error);
+    return "cloud";
+  }
+}
+
 function savedVoiceLanguage(): string {
   try {
     const saved = localStorage.getItem("gomode.voiceLanguage");
@@ -298,6 +318,10 @@ export class VoiceSession {
 
   private _pc: RTCPeerConnection | null = null;
   private _dc: RTCDataChannel | null = null;
+  private _textSocket: WebSocket | null = null;
+  private _browserSpeech: BrowserSpeech | null = null;
+  private _browserReply = "";
+  private _browserTurnIdle = false;
   private _rtcSessionID: string | null = null;
   private _rtcGatewaySnapshot: GatewaySnapshot | null = null;
   private _rtcOfferService: ServiceAuthorization | null = null;
@@ -322,6 +346,7 @@ export class VoiceSession {
 
   constructor(chime?: VoiceChimePlayer) {
     const [state, setState] = createStore<VoiceState>({
+      mode: savedVoiceMode(),
       connectStatus: null,
       connectPhase: null,
       connected: false,
@@ -347,6 +372,17 @@ export class VoiceSession {
   // -----------------------------------------------------------------------
   // Public API
   // -----------------------------------------------------------------------
+
+  /** Persist the transport preference without disrupting an active session. */
+  selectMode(mode: VoiceMode): void {
+    if (mode !== "browser" && mode !== "cloud") throw new Error("Invalid voice mode");
+    if (this.state.connected || this.state.connectStatus !== null)
+      throw new Error("End the session before changing voice mode");
+    if (mode === "browser" && !browserSpeechAvailable())
+      throw new Error("Browser speech is unavailable. Use Cloud voice.");
+    localStorage.setItem("gomode.voiceMode", mode);
+    this.setState((s) => ({ ...s, mode }));
+  }
 
   /** Save the language for the next session. An active session keeps its language. */
   selectLanguage(tag: string): void {
@@ -472,6 +508,11 @@ export class VoiceSession {
 
   /** Unlock chime playback while a browser user-activation event is still active. */
   prepareAudio(): void {
+    if (this.state.mode === "browser" && !browserSpeechAvailable()) return;
+    if (this.state.mode === "browser" && browserSpeechAvoidsChimes()) {
+      window.speechSynthesis.resume();
+      return;
+    }
     this._chime.prepare();
   }
 
@@ -483,6 +524,10 @@ export class VoiceSession {
   }
 
   private async _connect(preserveTranscript: boolean): Promise<void> {
+    if (this.state.mode === "browser") {
+      await this._connectBrowser(preserveTranscript);
+      return;
+    }
     const attempt = ++this._connectionAttempt;
     if (this._reconnectTimer !== null) {
       clearTimeout(this._reconnectTimer);
@@ -661,6 +706,135 @@ export class VoiceSession {
     }
   }
 
+  private async _connectBrowser(preserveTranscript: boolean): Promise<void> {
+    const attempt = ++this._connectionAttempt;
+    this._reconnectEnabled = false;
+    if (this._reconnectTimer !== null) clearTimeout(this._reconnectTimer);
+    if (this._setupTimer !== null) clearTimeout(this._setupTimer);
+    this._reconnectTimer = null;
+    this._setupTimer = null;
+    this._releaseAll();
+    this._speakerActive = false;
+    this._pendingNotifications = [];
+    if (!preserveTranscript) this._clearTranscript();
+    this._update((s) => {
+      s.connected = false;
+      s.muted = false;
+      s.speaking = false;
+      s.activeTool = null;
+      s.turnState = TurnStateIdle;
+    });
+    this._setStatus("setup", "Setting up browser speech…");
+    if (!browserSpeechAvailable()) {
+      this._setError("Browser speech is unavailable. Use Cloud voice.");
+      return;
+    }
+    try {
+      const snapshot = gatewaySnapshot();
+      const [systemInstruction, tools, serviceItems, service] = await Promise.all([
+        mcpClient.serverInstructions(),
+        mcpClient.listTools(),
+        mcpClient.readAdvertisedTextResource(GO_MODE_ITEMS_RESOURCE_URI).catch(() => null),
+        snapshot.serviceProvider?.() ?? Promise.resolve(null),
+      ]);
+      if (attempt !== this._connectionAttempt) return;
+      const response = await snapshot.api.voiceTextTicket(service === null ? {} : { service });
+      if (attempt !== this._connectionAttempt) return;
+      const url = new URL("/api/voicegateway/v1/voice/text/browser", snapshot.origin);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      const socket = new WebSocket(url, ["gomode.text.v1", `gomode.ticket.${response.ticket}`]);
+      this._textSocket = socket;
+      const speech = new BrowserSpeech(this.state.languageTag, {
+        listening: (value) => {
+          if (this._ownsChannel(attempt, socket))
+            this._update((s) => {
+              s.listening = value;
+            });
+        },
+        interim: (text) => {
+          if (this._ownsChannel(attempt, socket)) this._browserUserText(text, false);
+        },
+        final: (text) => {
+          if (!this._ownsChannel(attempt, socket)) return;
+          this._browserTurnIdle = false;
+          this._speakerActive = true;
+          this._browserUserText(text, true);
+          this._send(JSON.stringify(gatewayUserMessage(text)));
+        },
+        error: (message) => {
+          if (this._ownsChannel(attempt, socket)) this._setError(message);
+        },
+      });
+      this._browserSpeech = speech;
+      socket.onopen = () => {
+        if (!this._ownsChannel(attempt, socket)) return;
+        this._setStatus("waiting", "Waiting for server…");
+        this._sendSetup(tools, systemInstruction, initialServiceContext(serviceItems));
+      };
+      socket.onmessage = (event: MessageEvent<unknown>) => {
+        if (typeof event.data !== "string") return;
+        void this._handleMessage(event.data, attempt, socket).catch((error: unknown) => {
+          if (this._ownsChannel(attempt, socket))
+            this._setError(error instanceof Error ? error.message : "Text voice message failed");
+        });
+      };
+      socket.onerror = () => {
+        if (this._ownsChannel(attempt, socket)) this._setError("Could not connect to the text voice gateway");
+      };
+      socket.onclose = (event) => {
+        if (!this._ownsChannel(attempt, socket)) return;
+        if (event.code === 1000) this.disconnect();
+        else this._setError(`Text voice connection closed (${event.code})`);
+      };
+      this._setupTimer = setTimeout(() => {
+        if (this._ownsChannel(attempt, socket) && !this.state.connected)
+          this._setError("Text voice connection timed out");
+      }, SETUP_TIMEOUT_MS);
+    } catch (error) {
+      if (attempt === this._connectionAttempt)
+        this._setError(error instanceof Error ? error.message : "Text voice connection failed");
+    }
+  }
+
+  private _browserUserText(text: string, final: boolean): void {
+    this._update((s) => {
+      const last = s.transcript.at(-1);
+      const entries = last?.speaker === "user" && !last.final ? s.transcript.slice(0, -1) : s.transcript;
+      s.transcript = text === "" ? entries : [...entries, { speaker: "user", text, final }];
+    });
+  }
+
+  private _startBrowserListening(): void {
+    if (this.state.connected && !this.state.muted && !this.state.speaking && this._browserTurnIdle)
+      this._browserSpeech?.listen();
+  }
+
+  private _finishBrowserTurn(attempt: number, channel: VoiceChannel): void {
+    this._browserTurnIdle = true;
+    if (this.state.speaking) return;
+    this._update((s) => {
+      s.transcript = s.transcript.map((entry) => ({ ...entry, final: true }));
+    });
+    const text = this._browserReply;
+    this._browserReply = "";
+    if (text !== "" && this._browserSpeech !== null) {
+      this._update((s) => {
+        s.speaking = true;
+      });
+      this._browserSpeech.speak(text, () => {
+        if (!this._ownsChannel(attempt, channel)) return;
+        this._update((s) => {
+          s.speaking = false;
+        });
+        if (this._browserTurnIdle) this._finishBrowserTurn(attempt, channel);
+      });
+    } else {
+      this._speakerActive = false;
+      this._flushPendingNotifications();
+      this._startBrowserListening();
+    }
+  }
+
   disconnect(): void {
     this._leaveVoiceMode();
     this._connectionAttempt++;
@@ -694,6 +868,10 @@ export class VoiceSession {
     this._update((s) => {
       s.muted = !s.muted;
     });
+    if (this._browserSpeech !== null) {
+      if (this.state.muted) this._browserSpeech.stopListening();
+      else this._startBrowserListening();
+    }
     if (this._micStream) {
       const enabled = !this.state.muted;
       this._micStream.getAudioTracks().forEach((t) => {
@@ -727,13 +905,20 @@ export class VoiceSession {
 
   /** Send a message via the WebRTC data channel. */
   private _send(msg: string): void {
-    if (this._dc && this._dc.readyState === "open") {
-      this._dc.send(msg);
-    }
+    const channel = this._textSocket ?? this._dc;
+    if (channel !== null && voiceChannelOpen(channel)) channel.send(msg);
   }
 
   /** Release WebRTC transport and audio resources. */
   private _releaseAll(): void {
+    const socket = this._textSocket;
+    const speech = this._browserSpeech;
+    this._textSocket = null;
+    this._browserSpeech = null;
+    this._browserReply = "";
+    this._browserTurnIdle = false;
+    speech?.close();
+    socket?.close(1000);
     const sessionID = this._rtcSessionID;
     const snapshot = this._rtcGatewaySnapshot;
     const service = this._rtcOfferService;
@@ -844,6 +1029,8 @@ export class VoiceSession {
     this._leaveVoiceMode();
     this._connectionAttempt++;
     this._releaseAll();
+    if (this._setupTimer !== null) clearTimeout(this._setupTimer);
+    this._setupTimer = null;
     this._update((s) => {
       s.connectStatus = null;
       s.connectPhase = null;
@@ -857,7 +1044,7 @@ export class VoiceSession {
   private _leaveVoiceMode(): void {
     if (!this._voiceModeActive) return;
     this._voiceModeActive = false;
-    this._chime.playDisconnected();
+    if (this.state.mode !== "browser" || !browserSpeechAvoidsChimes()) this._chime.playDisconnected();
   }
 
   private _clearTranscript(): void {
@@ -888,11 +1075,11 @@ export class VoiceSession {
   // Message handling
   // -----------------------------------------------------------------------
 
-  private _ownsChannel(attempt: number, channel: RTCDataChannel): boolean {
-    return attempt === this._connectionAttempt && channel === this._dc;
+  private _ownsChannel(attempt: number, channel: VoiceChannel): boolean {
+    return attempt === this._connectionAttempt && (channel === this._dc || channel === this._textSocket);
   }
 
-  private async _handleMessage(text: string, attempt: number, channel: RTCDataChannel): Promise<void> {
+  private async _handleMessage(text: string, attempt: number, channel: VoiceChannel): Promise<void> {
     if (!this._ownsChannel(attempt, channel)) return;
     let env: MessageEnvelope;
     try {
@@ -914,7 +1101,7 @@ export class VoiceSession {
       });
       if (!this._voiceModeActive) {
         this._voiceModeActive = true;
-        this._chime.playConnected();
+        if (this.state.mode !== "browser" || !browserSpeechAvoidsChimes()) this._chime.playConnected();
       }
       if (this._recoveryContext !== "") {
         this._send(JSON.stringify(gatewayContextUpdate(this._recoveryContext)));
@@ -927,7 +1114,21 @@ export class VoiceSession {
     }
 
     if (env.kind === MessageKindTranscriptDelta) {
-      this._handleTranscriptDelta(JSON.parse(text) as TranscriptDelta);
+      const delta = JSON.parse(text) as TranscriptDelta;
+      // Browser recognition already owns the user's interim and final text.
+      if (this.state.mode !== "browser" || delta.speaker !== "user") this._handleTranscriptDelta(delta);
+      return;
+    }
+
+    if (env.kind === MessageKindAssistantTextDelta && this.state.mode === "browser") {
+      const delta = JSON.parse(text) as AssistantTextDelta;
+      this._browserSpeech?.stopListening();
+      this._browserTurnIdle = false;
+      this._speakerActive = true;
+      this._browserReply += delta.text;
+      this._update((s) => {
+        s.transcript = appendChunk(s.transcript, "assistant", delta.text);
+      });
       return;
     }
 
@@ -964,6 +1165,13 @@ export class VoiceSession {
       this._update((s) => {
         s.turnState = msg.state;
       });
+      if (this.state.mode === "browser") {
+        if (msg.state === TurnStateIdle) this._finishBrowserTurn(attempt, channel);
+        else {
+          this._browserTurnIdle = false;
+          this._browserSpeech?.stopListening();
+        }
+      }
       return;
     }
 
@@ -990,7 +1198,7 @@ export class VoiceSession {
     });
   }
 
-  private async _handleToolCall(msg: ToolCall, attempt: number, channel: RTCDataChannel): Promise<void> {
+  private async _handleToolCall(msg: ToolCall, attempt: number, channel: VoiceChannel): Promise<void> {
     if (!this._ownsChannel(attempt, channel)) return;
     if (!msg.id || !msg.name) return;
     if (msg.name === HANG_UP_TOOL_NAME) {
@@ -1045,8 +1253,8 @@ export class VoiceSession {
     }
   }
 
-  private _sendToolResult(channel: RTCDataChannel, id: string, name: string, result: Record<string, unknown>): void {
-    if (channel.readyState === "open") channel.send(JSON.stringify(gatewayToolResult(id, name, result)));
+  private _sendToolResult(channel: VoiceChannel, id: string, name: string, result: Record<string, unknown>): void {
+    if (voiceChannelOpen(channel)) channel.send(JSON.stringify(gatewayToolResult(id, name, result)));
   }
 
   // -----------------------------------------------------------------------

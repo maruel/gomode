@@ -581,6 +581,25 @@ data class ServiceAuthorization(
     val token: String,
 )
 
+/**
+ * VoiceTextTicketReq authorizes a browser text-session WebSocket upgrade.
+ * Embedded hosts authenticate this HTTP request before dispatch.
+ */
+@Serializable
+data class VoiceTextTicketReq(
+    /** Service authorizes a session on a standalone gateway. */
+    val service: ServiceAuthorization? = null,
+)
+
+/**
+ * VoiceTextTicketResp carries a single-use ticket that expires after 30 seconds.
+ * Connect to /api/voicegateway/v1/voice/text/browser with the
+ * gomode.ticket.<ticket> WebSocket subprotocol alongside gomode.text.v1.
+ * Never put it in a URL or store it persistently.
+ */
+@Serializable
+data class VoiceTextTicketResp(val ticket: String)
+
 /** VoiceRTCOfferReq is the request body for POST /api/voicegateway/v1/voice/rtc/offer. */
 @Serializable
 data class VoiceRTCOfferReq(

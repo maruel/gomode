@@ -10,6 +10,7 @@ Type notation: `JSONValue` means any valid JSON value.
 
 | Method | Path | Description | Request | Response |
 |--------|------|-------------|---------|----------|
+| POST | `/api/voicegateway/v1/voice/text/ticket` | Authorizes a browser text-session upgrade with a short-lived, single-use ticket. | `VoiceTextTicketReq` | `VoiceTextTicketResp` |
 | POST | `/api/voicegateway/v1/voice/rtc/offer` | Exchanges a WebRTC SDP offer for an answer, opening a voice gateway session. | `VoiceRTCOfferReq` | `VoiceRTCAnswerResp` |
 | POST | `/api/voicegateway/v1/voice/rtc/{sessionID}/diagnostics` | Returns structured WebRTC connectivity diagnostics for a voice bridge session. | `VoiceRTCDiagnosticsReq` | `VoiceRTCDiagnosticsResp` |
 | POST | `/api/voicegateway/v1/voice/rtc/{sessionID}` | Closes a WebRTC voice bridge session. |  | `StatusResp` |
@@ -195,6 +196,26 @@ ServiceAuthorization identifies the host and carries its scoped gateway token.
 | `instanceID` | `string` |  | yes |
 | `baseURL` | `string` |  | yes |
 | `token` | `string` |  | yes |
+
+### VoiceTextTicketReq
+
+VoiceTextTicketReq authorizes a browser text-session WebSocket upgrade.
+Embedded hosts authenticate this HTTP request before dispatch.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `service` | `ServiceAuthorization` | Service authorizes a session on a standalone gateway. |  |
+
+### VoiceTextTicketResp
+
+VoiceTextTicketResp carries a single-use ticket that expires after 30 seconds.
+Connect to /api/voicegateway/v1/voice/text/browser with the
+gomode.ticket.<ticket> WebSocket subprotocol alongside gomode.text.v1.
+Never put it in a URL or store it persistently.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `ticket` | `string` |  | yes |
 
 ### VoiceRTCOfferReq
 

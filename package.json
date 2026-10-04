@@ -21,6 +21,7 @@
     "./web/ServiceItems": "./web/src/ServiceItems.ts",
     "./web/VoiceOverlay": "./web/src/VoiceOverlay.tsx",
     "./web/VoiceSession": "./web/src/VoiceSession.ts",
+    "./web/VoiceSettings": "./web/src/VoiceSettings.tsx",
     "./web/notifications": "./web/src/notifications.ts",
     "./sdk/mcp/*": "./sdk/mcp/ts/v1/*",
     "./sdk/oauth/*": "./sdk/oauth/ts/v1/*",

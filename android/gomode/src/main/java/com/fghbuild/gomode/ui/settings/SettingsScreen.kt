@@ -4,6 +4,8 @@ package com.fghbuild.gomode.ui.settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
@@ -36,6 +39,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
+import com.fghbuild.gomode.data.VoiceMode
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -193,6 +197,8 @@ fun SettingsScreen(
                 }
             }
             HorizontalDivider()
+            if (voiceSessionActive) Text("End the voice session before changing voice settings.")
+            VoiceModeSetting(settings.voiceMode, settingsRepository, enabled = !voiceSessionActive)
             VoiceLanguageSetting(settings, settingsRepository, enabled = !voiceSessionActive)
             HorizontalDivider()
             Text("Halo", style = MaterialTheme.typography.titleMedium)
@@ -210,6 +216,36 @@ fun SettingsScreen(
                 },
             )
         }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun VoiceModeSetting(
+    mode: VoiceMode,
+    repository: SettingsRepository,
+    enabled: Boolean,
+) {
+    val scope = rememberCoroutineScope()
+    Text("Voice mode", style = MaterialTheme.typography.titleMedium)
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        FilterChip(
+            selected = mode == VoiceMode.CLOUD,
+            onClick = { scope.launch { repository.updateVoiceMode(VoiceMode.CLOUD) } },
+            enabled = enabled,
+            label = { Text("Cloud voice") },
+            modifier = Modifier.testTag("gomode-voice-mode-cloud"),
+        )
+        FilterChip(
+            selected = mode == VoiceMode.DEVICE,
+            onClick = { scope.launch { repository.updateVoiceMode(VoiceMode.DEVICE) } },
+            enabled = enabled,
+            label = { Text("On-device voice") },
+            modifier = Modifier.testTag("gomode-voice-mode-device"),
+        )
     }
 }
 
@@ -233,7 +269,6 @@ private fun VoiceLanguageSetting(
         isError = normalized == null,
         enabled = enabled,
     )
-    if (!enabled) Text("End the voice session before changing language.")
     Button(
         onClick = { scope.launch { repository.updateVoiceLanguageTag(tag) } },
         enabled = enabled && normalized != null && normalized != settings.voiceLanguageTag,

@@ -209,6 +209,25 @@ export interface ServiceAuthorization {
   token: string;
 }
 
+/**
+ * VoiceTextTicketReq authorizes a browser text-session WebSocket upgrade.
+ * Embedded hosts authenticate this HTTP request before dispatch.
+ */
+export interface VoiceTextTicketReq {
+  /** Service authorizes a session on a standalone gateway. */
+  service?: ServiceAuthorization;
+}
+
+/**
+ * VoiceTextTicketResp carries a single-use ticket that expires after 30 seconds.
+ * Connect to /api/voicegateway/v1/voice/text/browser with the
+ * gomode.ticket.<ticket> WebSocket subprotocol alongside gomode.text.v1.
+ * Never put it in a URL or store it persistently.
+ */
+export interface VoiceTextTicketResp {
+  ticket: string;
+}
+
 /** VoiceRTCOfferReq is the request body for POST /api/voicegateway/v1/voice/rtc/offer. */
 export interface VoiceRTCOfferReq {
   /** SDP is the browser/client WebRTC offer session description from RTCSessionDescription.sdp after createOffer and setLocalDescription. */

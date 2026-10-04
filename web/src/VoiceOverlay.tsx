@@ -1,11 +1,22 @@
 // Voice overlay component: persistent bottom panel with mic button and voice controls.
 
-import { createEffect, createSignal, For, Show, onCleanup, onMount, type Accessor, type JSX } from "solid-js";
+import {
+  createEffect,
+  createSignal,
+  createUniqueId,
+  For,
+  Show,
+  onCleanup,
+  onMount,
+  type Accessor,
+  type JSX,
+} from "solid-js";
 
 import { TurnStateThinking, TurnStateTranscribing } from "../../sdk/voicegateway/ts/v1/types.gen";
 import { voiceSession } from "./VoiceSession";
 import type { VoiceState, TranscriptEntry } from "./VoiceSession";
 import { notifications } from "./notifications";
+import VoiceSettings, { defaultVoiceSettingsMessages, type VoiceSettingsMessages } from "./VoiceSettings";
 import styles from "./VoiceOverlay.module.css";
 
 type IconProps = JSX.SvgSVGAttributes<SVGSVGElement>;
@@ -49,7 +60,9 @@ const BAR_MIN_H = 3;
 const BAR_MAX_H = 20;
 
 /** Host-provided text for the browser voice controls. */
-export interface VoiceOverlayMessages {
+export interface VoiceOverlayMessages extends Partial<VoiceSettingsMessages> {
+  voiceSettings?: string;
+  settingUpBrowserSpeech?: string;
   assistant: string;
   cancel: string;
   cancelConnection: string;
@@ -80,6 +93,9 @@ export interface VoiceOverlayMessages {
 }
 
 export const defaultVoiceOverlayMessages: VoiceOverlayMessages = {
+  ...defaultVoiceSettingsMessages,
+  voiceSettings: "Voice settings",
+  settingUpBrowserSpeech: "Setting up browser speech…",
   assistant: "Assistant:",
   cancel: "Cancel",
   cancelConnection: "Cancel connection",
@@ -150,6 +166,35 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
   };
 
   let panelRef: HTMLDivElement | undefined;
+  let settingsTrigger: HTMLButtonElement | null = null;
+  const [settingsOpen, setSettingsOpen] = createSignal(false);
+  const settingsId = createUniqueId();
+  const SettingsButton = () => (
+    <button
+      type="button"
+      class={styles.iconButton}
+      aria-label={messages().voiceSettings ?? "Voice settings"}
+      aria-expanded={settingsOpen()}
+      aria-controls={settingsId}
+      onClick={(event) => {
+        settingsTrigger = event.currentTarget;
+        setSettingsOpen(!settingsOpen());
+      }}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        width="1.1em"
+        height="1.1em"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.8"
+        aria-hidden="true"
+      >
+        <path d="m9 3-.5 2-2 1-2-.5-2 3 1.5 1.5v3L2.5 15l2 3 2-.5 2 1 .5 2h4l.5-2 2-1 2 .5 2-3-1.5-1.5v-3L20.5 9l-2-3-2 .5-2-1-.5-2Z" />
+        <circle cx="11" cy="12" r="3" />
+      </svg>
+    </button>
+  );
   const [spacerHeight, setSpacerHeight] = createSignal(0);
   onMount(() => {
     const observer = new ResizeObserver(([entry]) => {
@@ -192,7 +237,7 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
       // Browser audio must be unlocked synchronously while the click or key event
       // still carries user activation. Device enumeration yields before connect().
       session.prepareAudio();
-      await session.enumerateDevices();
+      if (session.state.mode === "cloud") await session.enumerateDevices();
       void session.connect();
     }
   };
@@ -200,6 +245,20 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
   onMount(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (
+        settingsOpen() &&
+        event.key === "Escape" &&
+        !document.querySelector("dialog[open]") &&
+        panelRef?.contains(event.target as Node)
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        setSettingsOpen(false);
+        if (settingsTrigger?.isConnected) settingsTrigger.focus();
+        else panelRef?.querySelector<HTMLButtonElement>("button[aria-controls]")?.focus();
+        return;
+      }
+      if (
+        settingsOpen() ||
         event.defaultPrevented ||
         event.repeat ||
         event.ctrlKey ||
@@ -236,7 +295,7 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
           {/* Idle state: mic button right-aligned */}
           <Show when={!isActive()}>
             <div class={styles.rowEnd}>
-              <VoiceLanguageSetting messages={messages} />
+              <SettingsButton />
               <button
                 type="button"
                 class={styles.micButton}
@@ -249,15 +308,13 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
             </div>
           </Show>
 
-          <Show when={session.state.error !== null && !session.state.connected && session.state.connectStatus === null}>
-            <VoiceLanguageSetting messages={messages} />
-          </Show>
           <Show when={session.state.error !== null && session.state.error} keyed>
             {(err) => (
               <ErrorPanel
                 error={err}
                 messages={messages}
                 hasCustomMessages={props.messages !== undefined}
+                settingsButton={SettingsButton}
                 onRetry={() => handleMicClick()}
               />
             )}
@@ -273,6 +330,7 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
                 messages={messages}
                 hasCustomMessages={props.messages !== undefined}
                 onDisconnect={() => session.disconnect()}
+                settingsButton={SettingsButton}
               />
             )}
           </Show>
@@ -287,6 +345,7 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
               state={session.state}
               messages={messages}
               onDisconnect={() => session.disconnect()}
+              settingsButton={SettingsButton}
               onToggleMute={() => session.toggleMute()}
               onSelectInput={(id) => {
                 void session.selectInputDevice(id);
@@ -297,48 +356,19 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
               onClearTranscript={() => session.clearTranscript()}
             />
           </Show>
+          <Show when={settingsOpen()}>
+            <section
+              id={settingsId}
+              class={styles.settingsSection}
+              aria-label={messages().voiceSettings ?? "Voice settings"}
+            >
+              <h2>{messages().voiceSettings ?? "Voice settings"}</h2>
+              <VoiceSettings messages={messages} />
+            </section>
+          </Show>
         </div>
       </div>
     </>
-  );
-}
-
-function VoiceLanguageSetting(props: { messages: Accessor<VoiceOverlayMessages> }) {
-  const [tag, setTag] = createSignal(voiceSession.state.languageTag);
-  const [error, setError] = createSignal<string | null>(null);
-  return (
-    <form
-      class={styles.languageForm}
-      onSubmit={(event) => {
-        event.preventDefault();
-        try {
-          voiceSession.selectLanguage(tag());
-          setTag(voiceSession.state.languageTag);
-          setError(null);
-        } catch (err) {
-          setError(err instanceof Error ? err.message : String(err));
-        }
-      }}
-    >
-      <label>
-        {props.messages().voiceLanguage ?? defaultVoiceOverlayMessages.voiceLanguage}
-        <input
-          class={styles.deviceSelect}
-          value={tag()}
-          onInput={(event) => {
-            setTag(event.currentTarget.value);
-            setError(null);
-          }}
-          aria-invalid={error() !== null}
-          spellcheck={false}
-          autocapitalize="none"
-        />
-      </label>
-      <button type="submit" class={styles.actionButton} disabled={tag() === voiceSession.state.languageTag}>
-        {props.messages().saveLanguage ?? defaultVoiceOverlayMessages.saveLanguage}
-      </button>
-      <Show when={error()}>{(message) => <span role="alert">{message()}</span>}</Show>
-    </form>
   );
 }
 
@@ -350,12 +380,16 @@ function ConnectingPanel(props: {
   messages: Accessor<VoiceOverlayMessages>;
   hasCustomMessages: boolean;
   onDisconnect: () => void;
+  settingsButton: () => JSX.Element;
 }) {
   return (
     <div class={`${styles.row} ${styles.statusConnecting}`}>
+      {props.settingsButton()}
       <MicIcon width="1.1em" height="1.1em" />
       <span class={styles.statusText}>
-        {localizedStatus(props.status, props.phase, props.messages(), props.hasCustomMessages)}
+        {props.phase === "setup" && voiceSession.state.mode === "browser"
+          ? (props.messages().settingUpBrowserSpeech ?? props.status)
+          : localizedStatus(props.status, props.phase, props.messages(), props.hasCustomMessages)}
       </span>
       <button
         type="button"
@@ -375,9 +409,11 @@ function ErrorPanel(props: {
   messages: Accessor<VoiceOverlayMessages>;
   hasCustomMessages: boolean;
   onRetry: () => void;
+  settingsButton: () => JSX.Element;
 }) {
   return (
     <div class={styles.row}>
+      {props.settingsButton()}
       <MicIcon width="1.1em" height="1.1em" class={styles.micIconError} />
       <span class={styles.statusError}>
         {props.hasCustomMessages ? props.messages().connectionFailed : props.error}
@@ -402,6 +438,7 @@ function ActivePanel(props: {
   onSelectInput: (id: string) => void;
   onSelectOutput: (id: string) => void;
   onClearTranscript: () => void;
+  settingsButton: () => JSX.Element;
 }) {
   // Gateway work outranks muting: a muted user still waits for the reply.
   const busyText = () => {
@@ -428,6 +465,7 @@ function ActivePanel(props: {
   return (
     <>
       <div class={styles.rowSpaced}>
+        {props.settingsButton()}
         <MicLevelBars micLevel={props.state.micLevel} />
         <span class={statusClass()}>{statusText()}</span>
         <button
@@ -451,7 +489,7 @@ function ActivePanel(props: {
           <CallEndIcon width="1.1em" height="1.1em" />
         </button>
       </div>
-      {(props.state.audioInputs.length > 1 || props.state.audioOutputs.length > 1) && (
+      {props.state.mode === "cloud" && (props.state.audioInputs.length > 1 || props.state.audioOutputs.length > 1) && (
         <AudioDevicePicker
           inputs={props.state.audioInputs}
           outputs={props.state.audioOutputs}

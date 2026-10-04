@@ -87,6 +87,8 @@ class ApiClient(
     }
 
     // JSON endpoints
+    /** Authorizes a browser text-session upgrade with a short-lived, single-use ticket. */
+    suspend fun voiceTextTicket(req: VoiceTextTicketReq, headers: Map<String, String> = emptyMap()): VoiceTextTicketResp = request("POST", "/api/voicegateway/v1/voice/text/ticket", json.encodeToString(req), headers = headers)
     /** Exchanges a WebRTC SDP offer for an answer, opening a voice gateway session. */
     suspend fun voiceRTCOffer(req: VoiceRTCOfferReq, headers: Map<String, String> = emptyMap()): VoiceRTCAnswerResp = request("POST", "/api/voicegateway/v1/voice/rtc/offer", json.encodeToString(req), headers = headers)
     /** Returns structured WebRTC connectivity diagnostics for a voice bridge session. */

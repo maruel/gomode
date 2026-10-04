@@ -47,9 +47,18 @@ func (r *Route) CategoryName() string {
 }
 
 // Routes lists the voice gateway JSON API endpoints used by the SDK generator.
-// It excludes the WebSocket text-session route, GET
-// /api/voicegateway/v1/voice/text, which carries no JSON request or response body.
+// It excludes the WebSocket text-session routes, GET
+// /api/voicegateway/v1/voice/text and /api/voicegateway/v1/voice/text/browser,
+// which carry no JSON request or response body.
 var Routes = []Route{
+	{
+		Name:   "voiceTextTicket",
+		Doc:    "Authorizes a browser text-session upgrade with a short-lived, single-use ticket.",
+		Method: "POST",
+		Path:   "/api/voicegateway/v1/voice/text/ticket",
+		Req:    reflect.TypeFor[VoiceTextTicketReq](),
+		Resp:   reflect.TypeFor[VoiceTextTicketResp](),
+	},
 	{
 		Name:   "voiceRTCOffer",
 		Doc:    "Exchanges a WebRTC SDP offer for an answer, opening a voice gateway session.",

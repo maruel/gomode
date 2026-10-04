@@ -1,0 +1,70 @@
+/* Saved speech controls in the expanded voice settings section. */
+
+.settings,
+.settings fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.settings fieldset {
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+
+.settings label {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.85rem;
+}
+
+.settings input,
+.settings select,
+.settings button {
+  padding: 0.4rem 0.6rem;
+  font: inherit;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-medium);
+  border-radius: var(--radius-sm);
+}
+
+.settings input,
+.settings select {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.settings input {
+  width: 8rem;
+}
+
+.settings button {
+  align-self: flex-start;
+  cursor: pointer;
+}
+
+.settings button:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+}
+
+.settings input:disabled,
+.settings select:disabled,
+.settings button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.settings p {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+}
+
+.settings .error {
+  color: var(--color-danger);
+}

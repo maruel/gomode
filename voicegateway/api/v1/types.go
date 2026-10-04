@@ -22,6 +22,21 @@ type VoiceRTCOfferReq struct {
 	Service *ServiceAuthorization `json:"service,omitempty"`
 }
 
+// VoiceTextTicketReq authorizes a browser text-session WebSocket upgrade.
+// Embedded hosts authenticate this HTTP request before dispatch.
+type VoiceTextTicketReq struct {
+	// Service authorizes a session on a standalone gateway.
+	Service *ServiceAuthorization `json:"service,omitempty"`
+}
+
+// VoiceTextTicketResp carries a single-use ticket that expires after 30 seconds.
+// Connect to /api/voicegateway/v1/voice/text/browser with the
+// gomode.ticket.<ticket> WebSocket subprotocol alongside gomode.text.v1.
+// Never put it in a URL or store it persistently.
+type VoiceTextTicketResp struct {
+	Ticket string `json:"ticket"`
+}
+
 // ServiceAuthorization identifies the host and carries its scoped gateway token.
 type ServiceAuthorization struct {
 	Kind       string `json:"kind"`

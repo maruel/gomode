@@ -362,8 +362,6 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
                 VoicePanel(
                     voiceState = voiceState,
                     voiceEnabled = voiceAvailable,
-                    voiceMode = voiceMode,
-                    onVoiceModeChange = { mode -> scope.launch { settingsRepository.updateVoiceMode(mode) } },
                     onConnect = {
                         if (bearerStore.authReady.value) {
                             if (ContextCompat.checkSelfPermission(
