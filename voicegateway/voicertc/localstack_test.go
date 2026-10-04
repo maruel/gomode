@@ -461,6 +461,43 @@ func TestLocalStackSession(t *testing.T) {
 		}
 	})
 
+	t.Run("audio turn completes a provider tool batch", func(t *testing.T) {
+		t.Parallel()
+		p := &fakeGenAIProvider{firstReplies: []genai.Reply{
+			{ToolCall: genai.ToolCall{ID: "detail-3", Name: "task_get_detail", Arguments: `{"task":3}`}},
+			{ToolCall: genai.ToolCall{ID: "message-3", Name: "agent_last_message", Arguments: `{"task_number":3}`}},
+		}}
+		backend := newLocalStackBackend(func() vadSegmenter { return &energyVAD{} }, placeholderASR{}, &genaiLLMAdapter{provider: p}, &recordingTTS{})
+		sink := &captureSink{}
+		sess, err := backend.connect(t.Context(), "tool-batch", sink)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = sess.close() })
+		if err := sess.acceptClientMessage(t.Context(), mustJSON(t, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})); err != nil {
+			t.Fatal(err)
+		}
+		if err := sess.acceptClientMessage(t.Context(), mustJSON(t, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "Status of task three"})); err != nil {
+			t.Fatal(err)
+		}
+		for i, call := range []struct{ id, name string }{{"detail-3", "task_get_detail"}, {"message-3", "agent_last_message"}} {
+			waitForKindCount(t, sink, voicev1.MessageKindToolCall, i+1)
+			if got := len(p.callsSnapshot()); got != 1 {
+				t.Fatalf("provider generations before result %d = %d, want 1", i+1, got)
+			}
+			if err := sess.acceptClientMessage(t.Context(), mustJSON(t, voicev1.ToolResult{Kind: voicev1.MessageKindToolResult, ID: call.id, Name: call.name, Result: json.RawMessage(`{}`)})); err != nil {
+				t.Fatal(err)
+			}
+		}
+		waitForKind(t, sink, voicev1.MessageKindSpeechEnded)
+		if got := sink.assistantText(); got != "Done." {
+			t.Fatalf("assistant text = %q, want Done.", got)
+		}
+		if got := len(p.callsSnapshot()); got != 2 {
+			t.Fatalf("provider generations = %d, want 2", got)
+		}
+	})
+
 	t.Run("speak", func(t *testing.T) {
 		t.Parallel()
 
@@ -743,6 +780,62 @@ func TestGenaiConversation(t *testing.T) {
 			t.Fatal("post-tool generation omitted tools")
 		}
 	})
+	t.Run("cancelled tool batch does not poison the next turn", func(t *testing.T) {
+		t.Parallel()
+		p := &fakeGenAIProvider{firstReplies: []genai.Reply{
+			{Text: "Checking. "},
+			{ToolCall: genai.ToolCall{Name: "task_get_detail"}},
+			{ToolCall: genai.ToolCall{Name: "agent_last_message"}},
+		}}
+		conv := (&genaiLLMAdapter{provider: p}).newConversation("Answer briefly.", nil)
+		step, err := conv.user(t.Context(), "Status of task three")
+		if err != nil {
+			t.Fatal(err)
+		}
+		first, _ := finishLLMStep(t, step)
+		if first.toolCall == nil || first.toolCall.id == "" || string(first.toolCall.args) != `{}` || first.text != "Checking. " {
+			t.Fatalf("first reply = %+v", first)
+		}
+		if _, err := conv.toolResult(t.Context(), first.toolCall.id, "wrong_tool", json.RawMessage(`{}`)); err == nil {
+			t.Fatal("mismatched result name was accepted")
+		}
+		step, err = conv.toolResult(t.Context(), first.toolCall.id, first.toolCall.name, json.RawMessage(`{"state":"waiting"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, deltas := finishLLMStep(t, step)
+		if second.toolCall == nil || second.toolCall.id == "" || second.toolCall.id == first.toolCall.id || string(second.toolCall.args) != `{}` || len(deltas) != 0 {
+			t.Fatalf("second reply = %+v, deltas = %v", second, deltas)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if _, err := conv.toolResult(ctx, second.toolCall.id, second.toolCall.name, json.RawMessage(`{}`)); !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled result error = %v", err)
+		}
+		if got := len(p.callsSnapshot()); got != 1 {
+			t.Fatalf("provider generations before cancellation = %d, want 1", got)
+		}
+		step, err = conv.user(t.Context(), "Never mind")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reply, _ := finishLLMStep(t, step); reply.text != "Done." {
+			t.Fatalf("reply = %+v", reply)
+		}
+		calls := p.callsSnapshot()
+		if len(calls) != 2 {
+			t.Fatalf("provider generations = %d, want 2", len(calls))
+		}
+		history := calls[1].messages
+		if len(history) != 4 || history[0].String() != "Status of task three" || history[3].String() != "Never mind" || len(history[2].ToolCallResults) != 2 {
+			t.Fatalf("history = %+v, want settled tool batch followed by the new request", history)
+		}
+		results := history[2].ToolCallResults
+		if results[0].ID != first.toolCall.id || results[0].Result != `{"state":"waiting"}` || results[1].ID != second.toolCall.id || !strings.Contains(results[1].Result, "cancelled") {
+			t.Fatalf("results = %+v, want completed result preserved and remaining call cancelled", results)
+		}
+	})
+
 	t.Run("user after unanswered user", func(t *testing.T) {
 		t.Parallel()
 		// A new utterance cancels the turn in flight, as when speech interrupts
@@ -1428,6 +1521,8 @@ func (c *fakeGenAICall) hasTools() bool {
 type fakeGenAIProvider struct {
 	base.NotImplemented
 
+	firstReplies []genai.Reply
+
 	mu    sync.Mutex
 	calls []fakeGenAICall
 }
@@ -1457,7 +1552,10 @@ func (p *fakeGenAIProvider) GenStream(ctx context.Context, msgs genai.Messages, 
 
 	var replies []genai.Reply
 	if callCount == 1 {
-		replies = []genai.Reply{{ToolCall: genai.ToolCall{Name: "tasks_list", Arguments: `{"limit":1}`}}}
+		replies = slices.Clone(p.firstReplies)
+		if replies == nil {
+			replies = []genai.Reply{{ToolCall: genai.ToolCall{Name: "tasks_list", Arguments: `{"limit":1}`}}}
+		}
 	} else {
 		replies = []genai.Reply{{Text: "Done."}}
 	}

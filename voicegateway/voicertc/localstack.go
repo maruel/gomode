@@ -52,7 +52,7 @@ type llmToolCall struct {
 	args json.RawMessage
 }
 
-// llmReply is one step of an LLM turn: assistant text or a tool call.
+// llmReply is one step of an LLM turn: assistant text, then an optional tool call.
 type llmReply struct {
 	text     string
 	toolCall *llmToolCall

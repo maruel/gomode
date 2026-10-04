@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/maruel/genai"
 
 	voiceapi "github.com/maruel/gomode/voicegateway/api"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
@@ -155,6 +156,48 @@ func TestBridge(t *testing.T) {
 			expectTurnStatus(t, ctx, conn, voicev1.TurnStateIdle)
 			if got := conv.userCalls(); got != 1 {
 				t.Errorf("user calls = %d, want 1", got)
+			}
+		})
+
+		t.Run("completes every tool call before resuming generation", func(t *testing.T) {
+			t.Parallel()
+			p := &fakeGenAIProvider{firstReplies: []genai.Reply{
+				{ToolCall: genai.ToolCall{ID: "detail-3", Name: "task_get_detail", Arguments: `{"task":3}`}},
+				{ToolCall: genai.ToolCall{ID: "message-3", Name: "agent_last_message", Arguments: `{"task_number":3}`}},
+			}}
+			conn := dialTextSession(t, newTestTextBridge(t, &genaiLLMAdapter{provider: p}))
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			t.Cleanup(cancel)
+			writeMessage(t, ctx, conn, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})
+			expectKind(t, ctx, conn, voicev1.MessageKindSessionReady)
+			writeMessage(t, ctx, conn, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "give me the status of task number 3"})
+			expectTurnStatus(t, ctx, conn, voicev1.TurnStateThinking)
+			first := expectToolCall(t, ctx, conn)
+			if first.ID != "detail-3" || first.Name != "task_get_detail" || string(first.Args) != `{"task":3}` {
+				t.Fatalf("first call = %+v", first)
+			}
+			writeMessage(t, ctx, conn, voicev1.ToolResult{Kind: voicev1.MessageKindToolResult, ID: first.ID, Name: first.Name, Result: json.RawMessage(`{"state":"waiting"}`)})
+			second := expectToolCall(t, ctx, conn)
+			if second.ID != "message-3" || second.Name != "agent_last_message" || string(second.Args) != `{"task_number":3}` {
+				t.Fatalf("second call = %+v", second)
+			}
+			if got := len(p.callsSnapshot()); got != 1 {
+				t.Fatalf("provider generations before final result = %d, want 1", got)
+			}
+			writeMessage(t, ctx, conn, voicev1.ToolResult{Kind: voicev1.MessageKindToolResult, ID: second.ID, Name: second.Name, Result: json.RawMessage(`{"error":"No agent message"}`)})
+			expectAssistantText(t, ctx, conn, "Done.")
+			expectTurnStatus(t, ctx, conn, voicev1.TurnStateIdle)
+			calls := p.callsSnapshot()
+			if len(calls) != 2 {
+				t.Fatalf("provider generations = %d, want 2", len(calls))
+			}
+			history := calls[1].messages
+			if len(history) != 3 || len(history[1].Replies) != 2 || len(history[2].ToolCallResults) != 2 {
+				t.Fatalf("provider history = %+v, want both calls and both results", history)
+			}
+			results := history[2].ToolCallResults
+			if results[0].ID != "detail-3" || results[0].Name != "task_get_detail" || results[0].Result != `{"state":"waiting"}` || results[1].ID != "message-3" || results[1].Name != "agent_last_message" || results[1].Result != `{"error":"No agent message"}` {
+				t.Fatalf("tool results = %+v", results)
 			}
 		})
 

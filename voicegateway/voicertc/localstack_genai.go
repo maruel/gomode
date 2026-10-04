@@ -1,4 +1,4 @@
-// Local stack model adapters for local ASR, LLM, and TTS runtimes.
+// Local stack model adapters for ASR, TTS, and LLM turns with serialized tool batches.
 
 package voicertc
 
@@ -404,8 +404,12 @@ type genaiConversation struct {
 	tools             []genai.ToolDef
 	initErr           error
 	nextToolID        int
-	// unanswered is the user text of the last message when its generation
-	// failed or was cancelled before a reply. It is empty otherwise.
+	// pendingCalls serializes one provider response through the client's
+	// single-call protocol. Results reach the provider only after the batch ends.
+	pendingCalls []llmToolCall
+	toolResults  []genai.ToolCallResult
+	// unanswered retains user text until the first reply or tool batch
+	// completes, so an interrupted request can merge into the next utterance.
 	unanswered string
 }
 
@@ -414,6 +418,21 @@ func (c *genaiConversation) user(ctx context.Context, text string) (llmStep, err
 	if c.initErr != nil {
 		c.mu.Unlock()
 		return llmStep{}, c.initErr
+	}
+	if len(c.pendingCalls) != 0 {
+		// Retain completed results and settle interrupted calls before the
+		// next user message. An in-flight call may have had side effects even
+		// though its result never arrived, so do not replay the old request.
+		for _, call := range c.pendingCalls {
+			c.toolResults = append(c.toolResults, genai.ToolCallResult{
+				ID: call.id, Name: call.name,
+				Result: `{"error":"Tool call cancelled before its result was received. Do not assume it completed."}`,
+			})
+		}
+		c.messages = append(c.messages, genai.Message{ToolCallResults: c.toolResults})
+		c.pendingCalls = nil
+		c.toolResults = nil
+		c.unanswered = ""
 	}
 	if c.unanswered != "" {
 		// genai requires alternating roles. Keep what the user said in the
@@ -433,15 +452,29 @@ func (c *genaiConversation) toolResult(ctx context.Context, id, name string, res
 		c.mu.Unlock()
 		return llmStep{}, c.initErr
 	}
+	if err := ctx.Err(); err != nil {
+		c.mu.Unlock()
+		return llmStep{}, err
+	}
+	if len(c.pendingCalls) == 0 || c.pendingCalls[0].id != id || c.pendingCalls[0].name != name {
+		c.mu.Unlock()
+		return llmStep{}, fmt.Errorf("unexpected tool result %q for %q", id, name)
+	}
 	resultText := string(result)
 	if resultText == "" {
 		resultText = "null"
 	}
-	c.messages = append(c.messages, genai.Message{ToolCallResults: []genai.ToolCallResult{{
-		ID:     id,
-		Name:   name,
-		Result: resultText,
-	}}})
+	c.toolResults = append(c.toolResults, genai.ToolCallResult{ID: id, Name: name, Result: resultText})
+	c.pendingCalls = c.pendingCalls[1:]
+	if len(c.pendingCalls) != 0 {
+		reply := llmReply{toolCall: &c.pendingCalls[0]}
+		c.mu.Unlock()
+		return newLLMStep(nil, reply, nil), nil
+	}
+	c.messages = append(c.messages, genai.Message{ToolCallResults: c.toolResults})
+	c.pendingCalls = nil
+	c.toolResults = nil
+	c.unanswered = ""
 	return c.startGenerationLocked(ctx), nil
 }
 
@@ -479,7 +512,9 @@ func (c *genaiConversation) startGenerationLocked(ctx context.Context) llmStep {
 			}
 			reply := c.toReplyLocked(&res.Message)
 			c.messages = append(c.messages, res.Message)
-			c.unanswered = ""
+			if len(c.pendingCalls) == 0 {
+				c.unanswered = ""
+			}
 			return reply, nil
 		},
 	}
@@ -507,15 +542,19 @@ func (c *genaiConversation) toReplyLocked(msg *genai.Message) llmReply {
 			if reply.ToolCall.Arguments == "" {
 				reply.ToolCall.Arguments = "{}"
 			}
-			return llmReply{toolCall: &llmToolCall{
+			c.pendingCalls = append(c.pendingCalls, llmToolCall{
 				id:   reply.ToolCall.ID,
 				name: reply.ToolCall.Name,
 				args: json.RawMessage(reply.ToolCall.Arguments),
-			}}
+			})
 		}
 		text.WriteString(reply.Text)
 	}
-	return llmReply{text: text.String()}
+	reply := llmReply{text: text.String()}
+	if len(c.pendingCalls) != 0 {
+		reply.toolCall = &c.pendingCalls[0]
+	}
+	return reply
 }
 
 func (c *genaiConversation) userText(text string) string {
