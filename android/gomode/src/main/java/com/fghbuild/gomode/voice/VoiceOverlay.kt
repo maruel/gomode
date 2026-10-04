@@ -44,6 +44,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -91,16 +92,16 @@ fun VoicePanel(
         Column(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outline)
             when {
+                voiceState.error != null -> {
+                    ErrorPanel(voiceState.error, voiceEnabled, onConnect, onDisconnect, onOpenSettings)
+                }
+
                 !voiceEnabled -> {
                     IdlePanel(
                         onConnect = onConnect,
                         onOpenSettings = onOpenSettings,
                         voiceEnabled = false,
                     )
-                }
-
-                voiceState.error != null -> {
-                    ErrorPanel(voiceState.error, onConnect, onOpenSettings)
                 }
 
                 voiceState.connectStatus != null -> {
@@ -344,7 +345,9 @@ private fun ActivePanel(
 @Composable
 private fun ErrorPanel(
     message: String,
+    voiceEnabled: Boolean,
     onReconnect: () -> Unit,
+    onDismiss: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     Row(
@@ -373,8 +376,13 @@ private fun ErrorPanel(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Button(onClick = onReconnect) {
-            Text("Reconnect")
+        Column {
+            Button(onClick = onReconnect, enabled = voiceEnabled) {
+                Text("Reconnect")
+            }
+            TextButton(onClick = onDismiss) {
+                Text("Dismiss")
+            }
         }
     }
 }

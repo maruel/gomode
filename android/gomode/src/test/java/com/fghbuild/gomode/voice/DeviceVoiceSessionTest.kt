@@ -80,6 +80,35 @@ class DeviceVoiceSessionTest {
     }
 
     @Test
+    fun `gateway error remains visible after idle and socket closure`() {
+        val speech = FakeSpeech()
+        val socket = FakeWebSocket()
+        var listener: WebSocketListener? = null
+        val session =
+            createSession(speech) { _, captured ->
+                listener = captured
+                socket
+            }
+        session.connect()
+        val connected = requireNotNull(listener)
+        connected.onOpen(socket, upgradeResponse())
+        connected.onMessage(socket, """{"kind":"session.ready"}""")
+        connected.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
+        connected.onMessage(socket, """{"kind":"error","message":"Voice turn failed (llm)","recoverable":false}""")
+        connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+        connected.onClosed(socket, 1000, "")
+
+        assertEquals("Voice turn failed (llm)", session.state.value.error)
+        assertEquals(1L, session.state.value.errorId)
+        assertFalse(session.state.value.connected)
+        assertFalse(speech.listening)
+        assertTrue(socket.closed)
+        session.disconnect()
+        assertEquals(null, session.state.value.error)
+        session.close()
+    }
+
+    @Test
     fun `device session sends the selected speech language`() {
         val socket = FakeWebSocket()
         var listener: WebSocketListener? = null

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -331,7 +332,7 @@ func (s *localStackSession) startTurn(ctx context.Context, utterance []byte) {
 func (s *localStackSession) runTurn(ctx context.Context, generation int, conv llmConversation, utterance []byte) {
 	text, err := s.asr.transcribe(ctx, utterance)
 	if err != nil {
-		s.warnTurn("asr", err)
+		s.warnTurn(ctx, "asr", err)
 		return
 	}
 	if text == "" {
@@ -345,7 +346,7 @@ func (s *localStackSession) handleUserText(ctx context.Context, generation int, 
 	s.reportTurnState(generation, voicev1.TurnStateThinking)
 	step, err := conv.user(ctx, text)
 	if err != nil {
-		s.warnTurn("llm", err)
+		s.warnTurn(ctx, "llm", err)
 		return
 	}
 	if s.clientSpeech {
@@ -374,7 +375,7 @@ func (s *localStackSession) handleTextStep(ctx context.Context, conv llmConversa
 		}
 		reply, err := step.finish()
 		if err != nil {
-			s.warnTurn("llm", err)
+			s.warnTurn(ctx, "llm", err)
 			return
 		}
 		if ctx.Err() != nil {
@@ -402,7 +403,7 @@ func (s *localStackSession) handleLLMStep(ctx context.Context, conv llmConversat
 		// the turn is cancelled, so a later turn is not blocked on the lock.
 		reply, err := s.forwardLLMText(ctx, speech, step)
 		if err != nil {
-			s.warnTurn("llm", err)
+			s.warnTurn(ctx, "llm", err)
 			return
 		}
 		if ctx.Err() != nil {
@@ -499,7 +500,7 @@ func (s *localStackSession) speakFragments(ctx context.Context, fragments iter.S
 		for pcm, err := range s.tts.synthesize(ctx, text) {
 			if err != nil {
 				if ctx.Err() == nil {
-					s.warnTurn("tts", err)
+					s.warnTurn(ctx, "tts", err)
 					if started {
 						s.emit(&voicev1.SpeechEnded{Kind: voicev1.MessageKindSpeechEnded, Speaker: voicev1.SpeakerAssistant})
 					}
@@ -565,10 +566,10 @@ func (s *localStackSession) bargeIn(source voicev1.InterruptSource, message stri
 	cancel := s.turnCancel
 	s.turnCancel = nil
 	s.speaking = false
-	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+	s.mu.Unlock()
 	s.sink.clearAssistantAudio()
 	s.emit(&voicev1.Interrupted{Kind: voicev1.MessageKindInterrupted, Source: source, Message: message})
 }
@@ -609,7 +610,7 @@ func (s *localStackSession) runToolCall(ctx context.Context, conv llmConversatio
 	}
 	step, err := conv.toolResult(ctx, res.id, res.name, res.result)
 	if err != nil {
-		s.warnTurn("llm", err)
+		s.warnTurn(ctx, "llm", err)
 		return llmStep{}, false
 	}
 	return step, true
@@ -648,8 +649,17 @@ func (s *localStackSession) isSpeaking() bool {
 	return s.speaking
 }
 
-func (s *localStackSession) warnTurn(stage string, err error) {
+// warnTurn reports genuine turn failures to the client. Provider details stay
+// in server logs. Serialize the cancellation check and delivery with turn
+// replacement, so a superseded turn cannot disconnect a newer client turn.
+func (s *localStackSession) warnTurn(ctx context.Context, stage string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		return
+	}
 	slog.WarnContext(s.baseCtx, "voicertc: local stack turn failed", "session", s.id, "stage", stage, "err", err)
+	s.sink.sendGatewayError(fmt.Sprintf("Voice turn failed (%s)", stage))
 }
 
 // sleepCtx sleeps for d, returning false if ctx is cancelled first.

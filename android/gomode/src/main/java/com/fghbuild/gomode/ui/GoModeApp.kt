@@ -305,20 +305,16 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
             }
         },
     ) { padding ->
+        // Apply the IME inset once to the shell. Keep hosted content and native
+        // recovery/error controls above the keyboard without duplicate footer insets.
         Column(
             modifier =
                 Modifier
                     .fillMaxSize()
-                    .padding(padding),
+                    .padding(padding)
+                    .imePadding(),
         ) {
-            // Resize hosted WebViews above the IME. Without native IME insets, Android WebView
-            // keeps reporting a full-height viewport and fixed bottom web inputs sit under the keyboard.
-            Box(
-                modifier =
-                    Modifier
-                        .weight(1f)
-                        .imePadding(),
-            ) {
+            Box(modifier = Modifier.weight(1f)) {
                 GoModeContent(
                     settings = settings,
                     settingsRepository = settingsRepository,
@@ -343,7 +339,8 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
                     },
                 )
             }
-            shellRecovery?.let { recovery ->
+            // Show recovery controls after the user dismisses the voice failure.
+            shellRecovery?.takeIf { voiceState.error == null }?.let { recovery ->
                 ShellRecoveryStrip(
                     recovery = recovery,
                     voiceSessionActive = voiceSessionActive,
@@ -355,10 +352,11 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
                         }
                     },
                     onOpenSettings = { activeNativeScreen = NativeScreen.Settings },
-                    modifier = Modifier.fillMaxWidth().imePadding(),
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
-            if (!keyboardOpen && (shellRecovery == null || voiceSessionActive)) {
+            // Keep failures visible even when the keyboard or shell recovery hides idle controls.
+            if (voiceState.error != null || (!keyboardOpen && (shellRecovery == null || voiceSessionActive))) {
                 VoicePanel(
                     voiceState = voiceState,
                     voiceEnabled = voiceAvailable,

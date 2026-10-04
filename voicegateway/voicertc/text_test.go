@@ -88,6 +88,51 @@ func TestBridge(t *testing.T) {
 	t.Run("ServeTextSession", func(t *testing.T) {
 		t.Parallel()
 
+		t.Run("delivers generation failures over WebSocket", func(t *testing.T) {
+			t.Parallel()
+			llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/chat/completions" || r.Method != http.MethodPost {
+					t.Errorf("LLM request = %s %s", r.Method, r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				if err := json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]string{"type": "invalid_request_error", "message": "insufficient tool messages following tool_calls message"},
+				}); err != nil {
+					t.Error(err)
+				}
+			}))
+			t.Cleanup(llmServer.Close)
+			endpoint, err := localStackGenAIEndpoint(t.Context(), "openaicompatible", llmServer.URL+"/v1/chat/completions", "test-model")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := endpoint.runtime.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			conn := dialTextSession(t, newTestTextBridge(t, &genaiLLMAdapter{provider: endpoint.provider}))
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			t.Cleanup(cancel)
+			writeMessage(t, ctx, conn, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})
+			expectKind(t, ctx, conn, voicev1.MessageKindSessionReady)
+			writeMessage(t, ctx, conn, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "status"})
+			expectTurnStatus(t, ctx, conn, voicev1.TurnStateThinking)
+			kind, data := readMessage(t, ctx, conn)
+			if kind != voicev1.MessageKindError {
+				t.Fatalf("kind = %q, want error", kind)
+			}
+			var msg voicev1.Error
+			if err := json.Unmarshal(data, &msg); err != nil {
+				t.Fatal(err)
+			}
+			if msg.Message != "Voice turn failed (llm)" || msg.Recoverable {
+				t.Fatalf("error = %+v", msg)
+			}
+			expectTurnStatus(t, ctx, conn, voicev1.TurnStateIdle)
+		})
+
 		t.Run("streams assistant text", func(t *testing.T) {
 			t.Parallel()
 			conv := &fakeConversation{

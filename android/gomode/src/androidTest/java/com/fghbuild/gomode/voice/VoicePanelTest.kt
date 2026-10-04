@@ -3,9 +3,11 @@ package com.fghbuild.gomode.voice
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -44,5 +46,30 @@ class VoicePanelTest {
         assertTrue(composeRule.onAllNodesWithTag("gomode-voice-transcript").fetchSemanticsNodes().isEmpty())
         composeRule.onNodeWithTag("gomode-voice-transcript-toggle").performClick()
         composeRule.onNodeWithTag("gomode-voice-transcript").assertIsDisplayed()
+    }
+
+    @Test
+    fun voiceErrorRemainsVisibleWhenVoiceIsUnavailable() {
+        var dismissed = false
+        composeRule.setContent {
+            MaterialTheme {
+                VoicePanel(
+                    voiceState = VoiceState(error = "Voice turn failed (llm)"),
+                    voiceEnabled = false,
+                    onConnect = {},
+                    onDisconnect = { dismissed = true },
+                    onToggleMute = {},
+                    onSelectDevice = {},
+                    onClearTranscript = {},
+                    onOpenSettings = {},
+                    serviceStatusText = null,
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Voice turn failed (llm)").assertIsDisplayed()
+        composeRule.onNodeWithText("Reconnect").assertIsNotEnabled()
+        composeRule.onNodeWithText("Dismiss").assertIsDisplayed().performClick()
+        assertTrue(dismissed)
     }
 }

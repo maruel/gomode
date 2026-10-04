@@ -101,6 +101,38 @@ func TestLocalStackSessionLanguage(t *testing.T) {
 }
 
 func TestLocalStackSession(t *testing.T) {
+	t.Run("generation failure reaches client", func(t *testing.T) {
+		t.Parallel()
+		for _, cancelled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("cancelled=%t", cancelled), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if cancelled {
+					cancel()
+				}
+				sink := &captureSink{}
+				s := &localStackSession{id: "llm-error", sink: sink, baseCtx: t.Context()}
+				step := newLLMStep(nil, llmReply{}, errors.New("http 400: private provider detail"))
+				s.handleTextStep(ctx, &fakeConversation{}, step)
+				if cancelled {
+					if got := sink.kinds(); len(got) != 0 {
+						t.Fatalf("cancelled turn messages = %v", got)
+					}
+					return
+				}
+				if got := sink.kinds(); !slices.Equal(got, []voicev1.MessageKind{voicev1.MessageKindError}) {
+					t.Fatalf("messages = %v, want error", got)
+				}
+				var msg voicev1.Error
+				if err := json.Unmarshal(sink.msgs[0], &msg); err != nil {
+					t.Fatal(err)
+				}
+				if msg.Message != "Voice turn failed (llm)" {
+					t.Fatalf("error message = %q", msg.Message)
+				}
+			})
+		}
+	})
 	t.Parallel()
 
 	t.Run("tool round trip", func(t *testing.T) {
@@ -483,8 +515,8 @@ func TestLocalStackSession(t *testing.T) {
 			default:
 				t.Fatal("TTS was not called")
 			}
-			if kinds := sink.kinds(); len(kinds) != 0 {
-				t.Fatalf("kinds = %v, want no speech events after TTS failure", kinds)
+			if kinds := sink.kinds(); !slices.Equal(kinds, []voicev1.MessageKind{voicev1.MessageKindError}) {
+				t.Fatalf("kinds = %v, want error without speech events after TTS failure", kinds)
 			}
 			if sink.pcmLen() != 0 {
 				t.Fatal("assistant audio produced after TTS failure")
@@ -1028,7 +1060,11 @@ func (c *captureSink) sendGatewayMessage(_ context.Context, data []byte) error {
 	return nil
 }
 
-func (c *captureSink) sendGatewayError(string) {}
+func (c *captureSink) sendGatewayError(message string) {
+	_ = c.sendGatewayMessage(context.Background(), mustGatewayServerMessage(&voicev1.Error{
+		Kind: voicev1.MessageKindError, Message: message,
+	}))
+}
 
 func (c *captureSink) cancelSession() {
 	c.mu.Lock()
