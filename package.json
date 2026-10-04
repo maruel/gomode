@@ -16,6 +16,7 @@
     "sdk/gomode/ts"
   ],
   "exports": {
+    "./web/FrontendVoiceTools": "./web/src/FrontendVoiceTools.ts",
     "./web/HostMode": "./web/src/HostMode.tsx",
     "./web/McpClient": "./web/src/McpClient.ts",
     "./web/ServiceItems": "./web/src/ServiceItems.ts",

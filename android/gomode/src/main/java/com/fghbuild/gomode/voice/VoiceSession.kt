@@ -40,6 +40,7 @@ import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.service.VoiceTokenClient
 import com.fghbuild.gomode.service.credentialedHTTPClient
+import com.fghbuild.gomode.ui.web.FrontendVoiceTools
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -96,6 +97,11 @@ internal fun voiceToolDeclarations(mcpTools: List<ToolDescriptor>): List<ToolDec
         require(mcpTools.none { it.name == HANG_UP_TOOL_NAME }) {
             "MCP tool \"$HANG_UP_TOOL_NAME\" conflicts with the reserved voice command."
         }
+        val frontendTools = FrontendVoiceTools.declarations
+        require(mcpTools.none { mcp -> frontendTools.any { it.name == mcp.name } }) {
+            "MCP tool conflicts with a frontend voice tool."
+        }
+        addAll(frontendTools)
         add(
             ToolDeclaration(
                 name = HANG_UP_TOOL_NAME,
@@ -209,6 +215,7 @@ internal class VoiceSession(
     @Volatile
     private var usableICECandidateWaiter: CompletableDeferred<Unit>? = null
     private var mcpClient: McpClient? = null
+    private var frontendToolNames: Set<String> = emptySet()
     private var mcpTools: List<ToolDescriptor> = emptyList()
     private var deviceCallback: AudioDeviceCallback? = null
     private var scoReceiver: BroadcastReceiver? = null
@@ -988,6 +995,7 @@ internal class VoiceSession(
         systemInstruction: String,
         serviceContextText: String,
     ) {
+        frontendToolNames = FrontendVoiceTools.declarations.map { it.name }.toSet()
         val setup =
             gatewaySessionSetup(voiceToolDeclarations(mcpTools), systemInstruction, serviceContextText, languageTag)
         Log.i(TAG, "sending setup message")
@@ -1105,6 +1113,16 @@ internal class VoiceSession(
         }
         try {
             _state.update { it.copy(activeTool = name) }
+            val frontendResult =
+                FrontendVoiceTools.execute(name, msg.args as? JsonObject ?: JsonObject(emptyMap())) {
+                    ownsAttempt(attempt) && dataChannel === originChannel
+                }
+            if (frontendResult != null) {
+                if (!ownsAttempt(attempt) || dataChannel !== originChannel) return
+                _state.update { it.copy(activeTool = null) }
+                sendToolResult(id, name, frontendResult, attempt, originChannel)
+                return
+            }
             val args = msg.args as? JsonObject ?: JsonObject(emptyMap())
             val client =
                 mcpClient ?: run {
@@ -1112,6 +1130,7 @@ internal class VoiceSession(
                     sendToolResult(id, name, errorJson("No MCP client"), attempt, originChannel)
                     return
                 }
+            require(name !in frontendToolNames) { "Frontend voice tool is unavailable: $name" }
             val result = client.callTool(name, args)
             if (!ownsAttempt(attempt) || dataChannel !== originChannel) return
             _state.update { it.copy(activeTool = null) }

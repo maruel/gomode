@@ -16,6 +16,7 @@ import com.caic.voicegateway.sdk.v1.TurnStatus
 import com.caic.voicegateway.sdk.v1.UserMessage
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.service.ServiceSettingsClient
+import com.fghbuild.gomode.ui.web.FrontendVoiceTools
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -98,6 +99,7 @@ internal class DeviceVoiceSession(
     private var connectJob: Job? = null
     private var webSocket: WebSocket? = null
     private var mcpClient: McpClient? = null
+    private var frontendToolNames: Set<String> = emptySet()
     private var mcpTools: List<ToolDescriptor> = emptyList()
 
     private var muted = false
@@ -185,6 +187,7 @@ internal class DeviceVoiceSession(
                         }
                         this@DeviceVoiceSession.webSocket = webSocket
                         setStatus("Waiting for server…")
+                        frontendToolNames = FrontendVoiceTools.declarations.map { it.name }.toSet()
                         sendOn(
                             webSocket,
                             json.encodeToString(
@@ -418,6 +421,16 @@ internal class DeviceVoiceSession(
         }
         try {
             _state.update { it.copy(activeTool = name) }
+            val frontendResult =
+                FrontendVoiceTools.execute(name, msg.args as? JsonObject ?: JsonObject(emptyMap())) {
+                    ownsAttempt(attempt) && webSocket === origin
+                }
+            if (frontendResult != null) {
+                if (!ownsAttempt(attempt) || webSocket !== origin) return
+                _state.update { it.copy(activeTool = null) }
+                sendToolResult(id, name, frontendResult)
+                return
+            }
             val client = mcpClient
             if (client == null) {
                 _state.update { it.copy(activeTool = null) }
@@ -425,6 +438,7 @@ internal class DeviceVoiceSession(
                 return
             }
             val args = msg.args as? JsonObject ?: JsonObject(emptyMap())
+            require(name !in frontendToolNames) { "Frontend voice tool is unavailable: $name" }
             val result = client.callTool(name, args)
             if (!ownsAttempt(attempt) || webSocket !== origin) return
             _state.update { it.copy(activeTool = null) }

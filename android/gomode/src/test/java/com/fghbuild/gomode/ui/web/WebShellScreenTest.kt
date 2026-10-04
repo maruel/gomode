@@ -35,6 +35,28 @@ class WebShellScreenTest {
     }
 
     @Test
+    fun frontendVoiceToolsAcceptEquivalentOriginsOnlyFromTheHostedMainPage() {
+        val serviceURL = "https://Service.test:443/workspace"
+        assertEquals(
+            true,
+            acceptsFrontendVoiceTools(Uri.parse("https://service.test"), true, "https://service.test/", serviceURL),
+        )
+        assertEquals(
+            false,
+            acceptsFrontendVoiceTools(Uri.parse("https://service.test"), false, "https://service.test/", serviceURL),
+        )
+        assertEquals(
+            false,
+            acceptsFrontendVoiceTools(Uri.parse("https://attacker.test"), true, "https://service.test/", serviceURL),
+        )
+        assertEquals(
+            false,
+            acceptsFrontendVoiceTools(Uri.parse("https://service.test"), true, "https://attacker.test/", serviceURL),
+        )
+        assertEquals(false, acceptsFrontendVoiceTools(Uri.parse("https://service.test"), true, null, serviceURL))
+    }
+
+    @Test
     fun firstTimeoutIsRetriedSilently() {
         assertEquals(true, shouldAutomaticallyRetryWebLoadError(WebViewClient.ERROR_TIMEOUT, retryAttempts = 0))
         assertEquals(false, shouldAutomaticallyRetryWebLoadError(WebViewClient.ERROR_TIMEOUT, retryAttempts = 1))

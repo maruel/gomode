@@ -1,4 +1,4 @@
-// WebView shell that reports host state and accepts origin-scoped bearer tokens from the hosted frontend.
+// WebView shell with host state, origin-scoped auth, and frontend voice tools.
 package com.fghbuild.gomode.ui.web
 
 import android.Manifest
@@ -96,6 +96,21 @@ internal fun WebShellScreen(
                 if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
                     WebViewCompat.addWebMessageListener(
                         this,
+                        "gomodeVoiceTools",
+                        setOf(serviceOrigin(initialURL)),
+                    ) { view, message, sourceOrigin, isMainFrame, _ ->
+                        if (acceptsFrontendVoiceTools(sourceOrigin, isMainFrame, view.url, initialURL)) {
+                            message.data?.let { payload ->
+                                runCatching { FrontendVoiceTools.register(view, payload) }
+                                    .onFailure {
+                                        FrontendVoiceTools.clear(view)
+                                        Log.e(TAG, "Invalid frontend voice tools", it)
+                                    }
+                            }
+                        }
+                    }
+                    WebViewCompat.addWebMessageListener(
+                        this,
                         "gomodeAuth",
                         setOf(serviceOrigin(initialURL)),
                     ) { view, message, sourceOrigin, isMainFrame, _ ->
@@ -127,6 +142,7 @@ internal fun WebShellScreen(
                             if (currentHostURL != hostURL || currentServiceID != serviceID) return
 
                             authHandler.onNavigation(url)
+                            FrontendVoiceTools.clear(view)
 
                             automaticRetryState = automaticTimeoutRetryStateOnPageStarted(automaticRetryState)
                             loadFailed = false
@@ -305,6 +321,7 @@ internal fun WebShellScreen(
     DisposableEffect(webView) {
         onDispose {
             authHandler.onNavigation(null)
+            FrontendVoiceTools.clear(webView)
             webView.destroy()
         }
     }
@@ -350,6 +367,15 @@ private fun hasPermission(
     context: Context,
     permission: String,
 ): Boolean = ContextCompat.checkSelfPermission(context, permission) == PermissionChecker.PERMISSION_GRANTED
+
+internal fun acceptsFrontendVoiceTools(
+    sourceOrigin: Uri,
+    isMainFrame: Boolean,
+    pageURL: String?,
+    serviceURL: String,
+): Boolean =
+    isMainFrame && isTrustedPermissionOrigin(sourceOrigin, serviceURL) &&
+        pageURL?.let { isTrustedPermissionOrigin(it.toUri(), serviceURL) } == true
 
 internal fun isTrustedPermissionOrigin(
     origin: Uri,

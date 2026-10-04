@@ -12,6 +12,7 @@ import {
   configureVoiceGateway,
   voiceToolDeclarations,
 } from "./VoiceSession";
+import { registerFrontendVoiceTool } from "./FrontendVoiceTools";
 import { mcpClient } from "./McpClient";
 
 // MCP calls are spied on; gateway signaling is exercised through fetch.
@@ -391,6 +392,47 @@ describe("VoiceSession", () => {
     expect(mcpMocks.mcpCallTool).not.toHaveBeenCalled();
     expect(chime.playDisconnected).toHaveBeenCalledOnce();
     expect(session.state.connected).toBe(false);
+  });
+
+  it("executes frontend tools locally and returns errors through the gateway", async () => {
+    const execute = vi.fn(() => ({ selected: "item-1" }));
+    const unregister = registerFrontendVoiceTool({
+      declaration: { name: "select_item", description: "Select an item", parameters: { type: "object" } },
+      execute,
+    });
+    const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
+    try {
+      expect(voiceToolDeclarations([]).some((tool) => tool.name === "select_item")).toBe(true);
+      expect(() => voiceToolDeclarations([{ name: "select_item", description: "Conflict", inputSchema: {} }])).toThrow(
+        /conflicts/,
+      );
+      await session.connect();
+      const channel = FakePeerConnection.dataChannels[0];
+      channel?.onopen?.();
+      dispatchToolCall(channel, "frontend-1", "select_item");
+      await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+      expect(mcpMocks.mcpCallTool).not.toHaveBeenCalled();
+      expect(channel?.send).toHaveBeenCalledWith(
+        JSON.stringify({ kind: "tool.result", id: "frontend-1", name: "select_item", result: { selected: "item-1" } }),
+      );
+      execute.mockImplementation(() => {
+        throw new Error("Missing item");
+      });
+      dispatchToolCall(channel, "frontend-2", "select_item");
+      await vi.waitFor(() =>
+        expect(channel?.send).toHaveBeenCalledWith(
+          JSON.stringify({
+            kind: "tool.result",
+            id: "frontend-2",
+            name: "select_item",
+            result: { error: "Missing item" },
+          }),
+        ),
+      );
+    } finally {
+      session.disconnect();
+      unregister();
+    }
   });
 
   it("tracks gateway turn status until disconnect", async () => {

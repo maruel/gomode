@@ -1,4 +1,4 @@
-// Core voice gateway session manager for the web frontend via WebRTC.
+// Browser voice sessions via WebRTC and speech, dispatching MCP and frontend tools.
 
 import { createStore, produce } from "solid-js/store";
 
@@ -36,6 +36,7 @@ import {
 } from "../../sdk/voicegateway/ts/v1/types.gen";
 
 import { mcpClient, type McpToolDescriptor } from "./McpClient";
+import { executeFrontendVoiceTool, frontendVoiceToolDeclarations } from "./FrontendVoiceTools";
 import { GO_MODE_ITEMS_RESOURCE_URI, initialServiceContext } from "./ServiceItems";
 import { WebAudioVoiceChime, type VoiceChimePlayer } from "./VoiceChime";
 import { BrowserSpeech, browserSpeechAvailable, browserSpeechAvoidsChimes } from "./BrowserSpeech";
@@ -214,7 +215,14 @@ export function voiceToolDeclarations(mcpTools: McpToolDescriptor[]): SessionSet
   if (mcpTools.some((tool) => tool.name === HANG_UP_TOOL_NAME)) {
     throw new Error(`MCP tool "${HANG_UP_TOOL_NAME}" conflicts with the reserved voice command.`);
   }
+  const frontendTools = frontendVoiceToolDeclarations();
+  for (const tool of frontendTools) {
+    if (mcpTools.some((mcp) => mcp.name === tool.name)) {
+      throw new Error(`MCP tool "${tool.name}" conflicts with a frontend voice tool.`);
+    }
+  }
   return [
+    ...frontendTools,
     {
       name: HANG_UP_TOOL_NAME,
       description:
@@ -316,6 +324,7 @@ export class VoiceSession {
   /** Public store updater (also the seam tests use to arrange session state). */
   readonly setState: (fn: (s: VoiceState) => VoiceState) => void;
 
+  private _frontendToolNames = new Set<string>();
   private _pc: RTCPeerConnection | null = null;
   private _dc: RTCDataChannel | null = null;
   private _textSocket: WebSocket | null = null;
@@ -1062,6 +1071,7 @@ export class VoiceSession {
   // -----------------------------------------------------------------------
 
   private _sendSetup(tools: McpToolDescriptor[], systemInstruction: string, serviceContext: string): void {
+    this._frontendToolNames = new Set(frontendVoiceToolDeclarations().map((tool) => tool.name));
     const setup = gatewaySessionSetup(
       voiceToolDeclarations(tools),
       systemInstruction,
@@ -1210,7 +1220,9 @@ export class VoiceSession {
       this._update((s) => {
         s.activeTool = msg.name ?? null;
       });
-      const result = await mcpClient.callTool(msg.name, msg.args ?? {});
+      const result = this._frontendToolNames.has(msg.name)
+        ? { structuredContent: executeFrontendVoiceTool(msg.name, msg.args ?? {}), isError: false }
+        : await mcpClient.callTool(msg.name, msg.args ?? {});
       if (!this._ownsChannel(attempt, channel)) return;
       this._update((s) => {
         s.activeTool = null;
