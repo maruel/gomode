@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,6 +24,63 @@ import (
 	voiceapi "github.com/maruel/gomode/voicegateway/api"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
+
+func TestServeTextSessionCloseLogging(t *testing.T) {
+	// These cases change the process logger, so do not run them in parallel.
+	for _, tc := range []struct {
+		name    string
+		status  websocket.StatusCode
+		abrupt  bool
+		wantLog bool
+	}{
+		{name: "normal closure", status: websocket.StatusNormalClosure},
+		{name: "going away", status: websocket.StatusGoingAway},
+		{name: "policy violation", status: websocket.StatusPolicyViolation, wantLog: true},
+		{name: "abrupt disconnect", abrupt: true, wantLog: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+			bridge := newTestTextBridge(t, fixedConversationLLM{conv: &fakeConversation{}})
+			done := make(chan error, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				done <- bridge.ServeTextSession(r.Context(), w, r)
+			}))
+			t.Cleanup(server.Close)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			t.Cleanup(cancel)
+			conn, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = conn.CloseNow() })
+			if tc.abrupt {
+				err = conn.CloseNow()
+			} else {
+				err = conn.Close(tc.status, "")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatal("text session did not end")
+			}
+			if got := strings.Contains(logs.String(), "voicertc: text session closed"); got != tc.wantLog {
+				t.Fatalf("disconnect log = %t, want %t; logs: %s", got, tc.wantLog, logs.String())
+			}
+		})
+	}
+}
 
 func TestBridge(t *testing.T) {
 	t.Parallel()

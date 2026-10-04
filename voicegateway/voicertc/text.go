@@ -58,7 +58,10 @@ func serveTextSession(ctx context.Context, w http.ResponseWriter, r *http.Reques
 	for {
 		kind, data, err := conn.Read(sessionCtx)
 		if err != nil {
-			if sessionCtx.Err() == nil {
+			// The WebSocket reader returns close frames as errors, including
+			// ordinary hangups and clients leaving the app.
+			status := websocket.CloseStatus(err)
+			if sessionCtx.Err() == nil && status != websocket.StatusNormalClosure && status != websocket.StatusGoingAway {
 				slog.InfoContext(sessionCtx, "voicertc: text session closed", "err", err)
 			}
 			return nil
