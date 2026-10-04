@@ -1,10 +1,11 @@
 // Tests for the generic voice overlay connection controls.
 
-import { beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect, vi } from "../tests/expect";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { createSignal } from "solid-js";
+import { installBrowserSpeech } from "../tests/browser-speech";
 
 import { TurnStateIdle, TurnStateThinking, TurnStateTranscribing } from "../../sdk/voicegateway/ts/v1/types.gen";
 import VoiceOverlay, { defaultVoiceOverlayMessages, type VoiceOverlayMessages } from "./VoiceOverlay";
@@ -17,7 +18,9 @@ const enumerateDevicesMock = vi.spyOn(voiceSession, "enumerateDevices").mockReso
 const prepareAudioMock = vi.spyOn(voiceSession, "prepareAudio").mockImplementation(() => {});
 const setVoiceActiveMock = vi.spyOn(notifications, "setVoiceActive");
 
+let restoreBrowserSpeech: () => void;
 beforeEach(() => {
+  restoreBrowserSpeech = installBrowserSpeech("Chrome desktop");
   vi.clearAllMocks();
   localStorage.removeItem("gomode.voiceLanguage");
   voiceSession.setState((s) => ({
@@ -35,6 +38,11 @@ beforeEach(() => {
     languageTag: "en-US",
     mode: "cloud",
   }));
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  restoreBrowserSpeech();
 });
 
 describe("VoiceOverlay status", () => {
@@ -76,7 +84,7 @@ describe("VoiceOverlay settings", () => {
     render(() => <VoiceOverlay />);
     await user.click(screen.getByRole("button", { name: "Voice settings" }));
     voiceSession.setState((s) => ({ ...s, connectStatus: "Connecting…", connectPhase: "setup" }));
-    expect(screen.getByRole("combobox", { name: "Voice mode" })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "Cloud voice" })).toBeDisabled();
     expect(screen.getByRole("textbox", { name: "Voice language (e.g. en-US)" })).toBeDisabled();
     expect(screen.getByText("End the voice session before changing voice settings.")).toBeInTheDocument();
   });
@@ -87,9 +95,11 @@ describe("VoiceOverlay settings", () => {
     render(() => <VoiceOverlay />);
     await user.click(screen.getByRole("button", { name: "Voice settings" }));
     const input = screen.getByRole("textbox", { name: "Voice language (e.g. en-US)" });
-    await user.clear(input);
-    await user.type(input, "en-GB");
-    await user.click(screen.getByRole("button", { name: "Save language" }));
+    await user.click(input);
+    vi.useFakeTimers();
+    fireEvent.input(input, { target: { value: "en-GB" } });
+    vi.advanceTimersByTime(1000);
+    vi.useRealTimers();
     expect(voiceSession.state.languageTag).toBe("en-GB");
     expect(input).toHaveFocus();
     await user.keyboard("{Escape}");
@@ -97,21 +107,86 @@ describe("VoiceOverlay settings", () => {
     expect(screen.queryByRole("region", { name: "Voice settings" })).not.toBeInTheDocument();
   });
 
-  it("saves a language and rejects invalid input", async () => {
+  it("uses the edited language when connecting before the debounce expires", async () => {
     const user = userEvent.setup();
     render(() => <VoiceOverlay />);
     await user.click(screen.getByRole("button", { name: "Voice settings" }));
-    const input = screen.getByRole("textbox", { name: "Voice language (e.g. en-US)" });
-    await user.clear(input);
-    await user.type(input, "fr-CA");
-    await user.click(screen.getByRole("button", { name: "Save language" }));
+    await user.click(screen.getByRole("textbox"));
+    vi.useFakeTimers();
+    fireEvent.input(screen.getByRole("textbox"), { target: { value: "fr-CA" } });
+    vi.useRealTimers();
+    await user.click(screen.getByRole("button", { name: "Connect voice assistant" }));
     expect(voiceSession.state.languageTag).toBe("fr-CA");
-    expect(localStorage.getItem("gomode.voiceLanguage")).toBe("fr-CA");
-    await user.clear(input);
-    await user.type(input, "en_US");
-    await user.click(screen.getByRole("button", { name: "Save language" }));
+    expect(connectMock).toHaveBeenCalledOnce();
+  });
+
+  it("keeps invalid language errors visible after close and prevents using the old language", async () => {
+    const user = userEvent.setup();
+    render(() => <VoiceOverlay />);
+    await user.click(screen.getByRole("button", { name: "Voice settings" }));
+    await user.click(screen.getByRole("textbox"));
+    vi.useFakeTimers();
+    fireEvent.input(screen.getByRole("textbox"), { target: { value: "en_US" } });
+    vi.useRealTimers();
+    await user.click(screen.getByRole("button", { name: "Close voice settings" }));
+    expect(screen.queryByRole("region", { name: "Voice settings" })).toBeNull();
     expect(screen.getByRole("alert")).toBeInTheDocument();
-    expect(voiceSession.state.languageTag).toBe("fr-CA");
+    await user.click(screen.getByRole("button", { name: "Connect voice assistant" }));
+    expect(connectMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox")).toHaveFocus();
+    await user.clear(screen.getByRole("textbox"));
+    await user.type(screen.getByRole("textbox"), "de-DE");
+    await user.click(screen.getByRole("button", { name: "Connect voice assistant" }));
+    expect(voiceSession.state.languageTag).toBe("de-DE");
+    expect(connectMock).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an invalid language blocked after a successful voice mode change", async () => {
+    const user = userEvent.setup();
+    render(() => <VoiceOverlay />);
+    await user.click(screen.getByRole("button", { name: "Voice settings" }));
+    await user.type(screen.getByRole("textbox"), "_invalid");
+    await user.click(screen.getByRole("radio", { name: "Browser speech" }));
+    expect(screen.getByRole("radio", { name: "Browser speech" })).toBeChecked();
+    expect(screen.getByRole("textbox")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent("Invalid language tag");
+    await user.click(screen.getByRole("button", { name: "Connect voice assistant" }));
+    expect(connectMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox")).toHaveFocus();
+  });
+
+  it("allows connecting with the saved mode after a mode persistence failure", async () => {
+    const user = userEvent.setup();
+    render(() => <VoiceOverlay />);
+    await user.click(screen.getByRole("button", { name: "Voice settings" }));
+    const save = vi.spyOn(window.Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    try {
+      await user.click(screen.getByRole("radio", { name: "Browser speech" }));
+      expect(screen.getByRole("alert")).toHaveTextContent("Storage unavailable");
+      expect(screen.getByRole("textbox")).toHaveAttribute("aria-invalid", "false");
+      await user.click(screen.getByRole("button", { name: "Connect voice assistant" }));
+      expect(connectMock).toHaveBeenCalledOnce();
+      expect(voiceSession.state.mode).toBe("cloud");
+    } finally {
+      save.mockRestore();
+    }
+  });
+
+  it("closes settings with the close button, restores focus, and finishes pending saves", async () => {
+    const user = userEvent.setup();
+    render(() => <VoiceOverlay />);
+    const trigger = screen.getByRole("button", { name: "Voice settings" });
+    await user.click(trigger);
+    vi.useFakeTimers();
+    fireEvent.input(screen.getByRole("textbox"), { target: { value: "fr-CA" } });
+    fireEvent.click(screen.getByRole("button", { name: "Close voice settings" }));
+    expect(screen.queryByRole("region", { name: "Voice settings" })).toBeNull();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveFocus();
+    vi.advanceTimersByTime(1000);
+    expect(localStorage.getItem("gomode.voiceLanguage")).toBe("fr-CA");
   });
 });
 

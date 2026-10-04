@@ -22,39 +22,31 @@
   font-size: 0.85rem;
 }
 
-.settings input,
-.settings select,
-.settings button {
+.settings input[type="text"] {
   padding: 0.4rem 0.6rem;
   font: inherit;
   color: var(--color-text-secondary);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-medium);
   border-radius: var(--radius-sm);
-}
-
-.settings input,
-.settings select {
+  width: 8rem;
   max-width: 100%;
   min-width: 0;
 }
 
-.settings input {
-  width: 8rem;
+.settings input[type="radio"] {
+  flex-shrink: 0;
+  margin: 0;
+  accent-color: var(--color-primary);
 }
 
-.settings button {
-  align-self: flex-start;
-  cursor: pointer;
+.settings legend {
+  padding: 0;
+  margin-bottom: 0.75rem;
+  font-size: 0.85rem;
 }
 
-.settings button:hover:not(:disabled) {
-  background: var(--color-bg-hover);
-}
-
-.settings input:disabled,
-.settings select:disabled,
-.settings button:disabled {
+.settings input:disabled {
   cursor: default;
   opacity: 0.6;
 }
@@ -66,5 +58,8 @@
 }
 
 .settings .error {
+  /* Keep blur validation from moving the close or connect button during a click. */
+  height: 2.4em;
+  overflow-y: auto;
   color: var(--color-danger);
 }

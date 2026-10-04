@@ -62,6 +62,7 @@ const BAR_MAX_H = 20;
 /** Host-provided text for the browser voice controls. */
 export interface VoiceOverlayMessages extends Partial<VoiceSettingsMessages> {
   voiceSettings?: string;
+  closeVoiceSettings?: string;
   settingUpBrowserSpeech?: string;
   assistant: string;
   cancel: string;
@@ -86,7 +87,6 @@ export interface VoiceOverlayMessages extends Partial<VoiceSettingsMessages> {
   unmute: string;
   voiceAssistant: string;
   voiceLanguage?: string;
-  saveLanguage?: string;
   waitingForServer: string;
   settingUpWebRTC: string;
   you: string;
@@ -95,6 +95,7 @@ export interface VoiceOverlayMessages extends Partial<VoiceSettingsMessages> {
 export const defaultVoiceOverlayMessages: VoiceOverlayMessages = {
   ...defaultVoiceSettingsMessages,
   voiceSettings: "Voice settings",
+  closeVoiceSettings: "Close voice settings",
   settingUpBrowserSpeech: "Setting up browser speech…",
   assistant: "Assistant:",
   cancel: "Cancel",
@@ -119,7 +120,6 @@ export const defaultVoiceOverlayMessages: VoiceOverlayMessages = {
   unmute: "Unmute",
   voiceAssistant: "Voice assistant",
   voiceLanguage: "Voice language (e.g. en-US)",
-  saveLanguage: "Save language",
   waitingForServer: "Waiting for server…",
   settingUpWebRTC: "Setting up WebRTC…",
   you: "You:",
@@ -168,7 +168,14 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
   let panelRef: HTMLDivElement | undefined;
   let settingsTrigger: HTMLButtonElement | null = null;
   const [settingsOpen, setSettingsOpen] = createSignal(false);
+  const [settingsError, setSettingsError] = createSignal<string | null>(null);
+  const [languageError, setLanguageError] = createSignal<string | null>(null);
   const settingsId = createUniqueId();
+  const closeSettings = () => {
+    setSettingsOpen(false);
+    if (settingsTrigger?.isConnected) settingsTrigger.focus();
+    else panelRef?.querySelector<HTMLButtonElement>("button[aria-controls]")?.focus();
+  };
   const SettingsButton = () => (
     <button
       type="button"
@@ -234,6 +241,11 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
     if (session.state.connected || session.state.connectStatus !== null) {
       session.disconnect();
     } else {
+      if (languageError() !== null) {
+        setSettingsOpen(true);
+        panelRef?.querySelector<HTMLInputElement>('input[type="text"]')?.focus();
+        return;
+      }
       // Browser audio must be unlocked synchronously while the click or key event
       // still carries user activation. Device enumeration yields before connect().
       session.prepareAudio();
@@ -252,9 +264,7 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
       ) {
         event.preventDefault();
         event.stopPropagation();
-        setSettingsOpen(false);
-        if (settingsTrigger?.isConnected) settingsTrigger.focus();
-        else panelRef?.querySelector<HTMLButtonElement>("button[aria-controls]")?.focus();
+        closeSettings();
         return;
       }
       if (
@@ -356,16 +366,33 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
               onClearTranscript={() => session.clearTranscript()}
             />
           </Show>
-          <Show when={settingsOpen()}>
-            <section
-              id={settingsId}
-              class={styles.settingsSection}
-              aria-label={messages().voiceSettings ?? "Voice settings"}
-            >
-              <h2>{messages().voiceSettings ?? "Voice settings"}</h2>
-              <VoiceSettings messages={messages} />
-            </section>
+          <Show when={!settingsOpen() && settingsError()}>
+            {(error) => (
+              <p role="alert" class={styles.statusError}>
+                {error()}
+              </p>
+            )}
           </Show>
+          {/* Keep drafts and pending language saves alive when settings close. */}
+          <section
+            id={settingsId}
+            hidden={!settingsOpen()}
+            class={styles.settingsSection}
+            aria-label={messages().voiceSettings ?? "Voice settings"}
+          >
+            <div class={styles.settingsHeader}>
+              <h2>{messages().voiceSettings ?? "Voice settings"}</h2>
+              <button
+                type="button"
+                class={styles.iconButton}
+                aria-label={messages().closeVoiceSettings ?? "Close voice settings"}
+                onClick={closeSettings}
+              >
+                <CloseIcon width="1.1em" height="1.1em" />
+              </button>
+            </div>
+            <VoiceSettings messages={messages} onError={setSettingsError} onLanguageError={setLanguageError} />
+          </section>
         </div>
       </div>
     </>
