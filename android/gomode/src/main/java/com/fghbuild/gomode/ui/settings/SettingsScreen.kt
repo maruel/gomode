@@ -43,6 +43,7 @@ import kotlinx.coroutines.launch
 fun SettingsScreen(
     settings: SettingsState,
     settingsRepository: SettingsRepository,
+    voiceSessionActive: Boolean,
     onDone: () -> Unit,
     onOpenHalo: () -> Unit,
 ) {
@@ -192,6 +193,8 @@ fun SettingsScreen(
                 }
             }
             HorizontalDivider()
+            VoiceLanguageSetting(settings, settingsRepository, enabled = !voiceSessionActive)
+            HorizontalDivider()
             Text("Halo", style = MaterialTheme.typography.titleMedium)
             ListItem(
                 headlineContent = { Text("Device") },
@@ -207,6 +210,36 @@ fun SettingsScreen(
                 },
             )
         }
+    }
+}
+
+@Composable
+private fun VoiceLanguageSetting(
+    settings: SettingsState,
+    repository: SettingsRepository,
+    enabled: Boolean,
+) {
+    val scope = rememberCoroutineScope()
+    var tag by remember(settings.voiceLanguageTag) { mutableStateOf(settings.voiceLanguageTag) }
+    val normalized = runCatching { SettingsRepository.normalizeVoiceLanguageTag(tag) }.getOrNull()
+    Text("Voice language", style = MaterialTheme.typography.titleMedium)
+    OutlinedTextField(
+        value = tag,
+        onValueChange = { tag = it },
+        modifier = Modifier.fillMaxWidth().testTag("gomode-voice-language"),
+        singleLine = true,
+        label = { Text("Language tag") },
+        supportingText = { Text("English (US): en-US. Sets device speech and assistant reply language.") },
+        isError = normalized == null,
+        enabled = enabled,
+    )
+    if (!enabled) Text("End the voice session before changing language.")
+    Button(
+        onClick = { scope.launch { repository.updateVoiceLanguageTag(tag) } },
+        enabled = enabled && normalized != null && normalized != settings.voiceLanguageTag,
+        modifier = Modifier.testTag("gomode-save-voice-language"),
+    ) {
+        Text("Save language")
     }
 }
 

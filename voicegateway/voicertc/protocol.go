@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+
+	"golang.org/x/text/language"
 
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
@@ -69,6 +72,9 @@ func buildGeminiSetup(msg *voicev1.SessionSetup, model string) ([]byte, error) {
 	if msg.Context.SystemInstruction == "" {
 		return nil, errors.New("session.setup context.systemInstruction is required")
 	}
+	if err := applySessionLanguage(msg); err != nil {
+		return nil, err
+	}
 	voiceName := msg.Voice.Name
 	if voiceName == "" {
 		voiceName = "Orus"
@@ -112,7 +118,9 @@ func buildGeminiSetup(msg *voicev1.SessionSetup, model string) ([]byte, error) {
 				ActivityHandling: geminiActivityHandlingStartOfActivityInterrupts,
 				TurnCoverage:     geminiTurnCoverageOnlyActivity,
 			},
-			InputAudioTranscription:  geminiAudioTranscriptionConfig{},
+			InputAudioTranscription: geminiAudioTranscriptionConfig{
+				LanguageCodes: []string{msg.Voice.Language},
+			},
 			OutputAudioTranscription: geminiAudioTranscriptionConfig{},
 		},
 	}
@@ -125,6 +133,30 @@ func buildGeminiSetup(msg *voicev1.SessionSetup, model string) ([]byte, error) {
 		)
 	}
 	return json.Marshal(setup)
+}
+
+// applySessionLanguage owns the language preference for every gateway backend.
+func applySessionLanguage(msg *voicev1.SessionSetup) error {
+	tag := msg.Voice.Language
+	if tag == "" {
+		tag = "en-US"
+	}
+	// Reject underscore-separated locale IDs and unspecified languages, not BCP 47 tags.
+	if strings.Contains(tag, "_") {
+		return fmt.Errorf("voice.language must be a BCP 47 language tag: %q", tag)
+	}
+	parsed, err := language.Parse(tag)
+	base, _, _ := parsed.Raw()
+	if err != nil || base.String() == "und" {
+		return fmt.Errorf("invalid voice.language %q", tag)
+	}
+	msg.Voice.Language = parsed.String()
+	// Native-audio Gemini does not support speechConfig.languageCode. The system
+	// instruction selects its output language; transcription has a separate hint.
+	// Checked against https://ai.google.dev/gemini-api/docs/live-api/capabilities
+	// and googleapis/go-genai 5fed9374ce1a (types.go, live.go, live_converters.go).
+	msg.Context.SystemInstruction += "\nSpeak in the selected language: " + msg.Voice.Language + "."
+	return nil
 }
 
 func buildGeminiRealtimeText(text string) ([]byte, error) {

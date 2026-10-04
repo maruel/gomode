@@ -183,6 +183,9 @@ func (s *localStackSession) acceptClientMessage(ctx context.Context, data []byte
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("decode session.setup: %w", err)
 		}
+		if err := applySessionLanguage(&msg); err != nil {
+			return err
+		}
 		s.mu.Lock()
 		s.conv = s.llm.newConversation(msg.Context.SystemInstruction, msg.Tools)
 		if msg.Context.Text != "" {

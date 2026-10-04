@@ -146,6 +146,31 @@ class SettingsRepositoryTest {
     }
 
     @Test
+    fun `voice language defaults to US English and survives repository recreation`() =
+        runBlocking {
+            val store = InMemoryPreferencesDataStore()
+            val repo = SettingsRepository(store)
+            assertEquals("en-US", repo.awaitSettings("default language").voiceLanguageTag)
+            repo.updateVoiceLanguageTag(" fr-ca ")
+            assertEquals(
+                "fr-CA",
+                repo.awaitSettings("saved language") { it.voiceLanguageTag == "fr-CA" }.voiceLanguageTag,
+            )
+            val reopened = SettingsRepository(store)
+            assertEquals(
+                "fr-CA",
+                reopened.awaitSettings("reopened language") { it.voiceLanguageTag == "fr-CA" }.voiceLanguageTag,
+            )
+        }
+
+    @Test
+    fun `voice language rejects invalid and unspecified tags`() {
+        listOf("", "und", "en_US").forEach { tag ->
+            assertTrue(runCatching { SettingsRepository.normalizeVoiceLanguageTag(tag) }.isFailure)
+        }
+    }
+
+    @Test
     fun `voice mode defaults to cloud and persists device`() =
         runBlocking {
             val repo = createRepo()

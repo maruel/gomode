@@ -52,7 +52,7 @@ internal interface DeviceSpeech {
 /** AndroidDeviceSpeech uses the on-device recognizer and text-to-speech engine. */
 internal class AndroidDeviceSpeech(
     private val context: Context,
-    private val languageTag: String = Locale.getDefault().toLanguageTag(),
+    private val languageTag: String,
 ) : DeviceSpeech {
     private val main = Handler(Looper.getMainLooper())
     private var recognizer: SpeechRecognizer? = null
@@ -60,7 +60,7 @@ internal class AndroidDeviceSpeech(
     private var recognitionGeneration = 0
     private var engine: TextToSpeech? = null
     private var engineReady = false
-    private var engineFailed = false
+    private var engineFailure: String? = null
     private val queuedSpeech = ArrayDeque<QueuedSpeech>()
     private val speechCallbacks = mutableMapOf<String, SpeechCallbacks>()
     private var utteranceCounter = 0
@@ -92,8 +92,17 @@ internal class AndroidDeviceSpeech(
             engine =
                 TextToSpeech(context) { status ->
                     if (status == TextToSpeech.SUCCESS) {
+                        val languageStatus = engine?.setLanguage(Locale.forLanguageTag(languageTag))
+                        if (languageStatus == TextToSpeech.LANG_MISSING_DATA ||
+                            languageStatus == TextToSpeech.LANG_NOT_SUPPORTED
+                        ) {
+                            val failure = "Text-to-speech language $languageTag is unavailable"
+                            Log.w(TAG, failure)
+                            engineFailure = failure
+                            failQueuedSpeech(failure)
+                            return@TextToSpeech
+                        }
                         engineReady = true
-                        engine?.language = Locale.forLanguageTag(languageTag)
                         engine?.setAudioAttributes(
                             AudioAttributes
                                 .Builder()
@@ -105,7 +114,7 @@ internal class AndroidDeviceSpeech(
                         flushQueuedSpeech()
                     } else {
                         Log.w(TAG, "Text-to-speech engine unavailable")
-                        engineFailed = true
+                        engineFailure = "Text-to-speech is unavailable"
                         failQueuedSpeech("Text-to-speech is unavailable")
                     }
                 }
@@ -202,8 +211,9 @@ internal class AndroidDeviceSpeech(
             return
         }
         main.post {
-            if (engineFailed) {
-                onError("Text-to-speech is unavailable")
+            val failure = engineFailure
+            if (failure != null) {
+                onError(failure)
                 return@post
             }
             if (!engineReady) {

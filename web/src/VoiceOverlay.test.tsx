@@ -19,6 +19,7 @@ const setVoiceActiveMock = vi.spyOn(notifications, "setVoiceActive");
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.removeItem("gomode.voiceLanguage");
   voiceSession.setState((s) => ({
     ...s,
     connected: false,
@@ -31,6 +32,7 @@ beforeEach(() => {
     activeTool: null,
     turnState: TurnStateIdle,
     transcript: [],
+    languageTag: "en-US",
   }));
 });
 
@@ -48,6 +50,35 @@ describe("VoiceOverlay status", () => {
 
     voiceSession.setState((s) => ({ ...s, speaking: false, turnState: TurnStateIdle }));
     expect(screen.getByText("Muted")).toBeInTheDocument();
+  });
+});
+
+describe("VoiceOverlay language", () => {
+  it("allows correcting the language after a failed connection", async () => {
+    voiceSession.setState((s) => ({ ...s, error: "invalid voice.language" }));
+    const user = userEvent.setup();
+    render(() => <VoiceOverlay />);
+    const input = screen.getByRole("textbox", { name: "Voice language (e.g. en-US)" });
+    await user.clear(input);
+    await user.type(input, "en-GB");
+    await user.click(screen.getByRole("button", { name: "Save language" }));
+    expect(voiceSession.state.languageTag).toBe("en-GB");
+  });
+
+  it("saves a language and rejects invalid input", async () => {
+    const user = userEvent.setup();
+    render(() => <VoiceOverlay />);
+    const input = screen.getByRole("textbox", { name: "Voice language (e.g. en-US)" });
+    await user.clear(input);
+    await user.type(input, "fr-CA");
+    await user.click(screen.getByRole("button", { name: "Save language" }));
+    expect(voiceSession.state.languageTag).toBe("fr-CA");
+    expect(localStorage.getItem("gomode.voiceLanguage")).toBe("fr-CA");
+    await user.clear(input);
+    await user.type(input, "en_US");
+    await user.click(screen.getByRole("button", { name: "Save language" }));
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    expect(voiceSession.state.languageTag).toBe("fr-CA");
   });
 });
 

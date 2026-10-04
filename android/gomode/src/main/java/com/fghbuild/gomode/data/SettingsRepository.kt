@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.util.Locale
 import java.util.UUID
 
 @Serializable
@@ -35,6 +36,8 @@ enum class VoiceMode {
     DEVICE,
 }
 
+const val DEFAULT_VOICE_LANGUAGE_TAG = "en-US"
+
 data class SettingsState(
     val activeServiceURL: String = "",
     val haloAddress: String? = null,
@@ -42,6 +45,7 @@ data class SettingsState(
     val services: List<ServiceInstance> = emptyList(),
     val activeServiceId: String = "",
     val voiceMode: VoiceMode = VoiceMode.CLOUD,
+    val voiceLanguageTag: String = DEFAULT_VOICE_LANGUAGE_TAG,
 )
 
 class SettingsRepository(
@@ -56,6 +60,7 @@ class SettingsRepository(
         val HALO_ADDRESS = stringPreferencesKey("HALO_ADDRESS")
         val HALO_AUTO_CONNECT = booleanPreferencesKey("HALO_AUTO_CONNECT")
         val VOICE_MODE = stringPreferencesKey("VOICE_MODE")
+        val VOICE_LANGUAGE_TAG = stringPreferencesKey("VOICE_LANGUAGE_TAG")
     }
 
     val settings: StateFlow<SettingsState> =
@@ -71,6 +76,7 @@ class SettingsRepository(
                     services = services,
                     activeServiceId = active?.id ?: "",
                     voiceMode = decodeVoiceMode(prefs[Keys.VOICE_MODE]),
+                    voiceLanguageTag = prefs[Keys.VOICE_LANGUAGE_TAG] ?: DEFAULT_VOICE_LANGUAGE_TAG,
                 )
             }.stateIn(scope, SharingStarted.Eagerly, SettingsState())
 
@@ -147,6 +153,11 @@ class SettingsRepository(
         }
     }
 
+    suspend fun updateVoiceLanguageTag(tag: String) {
+        val normalized = normalizeVoiceLanguageTag(tag)
+        dataStore.edit { prefs -> prefs[Keys.VOICE_LANGUAGE_TAG] = normalized }
+    }
+
     private fun decodeServices(prefs: Preferences): List<ServiceInstance> =
         prefs[Keys.SERVICES]?.let { encoded ->
             runCatching { json.decodeFromString<List<ServiceInstance>>(encoded) }.getOrNull()
@@ -159,5 +170,13 @@ class SettingsRepository(
         const val DEFAULT_SERVICE_LABEL = "Service"
 
         fun normalizeURL(url: String): String = url.trim().trimEnd('/')
+
+        fun normalizeVoiceLanguageTag(tag: String): String {
+            val locale = Locale.Builder().setLanguageTag(tag.trim()).build()
+            require(
+                locale.language.isNotEmpty() && locale.language != "und",
+            ) { "Specify a language tag, such as en-US" }
+            return locale.toLanguageTag()
+        }
     }
 }

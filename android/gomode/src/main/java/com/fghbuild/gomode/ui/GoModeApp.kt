@@ -134,7 +134,7 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
     val voiceMode = settings.voiceMode
     val voiceCallController = remember(context.applicationContext) { TelecomCallController(context.applicationContext) }
     val voiceSession: VoiceSessionController =
-        remember(settingsRepository, bearerStore, voiceMode, voiceCallController) {
+        remember(settingsRepository, bearerStore, voiceMode, settings.voiceLanguageTag, voiceCallController) {
             when (voiceMode) {
                 VoiceMode.DEVICE -> {
                     DeviceVoiceSession(
@@ -142,6 +142,7 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
                         settingsRepository,
                         settingsClient,
                         bearerTokenFor = bearerStore::tokenFor,
+                        languageTag = settings.voiceLanguageTag,
                         callController = voiceCallController,
                     )
                 }
@@ -152,6 +153,7 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
                         settingsRepository,
                         settingsClient,
                         bearerTokenFor = bearerStore::tokenFor,
+                        languageTag = settings.voiceLanguageTag,
                         callController = voiceCallController,
                     )
                 }
@@ -327,6 +329,7 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
                     onSetNativeScreen = { activeNativeScreen = it },
                     activeNativeScreen = activeNativeScreen,
                     voiceConnected = voiceState.connected,
+                    voiceSessionActive = voiceSessionActive,
                     webReloadToken = webReloadToken,
                     onWebLoadStateChanged = { webLoadState = it },
                     onHostedPageLoaded = {
@@ -425,6 +428,7 @@ private fun GoModeContent(
     activeNativeScreen: NativeScreen?,
     onSetNativeScreen: (NativeScreen?) -> Unit,
     voiceConnected: Boolean,
+    voiceSessionActive: Boolean,
     webReloadToken: Int,
     onWebLoadStateChanged: (WebShellLoadState) -> Unit,
     onHostedPageLoaded: () -> Unit,
@@ -442,6 +446,7 @@ private fun GoModeContent(
             SettingsScreen(
                 settings = settings,
                 settingsRepository = settingsRepository,
+                voiceSessionActive = voiceSessionActive,
                 onDone = { onSetNativeScreen(null) },
                 onOpenHalo = { onSetNativeScreen(NativeScreen.Halo) },
             )

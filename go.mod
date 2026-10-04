@@ -18,6 +18,7 @@ require (
 	github.com/pion/ice/v4 v4.4.2
 	github.com/pion/transport/v4 v4.1.1
 	github.com/pion/webrtc/v4 v4.2.20
+	golang.org/x/text v0.42.0
 )
 
 require (
@@ -246,7 +247,6 @@ require (
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/term v0.46.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 	golang.org/x/tools v0.50.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect

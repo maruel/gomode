@@ -212,6 +212,33 @@
 
 /* ---- Audio device picker ---- */
 
+.languageForm {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  min-width: 0;
+  font-size: 0.75rem;
+}
+
+.languageForm label {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.languageForm input {
+  width: 7rem;
+  cursor: text;
+}
+
+.languageForm [role="alert"] {
+  flex-basis: 100%;
+  color: var(--color-danger);
+}
+
 .deviceRow {
   display: flex;
   gap: 0.5rem;

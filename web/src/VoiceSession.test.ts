@@ -169,6 +169,7 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  localStorage.removeItem("gomode.voiceLanguage");
   closeRequests = [];
   offerRequests = [];
   diagnosticRequests = [];
@@ -797,9 +798,24 @@ describe("VoiceSession", () => {
     expect(setup.context.systemInstruction).toContain('only "Ready"');
     expect(setup.context.systemInstruction).toContain('"Done"');
     expect(setup.context.systemInstruction).toContain("answered completely with a number");
-    expect(setup.context.systemInstruction).toContain("first uses and stick to it");
+    expect(setup.voice.language).toBe("en-US");
     expect(setup.context.systemInstruction).toContain("service item updates");
     expect(setup.context.systemInstruction).toMatch(/\n\ninstructions$/);
+  });
+
+  it("saves a regional language and sends it to the gateway", async () => {
+    const session = new VoiceSession();
+    session.selectLanguage(" fr-ca ");
+    expect(new VoiceSession().state.languageTag).toBe("fr-CA");
+    await session.connect();
+    FakePeerConnection.dataChannels[0]?.onopen?.();
+    const sent = FakePeerConnection.dataChannels[0]?.send.mock.calls[0]?.[0];
+    expect(JSON.parse(sent as string).voice.language).toBe("fr-CA");
+    expect(() => session.selectLanguage("en-US")).toThrow("End the session");
+    session.disconnect();
+    session.selectLanguage("en-US");
+    expect(() => session.selectLanguage("en_US")).toThrow();
+    expect(session.state.languageTag).toBe("en-US");
   });
 
   it("uses the Go Mode instruction when the host has no instructions", async () => {

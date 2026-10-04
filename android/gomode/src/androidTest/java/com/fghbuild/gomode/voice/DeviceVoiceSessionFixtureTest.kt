@@ -55,6 +55,7 @@ class DeviceVoiceSessionFixtureTest {
                 DeviceVoiceSession(
                     appContext = context,
                     settingsRepository = repository,
+                    languageTag = "en-US",
                     callController = TelecomCallController(context),
                 )
             try {

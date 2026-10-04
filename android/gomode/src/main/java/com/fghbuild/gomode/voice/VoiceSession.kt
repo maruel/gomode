@@ -170,6 +170,7 @@ internal class VoiceSession(
     private val settingsRepository: SettingsRepository,
     private val settingsClient: ServiceSettingsClient = ServiceSettingsClient(),
     private val bearerTokenFor: (String) -> String? = { null },
+    private val languageTag: String,
     voiceChimePlayer: VoiceChimePlayer = AndroidVoiceChime(),
     private val callController: VoiceCallController = NoopVoiceCallController(),
 ) : VoiceSessionController {
@@ -987,7 +988,8 @@ internal class VoiceSession(
         systemInstruction: String,
         serviceContextText: String,
     ) {
-        val setup = gatewaySessionSetup(voiceToolDeclarations(mcpTools), systemInstruction, serviceContextText)
+        val setup =
+            gatewaySessionSetup(voiceToolDeclarations(mcpTools), systemInstruction, serviceContextText, languageTag)
         Log.i(TAG, "sending setup message")
         send(json.encodeToString(SessionSetup.serializer(), setup))
     }
@@ -1398,12 +1400,13 @@ internal fun gatewaySessionSetup(
     tools: List<ToolDeclaration>,
     systemInstruction: String,
     serviceContextText: String,
+    languageTag: String,
 ) = SessionSetup(
     kind = MessageKind.SessionSetup,
     voice =
         VoiceConfig(
             name = "Orus",
-            language = "en",
+            language = languageTag,
         ),
     tools = tools,
     context =
@@ -1423,7 +1426,7 @@ private const val GO_MODE_SYSTEM_INSTRUCTION =
         "Do not ask a follow-up or confirmation unless missing information makes the request impossible or " +
         "safety-critical. Ask only for information required to proceed. Once enough information is available, " +
         "perform the request without asking for confirmation. Do not volunteer ideas, next steps, related actions, " +
-        "or offers. Match the language the user first uses and stick to it. Use the service MCP tools whenever " +
+        "or offers. Use the service MCP tools whenever " +
         "they are useful after the user asks. Other than the initial greeting, do not speak or invoke tools until " +
         "the user asks. " +
         "When notified of service item updates, do not verbally acknowledge or confirm receipt. Stay silent unless " +

@@ -86,6 +86,7 @@ class VoiceSessionTest {
                 tools = emptyList(),
                 systemInstruction = "system prompt",
                 serviceContextText = "Current service items:\n- Build (running)",
+                languageTag = "en-US",
             )
         val instruction = requireNotNull(setup.context.systemInstruction)
 
@@ -93,7 +94,7 @@ class VoiceSessionTest {
         assertTrue(instruction.contains("only \"Ready\""))
         assertTrue(instruction.contains("\"Done\""))
         assertTrue(instruction.contains("answered completely with a number"))
-        assertTrue(instruction.contains("first uses and stick to it"))
+        assertEquals("en-US", setup.voice.language)
         assertTrue(instruction.contains("service item updates"))
         assertEquals("Current service items:\n- Build (running)", setup.context.text)
     }
@@ -105,11 +106,18 @@ class VoiceSessionTest {
                 tools = emptyList(),
                 systemInstruction = "",
                 serviceContextText = "",
+                languageTag = "en-US",
             )
         val instruction = requireNotNull(setup.context.systemInstruction)
 
         assertTrue(instruction.isNotBlank())
         assertFalse(instruction.contains("\n\n"))
+    }
+
+    @Test
+    fun sessionSetupSendsSelectedLanguage() {
+        val setup = gatewaySessionSetup(emptyList(), "", "", "fr-CA")
+        assertEquals("fr-CA", setup.voice.language)
     }
 
     @Test

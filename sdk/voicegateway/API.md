@@ -313,7 +313,11 @@ VoiceConfig describes provider-neutral voice preferences.
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
 | `name` | `string` | Name is the requested provider-specific voice name. | yes |
-| `language` | `string` | Language is the requested BCP 47 language tag, such as "en" or "fr-CA". | yes |
+| `language` | `string` | Language is the requested BCP 47 language tag, such as "en-US" or "fr-CA".
+Empty defaults to "en-US". Invalid tags fail session setup. The gateway
+instructs the assistant to use this language and supplies recognition hints
+where supported. Speech models determine available languages and accents;
+local server ASR/TTS adapters do not expose per-session language controls. | yes |
 
 ### ToolDeclaration
 

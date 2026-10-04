@@ -72,7 +72,8 @@ internal class DeviceVoiceSession(
     private val settingsRepository: SettingsRepository,
     private val settingsClient: ServiceSettingsClient = ServiceSettingsClient(),
     private val bearerTokenFor: (String) -> String? = { null },
-    private val speech: DeviceSpeech = AndroidDeviceSpeech(appContext),
+    private val languageTag: String,
+    private val speech: DeviceSpeech = AndroidDeviceSpeech(appContext, languageTag),
     voiceChimePlayer: VoiceChimePlayer = AndroidVoiceChime(),
     private val callController: VoiceCallController = NoopVoiceCallController(),
     private val setupProvider: suspend () -> VoiceSetup = {
@@ -192,6 +193,7 @@ internal class DeviceVoiceSession(
                                     voiceToolDeclarations(mcpTools),
                                     setup.systemInstruction,
                                     setup.serviceContextText,
+                                    languageTag,
                                 ),
                             ),
                         )

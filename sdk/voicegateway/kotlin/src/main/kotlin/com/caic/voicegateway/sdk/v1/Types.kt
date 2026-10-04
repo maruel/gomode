@@ -703,7 +703,13 @@ data class MessageEnvelope(
 data class VoiceConfig(
     /** Name is the requested provider-specific voice name. */
     val name: String,
-    /** Language is the requested BCP 47 language tag, such as "en" or "fr-CA". */
+    /**
+     * Language is the requested BCP 47 language tag, such as "en-US" or "fr-CA".
+     * Empty defaults to "en-US". Invalid tags fail session setup. The gateway
+     * instructs the assistant to use this language and supplies recognition hints
+     * where supported. Speech models determine available languages and accents;
+     * local server ASR/TTS adapters do not expose per-session language controls.
+     */
     val language: String,
 )
 

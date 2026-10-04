@@ -72,6 +72,8 @@ export interface VoiceOverlayMessages {
   transcriptPlaceholder: string;
   unmute: string;
   voiceAssistant: string;
+  voiceLanguage?: string;
+  saveLanguage?: string;
   waitingForServer: string;
   settingUpWebRTC: string;
   you: string;
@@ -100,6 +102,8 @@ export const defaultVoiceOverlayMessages: VoiceOverlayMessages = {
   transcriptPlaceholder: "Transcript will appear here…",
   unmute: "Unmute",
   voiceAssistant: "Voice assistant",
+  voiceLanguage: "Voice language (e.g. en-US)",
+  saveLanguage: "Save language",
   waitingForServer: "Waiting for server…",
   settingUpWebRTC: "Setting up WebRTC…",
   you: "You:",
@@ -232,6 +236,7 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
           {/* Idle state: mic button right-aligned */}
           <Show when={!isActive()}>
             <div class={styles.rowEnd}>
+              <VoiceLanguageSetting messages={messages} />
               <button
                 type="button"
                 class={styles.micButton}
@@ -244,6 +249,9 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
             </div>
           </Show>
 
+          <Show when={session.state.error !== null && !session.state.connected && session.state.connectStatus === null}>
+            <VoiceLanguageSetting messages={messages} />
+          </Show>
           <Show when={session.state.error !== null && session.state.error} keyed>
             {(err) => (
               <ErrorPanel
@@ -292,6 +300,45 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
         </div>
       </div>
     </>
+  );
+}
+
+function VoiceLanguageSetting(props: { messages: Accessor<VoiceOverlayMessages> }) {
+  const [tag, setTag] = createSignal(voiceSession.state.languageTag);
+  const [error, setError] = createSignal<string | null>(null);
+  return (
+    <form
+      class={styles.languageForm}
+      onSubmit={(event) => {
+        event.preventDefault();
+        try {
+          voiceSession.selectLanguage(tag());
+          setTag(voiceSession.state.languageTag);
+          setError(null);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      }}
+    >
+      <label>
+        {props.messages().voiceLanguage ?? defaultVoiceOverlayMessages.voiceLanguage}
+        <input
+          class={styles.deviceSelect}
+          value={tag()}
+          onInput={(event) => {
+            setTag(event.currentTarget.value);
+            setError(null);
+          }}
+          aria-invalid={error() !== null}
+          spellcheck={false}
+          autocapitalize="none"
+        />
+      </label>
+      <button type="submit" class={styles.actionButton} disabled={tag() === voiceSession.state.languageTag}>
+        {props.messages().saveLanguage ?? defaultVoiceOverlayMessages.saveLanguage}
+      </button>
+      <Show when={error()}>{(message) => <span role="alert">{message()}</span>}</Show>
+    </form>
   );
 }
 

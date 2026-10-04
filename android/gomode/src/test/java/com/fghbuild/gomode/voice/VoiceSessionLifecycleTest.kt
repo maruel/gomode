@@ -64,7 +64,7 @@ class VoiceSessionLifecycleTest {
                 val settings = SettingsRepository(InMemoryPreferencesDataStore())
                 settings.addService(label = "old", url = server.url("/").toString())
                 settings.settings.first { it.activeServiceURL.isNotBlank() }
-                val session = VoiceSession(RuntimeEnvironment.getApplication(), settings)
+                val session = VoiceSession(RuntimeEnvironment.getApplication(), settings, languageTag = "en-US")
 
                 session.connect()
                 assertEquals(true, discoveryStarted.await(5, TimeUnit.SECONDS))
@@ -97,7 +97,7 @@ class VoiceSessionLifecycleTest {
                 val settings = SettingsRepository(InMemoryPreferencesDataStore())
                 settings.addService(label = "old", url = oldServer.url("/").toString())
                 settings.settings.first { it.activeServiceURL == oldServer.url("/").toString().trimEnd('/') }
-                val session = VoiceSession(RuntimeEnvironment.getApplication(), settings)
+                val session = VoiceSession(RuntimeEnvironment.getApplication(), settings, languageTag = "en-US")
                 session.connect()
                 assertEquals(true, oldStarted.await(5, TimeUnit.SECONDS))
 
@@ -140,7 +140,7 @@ class VoiceSessionLifecycleTest {
                 server.start()
                 try {
                     val settings = SettingsRepository(InMemoryPreferencesDataStore())
-                    val session = VoiceSession(RuntimeEnvironment.getApplication(), settings)
+                    val session = VoiceSession(RuntimeEnvironment.getApplication(), settings, languageTag = "en-US")
                     val oldChannel = RecordingDataChannel()
                     val newChannel = RecordingDataChannel()
                     val client = McpClient(server.url("/mcp").toString(), "2026-07-28", { null })
@@ -198,7 +198,7 @@ class VoiceSessionLifecycleTest {
                         credentials::bearerForRequest,
                     )
                 val settings = SettingsRepository(InMemoryPreferencesDataStore())
-                val session = VoiceSession(RuntimeEnvironment.getApplication(), settings)
+                val session = VoiceSession(RuntimeEnvironment.getApplication(), settings, languageTag = "en-US")
                 val channel = RecordingDataChannel()
                 VoiceSession::class.java.getDeclaredField("dataChannel").apply {
                     isAccessible = true

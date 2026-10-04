@@ -80,6 +80,25 @@ class DeviceVoiceSessionTest {
     }
 
     @Test
+    fun `device session sends the selected speech language`() {
+        val socket = FakeWebSocket()
+        var listener: WebSocketListener? = null
+        val session =
+            createSession(FakeSpeech(), languageTag = "fr-CA") { _, captured ->
+                listener = captured
+                socket
+            }
+        session.connect()
+        requireNotNull(listener).onOpen(socket, upgradeResponse())
+        val setup =
+            kotlinx.serialization.json.Json.decodeFromString<com.caic.voicegateway.sdk.v1.SessionSetup>(
+                socket.sent.single(),
+            )
+        assertEquals("fr-CA", setup.voice.language)
+        session.close()
+    }
+
+    @Test
     fun `mute stops listening until unmuted`() {
         val speech = FakeSpeech()
         val socket = FakeWebSocket()
@@ -249,12 +268,14 @@ class DeviceVoiceSessionTest {
     private fun createSession(
         speech: DeviceSpeech,
         calls: VoiceCallController = NoopVoiceCallController(),
+        languageTag: String = "en-US",
         factory: (Request, WebSocketListener) -> WebSocket,
     ): DeviceVoiceSession =
         DeviceVoiceSession(
             appContext = RuntimeEnvironment.getApplication(),
             settingsRepository = SettingsRepository(InMemoryPreferencesDataStore()),
             speech = speech,
+            languageTag = languageTag,
             voiceChimePlayer = NoopChime(),
             callController = calls,
             setupProvider = { testSetup() },

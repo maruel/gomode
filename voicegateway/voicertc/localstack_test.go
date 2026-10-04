@@ -71,6 +71,35 @@ func TestEnergyVAD(t *testing.T) {
 	})
 }
 
+func TestLocalStackSessionLanguage(t *testing.T) {
+	t.Parallel()
+	backend := newLocalStackBackend(
+		func() vadSegmenter { return &energyVAD{} },
+		placeholderASR{}, &genaiLLMAdapter{provider: &fakeGenAIProvider{}}, placeholderTTS{},
+	)
+	sess := backend.newSession(t.Context(), "language", &captureSink{}, true)
+	t.Cleanup(func() { _ = sess.close() })
+	setup := mustJSON(t, voicev1.SessionSetup{
+		Kind:    voicev1.MessageKindSessionSetup,
+		Voice:   voicev1.VoiceConfig{Language: "fr-CA"},
+		Context: voicev1.Context{SystemInstruction: "Answer briefly."},
+	})
+	if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
+		t.Fatal(err)
+	}
+	conv := sess.conv.(*genaiConversation)
+	if !strings.Contains(conv.systemInstruction, "selected language: fr-CA") {
+		t.Fatalf("instruction = %q, want selected language", conv.systemInstruction)
+	}
+	invalid := mustJSON(t, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup, Voice: voicev1.VoiceConfig{Language: "en_US"}})
+	if err := sess.acceptClientMessage(t.Context(), invalid); err == nil {
+		t.Fatal("expected invalid language error")
+	}
+	if sess.conv != conv {
+		t.Fatal("invalid setup replaced the conversation")
+	}
+}
+
 func TestLocalStackSession(t *testing.T) {
 	t.Parallel()
 

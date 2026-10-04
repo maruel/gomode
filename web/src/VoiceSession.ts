@@ -58,7 +58,6 @@ const GO_MODE_SYSTEM_INSTRUCTION =
   "Ask only for information required to proceed. Once enough information is available, perform the request without " +
   "asking for confirmation. " +
   "Do not volunteer ideas, next steps, related actions, or offers. " +
-  "Match the language the user first uses and stick to it. " +
   "Use the service MCP tools whenever they are useful after the user asks. Other than the initial greeting, do not " +
   "speak or invoke tools until the user asks. When notified of service item updates, do not verbally acknowledge " +
   "or confirm receipt. Stay silent unless host instructions require a service-specific notification or the user " +
@@ -265,6 +264,29 @@ export interface VoiceState {
   selectedInputId: string;
   /** Currently selected output device ID, empty string for system default. */
   selectedOutputId: string;
+  /** Saved BCP 47 speech language, independent of the browser locale. */
+  languageTag: string;
+}
+
+const DEFAULT_VOICE_LANGUAGE = "en-US";
+
+/** Validate a BCP 47 language tag and preserve its regional variant. */
+export function normalizeVoiceLanguage(tag: string): string {
+  const normalized = Intl.getCanonicalLocales(tag.trim())[0];
+  if (!normalized || normalized === "und" || normalized.startsWith("und-")) {
+    throw new Error("Specify a language tag, such as en-US");
+  }
+  return normalized;
+}
+
+function savedVoiceLanguage(): string {
+  try {
+    const saved = localStorage.getItem("gomode.voiceLanguage");
+    return saved === null ? DEFAULT_VOICE_LANGUAGE : normalizeVoiceLanguage(saved);
+  } catch (err) {
+    console.warn("Could not load voice language; using en-US", err);
+    return DEFAULT_VOICE_LANGUAGE;
+  }
 }
 
 // VoiceSession
@@ -315,6 +337,7 @@ export class VoiceSession {
       audioOutputs: [],
       selectedInputId: "",
       selectedOutputId: "",
+      languageTag: savedVoiceLanguage(),
     });
     this.state = state;
     this.setState = setState as (fn: (s: VoiceState) => VoiceState) => void;
@@ -324,6 +347,15 @@ export class VoiceSession {
   // -----------------------------------------------------------------------
   // Public API
   // -----------------------------------------------------------------------
+
+  /** Save the language for the next session. An active session keeps its language. */
+  selectLanguage(tag: string): void {
+    if (this.state.connected || this.state.connectStatus !== null)
+      throw new Error("End the session before changing language");
+    const normalized = normalizeVoiceLanguage(tag);
+    localStorage.setItem("gomode.voiceLanguage", normalized);
+    this.setState((s) => ({ ...s, languageTag: normalized }));
+  }
 
   /** Enumerate available audio devices and auto-select defaults. Call before connect(). */
   async enumerateDevices(): Promise<void> {
@@ -843,7 +875,12 @@ export class VoiceSession {
   // -----------------------------------------------------------------------
 
   private _sendSetup(tools: McpToolDescriptor[], systemInstruction: string, serviceContext: string): void {
-    const setup = gatewaySessionSetup(voiceToolDeclarations(tools), systemInstruction, serviceContext);
+    const setup = gatewaySessionSetup(
+      voiceToolDeclarations(tools),
+      systemInstruction,
+      serviceContext,
+      this.state.languageTag,
+    );
     this._send(JSON.stringify(setup));
   }
 
@@ -1191,12 +1228,13 @@ function gatewaySessionSetup(
   tools: SessionSetup["tools"],
   systemInstruction: string,
   serviceContext: string,
+  languageTag: string,
 ): SessionSetup {
   return {
     kind: MessageKindSessionSetup,
     voice: {
       name: "Orus",
-      language: "en",
+      language: languageTag,
     },
     tools,
     context: {
