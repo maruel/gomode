@@ -1,4 +1,4 @@
-// OAuth durable authorization, signing-key, token-family, and replay state storage.
+// OAuth durable authorization state, disk conversions, and atomic persistence.
 
 package oauthserver
 
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/maruel/gomode/oauth"
+	v5 "github.com/maruel/gomode/oauth/oauthserver/data/v5"
 )
 
 // storeVersion is the on-disk schema version. Codes and Consents are keyed by
@@ -26,12 +27,6 @@ const storeVersion = 5
 // Rotation fails at capacity instead of evicting an unexpired verification key
 // and invalidating otherwise-valid access tokens.
 const maxAccessTokenSigningKeys = 20
-
-type storedSigningKey struct {
-	KID           string    `json:"kid"`
-	PrivateKeyPEM string    `json:"privateKeyPEM"`
-	VerifyUntil   time.Time `json:"verifyUntil,omitzero"`
-}
 
 // ClientProvenance records how the authorization server established a client identity.
 type ClientProvenance string
@@ -72,80 +67,31 @@ func claimStore(path string) (func(), error) {
 
 // Client is an OAuth client established by dynamic registration or verified metadata.
 type Client struct {
-	ID                      string           `json:"id"`
-	Name                    string           `json:"name"`
-	RedirectURIs            []string         `json:"redirectURIs"`
-	TokenEndpointAuthMethod string           `json:"tokenEndpointAuthMethod"`
-	GrantTypes              []string         `json:"grantTypes,omitempty"`
-	CreatedAt               time.Time        `json:"createdAt"`
-	Provenance              ClientProvenance `json:"provenance,omitempty"`
-	JWKS                    []oauth.JWK      `json:"-"`
-	JWKSURI                 string           `json:"-"`
-}
-
-// Code is an issued authorization code with PKCE binding.
-type Code struct {
-	UserID        string    `json:"userID"`
-	ClientID      string    `json:"clientID"`
-	RedirectURI   string    `json:"redirectURI"`
-	CodeChallenge string    `json:"codeChallenge"`
-	Resource      string    `json:"resource"`
-	Scope         string    `json:"scope"`
-	ExpiresAt     time.Time `json:"expiresAt"`
-}
-
-// ConsentParams holds in-progress OAuth authorization consent state.
-type ConsentParams struct {
-	UserID    string            `json:"userID"`
-	Params    map[string]string `json:"params"`
-	ExpiresAt time.Time         `json:"expiresAt"`
-}
-
-// RefreshToken is an opaque refresh token persisted by hash.
-type RefreshToken struct {
-	GrantID   string    `json:"grantID"`
-	UserID    string    `json:"userID"`
-	ClientID  string    `json:"clientID"`
-	Resource  string    `json:"resource"`
-	Scope     string    `json:"scope"`
-	DPoPJKT   string    `json:"dpopJKT,omitempty"`
-	ExpiresAt time.Time `json:"expiresAt"`
-	UsedAt    time.Time `json:"usedAt,omitzero"`
-	RevokedAt time.Time `json:"revokedAt,omitzero"`
+	ID                      string
+	Name                    string
+	RedirectURIs            []string
+	TokenEndpointAuthMethod string
+	GrantTypes              []string
+	CreatedAt               time.Time
+	Provenance              ClientProvenance
+	JWKS                    []oauth.JWK
+	JWKSURI                 string
 }
 
 // DeviceCode holds an in-progress device authorization flow (RFC 8628).
 type DeviceCode struct {
-	DeviceCode  string    `json:"-"`
-	UserCode    string    `json:"-"`
-	UserCodeKey string    `json:"userCodeKey,omitempty"`
-	ClientID    string    `json:"clientID"`
-	Scope       string    `json:"scope"`
-	UserID      string    `json:"userID,omitempty"`
-	Status      string    `json:"status"`
-	ExpiresAt   time.Time `json:"expiresAt"`
-	IssuedAt    time.Time `json:"issuedAt"`
+	DeviceCode  string
+	UserCode    string
+	UserCodeKey string
+	ClientID    string
+	Scope       string
+	UserID      string
+	Status      string
+	ExpiresAt   time.Time
+	IssuedAt    time.Time
 }
 
-// UnmarshalJSON migrates legacy plaintext user codes to digest-only storage.
-func (d *DeviceCode) UnmarshalJSON(data []byte) error {
-	type deviceCode DeviceCode
-	var value struct {
-		deviceCode
-
-		LegacyUserCode string `json:"userCode"`
-	}
-	if err := json.Unmarshal(data, &value); err != nil {
-		return err
-	}
-	*d = DeviceCode(value.deviceCode)
-	if d.UserCodeKey == "" && value.LegacyUserCode != "" {
-		d.UserCodeKey = oauth.RefreshTokenKey(value.LegacyUserCode)
-	}
-	return nil
-}
-
-// Grant ties a user authorization grant to a client and token.
+// Grant describes a user authorization returned by ListUserGrants.
 type Grant struct {
 	ID         string    `json:"id"`
 	UserID     string    `json:"userID"`
@@ -161,17 +107,17 @@ type Grant struct {
 
 // Store holds durable OAuth clients, refresh tokens, grants, authorization codes, and consents.
 type Store struct {
-	Clients             map[string]Client        `json:"clients,omitempty"`
-	RefreshTokens       map[string]RefreshToken  `json:"refreshTokens,omitempty"`
-	Grants              map[string]Grant         `json:"grants,omitempty"`
-	Codes               map[string]Code          `json:"codes,omitempty"`
-	Consents            map[string]ConsentParams `json:"consents,omitempty"`
-	DeviceCodes         map[string]*DeviceCode   `json:"deviceCodes,omitempty"`
-	DPoPProofs          map[string]time.Time     `json:"dpopProofs,omitempty"`
-	DPoPNonces          map[string]time.Time     `json:"dpopNonces,omitempty"`
-	ClientAssertionJTIs map[string]time.Time     `json:"clientAssertionJTIs,omitempty"`
+	Clients             map[string]Client
+	RefreshTokens       map[string]v5.RefreshToken
+	Grants              map[string]v5.Grant
+	Codes               map[string]v5.Code
+	Consents            map[string]v5.ConsentParams
+	DeviceCodes         map[string]*DeviceCode
+	DPoPProofs          map[string]time.Time
+	DPoPNonces          map[string]time.Time
+	ClientAssertionJTIs map[string]time.Time
 
-	accessTokenSigningKeys []storedSigningKey
+	accessTokenSigningKeys []v5.SigningKey
 	currentSigningKID      string
 
 	path string
@@ -184,7 +130,8 @@ func newEmptyStore(path string) *Store {
 	return store
 }
 
-// LoadStore loads durable OAuth state from path.
+// LoadStore loads durable OAuth state from path. Existing files must use version 5,
+// the format used by caic v0.13.2; missing files start an empty store.
 func LoadStore(path string) (*Store, error) {
 	store := newEmptyStore(path)
 	if path == "" {
@@ -197,11 +144,11 @@ func LoadStore(path string) (*Store, error) {
 		}
 		return nil, fmt.Errorf("read oauth state: %w", err)
 	}
-	var file storeFile
+	var file v5.Store
 	if err := json.Unmarshal(data, &file); err != nil {
 		return nil, fmt.Errorf("parse oauth state: %w", err)
 	}
-	if file.Version > storeVersion {
+	if file.Version != storeVersion {
 		return nil, fmt.Errorf("parse oauth state: unsupported version %d", file.Version)
 	}
 	if len(file.AccessTokenSigningKeys) > 0 {
@@ -213,12 +160,12 @@ func LoadStore(path string) (*Store, error) {
 			return nil, errors.New("oauth state containing signing keys must not be accessible by group or others")
 		}
 	}
-	store.Clients = file.Clients
+	store.Clients = loadClients(file.Clients)
 	store.RefreshTokens = file.RefreshTokens
 	store.Grants = file.Grants
 	store.Codes = file.Codes
 	store.Consents = file.Consents
-	store.DeviceCodes = file.DeviceCodes
+	store.DeviceCodes = loadDeviceCodes(file.DeviceCodes)
 	store.DPoPProofs = file.DPoPProofs
 	store.DPoPNonces = file.DPoPNonces
 	store.ClientAssertionJTIs = file.ClientAssertionJTIs
@@ -237,11 +184,12 @@ func (s *Store) Save() error {
 	return err
 }
 
-func persistStore(s *Store, file *storeFile) (bool, error) {
+func persistStore(s *Store, file *storeState) (bool, error) {
 	if s.path == "" {
 		return true, nil
 	}
-	data, err := json.MarshalIndent(file, "", "  ")
+	disk := file.disk()
+	data, err := json.MarshalIndent(&disk, "", "  ")
 	if err != nil {
 		return false, fmt.Errorf("marshal oauth state: %w", err)
 	}
@@ -302,7 +250,7 @@ func (s *Store) ListUserGrants(userID string) []Grant {
 	for id := range s.Grants {
 		grant := s.Grants[id]
 		if grant.UserID == userID {
-			grants = append(grants, grant)
+			grants = append(grants, Grant(grant))
 		}
 	}
 	slices.SortFunc(grants, func(a, b Grant) int {
@@ -316,11 +264,11 @@ func (s *Store) ListUserGrants(userID string) []Grant {
 
 // RevokeUserGrant revokes one user's grant and all refresh tokens for it.
 func (s *Store) RevokeUserGrant(userID, grantID string, now time.Time) bool {
-	file := storeFile{Grants: s.Grants, RefreshTokens: s.RefreshTokens}
+	file := storeState{Grants: s.Grants, RefreshTokens: s.RefreshTokens}
 	return revokeUserGrant(&file, userID, grantID, now)
 }
 
-func containResourceState(file *storeFile, resourceURL string, now time.Time) bool {
+func containResourceState(file *storeState, resourceURL string, now time.Time) bool {
 	changed := false
 	for key, code := range file.Codes {
 		if code.Resource != resourceURL {
@@ -361,7 +309,7 @@ func containResourceState(file *storeFile, resourceURL string, now time.Time) bo
 	return changed
 }
 
-func revokeUserGrant(file *storeFile, userID, grantID string, now time.Time) bool {
+func revokeUserGrant(file *storeState, userID, grantID string, now time.Time) bool {
 	grant, ok := file.Grants[grantID]
 	if !ok || grant.UserID != userID {
 		return false
@@ -370,7 +318,7 @@ func revokeUserGrant(file *storeFile, userID, grantID string, now time.Time) boo
 	return true
 }
 
-func revokeGrant(file *storeFile, grantID string, now time.Time) bool {
+func revokeGrant(file *storeState, grantID string, now time.Time) bool {
 	changed := false
 	grant, ok := file.Grants[grantID]
 	if ok && grant.RevokedAt.IsZero() {
@@ -392,16 +340,16 @@ func revokeGrant(file *storeFile, grantID string, now time.Time) bool {
 // RevokeAllUserGrants revokes all grants and refresh tokens for a user.
 // Returns true if any grants were revoked.
 func (s *Store) RevokeAllUserGrants(userID string, now time.Time) bool {
-	file := storeFile{Grants: s.Grants, RefreshTokens: s.RefreshTokens}
+	file := storeState{Grants: s.Grants, RefreshTokens: s.RefreshTokens}
 	return revokeAllUserGrants(&file, userID, now)
 }
 
-func revokeAllUserGrants(file *storeFile, userID string, now time.Time) bool {
+func revokeAllUserGrants(file *storeState, userID string, now time.Time) bool {
 	changed := false
 	for id := range file.Grants {
 		grant := file.Grants[id]
 		if grant.UserID == userID && grant.RevokedAt.IsZero() {
-			file.Grants[id] = Grant{
+			file.Grants[id] = v5.Grant{
 				ID:         grant.ID,
 				UserID:     grant.UserID,
 				ClientID:   grant.ClientID,
@@ -422,7 +370,7 @@ func revokeAllUserGrants(file *storeFile, userID string, now time.Time) bool {
 	for tokenHash := range file.RefreshTokens {
 		token := file.RefreshTokens[tokenHash]
 		if token.UserID == userID && token.RevokedAt.IsZero() {
-			file.RefreshTokens[tokenHash] = RefreshToken{
+			file.RefreshTokens[tokenHash] = v5.RefreshToken{
 				GrantID:   token.GrantID,
 				UserID:    token.UserID,
 				ClientID:  token.ClientID,
@@ -443,7 +391,7 @@ func (s *Store) PruneExpiredRefreshTokens(now time.Time) bool {
 	return s.pruneExpired(now)
 }
 
-func (s *Store) transact(update func(*storeFile) bool) error {
+func (s *Store) transact(update func(*storeState) bool) error {
 	next := s.snapshot()
 	if !update(&next) {
 		return nil
@@ -455,9 +403,8 @@ func (s *Store) transact(update func(*storeFile) bool) error {
 	return err
 }
 
-func (s *Store) snapshot() storeFile {
-	return storeFile{
-		Version:                storeVersion,
+func (s *Store) snapshot() storeState {
+	return storeState{
 		Clients:                cloneMap(s.Clients),
 		RefreshTokens:          cloneMap(s.RefreshTokens),
 		Grants:                 cloneMap(s.Grants),
@@ -472,7 +419,7 @@ func (s *Store) snapshot() storeFile {
 	}
 }
 
-func (s *Store) install(file *storeFile) {
+func (s *Store) install(file *storeState) {
 	s.Clients = file.Clients
 	s.RefreshTokens = file.RefreshTokens
 	s.Grants = file.Grants
@@ -492,8 +439,8 @@ func cloneMap[K comparable, V any](src map[K]V) map[K]V {
 	return dst
 }
 
-func cloneConsents(src map[string]ConsentParams) map[string]ConsentParams {
-	dst := make(map[string]ConsentParams, len(src))
+func cloneConsents(src map[string]v5.ConsentParams) map[string]v5.ConsentParams {
+	dst := make(map[string]v5.ConsentParams, len(src))
 	for key, value := range src {
 		value.Params = cloneMap(value.Params)
 		dst[key] = value
@@ -519,16 +466,16 @@ func (s *Store) ensureMaps() {
 		s.Clients = map[string]Client{}
 	}
 	if s.RefreshTokens == nil {
-		s.RefreshTokens = map[string]RefreshToken{}
+		s.RefreshTokens = map[string]v5.RefreshToken{}
 	}
 	if s.Grants == nil {
-		s.Grants = map[string]Grant{}
+		s.Grants = map[string]v5.Grant{}
 	}
 	if s.Codes == nil {
-		s.Codes = map[string]Code{}
+		s.Codes = map[string]v5.Code{}
 	}
 	if s.Consents == nil {
-		s.Consents = map[string]ConsentParams{}
+		s.Consents = map[string]v5.ConsentParams{}
 	}
 	if s.DeviceCodes == nil {
 		s.DeviceCodes = map[string]*DeviceCode{}
@@ -545,7 +492,7 @@ func (s *Store) ensureMaps() {
 }
 
 func (s *Store) pruneExpired(now time.Time) bool {
-	file := storeFile{RefreshTokens: s.RefreshTokens, Grants: s.Grants, Codes: s.Codes, Consents: s.Consents, DeviceCodes: s.DeviceCodes, DPoPProofs: s.DPoPProofs, DPoPNonces: s.DPoPNonces, ClientAssertionJTIs: s.ClientAssertionJTIs}
+	file := storeState{RefreshTokens: s.RefreshTokens, Grants: s.Grants, Codes: s.Codes, Consents: s.Consents, DeviceCodes: s.DeviceCodes, DPoPProofs: s.DPoPProofs, DPoPNonces: s.DPoPNonces, ClientAssertionJTIs: s.ClientAssertionJTIs}
 	return pruneExpiredStore(&file, now)
 }
 
@@ -574,22 +521,21 @@ func (osStoreIO) Rename(oldPath, newPath string) error {
 	return os.Rename(oldPath, newPath)
 }
 
-type storeFile struct {
-	Version                int                      `json:"version"`
-	Clients                map[string]Client        `json:"clients,omitempty"`
-	RefreshTokens          map[string]RefreshToken  `json:"refreshTokens,omitempty"`
-	Grants                 map[string]Grant         `json:"grants,omitempty"`
-	Codes                  map[string]Code          `json:"codes,omitempty"`
-	Consents               map[string]ConsentParams `json:"consents,omitempty"`
-	DeviceCodes            map[string]*DeviceCode   `json:"deviceCodes,omitempty"`
-	DPoPProofs             map[string]time.Time     `json:"dpopProofs,omitempty"`
-	DPoPNonces             map[string]time.Time     `json:"dpopNonces,omitempty"`
-	ClientAssertionJTIs    map[string]time.Time     `json:"clientAssertionJTIs,omitempty"`
-	AccessTokenSigningKeys []storedSigningKey       `json:"accessTokenSigningKeys,omitempty"`
-	CurrentSigningKID      string                   `json:"currentSigningKID,omitempty"`
+type storeState struct {
+	Clients                map[string]Client
+	RefreshTokens          map[string]v5.RefreshToken
+	Grants                 map[string]v5.Grant
+	Codes                  map[string]v5.Code
+	Consents               map[string]v5.ConsentParams
+	DeviceCodes            map[string]*DeviceCode
+	DPoPProofs             map[string]time.Time
+	DPoPNonces             map[string]time.Time
+	ClientAssertionJTIs    map[string]time.Time
+	AccessTokenSigningKeys []v5.SigningKey
+	CurrentSigningKID      string
 }
 
-func pruneExpiredStore(file *storeFile, now time.Time) bool {
+func pruneExpiredStore(file *storeState, now time.Time) bool {
 	changed := false
 	for token := range file.RefreshTokens {
 		entry := file.RefreshTokens[token]
@@ -642,4 +588,40 @@ func pruneExpiredStore(file *storeFile, now time.Time) bool {
 		}
 	}
 	return changed
+}
+
+func (s *storeState) disk() v5.Store {
+	clients := make(map[string]v5.Client, len(s.Clients))
+	for id, c := range s.Clients {
+		clients[id] = v5.Client{ID: c.ID, Name: c.Name, RedirectURIs: c.RedirectURIs, TokenEndpointAuthMethod: c.TokenEndpointAuthMethod, GrantTypes: c.GrantTypes, CreatedAt: c.CreatedAt, Provenance: v5.ClientProvenance(c.Provenance)}
+	}
+	devices := make(map[string]*v5.DeviceCode, len(s.DeviceCodes))
+	for key, d := range s.DeviceCodes {
+		if d == nil {
+			devices[key] = nil
+			continue
+		}
+		devices[key] = &v5.DeviceCode{UserCodeKey: d.UserCodeKey, ClientID: d.ClientID, Scope: d.Scope, UserID: d.UserID, Status: d.Status, ExpiresAt: d.ExpiresAt, IssuedAt: d.IssuedAt}
+	}
+	return v5.Store{Version: storeVersion, Clients: clients, RefreshTokens: s.RefreshTokens, Grants: s.Grants, Codes: s.Codes, Consents: s.Consents, DeviceCodes: devices, DPoPProofs: s.DPoPProofs, DPoPNonces: s.DPoPNonces, ClientAssertionJTIs: s.ClientAssertionJTIs, AccessTokenSigningKeys: s.AccessTokenSigningKeys, CurrentSigningKID: s.CurrentSigningKID}
+}
+
+func loadClients(src map[string]v5.Client) map[string]Client {
+	dst := make(map[string]Client, len(src))
+	for id, c := range src {
+		dst[id] = Client{ID: c.ID, Name: c.Name, RedirectURIs: c.RedirectURIs, TokenEndpointAuthMethod: c.TokenEndpointAuthMethod, GrantTypes: c.GrantTypes, CreatedAt: c.CreatedAt, Provenance: ClientProvenance(c.Provenance)}
+	}
+	return dst
+}
+
+func loadDeviceCodes(src map[string]*v5.DeviceCode) map[string]*DeviceCode {
+	dst := make(map[string]*DeviceCode, len(src))
+	for key, d := range src {
+		if d == nil {
+			dst[key] = nil
+			continue
+		}
+		dst[key] = &DeviceCode{UserCodeKey: d.UserCodeKey, ClientID: d.ClientID, Scope: d.Scope, UserID: d.UserID, Status: d.Status, ExpiresAt: d.ExpiresAt, IssuedAt: d.IssuedAt}
+	}
+	return dst
 }

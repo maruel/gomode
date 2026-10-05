@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	activitydata "github.com/maruel/gomode/voicegateway/voicertc/data"
+
 	"github.com/pion/ice/v4"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
@@ -265,7 +267,7 @@ func (b *Bridge) HandleOffer(ctx context.Context, sdpOffer string) (sdpAnswer, s
 			if backendSession == nil {
 				return
 			}
-			if err := sess.activityLog.record(activityLogSourceClient, msg.Data); err != nil {
+			if err := sess.activityLog.record(activitydata.SourceClient, msg.Data); err != nil {
 				slog.ErrorContext(sessionCtx, "voicertc: activity log write failed", "session", sess.id, "err", err)
 				sess.sendError("Failed to record voice activity: " + err.Error())
 				return
@@ -698,7 +700,7 @@ func (s *session) backendReady(ctx context.Context) {
 }
 
 func (s *session) sendGatewayMessage(_ context.Context, data []byte) error {
-	if err := s.activityLog.record(activityLogSourceGateway, data); err != nil {
+	if err := s.activityLog.record(activitydata.SourceGateway, data); err != nil {
 		return err
 	}
 	s.mu.Lock()

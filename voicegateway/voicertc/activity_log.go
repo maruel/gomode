@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	activitydata "github.com/maruel/gomode/voicegateway/voicertc/data"
+
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
@@ -32,7 +34,7 @@ func openActivityLog(dir, sessionID string) (*activityLog, error) {
 	return &activityLog{f: f}, nil
 }
 
-func (l *activityLog) record(source activityLogSource, data []byte) error {
+func (l *activityLog) record(source activitydata.Source, data []byte) error {
 	var envelope voicev1.MessageEnvelope
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return fmt.Errorf("decode voice activity message: %w", err)
@@ -48,10 +50,10 @@ func (l *activityLog) record(source activityLogSource, data []byte) error {
 	default:
 		return nil
 	}
-	record, err := json.Marshal(activityLogRecord{
+	record, err := json.Marshal(activitydata.Record{
 		Timestamp: time.Now().UTC().Round(time.Millisecond),
 		Source:    source,
-		Kind:      envelope.Kind,
+		Kind:      string(envelope.Kind),
 		Message:   data,
 	})
 	if err != nil {
@@ -77,18 +79,4 @@ func (l *activityLog) close() error {
 	err := l.f.Close()
 	l.f = nil
 	return err
-}
-
-type activityLogSource string
-
-const (
-	activityLogSourceClient  activityLogSource = "client"
-	activityLogSourceGateway activityLogSource = "gateway"
-)
-
-type activityLogRecord struct {
-	Timestamp time.Time           `json:"ts"`
-	Source    activityLogSource   `json:"src"`
-	Kind      voicev1.MessageKind `json:"kind"`
-	Message   json.RawMessage     `json:"msg"`
 }

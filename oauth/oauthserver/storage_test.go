@@ -8,16 +8,90 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/maruel/gomode/oauth"
+	v5 "github.com/maruel/gomode/oauth/oauthserver/data/v5"
 )
 
 func TestStore(t *testing.T) {
 	t.Parallel()
+	t.Run("version five fixture preserves restart and disk shape", func(t *testing.T) {
+		t.Parallel()
+		// This literal format is the gomode v0.1.1 store used by caic v0.13.2.
+		fixture, err := os.ReadFile("testdata/store_v5.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "oauth.json")
+		if err := os.WriteFile(path, fixture, 0o600); err != nil { //nolint:gosec // fixture and destination are test-controlled.
+			t.Fatal(err)
+		}
+		store, err := LoadStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if store.Codes["code-digest"].CodeChallenge != "pkce-challenge" || store.Consents["consent-digest"].Params["client_id"] != "client" {
+			t.Fatal("pending authorizations lost")
+		}
+		if store.DeviceCodes["device-digest"].UserCodeKey != "user-code-digest" || store.DeviceCodes["null"] != nil {
+			t.Fatal("device records changed")
+		}
+		if store.currentSigningKID != "current" || len(store.accessTokenSigningKeys) != 2 || store.accessTokenSigningKeys[1].VerifyUntil.IsZero() {
+			t.Fatal("signing key overlap lost")
+		}
+		if store.RefreshTokens["refresh-digest"].UsedAt.IsZero() || store.Grants["grant"].RevokedAt.IsZero() || len(store.DPoPProofs) != 1 || len(store.DPoPNonces) != 1 || len(store.ClientAssertionJTIs) != 1 {
+			t.Fatal("token lifecycle or replay state lost")
+		}
+		// Runtime-only metadata and raw device credentials never enter the disk contract.
+		client := store.Clients["client"]
+		client.JWKS = []oauth.JWK{{Kty: "RSA"}}
+		client.JWKSURI = "https://client.example/jwks"
+		store.Clients["client"] = client
+		store.DeviceCodes["device-digest"].DeviceCode = "raw-device-secret"
+		store.DeviceCodes["device-digest"].UserCode = "RAWCODE"
+		for range 2 {
+			if err := store.Save(); err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := os.ReadFile(path) //nolint:gosec // path is test-controlled.
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want, got any
+			if err := json.Unmarshal(fixture, &want); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(encoded, &got); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("disk shape changed: %s", encoded)
+			}
+			store, err = LoadStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+
+	t.Run("unsupported disk versions", func(t *testing.T) {
+		t.Parallel()
+		for _, fixture := range []string{`{}`, `null`, `{"version":-1}`, `{"version":0}`, `{"version":1}`, `{"version":2}`, `{"version":3}`, `{"version":4}`, `{"version":6}`} {
+			path := filepath.Join(t.TempDir(), "oauth.json")
+			if err := os.WriteFile(path, []byte(fixture), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadStore(path); err == nil || !strings.Contains(err.Error(), "unsupported version") {
+				t.Fatalf("LoadStore(%s) error = %v", fixture, err)
+			}
+		}
+	})
+
 	t.Run("valid save and load", func(t *testing.T) {
 		t.Parallel()
 		path := filepath.Join(t.TempDir(), "oauth.json")
@@ -27,8 +101,8 @@ func TestStore(t *testing.T) {
 			t.Fatalf("LoadStore: %v", err)
 		}
 		store.Clients["client-1"] = Client{ID: "client-1", Name: "Claude", RedirectURIs: []string{"https://example.com/callback"}, TokenEndpointAuthMethod: oauth.TokenEndpointAuthNone, CreatedAt: now}
-		store.RefreshTokens["refresh-hash"] = RefreshToken{GrantID: "grant-1", UserID: "usr_1", ClientID: "client-1", Resource: "https://caic.example.com/mcp", Scope: "caic:mcp.read", ExpiresAt: now.Add(time.Hour)}
-		store.Grants["grant-1"] = Grant{ID: "grant-1", UserID: "usr_1", ClientID: "client-1", ClientName: "Claude", Resource: "https://caic.example.com/mcp", Scope: "caic:mcp.read", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+		store.RefreshTokens["refresh-hash"] = v5.RefreshToken{GrantID: "grant-1", UserID: "usr_1", ClientID: "client-1", Resource: "https://caic.example.com/mcp", Scope: "caic:mcp.read", ExpiresAt: now.Add(time.Hour)}
+		store.Grants["grant-1"] = v5.Grant{ID: "grant-1", UserID: "usr_1", ClientID: "client-1", ClientName: "Claude", Resource: "https://caic.example.com/mcp", Scope: "caic:mcp.read", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
 		if err := store.Save(); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
@@ -58,9 +132,9 @@ func TestStore(t *testing.T) {
 			t.Fatalf("LoadStore: %v", err)
 		}
 		now := time.Now().UTC()
-		store.Grants["b"] = Grant{ID: "b", UserID: "usr_1", CreatedAt: now.Add(-time.Minute)}
-		store.Grants["a"] = Grant{ID: "a", UserID: "usr_1", CreatedAt: now}
-		store.Grants["other"] = Grant{ID: "other", UserID: "usr_2", CreatedAt: now.Add(time.Minute)}
+		store.Grants["b"] = v5.Grant{ID: "b", UserID: "usr_1", CreatedAt: now.Add(-time.Minute)}
+		store.Grants["a"] = v5.Grant{ID: "a", UserID: "usr_1", CreatedAt: now}
+		store.Grants["other"] = v5.Grant{ID: "other", UserID: "usr_2", CreatedAt: now.Add(time.Minute)}
 		grants := store.ListUserGrants("usr_1")
 		if len(grants) != 2 || grants[0].ID != "a" || grants[1].ID != "b" {
 			t.Fatalf("grants = %+v", grants)
@@ -74,9 +148,9 @@ func TestStore(t *testing.T) {
 			t.Fatalf("LoadStore: %v", err)
 		}
 		now := time.Now().UTC()
-		store.Grants["grant-1"] = Grant{ID: "grant-1", UserID: "usr_1"}
-		store.RefreshTokens["token-1"] = RefreshToken{GrantID: "grant-1", UserID: "usr_1"}
-		store.RefreshTokens["token-2"] = RefreshToken{GrantID: "grant-2", UserID: "usr_1"}
+		store.Grants["grant-1"] = v5.Grant{ID: "grant-1", UserID: "usr_1"}
+		store.RefreshTokens["token-1"] = v5.RefreshToken{GrantID: "grant-1", UserID: "usr_1"}
+		store.RefreshTokens["token-2"] = v5.RefreshToken{GrantID: "grant-2", UserID: "usr_1"}
 		if !store.RevokeUserGrant("usr_1", "grant-1", now) {
 			t.Fatal("RevokeUserGrant returned false")
 		}
@@ -98,27 +172,26 @@ func TestStore(t *testing.T) {
 		t.Parallel()
 		path := filepath.Join(t.TempDir(), "oauth.json")
 		now := time.Now().UTC()
-		file := storeFile{
-			Version: storeVersion,
+		file := storeState{
 			Clients: map[string]Client{"client-1": {ID: "client-1"}},
-			RefreshTokens: map[string]RefreshToken{
+			RefreshTokens: map[string]v5.RefreshToken{
 				"expired": {GrantID: "expired-grant", ExpiresAt: now.Add(-time.Hour)},
 				"active":  {GrantID: "active-grant", ExpiresAt: now.Add(time.Hour)},
 			},
-			Grants: map[string]Grant{
+			Grants: map[string]v5.Grant{
 				"expired-grant": {ID: "expired-grant", ExpiresAt: now.Add(-time.Hour)},
 				"active-grant":  {ID: "active-grant", ExpiresAt: now.Add(time.Hour)},
 			},
-			Codes: map[string]Code{
+			Codes: map[string]v5.Code{
 				"expired-code": {ExpiresAt: now.Add(-time.Hour)},
 				"active-code":  {ExpiresAt: now.Add(time.Hour)},
 			},
-			Consents: map[string]ConsentParams{
+			Consents: map[string]v5.ConsentParams{
 				"expired-consent": {ExpiresAt: now.Add(-time.Hour)},
 				"active-consent":  {ExpiresAt: now.Add(time.Hour)},
 			},
 		}
-		data, err := json.Marshal(file)
+		data, err := json.Marshal(file.disk())
 		if err != nil {
 			t.Fatalf("Marshal: %v", err)
 		}
@@ -156,73 +229,6 @@ func TestStore(t *testing.T) {
 func TestStoreTransactions(t *testing.T) {
 	t.Parallel()
 
-	t.Run("version one migrates without losing grants or clients", func(t *testing.T) {
-		t.Parallel()
-		path := filepath.Join(t.TempDir(), "oauth.json")
-		now := time.Now().UTC().Truncate(time.Second)
-		legacy := storeFile{
-			Version: 1,
-			Clients: map[string]Client{"client": {ID: "client", Name: "legacy"}},
-			Grants:  map[string]Grant{"grant": {ID: "grant", ClientID: "client", ExpiresAt: now.Add(time.Hour)}},
-			RefreshTokens: map[string]RefreshToken{
-				oauth.RefreshTokenKey("legacy-secret"): {GrantID: "grant", ClientID: "client", ExpiresAt: now.Add(time.Hour)},
-			},
-		}
-		data, err := json.Marshal(legacy)
-		if err != nil {
-			t.Fatalf("Marshal: %v", err)
-		}
-		var encoded map[string]any
-		if err := json.Unmarshal(data, &encoded); err != nil {
-			t.Fatalf("Unmarshal legacy fixture: %v", err)
-		}
-		encoded["deviceCodes"] = map[string]any{"device-digest": map[string]any{"userCode": "ABCDEFGH", "clientID": "client", "status": "pending", "expiresAt": now.Add(time.Hour)}}
-		data, err = json.Marshal(encoded)
-		if err != nil {
-			t.Fatalf("Marshal legacy device fixture: %v", err)
-		}
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			t.Fatalf("WriteFile: %v", err)
-		}
-		store, err := LoadStore(path)
-		if err != nil {
-			t.Fatalf("LoadStore: %v", err)
-		}
-		if store.Clients["client"].Name != "legacy" || store.Grants["grant"].ClientID != "client" {
-			t.Fatalf("legacy state was not preserved: clients=%+v grants=%+v", store.Clients, store.Grants)
-		}
-		if device := store.DeviceCodes["device-digest"]; device == nil || device.UserCode != "" || device.UserCodeKey != oauth.RefreshTokenKey("ABCDEFGH") {
-			t.Fatalf("legacy device user code was not migrated to a digest: %+v", device)
-		}
-		if err := store.transact(func(next *storeFile) bool {
-			next.Clients["client-2"] = Client{ID: "client-2"}
-			return true
-		}); err != nil {
-			t.Fatalf("transact: %v", err)
-		}
-		reloaded, err := LoadStore(path)
-		if err != nil {
-			t.Fatalf("reload: %v", err)
-		}
-		if len(reloaded.Clients) != 2 || reloaded.Grants["grant"].ClientID != "client" {
-			t.Fatalf("migrated state = clients=%+v grants=%+v", reloaded.Clients, reloaded.Grants)
-		}
-		onDisk, err := os.ReadFile(path) //nolint:gosec // test-owned path.
-		if err != nil {
-			t.Fatalf("ReadFile: %v", err)
-		}
-		if strings.Contains(string(onDisk), "legacy-secret") || strings.Contains(string(onDisk), "ABCDEFGH") {
-			t.Fatal("raw credential was persisted after migration")
-		}
-		var migrated storeFile
-		if err := json.Unmarshal(onDisk, &migrated); err != nil {
-			t.Fatalf("Unmarshal: %v", err)
-		}
-		if migrated.Version != storeVersion {
-			t.Fatalf("version = %d, want %d", migrated.Version, storeVersion)
-		}
-	})
-
 	t.Run("failed atomic replacement rolls back every credential mutation", func(t *testing.T) {
 		t.Parallel()
 		path := filepath.Join(t.TempDir(), "oauth.json")
@@ -232,14 +238,14 @@ func TestStoreTransactions(t *testing.T) {
 			t.Fatalf("LoadStore: %v", err)
 		}
 		store.Clients["client"] = Client{ID: "client"}
-		store.Codes["code-digest"] = Code{ClientID: "client", ExpiresAt: now.Add(time.Hour)}
-		store.Grants["grant"] = Grant{ID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
-		store.RefreshTokens["refresh-digest"] = RefreshToken{GrantID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
+		store.Codes["code-digest"] = v5.Code{ClientID: "client", ExpiresAt: now.Add(time.Hour)}
+		store.Grants["grant"] = v5.Grant{ID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
+		store.RefreshTokens["refresh-digest"] = v5.RefreshToken{GrantID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
 		if err := store.Save(); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
 		store.io = failingRenameStoreIO{storeIO: osStoreIO{}}
-		err = store.transact(func(next *storeFile) bool {
+		err = store.transact(func(next *storeState) bool {
 			delete(next.Codes, "code-digest")
 			delete(next.Clients, "client")
 			delete(next.Grants, "grant")
@@ -283,7 +289,7 @@ func TestStoreTransactions(t *testing.T) {
 					t.Fatalf("LoadStore: %v", err)
 				}
 				store.io = postRenameStoreIO{storeIO: osStoreIO{}, fault: fault}
-				err = store.transact(func(next *storeFile) bool {
+				err = store.transact(func(next *storeState) bool {
 					next.Clients["committed"] = Client{ID: "committed"}
 					return true
 				})
@@ -313,8 +319,8 @@ func TestStoreTransactions(t *testing.T) {
 		}
 		now := time.Now().UTC()
 		store.Clients["client"] = Client{ID: "client", RedirectURIs: []string{"https://client.example/callback"}}
-		store.Grants["grant"] = Grant{ID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
-		store.RefreshTokens[oauth.RefreshTokenKey("refresh-secret")] = RefreshToken{GrantID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
+		store.Grants["grant"] = v5.Grant{ID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
+		store.RefreshTokens[oauth.RefreshTokenKey("refresh-secret")] = v5.RefreshToken{GrantID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
 		if err := store.Save(); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
@@ -416,7 +422,7 @@ func BenchmarkBearerGrantCheck(b *testing.B) {
 	now := time.Now()
 	for i := range 1_000 {
 		id := fmt.Sprintf("grant-%04d", i)
-		store.Grants[id] = Grant{ID: id, ClientID: "client", ExpiresAt: now.Add(time.Hour)}
+		store.Grants[id] = v5.Grant{ID: id, ClientID: "client", ExpiresAt: now.Add(time.Hour)}
 	}
 	if err := store.Save(); err != nil {
 		b.Fatalf("Save: %v", err)

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	activitydata "github.com/maruel/gomode/voicegateway/voicertc/data"
+
 	"github.com/coder/websocket"
 
 	voiceapi "github.com/maruel/gomode/voicegateway/api"
@@ -69,7 +71,7 @@ func serveTextSession(ctx context.Context, w http.ResponseWriter, r *http.Reques
 		if kind != websocket.MessageText {
 			continue
 		}
-		if err := log.record(activityLogSourceClient, data); err != nil {
+		if err := log.record(activitydata.SourceClient, data); err != nil {
 			slog.ErrorContext(sessionCtx, "voicertc: activity log write failed", "session", sessionID, "err", err)
 			sink.sendGatewayError("Failed to record voice activity: " + err.Error())
 			return nil
@@ -99,7 +101,7 @@ func (s *textSink) backendReady(ctx context.Context) {
 }
 
 func (s *textSink) sendGatewayMessage(ctx context.Context, data []byte) error {
-	if err := s.log.record(activityLogSourceGateway, data); err != nil {
+	if err := s.log.record(activitydata.SourceGateway, data); err != nil {
 		return err
 	}
 	s.mu.Lock()

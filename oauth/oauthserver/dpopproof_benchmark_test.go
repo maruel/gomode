@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/maruel/gomode/oauth"
+	v5 "github.com/maruel/gomode/oauth/oauthserver/data/v5"
 )
 
 func BenchmarkDPoPBearerAuth(b *testing.B) {
@@ -30,7 +31,7 @@ func BenchmarkDPoPBearerAuth(b *testing.B) {
 	b.Cleanup(server.Close)
 	const grantID = "benchmark-grant"
 	now := time.Now()
-	server.state.Grants[grantID] = Grant{ID: grantID, UserID: user.ID, ClientID: "benchmark-client", Resource: testResourceURL, Scope: "read", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	server.state.Grants[grantID] = v5.Grant{ID: grantID, UserID: user.ID, ClientID: "benchmark-client", Resource: testResourceURL, Scope: "read", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
 	if err := server.state.Save(); err != nil {
 		b.Fatal(err)
 	}

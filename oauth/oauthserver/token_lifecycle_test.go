@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/maruel/gomode/oauth"
+	v5 "github.com/maruel/gomode/oauth/oauthserver/data/v5"
 )
 
 func TestAccessTokenSigningKeyLifecycle(t *testing.T) {
@@ -104,9 +105,9 @@ func TestAccessTokenSigningKeyLifecycleRejectsUnsafeState(t *testing.T) {
 
 	state = newEmptyStore("")
 	state.currentSigningKID = "key-0"
-	state.accessTokenSigningKeys = make([]storedSigningKey, maxAccessTokenSigningKeys)
+	state.accessTokenSigningKeys = make([]v5.SigningKey, maxAccessTokenSigningKeys)
 	for i := range maxAccessTokenSigningKeys {
-		state.accessTokenSigningKeys[i] = storedSigningKey{
+		state.accessTokenSigningKeys[i] = v5.SigningKey{
 			KID:           "key-" + big.NewInt(int64(i)).String(),
 			PrivateKeyPEM: string(key1),
 			VerifyUntil:   now.Add(time.Hour),

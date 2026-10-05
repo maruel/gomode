@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/maruel/gomode/oauth"
+	v5 "github.com/maruel/gomode/oauth/oauthserver/data/v5"
 )
 
 const (
@@ -125,14 +126,14 @@ func TestServer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadStore: %v", err)
 		}
-		err = legacy.transact(func(next *storeFile) bool {
+		err = legacy.transact(func(next *storeState) bool {
 			next.Clients[clientID] = Client{ID: clientID, RedirectURIs: []string{"https://client.example/callback"}}
-			next.Codes[oauth.RefreshTokenKey(code)] = Code{UserID: user.ID, ClientID: clientID, RedirectURI: "https://client.example/callback", CodeChallenge: testCodeChallenge(), Resource: foreignURL, Scope: "read", ExpiresAt: now.Add(time.Hour)}
-			next.Consents[oauth.RefreshTokenKey("legacy-consent")] = ConsentParams{UserID: user.ID, Params: map[string]string{"client_id": clientID, "resource": foreignURL}, ExpiresAt: now.Add(time.Hour)}
-			next.Grants[foreignGrant] = Grant{ID: foreignGrant, UserID: user.ID, ClientID: clientID, Resource: foreignURL, Scope: "read", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
-			next.RefreshTokens[oauth.RefreshTokenKey(foreignToken)] = RefreshToken{GrantID: foreignGrant, UserID: user.ID, ClientID: clientID, Resource: foreignURL, Scope: "read", ExpiresAt: now.Add(time.Hour)}
-			next.Grants[mixedGrant] = Grant{ID: mixedGrant, UserID: user.ID, ClientID: clientID, Resource: testResourceURL, Scope: "read", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
-			next.RefreshTokens[oauth.RefreshTokenKey(mixedRefresh)] = RefreshToken{GrantID: mixedGrant, UserID: user.ID, ClientID: clientID, Resource: foreignURL, Scope: "read", ExpiresAt: now.Add(time.Hour)}
+			next.Codes[oauth.RefreshTokenKey(code)] = v5.Code{UserID: user.ID, ClientID: clientID, RedirectURI: "https://client.example/callback", CodeChallenge: testCodeChallenge(), Resource: foreignURL, Scope: "read", ExpiresAt: now.Add(time.Hour)}
+			next.Consents[oauth.RefreshTokenKey("legacy-consent")] = v5.ConsentParams{UserID: user.ID, Params: map[string]string{"client_id": clientID, "resource": foreignURL}, ExpiresAt: now.Add(time.Hour)}
+			next.Grants[foreignGrant] = v5.Grant{ID: foreignGrant, UserID: user.ID, ClientID: clientID, Resource: foreignURL, Scope: "read", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+			next.RefreshTokens[oauth.RefreshTokenKey(foreignToken)] = v5.RefreshToken{GrantID: foreignGrant, UserID: user.ID, ClientID: clientID, Resource: foreignURL, Scope: "read", ExpiresAt: now.Add(time.Hour)}
+			next.Grants[mixedGrant] = v5.Grant{ID: mixedGrant, UserID: user.ID, ClientID: clientID, Resource: testResourceURL, Scope: "read", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+			next.RefreshTokens[oauth.RefreshTokenKey(mixedRefresh)] = v5.RefreshToken{GrantID: mixedGrant, UserID: user.ID, ClientID: clientID, Resource: foreignURL, Scope: "read", ExpiresAt: now.Add(time.Hour)}
 			return true
 		})
 		if err != nil {
@@ -206,10 +207,10 @@ func TestServer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadStore: %v", err)
 		}
-		err = legacy.transact(func(next *storeFile) bool {
+		err = legacy.transact(func(next *storeState) bool {
 			next.Clients[clientID] = Client{ID: clientID}
-			next.Grants[grantID] = Grant{ID: grantID, UserID: user.ID, ClientID: clientID, Resource: resource, Scope: "read", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
-			next.RefreshTokens[oauth.RefreshTokenKey(refresh)] = RefreshToken{GrantID: grantID, UserID: user.ID, ClientID: clientID, Resource: resource, Scope: "read", ExpiresAt: now.Add(time.Hour)}
+			next.Grants[grantID] = v5.Grant{ID: grantID, UserID: user.ID, ClientID: clientID, Resource: resource, Scope: "read", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+			next.RefreshTokens[oauth.RefreshTokenKey(refresh)] = v5.RefreshToken{GrantID: grantID, UserID: user.ID, ClientID: clientID, Resource: resource, Scope: "read", ExpiresAt: now.Add(time.Hour)}
 			return true
 		})
 		if err != nil {
@@ -282,11 +283,11 @@ func TestServer(t *testing.T) {
 		)
 		now := time.Now()
 		s.mu.Lock()
-		err := s.state.transact(func(next *storeFile) bool {
+		err := s.state.transact(func(next *storeState) bool {
 			next.Clients[clientID] = Client{ID: clientID}
-			next.Grants[accessGrantID] = Grant{ID: accessGrantID, UserID: user.ID, ClientID: clientID, Resource: foreignURL, Scope: "read", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
-			next.Grants[grantID] = Grant{ID: grantID, UserID: user.ID, ClientID: clientID, Resource: foreignURL, Scope: "read", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
-			next.RefreshTokens[oauth.RefreshTokenKey(refresh)] = RefreshToken{GrantID: grantID, UserID: user.ID, ClientID: clientID, Resource: foreignURL, Scope: "read", ExpiresAt: now.Add(time.Hour)}
+			next.Grants[accessGrantID] = v5.Grant{ID: accessGrantID, UserID: user.ID, ClientID: clientID, Resource: foreignURL, Scope: "read", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+			next.Grants[grantID] = v5.Grant{ID: grantID, UserID: user.ID, ClientID: clientID, Resource: foreignURL, Scope: "read", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+			next.RefreshTokens[oauth.RefreshTokenKey(refresh)] = v5.RefreshToken{GrantID: grantID, UserID: user.ID, ClientID: clientID, Resource: foreignURL, Scope: "read", ExpiresAt: now.Add(time.Hour)}
 			return true
 		})
 		s.mu.Unlock()
@@ -473,9 +474,9 @@ func TestServer(t *testing.T) {
 		code := "concurrent-code-secret"
 		now := time.Now()
 		s.mu.Lock()
-		err := s.state.transact(func(next *storeFile) bool {
+		err := s.state.transact(func(next *storeState) bool {
 			next.Clients[clientID] = Client{ID: clientID, Name: "Concurrent client", RedirectURIs: []string{"https://client.example/callback"}}
-			next.Codes[oauth.RefreshTokenKey(code)] = Code{UserID: user.ID, ClientID: clientID, RedirectURI: "https://client.example/callback", CodeChallenge: testCodeChallenge(), Resource: testResourceURL, Scope: "read", ExpiresAt: now.Add(time.Minute)}
+			next.Codes[oauth.RefreshTokenKey(code)] = v5.Code{UserID: user.ID, ClientID: clientID, RedirectURI: "https://client.example/callback", CodeChallenge: testCodeChallenge(), Resource: testResourceURL, Scope: "read", ExpiresAt: now.Add(time.Minute)}
 			return true
 		})
 		s.mu.Unlock()
@@ -768,7 +769,7 @@ func TestServer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadStore: %v", err)
 		}
-		store.RefreshTokens[oauth.RefreshTokenKey(opaque)] = RefreshToken{UserID: user.ID, ClientID: registered.ClientID, Resource: testResourceURL, Scope: "read", ExpiresAt: time.Now().Add(-time.Minute)}
+		store.RefreshTokens[oauth.RefreshTokenKey(opaque)] = v5.RefreshToken{UserID: user.ID, ClientID: registered.ClientID, Resource: testResourceURL, Scope: "read", ExpiresAt: time.Now().Add(-time.Minute)}
 		if err := store.Save(); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
@@ -792,8 +793,8 @@ func TestServer(t *testing.T) {
 			t.Fatalf("LoadStore: %v", err)
 		}
 		expiresAt := time.Now().Add(time.Hour)
-		store.Grants[grantID] = Grant{ID: grantID, UserID: "usr_missing", ClientID: registered.ClientID, ClientName: "Claude", Resource: testResourceURL, Scope: "read", CreatedAt: time.Now(), ExpiresAt: expiresAt}
-		store.RefreshTokens[oauth.RefreshTokenKey(opaque)] = RefreshToken{GrantID: grantID, UserID: "usr_missing", ClientID: registered.ClientID, Resource: testResourceURL, Scope: "read", ExpiresAt: expiresAt}
+		store.Grants[grantID] = v5.Grant{ID: grantID, UserID: "usr_missing", ClientID: registered.ClientID, ClientName: "Claude", Resource: testResourceURL, Scope: "read", CreatedAt: time.Now(), ExpiresAt: expiresAt}
+		store.RefreshTokens[oauth.RefreshTokenKey(opaque)] = v5.RefreshToken{GrantID: grantID, UserID: "usr_missing", ClientID: registered.ClientID, Resource: testResourceURL, Scope: "read", ExpiresAt: expiresAt}
 		if err := store.Save(); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
@@ -1545,9 +1546,9 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 		clientID := "fault-client"
 		code := "fault-code"
 		s.mu.Lock()
-		err := s.state.transact(func(next *storeFile) bool {
+		err := s.state.transact(func(next *storeState) bool {
 			next.Clients[clientID] = Client{ID: clientID, RedirectURIs: []string{"https://client.example/callback"}}
-			next.Codes[oauth.RefreshTokenKey(code)] = Code{UserID: user.ID, ClientID: clientID, RedirectURI: "https://client.example/callback", CodeChallenge: testCodeChallenge(), Resource: testResourceURL, Scope: "read", ExpiresAt: time.Now().Add(time.Hour)}
+			next.Codes[oauth.RefreshTokenKey(code)] = v5.Code{UserID: user.ID, ClientID: clientID, RedirectURI: "https://client.example/callback", CodeChallenge: testCodeChallenge(), Resource: testResourceURL, Scope: "read", ExpiresAt: time.Now().Add(time.Hour)}
 			return true
 		})
 		s.state.io = failingRenameStoreIO{storeIO: osStoreIO{}}
@@ -1599,8 +1600,8 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 		}
 		now := time.Now()
 		store.Clients["client"] = Client{ID: "client", RedirectURIs: []string{"https://client.example/callback"}}
-		store.Grants["grant"] = Grant{ID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
-		store.RefreshTokens[oauth.RefreshTokenKey("refresh")] = RefreshToken{GrantID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
+		store.Grants["grant"] = v5.Grant{ID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
+		store.RefreshTokens[oauth.RefreshTokenKey("refresh")] = v5.RefreshToken{GrantID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
 		if err := store.Save(); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
@@ -1626,8 +1627,8 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 			t.Fatalf("LoadStore: %v", err)
 		}
 		now := time.Now()
-		store.Grants["grant"] = Grant{ID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
-		store.RefreshTokens["refresh-digest"] = RefreshToken{GrantID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
+		store.Grants["grant"] = v5.Grant{ID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
+		store.RefreshTokens["refresh-digest"] = v5.RefreshToken{GrantID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
 		if err := store.Save(); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
@@ -1662,8 +1663,8 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 		h := newTestServerHandler(s)
 		registered := registerOAuthTestClient(t, h, "Fault client", []string{"https://client.example/callback"})
 		s.mu.Lock()
-		err := s.state.transact(func(next *storeFile) bool {
-			next.Grants["grant"] = Grant{ID: "grant", ClientID: registered.ClientID, ExpiresAt: time.Now().Add(time.Hour)}
+		err := s.state.transact(func(next *storeState) bool {
+			next.Grants["grant"] = v5.Grant{ID: "grant", ClientID: registered.ClientID, ExpiresAt: time.Now().Add(time.Hour)}
 			return true
 		})
 		s.state.io = failingRenameStoreIO{storeIO: osStoreIO{}}
@@ -4202,12 +4203,12 @@ func TestRegistrationManagement(t *testing.T) {
 		registered := registerOAuthTestClient(t, h, "Test Client", []string{"https://example.com/callback"})
 		now := time.Now()
 		s.mu.Lock()
-		err := s.state.transact(func(next *storeFile) bool {
-			next.Codes[oauth.RefreshTokenKey("client-code")] = Code{ClientID: registered.ClientID, ExpiresAt: now.Add(time.Hour)}
-			next.Consents[oauth.RefreshTokenKey("client-consent")] = ConsentParams{Params: map[string]string{"client_id": registered.ClientID}, ExpiresAt: now.Add(time.Hour)}
+		err := s.state.transact(func(next *storeState) bool {
+			next.Codes[oauth.RefreshTokenKey("client-code")] = v5.Code{ClientID: registered.ClientID, ExpiresAt: now.Add(time.Hour)}
+			next.Consents[oauth.RefreshTokenKey("client-consent")] = v5.ConsentParams{Params: map[string]string{"client_id": registered.ClientID}, ExpiresAt: now.Add(time.Hour)}
 			next.DeviceCodes[oauth.RefreshTokenKey("client-device-code")] = &DeviceCode{ClientID: registered.ClientID, ExpiresAt: now.Add(time.Hour)}
-			next.Grants["client-grant"] = Grant{ID: "client-grant", ClientID: registered.ClientID, ExpiresAt: now.Add(time.Hour)}
-			next.RefreshTokens[oauth.RefreshTokenKey("client-refresh-token")] = RefreshToken{GrantID: "client-grant", ClientID: registered.ClientID, ExpiresAt: now.Add(time.Hour)}
+			next.Grants["client-grant"] = v5.Grant{ID: "client-grant", ClientID: registered.ClientID, ExpiresAt: now.Add(time.Hour)}
+			next.RefreshTokens[oauth.RefreshTokenKey("client-refresh-token")] = v5.RefreshToken{GrantID: "client-grant", ClientID: registered.ClientID, ExpiresAt: now.Add(time.Hour)}
 			return true
 		})
 		s.mu.Unlock()
@@ -4437,8 +4438,8 @@ func TestClientLifecyclePolicy(t *testing.T) {
 		server := newTestServer(t)
 		now := time.Now()
 		server.state.Clients["client"] = Client{ID: "client", RedirectURIs: []string{"https://example.com/callback"}, GrantTypes: []string{oauth.GrantAuthorizationCode}}
-		server.state.Grants["grant"] = Grant{ID: "grant", UserID: "user", ClientID: "client", Resource: testResourceURL, ExpiresAt: now.Add(time.Hour)}
-		server.state.RefreshTokens[oauth.RefreshTokenKey("refresh")] = RefreshToken{GrantID: "grant", UserID: "user", ClientID: "client", Resource: testResourceURL, ExpiresAt: now.Add(time.Hour)}
+		server.state.Grants["grant"] = v5.Grant{ID: "grant", UserID: "user", ClientID: "client", Resource: testResourceURL, ExpiresAt: now.Add(time.Hour)}
+		server.state.RefreshTokens[oauth.RefreshTokenKey("refresh")] = v5.RefreshToken{GrantID: "grant", UserID: "user", ClientID: "client", Resource: testResourceURL, ExpiresAt: now.Add(time.Hour)}
 		result, _, err := server.exchangeRefreshToken("refresh", Client{ID: "client"}, "user", "next", dpopBinding{})
 		if err != nil || result != refreshExchangeUnknown {
 			t.Fatalf("refresh rotation = %v, %v; want ineligible", result, err)
@@ -4585,7 +4586,7 @@ func TestClientLifecyclePolicy(t *testing.T) {
 		server.mu.Lock()
 		client := server.state.Clients[registered.ClientID]
 		client.GrantTypes = nil
-		err := server.state.transact(func(next *storeFile) bool {
+		err := server.state.transact(func(next *storeState) bool {
 			next.Clients[registered.ClientID] = client
 			return true
 		})
@@ -4965,7 +4966,7 @@ func TestOAuthInputBounds(t *testing.T) {
 		registered := registerOAuthTestClient(t, handler, "Claude", []string{"https://claude.example.com/callback"})
 		now := time.Now()
 		for i := range maxPendingPARRequests {
-			server.parRequests[strconv.Itoa(i)] = ConsentParams{ExpiresAt: now.Add(time.Minute)}
+			server.parRequests[strconv.Itoa(i)] = v5.ConsentParams{ExpiresAt: now.Add(time.Minute)}
 		}
 		form := authorizationCodeForm(registered.ClientID, "https://claude.example.com/callback", "read")
 		push := func() *httptest.ResponseRecorder {
@@ -4978,7 +4979,7 @@ func TestOAuthInputBounds(t *testing.T) {
 		if w := push(); w.Code != http.StatusServiceUnavailable {
 			t.Fatalf("full PAR status = %d, want %d: %s", w.Code, http.StatusServiceUnavailable, w.Body.String())
 		}
-		server.parRequests["0"] = ConsentParams{ExpiresAt: now.Add(-time.Second)}
+		server.parRequests["0"] = v5.ConsentParams{ExpiresAt: now.Add(-time.Second)}
 		if w := push(); w.Code != http.StatusCreated {
 			t.Fatalf("pruned PAR status = %d, want %d: %s", w.Code, http.StatusCreated, w.Body.String())
 		}
@@ -4994,7 +4995,7 @@ func TestOAuthInputBounds(t *testing.T) {
 		registered := registerOAuthTestClient(t, handler, "Claude", []string{"https://claude.example.com/callback"})
 		now := time.Now()
 		for i := range maxPendingConsents {
-			server.state.Consents[strconv.Itoa(i)] = ConsentParams{ExpiresAt: now.Add(time.Minute)}
+			server.state.Consents[strconv.Itoa(i)] = v5.ConsentParams{ExpiresAt: now.Add(time.Minute)}
 		}
 		form := authorizationCodeForm(registered.ClientID, "https://claude.example.com/callback", "read")
 		start := func() *httptest.ResponseRecorder {
@@ -5006,7 +5007,7 @@ func TestOAuthInputBounds(t *testing.T) {
 		if w := start(); w.Code != http.StatusServiceUnavailable {
 			t.Fatalf("full consent status = %d, want %d: %s", w.Code, http.StatusServiceUnavailable, w.Body.String())
 		}
-		server.state.Consents["0"] = ConsentParams{ExpiresAt: now.Add(-time.Second)}
+		server.state.Consents["0"] = v5.ConsentParams{ExpiresAt: now.Add(-time.Second)}
 		if w := start(); w.Code != http.StatusOK {
 			t.Fatalf("pruned consent status = %d, want %d: %s", w.Code, http.StatusOK, w.Body.String())
 		}

@@ -1,0 +1,94 @@
+{
+  "version": 5,
+  "clients": {
+    "client": {
+      "id": "client",
+      "name": "Fixture client",
+      "redirectURIs": ["https://client.example/callback"],
+      "tokenEndpointAuthMethod": "none",
+      "grantTypes": ["authorization_code", "refresh_token"],
+      "createdAt": "2026-01-01T00:00:00Z",
+      "provenance": "dynamic_registration"
+    },
+    "empty": {
+      "id": "empty",
+      "name": "",
+      "redirectURIs": [],
+      "tokenEndpointAuthMethod": "none",
+      "createdAt": "2026-01-01T00:00:00Z"
+    },
+    "null": {
+      "id": "null",
+      "name": "",
+      "redirectURIs": null,
+      "tokenEndpointAuthMethod": "none",
+      "createdAt": "2026-01-01T00:00:00Z"
+    }
+  },
+  "refreshTokens": {
+    "refresh-digest": {
+      "grantID": "grant",
+      "userID": "user",
+      "clientID": "client",
+      "resource": "https://host.example/mcp",
+      "scope": "read",
+      "dpopJKT": "thumbprint",
+      "expiresAt": "2100-01-01T00:00:00Z",
+      "usedAt": "2026-01-02T00:00:00Z",
+      "revokedAt": "2026-01-03T00:00:00Z"
+    }
+  },
+  "grants": {
+    "grant": {
+      "id": "grant",
+      "userID": "user",
+      "clientID": "client",
+      "clientName": "Fixture client",
+      "resource": "https://host.example/mcp",
+      "scope": "read",
+      "createdAt": "2026-01-01T00:00:00Z",
+      "lastUsedAt": "2026-01-02T00:00:00Z",
+      "expiresAt": "2100-01-01T00:00:00Z",
+      "revokedAt": "2026-01-03T00:00:00Z"
+    }
+  },
+  "codes": {
+    "code-digest": {
+      "userID": "user",
+      "clientID": "client",
+      "redirectURI": "https://client.example/callback",
+      "codeChallenge": "pkce-challenge",
+      "resource": "https://host.example/mcp",
+      "scope": "read",
+      "expiresAt": "2100-01-01T00:00:00Z"
+    }
+  },
+  "consents": {
+    "consent-digest": {
+      "userID": "user",
+      "params": {"client_id": "client", "resource": "https://host.example/mcp"},
+      "expiresAt": "2100-01-01T00:00:00Z"
+    },
+    "null": {"userID": "user", "params": {}, "expiresAt": "2100-01-01T00:00:00Z"}
+  },
+  "deviceCodes": {
+    "device-digest": {
+      "userCodeKey": "user-code-digest",
+      "clientID": "client",
+      "scope": "read",
+      "userID": "user",
+      "status": "approved",
+      "expiresAt": "2100-01-01T00:00:00Z",
+      "issuedAt": "2026-01-01T00:00:00Z"
+    },
+    "null": null
+  },
+  "dpopProofs": {"proof": "2100-01-01T00:00:00Z"},
+  "dpopNonces": {"nonce": "2100-01-01T00:00:00Z"},
+  "clientAssertionJTIs": {"assertion": "2100-01-01T00:00:00Z"},
+  "accessTokenSigningKeys": [
+    {"kid": "current", "privateKeyPEM": "test-only current key material"},
+    {"kid": "retired", "privateKeyPEM": "test-only retired key material", "verifyUntil": "2100-01-01T00:00:00Z"}
+  ],
+  "currentSigningKID": "current"
+}

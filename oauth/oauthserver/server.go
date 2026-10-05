@@ -35,6 +35,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/maruel/gomode/oauth"
+	v5 "github.com/maruel/gomode/oauth/oauthserver/data/v5"
 )
 
 const (
@@ -158,7 +159,7 @@ type ServerConfig struct {
 type Server struct {
 	mu          sync.Mutex
 	state       *Store
-	parRequests map[string]ConsentParams // short-lived pushed authorization requests (RFC 9126)
+	parRequests map[string]v5.ConsentParams // short-lived pushed authorization requests (RFC 9126)
 	tokens      *AccessTokenService
 
 	supportedScopes []string
@@ -233,7 +234,7 @@ func NewServer(c ServerConfig) (*Server, error) { //nolint:gocritic // ServerCon
 		return nil, err
 	}
 	resourceURL := issuer + c.ResourceURLPath
-	if err := state.transact(func(next *storeFile) bool {
+	if err := state.transact(func(next *storeState) bool {
 		return containResourceState(next, resourceURL, time.Now())
 	}); err != nil {
 		releaseStore()
@@ -245,7 +246,7 @@ func NewServer(c ServerConfig) (*Server, error) { //nolint:gocritic // ServerCon
 	}
 	return &Server{
 		state:                   state,
-		parRequests:             map[string]ConsentParams{},
+		parRequests:             map[string]v5.ConsentParams{},
 		tokens:                  tokens,
 		supportedScopes:         c.SupportedScopes,
 		defaultScopes:           c.DefaultScopes,
@@ -405,7 +406,7 @@ func (s *Server) RevokeUserGrant(userID, grantID string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	revoked := false
-	err := s.state.transact(func(next *storeFile) bool {
+	err := s.state.transact(func(next *storeState) bool {
 		revoked = revokeUserGrant(next, userID, grantID, time.Now())
 		return revoked
 	})
@@ -416,7 +417,7 @@ func (s *Server) RevokeUserGrant(userID, grantID string) (bool, error) {
 func (s *Server) RevokeAllUserGrants(userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.state.transact(func(next *storeFile) bool {
+	return s.state.transact(func(next *storeState) bool {
 		return revokeAllUserGrants(next, userID, time.Now())
 	})
 }
@@ -607,13 +608,13 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request, user oaut
 	}
 	now := time.Now()
 	capacityExceeded := false
-	err = s.state.transact(func(next *storeFile) bool {
+	err = s.state.transact(func(next *storeState) bool {
 		changed := pruneExpiredStore(next, now)
 		if len(next.Consents) >= maxPendingConsents {
 			capacityExceeded = true
 			return changed
 		}
-		next.Consents[oauth.RefreshTokenKey(consentToken)] = ConsentParams{UserID: user.ID, Params: params, ExpiresAt: now.Add(s.authCodeTTL)}
+		next.Consents[oauth.RefreshTokenKey(consentToken)] = v5.ConsentParams{UserID: user.ID, Params: params, ExpiresAt: now.Add(s.authCodeTTL)}
 		return true
 	})
 	s.mu.Unlock()
@@ -694,7 +695,7 @@ func (s *Server) handleOAuthPAR(w http.ResponseWriter, r *http.Request) {
 		oauth.WriteError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "too many pending pushed authorization requests")
 		return
 	}
-	s.parRequests[requestURI] = ConsentParams{
+	s.parRequests[requestURI] = v5.ConsentParams{
 		Params:    params,
 		ExpiresAt: time.Now().Add(90 * time.Second),
 	}
@@ -725,9 +726,9 @@ func (s *Server) handleOAuthAuthorizePOST(w http.ResponseWriter, r *http.Request
 	consentToken := r.PostForm.Get("consent_token")
 	consentHash := oauth.RefreshTokenKey(consentToken)
 	s.mu.Lock()
-	var c ConsentParams
+	var c v5.ConsentParams
 	var consentFound bool
-	err := s.state.transact(func(next *storeFile) bool {
+	err := s.state.transact(func(next *storeState) bool {
 		c, consentFound = next.Consents[consentHash]
 		if consentFound {
 			delete(next.Consents, consentHash)
@@ -777,9 +778,9 @@ func (s *Server) handleOAuthAuthorizePOST(w http.ResponseWriter, r *http.Request
 		oauth.WriteError(w, http.StatusBadRequest, "invalid_scope", err.Error())
 		return
 	}
-	entry := Code{UserID: user.ID, ClientID: values.Get("client_id"), RedirectURI: values.Get("redirect_uri"), CodeChallenge: values.Get("code_challenge"), Resource: values.Get("resource"), Scope: scope, ExpiresAt: time.Now().Add(s.authCodeTTL)}
+	entry := v5.Code{UserID: user.ID, ClientID: values.Get("client_id"), RedirectURI: values.Get("redirect_uri"), CodeChallenge: values.Get("code_challenge"), Resource: values.Get("resource"), Scope: scope, ExpiresAt: time.Now().Add(s.authCodeTTL)}
 	s.mu.Lock()
-	err = s.state.transact(func(next *storeFile) bool {
+	err = s.state.transact(func(next *storeState) bool {
 		next.Codes[oauth.RefreshTokenKey(code)] = entry
 		return true
 	})
@@ -889,7 +890,7 @@ func (s *Server) handleOAuthAuthorizationCodeToken(w http.ResponseWriter, r *htt
 	}
 	if entry.Resource != s.resourceURL {
 		s.mu.Lock()
-		err := s.state.transact(func(next *storeFile) bool {
+		err := s.state.transact(func(next *storeState) bool {
 			current, found := next.Codes[codeHash]
 			if !found || current != entry {
 				return false
@@ -931,11 +932,11 @@ func (s *Server) handleOAuthAuthorizationCodeToken(w http.ResponseWriter, r *htt
 		return
 	}
 	now := time.Now()
-	grant := Grant{ID: grantID, UserID: entry.UserID, ClientID: entry.ClientID, Resource: entry.Resource, Scope: entry.Scope, CreatedAt: now, ExpiresAt: now.Add(s.refreshTokenTTL)}
+	grant := v5.Grant{ID: grantID, UserID: entry.UserID, ClientID: entry.ClientID, Resource: entry.Resource, Scope: entry.Scope, CreatedAt: now, ExpiresAt: now.Add(s.refreshTokenTTL)}
 	refreshToken := ""
-	refreshEntry := RefreshToken{}
+	refreshEntry := v5.RefreshToken{}
 	if clientSupportsGrant(&client, oauth.GrantRefreshToken) {
-		refreshEntry = RefreshToken{GrantID: grantID, UserID: entry.UserID, ClientID: entry.ClientID, Resource: entry.Resource, Scope: entry.Scope, DPoPJKT: dpopJKT, ExpiresAt: grant.ExpiresAt}
+		refreshEntry = v5.RefreshToken{GrantID: grantID, UserID: entry.UserID, ClientID: entry.ClientID, Resource: entry.Resource, Scope: entry.Scope, DPoPJKT: dpopJKT, ExpiresAt: grant.ExpiresAt}
 		refreshToken, err = randomToken()
 		if err != nil {
 			slog.WarnContext(r.Context(), "generate oauth refresh token", "err", err)
@@ -952,7 +953,7 @@ func (s *Server) handleOAuthAuthorizationCodeToken(w http.ResponseWriter, r *htt
 	redeemed := false
 	proofRejected := false
 	s.mu.Lock()
-	err = s.state.transact(func(next *storeFile) bool {
+	err = s.state.transact(func(next *storeState) bool {
 		current, found := next.Codes[codeHash]
 		if !found || current != entry {
 			return false
@@ -1248,7 +1249,7 @@ func (s *Server) revokeAccessToken(token, clientID string) (string, error) {
 	}
 	now := time.Now()
 	s.mu.Lock()
-	err := s.state.transact(func(next *storeFile) bool {
+	err := s.state.transact(func(next *storeState) bool {
 		grant, ok := next.Grants[claims.GrantID]
 		if !ok || grant.ClientID != clientID || !grant.RevokedAt.IsZero() {
 			return false
@@ -1343,16 +1344,16 @@ const (
 	refreshExchangeDPoPRejected
 )
 
-func (s *Server) exchangeRefreshToken(token string, client Client, userID, nextToken string, binding dpopBinding) (refreshExchangeResult, RefreshToken, error) { //nolint:gocritic // Immutable proof values are passed together to preserve their binding.
+func (s *Server) exchangeRefreshToken(token string, client Client, userID, nextToken string, binding dpopBinding) (refreshExchangeResult, v5.RefreshToken, error) { //nolint:gocritic // Immutable proof values are passed together to preserve their binding.
 	now := time.Now()
 	clientID := client.ID
 	tokenHash := oauth.RefreshTokenKey(token)
 	nextTokenHash := oauth.RefreshTokenKey(nextToken)
 	result := refreshExchangeUnknown
-	var exchanged RefreshToken
+	var exchanged v5.RefreshToken
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	err := s.state.transact(func(state *storeFile) bool {
+	err := s.state.transact(func(state *storeState) bool {
 		entry, found := state.RefreshTokens[tokenHash]
 		if !found {
 			return false
@@ -1398,7 +1399,7 @@ func (s *Server) exchangeRefreshToken(token string, client Client, userID, nextT
 		entry.UsedAt = now
 		state.RefreshTokens[tokenHash] = entry
 		nextExpiry := now.Add(s.refreshTokenTTL)
-		exchanged = RefreshToken{GrantID: entry.GrantID, UserID: entry.UserID, ClientID: entry.ClientID, Resource: entry.Resource, Scope: entry.Scope, DPoPJKT: entry.DPoPJKT, ExpiresAt: nextExpiry}
+		exchanged = v5.RefreshToken{GrantID: entry.GrantID, UserID: entry.UserID, ClientID: entry.ClientID, Resource: entry.Resource, Scope: entry.Scope, DPoPJKT: entry.DPoPJKT, ExpiresAt: nextExpiry}
 		state.RefreshTokens[nextTokenHash] = exchanged
 		grant.LastUsedAt = now
 		grant.ExpiresAt = nextExpiry
@@ -1415,7 +1416,7 @@ func (s *Server) revokeRefreshToken(token, clientID string) (string, error) {
 	defer s.mu.Unlock()
 	tokenHash := oauth.RefreshTokenKey(token)
 	var userID string
-	err := s.state.transact(func(next *storeFile) bool {
+	err := s.state.transact(func(next *storeState) bool {
 		entry, ok := next.RefreshTokens[tokenHash]
 		if !ok || entry.ClientID != clientID || !entry.RevokedAt.IsZero() {
 			return false
@@ -1437,7 +1438,7 @@ func (s *Server) touchGrant(grantID string, now time.Time) (active bool, clientI
 		return false, "", nil
 	}
 	if grant.Resource != s.resourceURL {
-		err := s.state.transact(func(next *storeFile) bool {
+		err := s.state.transact(func(next *storeState) bool {
 			return revokeGrant(next, grantID, now)
 		})
 		return false, "", err
@@ -1451,7 +1452,7 @@ func (s *Server) touchGrant(grantID string, now time.Time) (active bool, clientI
 func (s *Server) pruneExpiredRefreshTokens(now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.state.transact(func(next *storeFile) bool {
+	return s.state.transact(func(next *storeState) bool {
 		return pruneExpiredStore(next, now)
 	})
 }
@@ -1530,7 +1531,7 @@ func (s *Server) registerClient(client *Client) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	capacityExceeded := false
-	err := s.state.transact(func(next *storeFile) bool {
+	err := s.state.transact(func(next *storeState) bool {
 		if len(next.Clients) >= maxOAuthClients {
 			capacityExceeded = true
 			return false
@@ -1735,7 +1736,7 @@ func (s *Server) handleOAuthRegisterUpdate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	client.GrantTypes = grantTypes
-	err = s.state.transact(func(next *storeFile) bool {
+	err = s.state.transact(func(next *storeState) bool {
 		next.Clients[clientID] = client
 		return true
 	})
@@ -1781,7 +1782,7 @@ func (s *Server) handleOAuthRegisterDelete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.mu.Lock()
-	err := s.state.transact(func(next *storeFile) bool {
+	err := s.state.transact(func(next *storeState) bool {
 		delete(next.Clients, clientID)
 		for key, code := range next.Codes {
 			if code.ClientID == clientID {
@@ -2257,7 +2258,7 @@ func (s *Server) validateDPoPNonce(nonce string) time.Time {
 	return expiresAt
 }
 
-func reserveDPoPBinding(next *storeFile, binding dpopBinding, now time.Time) bool { //nolint:gocritic // Immutable proof values are passed together to preserve their binding.
+func reserveDPoPBinding(next *storeState, binding dpopBinding, now time.Time) bool { //nolint:gocritic // Immutable proof values are passed together to preserve their binding.
 	if binding.jkt == "" {
 		return true
 	}
@@ -2291,7 +2292,7 @@ func (s *Server) reserveDPoPBinding(binding dpopBinding) (bool, error) { //nolin
 	reserved := false
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	err := s.state.transact(func(next *storeFile) bool {
+	err := s.state.transact(func(next *storeState) bool {
 		reserved = reserveDPoPBinding(next, binding, time.Now())
 		return reserved
 	})
@@ -2426,7 +2427,7 @@ func (s *Server) handleOAuthDeviceAuthorization(w http.ResponseWriter, r *http.R
 	}
 	s.mu.Lock()
 	capacityExceeded := false
-	err = s.state.transact(func(next *storeFile) bool {
+	err = s.state.transact(func(next *storeState) bool {
 		changed := pruneExpiredStore(next, now)
 		if len(next.DeviceCodes) >= maxPendingDeviceCodes {
 			capacityExceeded = true
@@ -2495,7 +2496,7 @@ func (s *Server) handleOAuthDeviceApprove(w http.ResponseWriter, r *http.Request
 	s.mu.Lock()
 	var dc *DeviceCode
 	userCodeKey := oauth.RefreshTokenKey(userCode)
-	err := s.state.transact(func(next *storeFile) bool {
+	err := s.state.transact(func(next *storeState) bool {
 		for _, d := range next.DeviceCodes {
 			if d != nil && d.UserCodeKey == userCodeKey && d.Status == "pending" && time.Now().Before(d.ExpiresAt) {
 				dc = d
@@ -2540,7 +2541,7 @@ func (s *Server) handleOAuthDeviceCodeToken(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if time.Now().After(dc.ExpiresAt) {
-		err := s.state.transact(func(next *storeFile) bool {
+		err := s.state.transact(func(next *storeState) bool {
 			delete(next.DeviceCodes, codeHash)
 			return true
 		})
@@ -2555,7 +2556,7 @@ func (s *Server) handleOAuthDeviceCodeToken(w http.ResponseWriter, r *http.Reque
 	}
 	if binding.jkt != "" {
 		reserved := false
-		err := s.state.transact(func(next *storeFile) bool {
+		err := s.state.transact(func(next *storeState) bool {
 			reserved = reserveDPoPBinding(next, binding, time.Now())
 			return reserved
 		})
@@ -2577,7 +2578,7 @@ func (s *Server) handleOAuthDeviceCodeToken(w http.ResponseWriter, r *http.Reque
 		oauth.WriteError(w, http.StatusBadRequest, "authorization_pending", "user has not yet authorized the device")
 		return
 	case "denied":
-		err := s.state.transact(func(next *storeFile) bool {
+		err := s.state.transact(func(next *storeState) bool {
 			delete(next.DeviceCodes, codeHash)
 			return true
 		})
@@ -2609,11 +2610,11 @@ func (s *Server) handleOAuthDeviceCodeToken(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	now := time.Now()
-	grant := Grant{ID: grantID, UserID: dc.UserID, ClientID: dc.ClientID, Resource: s.resourceURL, Scope: dc.Scope, CreatedAt: now, ExpiresAt: now.Add(s.refreshTokenTTL)}
+	grant := v5.Grant{ID: grantID, UserID: dc.UserID, ClientID: dc.ClientID, Resource: s.resourceURL, Scope: dc.Scope, CreatedAt: now, ExpiresAt: now.Add(s.refreshTokenTTL)}
 	refreshToken := ""
-	refreshEntry := RefreshToken{}
+	refreshEntry := v5.RefreshToken{}
 	if clientSupportsGrant(&client, oauth.GrantRefreshToken) {
-		refreshEntry = RefreshToken{GrantID: grantID, UserID: dc.UserID, ClientID: dc.ClientID, Resource: s.resourceURL, Scope: dc.Scope, DPoPJKT: dpopJKT, ExpiresAt: grant.ExpiresAt}
+		refreshEntry = v5.RefreshToken{GrantID: grantID, UserID: dc.UserID, ClientID: dc.ClientID, Resource: s.resourceURL, Scope: dc.Scope, DPoPJKT: dpopJKT, ExpiresAt: grant.ExpiresAt}
 		refreshToken, err = randomToken()
 		if err != nil {
 			slog.WarnContext(r.Context(), "generate device refresh token", "err", err)
@@ -2629,7 +2630,7 @@ func (s *Server) handleOAuthDeviceCodeToken(w http.ResponseWriter, r *http.Reque
 	}
 	consumed := false
 	s.mu.Lock()
-	err = s.state.transact(func(next *storeFile) bool {
+	err = s.state.transact(func(next *storeState) bool {
 		current, found := next.DeviceCodes[codeHash]
 		currentClient := client
 		clientFound := currentClient.ID == dc.ClientID
@@ -2698,7 +2699,7 @@ func (s *Server) handleOAuthClientCredentialsToken(w http.ResponseWriter, r *htt
 	now := time.Now()
 	// The grant outlives the access token it issued, giving the client a
 	// revocation handle for the token's whole lifetime.
-	grant := Grant{ID: grantID, ClientID: client.ID, Resource: s.resourceURL, Scope: scope, CreatedAt: now, ExpiresAt: now.Add(s.refreshTokenTTL)}
+	grant := v5.Grant{ID: grantID, ClientID: client.ID, Resource: s.resourceURL, Scope: scope, CreatedAt: now, ExpiresAt: now.Add(s.refreshTokenTTL)}
 	accessToken, err := s.tokens.IssueClientCredentialsAccessToken(s.issuer, client.ID, s.resourceURL, scope, grantID, dpopJKT)
 	if err != nil {
 		slog.WarnContext(r.Context(), "sign client-credentials access token", "err", err)
@@ -2712,7 +2713,7 @@ func (s *Server) handleOAuthClientCredentialsToken(w http.ResponseWriter, r *htt
 	stored := false
 	proofRejected := false
 	s.mu.Lock()
-	err = s.state.transact(func(next *storeFile) bool {
+	err = s.state.transact(func(next *storeState) bool {
 		currentClient := client
 		if client.Provenance != ClientProvenanceMetadata {
 			var found bool
@@ -2798,7 +2799,7 @@ func (s *Server) reserveClientAssertion(clientID, jti string, expiresAt time.Tim
 	now := time.Now()
 	reserved := false
 	s.mu.Lock()
-	err := s.state.transact(func(next *storeFile) bool {
+	err := s.state.transact(func(next *storeState) bool {
 		changed := false
 		for storedKey, expiry := range next.ClientAssertionJTIs {
 			if !now.Before(expiry) {

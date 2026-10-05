@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/maruel/gomode/oauth"
+	v5 "github.com/maruel/gomode/oauth/oauthserver/data/v5"
 )
 
 const (
@@ -69,7 +70,7 @@ func configureAccessTokenService(state *Store, keyPEM []byte, kid string, ttl ti
 		return nil, err
 	}
 	if changed {
-		err = state.transact(func(file *storeFile) bool {
+		err = state.transact(func(file *storeState) bool {
 			file.AccessTokenSigningKeys = slices.Clone(next.AccessTokenSigningKeys)
 			file.CurrentSigningKID = next.CurrentSigningKID
 			return true
@@ -93,7 +94,7 @@ func configureAccessTokenService(state *Store, keyPEM []byte, kid string, ttl ti
 	return &AccessTokenService{keys: keys, currentKID: state.currentSigningKID, ttl: ttl}, nil
 }
 
-func reconcileSigningKeys(file *storeFile, keyPEM, kid string, ttl time.Duration, now time.Time) (bool, error) {
+func reconcileSigningKeys(file *storeState, keyPEM, kid string, ttl time.Duration, now time.Time) (bool, error) {
 	// TODO(observability): Report signing-key ring occupancy, rotations, the
 	// active KID, and the latest verification retirement time at this lifecycle
 	// boundary without exposing private key material.
@@ -138,7 +139,7 @@ func reconcileSigningKeys(file *storeFile, keyPEM, kid string, ttl time.Duration
 	}
 	file.AccessTokenSigningKeys = retained
 	if len(retained) == 0 {
-		file.AccessTokenSigningKeys = []storedSigningKey{{KID: kid, PrivateKeyPEM: keyPEM}}
+		file.AccessTokenSigningKeys = []v5.SigningKey{{KID: kid, PrivateKeyPEM: keyPEM}}
 		file.CurrentSigningKID = kid
 		return true, nil
 	}
@@ -164,7 +165,7 @@ func reconcileSigningKeys(file *storeFile, keyPEM, kid string, ttl time.Duration
 			retained[i].VerifyUntil = now.Add(ttl + tokenClockSkew)
 		}
 	}
-	file.AccessTokenSigningKeys = append(file.AccessTokenSigningKeys, storedSigningKey{KID: kid, PrivateKeyPEM: keyPEM})
+	file.AccessTokenSigningKeys = append(file.AccessTokenSigningKeys, v5.SigningKey{KID: kid, PrivateKeyPEM: keyPEM})
 	file.CurrentSigningKID = kid
 	return true, nil
 }
