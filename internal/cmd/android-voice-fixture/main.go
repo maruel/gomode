@@ -173,6 +173,13 @@ func (f *fixture) handleTextSession(w http.ResponseWriter, r *http.Request) {
 		case voicev1.MessageKindSessionClose:
 			_ = conn.Close(websocket.StatusNormalClosure, "closed")
 			return
+		case voicev1.MessageKindContextUpdate, voicev1.MessageKindToolResult, voicev1.MessageKindTurnCancel:
+			// Valid client messages the fixture does not act on: it never calls
+			// tools or runs a cancellable turn. The "client message" log above
+			// records each one.
+		default:
+			// Gateway-to-client kinds are invalid from a client.
+			f.log.WarnContext(ctx, "unexpected client message kind", "kind", env.Kind)
 		}
 	}
 }
@@ -198,7 +205,8 @@ func writeJSON(w http.ResponseWriter, body any) {
 }
 
 func run(ctx context.Context, log *slog.Logger, addr string) error {
-	listener, err := net.Listen("tcp", addr)
+	var lc net.ListenConfig
+	listener, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil {
 		return err
 	}

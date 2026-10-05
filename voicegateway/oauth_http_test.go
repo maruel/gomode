@@ -36,13 +36,19 @@ func newOAuthTestKey(t *testing.T, kid string) oauthTestKey {
 	return oauthTestKey{kid: kid, priv: priv}
 }
 
-func (k oauthTestKey) jwk() oauth.JWK {
+// jwk reports failures with Errorf because the HTTP handler goroutine calls it.
+func (k oauthTestKey) jwk(t *testing.T) oauth.JWK {
 	pub := k.priv.PublicKey
-	size := (pub.Curve.Params().BitSize + 7) / 8
+	point, err := pub.Bytes() // 0x04 || X || Y
+	if err != nil {
+		t.Errorf("encode public key: %v", err)
+		return oauth.JWK{}
+	}
+	size := (len(point) - 1) / 2
 	return oauth.JWK{
 		Kty: "EC", Crv: "P-256", Kid: k.kid, Alg: "ES256", Use: "sig",
-		X: base64.RawURLEncoding.EncodeToString(pub.X.FillBytes(make([]byte, size))),
-		Y: base64.RawURLEncoding.EncodeToString(pub.Y.FillBytes(make([]byte, size))),
+		X: base64.RawURLEncoding.EncodeToString(point[1 : 1+size]),
+		Y: base64.RawURLEncoding.EncodeToString(point[1+size:]),
 	}
 }
 
@@ -68,7 +74,7 @@ func newOAuthTestIssuer(t *testing.T, key oauthTestKey) *oauthTestIssuer {
 		keys := append([]oauthTestKey{ti.key}, ti.extra...)
 		set := oauth.JWKSet{Keys: make([]oauth.JWK, 0, len(keys))}
 		for _, k := range keys {
-			set.Keys = append(set.Keys, k.jwk())
+			set.Keys = append(set.Keys, k.jwk(t))
 		}
 		_ = json.NewEncoder(w).Encode(set)
 	})
@@ -243,10 +249,12 @@ func TestOAuthOfferRejections(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Run("expired", func(t *testing.T) {
+		t.Parallel()
 		w := offerWithService(t, handler, ti.authorization(t, key, "voice.session", time.Now().Add(-2*time.Minute)))
 		assertUnauthorized(t, w)
 	})
 	t.Run("wrong audience", func(t *testing.T) {
+		t.Parallel()
 		token := ti.token(t, key, "other-service", "voice.session", time.Now().Add(time.Minute))
 		service, err := json.Marshal(voicev1.ServiceAuthorization{Kind: "caic", InstanceID: "home", BaseURL: ti.issuer, Token: token})
 		if err != nil {
@@ -256,6 +264,7 @@ func TestOAuthOfferRejections(t *testing.T) {
 		assertUnauthorized(t, w)
 	})
 	t.Run("insufficient scope", func(t *testing.T) {
+		t.Parallel()
 		w := offerWithService(t, handler, ti.authorization(t, key, "read", time.Now().Add(time.Minute)))
 		assertUnauthorized(t, w)
 	})

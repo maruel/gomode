@@ -366,9 +366,9 @@ func (s *localStackSession) startTurn(ctx context.Context, utterance []byte) {
 		if s.baseCtx.Err() != nil {
 			return
 		}
-		text, err := s.asr.transcribe(s.baseCtx, utterance)
+		text, err := s.asr.transcribe(s.baseCtx, utterance) //nolint:contextcheck // turn goroutines run on the session lifetime context
 		if err != nil {
-			s.warnTurn(s.baseCtx, "asr", err)
+			s.warnTurn(s.baseCtx, "asr", err) //nolint:contextcheck // turn goroutines run on the session lifetime context
 			return
 		}
 		s.emit(&voicev1.TranscriptDelta{Kind: voicev1.MessageKindTranscriptDelta, Speaker: voicev1.SpeakerUser, Text: text})
@@ -667,8 +667,8 @@ func (s *localStackSession) warnTurn(ctx context.Context, stage string, err erro
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return
 	}
-	slog.WarnContext(s.baseCtx, "voicertc: local stack turn failed", "session", s.id, "stage", stage, "err", err)
-	s.sink.sendGatewayError(fmt.Sprintf("Voice turn failed (%s)", stage))
+	slog.WarnContext(s.baseCtx, "voicertc: local stack turn failed", "session", s.id, "stage", stage, "err", err) //nolint:contextcheck // turn goroutines run on the session lifetime context
+	s.sink.sendGatewayError(s.baseCtx, fmt.Sprintf("Voice turn failed (%s)", stage))                              //nolint:contextcheck // turn goroutines run on the session lifetime context
 }
 
 // sleepCtx sleeps for d, returning false if ctx is cancelled first.

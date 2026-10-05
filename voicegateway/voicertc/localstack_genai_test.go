@@ -41,6 +41,7 @@ type controlledRequest struct {
 
 type barrierSink struct {
 	captureSink
+
 	messages chan []byte
 }
 

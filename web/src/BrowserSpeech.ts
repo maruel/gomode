@@ -97,7 +97,7 @@ export class BrowserSpeech {
     utterance.lang = this.languageTag;
     const voices = window.speechSynthesis.getVoices();
     const language = this.languageTag.toLowerCase();
-    const exact = voices.filter((voice) => voice.lang.toLowerCase() === language);
+    const exact = voices.filter((candidate) => candidate.lang.toLowerCase() === language);
     const voice = exact.find((candidate) => candidate.localService) ?? exact[0];
     if (voice) utterance.voice = voice;
     this.utterance = utterance;

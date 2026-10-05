@@ -30,6 +30,7 @@ func (templatedRegistry) ResourceTemplates(context.Context) ([]ResourceTemplateD
 }
 
 func TestHandlerOptionalRegistry(t *testing.T) {
+	t.Parallel()
 	registry := noSubscriptionRegistry{Registry: &subscriptionTestRegistry{}}
 	request := func(h *Handler, method Method, fields string) JSONRPCResponse {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", strings.NewReader(nativeMCPRequestJSON(string(method), fields)))
@@ -49,7 +50,10 @@ func TestHandlerOptionalRegistry(t *testing.T) {
 	if !ok {
 		t.Fatalf("discover result = %T", discovery.Result)
 	}
-	capabilities := result["capabilities"].(map[string]any)
+	capabilities, ok := result["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilities = %T", result["capabilities"])
+	}
 	resources, _ := capabilities["resources"].(map[string]any)
 	if resources["subscribe"] != nil || resources["listChanged"] != nil {
 		t.Fatalf("unsupported subscriptions advertised: %#v", resources)
@@ -57,15 +61,28 @@ func TestHandlerOptionalRegistry(t *testing.T) {
 	if response := request(h, MethodSubscriptionsListen, `"notifications":{}`); response.Error == nil || response.Error.Code != MethodNotFoundCode {
 		t.Fatalf("unsupported subscription response = %#v", response)
 	}
-	list := request(h, MethodResourceTemplatesList, "")
-	listed := list.Result.(map[string]any)["resourceTemplates"].([]any)
+	templates := func(response JSONRPCResponse) []any {
+		t.Helper()
+		result, ok := response.Result.(map[string]any)
+		if !ok {
+			t.Fatalf("templates result = %T", response.Result)
+		}
+		listed, ok := result["resourceTemplates"].([]any)
+		if !ok {
+			t.Fatalf("resourceTemplates = %T", result["resourceTemplates"])
+		}
+		return listed
+	}
+	listed := templates(request(h, MethodResourceTemplatesList, ""))
 	if len(listed) != 0 {
 		t.Fatalf("templates = %#v, want none", listed)
 	}
 	h.Registry = templatedRegistry{Registry: registry}
-	list = request(h, MethodResourceTemplatesList, "")
-	listed = list.Result.(map[string]any)["resourceTemplates"].([]any)
-	if len(listed) != 1 || listed[0].(map[string]any)["uriTemplate"] != "mddb://documents/{id}" {
+	listed = templates(request(h, MethodResourceTemplatesList, ""))
+	if len(listed) != 1 {
+		t.Fatalf("host templates = %#v", listed)
+	}
+	if first, _ := listed[0].(map[string]any); first["uriTemplate"] != "mddb://documents/{id}" {
 		t.Fatalf("host templates = %#v", listed)
 	}
 }

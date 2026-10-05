@@ -146,8 +146,7 @@ function localizedStatus(
     case "signaling":
       return messages.signaling;
     case "reconnecting":
-      return messages.reconnecting;
-    default:
+    case null:
       return messages.reconnecting;
   }
 }

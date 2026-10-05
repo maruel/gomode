@@ -28,12 +28,12 @@ func SignState(state string, secret []byte) string {
 // ValidateState splits cookie value on ".", re-computes HMAC, returns the bare
 // state string. Returns ("", false) on any mismatch.
 func ValidateState(cookie string, secret []byte) (string, bool) {
-	dot := strings.LastIndex(cookie, ".")
-	if dot < 0 {
+	before, after, ok := strings.CutLast(cookie, ".")
+	if !ok {
 		return "", false
 	}
-	state := cookie[:dot]
-	sig := cookie[dot+1:]
+	state := before
+	sig := after
 	expected := hmacSHA256(secret, state)
 	if !hmac.Equal([]byte(sig), []byte(expected)) {
 		return "", false

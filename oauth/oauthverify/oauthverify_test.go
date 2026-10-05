@@ -29,15 +29,28 @@ type signingKey struct {
 	priv crypto.Signer
 }
 
+func newECKey(t *testing.T, kid string) signingKey {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signingKey{kid: kid, alg: "ES256", priv: priv}
+}
+
 func (k signingKey) jwk(t *testing.T) oauth.JWK {
 	t.Helper()
 	switch pub := k.priv.Public().(type) {
 	case *ecdsa.PublicKey:
-		size := (pub.Curve.Params().BitSize + 7) / 8
+		point, err := pub.Bytes() // 0x04 || X || Y
+		if err != nil {
+			t.Fatal(err)
+		}
+		size := (len(point) - 1) / 2
 		return oauth.JWK{
 			Kty: "EC", Crv: pub.Curve.Params().Name, Kid: k.kid, Alg: k.alg, Use: "sig",
-			X: base64.RawURLEncoding.EncodeToString(pub.X.FillBytes(make([]byte, size))),
-			Y: base64.RawURLEncoding.EncodeToString(pub.Y.FillBytes(make([]byte, size))),
+			X: base64.RawURLEncoding.EncodeToString(point[1 : 1+size]),
+			Y: base64.RawURLEncoding.EncodeToString(point[1+size:]),
 		}
 	case *rsa.PublicKey:
 		return oauth.JWK{
@@ -53,7 +66,7 @@ func (k signingKey) jwk(t *testing.T) oauth.JWK {
 	}
 }
 
-func (k signingKey) sign(t *testing.T, claims oauth.AccessTokenClaims) string {
+func (k signingKey) sign(t *testing.T, claims *oauth.AccessTokenClaims) string {
 	t.Helper()
 	header, err := json.Marshal(oauth.JWTHeader{Alg: k.alg, KID: k.kid, Typ: "at+jwt"})
 	if err != nil {
@@ -117,15 +130,6 @@ func signTestJWS(t *testing.T, alg string, key crypto.Signer, signingInput []byt
 	}
 }
 
-func newECKey(t *testing.T, kid string) signingKey {
-	t.Helper()
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return signingKey{kid: kid, alg: "ES256", priv: priv}
-}
-
 type testIssuer struct {
 	server    *httptest.Server
 	issuer    string
@@ -170,7 +174,7 @@ func newTestIssuer(t *testing.T, key signingKey) *testIssuer {
 
 func (ti *testIssuer) token(t *testing.T, key signingKey, audience, scope string, exp time.Time) string {
 	t.Helper()
-	return key.sign(t, oauth.AccessTokenClaims{
+	return key.sign(t, &oauth.AccessTokenClaims{
 		Issuer: ti.issuer, Subject: "user-1", Username: "alice", Audience: audience,
 		ClientID: "client-1", JWTID: "jti-1", Scope: scope,
 		IssuedAt: time.Now().Add(-time.Minute).Unix(), Expiry: exp.Unix(), Type: "access_token",
@@ -272,24 +276,28 @@ func TestVerifyRejections(t *testing.T) {
 	v := New(nil)
 
 	t.Run("expired", func(t *testing.T) {
+		t.Parallel()
 		token := ti.token(t, key, "voice-gateway", "voice.session", time.Now().Add(-2*time.Minute))
 		if _, err := v.Verify(t.Context(), token, ti.issuer, "voice-gateway", "voice.session"); err == nil {
 			t.Fatal("expired token verified")
 		}
 	})
 	t.Run("wrong audience", func(t *testing.T) {
+		t.Parallel()
 		token := ti.token(t, key, "other-service", "voice.session", time.Now().Add(time.Minute))
 		if _, err := v.Verify(t.Context(), token, ti.issuer, "voice-gateway", "voice.session"); err == nil {
 			t.Fatal("wrong-audience token verified")
 		}
 	})
 	t.Run("insufficient scope", func(t *testing.T) {
+		t.Parallel()
 		token := ti.token(t, key, "voice-gateway", "read", time.Now().Add(time.Minute))
 		if _, err := v.Verify(t.Context(), token, ti.issuer, "voice-gateway", "voice.session"); err == nil {
 			t.Fatal("insufficient-scope token verified")
 		}
 	})
 	t.Run("wrong issuer", func(t *testing.T) {
+		t.Parallel()
 		other := newTestIssuer(t, newECKey(t, "key-2"))
 		token := ti.token(t, key, "voice-gateway", "voice.session", time.Now().Add(time.Minute))
 		if _, err := v.Verify(t.Context(), token, other.issuer, "voice-gateway", "voice.session"); err == nil {
@@ -297,6 +305,7 @@ func TestVerifyRejections(t *testing.T) {
 		}
 	})
 	t.Run("tampered signature", func(t *testing.T) {
+		t.Parallel()
 		token := ti.token(t, key, "voice-gateway", "voice.session", time.Now().Add(time.Minute))
 		parts := strings.Split(token, ".")
 		parts[2] = base64.RawURLEncoding.EncodeToString([]byte("not-a-real-signature"))
@@ -305,6 +314,7 @@ func TestVerifyRejections(t *testing.T) {
 		}
 	})
 	t.Run("not a jwt", func(t *testing.T) {
+		t.Parallel()
 		if _, err := v.Verify(t.Context(), "opaque-scoped-token", ti.issuer, "voice-gateway", "voice.session"); err == nil {
 			t.Fatal("non-JWT token verified")
 		}
@@ -321,7 +331,7 @@ func TestVerifyMetadataIssuerMismatch(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	v := New(&Options{HTTPClient: server.Client()})
-	token := key.sign(t, oauth.AccessTokenClaims{
+	token := key.sign(t, &oauth.AccessTokenClaims{
 		Issuer: server.URL, Subject: "user-1", Audience: "voice-gateway", Scope: "voice.session",
 		IssuedAt: time.Now().Unix(), Expiry: time.Now().Add(time.Minute).Unix(),
 	})

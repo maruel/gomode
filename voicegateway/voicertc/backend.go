@@ -21,7 +21,7 @@ type backendSession interface {
 type backendSink interface {
 	backendReady(ctx context.Context)
 	sendGatewayMessage(ctx context.Context, data []byte) error
-	sendGatewayError(message string)
+	sendGatewayError(ctx context.Context, message string)
 	cancelSession()
 	addAssistantPCM(pcm []byte)
 	clearAssistantAudio()

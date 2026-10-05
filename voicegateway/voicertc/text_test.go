@@ -25,9 +25,9 @@ import (
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
-func TestServeTextSessionCloseLogging(t *testing.T) {
+func TestServeTextSessionCloseLogging(t *testing.T) { //nolint:paralleltest // The cases replace the process logger.
 	// These cases change the process logger, so do not run them in parallel.
-	for _, tc := range []struct {
+	for _, tc := range []struct { //nolint:paralleltest // The cases replace the process logger.
 		name    string
 		status  websocket.StatusCode
 		abrupt  bool
@@ -319,7 +319,7 @@ func TestBridge(t *testing.T) {
 			t.Parallel()
 			bridge := &Bridge{backend: textlessBackend{}}
 			rec := httptest.NewRecorder()
-			err := bridge.ServeTextSession(t.Context(), rec, httptest.NewRequest(http.MethodGet, "/", nil))
+			err := bridge.ServeTextSession(t.Context(), rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody))
 			if err == nil {
 				t.Fatal("ServeTextSession() error = nil, want error")
 			}
@@ -339,7 +339,7 @@ func TestBridge(t *testing.T) {
 			t.Parallel()
 			bridge := newTestTextBridge(t, fixedConversationLLM{conv: &fakeConversation{}})
 			rec := httptest.NewRecorder()
-			if err := bridge.ServeTextSession(t.Context(), rec, httptest.NewRequest(http.MethodGet, "/", nil)); err == nil {
+			if err := bridge.ServeTextSession(t.Context(), rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)); err == nil {
 				t.Fatal("ServeTextSession() error = nil, want upgrade failure")
 			}
 			matches, err := filepath.Glob(filepath.Join(bridge.activityLogDir, "*.jsonl"))
@@ -590,7 +590,7 @@ func writeMessage(t *testing.T, ctx context.Context, conn *websocket.Conn, msg a
 	}
 }
 
-func readMessage(t *testing.T, ctx context.Context, conn *websocket.Conn) (voicev1.MessageKind, []byte) {
+func readMessage(t *testing.T, ctx context.Context, conn *websocket.Conn) (kind voicev1.MessageKind, data []byte) {
 	_, data, err := conn.Read(ctx)
 	if err != nil {
 		t.Fatalf("read message: %v", err)

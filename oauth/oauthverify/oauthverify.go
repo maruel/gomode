@@ -26,6 +26,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -81,12 +82,7 @@ type Claims struct {
 
 // HasScope reports whether the token carries scope.
 func (c *Claims) HasScope(scope string) bool {
-	for _, s := range c.Scopes {
-		if s == scope {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.Scopes, scope)
 }
 
 // Verifier verifies access tokens from configured issuers.
@@ -140,44 +136,6 @@ func New(opts *Options) *Verifier {
 		refreshCooldown: refreshCooldown,
 		issuers:         make(map[string]*issuerState),
 	}
-}
-
-type issuerState struct {
-	mu             sync.Mutex
-	issuer         string
-	metadata       metadata
-	metadataExpiry time.Time
-	keys           map[string]any
-	keysExpiry     time.Time
-	keysFetchedAt  time.Time
-}
-
-type metadata struct {
-	Issuer  string `json:"issuer"`
-	JWKSURI string `json:"jwks_uri"`
-}
-
-// Issuer returns the unverified "iss" claim of an encoded JWT so a caller can
-// reject unknown issuers before any network fetch. The value is untrusted.
-func Issuer(token string) (string, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return "", errors.New("oauthverify: token is not a JWT")
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return "", fmt.Errorf("oauthverify: decode token payload: %w", err)
-	}
-	var claims struct {
-		Issuer string `json:"iss"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", fmt.Errorf("oauthverify: parse token payload: %w", err)
-	}
-	if claims.Issuer == "" {
-		return "", errors.New("oauthverify: token has no issuer")
-	}
-	return claims.Issuer, nil
 }
 
 // Verify validates token as an access token issued by issuer for audience, with
@@ -235,6 +193,79 @@ func (v *Verifier) state(issuer string) *issuerState {
 	return state
 }
 
+func (v *Verifier) get(ctx context.Context, rawURL string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := v.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+}
+
+func (v *Verifier) validateClaims(payload []byte, issuer, audience, requiredScope string) (*Claims, error) {
+	var claims tokenClaims
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, fmt.Errorf("oauthverify: parse token claims: %w", err)
+	}
+	if claims.Issuer != issuer {
+		return nil, errors.New("oauthverify: token issuer mismatch")
+	}
+	if !audienceMatches(claims.Audience, audience) {
+		return nil, errors.New("oauthverify: token audience mismatch")
+	}
+	if claims.Subject == "" {
+		return nil, errors.New("oauthverify: token subject is required")
+	}
+	now := v.now()
+	skew := int64(v.clockSkew / time.Second)
+	if claims.Expiry == 0 {
+		return nil, errors.New("oauthverify: token expiry is required")
+	}
+	if now.Unix() > claims.Expiry+skew {
+		return nil, errors.New("oauthverify: token is expired")
+	}
+	if claims.NotBefore != 0 && now.Unix() < claims.NotBefore-skew {
+		return nil, errors.New("oauthverify: token is not valid yet")
+	}
+	if claims.IssuedAt != 0 && claims.IssuedAt > now.Unix()+skew {
+		return nil, errors.New("oauthverify: token was issued in the future")
+	}
+	scopes := strings.Fields(claims.Scope)
+	if requiredScope != "" {
+		found := slices.Contains(scopes, requiredScope)
+		if !found {
+			return nil, fmt.Errorf("oauthverify: token lacks scope %q", requiredScope)
+		}
+	}
+	return &Claims{
+		Issuer:   claims.Issuer,
+		Subject:  claims.Subject,
+		Username: claims.Username,
+		Audience: audience,
+		Scopes:   scopes,
+		ClientID: claims.ClientID,
+		Expiry:   time.Unix(claims.Expiry, 0),
+	}, nil
+}
+
+type issuerState struct {
+	mu             sync.Mutex
+	issuer         string
+	metadata       metadata
+	metadataExpiry time.Time
+	keys           map[string]any
+	keysExpiry     time.Time
+	keysFetchedAt  time.Time
+}
+
 func (s *issuerState) keySet(ctx context.Context, v *Verifier) (map[string]any, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -270,7 +301,8 @@ func (s *issuerState) fetchKeysLocked(ctx context.Context, v *Verifier) (map[str
 		return nil, errors.New("oauthverify: issuer key set is empty")
 	}
 	keys := make(map[string]any, len(set.Keys))
-	for _, jwk := range set.Keys {
+	for i := range set.Keys {
+		jwk := &set.Keys[i]
 		if jwk.Kid == "" {
 			continue
 		}
@@ -317,83 +349,49 @@ func (s *issuerState) metadataLocked(ctx context.Context, v *Verifier) (metadata
 	return md, nil
 }
 
-func (v *Verifier) get(ctx context.Context, rawURL string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/json")
-	resp, err := v.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
-	}
-	return io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+type metadata struct {
+	Issuer  string `json:"issuer"`
+	JWKSURI string `json:"jwks_uri"`
 }
 
-func (v *Verifier) validateClaims(payload []byte, issuer, audience, requiredScope string) (*Claims, error) {
-	var claims struct {
-		Issuer    string          `json:"iss"`
-		Subject   string          `json:"sub"`
-		Username  string          `json:"username"`
-		Audience  json.RawMessage `json:"aud"`
-		ClientID  string          `json:"client_id"`
-		Scope     string          `json:"scope"`
-		IssuedAt  int64           `json:"iat"`
-		NotBefore int64           `json:"nbf"`
-		Expiry    int64           `json:"exp"`
+// Issuer returns the unverified "iss" claim of an encoded JWT so a caller can
+// reject unknown issuers before any network fetch. The value is untrusted.
+func Issuer(token string) (string, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", errors.New("oauthverify: token is not a JWT")
 	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", fmt.Errorf("oauthverify: decode token payload: %w", err)
+	}
+	var claims issuerClaim
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return nil, fmt.Errorf("oauthverify: parse token claims: %w", err)
+		return "", fmt.Errorf("oauthverify: parse token payload: %w", err)
 	}
-	if claims.Issuer != issuer {
-		return nil, errors.New("oauthverify: token issuer mismatch")
+	if claims.Issuer == "" {
+		return "", errors.New("oauthverify: token has no issuer")
 	}
-	if !audienceMatches(claims.Audience, audience) {
-		return nil, errors.New("oauthverify: token audience mismatch")
-	}
-	if claims.Subject == "" {
-		return nil, errors.New("oauthverify: token subject is required")
-	}
-	now := v.now()
-	skew := int64(v.clockSkew / time.Second)
-	if claims.Expiry == 0 {
-		return nil, errors.New("oauthverify: token expiry is required")
-	}
-	if now.Unix() > claims.Expiry+skew {
-		return nil, errors.New("oauthverify: token is expired")
-	}
-	if claims.NotBefore != 0 && now.Unix() < claims.NotBefore-skew {
-		return nil, errors.New("oauthverify: token is not valid yet")
-	}
-	if claims.IssuedAt != 0 && claims.IssuedAt > now.Unix()+skew {
-		return nil, errors.New("oauthverify: token was issued in the future")
-	}
-	scopes := strings.Fields(claims.Scope)
-	if requiredScope != "" {
-		found := false
-		for _, s := range scopes {
-			if s == requiredScope {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return nil, fmt.Errorf("oauthverify: token lacks scope %q", requiredScope)
-		}
-	}
-	return &Claims{
-		Issuer:   claims.Issuer,
-		Subject:  claims.Subject,
-		Username: claims.Username,
-		Audience: audience,
-		Scopes:   scopes,
-		ClientID: claims.ClientID,
-		Expiry:   time.Unix(claims.Expiry, 0),
-	}, nil
+	return claims.Issuer, nil
+}
+
+// tokenClaims are the access-token claims Verify checks. The audience stays
+// raw because RFC 7519 allows a string or an array.
+type tokenClaims struct {
+	Issuer    string          `json:"iss"`
+	Subject   string          `json:"sub"`
+	Username  string          `json:"username"`
+	Audience  json.RawMessage `json:"aud"`
+	ClientID  string          `json:"client_id"`
+	Scope     string          `json:"scope"`
+	IssuedAt  int64           `json:"iat"`
+	NotBefore int64           `json:"nbf"`
+	Expiry    int64           `json:"exp"`
+}
+
+// issuerClaim is the unverified "iss" claim Issuer reads before any network fetch.
+type issuerClaim struct {
+	Issuer string `json:"iss"`
 }
 
 type jwtHeader struct {
@@ -462,10 +460,8 @@ func audienceMatches(raw json.RawMessage, want string) bool {
 	}
 	var many []string
 	if err := json.Unmarshal(raw, &many); err == nil {
-		for _, aud := range many {
-			if aud == want {
-				return true
-			}
+		if slices.Contains(many, want) {
+			return true
 		}
 	}
 	return false
@@ -503,7 +499,7 @@ func checkAlg(alg string) error {
 	}
 }
 
-func parseJWK(jwk oauth.JWK) (any, error) {
+func parseJWK(jwk *oauth.JWK) (any, error) {
 	switch jwk.Kty {
 	case "RSA":
 		n, err := base64.RawURLEncoding.DecodeString(jwk.N)
@@ -535,9 +531,15 @@ func parseJWK(jwk oauth.JWK) (any, error) {
 		if err != nil {
 			return nil, fmt.Errorf("decode ec y: %w", err)
 		}
-		key := &ecdsa.PublicKey{Curve: curve, X: new(big.Int).SetBytes(x), Y: new(big.Int).SetBytes(y)}
-		if !key.Curve.IsOnCurve(key.X, key.Y) {
-			return nil, errors.New("ec point is not on curve")
+		// RFC 7518 section 6.2.1.2 requires full-length coordinates.
+		size := (curve.Params().BitSize + 7) / 8
+		if len(x) != size || len(y) != size {
+			return nil, fmt.Errorf("ec coordinates must be %d bytes", size)
+		}
+		point := append(append([]byte{4}, x...), y...)
+		key, err := ecdsa.ParseUncompressedPublicKey(curve, point)
+		if err != nil {
+			return nil, fmt.Errorf("ec point is not on curve: %w", err)
 		}
 		return key, nil
 	case "OKP":

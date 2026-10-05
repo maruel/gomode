@@ -12,5 +12,5 @@
     "types": ["node", "@testing-library/jest-dom"],
     "noEmit": true
   },
-  "include": ["src", "../sdk/mcp/ts/v1", "../sdk/oauth/ts/v1", "../sdk/voicegateway/ts/v1"]
+  "include": ["src", "tests", "../sdk/mcp/ts/v1", "../sdk/oauth/ts/v1", "../sdk/voicegateway/ts/v1"]
 }

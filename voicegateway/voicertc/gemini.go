@@ -213,7 +213,7 @@ func (s *geminiBridgeSession) rxLoop(ctx context.Context) {
 		if err != nil {
 			if ctx.Err() == nil {
 				slog.WarnContext(ctx, "voicertc: gemini read failed", "session", s.id, "err", err)
-				s.sink.sendGatewayError("Connection to Gemini lost: " + geminiCloseReason(err))
+				s.sink.sendGatewayError(ctx, "Connection to Gemini lost: "+geminiCloseReason(err))
 			}
 			// Don't cancel here. The client receives the error and disconnects,
 			// which closes the data channel and triggers gateway cleanup.
@@ -296,7 +296,7 @@ func (s *geminiBridgeSession) handleAudioExtraction(ctx context.Context, data []
 		hadAudio = true
 		if mt := part.InlineData.MimeType; mt != "" && mt != "audio/pcm;rate=24000" {
 			slog.WarnContext(ctx, "voicertc: unexpected audio mime type", "session", s.id, "mimeType", mt)
-			s.sink.sendGatewayError("Unexpected audio format from Gemini: " + mt)
+			s.sink.sendGatewayError(ctx, "Unexpected audio format from Gemini: "+mt)
 			s.sink.cancelSession()
 			return nil, false
 		}

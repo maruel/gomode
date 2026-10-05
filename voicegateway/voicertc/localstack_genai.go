@@ -264,6 +264,7 @@ type managedLlamaStarter func(context.Context, string) (managedLlamaServer, erro
 
 var managedLlamaRelease struct {
 	sync.Mutex
+
 	cache string
 	exe   string
 }

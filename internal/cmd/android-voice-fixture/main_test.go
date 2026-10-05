@@ -41,10 +41,35 @@ func TestFixtureSettingsValidate(t *testing.T) {
 	}
 }
 
+// rpcResponse is a JSON-RPC response with its result and error left raw so a
+// test can inspect the fields the app's generated DTOs require.
+type rpcResponse struct {
+	ID     int             `json:"id"`
+	Result json.RawMessage `json:"result"`
+	Error  json.RawMessage `json:"error"`
+}
+
+func httpGet(t *testing.T, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, http.NoBody)
+	if err != nil {
+		return nil, err
+	}
+	return http.DefaultClient.Do(req)
+}
+
+func httpPost(t *testing.T, url, contentType string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	return http.DefaultClient.Do(req)
+}
+
 func TestFixtureServesSettings(t *testing.T) {
 	t.Parallel()
 	srv := newFixture(t)
-	resp, err := http.Get(srv.URL + "/.well-known/gomode.json")
+	resp, err := httpGet(t, srv.URL+"/.well-known/gomode.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,16 +105,12 @@ func TestFixtureMCPResultsAreComplete(t *testing.T) {
 		t.Run(tc.method, func(t *testing.T) {
 			t.Parallel()
 			body := `{"jsonrpc":"2.0","id":7,"method":"` + tc.method + `","params":{}}`
-			resp, err := http.Post(srv.URL+"/api/mcp", "application/json", strings.NewReader(body))
+			resp, err := httpPost(t, srv.URL+"/api/mcp", "application/json", strings.NewReader(body))
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer func() { _ = resp.Body.Close() }()
-			var envelope struct {
-				ID     int             `json:"id"`
-				Result json.RawMessage `json:"result"`
-				Error  json.RawMessage `json:"error"`
-			}
+			var envelope rpcResponse
 			if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
 				t.Fatal(err)
 			}
@@ -116,7 +137,7 @@ func TestFixtureMCPUnknownMethod(t *testing.T) {
 	t.Parallel()
 	srv := newFixture(t)
 	body := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{}}`
-	resp, err := http.Post(srv.URL+"/api/mcp", "application/json", strings.NewReader(body))
+	resp, err := httpPost(t, srv.URL+"/api/mcp", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +209,7 @@ func TestFixtureTextSession(t *testing.T) {
 func TestFixtureRefusesOffer(t *testing.T) {
 	t.Parallel()
 	srv := newFixture(t)
-	resp, err := http.Post(srv.URL+"/api/voicegateway/v1/voice/rtc/offer", "application/json", bytes.NewReader([]byte(`{"sdp":"v=0"}`)))
+	resp, err := httpPost(t, srv.URL+"/api/voicegateway/v1/voice/rtc/offer", "application/json", bytes.NewReader([]byte(`{"sdp":"v=0"}`)))
 	if err != nil {
 		t.Fatal(err)
 	}

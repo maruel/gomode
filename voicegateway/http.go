@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -131,15 +132,6 @@ type handler struct {
 
 	textTicketMu sync.Mutex
 	textTickets  map[string]textTicket
-}
-
-type textTicket struct {
-	origin  string
-	expires time.Time
-}
-
-type serviceSessionIdentity struct {
-	kind, instanceID, origin, subject string
 }
 
 func (h *handler) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -387,7 +379,11 @@ func (h *handler) authorizeSession(w http.ResponseWriter, r *http.Request, sessi
 		voiceapi.WriteError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, "bearer token required")
 		return false
 	}
-	identity := bound.(serviceSessionIdentity)
+	identity, ok := bound.(serviceSessionIdentity)
+	if !ok {
+		voiceapi.WriteError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, "bearer token required")
+		return false
+	}
 	verified, err := h.verifyServiceToken(r.Context(), voicev1.ServiceAuthorization{
 		Kind:       identity.kind,
 		InstanceID: identity.instanceID,
@@ -464,7 +460,7 @@ func (h *handler) verifyServiceToken(ctx context.Context, s voicev1.ServiceAutho
 			continue
 		}
 		if issuer.OAuth {
-			return h.verifyOAuthToken(ctx, issuer, s)
+			return h.verifyOAuthToken(ctx, &issuer, s)
 		}
 		publicKey, err := gomode.ParseServiceSigningPublicKey(issuer.PublicKey)
 		if err != nil {
@@ -496,7 +492,7 @@ func (h *handler) verifyServiceToken(ctx context.Context, s voicev1.ServiceAutho
 // issuer. The subject comes from the verified token; the service kind,
 // instance, and origin come from the host's authorization envelope because
 // standard access tokens do not carry host-instance claims.
-func (h *handler) verifyOAuthToken(ctx context.Context, issuer TrustedIssuerConfig, s voicev1.ServiceAuthorization) (serviceSessionIdentity, error) {
+func (h *handler) verifyOAuthToken(ctx context.Context, issuer *TrustedIssuerConfig, s voicev1.ServiceAuthorization) (serviceSessionIdentity, error) {
 	if h.verifier == nil {
 		return serviceSessionIdentity{}, errors.New("oauth token verifier is not configured")
 	}
@@ -511,13 +507,17 @@ func (h *handler) verifyOAuthToken(ctx context.Context, issuer TrustedIssuerConf
 	return serviceSessionIdentity{kind: s.Kind, instanceID: s.InstanceID, origin: origin, subject: claims.Subject}, nil
 }
 
+type textTicket struct {
+	origin  string
+	expires time.Time
+}
+
+type serviceSessionIdentity struct {
+	kind, instanceID, origin, subject string
+}
+
 func hasVoiceSessionCapability(claims *gomode.ScopedTokenClaims) bool {
-	for _, capability := range claims.Capabilities {
-		if capability == "voice.session" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(claims.Capabilities, "voice.session")
 }
 
 func validateServiceAuthorization(s voicev1.ServiceAuthorization) error {

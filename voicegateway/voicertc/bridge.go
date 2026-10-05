@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"github.com/pion/webrtc/v4/pkg/media"
 
 	"github.com/maruel/gomode/voicegateway"
+	voiceapi "github.com/maruel/gomode/voicegateway/api"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
@@ -391,17 +393,6 @@ func (b *Bridge) HasSession(sessionID string) bool {
 	return ok
 }
 
-func (b *Bridge) removeSession(sessionID string) (*session, func(string)) {
-	b.sessionsMu.Lock()
-	sess := b.sessions[sessionID]
-	if sess != nil {
-		delete(b.sessions, sessionID)
-	}
-	callback := b.onSessionClosed
-	b.sessionsMu.Unlock()
-	return sess, callback
-}
-
 // DiagnoseVoiceRTC returns structured connectivity diagnostics for a session.
 func (b *Bridge) DiagnoseVoiceRTC(_ context.Context, sessionID string, client *voicev1.VoiceRTCClientDiagnostics) voicev1.VoiceRTCDiagnosticsResp {
 	udpEndpoints, udpMappingError := b.udpDiagnostics()
@@ -486,6 +477,47 @@ func (b *Bridge) CloseAll(ctx context.Context) {
 	if err := b.backend.Close(); err != nil {
 		slog.Warn("voicertc: close backend", "err", err)
 	}
+}
+
+// ServeTextSession upgrades the HTTP request to a client-speech text session
+// that shares the bridge's language model. When the configured backend has no
+// language model, it writes a 503 response and returns the error.
+//
+// A gateway keeps its configured voice backend: text sessions are additive and
+// do not replace the WebRTC audio sessions other clients use.
+func (b *Bridge) ServeTextSession(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+	backend, ok := b.backend.(*localStackBackend)
+	if !ok {
+		err := errors.New("configured voice backend does not serve text sessions")
+		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, err.Error())
+		return err
+	}
+	sessionCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := context.AfterFunc(b.textCtx, cancel) //nolint:contextcheck // the bridge shutdown context cancels every text session
+	defer stop()
+	// Hold textMu so a CloseAll cannot start its Wait between the check and Add.
+	b.textMu.Lock()
+	if b.textCtx.Err() != nil {
+		b.textMu.Unlock()
+		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "voice gateway is shutting down")
+		return errors.New("voice gateway is shutting down")
+	}
+	b.textWG.Add(1)
+	b.textMu.Unlock()
+	defer b.textWG.Done()
+	return serveTextSession(sessionCtx, w, r, generateSessionID(), b.activityLogDir, backend)
+}
+
+func (b *Bridge) removeSession(sessionID string) (sess *session, onClosed func(string)) {
+	b.sessionsMu.Lock()
+	sess = b.sessions[sessionID]
+	if sess != nil {
+		delete(b.sessions, sessionID)
+	}
+	onClosed = b.onSessionClosed
+	b.sessionsMu.Unlock()
+	return sess, onClosed
 }
 
 func (b *Bridge) ensureWebRTCAPI(ctx context.Context) (*webrtc.API, error) {
@@ -712,7 +744,7 @@ func (s *session) sendGatewayMessage(_ context.Context, data []byte) error {
 	return dc.SendText(string(data))
 }
 
-func (s *session) sendGatewayError(message string) {
+func (s *session) sendGatewayError(_ context.Context, message string) {
 	s.sendError(message)
 }
 

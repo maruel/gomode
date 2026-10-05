@@ -49,8 +49,10 @@ describe("VoiceSettings", () => {
     voiceSession.selectLanguage("fr-CA");
     expect(inputs[0]).toHaveValue("fr-CA");
     expect(inputs[1]).toHaveValue("fr-CA");
-    await user.clear(inputs[1]!);
-    await user.type(inputs[1]!, "de-DE");
+    const second = inputs[1];
+    if (!second) throw new Error("second settings view has no textbox");
+    await user.clear(second);
+    await user.type(second, "de-DE");
     voiceSession.selectLanguage("en-GB");
     expect(inputs[0]).toHaveValue("en-GB");
     expect(inputs[1]).toHaveValue("de-DE");

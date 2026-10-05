@@ -149,8 +149,11 @@ afterEach(cleanup);
 // imports are build-time transforms the node runner does not perform; stub them here.
 const STUB_SUFFIXES = [".css", ".png", ".jpg", ".jpeg", ".woff", ".woff2"];
 
+// stripQuery drops the "?raw", "?url", and similar suffix from an import specifier or URL.
+const stripQuery = (specifier: string): string => specifier.split("?")[0] ?? specifier;
+
 const isStubbedSpecifier = (specifier: string): boolean => {
-  const path = specifier.split("?")[0]!;
+  const path = stripQuery(specifier);
   if (specifier.includes("?url") || specifier.includes("?raw")) return true;
   return STUB_SUFFIXES.some((suffix) => path.endsWith(suffix));
 };
@@ -162,7 +165,7 @@ registerHooks({
     if (specifier.includes("?raw")) {
       // ?raw keeps its real file: resolve the stripped specifier, then mark the URL so
       // the load hook below can serve the file's text as the module's default export.
-      const resolved = nextResolve(specifier.split("?")[0]!, context);
+      const resolved = nextResolve(stripQuery(specifier), context);
       return { url: `${resolved.url}?raw`, shortCircuit: true };
     }
     if (isStubbedSpecifier(specifier)) {
@@ -198,8 +201,8 @@ registerHooks({
         source: `export default ${JSON.stringify(readFileSync(filePath, "utf8"))};`,
       };
     }
-    if (/\.tsx$/.test(url.split("?")[0]!)) {
-      const filePath = fileURLToPath(url.split("?")[0]!);
+    if (/\.tsx$/.test(stripQuery(url))) {
+      const filePath = fileURLToPath(stripQuery(url));
       const result = babel.transformSync(readFileSync(filePath, "utf8"), {
         filename: filePath,
         sourceType: "module",

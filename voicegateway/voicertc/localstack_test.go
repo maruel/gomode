@@ -87,7 +87,10 @@ func TestLocalStackSessionLanguage(t *testing.T) {
 	if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
 		t.Fatal(err)
 	}
-	conv := sess.conv.(*genaiConversation)
+	conv, ok := sess.conv.(*genaiConversation)
+	if !ok {
+		t.Fatalf("conversation = %T, want *genaiConversation", sess.conv)
+	}
 	if !strings.Contains(conv.systemInstruction, "selected language: fr-CA") {
 		t.Fatalf("instruction = %q, want selected language", conv.systemInstruction)
 	}
@@ -101,10 +104,12 @@ func TestLocalStackSessionLanguage(t *testing.T) {
 }
 
 func TestLocalStackSession(t *testing.T) {
+	t.Parallel()
 	t.Run("generation failure reaches client", func(t *testing.T) {
 		t.Parallel()
 		for _, cancelled := range []bool{false, true} {
 			t.Run(fmt.Sprintf("cancelled=%t", cancelled), func(t *testing.T) {
+				t.Parallel()
 				ctx, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				if cancelled {
@@ -133,7 +138,6 @@ func TestLocalStackSession(t *testing.T) {
 			})
 		}
 	})
-	t.Parallel()
 
 	t.Run("tool round trip", func(t *testing.T) {
 		t.Parallel()
@@ -821,12 +825,12 @@ func TestLocalStackModelsForConfig(t *testing.T) {
 	}
 }
 
-func TestLocalStackProviderCleanup(t *testing.T) {
+func TestLocalStackProviderCleanup(t *testing.T) { //nolint:paralleltest // The test registers a provider in the process-wide genai registry.
 	const name = "gomode-test-cleanup"
 	t.Cleanup(func() { delete(providers.All, name) })
 	closeErr := errors.New("provider close failed")
 	pingErr := errors.New("provider ping failed")
-	for _, tc := range []struct {
+	for _, tc := range []struct { //nolint:paralleltest // The cases share one registered provider name.
 		name        string
 		pingErr     error
 		llmProvider string
@@ -872,6 +876,7 @@ func TestLocalStackProviderCleanup(t *testing.T) {
 
 type cleanupGenAIProvider struct {
 	fakeGenAIProvider
+
 	pingErr  error
 	closeErr error
 	closed   bool
@@ -913,7 +918,7 @@ func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
 	const envName = "GOMODE_TEST_LLM_KEY"
 	// Setenv requires this test and its ancestors to run serially.
 	t.Setenv(envName, "test-llm-key")
-	for _, redirect := range []bool{false, true} {
+	for _, redirect := range []bool{false, true} { //nolint:paralleltest // The parent test sets an environment variable.
 		t.Run(fmt.Sprintf("redirect=%t", redirect), func(t *testing.T) {
 			destination := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				t.Error("authenticated request followed redirect to another endpoint")
@@ -1061,8 +1066,8 @@ func (c *captureSink) sendGatewayMessage(_ context.Context, data []byte) error {
 	return nil
 }
 
-func (c *captureSink) sendGatewayError(message string) {
-	_ = c.sendGatewayMessage(context.Background(), mustGatewayServerMessage(&voicev1.Error{
+func (c *captureSink) sendGatewayError(ctx context.Context, message string) {
+	_ = c.sendGatewayMessage(ctx, mustGatewayServerMessage(&voicev1.Error{
 		Kind: voicev1.MessageKindError, Message: message,
 	}))
 }

@@ -22,6 +22,14 @@ type VoiceRTCOfferReq struct {
 	Service *ServiceAuthorization `json:"service,omitempty"`
 }
 
+// Validate checks that the SDP offer is provided.
+func (r *VoiceRTCOfferReq) Validate() error {
+	if r.SDP == "" {
+		return &api.Error{Status: http.StatusBadRequest, Code: api.CodeBadRequest, Message: "sdp is required"}
+	}
+	return nil
+}
+
 // VoiceTextTicketReq authorizes a browser text-session WebSocket upgrade.
 // Embedded hosts authenticate this HTTP request before dispatch.
 type VoiceTextTicketReq struct {
@@ -43,14 +51,6 @@ type ServiceAuthorization struct {
 	InstanceID string `json:"instanceID"`
 	BaseURL    string `json:"baseURL"`
 	Token      string `json:"token"`
-}
-
-// Validate checks that the SDP offer is provided.
-func (r *VoiceRTCOfferReq) Validate() error {
-	if r.SDP == "" {
-		return &api.Error{Status: http.StatusBadRequest, Code: api.CodeBadRequest, Message: "sdp is required"}
-	}
-	return nil
 }
 
 // VoiceRTCAnswerResp is the response for POST /api/voicegateway/v1/voice/rtc/offer.

@@ -180,7 +180,7 @@ func TestStartRestartWatch(t *testing.T) {
 	})
 }
 
-func TestRestartWatchProcess(t *testing.T) {
+func TestRestartWatchProcess(t *testing.T) { //nolint:paralleltest // Subprocess helper driven by the parent test.
 	dir := os.Getenv("GOMODE_RESTART_WATCH_DIR")
 	if dir == "" {
 		t.Skip("subprocess helper")

@@ -236,6 +236,7 @@ voice = "af_heart"
 		{"TTS engine", func(c *Config) { c.LocalStack.TTS.Engine = "unknown" }, "local_stack.tts.engine"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			bad := cfg
 			tc.edit(&bad)
 			if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -596,6 +597,7 @@ voice = "Luna"
 }
 
 func TestValidateWhistleASR(t *testing.T) {
+	t.Parallel()
 	for _, cfg := range []LocalStackASRConfig{{Engine: LocalStackASRWhistle}, {Engine: LocalStackASRWhistle, Model: "/tmp/whistle.cact"}} {
 		if err := validateLocalStackASR(cfg); err != nil {
 			t.Fatal(err)

@@ -15,7 +15,6 @@ import (
 
 	"github.com/coder/websocket"
 
-	voiceapi "github.com/maruel/gomode/voicegateway/api"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
@@ -73,7 +72,7 @@ func serveTextSession(ctx context.Context, w http.ResponseWriter, r *http.Reques
 		}
 		if err := log.record(activitydata.SourceClient, data); err != nil {
 			slog.ErrorContext(sessionCtx, "voicertc: activity log write failed", "session", sessionID, "err", err)
-			sink.sendGatewayError("Failed to record voice activity: " + err.Error())
+			sink.sendGatewayError(sessionCtx, "Failed to record voice activity: "+err.Error())
 			return nil
 		}
 		if err := sess.acceptClientMessage(sessionCtx, data); err != nil {
@@ -81,7 +80,7 @@ func serveTextSession(ctx context.Context, w http.ResponseWriter, r *http.Reques
 				return nil
 			}
 			slog.WarnContext(sessionCtx, "voicertc: text session message", "err", err)
-			sink.sendGatewayError(err.Error())
+			sink.sendGatewayError(sessionCtx, err.Error())
 			return nil
 		}
 	}
@@ -114,8 +113,9 @@ func (s *textSink) sendGatewayMessage(ctx context.Context, data []byte) error {
 	return nil
 }
 
-func (s *textSink) sendGatewayError(message string) {
-	_ = s.sendGatewayMessage(context.Background(), mustGatewayServerMessage(&voicev1.Error{
+// sendGatewayError delivers message even when ctx is already canceled.
+func (s *textSink) sendGatewayError(ctx context.Context, message string) {
+	_ = s.sendGatewayMessage(context.WithoutCancel(ctx), mustGatewayServerMessage(&voicev1.Error{
 		Kind:        voicev1.MessageKindError,
 		Message:     message,
 		Recoverable: false,
@@ -130,33 +130,3 @@ func (s *textSink) cancelSession() {
 func (s *textSink) addAssistantPCM([]byte) {}
 
 func (s *textSink) clearAssistantAudio() {}
-
-// ServeTextSession upgrades the HTTP request to a client-speech text session
-// that shares the bridge's language model. When the configured backend has no
-// language model, it writes a 503 response and returns the error.
-//
-// A gateway keeps its configured voice backend: text sessions are additive and
-// do not replace the WebRTC audio sessions other clients use.
-func (b *Bridge) ServeTextSession(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-	backend, ok := b.backend.(*localStackBackend)
-	if !ok {
-		err := errors.New("configured voice backend does not serve text sessions")
-		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, err.Error())
-		return err
-	}
-	sessionCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	stop := context.AfterFunc(b.textCtx, cancel)
-	defer stop()
-	// Hold textMu so a CloseAll cannot start its Wait between the check and Add.
-	b.textMu.Lock()
-	if b.textCtx.Err() != nil {
-		b.textMu.Unlock()
-		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "voice gateway is shutting down")
-		return errors.New("voice gateway is shutting down")
-	}
-	b.textWG.Add(1)
-	b.textMu.Unlock()
-	defer b.textWG.Done()
-	return serveTextSession(sessionCtx, w, r, generateSessionID(), b.activityLogDir, backend)
-}

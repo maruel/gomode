@@ -8,6 +8,8 @@ import (
 	"github.com/maruel/apisdkgen/apispec"
 )
 
+//go:generate go run ./internal/cmd/gen-sdk
+
 // SDKAPI returns the SDK generation specification for the Go Mode service discovery API.
 func SDKAPI() apispec.Config[string] {
 	return apispec.Config[string]{

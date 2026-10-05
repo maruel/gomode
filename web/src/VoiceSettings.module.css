@@ -23,15 +23,15 @@
 }
 
 .settings input[type="text"] {
+  width: 8rem;
+  min-width: 0;
+  max-width: 100%;
   padding: 0.4rem 0.6rem;
   font: inherit;
   color: var(--color-text-secondary);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-medium);
   border-radius: var(--radius-sm);
-  width: 8rem;
-  max-width: 100%;
-  min-width: 0;
 }
 
 .settings input[type="radio"] {

@@ -41,7 +41,7 @@ async function authenticatedFetch(path: string, init?: RequestInit): Promise<Res
   return fetch(path, { ...init, headers });
 }
 
-function endpoint(): string {
+function configuredEndpoint(): string {
   if (mcpEndpoint === null) throw new Error("Go Mode MCP endpoint has not been configured");
   return mcpEndpoint;
 }
@@ -78,7 +78,7 @@ async function mcpRequest(
   };
   if (opts.name !== undefined) headers["Mcp-Name"] = opts.name;
 
-  const resp = await authenticatedFetch(endpoint(), {
+  const resp = await authenticatedFetch(configuredEndpoint(), {
     method: "POST",
     headers,
     body: JSON.stringify({
@@ -115,7 +115,7 @@ export interface McpToolDescriptor {
 }
 
 async function mcpServerInstructions(): Promise<string> {
-  const api = createMcpApiClient((path, init) => authenticatedFetch(`${endpoint()}${path}`, init));
+  const api = createMcpApiClient((path, init) => authenticatedFetch(`${configuredEndpoint()}${path}`, init));
   return api.serverInstructions();
 }
 
@@ -284,7 +284,7 @@ function subscribeMcpResources(
     if (closed) return;
     controller = new AbortController();
     try {
-      const resp = await authenticatedFetch(endpoint(), {
+      const resp = await authenticatedFetch(configuredEndpoint(), {
         method: "POST",
         headers: {
           Accept: "text/event-stream",

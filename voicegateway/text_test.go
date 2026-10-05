@@ -51,7 +51,7 @@ func TestTextSessionTickets(t *testing.T) {
 			t.Fatal(err)
 		}
 		issue := func(requestOrigin, body string) *httptest.ResponseRecorder {
-			r := httptest.NewRequest(http.MethodPost, "/api/voicegateway/v1/voice/text/ticket", strings.NewReader(body))
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/text/ticket", strings.NewReader(body))
 			r.Header.Set("Origin", requestOrigin)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, r)
@@ -75,7 +75,7 @@ func TestTextSessionTickets(t *testing.T) {
 			t.Fatal("empty ticket")
 		}
 		redeem := func(requestOrigin, protocols string) int {
-			r := httptest.NewRequest(http.MethodGet, "/api/voicegateway/v1/voice/text/browser", nil)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/text/browser", http.NoBody)
 			r.Header.Set("Origin", requestOrigin)
 			r.Header.Set("Sec-WebSocket-Protocol", protocols)
 			w := httptest.NewRecorder()
@@ -134,7 +134,7 @@ func TestTextSessionTickets(t *testing.T) {
 		}
 		server := httptest.NewServer(h)
 		t.Cleanup(server.Close)
-		r := httptest.NewRequest(http.MethodPost, "/api/voicegateway/v1/voice/text/ticket", strings.NewReader(`{"service":`+serviceJSON+`}`))
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/text/ticket", strings.NewReader(`{"service":`+serviceJSON+`}`))
 		r.Header.Set("Origin", origin)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
@@ -176,7 +176,7 @@ func TestTextSessionTickets(t *testing.T) {
 			return nil
 		}))
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/voicegateway/v1/voice/text/browser", nil))
+		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/text/browser", http.NoBody))
 		if w.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d", w.Code)
 		}
@@ -184,7 +184,7 @@ func TestTextSessionTickets(t *testing.T) {
 	t.Run("rejects expired tickets", func(t *testing.T) {
 		t.Parallel()
 		h := &handler{textTickets: map[string]textTicket{"expired": {origin: "https://host.example", expires: time.Now().Add(-time.Second)}}}
-		r := httptest.NewRequest(http.MethodGet, "/api/voicegateway/v1/voice/text/browser", nil)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/text/browser", http.NoBody)
 		r.Header.Set("Origin", "https://host.example")
 		r.Header.Set("Sec-WebSocket-Protocol", "gomode.text.v1, gomode.ticket.expired")
 		w := httptest.NewRecorder()
@@ -197,7 +197,7 @@ func TestTextSessionTickets(t *testing.T) {
 		t.Parallel()
 		h := NewEmbeddedHandler(nil, nil)
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/voicegateway/v1/voice/text/ticket", strings.NewReader(`{}`)))
+		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/text/ticket", strings.NewReader(`{}`)))
 		if w.Code != http.StatusServiceUnavailable {
 			t.Fatalf("status = %d", w.Code)
 		}
@@ -211,7 +211,7 @@ func TestTextSessionRoute(t *testing.T) {
 		t.Parallel()
 		handler := NewEmbeddedHandler(nil, nil)
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/voicegateway/v1/voice/text", nil))
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/text", http.NoBody))
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 		}
@@ -227,7 +227,7 @@ func TestTextSessionRoute(t *testing.T) {
 			t.Fatal(err)
 		}
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/voicegateway/v1/voice/text", nil))
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/text", http.NoBody))
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 		}
@@ -243,7 +243,7 @@ func TestTextSessionRoute(t *testing.T) {
 		})
 		handler := NewEmbeddedHandler(nil, server)
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/voicegateway/v1/voice/text", nil))
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/text", http.NoBody))
 		if !called {
 			t.Fatal("text session server was not called")
 		}
@@ -268,7 +268,7 @@ func TestTextSessionRoute(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		req := httptest.NewRequest(http.MethodGet, "/api/voicegateway/v1/voice/text", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/text", http.NoBody)
 		req.Header.Set("Authorization", "Bearer "+auth.Token)
 		req.Header.Set("X-Service-Kind", auth.Kind)
 		req.Header.Set("X-Service-Instance", auth.InstanceID)
@@ -298,7 +298,7 @@ func TestTextSessionRoute(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		req := httptest.NewRequest(http.MethodGet, "/api/voicegateway/v1/voice/text", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/text", http.NoBody)
 		req.Header.Set("Authorization", "Bearer bogus")
 		req.Header.Set("X-Service-Kind", auth.Kind)
 		req.Header.Set("X-Service-Instance", auth.InstanceID)

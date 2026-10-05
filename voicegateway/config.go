@@ -119,7 +119,7 @@ func (c *Config) validate(requireHTTP bool) error {
 		errs = append(errs, fmt.Errorf("backend %q is not a known backend", c.Backend))
 	}
 	for i, issuer := range c.TrustedIssuers {
-		errs = append(errs, validateTrustedIssuer(i, issuer))
+		errs = append(errs, validateTrustedIssuer(i, &issuer))
 	}
 	errs = append(errs, c.LocalStack.validate())
 	return errors.Join(errs...)
@@ -287,7 +287,7 @@ type TrustedIssuerConfig struct {
 }
 
 // OAuthAudience returns the audience an OAuth token from this issuer must carry.
-func (c TrustedIssuerConfig) OAuthAudience() string {
+func (c *TrustedIssuerConfig) OAuthAudience() string {
 	if c.Audience == "" {
 		return gomode.ScopedTokenAudience
 	}
@@ -295,7 +295,7 @@ func (c TrustedIssuerConfig) OAuthAudience() string {
 }
 
 // OAuthScope returns the scope an OAuth token from this issuer must carry.
-func (c TrustedIssuerConfig) OAuthScope() string {
+func (c *TrustedIssuerConfig) OAuthScope() string {
 	if c.Scope == "" {
 		return DefaultVoiceScope
 	}
@@ -319,7 +319,7 @@ func validateLocalStackProvider(prefix, provider, remote string) error {
 	return nil
 }
 
-func validateTrustedIssuer(i int, issuer TrustedIssuerConfig) error {
+func validateTrustedIssuer(i int, issuer *TrustedIssuerConfig) error {
 	var errs []error
 	prefix := fmt.Sprintf("trusted_issuers[%d]", i)
 	if issuer.Service == "" {

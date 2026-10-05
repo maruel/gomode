@@ -257,9 +257,14 @@ describe("VoiceSession", () => {
     Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true, value: sink });
     const audio = new window.Audio();
     vi.spyOn(audio, "play").mockResolvedValue();
-    vi.stubGlobal("Audio", function () {
-      return audio;
-    });
+    vi.stubGlobal(
+      "Audio",
+      class {
+        constructor() {
+          return audio;
+        }
+      },
+    );
     const session = new VoiceSession();
     try {
       vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue(devices);
@@ -292,9 +297,14 @@ describe("VoiceSession", () => {
       Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true, value: sink });
       const audio = new window.Audio();
       vi.spyOn(audio, "play").mockResolvedValue();
-      vi.stubGlobal("Audio", function () {
-        return audio;
-      });
+      vi.stubGlobal(
+        "Audio",
+        class {
+          constructor() {
+            return audio;
+          }
+        },
+      );
       const session = new VoiceSession();
       try {
         vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue(devices);

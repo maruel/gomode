@@ -535,6 +535,22 @@ type storeState struct {
 	CurrentSigningKID      string
 }
 
+func (s *storeState) disk() v5.Store {
+	clients := make(map[string]v5.Client, len(s.Clients))
+	for id, c := range s.Clients { //nolint:gocritic // map values are not addressable
+		clients[id] = v5.Client{ID: c.ID, Name: c.Name, RedirectURIs: c.RedirectURIs, TokenEndpointAuthMethod: c.TokenEndpointAuthMethod, GrantTypes: c.GrantTypes, CreatedAt: c.CreatedAt, Provenance: v5.ClientProvenance(c.Provenance)}
+	}
+	devices := make(map[string]*v5.DeviceCode, len(s.DeviceCodes))
+	for key, d := range s.DeviceCodes {
+		if d == nil {
+			devices[key] = nil
+			continue
+		}
+		devices[key] = &v5.DeviceCode{UserCodeKey: d.UserCodeKey, ClientID: d.ClientID, Scope: d.Scope, UserID: d.UserID, Status: d.Status, ExpiresAt: d.ExpiresAt, IssuedAt: d.IssuedAt}
+	}
+	return v5.Store{Version: storeVersion, Clients: clients, RefreshTokens: s.RefreshTokens, Grants: s.Grants, Codes: s.Codes, Consents: s.Consents, DeviceCodes: devices, DPoPProofs: s.DPoPProofs, DPoPNonces: s.DPoPNonces, ClientAssertionJTIs: s.ClientAssertionJTIs, AccessTokenSigningKeys: s.AccessTokenSigningKeys, CurrentSigningKID: s.CurrentSigningKID}
+}
+
 func pruneExpiredStore(file *storeState, now time.Time) bool {
 	changed := false
 	for token := range file.RefreshTokens {
@@ -590,25 +606,9 @@ func pruneExpiredStore(file *storeState, now time.Time) bool {
 	return changed
 }
 
-func (s *storeState) disk() v5.Store {
-	clients := make(map[string]v5.Client, len(s.Clients))
-	for id, c := range s.Clients {
-		clients[id] = v5.Client{ID: c.ID, Name: c.Name, RedirectURIs: c.RedirectURIs, TokenEndpointAuthMethod: c.TokenEndpointAuthMethod, GrantTypes: c.GrantTypes, CreatedAt: c.CreatedAt, Provenance: v5.ClientProvenance(c.Provenance)}
-	}
-	devices := make(map[string]*v5.DeviceCode, len(s.DeviceCodes))
-	for key, d := range s.DeviceCodes {
-		if d == nil {
-			devices[key] = nil
-			continue
-		}
-		devices[key] = &v5.DeviceCode{UserCodeKey: d.UserCodeKey, ClientID: d.ClientID, Scope: d.Scope, UserID: d.UserID, Status: d.Status, ExpiresAt: d.ExpiresAt, IssuedAt: d.IssuedAt}
-	}
-	return v5.Store{Version: storeVersion, Clients: clients, RefreshTokens: s.RefreshTokens, Grants: s.Grants, Codes: s.Codes, Consents: s.Consents, DeviceCodes: devices, DPoPProofs: s.DPoPProofs, DPoPNonces: s.DPoPNonces, ClientAssertionJTIs: s.ClientAssertionJTIs, AccessTokenSigningKeys: s.AccessTokenSigningKeys, CurrentSigningKID: s.CurrentSigningKID}
-}
-
 func loadClients(src map[string]v5.Client) map[string]Client {
 	dst := make(map[string]Client, len(src))
-	for id, c := range src {
+	for id, c := range src { //nolint:gocritic // map values are not addressable
 		dst[id] = Client{ID: c.ID, Name: c.Name, RedirectURIs: c.RedirectURIs, TokenEndpointAuthMethod: c.TokenEndpointAuthMethod, GrantTypes: c.GrantTypes, CreatedAt: c.CreatedAt, Provenance: ClientProvenance(c.Provenance)}
 	}
 	return dst
