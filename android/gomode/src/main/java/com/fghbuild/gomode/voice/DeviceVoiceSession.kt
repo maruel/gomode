@@ -109,6 +109,20 @@ internal class DeviceVoiceSession(
     private val pendingNotifications = ArrayList<String>()
     private val segmenter = SentenceSegmenter()
 
+    private val audioStateJob =
+        scope.launch {
+            callController.audioState.collect { audio ->
+                _state.update {
+                    it.copy(
+                        availableDevices = audio.devices,
+                        selectedDeviceId = audio.selectedDeviceId,
+                        audioError = audio.error,
+                        audioSwitching = audio.switching,
+                    )
+                }
+            }
+        }
+
     override fun connect(preserveTranscript: Boolean) {
         val attempt = invalidateAttempt()
         connectJob?.cancel()
@@ -533,7 +547,7 @@ internal class DeviceVoiceSession(
     }
 
     override fun selectAudioDevice(deviceId: Int) {
-        // Device mode uses the platform default routing for recognition and speech.
+        callController.selectAudioDevice(deviceId)
     }
 
     override fun clearTranscript() {
@@ -549,6 +563,7 @@ internal class DeviceVoiceSession(
     }
 
     override fun close() {
+        audioStateJob.cancel()
         disconnect()
         speech.close()
     }

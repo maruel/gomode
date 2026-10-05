@@ -239,22 +239,47 @@
 
 .deviceRow {
   display: flex;
-  gap: 0.5rem;
-  align-items: center;
-  margin-bottom: 0.25rem;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.deviceField {
+  display: flex;
+  flex: 1 1 14rem;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+  max-width: 26rem;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+}
+
+.deviceHint {
+  color: var(--color-text-muted);
+}
+
+.audioError {
+  color: var(--color-danger);
 }
 
 .deviceSelect {
   flex: 1;
   min-width: 0;
-  padding: 0.25rem 0.4rem;
+  min-height: 2.75rem;
+  padding: 0.5rem;
   font: inherit;
-  font-size: 0.75rem;
+  font-size: 0.9rem;
   color: var(--color-text-secondary);
   cursor: pointer;
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
+}
+
+.deviceSelect:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
 }
 
 /* ---- Mic level bars ---- */

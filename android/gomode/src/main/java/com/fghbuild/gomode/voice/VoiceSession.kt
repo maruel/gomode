@@ -240,6 +240,24 @@ internal class VoiceSession(
     private var lastIceGatheringState: String? = null
     private var lastSignalingState: String? = null
 
+    private val audioStateJob =
+        if (callController.isSupported()) {
+            scope.launch {
+                callController.audioState.collect { audio ->
+                    _state.update {
+                        it.copy(
+                            availableDevices = audio.devices,
+                            selectedDeviceId = audio.selectedDeviceId,
+                            audioError = audio.error,
+                            audioSwitching = audio.switching,
+                        )
+                    }
+                }
+            }
+        } else {
+            null
+        }
+
     override fun setError(message: String) {
         val attempt = invalidateAttempt()
         val deferAudioRelease = deferDisconnectAudio(attempt)
@@ -876,8 +894,11 @@ internal class VoiceSession(
     }
 
     override fun selectAudioDevice(deviceId: Int) {
-        _state.update { it.copy(selectedDeviceId = deviceId) }
-        applyCommunicationDevice(deviceId)
+        if (telecomCallActive) {
+            callController.selectAudioDevice(deviceId)
+        } else {
+            applyCommunicationDevice(deviceId)
+        }
     }
 
     private fun releaseTransport() {
@@ -958,6 +979,7 @@ internal class VoiceSession(
     }
 
     override fun close() {
+        audioStateJob?.cancel()
         disconnect()
     }
 
@@ -1196,6 +1218,7 @@ internal class VoiceSession(
 
     /** Populate available devices list and auto-select the best device. */
     private fun refreshAvailableDevices() {
+        if (callController.isSupported()) return
         val devices =
             audioManager.availableCommunicationDevices.map { info ->
                 AudioDevice(id = info.id, type = info.type, name = audioDeviceTypeName(info.type))
@@ -1213,7 +1236,7 @@ internal class VoiceSession(
                     ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET }?.id
                     ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }?.id
             }
-        _state.update { it.copy(availableDevices = devices, selectedDeviceId = autoSelect) }
+        _state.update { it.copy(availableDevices = devices) }
         if (autoSelect != null) {
             applyCommunicationDevice(autoSelect)
         }
@@ -1222,8 +1245,16 @@ internal class VoiceSession(
     private fun applyCommunicationDevice(deviceId: Int) {
         val info =
             audioManager.availableCommunicationDevices.firstOrNull { it.id == deviceId }
-                ?: return
-        audioManager.setCommunicationDevice(info)
+        if (info == null) {
+            refreshAvailableDevices()
+            _state.update { it.copy(audioError = "Audio device is no longer available. Choose another device.") }
+            return
+        }
+        if (audioManager.setCommunicationDevice(info)) {
+            _state.update { it.copy(selectedDeviceId = deviceId, audioError = null) }
+        } else {
+            _state.update { it.copy(audioError = "Could not switch audio device") }
+        }
     }
 
     private fun registerDeviceCallback() {
@@ -1390,6 +1421,8 @@ data class VoiceState(
     val availableDevices: List<AudioDevice> = emptyList(),
     /** Currently selected audio device ID, or null for system default. */
     val selectedDeviceId: Int? = null,
+    val audioError: String? = null,
+    val audioSwitching: Boolean = false,
 )
 
 /** Build a bounded recovery-only context without replaying unfinished transcript deltas. */

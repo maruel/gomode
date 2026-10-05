@@ -36,6 +36,12 @@ import {
 } from "../../sdk/voicegateway/ts/v1/types.gen";
 
 class FakePeerConnection extends EventTarget {
+  readonly sender = { track: { kind: "audio" }, replaceTrack: vi.fn(async (_track: MediaStreamTrack) => {}) };
+  readonly addedTracks: MediaStreamTrack[] = [];
+
+  getSenders() {
+    return [this.sender];
+  }
   static completeICE = true;
   static reflexiveCandidateDelayMs: number | null = null;
   static last: FakePeerConnection | null = null;
@@ -55,7 +61,9 @@ class FakePeerConnection extends EventTarget {
     FakePeerConnection.instances.push(this);
   }
 
-  addTrack(): void {}
+  addTrack(track: MediaStreamTrack): void {
+    this.addedTracks.push(track);
+  }
 
   createDataChannel(): RTCDataChannel {
     const channel = new FakeDataChannel();
@@ -212,6 +220,7 @@ beforeEach(() => {
   Object.defineProperty(navigator, "mediaDevices", {
     configurable: true,
     value: {
+      enumerateDevices: vi.fn(async () => []),
       getUserMedia: vi.fn(async () => ({
         getAudioTracks: () => [{}],
         getTracks: () => [],
@@ -239,6 +248,223 @@ class FakeAudioContext {
 }
 
 describe("VoiceSession", () => {
+  it("keeps a failed speaker recovery visible when the same headset microphone recovers", async () => {
+    const devices = [
+      { kind: "audioinput", deviceId: "usb", label: "Headset microphone" } as MediaDeviceInfo,
+      { kind: "audiooutput", deviceId: "bt", label: "Headset speaker" } as MediaDeviceInfo,
+    ];
+    const sink = vi.fn(async (_id: string) => {});
+    Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true, value: sink });
+    const audio = new window.Audio();
+    vi.spyOn(audio, "play").mockResolvedValue();
+    vi.stubGlobal("Audio", function () {
+      return audio;
+    });
+    const session = new VoiceSession();
+    try {
+      vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue(devices);
+      await session.selectInputDevice("usb");
+      await session.selectOutputDevice("bt");
+      await session.connect();
+      const pc = FakePeerConnection.last;
+      pc?.ontrack?.call(pc as unknown as RTCPeerConnection, { streams: [{}] } as unknown as RTCTrackEvent);
+      await vi.waitFor(() => expect(session.state.audioSwitching).toBeNull());
+      sink.mockRejectedValueOnce(new Error("Speaker permission denied"));
+      vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue([]);
+      await session.enumerateDevices();
+      expect(session.state.selectedInputId).toBe("");
+      expect(session.state.selectedOutputId).toBe("bt");
+      expect(session.state.audioOutputError).toContain("Speaker permission denied");
+      expect(session.state.audioInputError).toBeNull();
+    } finally {
+      session.disconnect();
+      Reflect.deleteProperty(HTMLMediaElement.prototype, "setSinkId");
+    }
+  });
+
+  for (const kind of ["input", "output"] as const) {
+    it(`does not retain an ${kind} disconnection warning after overlapping refreshes recover it`, async () => {
+      const devices = [
+        { kind: "audioinput", deviceId: "usb", label: "USB microphone" } as MediaDeviceInfo,
+        { kind: "audiooutput", deviceId: "bt", label: "Bluetooth headphones" } as MediaDeviceInfo,
+      ];
+      const sink = vi.fn(async (_id: string) => {});
+      Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true, value: sink });
+      const audio = new window.Audio();
+      vi.spyOn(audio, "play").mockResolvedValue();
+      vi.stubGlobal("Audio", function () {
+        return audio;
+      });
+      const session = new VoiceSession();
+      try {
+        vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue(devices);
+        await session.selectInputDevice("usb");
+        await session.selectOutputDevice("bt");
+        await session.connect();
+        const pc = FakePeerConnection.last;
+        pc?.ontrack?.call(pc as unknown as RTCPeerConnection, { streams: [{}] } as unknown as RTCTrackEvent);
+        await vi.waitFor(() => expect(session.state.audioSwitching).toBeNull());
+        const microphone = deferred<MediaStream>();
+        const speaker = deferred<void>();
+        if (kind === "input") vi.mocked(navigator.mediaDevices.getUserMedia).mockReturnValueOnce(microphone.promise);
+        else sink.mockReturnValueOnce(speaker.promise);
+        vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue(
+          devices.filter((d) => d.kind !== `audio${kind}`),
+        );
+        const recovery = session.enumerateDevices();
+        await vi.waitFor(() => expect(session.state.audioSwitching).toBe(kind));
+        await session.enumerateDevices();
+        if (kind === "input")
+          microphone.resolve({ getTracks: () => [], getAudioTracks: () => [{}] } as unknown as MediaStream);
+        else speaker.resolve();
+        await recovery;
+        expect(kind === "input" ? session.state.selectedInputId : session.state.selectedOutputId).toBe("");
+        expect(session.state.audioInputError).toBeNull();
+        expect(session.state.audioOutputError).toBeNull();
+
+        // A successful switch must preserve a newer warning about the other route.
+        const nextMicrophone = deferred<MediaStream>();
+        const nextSpeaker = deferred<void>();
+        if (kind === "input")
+          vi.mocked(navigator.mediaDevices.getUserMedia).mockReturnValueOnce(nextMicrophone.promise);
+        else sink.mockReturnValueOnce(nextSpeaker.promise);
+        const switching = kind === "input" ? session.selectInputDevice("") : session.selectOutputDevice("");
+        vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue([]);
+        await session.enumerateDevices();
+        if (kind === "input")
+          nextMicrophone.resolve({ getTracks: () => [], getAudioTracks: () => [{}] } as unknown as MediaStream);
+        else nextSpeaker.resolve();
+        await switching;
+        expect(kind === "input" ? session.state.audioOutputError : session.state.audioInputError).toBe(
+          kind === "input"
+            ? "Speaker disconnected. Choose another speaker."
+            : "Microphone disconnected. Choose another microphone.",
+        );
+      } finally {
+        session.disconnect();
+        Reflect.deleteProperty(HTMLMediaElement.prototype, "setSinkId");
+      }
+    });
+  }
+
+  it("installs the initial sender before recovering a mic lost during setup", async () => {
+    const stop = vi.fn();
+    const oldTrack = { stop, enabled: true };
+    const newTrack = { stop: vi.fn(), enabled: true };
+    vi.mocked(navigator.mediaDevices.getUserMedia)
+      .mockResolvedValueOnce({
+        getTracks: () => [oldTrack],
+        getAudioTracks: () => [oldTrack],
+      } as unknown as MediaStream)
+      .mockImplementationOnce(async () => {
+        expect(FakePeerConnection.last?.addedTracks).toEqual([oldTrack]);
+        return { getTracks: () => [newTrack], getAudioTracks: () => [newTrack] } as unknown as MediaStream;
+      });
+    const session = new VoiceSession();
+    await session.selectInputDevice("usb");
+    await session.connect();
+    expect(FakePeerConnection.last?.addedTracks).toEqual([oldTrack]);
+    expect(FakePeerConnection.last?.sender.replaceTrack).toHaveBeenCalledWith(newTrack);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(session.state.selectedInputId).toBe("");
+    session.disconnect();
+  });
+
+  it("ignores an older device list that omits a currently selected microphone", async () => {
+    const devices = [{ kind: "audioinput", deviceId: "usb", label: "USB headset" } as MediaDeviceInfo];
+    vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue(devices);
+    const session = new VoiceSession();
+    await session.selectInputDevice("usb");
+    await session.connect();
+    const oldList = deferred<MediaDeviceInfo[]>();
+    const newList = deferred<MediaDeviceInfo[]>();
+    vi.mocked(navigator.mediaDevices.enumerateDevices)
+      .mockReturnValueOnce(oldList.promise)
+      .mockReturnValueOnce(newList.promise);
+    const older = session.enumerateDevices();
+    const newer = session.enumerateDevices();
+    newList.resolve(devices);
+    await newer;
+    oldList.resolve([]);
+    await older;
+    expect(session.state.selectedInputId).toBe("usb");
+    expect(session.state.audioInputs[0]?.deviceId).toBe("usb");
+    expect(FakePeerConnection.last?.sender.replaceTrack).not.toHaveBeenCalled();
+    session.disconnect();
+  });
+
+  it("replaces an unplugged selected microphone with the system default", async () => {
+    const stop = vi.fn();
+    const oldTrack = { stop, enabled: true };
+    const newTrack = { stop: vi.fn(), enabled: true };
+    vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue([
+      { kind: "audioinput", deviceId: "usb", label: "USB headset" } as MediaDeviceInfo,
+    ]);
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockResolvedValue({
+      getTracks: () => [oldTrack],
+      getAudioTracks: () => [oldTrack],
+    } as unknown as MediaStream);
+    const session = new VoiceSession();
+    await session.selectInputDevice("usb");
+    await session.connect();
+    vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue([]);
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockResolvedValue({
+      getTracks: () => [newTrack],
+      getAudioTracks: () => [newTrack],
+    } as unknown as MediaStream);
+    await session.enumerateDevices();
+    expect(FakePeerConnection.last?.sender.replaceTrack).toHaveBeenCalledWith(newTrack);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(session.state.selectedInputId).toBe("");
+    expect(session.state.audioInputError).toBeNull();
+    session.disconnect();
+  });
+
+  it("keeps the working microphone and selection when switching fails", async () => {
+    const stop = vi.fn();
+    const track = { stop, enabled: true };
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockResolvedValue({
+      getTracks: () => [track],
+      getAudioTracks: () => [track],
+    } as unknown as MediaStream);
+    const session = new VoiceSession();
+    await session.connect();
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValue(new Error("Permission denied"));
+    await session.selectInputDevice("headset");
+    expect(stop).not.toHaveBeenCalled();
+    expect(session.state.selectedInputId).toBe("");
+    expect(session.state.audioInputError).toContain("Permission denied");
+    expect(session.state.audioSwitching).toBeNull();
+    session.disconnect();
+  });
+
+  it("replaces a muted microphone before stopping the old stream", async () => {
+    const stop = vi.fn();
+    const oldTrack = { stop, enabled: true };
+    const newTrack = { stop: vi.fn(), enabled: true };
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockResolvedValue({
+      getTracks: () => [oldTrack],
+      getAudioTracks: () => [oldTrack],
+    } as unknown as MediaStream);
+    const session = new VoiceSession();
+    await session.connect();
+    session.toggleMute();
+    const pc = FakePeerConnection.last;
+    pc?.sender.replaceTrack.mockImplementation(async () => {
+      expect(stop).not.toHaveBeenCalled();
+    });
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockResolvedValue({
+      getTracks: () => [newTrack],
+      getAudioTracks: () => [newTrack],
+    } as unknown as MediaStream);
+    await session.selectInputDevice("headset");
+    expect(pc?.sender.replaceTrack).toHaveBeenCalledWith(newTrack);
+    expect(newTrack.enabled).toBe(false);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(session.state.selectedInputId).toBe("headset");
+    session.disconnect();
+  });
+
   it("does not resume setup when disconnected during MCP discovery", async () => {
     const tools = deferred<Awaited<ReturnType<typeof mcpClient.listTools>>>();
     mcpMocks.mcpListTools.mockReturnValue(tools.promise);

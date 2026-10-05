@@ -4,11 +4,13 @@ package com.fghbuild.gomode.voice
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -16,6 +18,35 @@ import org.junit.Test
 class VoicePanelTest {
     @get:Rule
     val composeRule = createComposeRule()
+
+    @Test
+    fun audioOutputShowsTheConfirmedRouteAndOffersHeadphones() {
+        var selected: Int? = null
+        composeRule.setContent {
+            MaterialTheme {
+                VoicePanel(
+                    voiceState =
+                        VoiceState(
+                            connected = true,
+                            availableDevices = listOf(AudioDevice(1, 1, "Earpiece"), AudioDevice(2, 2, "Headphones")),
+                            selectedDeviceId = 1,
+                        ),
+                    voiceEnabled = true,
+                    onConnect = {},
+                    onDisconnect = {},
+                    onToggleMute = {},
+                    onSelectDevice = { selected = it },
+                    onClearTranscript = {},
+                    onOpenSettings = {},
+                    serviceStatusText = null,
+                )
+            }
+        }
+        composeRule.onNodeWithText("Audio output").assertIsDisplayed()
+        composeRule.onNodeWithTag("gomode-voice-audio-1").assertIsSelected()
+        composeRule.onNodeWithTag("gomode-voice-audio-2").assertIsDisplayed().performClick()
+        assertEquals(2, selected)
+    }
 
     @Test
     fun transcriptIsCollapsedByDefaultAndCanBeExpanded() {

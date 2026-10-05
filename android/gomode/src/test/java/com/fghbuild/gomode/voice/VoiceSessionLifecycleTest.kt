@@ -25,6 +25,7 @@ import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -50,6 +51,20 @@ class VoiceSessionLifecycleTest {
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+    }
+
+    @Test
+    fun selectingAnUnavailableAudioDeviceReportsFailure() {
+        val settings = SettingsRepository(InMemoryPreferencesDataStore())
+        val session = VoiceSession(RuntimeEnvironment.getApplication(), settings, languageTag = "en-US")
+        session.selectAudioDevice(Int.MAX_VALUE)
+        assertTrue(
+            session.state.value.audioError
+                .orEmpty()
+                .contains("no longer available"),
+        )
+        assertTrue(session.state.value.selectedDeviceId != Int.MAX_VALUE)
+        session.close()
     }
 
     @Test

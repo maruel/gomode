@@ -79,6 +79,9 @@ export interface VoiceOverlayMessages extends Partial<VoiceSettingsMessages> {
   retry: string;
   signaling: string;
   speaker: string;
+  systemDefault?: string;
+  systemAudioSettings?: string;
+  unavailableDevice?: string;
   speaking: string;
   thinking: string;
   transcribing: string;
@@ -112,6 +115,9 @@ export const defaultVoiceOverlayMessages: VoiceOverlayMessages = {
   retry: "Retry",
   signaling: "Signaling…",
   speaker: "Speaker",
+  systemDefault: "System default",
+  systemAudioSettings: "Use your device’s sound settings to change the speaker.",
+  unavailableDevice: "Device unavailable",
   speaking: "Speaking…",
   thinking: "Thinking…",
   transcribing: "Transcribing…",
@@ -254,6 +260,10 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
     }
   };
 
+  createEffect(() => {
+    if (settingsOpen() && session.state.mode === "cloud") void session.enumerateDevices();
+  });
+
   onMount(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (
@@ -285,6 +295,11 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
 
     document.addEventListener("keydown", onKeyDown);
     onCleanup(() => document.removeEventListener("keydown", onKeyDown));
+    const refreshDevices = () => {
+      if (session.state.mode === "cloud") void session.enumerateDevices();
+    };
+    navigator.mediaDevices?.addEventListener?.("devicechange", refreshDevices);
+    onCleanup(() => navigator.mediaDevices?.removeEventListener?.("devicechange", refreshDevices));
   });
 
   // -----------------------------------------------------------------------
@@ -357,12 +372,8 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
               onDisconnect={() => session.disconnect()}
               settingsButton={SettingsButton}
               onToggleMute={() => session.toggleMute()}
-              onSelectInput={(id) => {
-                void session.selectInputDevice(id);
-              }}
-              onSelectOutput={(id) => {
-                session.selectOutputDevice(id);
-              }}
+              onSelectInput={(id) => session.selectInputDevice(id)}
+              onSelectOutput={(id) => session.selectOutputDevice(id)}
               onClearTranscript={() => session.clearTranscript()}
             />
           </Show>
@@ -392,6 +403,19 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
               </button>
             </div>
             <VoiceSettings messages={messages} onError={setSettingsError} onLanguageError={setLanguageError} />
+            <Show when={session.state.mode === "cloud" && !session.state.connected}>
+              <AudioDevicePicker
+                inputs={session.state.audioInputs}
+                outputs={session.state.audioOutputs}
+                selectedInputId={session.state.selectedInputId}
+                selectedOutputId={session.state.selectedOutputId}
+                messages={messages}
+                switching={session.state.audioSwitching !== null || session.state.connectStatus !== null}
+                onSelectInput={(id) => session.selectInputDevice(id)}
+                onSelectOutput={(id) => session.selectOutputDevice(id)}
+              />
+              <AudioErrors state={session.state} />
+            </Show>
           </section>
         </div>
       </div>
@@ -462,8 +486,8 @@ function ActivePanel(props: {
   messages: Accessor<VoiceOverlayMessages>;
   onDisconnect: () => void;
   onToggleMute: () => void;
-  onSelectInput: (id: string) => void;
-  onSelectOutput: (id: string) => void;
+  onSelectInput: (id: string) => Promise<void>;
+  onSelectOutput: (id: string) => Promise<void>;
   onClearTranscript: () => void;
   settingsButton: () => JSX.Element;
 }) {
@@ -516,7 +540,7 @@ function ActivePanel(props: {
           <CallEndIcon width="1.1em" height="1.1em" />
         </button>
       </div>
-      {props.state.mode === "cloud" && (props.state.audioInputs.length > 1 || props.state.audioOutputs.length > 1) && (
+      {props.state.mode === "cloud" && (
         <AudioDevicePicker
           inputs={props.state.audioInputs}
           outputs={props.state.audioOutputs}
@@ -525,8 +549,12 @@ function ActivePanel(props: {
           messages={props.messages}
           onSelectInput={props.onSelectInput}
           onSelectOutput={props.onSelectOutput}
+          switching={props.state.audioSwitching !== null}
         />
       )}
+      <Show when={props.state.mode === "cloud"}>
+        <AudioErrors state={props.state} />
+      </Show>
       <TranscriptLog
         transcript={props.state.transcript}
         messages={props.messages}
@@ -538,37 +566,91 @@ function ActivePanel(props: {
 
 // Audio device picker
 
+function AudioErrors(props: { state: VoiceState }) {
+  const message = () =>
+    [props.state.audioDevicesError, props.state.audioInputError, props.state.audioOutputError]
+      .filter((error) => error !== null)
+      .join(" ");
+  return (
+    <Show when={message()}>
+      {(error) => (
+        <p role="alert" class={styles.audioError}>
+          {error()}
+        </p>
+      )}
+    </Show>
+  );
+}
+
 function AudioDevicePicker(props: {
   inputs: Array<{ deviceId: string; label: string }>;
   outputs: Array<{ deviceId: string; label: string }>;
   selectedInputId: string;
   selectedOutputId: string;
   messages: Accessor<VoiceOverlayMessages>;
-  onSelectInput: (id: string) => void;
-  onSelectOutput: (id: string) => void;
+  onSelectInput: (id: string) => Promise<void>;
+  onSelectOutput: (id: string) => Promise<void>;
+  switching: boolean;
 }) {
   return (
     <div class={styles.deviceRow}>
-      {props.inputs.length > 1 && (
+      <label class={styles.deviceField}>
+        <span>{props.messages().microphone}</span>
         <select
           class={styles.deviceSelect}
           value={props.selectedInputId}
-          onChange={(e) => props.onSelectInput(e.currentTarget.value)}
+          onChange={async (e) => {
+            const select = e.currentTarget;
+            await props.onSelectInput(select.value);
+            select.value = props.selectedInputId;
+          }}
           aria-label={props.messages().microphone}
+          disabled={props.switching}
         >
-          <For each={props.inputs}>{(d) => <option value={d.deviceId}>🎤 {d.label}</option>}</For>
+          <option value="">{props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault}</option>
+          <Show when={props.selectedInputId && !props.inputs.some((d) => d.deviceId === props.selectedInputId)}>
+            <option value={props.selectedInputId}>
+              {props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice}
+            </option>
+          </Show>
+          <For each={props.inputs.filter((d) => d.deviceId !== "" && d.deviceId !== "default")}>
+            {(d) => <option value={d.deviceId}>{d.label}</option>}
+          </For>
         </select>
-      )}
-      {props.outputs.length > 1 && (
-        <select
-          class={styles.deviceSelect}
-          value={props.selectedOutputId}
-          onChange={(e) => props.onSelectOutput(e.currentTarget.value)}
-          aria-label={props.messages().speaker}
+      </label>
+      <label class={styles.deviceField}>
+        <span>{props.messages().speaker}</span>
+        <Show
+          when={"setSinkId" in HTMLMediaElement.prototype}
+          fallback={
+            <span class={styles.deviceHint}>
+              {props.messages().systemAudioSettings ?? defaultVoiceOverlayMessages.systemAudioSettings}
+            </span>
+          }
         >
-          <For each={props.outputs}>{(d) => <option value={d.deviceId}>🔊 {d.label}</option>}</For>
-        </select>
-      )}
+          <select
+            class={styles.deviceSelect}
+            value={props.selectedOutputId}
+            onChange={async (e) => {
+              const select = e.currentTarget;
+              await props.onSelectOutput(select.value);
+              select.value = props.selectedOutputId;
+            }}
+            aria-label={props.messages().speaker}
+            disabled={props.switching}
+          >
+            <option value="">{props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault}</option>
+            <Show when={props.selectedOutputId && !props.outputs.some((d) => d.deviceId === props.selectedOutputId)}>
+              <option value={props.selectedOutputId}>
+                {props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice}
+              </option>
+            </Show>
+            <For each={props.outputs.filter((d) => d.deviceId !== "" && d.deviceId !== "default")}>
+              {(d) => <option value={d.deviceId}>{d.label}</option>}
+            </For>
+          </select>
+        </Show>
+      </label>
     </div>
   );
 }

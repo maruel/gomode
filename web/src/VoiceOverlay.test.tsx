@@ -37,6 +37,14 @@ beforeEach(() => {
     transcript: [],
     languageTag: "en-US",
     mode: "cloud",
+    audioInputs: [],
+    audioOutputs: [],
+    selectedInputId: "",
+    selectedOutputId: "",
+    audioSwitching: null,
+    audioDevicesError: null,
+    audioInputError: null,
+    audioOutputError: null,
   }));
 });
 
@@ -46,6 +54,80 @@ afterEach(() => {
 });
 
 describe("VoiceOverlay status", () => {
+  it("does not show cloud audio-device errors during browser speech", () => {
+    voiceSession.setState((s) => ({
+      ...s,
+      connected: true,
+      mode: "browser",
+      audioDevicesError: "Could not list audio devices: permission denied",
+    }));
+    render(() => <VoiceOverlay />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("restores both dropdowns to the confirmed route after a failed switch", async () => {
+    Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true, value: vi.fn() });
+    const input = vi.spyOn(voiceSession, "selectInputDevice").mockImplementation(async () => {
+      voiceSession.setState((s) => ({ ...s, audioInputError: "Microphone permission denied" }));
+    });
+    const output = vi.spyOn(voiceSession, "selectOutputDevice").mockImplementation(async () => {
+      voiceSession.setState((s) => ({ ...s, audioOutputError: "Speaker permission denied" }));
+    });
+    try {
+      voiceSession.setState((s) => ({
+        ...s,
+        connected: true,
+        audioInputs: [{ deviceId: "usb", kind: "audioinput", label: "USB headset" }],
+        audioOutputs: [{ deviceId: "bt", kind: "audiooutput", label: "Bluetooth headphones" }],
+      }));
+      render(() => <VoiceOverlay />);
+      const user = userEvent.setup();
+      await user.selectOptions(screen.getByRole("combobox", { name: "Microphone" }), "usb");
+      expect(screen.getByRole("combobox", { name: "Microphone" })).toHaveValue("");
+      await user.selectOptions(screen.getByRole("combobox", { name: "Speaker" }), "bt");
+      expect(screen.getByRole("combobox", { name: "Speaker" })).toHaveValue("");
+      expect(screen.getByRole("alert")).toHaveTextContent("Speaker permission denied");
+      expect(screen.getByRole("alert")).toHaveTextContent("Microphone permission denied");
+    } finally {
+      input.mockRestore();
+      output.mockRestore();
+      Reflect.deleteProperty(HTMLMediaElement.prototype, "setSinkId");
+    }
+  });
+
+  it("shows the current microphone and explains system-managed output", () => {
+    voiceSession.setState((s) => ({
+      ...s,
+      connected: true,
+      audioInputs: [{ deviceId: "usb", kind: "audioinput", label: "USB headset" }],
+      selectedInputId: "usb",
+    }));
+    render(() => <VoiceOverlay />);
+    expect(screen.getByRole("combobox", { name: "Microphone" })).toHaveValue("usb");
+    expect(screen.getByText("Use your device’s sound settings to change the speaker.")).toBeInTheDocument();
+    voiceSession.setState((s) => ({ ...s, audioSwitching: "input", audioInputError: "Microphone permission denied" }));
+    expect(screen.getByRole("combobox", { name: "Microphone" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Microphone permission denied");
+  });
+
+  it("labels speaker choices and dispatches the selected output", async () => {
+    const select = vi.spyOn(voiceSession, "selectOutputDevice").mockResolvedValue();
+    Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true, value: vi.fn() });
+    try {
+      voiceSession.setState((s) => ({
+        ...s,
+        connected: true,
+        audioOutputs: [{ deviceId: "headset", kind: "audiooutput", label: "Bluetooth headphones" }],
+      }));
+      render(() => <VoiceOverlay />);
+      await userEvent.setup().selectOptions(screen.getByRole("combobox", { name: "Speaker" }), "headset");
+      expect(select).toHaveBeenCalledWith("headset");
+    } finally {
+      select.mockRestore();
+      Reflect.deleteProperty(HTMLMediaElement.prototype, "setSinkId");
+    }
+  });
+
   it("shows gateway work behind speech and ahead of muting", () => {
     voiceSession.setState((s) => ({ ...s, connected: true, muted: true, turnState: TurnStateTranscribing }));
     render(() => <VoiceOverlay />);

@@ -283,6 +283,11 @@ export interface VoiceState {
   selectedInputId: string;
   /** Currently selected output device ID, empty string for system default. */
   selectedOutputId: string;
+  audioDevicesError: string | null;
+  audioInputError: string | null;
+  audioOutputError: string | null;
+  /** The route being changed, or null when no switch is pending. */
+  audioSwitching: "input" | "output" | null;
   /** Saved BCP 47 speech language, independent of the browser locale. */
   languageTag: string;
 }
@@ -338,6 +343,7 @@ export class VoiceSession {
   private _lastAnswerSDP = "";
   private _audioContext: AudioContext | null = null;
   private _micStream: MediaStream | null = null;
+  private _micMonitorFrame: number | null = null;
   /** The <audio> element playing remote RTP audio, stored so we can call setSinkId(). */
   private _speakerAudio: HTMLAudioElement | null = null;
   /** True while the model is speaking — injected text is buffered and flushed after the turn ends. */
@@ -350,6 +356,8 @@ export class VoiceSession {
   private _reconnectAttempts = 0;
   private _recoveryContext = "";
   private _connectionAttempt = 0;
+  private _audioSelectionAttempt = 0;
+  private _deviceEnumerationAttempt = 0;
   private _voiceModeActive = false;
   private readonly _chime: VoiceChimePlayer;
 
@@ -368,6 +376,10 @@ export class VoiceSession {
       micLevel: 0,
       error: null,
       audioInputs: [],
+      audioDevicesError: null,
+      audioInputError: null,
+      audioOutputError: null,
+      audioSwitching: null,
       audioOutputs: [],
       selectedInputId: "",
       selectedOutputId: "",
@@ -404,8 +416,10 @@ export class VoiceSession {
 
   /** Enumerate available audio devices and auto-select defaults. Call before connect(). */
   async enumerateDevices(): Promise<void> {
+    const attempt = ++this._deviceEnumerationAttempt;
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
+      if (attempt !== this._deviceEnumerationAttempt) return;
       const inputs: AudioDevice[] = [];
       const outputs: AudioDevice[] = [];
       for (const d of devices) {
@@ -423,95 +437,165 @@ export class VoiceSession {
           });
         }
       }
-      // Auto-select: first available, or keep current selection if still valid.
-      const curSel = this.state.selectedInputId;
-      const curOut = this.state.selectedOutputId;
-      const newInId = curSel && inputs.some((d) => d.deviceId === curSel) ? curSel : (inputs[0]?.deviceId ?? "");
-      const newOutId = curOut && outputs.some((d) => d.deviceId === curOut) ? curOut : (outputs[0]?.deviceId ?? "");
       this._update((s) => {
         s.audioInputs = inputs;
         s.audioOutputs = outputs;
-        s.selectedInputId = newInId;
-        s.selectedOutputId = newOutId;
+        s.audioDevicesError = null;
       });
-    } catch {
-      // enumerateDevices() can fail if permissions are denied; ignore silently.
+      const curOut = this.state.selectedOutputId;
+      if (curOut && !outputs.some((d) => d.deviceId === curOut)) {
+        if (this.state.audioSwitching !== null) {
+          // An output switch already owns recovery and will report its outcome.
+          if (this.state.audioSwitching !== "output")
+            this._update((s) => {
+              s.audioOutputError = "Speaker disconnected. Choose another speaker.";
+            });
+        } else {
+          await this.selectOutputDevice("");
+        }
+      }
+      const curSel = this.state.selectedInputId;
+      if (attempt !== this._deviceEnumerationAttempt) return;
+      if (curSel && !inputs.some((d) => d.deviceId === curSel)) {
+        if (this.state.audioSwitching !== null) {
+          // Preserve warnings about the other route while this switch completes.
+          if (this.state.audioSwitching !== "input")
+            this._update((s) => {
+              s.audioInputError = "Microphone disconnected. Choose another microphone.";
+            });
+        } else {
+          // Keep the displayed choice until a replacement track is working.
+          await this.selectInputDevice("");
+        }
+      }
+    } catch (error) {
+      if (attempt !== this._deviceEnumerationAttempt) return;
+      this._update((s) => {
+        s.audioDevicesError = `Could not list audio devices: ${String(error)}`;
+      });
     }
   }
 
   /** Select an audio input device. If connected, replaces the mic track. */
   async selectInputDevice(deviceId: string): Promise<void> {
-    this._update((s) => {
-      s.selectedInputId = deviceId;
-    });
+    if (this.state.audioSwitching !== null) return;
+    const selection = ++this._audioSelectionAttempt;
     const pc = this._pc;
-    if (pc && this._micStream) {
+    const oldStream = this._micStream;
+    if (pc && oldStream) {
+      this._update((s) => {
+        s.audioSwitching = "input";
+        s.audioInputError = null;
+      });
+      let newStream: MediaStream | null = null;
       try {
-        // Stop old mic tracks.
-        this._micStream.getTracks().forEach((t) => t.stop());
         // Acquire new mic stream with the selected device.
         const constraints: MediaStreamConstraints = {
           audio: deviceId ? { deviceId: { exact: deviceId } } : true,
           video: false,
         };
-        const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+        newStream = await navigator.mediaDevices.getUserMedia(constraints);
         if (this._pc !== pc) {
           newStream.getTracks().forEach((track) => track.stop());
           return;
         }
-        this._micStream = newStream;
         // Replace tracks on the PeerConnection.
         const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
         for (const t of newStream.getAudioTracks()) {
+          t.enabled = !this.state.muted;
           if (sender) {
             await sender.replaceTrack(t);
-            if (this._pc !== pc) return;
+            if (this._pc !== pc) {
+              newStream.getTracks().forEach((track) => track.stop());
+              return;
+            }
           } else {
             pc.addTrack(t, newStream);
           }
         }
-        // Reconnect AnalyserNode if present.
-        if (this._audioContext) {
-          const analyser = this._audioContext.createAnalyser();
-          analyser.fftSize = 256;
-          const source = this._audioContext.createMediaStreamSource(newStream);
-          source.connect(analyser);
-          const buf = new Uint8Array(analyser.frequencyBinCount);
-          const pollMicLevel = () => {
-            if (this._pc !== pc) return;
-            analyser.getByteTimeDomainData(buf);
-            let sumSq = 0;
-            for (const sample of buf) {
-              const v = (sample - 128) / 128;
-              sumSq += v * v;
-            }
-            const rms = Math.sqrt(sumSq / buf.length);
-            if (!this.state.muted && !this._speakerActive) {
-              this._update((s) => {
-                s.micLevel = Math.min(1, Math.sqrt(rms));
-              });
-            }
-            requestAnimationFrame(pollMicLevel);
-          };
-          requestAnimationFrame(pollMicLevel);
-        }
-      } catch {
-        // If switching fails, leave the previous stream in place.
+        this._micStream = newStream;
+        oldStream.getTracks().forEach((track) => track.stop());
+        this._update((s) => {
+          s.selectedInputId = deviceId;
+          s.audioInputError = null;
+        });
+        this._monitorMicrophone(pc, newStream);
+      } catch (error) {
+        if (this._micStream !== newStream) newStream?.getTracks().forEach((track) => track.stop());
+        if (this._pc === pc)
+          this._update((s) => {
+            s.audioInputError = `Could not switch microphone: ${String(error)}`;
+          });
+      } finally {
+        if (selection === this._audioSelectionAttempt)
+          this._update((s) => {
+            s.audioSwitching = null;
+          });
       }
+    } else {
+      this._update((s) => {
+        s.selectedInputId = deviceId;
+        s.audioInputError = null;
+      });
     }
   }
 
+  private _monitorMicrophone(pc: RTCPeerConnection, stream: MediaStream): void {
+    if (this._micMonitorFrame !== null) cancelAnimationFrame(this._micMonitorFrame);
+    this._micMonitorFrame = null;
+    const context = this._audioContext;
+    if (context === null) return;
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 256;
+    context.createMediaStreamSource(stream).connect(analyser);
+    const buf = new Uint8Array(analyser.frequencyBinCount);
+    const pollMicLevel = () => {
+      if (this._pc !== pc || this._micStream !== stream) return;
+      analyser.getByteTimeDomainData(buf);
+      let sumSq = 0;
+      for (const sample of buf) {
+        const v = (sample - 128) / 128;
+        sumSq += v * v;
+      }
+      const rms = Math.sqrt(sumSq / buf.length);
+      if (!this.state.muted && !this._speakerActive) {
+        this._update((s) => {
+          s.micLevel = Math.min(1, Math.sqrt(rms));
+        });
+      }
+      this._micMonitorFrame = requestAnimationFrame(pollMicLevel);
+    };
+    this._micMonitorFrame = requestAnimationFrame(pollMicLevel);
+  }
+
   /** Select an audio output device. Applies immediately if connected. */
-  selectOutputDevice(deviceId: string): void {
+  async selectOutputDevice(deviceId: string): Promise<void> {
+    if (this.state.audioSwitching !== null) return;
+    const selection = ++this._audioSelectionAttempt;
+    const audio = this._speakerAudio;
     this._update((s) => {
-      s.selectedOutputId = deviceId;
+      s.audioSwitching = "output";
+      s.audioOutputError = null;
     });
-    if (this._speakerAudio && "setSinkId" in this._speakerAudio) {
-      void (
-        this._speakerAudio as HTMLAudioElement & {
-          setSinkId: (id: string) => Promise<void>;
-        }
-      ).setSinkId(deviceId);
+    try {
+      if (!("setSinkId" in HTMLMediaElement.prototype))
+        throw new Error("Use your device's sound settings to change the speaker");
+      if (audio) await audio.setSinkId(deviceId);
+      if (this._speakerAudio !== audio || selection !== this._audioSelectionAttempt) return;
+      this._update((s) => {
+        s.selectedOutputId = deviceId;
+        s.audioOutputError = null;
+      });
+    } catch (error) {
+      if (this._speakerAudio === audio && selection === this._audioSelectionAttempt)
+        this._update((s) => {
+          s.audioOutputError = `Could not switch speaker: ${String(error)}`;
+        });
+    } finally {
+      if (selection === this._audioSelectionAttempt)
+        this._update((s) => {
+          s.audioSwitching = null;
+        });
     }
   }
 
@@ -588,47 +672,20 @@ export class VoiceSession {
         t.enabled = !this.state.muted;
         pc.addTrack(t, micStream);
       }
+      await this.enumerateDevices();
+      if (attempt !== this._connectionAttempt) return;
+      const activeMicStream = this._micStream;
+      if (activeMicStream === null) return;
 
-      // Mic level via AnalyserNode (replaces AudioWorklet RMS in WebRTC mode).
-      if (this._audioContext) {
-        const analyser = this._audioContext.createAnalyser();
-        analyser.fftSize = 256;
-        const source = this._audioContext.createMediaStreamSource(micStream);
-        source.connect(analyser);
-        const buf = new Uint8Array(analyser.frequencyBinCount);
-        const pollMicLevel = () => {
-          if (!this._pc || this._pc !== pc) return;
-          analyser.getByteTimeDomainData(buf);
-          let sumSq = 0;
-          for (const sample of buf) {
-            const v = (sample - 128) / 128;
-            sumSq += v * v;
-          }
-          const rms = Math.sqrt(sumSq / buf.length);
-          if (!this.state.muted && !this._speakerActive) {
-            this._update((s) => {
-              s.micLevel = Math.min(1, Math.sqrt(rms));
-            });
-          }
-          requestAnimationFrame(pollMicLevel);
-        };
-        requestAnimationFrame(pollMicLevel);
-      }
+      this._monitorMicrophone(pc, activeMicStream);
 
       // Speaker audio from remote RTP track.
-      const outId = this.state.selectedOutputId;
       pc.ontrack = (evt) => {
         if (attempt !== this._connectionAttempt || this._pc !== pc) return;
         const audio = new Audio();
         this._speakerAudio = audio;
         audio.srcObject = evt.streams[0] ?? new MediaStream([evt.track]);
-        if (outId && "setSinkId" in audio) {
-          void (
-            audio as HTMLAudioElement & {
-              setSinkId: (id: string) => Promise<void>;
-            }
-          ).setSinkId(outId);
-        }
+        if (this.state.selectedOutputId) void this.selectOutputDevice(this.state.selectedOutputId);
         audio.play().catch(() => {
           // Autoplay may be blocked; user interaction will resume.
         });
@@ -847,6 +904,8 @@ export class VoiceSession {
   disconnect(): void {
     this._leaveVoiceMode();
     this._connectionAttempt++;
+    this._audioSelectionAttempt++;
+    this._deviceEnumerationAttempt++;
     this._reconnectEnabled = false;
     if (this._reconnectTimer !== null) {
       clearTimeout(this._reconnectTimer);
@@ -869,6 +928,10 @@ export class VoiceSession {
       s.activeTool = null;
       s.turnState = TurnStateIdle;
       s.micLevel = 0;
+      s.audioSwitching = null;
+      s.audioDevicesError = null;
+      s.audioInputError = null;
+      s.audioOutputError = null;
       s.transcript = s.transcript.map((e) => ({ ...e, final: true }));
     });
   }
@@ -920,6 +983,8 @@ export class VoiceSession {
 
   /** Release WebRTC transport and audio resources. */
   private _releaseAll(): void {
+    if (this._micMonitorFrame !== null) cancelAnimationFrame(this._micMonitorFrame);
+    this._micMonitorFrame = null;
     const socket = this._textSocket;
     const speech = this._browserSpeech;
     this._textSocket = null;

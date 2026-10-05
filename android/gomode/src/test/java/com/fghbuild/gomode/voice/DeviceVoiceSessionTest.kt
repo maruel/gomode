@@ -226,6 +226,23 @@ class DeviceVoiceSessionTest {
         assertEquals(1, calls.started)
         assertEquals(1, calls.activated)
 
+        calls.audio.value =
+            CallAudioState(
+                devices = listOf(AudioDevice(7, 1, "Earpiece"), AudioDevice(8, 2, "Headphones")),
+                selectedDeviceId = 7,
+            )
+        assertEquals(
+            "Earpiece",
+            session.state.value.availableDevices
+                .first()
+                .name,
+        )
+        session.selectAudioDevice(8)
+        assertEquals(8, calls.selectedDevice)
+        assertEquals("selection waits for Telecom confirmation", 7, session.state.value.selectedDeviceId)
+        calls.audio.value = calls.audio.value.copy(selectedDeviceId = 8)
+        assertEquals(8, session.state.value.selectedDeviceId)
+
         session.disconnect()
 
         assertEquals(1, calls.endedLocal)
@@ -408,6 +425,14 @@ class DeviceVoiceSessionTest {
         private val supported: Boolean = true,
         private val startResult: Boolean = true,
     ) : VoiceCallController {
+        val audio = MutableStateFlow(CallAudioState())
+        override val audioState = audio
+        var selectedDevice: Int? = null
+
+        override fun selectAudioDevice(deviceId: Int) {
+            selectedDevice = deviceId
+        }
+
         var started = 0
         var activated = 0
         var endedLocal = 0

@@ -289,12 +289,16 @@ private fun ActivePanel(
             }
         }
 
-        if (voiceState.availableDevices.size > 1) {
+        if (voiceState.availableDevices.isNotEmpty()) {
             AudioDevicePicker(
                 devices = voiceState.availableDevices,
                 selectedDeviceId = voiceState.selectedDeviceId,
+                switching = voiceState.audioSwitching,
                 onSelect = onSelectDevice,
             )
+        }
+        voiceState.audioError?.let { message ->
+            Text(text = message, color = MaterialTheme.colorScheme.error)
         }
 
         if (voiceState.transcript.isNotEmpty()) {
@@ -392,17 +396,21 @@ private fun ErrorPanel(
 private fun AudioDevicePicker(
     devices: List<AudioDevice>,
     selectedDeviceId: Int?,
+    switching: Boolean,
     onSelect: (Int) -> Unit,
 ) {
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        devices.forEach { device ->
-            FilterChip(
-                selected = device.id == selectedDeviceId,
-                onClick = { onSelect(device.id) },
-                label = { Text(device.name, style = MaterialTheme.typography.labelSmall) },
-            )
+    Column {
+        Text("Audio output", style = MaterialTheme.typography.labelSmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            devices.forEach { device ->
+                FilterChip(
+                    modifier = Modifier.testTag("gomode-voice-audio-${device.id}"),
+                    selected = device.id == selectedDeviceId,
+                    enabled = !switching,
+                    onClick = { onSelect(device.id) },
+                    label = { Text(device.name) },
+                )
+            }
         }
     }
 }

@@ -1,6 +1,17 @@
 // Android Telecom self-managed call boundary for a voice session.
 package com.fghbuild.gomode.voice
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+internal data class CallAudioState(
+    val devices: List<AudioDevice> = emptyList(),
+    val selectedDeviceId: Int? = null,
+    val error: String? = null,
+    val switching: Boolean = false,
+)
+
 /**
  * VoiceCallController maps one active voice session to an Android Telecom
  * self-managed call. A car or headset hang-up arrives as [start]'s
@@ -11,6 +22,10 @@ package com.fghbuild.gomode.voice
  * overlay hang-up.
  */
 internal interface VoiceCallController {
+    val audioState: StateFlow<CallAudioState>
+
+    fun selectAudioDevice(deviceId: Int)
+
     /** isSupported reports whether this device can host a self-managed call. */
     fun isSupported(): Boolean
 
@@ -30,6 +45,10 @@ internal interface VoiceCallController {
 
 /** NoopVoiceCallController serves devices and tests without Telecom. */
 internal class NoopVoiceCallController : VoiceCallController {
+    override val audioState = MutableStateFlow(CallAudioState()).asStateFlow()
+
+    override fun selectAudioDevice(deviceId: Int) = Unit
+
     override fun isSupported(): Boolean = false
 
     override suspend fun start(onTelecomDisconnect: () -> Unit): Boolean = false
