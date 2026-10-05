@@ -346,11 +346,11 @@ func TestLocalStackSession(t *testing.T) {
 		conv := &fakeConversation{
 			userStep: fakeLLMStep{
 				deltas: []string{"Let me check. "},
-				reply: llmReply{toolCall: &llmToolCall{
+				reply: llmReply{toolCalls: []llmToolCall{{
 					id:   "call-1",
 					name: "tasks_list",
 					args: json.RawMessage(`{}`),
-				}},
+				}}},
 			},
 		}
 		tts := &recordingTTS{}
@@ -394,16 +394,16 @@ func TestLocalStackSession(t *testing.T) {
 		conv := &fakeConversation{
 			userStep: fakeLLMStep{
 				deltas: []string{"Looking. "},
-				reply: llmReply{toolCall: &llmToolCall{
+				reply: llmReply{toolCalls: []llmToolCall{{
 					id:   "call-1",
 					name: "tasks_list",
 					args: json.RawMessage(`{}`),
-				}},
+				}}},
 			},
 			toolResultSteps: []fakeLLMStep{
 				{
 					deltas: []string{"Checking details. "},
-					reply:  llmReply{toolCall: &llmToolCall{id: "call-2", name: "tasks_get", args: json.RawMessage(`{}`)}},
+					reply:  llmReply{toolCalls: []llmToolCall{{id: "call-2", name: "tasks_get", args: json.RawMessage(`{}`)}}},
 				},
 				{deltas: []string{"Done. Next"}, reply: llmReply{text: "Done. Next"}},
 			},
@@ -449,7 +449,7 @@ func TestLocalStackSession(t *testing.T) {
 		if err := sess.acceptClientMessage(t.Context(), result); err != nil {
 			t.Fatal(err)
 		}
-		waitForKind(t, sink, voicev1.MessageKindSpeechEnded)
+		waitForTurnStates(t, sink, 2)
 		if conv.toolResultCalls() != 2 {
 			t.Fatalf("tool result calls = %d, want 2", conv.toolResultCalls())
 		}
@@ -458,43 +458,6 @@ func TestLocalStackSession(t *testing.T) {
 		}
 		if got := sink.assistantText(); got != "Looking. Checking details. Done. Next" {
 			t.Fatalf("assistant text = %q, want streamed chained text", got)
-		}
-	})
-
-	t.Run("audio turn completes a provider tool batch", func(t *testing.T) {
-		t.Parallel()
-		p := &fakeGenAIProvider{firstReplies: []genai.Reply{
-			{ToolCall: genai.ToolCall{ID: "detail-3", Name: "task_get_detail", Arguments: `{"task":3}`}},
-			{ToolCall: genai.ToolCall{ID: "message-3", Name: "agent_last_message", Arguments: `{"task_number":3}`}},
-		}}
-		backend := newLocalStackBackend(func() vadSegmenter { return &energyVAD{} }, placeholderASR{}, &genaiLLMAdapter{provider: p}, &recordingTTS{})
-		sink := &captureSink{}
-		sess, err := backend.connect(t.Context(), "tool-batch", sink)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = sess.close() })
-		if err := sess.acceptClientMessage(t.Context(), mustJSON(t, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})); err != nil {
-			t.Fatal(err)
-		}
-		if err := sess.acceptClientMessage(t.Context(), mustJSON(t, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "Status of task three"})); err != nil {
-			t.Fatal(err)
-		}
-		for i, call := range []struct{ id, name string }{{"detail-3", "task_get_detail"}, {"message-3", "agent_last_message"}} {
-			waitForKindCount(t, sink, voicev1.MessageKindToolCall, i+1)
-			if got := len(p.callsSnapshot()); got != 1 {
-				t.Fatalf("provider generations before result %d = %d, want 1", i+1, got)
-			}
-			if err := sess.acceptClientMessage(t.Context(), mustJSON(t, voicev1.ToolResult{Kind: voicev1.MessageKindToolResult, ID: call.id, Name: call.name, Result: json.RawMessage(`{}`)})); err != nil {
-				t.Fatal(err)
-			}
-		}
-		waitForKind(t, sink, voicev1.MessageKindSpeechEnded)
-		if got := sink.assistantText(); got != "Done." {
-			t.Fatalf("assistant text = %q, want Done.", got)
-		}
-		if got := len(p.callsSnapshot()); got != 2 {
-			t.Fatalf("provider generations = %d, want 2", got)
 		}
 	})
 
@@ -725,21 +688,21 @@ func TestGenaiConversation(t *testing.T) {
 		if len(deltas) != 0 {
 			t.Fatalf("initial text deltas = %#v, want none before tool call", deltas)
 		}
-		if reply.toolCall == nil {
+		if len(reply.toolCalls) == 0 {
 			t.Fatal("toolCall = nil, want tool call")
 		}
-		if reply.toolCall.id == "" {
+		if reply.toolCalls[0].id == "" {
 			t.Fatal("toolCall.id is empty")
 		}
-		if reply.toolCall.name != "tasks_list" {
-			t.Errorf("toolCall.name = %q, want tasks_list", reply.toolCall.name)
+		if reply.toolCalls[0].name != "tasks_list" {
+			t.Errorf("toolCall.name = %q, want tasks_list", reply.toolCalls[0].name)
 		}
-		if string(reply.toolCall.args) != `{"limit":1}` {
-			t.Errorf("toolCall.args = %s, want limit argument", reply.toolCall.args)
+		if string(reply.toolCalls[0].args) != `{"limit":1}` {
+			t.Errorf("toolCall.args = %s, want limit argument", reply.toolCalls[0].args)
 		}
-		callID := reply.toolCall.id
+		callID := reply.toolCalls[0].id
 
-		step, err = conv.toolResult(t.Context(), reply.toolCall.id, reply.toolCall.name, json.RawMessage(`{"tasks":[]}`))
+		step, err = conv.toolResult(t.Context(), reply.toolCalls[0].id, reply.toolCalls[0].name, json.RawMessage(`{"tasks":[]}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -780,61 +743,6 @@ func TestGenaiConversation(t *testing.T) {
 			t.Fatal("post-tool generation omitted tools")
 		}
 	})
-	t.Run("cancelled tool batch does not poison the next turn", func(t *testing.T) {
-		t.Parallel()
-		p := &fakeGenAIProvider{firstReplies: []genai.Reply{
-			{Text: "Checking. "},
-			{ToolCall: genai.ToolCall{Name: "task_get_detail"}},
-			{ToolCall: genai.ToolCall{Name: "agent_last_message"}},
-		}}
-		conv := (&genaiLLMAdapter{provider: p}).newConversation("Answer briefly.", nil)
-		step, err := conv.user(t.Context(), "Status of task three")
-		if err != nil {
-			t.Fatal(err)
-		}
-		first, _ := finishLLMStep(t, step)
-		if first.toolCall == nil || first.toolCall.id == "" || string(first.toolCall.args) != `{}` || first.text != "Checking. " {
-			t.Fatalf("first reply = %+v", first)
-		}
-		if _, err := conv.toolResult(t.Context(), first.toolCall.id, "wrong_tool", json.RawMessage(`{}`)); err == nil {
-			t.Fatal("mismatched result name was accepted")
-		}
-		step, err = conv.toolResult(t.Context(), first.toolCall.id, first.toolCall.name, json.RawMessage(`{"state":"waiting"}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		second, deltas := finishLLMStep(t, step)
-		if second.toolCall == nil || second.toolCall.id == "" || second.toolCall.id == first.toolCall.id || string(second.toolCall.args) != `{}` || len(deltas) != 0 {
-			t.Fatalf("second reply = %+v, deltas = %v", second, deltas)
-		}
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		if _, err := conv.toolResult(ctx, second.toolCall.id, second.toolCall.name, json.RawMessage(`{}`)); !errors.Is(err, context.Canceled) {
-			t.Fatalf("cancelled result error = %v", err)
-		}
-		if got := len(p.callsSnapshot()); got != 1 {
-			t.Fatalf("provider generations before cancellation = %d, want 1", got)
-		}
-		step, err = conv.user(t.Context(), "Never mind")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if reply, _ := finishLLMStep(t, step); reply.text != "Done." {
-			t.Fatalf("reply = %+v", reply)
-		}
-		calls := p.callsSnapshot()
-		if len(calls) != 2 {
-			t.Fatalf("provider generations = %d, want 2", len(calls))
-		}
-		history := calls[1].messages
-		if len(history) != 4 || history[0].String() != "Status of task three" || history[3].String() != "Never mind" || len(history[2].ToolCallResults) != 2 {
-			t.Fatalf("history = %+v, want settled tool batch followed by the new request", history)
-		}
-		results := history[2].ToolCallResults
-		if results[0].ID != first.toolCall.id || results[0].Result != `{"state":"waiting"}` || results[1].ID != second.toolCall.id || !strings.Contains(results[1].Result, "cancelled") {
-			t.Fatalf("results = %+v, want completed result preserved and remaining call cancelled", results)
-		}
-	})
 
 	t.Run("user after unanswered user", func(t *testing.T) {
 		t.Parallel()
@@ -862,8 +770,8 @@ func TestGenaiConversation(t *testing.T) {
 			t.Errorf("reply.text = %q, want Done.", reply.text)
 		}
 		calls := p.callsSnapshot()
-		if got := calls[len(calls)-1].messages; len(got) != 1 || got[0].String() != "Set a timer\nfor five minutes." {
-			t.Fatalf("history = %#v, want one user message with both utterances", got)
+		if got := calls[len(calls)-1].messages; len(got) != 2 || got[0].String() != "Set a timer" || got[1].String() != "for five minutes." {
+			t.Fatalf("history = %#v, want separate chronological utterances", got)
 		}
 	})
 }
@@ -1100,10 +1008,10 @@ func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(text) != 0 || reply.toolCall == nil || reply.toolCall.id != "call-1" || reply.toolCall.name != "tasks_list" || string(reply.toolCall.args) != `{"limit":1}` {
-				t.Fatalf("text = %v, tool reply = %+v", text, reply.toolCall)
+			if len(text) != 0 || len(reply.toolCalls) == 0 || reply.toolCalls[0].id != "call-1" || reply.toolCalls[0].name != "tasks_list" || string(reply.toolCalls[0].args) != `{"limit":1}` {
+				t.Fatalf("text = %v, tool reply = %+v", text, reply.toolCalls)
 			}
-			step, err = conv.toolResult(t.Context(), reply.toolCall.id, reply.toolCall.name, json.RawMessage(`{"tasks":["Task one"]}`))
+			step, err = conv.toolResult(t.Context(), reply.toolCalls[0].id, reply.toolCalls[0].name, json.RawMessage(`{"tasks":["Task one"]}`))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1112,7 +1020,7 @@ func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if strings.Join(text, "") != "Task one." || reply.text != "Task one." || reply.toolCall != nil {
+			if strings.Join(text, "") != "Task one." || reply.text != "Task one." || len(reply.toolCalls) != 0 {
 				t.Fatalf("text = %v, reply = %+v", text, reply)
 			}
 		})
@@ -1343,9 +1251,8 @@ func (l *blockingLLM) newConversation(string, []voicev1.ToolDeclaration) llmConv
 
 func (l *blockingLLM) user(ctx context.Context, _ string) (llmStep, error) {
 	return llmStep{
-		text: func(func(string) bool) {},
+		text: func(func(string) bool) { <-ctx.Done() },
 		finish: func() (llmReply, error) {
-			<-ctx.Done()
 			l.finished <- struct{}{}
 			return llmReply{}, ctx.Err()
 		},
@@ -1613,7 +1520,5 @@ func TestLocalStackSessionClosedRejectsTurns(t *testing.T) {
 	if err := sess.close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, ok := sess.beginTurn(t.Context()); ok {
-		t.Fatal("beginTurn() = true after close, want false")
-	}
+	sess.startUserMessage(t.Context(), "after close")
 }

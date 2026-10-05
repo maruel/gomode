@@ -42,8 +42,13 @@ flowchart LR
 - `turn.status` reports `transcribing` at end of speech, `thinking` before
   generation, and `idle` when the turn ends. A turn superseded by newer speech
   reports nothing, so its late end cannot clear the newer turn's state.
-- An interrupted turn keeps its user text: the next utterance joins it in one
-  user message, since genai requires alternating roles.
+- User utterances remain separate, in order. Dispatched tools belong to the
+  session: interrupting generation or speech does not cancel a tool. Known late
+  results are recorded once, in arrival order; unknown, duplicate and mismatched
+  results report recoverable errors without advancing the conversation.
+- Each user utterance or tool result starts generation with chronological
+  history, even while other tools remain pending. Provider errors surface
+  directly; the gateway does not switch models or rewrite history.
 - The bridge drains assistant PCM at realtime from an unbounded buffer, so TTS
   can queue audio ahead of playback.
 - Logs report TTS first audio per fragment, buffer depth, and first assistant

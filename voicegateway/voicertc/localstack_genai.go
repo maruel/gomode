@@ -1,4 +1,4 @@
-// Local stack model adapters for ASR, TTS, and LLM turns with serialized tool batches.
+// Local stack model adapters with chronological conversation events and session-owned tools.
 
 package voicertc
 
@@ -9,12 +9,12 @@ import (
 	"fmt"
 	"io"
 	"iter"
-
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -391,6 +391,8 @@ func (a *genaiLLMAdapter) newConversation(systemInstruction string, tools []voic
 		systemInstruction: systemInstruction,
 		tools:             defs,
 		initErr:           err,
+		pendingCalls:      make(map[string]string),
+		seenCalls:         make(map[string]struct{}),
 	}
 }
 
@@ -404,77 +406,38 @@ type genaiConversation struct {
 	tools             []genai.ToolDef
 	initErr           error
 	nextToolID        int
-	// pendingCalls serializes one provider response through the client's
-	// single-call protocol. Results reach the provider only after the batch ends.
-	pendingCalls []llmToolCall
-	toolResults  []genai.ToolCallResult
-	// unanswered retains user text until the first reply or tool batch
-	// completes, so an interrupted request can merge into the next utterance.
-	unanswered string
+	// Pending calls outlive generations; completed IDs remain reserved so a
+	// provider cannot replay a potentially acted side effect.
+	pendingCalls map[string]string
+	seenCalls    map[string]struct{}
+	revision     uint64
 }
 
 func (c *genaiConversation) user(ctx context.Context, text string) (llmStep, error) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.initErr != nil {
-		c.mu.Unlock()
 		return llmStep{}, c.initErr
 	}
-	if len(c.pendingCalls) != 0 {
-		// Retain completed results and settle interrupted calls before the
-		// next user message. An in-flight call may have had side effects even
-		// though its result never arrived, so do not replay the old request.
-		for _, call := range c.pendingCalls {
-			c.toolResults = append(c.toolResults, genai.ToolCallResult{
-				ID: call.id, Name: call.name,
-				Result: `{"error":"Tool call cancelled before its result was received. Do not assume it completed."}`,
-			})
-		}
-		c.messages = append(c.messages, genai.Message{ToolCallResults: c.toolResults})
-		c.pendingCalls = nil
-		c.toolResults = nil
-		c.unanswered = ""
-	}
-	if c.unanswered != "" {
-		// genai requires alternating roles. Keep what the user said in the
-		// interrupted turn, such as the first half of a sentence the VAD split
-		// at a pause, and drop only the reply that never completed.
-		text = c.unanswered + "\n" + text
-		c.messages = c.messages[:len(c.messages)-1]
-	}
-	c.unanswered = text
 	c.messages = append(c.messages, genai.NewTextMessage(c.userText(text)))
 	return c.startGenerationLocked(ctx), nil
 }
 
 func (c *genaiConversation) toolResult(ctx context.Context, id, name string, result json.RawMessage) (llmStep, error) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.initErr != nil {
-		c.mu.Unlock()
 		return llmStep{}, c.initErr
 	}
-	if err := ctx.Err(); err != nil {
-		c.mu.Unlock()
-		return llmStep{}, err
-	}
-	if len(c.pendingCalls) == 0 || c.pendingCalls[0].id != id || c.pendingCalls[0].name != name {
-		c.mu.Unlock()
+	if want, ok := c.pendingCalls[id]; !ok || want != name {
 		return llmStep{}, fmt.Errorf("unexpected tool result %q for %q", id, name)
 	}
 	resultText := string(result)
 	if resultText == "" {
 		resultText = "null"
 	}
-	c.toolResults = append(c.toolResults, genai.ToolCallResult{ID: id, Name: name, Result: resultText})
-	c.pendingCalls = c.pendingCalls[1:]
-	if len(c.pendingCalls) != 0 {
-		reply := llmReply{toolCall: &c.pendingCalls[0]}
-		c.mu.Unlock()
-		return newLLMStep(nil, reply, nil), nil
-	}
-	c.messages = append(c.messages, genai.Message{ToolCallResults: c.toolResults})
-	c.pendingCalls = nil
-	c.toolResults = nil
-	c.unanswered = ""
+	c.messages = append(c.messages, genai.Message{ToolCallResults: []genai.ToolCallResult{{ID: id, Name: name, Result: resultText}}})
+	delete(c.pendingCalls, id)
 	return c.startGenerationLocked(ctx), nil
 }
 
@@ -492,29 +455,41 @@ func (c *genaiConversation) addContext(text string) {
 }
 
 func (c *genaiConversation) startGenerationLocked(ctx context.Context) llmStep {
-	fragments, finish := c.provider.GenStream(ctx, c.messages, c.genOptions()...)
+	// History is append-only. Give each request its own outer slice so later
+	// events cannot overwrite it. Provider responses are owned only after finish.
+	snapshot := slices.Clone(c.messages)
+	opts := c.genOptions()
+	c.revision++
+	revision := c.revision
+	var res genai.Result
+	var err error
 	return llmStep{
 		text: func(yield func(string) bool) {
+			fragments, done := c.provider.GenStream(ctx, snapshot, opts...)
 			for fragment := range fragments {
-				if fragment.Text == "" {
-					continue
-				}
-				if !yield(fragment.Text) {
-					return
+				if fragment.Text != "" && !yield(fragment.Text) {
+					break
 				}
 			}
+			res, err = done()
 		},
 		finish: func() (llmReply, error) {
+			c.mu.Lock()
 			defer c.mu.Unlock()
-			res, err := finish()
 			if err != nil {
 				return llmReply{}, err
 			}
-			reply := c.toReplyLocked(&res.Message)
-			c.messages = append(c.messages, res.Message)
-			if len(c.pendingCalls) == 0 {
-				c.unanswered = ""
+			if ctx.Err() != nil {
+				return llmReply{}, ctx.Err()
 			}
+			if revision != c.revision {
+				return llmReply{}, context.Canceled
+			}
+			reply, err := c.toReplyLocked(&res.Message)
+			if err != nil {
+				return llmReply{}, err
+			}
+			c.messages = append(c.messages, res.Message)
 			return reply, nil
 		},
 	}
@@ -530,31 +505,42 @@ func (c *genaiConversation) genOptions() []genai.GenOption {
 	return opts
 }
 
-func (c *genaiConversation) toReplyLocked(msg *genai.Message) llmReply {
+func (c *genaiConversation) toReplyLocked(msg *genai.Message) (llmReply, error) {
 	text := strings.Builder{}
+	var calls []llmToolCall
+	ids := make(map[string]struct{})
 	for i := range msg.Replies {
 		reply := &msg.Replies[i]
 		if !reply.ToolCall.IsZero() {
 			if reply.ToolCall.ID == "" {
-				c.nextToolID++
-				reply.ToolCall.ID = fmt.Sprintf("local-call-%d", c.nextToolID)
+				for {
+					c.nextToolID++
+					reply.ToolCall.ID = fmt.Sprintf("local-call-%d", c.nextToolID)
+					if _, exists := c.seenCalls[reply.ToolCall.ID]; !exists {
+						break
+					}
+				}
 			}
+			id := reply.ToolCall.ID
+			if _, exists := c.seenCalls[id]; exists {
+				return llmReply{}, fmt.Errorf("reused tool call ID %q", id)
+			}
+			if _, exists := ids[id]; exists {
+				return llmReply{}, fmt.Errorf("duplicate tool call ID %q", id)
+			}
+			ids[id] = struct{}{}
 			if reply.ToolCall.Arguments == "" {
 				reply.ToolCall.Arguments = "{}"
 			}
-			c.pendingCalls = append(c.pendingCalls, llmToolCall{
-				id:   reply.ToolCall.ID,
-				name: reply.ToolCall.Name,
-				args: json.RawMessage(reply.ToolCall.Arguments),
-			})
+			calls = append(calls, llmToolCall{id: id, name: reply.ToolCall.Name, args: json.RawMessage(reply.ToolCall.Arguments)})
 		}
 		text.WriteString(reply.Text)
 	}
-	reply := llmReply{text: text.String()}
-	if len(c.pendingCalls) != 0 {
-		reply.toolCall = &c.pendingCalls[0]
+	for _, call := range calls {
+		c.seenCalls[call.id] = struct{}{}
+		c.pendingCalls[call.id] = call.name
 	}
-	return reply
+	return llmReply{text: text.String(), toolCalls: calls}, nil
 }
 
 func (c *genaiConversation) userText(text string) string {

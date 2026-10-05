@@ -1191,11 +1191,15 @@ export class VoiceSession {
     }
 
     if (env.kind === MessageKindError) {
-      if (this._setupTimer !== null) {
-        clearTimeout(this._setupTimer);
-        this._setupTimer = null;
-      }
       const msg = JSON.parse(text) as Error;
+      if (msg.recoverable) {
+        // Keep the connection and outstanding tool deliveries alive. Diagnostics
+        // use the same transcript presentation as tool errors, not fatal state.
+        this._update((s) => {
+          s.transcript = [...s.transcript, { speaker: "assistant", text: `[Voice] ${msg.message}`, final: true }];
+        });
+        return;
+      }
       this._setError(msg.message);
     }
   }

@@ -162,6 +162,31 @@ describe("browser voice sessions", () => {
     expect(session.state.transcript.some((entry) => entry.text === "stale")).toBe(false);
   });
 
+  it("keeps a text session and late tool result alive after a recoverable gateway error", async () => {
+    let finish: (value: Awaited<ReturnType<typeof mcpClient.callTool>>) => void = () => {
+      throw new Error("tool not started");
+    };
+    callTool.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const socket = await readySocket();
+    socket.message({ kind: "tool.call", id: "pending", name: "items_list", args: {} });
+    socket.message({ kind: "error", message: "OutOfOrder support is unavailable", recoverable: true });
+    expect(session.state.connected).toBe(true);
+    expect(session.state.activeTool).toBe("items_list");
+    expect(session.state.transcript.at(-1)?.text).toBe("[Voice] OutOfOrder support is unavailable");
+    expect(socket.readyState).toBe(1);
+    finish({ isError: false, structuredContent: { items: ["late"] } });
+    await Promise.resolve();
+    expect(socket.sent).toContain(
+      JSON.stringify({ kind: "tool.result", id: "pending", name: "items_list", result: { items: ["late"] } }),
+    );
+    expect(session.state.activeTool).toBeNull();
+  });
+
   it("does not send late tool results after disconnect", async () => {
     let finish: (value: Awaited<ReturnType<typeof mcpClient.callTool>>) => void = () => {
       throw new Error("tool not started");

@@ -487,6 +487,40 @@ describe("VoiceSession", () => {
     session.disconnect();
   });
 
+  it("preserves outstanding tools and transport after a recoverable gateway error", async () => {
+    const tool = deferred<Awaited<ReturnType<typeof mcpClient.callTool>>>();
+    mcpMocks.mcpCallTool.mockReturnValue(tool.promise);
+    const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
+    await session.connect();
+    const channel = FakePeerConnection.dataChannels[0];
+    channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindSessionReady }) }));
+    dispatchToolCall(channel, "pending-tool", "lookup");
+    expect(session.state.activeTool).toBe("lookup");
+    channel?.onmessage?.(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          kind: MessageKindError,
+          message: "Streaming OutOfOrder support is unmeasured",
+          recoverable: true,
+        }),
+      }),
+    );
+    expect(session.state.connected).toBe(true);
+    expect(session.state.error).toBeNull();
+    expect(session.state.activeTool).toBe("lookup");
+    expect(session.state.transcript.at(-1)?.text).toBe("[Voice] Streaming OutOfOrder support is unmeasured");
+    expect(channel?.readyState).toBe("open");
+    expect(closeRequests).toEqual([]);
+    tool.resolve({ structuredContent: { answer: "late" } });
+    await tool.promise;
+    await Promise.resolve();
+    expect(channel?.send).toHaveBeenCalledWith(
+      JSON.stringify({ kind: "tool.result", id: "pending-tool", name: "lookup", result: { answer: "late" } }),
+    );
+    expect(session.state.activeTool).toBeNull();
+    session.disconnect();
+  });
+
   it("discards a late MCP result from a replaced voice connection", async () => {
     const tool = deferred<Awaited<ReturnType<typeof mcpClient.callTool>>>();
     mcpMocks.mcpCallTool.mockReturnValue(tool.promise);
@@ -770,9 +804,13 @@ describe("VoiceSession", () => {
     );
   });
 
-  it("closes the gateway session when the voice protocol reports an error", async () => {
+  it("closes the gateway session and drops late tools when the voice protocol reports a fatal error", async () => {
+    const tool = deferred<Awaited<ReturnType<typeof mcpClient.callTool>>>();
+    mcpMocks.mcpCallTool.mockReturnValue(tool.promise);
     const session = new VoiceSession();
     await session.connect();
+    const channel = FakePeerConnection.dataChannels[0];
+    dispatchToolCall(channel, "pending-tool", "lookup");
 
     FakePeerConnection.dataChannels[0]?.onmessage?.(
       new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindError, message: "session failed" }) }),
@@ -787,6 +825,12 @@ describe("VoiceSession", () => {
       ]),
     );
     expect(session.state.error).toBe("session failed");
+    expect(session.state.connected).toBe(false);
+    expect(channel?.readyState).toBe("closed");
+    tool.resolve({ structuredContent: { answer: "late" } });
+    await tool.promise;
+    await Promise.resolve();
+    expect(channel?.send).not.toHaveBeenCalled();
   });
 
   it("refreshes host authorization for standalone diagnostics", async () => {

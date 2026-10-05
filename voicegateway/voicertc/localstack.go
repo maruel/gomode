@@ -52,16 +52,16 @@ type llmToolCall struct {
 	args json.RawMessage
 }
 
-// llmReply is one step of an LLM turn: assistant text, then an optional tool call.
+// llmReply is one completed generation: assistant text and its tool calls.
 type llmReply struct {
-	text     string
-	toolCall *llmToolCall
+	text      string
+	toolCalls []llmToolCall
 }
 
 // llmStep is one streamed LLM generation.
 //
-// Callers must drain text, then call finish exactly once. finish returns the
-// final message used for conversation history and tool-call handling.
+// Callers must drain text (including provider completion), then call finish
+// exactly once. finish is a nonblocking history commit, serialized with events.
 type llmStep struct {
 	text   iter.Seq[string]
 	finish func() (llmReply, error)
@@ -125,15 +125,17 @@ func (b *localStackBackend) newTextSession(ctx context.Context, sessionID string
 }
 
 func (b *localStackBackend) newSession(ctx context.Context, sessionID string, sink backendSink, clientSpeech bool) *localStackSession {
+	sessionCtx, cancel := context.WithCancel(ctx)
 	s := &localStackSession{
-		id:           sessionID,
-		sink:         sink,
-		baseCtx:      ctx,
-		asr:          b.asr,
-		llm:          b.llm,
-		tts:          b.tts,
-		clientSpeech: clientSpeech,
-		toolWaiters:  make(map[string]chan toolResultMsg),
+		id:            sessionID,
+		sink:          sink,
+		baseCtx:       sessionCtx,
+		sessionCancel: cancel,
+		asr:           b.asr,
+		llm:           b.llm,
+		tts:           b.tts,
+		clientSpeech:  clientSpeech,
+		outstanding:   make(map[string]sessionToolCall),
 	}
 	if !clientSpeech {
 		s.vad = b.newVAD()
@@ -141,11 +143,16 @@ func (b *localStackBackend) newSession(ctx context.Context, sessionID string, si
 	return s
 }
 
-// toolResultMsg carries a client tool result back to a waiting turn.
+// toolResultMsg carries a client tool result independently of a generation.
 type toolResultMsg struct {
 	id     string
 	name   string
 	result json.RawMessage
+}
+
+type sessionToolCall struct {
+	name string
+	conv llmConversation
 }
 
 // localStackSession owns one half-duplex voice session: queues, cancellation,
@@ -155,6 +162,8 @@ type localStackSession struct {
 	sink    backendSink
 	baseCtx context.Context //nolint:containedctx // session lifetime context for turn goroutines
 
+	sessionCancel context.CancelFunc
+
 	vad vadSegmenter
 	asr asrAdapter
 	llm llmAdapter
@@ -163,14 +172,18 @@ type localStackSession struct {
 	// synthesis, so this session only runs the text LLM turn.
 	clientSpeech bool
 
-	turnWG         sync.WaitGroup
-	mu             sync.Mutex
-	closed         bool
-	conv           llmConversation
-	turnCancel     context.CancelFunc
-	turnGeneration int
-	speaking       bool
-	toolWaiters    map[string]chan toolResultMsg
+	turnWG sync.WaitGroup
+	// events serializes admission, generation commits and tool dispatch, never streaming.
+	events            sync.Mutex
+	mu                sync.Mutex
+	closed            bool
+	conv              llmConversation
+	turnCancel        context.CancelFunc
+	turnCtx           context.Context //nolint:containedctx // active generation identity for speech state
+	turnGeneration    int
+	speaking          bool
+	outstanding       map[string]sessionToolCall
+	transcriptionTail <-chan struct{}
 }
 
 func (s *localStackSession) acceptClientMessage(ctx context.Context, data []byte) error {
@@ -187,12 +200,19 @@ func (s *localStackSession) acceptClientMessage(ctx context.Context, data []byte
 		if err := applySessionLanguage(&msg); err != nil {
 			return err
 		}
+		s.events.Lock()
 		s.mu.Lock()
+		if s.conv != nil || s.closed {
+			s.mu.Unlock()
+			s.events.Unlock()
+			return errors.New("session is already configured or closed")
+		}
 		s.conv = s.llm.newConversation(msg.Context.SystemInstruction, msg.Tools)
 		if msg.Context.Text != "" {
 			s.conv.addContext(msg.Context.Text)
 		}
 		s.mu.Unlock()
+		s.events.Unlock()
 		s.sink.backendReady(ctx)
 		return nil
 	case voicev1.MessageKindContextUpdate:
@@ -200,12 +220,14 @@ func (s *localStackSession) acceptClientMessage(ctx context.Context, data []byte
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("decode context.update: %w", err)
 		}
+		s.events.Lock()
 		s.mu.Lock()
 		conv := s.conv
 		s.mu.Unlock()
 		if conv != nil && msg.Context.Text != "" {
 			conv.addContext(msg.Context.Text)
 		}
+		s.events.Unlock()
 		return nil
 	case voicev1.MessageKindUserMessage:
 		var msg voicev1.UserMessage
@@ -219,7 +241,7 @@ func (s *localStackSession) acceptClientMessage(ctx context.Context, data []byte
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("decode tool.result: %w", err)
 		}
-		s.deliverToolResult(toolResultMsg{id: msg.ID, name: msg.Name, result: msg.Result})
+		s.deliverToolResult(ctx, toolResultMsg{id: msg.ID, name: msg.Name, result: msg.Result})
 		return nil
 	case voicev1.MessageKindTurnCancel:
 		s.bargeIn(voicev1.InterruptSourceUser, "turn cancelled")
@@ -244,13 +266,17 @@ func (s *localStackSession) acceptMicPCM(ctx context.Context, pcm []byte) error 
 }
 
 func (s *localStackSession) close() error {
+	s.events.Lock()
 	s.mu.Lock()
 	s.closed = true
+	s.sessionCancel()
 	if s.turnCancel != nil {
 		s.turnCancel()
 		s.turnCancel = nil
 	}
+	s.outstanding = nil
 	s.mu.Unlock()
+	s.events.Unlock()
 	s.turnWG.Wait()
 	return nil
 }
@@ -260,7 +286,7 @@ func (s *localStackSession) close() error {
 func (s *localStackSession) reportTurnState(generation int, state voicev1.TurnState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.turnGeneration == generation {
+	if !s.closed && s.turnGeneration == generation {
 		s.emit(&voicev1.TurnStatus{Kind: voicev1.MessageKindTurnStatus, State: state})
 	}
 }
@@ -269,161 +295,164 @@ func (s *localStackSession) reportTurnState(generation int, state voicev1.TurnSt
 func (s *localStackSession) finishTurn(generation int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.turnGeneration == generation {
+	if !s.closed && s.turnGeneration == generation {
+		if s.turnCancel != nil {
+			s.turnCancel()
+		}
 		s.turnCancel = nil
+		if len(s.outstanding) != 0 {
+			return
+		}
 		s.emit(&voicev1.TurnStatus{Kind: voicev1.MessageKindTurnStatus, State: voicev1.TurnStateIdle})
 	}
-}
-
-// beginTurn cancels any previous turn and reserves a turn goroutine. It holds
-// s.mu across the closed check and turnWG.Add so a concurrent close cannot start
-// its Wait between them. It reports false when the session is closed or has no
-// conversation.
-func (s *localStackSession) beginTurn(ctx context.Context) (context.Context, int, llmConversation, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return nil, 0, nil, false
-	}
-	if s.turnCancel != nil {
-		s.turnCancel()
-	}
-	turnCtx, cancel := context.WithCancel(ctx)
-	s.turnCancel = cancel
-	s.turnGeneration++
-	generation := s.turnGeneration
-	conv := s.conv
-	if conv == nil {
-		cancel()
-		return nil, 0, nil, false
-	}
-	s.turnWG.Add(1)
-	return turnCtx, generation, conv, true
 }
 
 func (s *localStackSession) startUserMessage(ctx context.Context, text string) {
 	if text == "" {
 		return
 	}
-	turnCtx, generation, conv, ok := s.beginTurn(ctx)
-	if !ok {
+	s.events.Lock()
+	defer s.events.Unlock()
+	s.mu.Lock()
+	if s.closed || s.conv == nil {
+		s.mu.Unlock()
 		return
 	}
-	go func() {
-		defer s.turnWG.Done()
-		defer s.finishTurn(generation)
-		s.handleUserText(turnCtx, generation, conv, text)
-	}()
+	conv := s.conv
+	s.mu.Unlock()
+	// Admission is synchronous, before launching a goroutine: rapid utterances
+	// cannot race their order or disappear when a later generation supersedes them.
+	turnCtx, cancel := context.WithCancel(ctx)
+	step, err := conv.user(turnCtx, text)
+	if err != nil {
+		cancel()
+		s.emit(&voicev1.Error{Kind: voicev1.MessageKindError, Message: err.Error(), Recoverable: true})
+		return
+	}
+	s.startAdmittedStep(turnCtx, conv, step, cancel, true)
 }
 
 func (s *localStackSession) startTurn(ctx context.Context, utterance []byte) {
-	turnCtx, generation, conv, ok := s.beginTurn(ctx)
-	if !ok {
+	s.events.Lock()
+	defer s.events.Unlock()
+	s.mu.Lock()
+	if s.closed || s.conv == nil {
+		s.mu.Unlock()
 		return
 	}
-	s.reportTurnState(generation, voicev1.TurnStateTranscribing)
+	if s.turnCancel != nil {
+		s.turnCancel()
+		s.turnCancel = nil
+	}
+	s.turnGeneration++
+	generation := s.turnGeneration
+	s.emit(&voicev1.TurnStatus{Kind: voicev1.MessageKindTurnStatus, State: voicev1.TurnStateTranscribing})
+	previous := s.transcriptionTail
+	done := make(chan struct{})
+	s.transcriptionTail = done
+	s.turnWG.Add(1)
+	s.mu.Unlock()
 	go func() {
 		defer s.turnWG.Done()
+		defer close(done)
 		defer s.finishTurn(generation)
-		s.runTurn(turnCtx, generation, conv, utterance)
+		if previous != nil {
+			select {
+			case <-previous:
+			case <-s.baseCtx.Done():
+				return
+			}
+		}
+		if s.baseCtx.Err() != nil {
+			return
+		}
+		text, err := s.asr.transcribe(s.baseCtx, utterance)
+		if err != nil {
+			s.warnTurn(s.baseCtx, "asr", err)
+			return
+		}
+		s.emit(&voicev1.TranscriptDelta{Kind: voicev1.MessageKindTranscriptDelta, Speaker: voicev1.SpeakerUser, Text: text})
+		s.startUserMessage(ctx, text)
 	}()
 }
 
-func (s *localStackSession) runTurn(ctx context.Context, generation int, conv llmConversation, utterance []byte) {
-	text, err := s.asr.transcribe(ctx, utterance)
-	if err != nil {
-		s.warnTurn(ctx, "asr", err)
-		return
+func (s *localStackSession) startAdmittedStep(ctx context.Context, conv llmConversation, step llmStep, cancel context.CancelFunc, reportThinking bool) {
+	s.mu.Lock()
+	if s.turnCancel != nil {
+		s.turnCancel()
 	}
-	if text == "" {
-		return
+	s.turnCancel = cancel
+	s.turnCtx = ctx
+	s.speaking = false
+	s.turnGeneration++
+	generation := s.turnGeneration
+	s.turnWG.Add(1)
+	s.mu.Unlock()
+	if reportThinking {
+		s.reportTurnState(generation, voicev1.TurnStateThinking)
 	}
-	s.emit(&voicev1.TranscriptDelta{Kind: voicev1.MessageKindTranscriptDelta, Speaker: voicev1.SpeakerUser, Text: text})
-	s.handleUserText(ctx, generation, conv, text)
-}
-
-func (s *localStackSession) handleUserText(ctx context.Context, generation int, conv llmConversation, text string) {
-	s.reportTurnState(generation, voicev1.TurnStateThinking)
-	step, err := conv.user(ctx, text)
-	if err != nil {
-		s.warnTurn(ctx, "llm", err)
-		return
-	}
-	if s.clientSpeech {
-		s.handleTextStep(ctx, conv, step)
-		return
-	}
-	s.handleLLMStep(ctx, conv, step)
+	go func() {
+		defer s.turnWG.Done()
+		defer s.finishTurn(generation)
+		if s.clientSpeech {
+			s.handleTextStep(ctx, conv, step)
+		} else {
+			s.handleLLMStep(ctx, conv, step)
+		}
+	}()
 }
 
 // handleTextStep streams one LLM step as assistant text for a client-speech
 // session. It performs the same tool round trip as handleLLMStep without local
 // synthesis.
 func (s *localStackSession) handleTextStep(ctx context.Context, conv llmConversation, step llmStep) {
-	for {
-		// Drain and finish step exactly once. finish releases the conversation
-		// lock even when the turn is cancelled, so the next turn can start.
-		streamed := false
-		for delta := range step.text {
-			if delta == "" {
-				continue
-			}
+	streamed := false
+	for delta := range step.text {
+		if delta != "" && ctx.Err() == nil {
 			streamed = true
-			if ctx.Err() == nil {
-				s.emit(&voicev1.AssistantTextDelta{Kind: voicev1.MessageKindAssistantTextDelta, Text: delta})
-			}
+			s.emit(&voicev1.AssistantTextDelta{Kind: voicev1.MessageKindAssistantTextDelta, Text: delta})
 		}
-		reply, err := step.finish()
-		if err != nil {
-			s.warnTurn(ctx, "llm", err)
-			return
-		}
-		if ctx.Err() != nil {
-			return
-		}
-		if !streamed && reply.text != "" {
-			s.emit(&voicev1.AssistantTextDelta{Kind: voicev1.MessageKindAssistantTextDelta, Text: reply.text})
-		}
-		if reply.toolCall == nil {
-			return
-		}
-		next, ok := s.runToolCall(ctx, conv, reply.toolCall)
-		if !ok {
-			return
-		}
-		step = next
+	}
+	reply, err := s.finishStep(ctx, conv, step)
+	if err != nil {
+		s.warnTurn(ctx, "llm", err)
+		return
+	}
+	if ctx.Err() == nil && !streamed && reply.text != "" {
+		s.emit(&voicev1.AssistantTextDelta{Kind: voicev1.MessageKindAssistantTextDelta, Text: reply.text})
 	}
 }
 
 func (s *localStackSession) handleLLMStep(ctx context.Context, conv llmConversation, step llmStep) {
 	speech := s.startSpeechQueue(ctx)
-	defer speech.close(ctx)
-	for {
-		// forwardLLMText drains and finishes step exactly once, including when
-		// the turn is cancelled, so a later turn is not blocked on the lock.
-		reply, err := s.forwardLLMText(ctx, speech, step)
-		if err != nil {
-			s.warnTurn(ctx, "llm", err)
-			return
-		}
-		if ctx.Err() != nil {
-			return
-		}
-		if reply.toolCall == nil {
-			return
-		}
-		if !speech.flush(ctx) {
-			return
-		}
-		next, ok := s.runToolCall(ctx, conv, reply.toolCall)
-		if !ok {
-			return
-		}
-		step = next
+	defer speech.close()
+	if _, err := s.forwardLLMText(ctx, conv, speech, step); err != nil {
+		s.warnTurn(ctx, "llm", err)
 	}
 }
 
-func (s *localStackSession) forwardLLMText(ctx context.Context, speech *assistantSpeechQueue, step llmStep) (llmReply, error) {
+// finishStep commits and dispatches atomically with respect to newer events.
+// Once dispatched, tools belong to the session, not the cancelled turn.
+func (s *localStackSession) finishStep(ctx context.Context, conv llmConversation, step llmStep) (llmReply, error) {
+	s.events.Lock()
+	defer s.events.Unlock()
+	reply, err := step.finish()
+	if err != nil {
+		return llmReply{}, err
+	}
+	if ctx.Err() != nil {
+		return llmReply{}, ctx.Err()
+	}
+	for _, call := range reply.toolCalls {
+		s.mu.Lock()
+		s.outstanding[call.id] = sessionToolCall{name: call.name, conv: conv}
+		s.mu.Unlock()
+		s.emit(&voicev1.ToolCall{Kind: voicev1.MessageKindToolCall, ID: call.id, Name: call.name, Args: call.args})
+	}
+	return reply, nil
+}
+
+func (s *localStackSession) forwardLLMText(ctx context.Context, conv llmConversation, speech *assistantSpeechQueue, step llmStep) (llmReply, error) {
 	fragmenter := newSentenceFragmenter(defaultSentenceFragmentMaxRunes)
 	sending := true
 	streamed := false
@@ -442,12 +471,15 @@ func (s *localStackSession) forwardLLMText(ctx context.Context, speech *assistan
 			sendFragment(fragment)
 		}
 	}
-	reply, err := step.finish()
-	if err != nil {
-		return llmReply{}, err
-	}
 	for _, fragment := range fragmenter.flush() {
 		sendFragment(fragment)
+	}
+	if ctx.Err() == nil {
+		speech.flush(ctx)
+	}
+	reply, err := s.finishStep(ctx, conv, step)
+	if err != nil {
+		return llmReply{}, err
 	}
 	if !streamed && reply.text != "" {
 		fallback := newSentenceFragmenter(defaultSentenceFragmentMaxRunes)
@@ -485,7 +517,7 @@ func (s *localStackSession) speakFragments(ctx context.Context, fragments iter.S
 	var audioBytes int
 	defer func() {
 		if started {
-			s.setSpeaking(false)
+			s.setSpeaking(ctx, false)
 		}
 	}()
 
@@ -518,7 +550,7 @@ func (s *localStackSession) speakFragments(ctx context.Context, fragments iter.S
 				if !started {
 					started = true
 					audioStartedAt = time.Now()
-					s.setSpeaking(true)
+					s.setSpeaking(ctx, true)
 					s.emit(&voicev1.SpeechStarted{Kind: voicev1.MessageKindSpeechStarted, Speaker: voicev1.SpeakerAssistant})
 				}
 				s.emit(&voicev1.TranscriptDelta{Kind: voicev1.MessageKindTranscriptDelta, Speaker: voicev1.SpeakerAssistant, Text: text})
@@ -562,6 +594,8 @@ func queuedTextFragments(ch <-chan assistantSpeechQueueItem) iter.Seq[string] {
 }
 
 func (s *localStackSession) bargeIn(source voicev1.InterruptSource, message string) {
+	s.events.Lock()
+	defer s.events.Unlock()
 	s.mu.Lock()
 	cancel := s.turnCancel
 	s.turnCancel = nil
@@ -574,61 +608,34 @@ func (s *localStackSession) bargeIn(source voicev1.InterruptSource, message stri
 	s.emit(&voicev1.Interrupted{Kind: voicev1.MessageKindInterrupted, Source: source, Message: message})
 }
 
-// awaitToolResult emits a tool call and waits for the matching client result. It
-// reserves the delivery slot before the emit, so a fast client cannot race the
-// registration. A result for a superseded call never reaches the LLM.
-func (s *localStackSession) awaitToolResult(ctx context.Context, call *llmToolCall) (toolResultMsg, bool) {
-	ch := make(chan toolResultMsg, 1)
+// deliverToolResult validates session identity before admitting a result. Late
+// completions survive interruption; duplicates and mismatches do not start work.
+func (s *localStackSession) deliverToolResult(ctx context.Context, r toolResultMsg) {
+	s.events.Lock()
+	defer s.events.Unlock()
 	s.mu.Lock()
-	s.toolWaiters[call.id] = ch
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		delete(s.toolWaiters, call.id)
+	call, ok := s.outstanding[r.id]
+	if s.closed {
 		s.mu.Unlock()
-	}()
-	s.emit(&voicev1.ToolCall{
-		Kind: voicev1.MessageKindToolCall,
-		ID:   call.id,
-		Name: call.name,
-		Args: call.args,
-	})
-	select {
-	case r := <-ch:
-		return r, true
-	case <-ctx.Done():
-		return toolResultMsg{}, false
-	}
-}
-
-// runToolCall emits a tool call, waits for its result, and returns the next
-// step. It returns false when the turn ends first.
-func (s *localStackSession) runToolCall(ctx context.Context, conv llmConversation, call *llmToolCall) (llmStep, bool) {
-	res, ok := s.awaitToolResult(ctx, call)
-	if !ok {
-		return llmStep{}, false
-	}
-	step, err := conv.toolResult(ctx, res.id, res.name, res.result)
-	if err != nil {
-		s.warnTurn(ctx, "llm", err)
-		return llmStep{}, false
-	}
-	return step, true
-}
-
-// deliverToolResult hands a client result to the pending call that owns its ID.
-// A result for a superseded or unknown call is dropped.
-func (s *localStackSession) deliverToolResult(r toolResultMsg) {
-	s.mu.Lock()
-	ch := s.toolWaiters[r.id]
-	s.mu.Unlock()
-	if ch == nil {
 		return
 	}
-	select {
-	case ch <- r:
-	default:
+	if !ok || call.name != r.name {
+		s.mu.Unlock()
+		s.emit(&voicev1.Error{Kind: voicev1.MessageKindError, Message: "Unknown, duplicate or mismatched tool result", Recoverable: true})
+		return
 	}
+	s.mu.Unlock()
+	turnCtx, cancel := context.WithCancel(ctx)
+	step, err := call.conv.toolResult(turnCtx, r.id, r.name, r.result)
+	if err != nil {
+		cancel()
+		s.emit(&voicev1.Error{Kind: voicev1.MessageKindError, Message: err.Error(), Recoverable: true})
+		return
+	}
+	s.mu.Lock()
+	delete(s.outstanding, r.id)
+	s.mu.Unlock()
+	s.startAdmittedStep(turnCtx, call.conv, step, cancel, false)
 }
 
 func (s *localStackSession) emit(msg any) {
@@ -637,9 +644,11 @@ func (s *localStackSession) emit(msg any) {
 	}
 }
 
-func (s *localStackSession) setSpeaking(v bool) {
+func (s *localStackSession) setSpeaking(ctx context.Context, v bool) {
 	s.mu.Lock()
-	s.speaking = v
+	if s.turnCtx == ctx {
+		s.speaking = v
+	}
 	s.mu.Unlock()
 }
 
@@ -763,11 +772,11 @@ type placeholderConversation struct {
 func (c *placeholderConversation) user(_ context.Context, text string) (llmStep, error) {
 	if len(c.tools) > 0 && !c.calledTool {
 		c.calledTool = true
-		return newLLMStep(nil, llmReply{toolCall: &llmToolCall{
+		return newLLMStep(nil, llmReply{toolCalls: []llmToolCall{{
 			id:   "local-call-1",
 			name: c.tools[0].Name,
 			args: json.RawMessage(`{}`),
-		}}, nil), nil
+		}}}, nil), nil
 	}
 	return newLLMStep([]string{"You said: " + text}, llmReply{text: "You said: " + text}, nil), nil
 }
@@ -842,12 +851,9 @@ func (q *assistantSpeechQueue) flush(ctx context.Context) bool {
 	}
 }
 
-func (q *assistantSpeechQueue) close(ctx context.Context) {
+func (q *assistantSpeechQueue) close() {
 	close(q.items)
-	select {
-	case <-q.done:
-	case <-ctx.Done():
-	}
+	<-q.done
 }
 
 type assistantSpeechQueueItem struct {
