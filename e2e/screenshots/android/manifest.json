@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "producer": "gomode",
+  "platform": "android",
+  "source": {
+    "revision": "8a6c776817f3463f79085ea82faf2c60fad5573b",
+    "inputsSha256": "0985c7a43d880ba95bf4b6d3e21c491bd9c56151504bc50d46b7fe9f92833ade"
+  },
+  "comparison": {
+    "product": "exact RGB",
+    "statusBarHeightPx": 63,
+    "statusBarMaximumChannelDelta": 2,
+    "statusBarMaximumChangedPixelFraction": 0.01
+  },
+  "device": {
+    "avd": "gomode_test_stock",
+    "locale": "en-US",
+    "apiLevel": "35",
+    "model": "sdk_gphone64_x86_64",
+    "density": "Physical density: 420"
+  },
+  "scenarios": [
+    {
+      "name": "connections",
+      "file": "connections.webp",
+      "width": 1080,
+      "height": 2400,
+      "sha256": "8d3a893e602dc8613079c35db5042b89fbef2bb2fe5bb5692491db6953e53ef4",
+      "description": "Two configured hosted services with the active service identified."
+    },
+    {
+      "name": "halo",
+      "file": "halo.webp",
+      "width": 1080,
+      "height": 2400,
+      "sha256": "f25b7dbb8cab7417f65a0da50c409bf83238325b864f5b03e2c678e99a07f363",
+      "description": "Native Halo device management before a Bluetooth device is paired."
+    },
+    {
+      "name": "hosted-service",
+      "file": "hosted-service.webp",
+      "width": 1080,
+      "height": 2400,
+      "sha256": "41dc6101a4f000de3b548ddfb985c3c2d2b7420306ba71725b542de1a00f9c0e",
+      "description": "Real Android WebView hosting the labeled Field Notes demonstration service."
+    },
+    {
+      "name": "service-editor",
+      "file": "service-editor.webp",
+      "width": 1080,
+      "height": 2400,
+      "sha256": "97ba97ece6b2c08923c03ce1639f890b959fc7a259cb19d2df009be4c8dce171",
+      "description": "Native service editor with a development service ready to connect."
+    },
+    {
+      "name": "voice-settings",
+      "file": "voice-settings.webp",
+      "width": 1080,
+      "height": 2400,
+      "sha256": "f88de8fff6061cac910137bee912f3ff0d26da47ea6cbf53c21c12c949beeac3",
+      "description": "Native on-device speech mode and language settings."
+    }
+  ]
+}

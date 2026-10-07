@@ -1,3 +1,5 @@
+
+/android-screenshots-failures/
 /android/.gradle/
 /android/.kotlin/
 /android/build/
@@ -5,6 +7,10 @@
 /android/local.properties
 /coverage.html
 /coverage.out
+/e2e/screenshots/.android-publish-*/
+/e2e/screenshots/.android.previous/
+/e2e/screenshots/.android.capture.lock
+/e2e/screenshots/.android.publish.lock
 /go.work
 /go.work.sum
 /sdk/gomode/kotlin/build/

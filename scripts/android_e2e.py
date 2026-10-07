@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Go Mode shell tests against a standalone hosted frontend fixture.
+"""Run hosted Go Mode tests and share device-scoped instrumentation execution.
 
 With --voice, serve internal/cmd/android-voice-fixture instead and select tests
 marked @VoiceFixture.
@@ -29,10 +29,8 @@ SETTINGS = {
     },
 }
 
-PAGE = b"""<!doctype html>
-<html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body><div id="app"><div style="min-height:100vh">Go Mode hosted test frontend</div></div></body></html>
-"""
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+PAGE = (ROOT / "e2e" / "hosted.html").read_bytes()
 
 HOSTED_FIXTURE_ANNOTATION = "com.fghbuild.gomode.StandaloneHostedFixture"
 VOICE_FIXTURE_ANNOTATION = "com.fghbuild.gomode.VoiceFixture"
@@ -65,16 +63,47 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
+def run_instrumented_tests(port: int, selection: list[str], serial: str) -> int:
+    """Run selected Android tests with a hosted fixture and clean up adb forwarding."""
+    adb = adb_path()
+    sdk_script = pathlib.Path(__file__).with_name("android_sdk.py")
+    subprocess.run([sys.executable, str(sdk_script), "check"], check=True)
+    sdk = find_sdkmanager()
+    if sdk is None:
+        raise RuntimeError("Android SDK was not available after setup")
+    gradle_env = {**os.environ, "ANDROID_HOME": sdk[1], "ANDROID_SDK_ROOT": sdk[1], "ANDROID_SERIAL": serial}
+    reverse = f"tcp:{port}"
+    try:
+        subprocess.run([adb, "-s", serial, "reverse", reverse, reverse], check=True)
+        print(
+            f"Testing Go Mode shell on {serial} with the fixture at localhost:{port}",
+            flush=True,
+        )
+        return subprocess.run(
+            [
+                "./gradlew",
+                "--max-workers=2",
+                ":gomode:connectedDebugAndroidTest",
+                f"-Pandroid.testInstrumentationRunnerArguments.baseUrl=http://localhost:{port}",
+                *selection,
+            ],
+            cwd=ROOT / "android",
+            env=gradle_env,
+            check=False,
+        ).returncode
+    finally:
+        subprocess.run([adb, "-s", serial, "reverse", "--remove", reverse], check=False)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--voice", action="store_true", help="serve the voice gateway fixture")
     args = parser.parse_args()
-
     server: http.server.ThreadingHTTPServer | None = None
     fixture: subprocess.Popen[bytes] | None = None
     if args.voice:
         port = free_port()
-        fixture = subprocess.Popen(["go", "run", VOICE_FIXTURE_PACKAGE, "-addr", f"127.0.0.1:{port}"])
+        fixture = subprocess.Popen(["go", "run", VOICE_FIXTURE_PACKAGE, "-addr", f"127.0.0.1:{port}"], cwd=ROOT)
         annotation = VOICE_FIXTURE_ANNOTATION
     else:
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
@@ -84,35 +113,10 @@ def main() -> int:
         annotation = HOSTED_FIXTURE_ANNOTATION
 
     try:
-        adb = adb_path()
-        serial = selected_device_serial(adb)
-        sdk_script = pathlib.Path(__file__).with_name("android_sdk.py")
-        subprocess.run([sys.executable, str(sdk_script), "check"], check=True)
-        sdk = find_sdkmanager()
-        if sdk is None:
-            raise RuntimeError("Android SDK was not available after setup")
-        gradle_env = {**os.environ, "ANDROID_HOME": sdk[1], "ANDROID_SDK_ROOT": sdk[1]}
-        reverse = f"tcp:{port}"
-        try:
-            subprocess.run([adb, "-s", serial, "reverse", reverse, reverse], check=True)
-            print(
-                f"Testing Go Mode shell on {serial} with the fixture at localhost:{port}",
-                flush=True,
-            )
-            return subprocess.run(
-                [
-                    "./gradlew",
-                    "--no-daemon",
-                    ":gomode:connectedDebugAndroidTest",
-                    f"-Pandroid.testInstrumentationRunnerArguments.baseUrl=http://localhost:{port}",
-                    f"-Pandroid.testInstrumentationRunnerArguments.annotation={annotation}",
-                ],
-                cwd="android",
-                env=gradle_env,
-                check=False,
-            ).returncode
-        finally:
-            subprocess.run([adb, "-s", serial, "reverse", "--remove", reverse], check=False)
+        serial = selected_device_serial(adb_path())
+        return run_instrumented_tests(
+            port, [f"-Pandroid.testInstrumentationRunnerArguments.annotation={annotation}"], serial
+        )
     finally:
         if fixture is not None:
             fixture.terminate()

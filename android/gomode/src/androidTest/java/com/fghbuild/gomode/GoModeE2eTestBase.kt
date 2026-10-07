@@ -1,4 +1,4 @@
-// Shared instrumented helpers for Go Mode hosted WebView e2e coverage.
+// Shared prelaunch validation, settings setup, and hosted WebView e2e helpers.
 package com.fghbuild.gomode
 
 import android.Manifest
@@ -28,6 +28,7 @@ abstract class GoModeE2eTestBase {
         TestRule { base, _ ->
             object : Statement() {
                 override fun evaluate() {
+                    validateDeviceBeforeSetup()
                     enableSoftKeyboardWithHardwareKeyboard()
                     val context = InstrumentationRegistry.getInstrumentation().targetContext
                     context.filesDir.resolve("datastore/gomode_settings.preferences_pb").delete()
@@ -46,6 +47,9 @@ abstract class GoModeE2eTestBase {
     protected val baseUrl: String by lazy {
         InstrumentationRegistry.getArguments().getString("baseUrl", DEFAULT_BASE_URL)
     }
+
+    // Specialized suites establish device requirements before any setup rule mutates it.
+    protected open fun validateDeviceBeforeSetup() = Unit
 
     protected fun openWebShell() {
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
@@ -71,6 +75,9 @@ abstract class GoModeE2eTestBase {
     }
 
     protected fun waitForHostedFrontend() {
+        // Synchronize Compose before polling a platform view. Native clicks can
+        // schedule state changes whose frames the Compose test clock must advance.
+        composeRule.waitUntil(GOMODE_LOAD_TIMEOUT_MS) { hasNodeWithTag("gomode-web-shell") }
         waitForWebView()
         waitForDom("frontend origin") { "location.origin === ${baseUrl.jsString()}" }
         waitForDom("Go Mode host query") { "new URL(location.href).searchParams.get('goModeHost') === '1'" }
@@ -79,100 +86,12 @@ abstract class GoModeE2eTestBase {
         waitForDom("frontend body has content") { "document.body?.innerText.trim().length > 0" }
     }
 
-    protected fun waitForHostedCaicFrontend() {
-        waitForHostedFrontend()
-        waitForDom("repository chips loaded", GOMODE_LOAD_TIMEOUT_MS) {
-            "!!document.querySelector('[data-testid=\"repo-chips\"] [data-testid^=\"chip-label-\"]')"
-        }
-    }
-
-    protected fun submitPromptThroughHostedUi(prompt: String) {
-        navigateHostedHome()
-        waitForDom("new task prompt is visible") { "isVisible('[data-testid=\"prompt-input\"]')" }
-        fillContentEditableByTestId("prompt-input", prompt)
-        clickByTestId("submit-task")
-        waitForTestId("task-detail-form", GOMODE_LOAD_TIMEOUT_MS)
-        waitForText(prompt, GOMODE_LOAD_TIMEOUT_MS)
-    }
-
-    protected fun openTaskCard(prompt: String) {
-        navigateHostedHome()
-        waitForDom("task card for '$prompt'", GOMODE_LOAD_TIMEOUT_MS) {
-            "taskCard(${prompt.jsString()}) !== null"
-        }
-        executeDom("open task card '$prompt'") {
-            "(() => { const card = taskCard(${prompt.jsString()}); card?.click(); return card !== null; })()"
-        }
-    }
-
-    protected fun navigateHostedHome() {
-        executeDom("navigate hosted frontend home") {
-            """
-            (() => {
-              if (location.pathname !== "/") {
-                history.pushState(null, "", "/");
-                dispatchEvent(new PopStateEvent("popstate"));
-              }
-              return true;
-            })()
-            """.trimIndent()
-        }
-    }
-
-    protected fun fillTaskDetailInput(text: String) {
-        fillContentEditable("[data-testid=\"task-detail-form\"] [role=\"textbox\"]", text)
-    }
-
-    protected fun fillContentEditableByTestId(
-        testId: String,
-        text: String,
-    ) {
-        fillContentEditable(testIdSelector(testId), text)
-    }
-
-    protected fun clickByTestId(testId: String) {
-        val selector = testIdSelector(testId)
-        waitForDom("clickable $testId") { "isEnabled(${selector.jsString()})" }
-        executeDom("click $testId") {
-            """
-            (() => {
-              const el = document.querySelector(${selector.jsString()});
-              el?.click();
-              return el !== null;
-            })()
-            """.trimIndent()
-        }
-    }
-
-    protected fun waitForTestId(
-        testId: String,
-        timeoutMs: Long = GOMODE_DEFAULT_TIMEOUT_MS,
-    ) {
-        val selector = testIdSelector(testId)
-        waitForDom("test id $testId", timeoutMs) { "isVisible(${selector.jsString()})" }
-    }
-
     protected fun waitForText(
         text: String,
         timeoutMs: Long = GOMODE_DEFAULT_TIMEOUT_MS,
     ) {
         waitForDom("text '$text'", timeoutMs) {
             "document.body?.innerText.includes(${text.jsString()}) === true"
-        }
-    }
-
-    protected fun textOccurrenceCount(text: String): Int =
-        js(
-            "((document.body?.innerText ?? '').split(${text.jsString()}).length - 1)",
-        ).toInt()
-
-    protected fun waitForTextOccurrenceAtLeast(
-        text: String,
-        minCount: Int,
-        timeoutMs: Long = GOMODE_DEFAULT_TIMEOUT_MS,
-    ) {
-        waitForDom("text '$text' occurrence count >= $minCount", timeoutMs) {
-            "((document.body?.innerText ?? '').split(${text.jsString()}).length - 1) >= $minCount"
         }
     }
 
@@ -312,35 +231,6 @@ abstract class GoModeE2eTestBase {
         return view
     }
 
-    private fun fillContentEditable(
-        selector: String,
-        text: String,
-    ) {
-        waitForDom("editable $selector") { "isVisible(${selector.jsString()})" }
-        executeDom("fill $selector") {
-            """
-            (() => {
-              const el = document.querySelector(${selector.jsString()});
-              if (!el) return false;
-              el.focus();
-              el.textContent = "";
-              el.dispatchEvent(new InputEvent(
-                "input",
-                { bubbles: true, inputType: "deleteContentBackward" },
-              ));
-              el.textContent = ${text.jsString()};
-              el.dispatchEvent(new InputEvent(
-                "input",
-                { bubbles: true, inputType: "insertText", data: ${text.jsString()} },
-              ));
-              return true;
-            })()
-            """.trimIndent()
-        }
-    }
-
-    private fun testIdSelector(testId: String): String = "[data-testid=\"${testId.cssString()}\"]"
-
     private fun wrapDomHelpers(script: String): String =
         """
         (() => {
@@ -356,16 +246,12 @@ abstract class GoModeE2eTestBase {
             const el = document.querySelector(selector);
             return !!el && !el.disabled;
           };
-          const taskCard = (prompt) => Array.from(document.querySelectorAll("[data-task-id]"))
-            .find((el) => el.textContent?.includes(prompt)) ?? null;
           return Boolean($script);
         })()
         """.trimIndent()
 
     protected fun String.jsString(): String =
         "\"" + replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\""
-
-    private fun String.cssString(): String = replace("\\", "\\\\").replace("\"", "\\\"")
 
     companion object {
         private const val DEFAULT_BASE_URL = "http://localhost:8090"

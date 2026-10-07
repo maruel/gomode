@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reuse a connected device or set up and start the gomode_test emulator."""
+"""Reuse a connected device or provision and start the stock Go Mode test emulator."""
 
 import argparse
 import fcntl
@@ -14,8 +14,8 @@ import tempfile
 import time
 
 from android_devices import adb_path, ready_device_serials
+from android_sdk import AVD_NAME
 
-AVD_NAME = "gomode_test"
 DEFAULT_SDK_ROOT = os.path.expanduser("~/.local/share/android-sdk")
 
 EMULATOR_ARGS = [
@@ -23,8 +23,8 @@ EMULATOR_ARGS = [
     "-no-audio",
     "-gpu",
     "swiftshader_indirect",
-    "-change-locale",
-    "en-US",
+    # The stock image already defaults to en-US. -change-locale schedules a
+    # second framework boot after sys.boot_completed and races APK installs.
     "-dpi-device",
     "420",
     "-no-boot-anim",
@@ -34,7 +34,7 @@ EMULATOR_ARGS = [
     "-feature",
     "-ModemSimulator",
     "-timezone",
-    "UTC",
+    "Etc/UTC",
     "-wipe-data",
     "-memory",
     "2048",
@@ -86,7 +86,7 @@ def _find_tool(name: str, sdk_root: str) -> str | None:
 
 
 def _running_avd_serial(adb: str) -> str | None:
-    """Return the serial of the running gomode_test AVD, if present."""
+    """Return the serial of the running owned stock AVD, if present."""
     devices = subprocess.run([adb, "devices"], capture_output=True, check=True, text=True)
     for line in devices.stdout.splitlines()[1:]:
         serial, separator, state = line.partition("\t")
@@ -249,7 +249,7 @@ def main() -> int:
     parser.add_argument(
         "--auto-reuse",
         action="store_true",
-        help="reuse a running gomode_test emulator instead of starting another one",
+        help="reuse the owned stock Go Mode emulator instead of starting another one",
     )
     parser.add_argument(
         "--reuse-connected-device",
@@ -319,6 +319,9 @@ def _start(args: argparse.Namespace) -> int:
         starting = _wait_for_starting_avd(adb)
         if starting is not None:
             return starting
+        if any(serial.startswith("emulator-") for serial in ready_device_serials(adb)):
+            print(f"Stop other emulators before starting owned AVD '{AVD_NAME}'.", file=sys.stderr)
+            return 1
 
     if args.reuse_connected_device and connected_adb:
         starting = _wait_for_starting_avd(connected_adb)
@@ -328,7 +331,7 @@ def _start(args: argparse.Namespace) -> int:
     if _check_host() != 0:
         return 1
 
-    if args.reuse_connected_device:
+    if args.reuse_connected_device or args.auto_reuse:
         setup_script = pathlib.Path(__file__).with_name("android_sdk.py")
         result = subprocess.run([sys.executable, str(setup_script), "setup-emulator"], check=False)
         if result.returncode != 0:

@@ -1,0 +1,52 @@
+<!doctype html>
+<!-- Host-neutral interactive demonstration frontend used by Android shell tests and documentation captures. -->
+<html lang="en">
+<head>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta charset="utf-8">
+  <title>Field Notes · Go Mode demo service</title>
+  <style>
+    :root { color-scheme: light; font-family: sans-serif; color: #17302c; background: #f2f6f3; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main { min-height: 100vh; padding: 24px 20px; }
+    .eyebrow { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: #4b6d61; }
+    h1 { font-size: 34px; letter-spacing: -.04em; margin: 14px 0 10px; }
+    .intro { color: #50645b; line-height: 1.5; font-size: 15px; }
+    .label { display: inline-block; background: #dceddf; padding: 6px 10px; border-radius: 30px; font-size: 12px; }
+    section { margin-top: 26px; }
+    h2 { font-size: 18px; margin: 0 0 14px; }
+    article { background: white; border: 1px solid #dbe5de; border-radius: 12px; padding: 16px; margin: 10px 0; }
+    article p { margin: 8px 0 0; color: #50645b; line-height: 1.45; font-size: 14px; }
+    .time { color: #50645b; font-size: 12px; margin-left: 8px; }
+    button { font: inherit; border: 0; border-radius: 8px; color: white; background: #216143; padding: 10px 14px; cursor: pointer; }
+    button:focus-visible { outline: 3px solid #d39520; outline-offset: 3px; }
+    #note-status { font-size: 14px; color: #216143; }
+  </style>
+</head>
+<body><div id="app"><div id="demo-service">
+  <main>
+    <div class="eyebrow">Field Notes</div>
+    <h1>Your day, within reach.</h1>
+    <span class="label">Demonstration service</span>
+    <p class="intro">A small hosted app inside Go Mode. Your service owns this screen; Go Mode supplies native connections and voice controls.</p>
+    <section aria-labelledby="today-heading">
+      <h2 id="today-heading">Today</h2>
+      <article><strong>Morning walk</strong><span class="time">08:30</span><p>Take the riverside route. Bring the camera and a light jacket.</p></article>
+      <article><strong>Project notes</strong><span class="time">11:00</span><p>Review the prototype with Sam and collect the next round of feedback.</p></article>
+      <article><strong>Weekend ideas</strong><p>A train ride, a good book, and somewhere new to explore.</p></article>
+    </section>
+    <section aria-labelledby="quick-heading">
+      <h2 id="quick-heading">Quick capture</h2>
+      <button id="save-note" type="button">Save a note</button>
+      <p id="note-status" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+</div></div>
+<script>
+  document.getElementById("save-note").addEventListener("click", () => {
+    document.getElementById("note-status").textContent = "Saved to your field notes.";
+  });
+</script>
+</body>
+</html>

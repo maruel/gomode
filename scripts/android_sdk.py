@@ -17,8 +17,8 @@ import zipfile
 
 REPOSITORY_XML_URL = "https://dl.google.com/android/repository/repository2-1.xml"
 DEFAULT_SDK_ROOT = os.path.expanduser("~/.local/share/android-sdk")
-AVD_NAME = "gomode_test"
-DEVICE_PROFILE = "pixel_6"
+AVD_NAME = "gomode_test_stock"
+DEVICE_PROFILE = "medium_phone"
 EMULATOR_API = "android-35"
 EMULATOR_TAG = "google_apis"
 YES_INPUT = b"y\ny\ny\ny\ny\ny\n"

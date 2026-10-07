@@ -157,3 +157,51 @@ on-device mode share the same language model.
 8. Execute tool calls through the skill's MCP endpoint.
 
 Car call control: [HFP_CALL_CONTROL.md](HFP_CALL_CONTROL.md).
+
+## Documentation captures
+
+Run `make screenshots-update` on the owned emulator to capture native service,
+settings, voice, and Halo screens plus a labeled host-neutral demonstration
+frontend. The runner renders twice, restores emulator settings, and publishes
+lossless WebP images with dimensions, hashes, source-input provenance, and the
+comparison contract in `e2e/screenshots/android/manifest.json`.
+The fingerprint includes the Android sources, compiled generated SDKs, hosted
+fixture, and capture tooling, including edits that have not been committed.
+Captures require the actual display locale to be en-US and refuse other locales
+before changing settings. The stock image already uses en-US; the launcher
+avoids the redundant locale change that otherwise restarts the framework after
+boot readiness and races APK installation.
+
+The SystemUI demo fixes the clock and battery while hiding notification icons.
+The runner adds only `mobile`, `satellite`, and `wifi` to the supported SystemUI
+`icon_blacklist`, then restores its exact original secure value. Microphone,
+camera, and location/privacy slots remain untouched. API35 can otherwise
+combine duplicate demo/modern network icons or show fallback satellite icons.
+The native fixture waits for the actual SystemUI clock/battery command receivers
+after visible shell readiness, then enters and applies the complete demo profile
+for every scene. It also waits for the settings footer after keyboard dismissal.
+Tests and captures share the owned `gomode_test_stock` AVD, using the Generic
+Medium Phone profile at 1080×2400 and 420dpi. The legacy Pixel6 AVD is preserved;
+stop it before starting the stock emulator. API35's Pixel6 profile has clipped
+status icons and cached insets that change when overlays are toggled. Captures
+refuse that incompatible profile before mutations and never toggle overlays.
+
+Product pixels must match exactly. SystemUI antialiasing may differ by at most
+two RGB levels on at most one percent of pixels within the runtime-measured
+status-bar inset. Meaningful icon changes and every difference outside that OS
+inset fail. Published full-frame images are unmodified. `make screenshots-check`
+compares fresh captures with the baselines; CI uses `make screenshots-generate`
+on the same emulator as the hosted-shell tests without a host-specific baseline.
+
+Publication stages and validates the complete image set before exchanging the
+managed directory. The ignored `.android.previous` catalog remains recoverable
+if a process is interrupted; the next update restores it when the destination
+is absent. Checks validate committed hashes, dimensions, and inventory without
+modifying either catalog. Concurrent publishers and symlinked destinations are
+refused.
+
+The capture entry point holds a nonblocking run lock before device selection
+through fixture execution, publication, and settings restoration. Publication
+uses a separate lock to avoid recursive locking during the owned capture run.
+The ordinary Android test CLI selects hosted or voice tests; documentation
+instrumentation is invoked only through the managed screenshot runner.

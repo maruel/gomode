@@ -1,6 +1,6 @@
 # Build and verification targets for the standalone Go Mode contracts and shell.
 .DEFAULT_GOAL := help
-.PHONY: help build fix verify test test-race android-check android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-push android-e2e generate-sdks refresh-generated benchmark coverage test-smoke upgrade git-hooks tools
+.PHONY: help build fix verify test test-race android-check android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-push android-e2e screenshots-check screenshots-generate screenshots-update generate-sdks refresh-generated benchmark coverage test-smoke upgrade git-hooks tools
 
 RUFF_VERSION=0.16.8
 UV_BIN := $(shell uv tool dir --bin 2>/dev/null)
@@ -37,6 +37,9 @@ help:
 	@printf '  %-27s - %s\n' 'make test-smoke' 'Run local model voice smoke tests (slow, downloads models)'
 	@printf '  %-27s - %s\n' 'make android-check' 'Run Android lint, builds, unit tests, and coverage'
 	@printf '  %-27s - %s\n' 'make android-e2e' 'Run Android instrumented tests on an emulator'
+	@printf '  %-27s - %s\n' 'make screenshots-update' 'Capture and publish repeatable native Android scenes'
+	@printf '  %-27s - %s\n' 'make screenshots-check' 'Compare native Android captures with committed baselines'
+	@printf '  %-27s - %s\n' 'make screenshots-generate' 'Render native captures once without baseline checks'
 	@printf '  %-27s - %s\n' 'make android-push' 'Build and install Go Mode on connected devices'
 	@printf '  %-27s - %s\n' 'make android-setup-emulator' 'Install emulator image and create the test AVD'
 	@printf '  %-27s - %s\n' 'make android-start-emulator' 'Start or reuse the Android emulator'
@@ -64,7 +67,7 @@ git-hooks:
 	@./scripts/install-git-hooks.sh
 
 test: android-sdk node_modules/.modules.yaml
-	@./scripts/run-concurrently.sh go,browser,android 'go test ./...' 'pnpm --silent test' 'cd ./android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet'
+	@./scripts/run-concurrently.sh go,browser,python,android 'go test ./...' 'pnpm --silent test' 'python3 -m unittest discover -s scripts -p "test_*.py"' 'cd ./android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet'
 
 # The Opus codec is deliberately disabled in race builds, so skip the two
 # tests that require it while running the rest of the voice gateway suite.
@@ -132,3 +135,9 @@ android-e2e:
 android-voice-e2e: android-sdk
 	@python3 scripts/android_start_emulator.py --reuse-connected-device
 	@python3 scripts/android_e2e.py --voice
+
+# Slow: runs the real app on the emulator, two passes for update/check.
+# Encodes at most two lossless WebP files concurrently and publishes a catalog.
+screenshots-check screenshots-generate screenshots-update: android-sdk
+	@python3 scripts/android_start_emulator.py --auto-reuse
+	@python3 scripts/android_screenshots.py $(subst screenshots-,,$@)

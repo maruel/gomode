@@ -1,10 +1,14 @@
-// Generates documentation screenshots for Go Mode native shell and hosted caic task surfaces.
+// Captures real native service, voice settings, Halo, and a host-neutral demonstration frontend.
 package com.fghbuild.gomode
 
 import android.os.Environment
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.printToString
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
@@ -15,238 +19,120 @@ import java.io.File
 
 @RunWith(AndroidJUnit4::class)
 class GoModeDocumentationScreenshotsTest : GoModeE2eTestBase() {
-    private val device: UiDevice by lazy {
-        UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+    override fun validateDeviceBeforeSetup() {
+        val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+        check(device.executeShellCommand("getprop ro.kernel.qemu").trim() == "1") {
+            "Documentation captures require an emulator"
+        }
     }
 
-    private val screenshotDir: File by lazy {
-        val dir =
+    @Test
+    fun captureNativeShellAndHostedService() {
+        assumeTrue(
+            "documentation captures require the explicit screenshot runner",
+            InstrumentationRegistry.getArguments().getString("gomodeScreenshots") == "true",
+        )
+        val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+        val directory =
             File(
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
                 "gomode-screenshots",
             )
-        dir.mkdirs()
-        dir
-    }
+        check(directory.mkdirs() || directory.isDirectory) { "Could not create screenshot directory" }
+        directory.listFiles()?.forEach { check(it.delete()) { "Could not remove old screenshot ${it.name}" } }
 
-    @Test
-    fun generateDocumentationScreenshotsForNativeShellAndHostedTasks() {
-        assumeTrue(
-            "documentation screenshots run only through the explicit visual workflow",
-            InstrumentationRegistry.getArguments().getString("caicVisualScreenshots") == "true",
-        )
-        screenshotDir.listFiles()?.forEach { it.delete() }
-
-        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
-            composeRule.onAllNodesWithTag("gomode-settings").fetchSemanticsNodes().isNotEmpty()
-        }
-        takeScreenshot("gomode-settings")
-
-        openWebShell()
-        waitForHostedCaicFrontend()
-        waitForText("No tasks yet.", GOMODE_LOAD_TIMEOUT_MS)
-        prepareHostedVisuals()
-        takeHostedScreenshot("gomode-web-shell", waitForTaskMetadata = false)
-
-        composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
-        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
-            composeRule.onAllNodesWithTag("gomode-settings").fetchSemanticsNodes().isNotEmpty()
-        }
-        takeScreenshot("gomode-settings-from-web")
-
-        openWebShell()
-        waitForHostedCaicFrontend()
-        prepareHostedVisuals()
-        generateHostedTaskScreenshots()
-
-        for (name in SCREENSHOT_NAMES) {
-            val file = File(screenshotDir, "$name.png")
-            check(file.exists()) { "Screenshot $name.png was not created" }
-            check(file.length() > 0L) { "Screenshot $name.png is empty" }
-        }
-    }
-
-    private fun generateHostedTaskScreenshots() {
-        val detailPrompt = "Fix token expiry bug in auth middleware"
-        submitPromptThroughHostedUi(detailPrompt)
-        waitForText("Fixed the token validation bug", GOMODE_LOAD_TIMEOUT_MS)
-        takeHostedScreenshot("gomode-task-detail")
-        navigateHostedHome()
-
-        val planPrompt = "Plan the rate limiting implementation for API endpoints"
-        submitPromptThroughHostedUi(planPrompt)
-        waitForTestId("clear-and-execute-plan", GOMODE_LOAD_TIMEOUT_MS)
-        waitForTestId("plan-content")
-        takeHostedScreenshot("gomode-task-plan", fitPlanMessages = true)
-        navigateHostedHome()
-
-        val askPrompt = "Which storage backend should we use for session data?"
-        submitPromptThroughHostedUi(askPrompt)
-        waitForText("Which approach should I use?", GOMODE_LOAD_TIMEOUT_MS)
-        waitForTestId("ask-option-In-memory (sync.Map)")
-        takeHostedScreenshot("gomode-task-ask")
-        tapDomElement(TASK_DETAIL_PROMPT_SELECTOR)
-        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { isImeVisible() }
-        takeHostedScreenshot("gomode-task-detail-prompt-focused")
+        waitForTag("gomode-settings")
+        composeRule.onNodeWithTag("gomode-service-label").performTextReplacement("Development")
+        composeRule.onNodeWithTag("gomode-service-url").performTextReplacement(baseUrl)
         device.pressBack()
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { !isImeVisible() }
-        navigateHostedHome()
+        waitForSettingsButton()
+        capture(device, directory, "service-editor")
 
-        val listPrompt = "Update CI pipeline to run tests in parallel"
-        submitPromptThroughHostedUi(listPrompt)
-        navigateHostedHome()
-
-        for (prompt in listOf(detailPrompt, planPrompt, askPrompt, listPrompt)) {
-            waitForDom("task card for screenshot prompt '$prompt'", GOMODE_LOAD_TIMEOUT_MS) {
-                "taskCard(${prompt.jsString()}) !== null"
-            }
-            waitForDom("task metadata for screenshot prompt '$prompt'", GOMODE_LOAD_TIMEOUT_MS) {
-                "taskCard(${prompt.jsString()})?.textContent?.includes('fake-model') === true"
-            }
-            waitForDom("successful CI for screenshot prompt '$prompt'", GOMODE_LOAD_TIMEOUT_MS) {
-                "taskCard(${prompt.jsString()})?.querySelector('[data-testid=\"ci-status\"]')?.dataset.status === 'success'"
-            }
+        composeRule.onNodeWithTag("gomode-save-service").performScrollTo().performClick()
+        try {
+            waitForHostedFrontend()
+        } catch (error: IllegalStateException) {
+            device.takeScreenshot(File(directory, "failure.png"))
+            throw IllegalStateException(composeRule.onRoot().printToString(), error)
         }
-        takeHostedScreenshot("gomode-task-list", waitForTaskMetadata = false)
+        waitForDom("demonstration service loaded") { "isVisible('#demo-service')" }
+        waitForDom("demonstration service fonts") { "document.fonts.status === 'loaded'" }
+        capture(device, directory, "hosted-service")
+
+        waitForSettingsButton()
+        composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
+        composeRule.onNodeWithTag("gomode-add-service").performClick()
+        composeRule.onNodeWithTag("gomode-service-label").performTextReplacement("Staging")
+        composeRule.onNodeWithTag("gomode-service-url").performTextReplacement(baseUrl)
+        composeRule.onNodeWithTag("gomode-save-service").performScrollTo().performClick()
+        waitForHostedFrontend()
+        waitForSettingsButton()
+        composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
+        waitForTag("gomode-settings")
+        capture(device, directory, "connections")
+
+        composeRule.onNodeWithTag("gomode-voice-mode-device").performScrollTo().performClick()
+        composeRule.onNodeWithTag("gomode-voice-language").performScrollTo()
+        capture(device, directory, "voice-settings")
+
+        composeRule.onNodeWithTag("gomode-manage-halo").performScrollTo().performClick()
+        waitForTag("gomode-halo-screen")
+        capture(device, directory, "halo")
     }
 
-    private fun fitHostedPlanMessages() {
-        executeDom("fit hosted plan messages") {
-            """
-            (() => {
-              const messages = document.querySelector('[data-testid="task-message-area"]');
-              const setup = messages?.querySelector('[data-testid="task-setup"]');
-              if (!(messages instanceof HTMLElement) || !(setup instanceof HTMLElement)) return false;
-              setup.style.display = "none";
-              messages.scrollTop = 0;
-              return true;
-            })()
-            """.trimIndent()
-        }
-        waitForDom("hosted plan messages fit without clipping") {
-            """
-            (() => {
-              const messages = document.querySelector('[data-testid="task-message-area"]');
-              return messages instanceof HTMLElement && messages.scrollHeight <= messages.clientHeight + 1;
-            })()
-            """.trimIndent()
+    private fun waitForTag(tag: String) {
+        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+            composeRule.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
         }
     }
 
-    private fun takeHostedScreenshot(
+    private fun capture(
+        device: UiDevice,
+        directory: File,
         name: String,
-        waitForTaskMetadata: Boolean = true,
-        fitPlanMessages: Boolean = false,
-    ) {
-        if (waitForTaskMetadata) {
-            waitForText("PR #1", GOMODE_LOAD_TIMEOUT_MS)
-            waitForText("CI: passed", GOMODE_LOAD_TIMEOUT_MS)
-        }
-        dismissHostedToasts()
-        stabilizeHostedVisuals()
-        val beforeCapture =
-            if (fitPlanMessages) {
-                {
-                    fitHostedPlanMessages()
-                    stabilizeHostedVisuals()
-                }
-            } else {
-                null
-            }
-        takeScreenshot(name, beforeCapture)
-    }
-
-    private fun prepareHostedVisuals() {
-        executeDom("install deterministic hosted visual state") {
-            """
-            (() => {
-              Date.now = () => 1788350400000;
-              let style = document.getElementById("caic-visual-test-style");
-              if (!style) {
-                style = document.createElement("style");
-                style.id = "caic-visual-test-style";
-                style.textContent = `
-                  *, *::before, *::after {
-                    animation: none !important;
-                    caret-color: transparent !important;
-                    transition: none !important;
-                  }
-                  [data-testid="timing-duration"] > span {
-                    display: none !important;
-                  }
-                  [data-testid="timing-duration"]::after {
-                    content: "150ms";
-                    font-size: 0.72rem;
-                    font-variant-numeric: tabular-nums;
-                    opacity: 0.72;
-                    white-space: nowrap;
-                  }
-                  [data-testid="task-setup"] [data-testid="timing-duration"]::after {
-                    content: "42ms";
-                  }
-                `;
-                document.head.append(style);
-              }
-              return true;
-            })()
-            """.trimIndent()
-        }
-        stabilizeHostedVisuals()
-    }
-
-    private fun stabilizeHostedVisuals() {
-        waitForDom("hosted fonts") { "document.fonts.status === 'loaded'" }
-        executeDom("schedule hosted layout stabilization") {
-            """
-            (() => {
-              document.documentElement.dataset.caicVisualReady = "false";
-              requestAnimationFrame(() => requestAnimationFrame(() => {
-                document.documentElement.dataset.caicVisualReady = "true";
-              }));
-              return true;
-            })()
-            """.trimIndent()
-        }
-        waitForDom("hosted layout stabilization") {
-            "document.documentElement.dataset.caicVisualReady === 'true'"
-        }
-    }
-
-    private fun dismissHostedToasts() {
-        executeDom("dismiss hosted toasts") {
-            """
-            (() => {
-              for (const button of document.querySelectorAll("button")) {
-                if (button.textContent?.trim() === "×") button.click();
-              }
-              return true;
-            })()
-            """.trimIndent()
-        }
-    }
-
-    private fun takeScreenshot(
-        name: String,
-        beforeCapture: (() -> Unit)? = null,
     ) {
         composeRule.waitForIdle()
+        // Cold device/test initialization can reset the managed SystemUI profile.
+        // Reapply it after shell readiness; the owning runner restores each value.
+        val hiddenIcons =
+            checkNotNull(InstrumentationRegistry.getArguments().getString("gomodeIconBlacklist")) {
+                "The managed screenshot runner must supply its saved-and-augmented icon profile"
+            }
+        check(hiddenIcons.matches(Regex("[A-Za-z0-9_,]+"))) { "Invalid SystemUI icon slot profile" }
+        // UiAutomation tokenizes the command directly, without shell quoting.
+        device.executeShellCommand("settings put secure icon_blacklist $hiddenIcons")
+        check(device.executeShellCommand("settings get secure icon_blacklist").trim() == hiddenIcons) {
+            "SystemUI icon profile was not applied"
+        }
+        device.executeShellCommand("settings put global sysui_demo_allowed 1")
+        // Wait for actual SystemUI command receivers after visible shell readiness.
+        val controllerCommand =
+            "dumpsys activity service com.android.systemui/.SystemUIService DemoModeController"
+        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+            val state = device.executeShellCommand(controllerCommand)
+            state.contains("isDemoModeAllowed=true") &&
+                Regex("clock : \\[[^\\]]+\\]").containsMatchIn(state) &&
+                Regex("battery : \\[[^\\]]+\\]").containsMatchIn(state)
+        }
+        // Demo Wi-Fi events have no replay; active connectivity avoids fallback
+        // satellite icons. The runner hides only the three network icon slots.
+        for (
+        command in
+        listOf(
+            "enter",
+            "clock -e hhmm 0930",
+            "battery -e level 100 -e plugged false",
+            "notifications -e visible false",
+            "network -e wifi show -e level 4 -e fully true -e mobile hide",
+        )
+        ) {
+            device.executeShellCommand("am broadcast -a com.android.systemui.demo -e command $command")
+        }
         device.waitForIdle()
-        beforeCapture?.invoke()
-        check(device.takeScreenshot(File(screenshotDir, "$name.png"))) { "Could not save screenshot $name" }
-    }
-
-    companion object {
-        private const val TASK_DETAIL_PROMPT_SELECTOR = "[data-testid=\"task-detail-form\"] [role=\"textbox\"]"
-        private val SCREENSHOT_NAMES =
-            listOf(
-                "gomode-settings",
-                "gomode-web-shell",
-                "gomode-settings-from-web",
-                "gomode-task-list",
-                "gomode-task-detail",
-                "gomode-task-detail-prompt-focused",
-                "gomode-task-plan",
-                "gomode-task-ask",
-            )
+        check(device.executeShellCommand(controllerCommand).contains("isInDemoMode=true")) {
+            "SystemUI demo mode was reset before capturing $name"
+        }
+        check(device.takeScreenshot(File(directory, "$name.png"))) { "Could not capture $name" }
     }
 }

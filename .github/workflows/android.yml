@@ -1,4 +1,4 @@
-# Build the Android shell and exercise it on an emulator.
+# Build the Android shell and exercise hosted scenarios and documentation captures on an emulator.
 name: Android
 on:
   push:
@@ -9,6 +9,10 @@ on:
       - android/**
       - sdk/**
       - scripts/android*
+      - scripts/test_android*
+      - scripts/screenshot_catalog.py
+      - scripts/test_screenshot_catalog.py
+      - e2e/**
   pull_request:
     paths:
       - .github/workflows/android.yml
@@ -16,6 +20,10 @@ on:
       - android/**
       - sdk/**
       - scripts/android*
+      - scripts/test_android*
+      - scripts/screenshot_catalog.py
+      - scripts/test_screenshot_catalog.py
+      - e2e/**
   workflow_dispatch:
 permissions:
   contents: read
@@ -68,6 +76,10 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - name: Run Android E2E tests
         run: make android-e2e
+      - name: Install capture encoders
+        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
+      - name: Render native documentation scenes on the same emulator
+        run: make screenshots-generate
       - name: Upload emulator test results on failure
         if: failure()
         uses: actions/upload-artifact@v7
@@ -76,6 +88,7 @@ jobs:
           path: |
             android/gomode/build/reports/androidTests/connected/
             android/gomode/build/outputs/androidTest-results/connected/
-            /tmp/gomode_test-emulator.log
+            /tmp/gomode_test_stock-emulator.log
+            android-screenshots-failures/
           if-no-files-found: ignore
           retention-days: 7
