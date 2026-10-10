@@ -1,4 +1,4 @@
-// Unit tests for LocalLlmEngine running compact sub-300M parameter models on Google Pixel 8 Pro.
+// Tests schema-bearing Gemma prompts, parsed tool arguments, and fail-closed local tool dispatch.
 package com.fghbuild.gomode.voice
 
 import com.caic.voicegateway.sdk.v1.ToolCall
@@ -6,7 +6,8 @@ import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
@@ -19,22 +20,53 @@ import org.robolectric.RuntimeEnvironment
 
 @RunWith(RobolectricTestRunner::class)
 class LocalLlmEngineTest {
-    private val sampleTools =
-        listOf(
-            ToolDescriptor(
-                name = "switch_service",
-                description = "Switch active service",
-                inputSchema = JsonObject(emptyMap()),
-            ),
-        )
-
     private val sessionContext =
         EngineSessionContext(
             languageTag = "en-US",
             systemInstruction = "You are a terse assistant.",
             serviceContextText = "",
-            tools = sampleTools,
+            tools =
+                listOf(
+                    ToolDescriptor(
+                        name = "switch_service",
+                        description = "Switch active service",
+                        inputSchema =
+                            Json.parseToJsonElement(
+                                """{
+                                    "type":"object",
+                                    "properties":{"service":{"type":"string"}},
+                                    "required":["service"],
+                                    "additionalProperties":false
+                                }""",
+                            ),
+                    ),
+                ),
             mcpClient = null,
+        )
+
+    private fun engineWithResponse(
+        response: String,
+        onSystemInstruction: (String) -> Unit = {},
+        onPrompt: (String) -> Unit = {},
+    ): LocalLlmEngine =
+        LocalLlmEngine(
+            context = RuntimeEnvironment.getApplication(),
+            runnerFactory = { _, instruction ->
+                onSystemInstruction(instruction)
+                object : EdgeLlmRunner {
+                    override val isModelLoaded = true
+
+                    override suspend fun generateStream(prompt: String): Flow<String> {
+                        onPrompt(prompt)
+                        // Split the marker and JSON across chunks like a real token stream.
+                        return flowOf(response.take(4), response.drop(4))
+                    }
+
+                    override suspend fun generate(prompt: String): String = response
+
+                    override fun close() = Unit
+                }
+            },
         )
 
     @Test
@@ -60,81 +92,21 @@ class LocalLlmEngineTest {
     }
 
     @Test
-    fun `local conversational turn streams sentence fragments to onDelta`() =
-        runBlocking {
-            val engine = LocalLlmEngine(RuntimeEnvironment.getApplication())
-            engine.initialize(sessionContext)
-
-            val deltas = mutableListOf<String>()
-            val result =
-                engine.processTurn(
-                    input = UserTurnInput(text = "Hello there!"),
-                    onDelta = { deltas.add(it) },
-                    onToolCall = { null },
-                )
-
-            assertTrue("sentence fragments emitted", deltas.isNotEmpty())
-            assertTrue("assistant text matches conversation", result.assistantText.contains("Pixel 8 Pro"))
-            assertTrue("tool calls empty for conversation", result.toolCalls.isEmpty())
-
-            engine.close()
-        }
-
-    @Test
-    fun `action query triggers tool call and concludes response`() =
-        runBlocking {
-            val engine = LocalLlmEngine(RuntimeEnvironment.getApplication())
-            engine.initialize(sessionContext)
-
-            val deltas = mutableListOf<String>()
-            var executedCall: ToolCall? = null
-
-            val result =
-                engine.processTurn(
-                    input = UserTurnInput(text = "Please switch_service to home"),
-                    onDelta = { deltas.add(it) },
-                    onToolCall = { call ->
-                        executedCall = call
-                        JsonObject(mapOf("status" to JsonPrimitive("Switched to home")))
-                    },
-                )
-
-            assertNotNull("tool call must be dispatched", executedCall)
-            assertEquals("switch_service", executedCall?.name)
-            assertTrue("assistant text incorporates conclusion", result.assistantText.contains("Switched to home"))
-            assertEquals(1, result.toolCalls.size)
-
-            engine.close()
-        }
-
-    @Test
-    fun `edge llm runner generates tokens and dispatches tool when model loaded`() =
-        runBlocking {
-            val fakeRunner =
-                object : EdgeLlmRunner {
-                    override val isModelLoaded: Boolean = true
-
-                    override suspend fun generateStream(prompt: String): Flow<String> =
-                        flowOf("TOOL_CALL: {\"name\": \"switch_service\", \"query\": \"switch to media\"}")
-
-                    override suspend fun generate(prompt: String): String =
-                        "TOOL_CALL: {\"name\": \"switch_service\", \"query\": \"switch to media\"}"
-
-                    override fun close() = Unit
-                }
-
+    fun `tool call preserves generated arguments and does not speak tool JSON`() =
+        runTest {
+            val arguments = Json.parseToJsonElement("""{"service":"media"}""")
+            var prompt = ""
             val engine =
-                LocalLlmEngine(
-                    context = RuntimeEnvironment.getApplication(),
-                    runnerFactory = { fakeRunner },
+                engineWithResponse(
+                    """TOOL_CALL: {"name":"switch_service","arguments":$arguments}""",
+                    onSystemInstruction = { prompt = it },
                 )
             engine.initialize(sessionContext)
-
             val deltas = mutableListOf<String>()
             var executedCall: ToolCall? = null
             val result =
                 engine.processTurn(
-                    input = UserTurnInput(text = "switch to media"),
+                    input = UserTurnInput(text = "Use my music service"),
                     onDelta = { deltas.add(it) },
                     onToolCall = { call ->
                         executedCall = call
@@ -144,35 +116,205 @@ class LocalLlmEngineTest {
 
             assertNotNull(executedCall)
             assertEquals("switch_service", executedCall?.name)
-            assertTrue(result.assistantText.contains("Switched to media"))
+            assertEquals(arguments, executedCall?.args)
+            assertTrue(prompt.contains("Switch active service"))
+            assertTrue(prompt.contains("\"required\":[\"service\"]"))
+            assertTrue(prompt.contains("\"additionalProperties\":false"))
+            assertEquals("Switched to media", deltas.joinToString(""))
+            assertEquals("Switched to media", result.assistantText)
+            assertEquals(listOf(executedCall), result.toolCalls)
+            engine.close()
+        }
+
+    @Test
+    fun `tool parser preserves nested arrays booleans numbers and null arguments`() =
+        runTest {
+            val arguments = Json.parseToJsonElement("""{"options":{"ids":[1,2],"enabled":true,"note":null}}""")
+            val engine = engineWithResponse("""TOOL_CALL: {"name":"configure","arguments":$arguments}""")
+            engine.initialize(
+                sessionContext.copy(
+                    tools = listOf(ToolDescriptor(name = "configure", inputSchema = JsonObject(emptyMap()))),
+                ),
+            )
+            val result =
+                engine.processTurn(
+                    input = UserTurnInput(text = "Configure it"),
+                    onDelta = {},
+                    onToolCall = { call ->
+                        assertEquals(arguments, call.args)
+                        JsonObject(emptyMap())
+                    },
+                )
             assertEquals(1, result.toolCalls.size)
             engine.close()
         }
 
     @Test
-    fun `injectContext incorporates notifications into conversation history`() =
-        runBlocking {
-            val engine = LocalLlmEngine(RuntimeEnvironment.getApplication())
-            engine.initialize(sessionContext)
-
-            engine.injectContext("Server restarted at 12:00")
+    fun `no argument tools receive an empty object without query`() =
+        runTest {
+            val engine = engineWithResponse("""TOOL_CALL: {"name":"refresh","arguments":{}}""")
+            engine.initialize(
+                sessionContext.copy(
+                    tools = listOf(ToolDescriptor(name = "refresh", inputSchema = JsonObject(emptyMap()))),
+                ),
+            )
             val result =
                 engine.processTurn(
-                    input = UserTurnInput(text = "What is the status?"),
+                    input = UserTurnInput(text = "Refresh"),
                     onDelta = {},
-                    onToolCall = { null },
+                    onToolCall = { call ->
+                        assertEquals(JsonObject(emptyMap()), call.args)
+                        JsonObject(emptyMap())
+                    },
                 )
-
-            assertTrue("assistant returns valid response after context update", result.assistantText.isNotEmpty())
+            assertEquals(1, result.toolCalls.size)
             engine.close()
         }
 
     @Test
-    fun `LiteRtLmRunner handles missing model gracefully`() =
-        runBlocking {
-            val runner = LiteRtLmRunner(RuntimeEnvironment.getApplication(), "/nonexistent/path/model.litertlm")
-            assertTrue("model not loaded for nonexistent path", !runner.isModelLoaded)
-            assertEquals("", runner.generate("Hello"))
-            runner.close()
+    fun `mentioning a tool in conversation never executes it`() =
+        runTest {
+            val response = "The switch_service tool changes your active service."
+            val engine = engineWithResponse(response)
+            engine.initialize(sessionContext)
+            val deltas = mutableListOf<String>()
+            val result =
+                engine.processTurn(
+                    input = UserTurnInput(text = "Explain switch_service"),
+                    onDelta = { deltas.add(it) },
+                    onToolCall = { error("Must not execute a tool from a keyword match") },
+                )
+            assertEquals(response, result.assistantText)
+            assertEquals(response, deltas.joinToString(""))
+            assertTrue(result.toolCalls.isEmpty())
+            engine.close()
+        }
+
+    @Test
+    fun `malformed and unknown tool calls fail without dispatch or speech`() =
+        runTest {
+            val invalidResponses =
+                listOf(
+                    "",
+                    "TOOL_CALL: not JSON",
+                    """Sure.
+                        TOOL_CALL: {"name":"switch_service","arguments":{"service":"media"}}
+                    """,
+                    """```json
+                        TOOL_CALL: {"name":"switch_service","arguments":{"service":"media"}}
+                        ```
+                    """,
+                    "tool_call: {}",
+                    "TOOL_CALL missing colon",
+                    """TOOL_CALL: {"name":"switch_service","query":"media"}""",
+                    """TOOL_CALL: {"name":"switch_service","arguments":null}""",
+                    """TOOL_CALL: {"name":"switch_service","arguments":"media"}""",
+                    """TOOL_CALL: {"name":"switch_service","arguments":[]}""",
+                    """TOOL_CALL: {"name":42,"arguments":{}}""",
+                    """TOOL_CALL: {"name":"unknown","arguments":{}}""",
+                    """TOOL_CALL: {"name":"switch_service","arguments":{}} trailing text""",
+                )
+            for (response in invalidResponses) {
+                val engine = engineWithResponse(response)
+                engine.initialize(sessionContext)
+                val result =
+                    runCatching {
+                        engine.processTurn(
+                            input = UserTurnInput(text = "switch_service to media"),
+                            onDelta = { error("Must not speak malformed tool output") },
+                            onToolCall = { error("Must not dispatch malformed tool output") },
+                        )
+                    }
+                assertTrue(response, result.exceptionOrNull() is IllegalArgumentException)
+                engine.close()
+            }
+        }
+
+    @Test
+    fun `missing model never fabricates a tool call`() =
+        runTest {
+            val engine =
+                LocalLlmEngine(
+                    RuntimeEnvironment.getApplication(),
+                    runnerFactory = { context, instruction ->
+                        LiteRtLmRunner(context, instruction, "/nonexistent/path/model.litertlm")
+                    },
+                )
+            engine.initialize(sessionContext)
+            val result =
+                engine.processTurn(
+                    input = UserTurnInput(text = "Please switch_service to home"),
+                    onDelta = {},
+                    onToolCall = { error("Missing model cannot generate arguments") },
+                )
+            assertTrue(result.toolCalls.isEmpty())
+            engine.close()
+        }
+
+    @Test
+    fun `tool schemas and protocol are installed once across multiple turns`() =
+        runTest {
+            val instructions = mutableListOf<String>()
+            val prompts = mutableListOf<String>()
+            val engine =
+                engineWithResponse(
+                    "Ready.",
+                    onSystemInstruction = { instructions.add(it) },
+                    onPrompt = { prompts.add(it) },
+                )
+            engine.initialize(sessionContext)
+            for (query in listOf("First request", "Second request")) {
+                engine.processTurn(
+                    input = UserTurnInput(text = query),
+                    onDelta = {},
+                    onToolCall = { error("Conversational response cannot dispatch a tool") },
+                )
+            }
+            assertEquals(1, instructions.size)
+            assertTrue(instructions.single().contains("\"required\":[\"service\"]"))
+            assertTrue(instructions.single().contains("TOOL_CALL:"))
+            assertEquals(listOf("First request", "Second request"), prompts)
+            engine.close()
+        }
+
+    @Test
+    fun `structured tool results never reach speech as JSON`() =
+        runTest {
+            val results =
+                listOf(
+                    """{"error":{"code":42}}""" to "Tool failed.",
+                    """{"message":["internal","details"]}""" to "Completed.",
+                    """{"status":true}""" to "Completed.",
+                )
+            for ((toolResult, expected) in results) {
+                val engine =
+                    engineWithResponse("""TOOL_CALL: {"name":"switch_service","arguments":{"service":"media"}}""")
+                engine.initialize(sessionContext)
+                val deltas = mutableListOf<String>()
+                val result =
+                    engine.processTurn(
+                        input = UserTurnInput(text = "Switch to media"),
+                        onDelta = { deltas.add(it) },
+                        onToolCall = { Json.parseToJsonElement(toolResult) },
+                    )
+                assertEquals(expected, deltas.joinToString(""))
+                assertEquals(expected, result.assistantText)
+                engine.close()
+            }
+        }
+
+    @Test
+    fun `tool execution errors are not reported as completed`() =
+        runTest {
+            val engine = engineWithResponse("""TOOL_CALL: {"name":"switch_service","arguments":{"service":"media"}}""")
+            engine.initialize(sessionContext)
+            val result =
+                engine.processTurn(
+                    input = UserTurnInput(text = "Switch to media"),
+                    onDelta = {},
+                    onToolCall = { JsonObject(mapOf("error" to JsonPrimitive("Invalid service"))) },
+                )
+            assertTrue(result.assistantText.contains("Invalid service"))
+            engine.close()
         }
 }

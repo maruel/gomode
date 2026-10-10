@@ -6,9 +6,9 @@ import android.util.Log
 import com.caic.voicegateway.sdk.v1.MessageKind
 import com.caic.voicegateway.sdk.v1.ToolCall
 import com.fghbuild.gomode.data.OnDeviceEngine
-import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
@@ -19,8 +19,12 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.File
@@ -107,6 +111,7 @@ internal interface EdgeLlmRunner : AutoCloseable {
  */
 internal class LiteRtLmRunner(
     private val context: Context,
+    systemInstruction: String,
     modelPath: String? = null,
 ) : EdgeLlmRunner {
     private var engine: Engine? = null
@@ -139,13 +144,17 @@ internal class LiteRtLmRunner(
                         EngineConfig(
                             modelPath = existingPath,
                             backend = backend,
-                            maxNumTokens = 512,
+                            // The context includes instructions, tool schemas, history, and output.
+                            maxNumTokens = 10_240,
                             cacheDir = context.cacheDir.absolutePath,
                         )
                     val eng = Engine(config)
                     eng.initialize()
                     engine = eng
-                    conversation = eng.createConversation(ConversationConfig())
+                    conversation =
+                        eng.createConversation(
+                            ConversationConfig(systemInstruction = Contents.of(systemInstruction)),
+                        )
                     Log.i(TAG, "Initialized Google AI Edge LiteRT-LM from $existingPath on ${backend.name}")
                     break
                 } catch (
@@ -200,7 +209,9 @@ internal class LiteRtLmRunner(
  */
 internal class LocalLlmEngine(
     private val context: Context,
-    private val runnerFactory: (Context) -> EdgeLlmRunner = { LiteRtLmRunner(it) },
+    private val runnerFactory: (Context, String) -> EdgeLlmRunner = { context, instruction ->
+        LiteRtLmRunner(context, instruction)
+    },
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : OnDeviceVoiceEngine {
     override val engineType: OnDeviceEngine = OnDeviceEngine.LOCAL_LLM
@@ -227,8 +238,9 @@ internal class LocalLlmEngine(
             conversationHistory.clear()
             injectedContexts.clear()
             runner?.close()
-            runner = runnerFactory(this@LocalLlmEngine.context)
-            conversationHistory.add(ChatMessage("system", formatSystemPrompt(context)))
+            val systemInstruction = formatSystemPrompt(context)
+            runner = runnerFactory(this@LocalLlmEngine.context, systemInstruction)
+            conversationHistory.add(ChatMessage("system", systemInstruction))
             Log.i(TAG, "Initialized LocalLlmEngine on Google Pixel 8 Pro with ${context.tools.size} tools")
         }
     }
@@ -244,63 +256,24 @@ internal class LocalLlmEngine(
 
             conversationHistory.add(ChatMessage("user", query))
 
-            val activeRunner = runner ?: runnerFactory(context).also { runner = it }
+            val activeRunner = checkNotNull(runner) { "Local model session is not initialized" }
 
             if (activeRunner.isModelLoaded) {
-                val prompt = formatLlmPrompt(query)
                 val fullTextBuilder = StringBuilder()
-                try {
-                    activeRunner.generateStream(prompt).collect { chunk ->
-                        fullTextBuilder.append(chunk)
-                        onDelta(chunk)
-                    }
-                } catch (
-                    @Suppress("TooGenericExceptionCaught") e: Exception,
-                ) {
-                    Log.w(TAG, "Inference error during Google AI Edge LiteRT-LM generation", e)
-                }
+                // Buffer the turn so protocol JSON never reaches speech or the transcript.
+                activeRunner.generateStream(query).collect { chunk -> fullTextBuilder.append(chunk) }
                 val response = fullTextBuilder.toString().trim()
-                if (response.isNotEmpty()) {
-                    val toolCall = extractToolCallIfPresent(response, query)
-                    if (toolCall != null) {
-                        val toolResult = onToolCall(toolCall)
-                        val conclusion = formatToolConclusion(toolResult)
-                        if (conclusion.isNotEmpty()) {
-                            onDelta(" $conclusion")
-                        }
-                        val fullText = "$response $conclusion".trim()
-                        conversationHistory.add(ChatMessage("assistant", fullText))
-                        return@withContext EngineTurnResult(assistantText = fullText, toolCalls = listOf(toolCall))
-                    }
-                    conversationHistory.add(ChatMessage("assistant", response))
-                    return@withContext EngineTurnResult(assistantText = response)
+                require(response.isNotEmpty()) { "Local model returned an empty response" }
+                val toolCall = extractToolCallIfPresent(response)
+                if (toolCall != null) {
+                    val conclusion = formatToolConclusion(onToolCall(toolCall))
+                    onDelta(conclusion)
+                    conversationHistory.add(ChatMessage("assistant", conclusion))
+                    return@withContext EngineTurnResult(assistantText = conclusion, toolCalls = listOf(toolCall))
                 }
-            }
-
-            // Check if query targets an available tool via indexed matching.
-            val targetTool = findTargetTool(query)
-            if (targetTool != null) {
-                val toolCallId = UUID.randomUUID().toString()
-                val arguments =
-                    buildJsonObject {
-                        put("query", query)
-                    }
-                val call =
-                    ToolCall(
-                        kind = MessageKind.ToolCall,
-                        id = toolCallId,
-                        name = targetTool.name,
-                        args = arguments,
-                    )
-
-                onDelta("I'll run ${targetTool.name} for you.")
-                val result = onToolCall(call)
-                val conclusion = formatToolConclusion(result)
-                onDelta(" $conclusion")
-
-                val fullText = "I'll run ${targetTool.name} for you. $conclusion"
-                conversationHistory.add(ChatMessage("assistant", fullText))
-                return@withContext EngineTurnResult(assistantText = fullText, toolCalls = listOf(call))
+                onDelta(response)
+                conversationHistory.add(ChatMessage("assistant", response))
+                return@withContext EngineTurnResult(assistantText = response)
             }
 
             // Conversational streaming generation fallback.
@@ -332,72 +305,70 @@ internal class LocalLlmEngine(
                 "You are Go Mode, an on-device AI assistant running locally on Google Pixel 8 Pro. " +
                     "Keep answers terse and helpful."
             }
-        val toolList = context.tools.joinToString(", ") { it.name }
-        return "$baseInstruction\nAvailable tools: [$toolList]\nLanguage: ${context.languageTag}"
-    }
-
-    private fun formatLlmPrompt(query: String): String {
-        val ctx = sessionContext
-        val toolList = ctx?.tools.orEmpty().joinToString(", ") { it.name }
-        val baseInstruction =
-            ctx?.systemInstruction?.ifEmpty {
-                "You are Go Mode, an on-device AI assistant running locally on Google Pixel 8 Pro."
-            } ?: "You are Go Mode on Pixel 8 Pro."
+        val tools =
+            buildJsonArray {
+                context.tools.forEach { tool ->
+                    add(
+                        buildJsonObject {
+                            put("name", tool.name)
+                            tool.description?.let { put("description", it) }
+                            tool.inputSchema?.let { put("inputSchema", it) }
+                        },
+                    )
+                }
+            }
         return buildString {
             append(baseInstruction)
-            append("\nAvailable tools: [").append(toolList).append("]")
-            append("\nIf a tool is requested, reply: TOOL_CALL: {\"name\": \"<tool_name>\", \"query\": \"<query>\"}")
-            append("\nUser: ").append(query)
-            append("\nAssistant:")
+            append("\nAvailable tools: ").append(tools)
+            append("\nLanguage: ").append(context.languageTag)
+            append("\nTo call a tool, reply only with TOOL_CALL: {\"name\":\"<tool_name>\",\"arguments\":{...}}.")
+            append("\nUse an available tool's exact name and arguments that match its inputSchema.")
+            append("\nDo not invent fields or wrap the call in Markdown. Otherwise reply with plain text.")
         }
     }
 
-    private fun extractToolCallIfPresent(
-        response: String,
-        query: String,
-    ): ToolCall? {
-        val tools = sessionContext?.tools.orEmpty()
-        val lower = response.lowercase(Locale.ROOT)
-        val lowerQuery = query.lowercase(Locale.ROOT)
-
-        val matchedTool =
-            tools.firstOrNull { tool ->
-                val name = tool.name.lowercase(Locale.ROOT)
-                (lower.contains("tool_call") && lower.contains(name)) ||
-                    lowerQuery.contains(name) ||
-                    tool.name.split('_', '-').any { part ->
-                        part.length > 3 && (lower.contains(part) || lowerQuery.contains(part))
-                    }
-            } ?: return null
-
-        val arguments =
-            buildJsonObject {
-                put("query", query)
+    private fun extractToolCallIfPresent(response: String): ToolCall? {
+        val prefix = "TOOL_CALL:"
+        if (!response.startsWith(prefix)) {
+            require(!response.contains("TOOL_CALL", ignoreCase = true)) {
+                "Local tool call must start with TOOL_CALL: and contain no preamble or Markdown"
             }
+            return null
+        }
+        val envelope =
+            try {
+                Json.parseToJsonElement(response.removePrefix(prefix).trim()) as? JsonObject
+            } catch (e: SerializationException) {
+                throw IllegalArgumentException("Local model returned malformed tool JSON", e)
+            }
+        require(envelope != null && envelope.keys == setOf("name", "arguments")) {
+            "Local tool call must contain only name and arguments"
+        }
+        val name = envelope["name"] as? JsonPrimitive
+        require(name != null && name.isString) { "Local tool name must be a string" }
+        require(sessionContext?.tools.orEmpty().any { it.name == name.content }) {
+            "Local model requested an unavailable tool"
+        }
+        val arguments = envelope["arguments"] as? JsonObject
+        require(arguments != null) { "Local tool arguments must be an object" }
+        // The host validates the arguments against its authoritative schema.
         return ToolCall(
             kind = MessageKind.ToolCall,
             id = UUID.randomUUID().toString(),
-            name = matchedTool.name,
+            name = name.content,
             args = arguments,
         )
-    }
-
-    private fun findTargetTool(query: String): ToolDescriptor? {
-        val lower = query.lowercase(Locale.ROOT)
-        val tools = sessionContext?.tools.orEmpty()
-        return tools.firstOrNull { tool ->
-            lower.contains(tool.name.lowercase(Locale.ROOT)) ||
-                tool.name.split('_', '-').any { part ->
-                    part.length > 3 && lower.contains(part.lowercase(Locale.ROOT))
-                }
-        }
     }
 
     private fun formatToolConclusion(result: JsonElement?): String {
         if (result == null) return "Execution finished."
         val obj = result as? JsonObject ?: return "Completed."
-        val message = obj["message"]?.toString() ?: obj["status"]?.toString() ?: "Completed."
-        return message.trim('"')
+        val error = obj["error"]
+        if (error != null) {
+            return if (error is JsonPrimitive && error.isString) "Tool failed: ${error.content}" else "Tool failed."
+        }
+        val message = obj["message"] ?: obj["status"]
+        return if (message is JsonPrimitive && message.isString) message.content else "Completed."
     }
 
     private fun generateConversationalResponse(query: String): String {
