@@ -46,12 +46,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    @Suppress("DEPRECATION")
-    kotlinOptions {
-        jvmTarget = "17"
-        freeCompilerArgs += listOf("-Xskip-metadata-version-check")
-    }
-
     buildFeatures {
         compose = true
     }
@@ -73,6 +67,12 @@ android {
                 "InsecureBaseConfiguration",
                 "OldTargetApi",
             )
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
@@ -126,14 +126,13 @@ dependencies {
     implementation(libs.androidx.webkit)
     implementation(libs.androidx.credentials)
     implementation(libs.androidx.credentials.play.services.auth)
+    implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
     implementation(libs.stream.webrtc)
     implementation(libs.onnxruntime.android)
-    implementation(libs.litertlm.android) {
-        exclude(group = "org.jetbrains.kotlin")
-        exclude(group = "org.jetbrains.kotlinx")
-    }
+    // LiteRT's asynchronous JNI callbacks require its declared Kotlin/coroutine runtime ABI.
+    implementation(libs.litertlm.android)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

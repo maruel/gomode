@@ -14,6 +14,7 @@ import com.caic.voicegateway.sdk.v1.ToolResult
 import com.caic.voicegateway.sdk.v1.TurnState
 import com.caic.voicegateway.sdk.v1.TurnStatus
 import com.caic.voicegateway.sdk.v1.UserMessage
+import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.service.ServiceSettingsClient
@@ -77,6 +78,7 @@ internal class DeviceVoiceSession(
     private val settingsClient: ServiceSettingsClient = ServiceSettingsClient(),
     private val bearerTokenFor: (String) -> String? = { null },
     private val languageTag: String,
+    private val localModelOwner: LocalModelOwner = (appContext.applicationContext as GoModeApplication).localModelOwner,
     private val speech: DeviceSpeech = AndroidDeviceSpeech(appContext, languageTag),
     voiceChimePlayer: VoiceChimePlayer = AndroidVoiceChime(),
     private val callController: VoiceCallController = NoopVoiceCallController(),
@@ -105,10 +107,18 @@ internal class DeviceVoiceSession(
 
     private var connectJob: Job? = null
     private var webSocket: WebSocket? = null
-    private var engine: OnDeviceVoiceEngine? = null
-    private var mcpClient: McpClient? = null
+    private var otherEngine: OnDeviceVoiceEngine? = null
+    private var preparedLocalModel: PreparedLocalModel? = null
+    private val engine: OnDeviceVoiceEngine?
+        get() = preparedLocalModel?.engine ?: otherEngine
+    private var otherSetup: VoiceSetup? = null
+    private val setup: VoiceSetup?
+        get() = preparedLocalModel?.setup ?: otherSetup
+    private val mcpClient: McpClient?
+        get() = setup?.mcpClient
+    private val mcpTools: List<ToolDescriptor>
+        get() = setup?.tools.orEmpty()
     private var frontendToolNames: Set<String> = emptySet()
-    private var mcpTools: List<ToolDescriptor> = emptyList()
 
     private var muted = false
     private var speakerActive = false
@@ -136,8 +146,7 @@ internal class DeviceVoiceSession(
         connectJob?.cancel()
         connectJob = null
         closeWebSocket()
-        engine?.close()
-        engine = null
+        releaseEngine()
         speech.stopListening()
         speech.stopSpeaking()
         pendingNotifications.clear()
@@ -146,24 +155,27 @@ internal class DeviceVoiceSession(
         pendingSpeech = 0
         muted = false
         segmenter.clear()
-        mcpClient = null
-        mcpTools = emptyList()
+        otherSetup = null
         if (!preserveTranscript) clearTranscript()
         if (!speech.isAvailable()) {
             setError("On-device speech recognition is not available")
             return
         }
-        VoiceService.start(appContext)
-        setStatus("Connecting…")
         val engineType = settingsRepository.settings.value.onDeviceEngine
+        if (engineType != OnDeviceEngine.LOCAL_LLM) VoiceService.start(appContext)
+        setStatus("Connecting…")
         connectJob =
             scope.launch {
                 try {
+                    if (engineType == OnDeviceEngine.LOCAL_LLM) {
+                        setStatus("Preparing local model…")
+                        preparedLocalModel = localModelOwner.acquire()
+                    }
                     val setup =
-                        try {
+                        preparedLocalModel?.setup ?: try {
                             setupProvider()
                         } catch (e: VoiceSetupException) {
-                            if (engineType == OnDeviceEngine.REMOTE_GATEWAY) {
+                            if (engineType == OnDeviceEngine.REMOTE_GATEWAY || engineType == OnDeviceEngine.LOCAL_LLM) {
                                 if (ownsAttempt(attempt)) setError(e.message ?: "Voice setup failed")
                                 return@launch
                             } else {
@@ -171,8 +183,8 @@ internal class DeviceVoiceSession(
                             }
                         }
                     if (!ownsAttempt(attempt)) return@launch
-                    mcpClient = setup.mcpClient
-                    mcpTools = setup.tools
+                    if (engineType == OnDeviceEngine.LOCAL_LLM) VoiceService.start(appContext)
+                    if (preparedLocalModel == null) otherSetup = setup
                     if (callController.isSupported() && !callController.start { disconnect() }) {
                         setError("Could not start the voice call")
                         return@launch
@@ -202,8 +214,9 @@ internal class DeviceVoiceSession(
         setup: VoiceSetup,
         engineType: OnDeviceEngine,
     ) {
-        val localEngine = withContext(ioDispatcher) { engineFactory(engineType) }
-        this.engine = localEngine
+        check(engineType != OnDeviceEngine.LOCAL_LLM || preparedLocalModel != null)
+        val localEngine = preparedLocalModel?.engine ?: withContext(ioDispatcher) { engineFactory(engineType) }
+        if (preparedLocalModel == null) otherEngine = localEngine
         val context =
             EngineSessionContext(
                 languageTag = languageTag,
@@ -214,13 +227,10 @@ internal class DeviceVoiceSession(
             )
         val modelDisplay = localEngine.modelName ?: localEngine.descriptor.name
         setStatus("Loading $modelDisplay…")
-        withContext(ioDispatcher) {
-            localEngine.initialize(context)
+        if (preparedLocalModel == null) {
+            withContext(ioDispatcher) { localEngine.initialize(context) }
         }
-        if (!ownsAttempt(attempt)) {
-            withContext(ioDispatcher) { localEngine.close() }
-            return
-        }
+        if (!ownsAttempt(attempt)) return
         frontendToolNames = FrontendVoiceTools.declarations.map { it.name }.toSet()
         _state.update {
             it.copy(connectStatus = null, connected = true, error = null)
@@ -649,8 +659,7 @@ internal class DeviceVoiceSession(
         connectJob?.cancel()
         connectJob = null
         closeWebSocket()
-        engine?.close()
-        engine = null
+        releaseEngine()
         speech.stopListening()
         speech.stopSpeaking()
         pendingNotifications.clear()
@@ -662,8 +671,7 @@ internal class DeviceVoiceSession(
         voiceModeChime.disconnected { }
         callController.endLocal()
         VoiceService.stop(appContext)
-        mcpClient = null
-        mcpTools = emptyList()
+        otherSetup = null
         // Preserve transcript so the user can review it after disconnecting.
         _state.value = VoiceState(transcript = _state.value.transcript.map { it.copy(final = true) })
     }
@@ -673,16 +681,14 @@ internal class DeviceVoiceSession(
         connectJob?.cancel()
         connectJob = null
         closeWebSocket()
-        engine?.close()
-        engine = null
+        releaseEngine()
         speech.stopListening()
         speech.stopSpeaking()
         pendingSpeech = 0
         speakerActive = false
         callController.endLocal()
         VoiceService.stop(appContext)
-        mcpClient = null
-        mcpTools = emptyList()
+        otherSetup = null
         Log.e(TAG, "setError: $message")
         _state.update {
             it.copy(
@@ -777,6 +783,13 @@ internal class DeviceVoiceSession(
         result: JsonElement,
     ) {
         send(json.encodeToString(ToolResult.serializer(), gatewayToolResult(id, name, result)))
+    }
+
+    private fun releaseEngine() {
+        preparedLocalModel?.let(localModelOwner::release)
+        preparedLocalModel = null
+        otherEngine?.close()
+        otherEngine = null
     }
 
     private fun closeWebSocket() {

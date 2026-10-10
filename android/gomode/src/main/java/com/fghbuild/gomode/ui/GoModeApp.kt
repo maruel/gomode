@@ -46,6 +46,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.VoiceMode
@@ -64,12 +65,16 @@ import com.fghbuild.gomode.ui.web.ServiceBearerStore
 import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.ui.web.WebShellScreen
 import com.fghbuild.gomode.voice.DeviceVoiceSession
+import com.fghbuild.gomode.voice.LocalModelOwner
+import com.fghbuild.gomode.voice.LocalModelSelection
+import com.fghbuild.gomode.voice.LocalModelState
 import com.fghbuild.gomode.voice.McpClient
 import com.fghbuild.gomode.voice.TelecomCallController
 import com.fghbuild.gomode.voice.VoicePanel
 import com.fghbuild.gomode.voice.VoiceService
 import com.fghbuild.gomode.voice.VoiceSession
 import com.fghbuild.gomode.voice.VoiceSessionController
+import com.fghbuild.gomode.voice.prepareVoiceSetup
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerializationException
@@ -96,7 +101,10 @@ internal sealed interface ServiceBootstrapState {
 }
 
 @Composable
-fun GoModeApp(settingsRepository: SettingsRepository) {
+internal fun GoModeApp(
+    settingsRepository: SettingsRepository,
+    localModelOwner: LocalModelOwner,
+) {
     val context = LocalContext.current
     val haloController =
         remember(settingsRepository) {
@@ -132,6 +140,41 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val voiceMode = settings.voiceMode
+    val localSelection =
+        remember(
+            settings.activeServiceId,
+            activeURL,
+            voiceMode,
+            settings.onDeviceEngine,
+            settings.voiceLanguageTag,
+            bearerStore,
+            bearerToken,
+            authEpoch,
+            authReady,
+            bootstrapState,
+        ) {
+            if (shouldPrepareLocalModel(settings, authReady) && bootstrapState is ServiceBootstrapState.Ready) {
+                LocalModelSelection(
+                    languageTag = settings.voiceLanguageTag,
+                    prepareSetup = { prepareVoiceSetup(settingsRepository, settingsClient, bearerStore::tokenFor) },
+                    isCurrent = {
+                        val current = settingsRepository.settings.value
+                        shouldPrepareLocalModel(current, bearerStore.authReady.value) &&
+                            current.activeServiceId == settings.activeServiceId &&
+                            current.activeServiceURL == activeURL &&
+                            current.voiceLanguageTag == settings.voiceLanguageTag &&
+                            bearerStore.authEpoch.value == authEpoch && bearerStore.token.value == bearerToken
+                    },
+                )
+            } else {
+                null
+            }
+        }
+    DisposableEffect(localModelOwner, localSelection) {
+        localModelOwner.select(localSelection)
+        onDispose { localModelOwner.clearSelection(localSelection) }
+    }
+    val localModelState by localModelOwner.state.collectAsStateWithLifecycle()
     val voiceCallController = remember(context.applicationContext) { TelecomCallController(context.applicationContext) }
     val voiceSession: VoiceSessionController =
         remember(
@@ -150,6 +193,7 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
                         settingsClient,
                         bearerTokenFor = bearerStore::tokenFor,
                         languageTag = settings.voiceLanguageTag,
+                        localModelOwner = localModelOwner,
                         callController = voiceCallController,
                     )
                 }
@@ -341,6 +385,7 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
                         }
                     },
                     onAuthInvalidated = {
+                        localModelOwner.clearSelection(localSelection)
                         voiceSession.disconnect()
                         serviceMonitor.stop()
                     },
@@ -361,6 +406,12 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
                     onOpenSettings = { activeNativeScreen = NativeScreen.Settings },
                     modifier = Modifier.fillMaxWidth(),
                 )
+            }
+            (localModelState as? LocalModelState.Failed)?.let { failure ->
+                Column(Modifier.fillMaxWidth().padding(12.dp).testTag("gomode-local-model-error")) {
+                    Text(failure.message)
+                    Button(onClick = localModelOwner::retry) { Text("Retry local model") }
+                }
             }
             // Keep failures visible even when the keyboard or shell recovery hides idle controls.
             if (voiceState.error != null || (!keyboardOpen && (shellRecovery == null || voiceSessionActive))) {
@@ -395,6 +446,13 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
         }
     }
 }
+
+internal fun shouldPrepareLocalModel(
+    settings: SettingsState,
+    authReady: Boolean,
+): Boolean =
+    authReady && settings.activeServiceURL.isNotBlank() &&
+        settings.voiceMode == VoiceMode.DEVICE && settings.onDeviceEngine == OnDeviceEngine.LOCAL_LLM
 
 internal suspend fun fetchBootstrapState(
     activeURL: String,

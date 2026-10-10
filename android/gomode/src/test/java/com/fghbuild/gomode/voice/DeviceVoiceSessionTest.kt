@@ -4,15 +4,19 @@ package com.fghbuild.gomode.voice
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
+import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import okhttp3.Protocol
 import okhttp3.Request
@@ -30,6 +34,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -351,78 +356,248 @@ class DeviceVoiceSessionTest {
         }
 
     @Test
-    fun `on-device voice session runs local LLM engine with streaming text deltas`() =
-        runBlocking {
+    fun `missing local LLM model reports initialization failure without starting speech`() =
+        runTest {
+            val dispatcher = StandardTestDispatcher(testScheduler)
+            Dispatchers.setMain(dispatcher)
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
             repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
             repo.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
 
-            val session = createSession(speech = speech, settingsRepo = repo)
+            val owner = LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher, readServiceContext = { "" })
+            owner.select(LocalModelSelection("en-US", { testSetup() }, { true }))
+            val session =
+                createSession(
+                    speech = speech,
+                    settingsRepo = repo,
+                    ioDispatcher = dispatcher,
+                    localModelOwner = owner,
+                )
             session.connect()
-            assertTrue(session.state.value.connected)
-
-            val onResult = requireNotNull(speech.resultCallback)
-            onResult("What model are you?")
+            testScheduler.runCurrent()
+            assertFalse(session.state.value.connected)
             assertTrue(
-                speech.spoken.any {
-                    it.contains("Pixel 8 Pro") &&
-                        (it.contains("Gemma") || it.contains("LiteRT-LM"))
-                },
+                session.state.value.error
+                    .orEmpty()
+                    .contains("make android-push-model"),
             )
+            assertTrue(speech.spoken.isEmpty())
+            assertFalse(speech.listening)
 
             session.disconnect()
             session.close()
+            owner.close()
+            testScheduler.runCurrent()
         }
 
     @Test
-    fun `shows model name in connect status while initializing local engine`() =
-        runBlocking {
+    fun `startup preparation starts no audio and first voice call reuses model and discovery`() =
+        runTest {
+            val dispatcher = StandardTestDispatcher(testScheduler)
+            Dispatchers.setMain(dispatcher)
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
             repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
             repo.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
 
-            var statusDuringInit: String? = null
-            var sessionRef: DeviceVoiceSession? = null
+            var allocations = 0
+            var discoveries = 0
+            val calls = FakeVoiceCallController()
+            val owner =
+                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher, readServiceContext = { "" }) {
+                    LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
+                        allocations++
+                        object : EdgeLlmRunner {
+                            override val isModelLoaded = true
 
-            val fakeEngine =
-                object : OnDeviceVoiceEngine {
-                    override val engineType = OnDeviceEngine.LOCAL_LLM
-                    override val modelName = "Gemma 4 E2B"
+                            override suspend fun generateStream(prompt: String) =
+                                kotlinx.coroutines.flow.flowOf("Hello")
 
-                    override suspend fun initialize(context: EngineSessionContext) {
-                        statusDuringInit = sessionRef?.state?.value?.connectStatus
-                    }
+                            override suspend fun generate(prompt: String) = "Hello"
 
-                    override suspend fun processTurn(
-                        input: UserTurnInput,
-                        onDelta: (String) -> Unit,
-                        onToolCall: suspend (
-                            com.caic.voicegateway.sdk.v1.ToolCall,
-                        ) -> kotlinx.serialization.json.JsonElement?,
-                    ): EngineTurnResult = EngineTurnResult(assistantText = "Ready")
+                            override fun replaceConversation(systemInstruction: String) = Unit
 
-                    override suspend fun injectContext(text: String) = Unit
-
-                    override fun close() = Unit
+                            override fun close() = Unit
+                        }
+                    }, dispatcher)
                 }
+            owner.select(
+                LocalModelSelection("en-US", {
+                    discoveries++
+                    testSetup()
+                }, { true }),
+            )
 
             val session =
                 createSession(
                     speech = speech,
                     settingsRepo = repo,
-                    engineFactory = { fakeEngine },
+                    ioDispatcher = dispatcher,
+                    calls = calls,
+                    localModelOwner = owner,
+                    setupProvider = { error("Connect must reuse startup discovery") },
+                    engineFactory = { error("Connect must reuse startup allocation") },
                 )
-            sessionRef = session
 
+            testScheduler.runCurrent()
+            assertTrue(speech.spoken.isEmpty())
+            assertFalse(speech.listening)
+            assertEquals(0, calls.started)
             session.connect()
-            assertEquals("Loading Gemma 4 E2B…", statusDuringInit)
+            testScheduler.runCurrent()
             assertTrue(session.state.value.connected)
+            assertEquals(1, allocations)
+            assertEquals(1, discoveries)
+            assertEquals(1, calls.started)
             assertNull(session.state.value.connectStatus)
-
+            requireNotNull(speech.resultCallback)("Hi")
+            testScheduler.runCurrent()
+            assertTrue(speech.spoken.contains("Hello"))
             session.disconnect()
             session.close()
+            owner.close()
+            testScheduler.runCurrent()
+        }
+
+    @Test
+    fun `disconnect during preparation preserves native owner and later connect reuses its result`() =
+        runTest {
+            val dispatcher = StandardTestDispatcher(testScheduler)
+            Dispatchers.setMain(dispatcher)
+            val speech = FakeSpeech()
+            val repo = SettingsRepository(InMemoryPreferencesDataStore())
+            repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
+            repo.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+            val finishSetup = CompletableDeferred<Unit>()
+            val calls = FakeVoiceCallController()
+            val application = RuntimeEnvironment.getApplication()
+            var allocations = 0
+            val owner =
+                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher, readServiceContext = { "" }) {
+                    LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
+                        allocations++
+                        object : EdgeLlmRunner {
+                            override val isModelLoaded = true
+
+                            override suspend fun generateStream(prompt: String) =
+                                kotlinx.coroutines.flow.flowOf("Hello")
+
+                            override suspend fun generate(prompt: String) = "Hello"
+
+                            override fun replaceConversation(systemInstruction: String) = Unit
+
+                            override fun close() = Unit
+                        }
+                    }, dispatcher)
+                }
+            owner.select(
+                LocalModelSelection("en-US", {
+                    finishSetup.await()
+                    testSetup()
+                }, { true }),
+            )
+            val session =
+                createSession(
+                    speech = speech,
+                    calls = calls,
+                    settingsRepo = repo,
+                    ioDispatcher = dispatcher,
+                    localModelOwner = owner,
+                )
+            session.connect()
+            testScheduler.runCurrent()
+            assertNull(
+                "Preparation cannot start a microphone foreground service",
+                shadowOf(application).nextStartedService,
+            )
+            assertEquals(0, calls.started)
+            assertEquals(0, calls.activated)
+            assertTrue(speech.spoken.isEmpty())
+            assertFalse(speech.listening)
+            session.disconnect()
+            finishSetup.complete(Unit)
+            testScheduler.runCurrent()
+            assertFalse(session.state.value.connected)
+            assertTrue(speech.spoken.isEmpty())
+            assertEquals(1, allocations)
+            assertNull(shadowOf(application).nextStartedService)
+            session.connect()
+            testScheduler.runCurrent()
+            assertTrue(session.state.value.connected)
+            assertEquals(1, allocations)
+            assertEquals(1, calls.started)
+            assertEquals(VoiceService::class.java.name, shadowOf(application).nextStartedService.component?.className)
+            session.close()
+            owner.close()
+            testScheduler.runCurrent()
+        }
+
+    @Test
+    fun `disconnect during local turn drains native work before reconnect and drops stale speech`() =
+        runTest {
+            val dispatcher = StandardTestDispatcher(testScheduler)
+            Dispatchers.setMain(dispatcher)
+            val speech = FakeSpeech()
+            val repo = SettingsRepository(InMemoryPreferencesDataStore())
+            repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
+            repo.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+            val finishTurn = CompletableDeferred<Unit>()
+            var allocations = 0
+            val events = mutableListOf<String>()
+            val owner =
+                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher, readServiceContext = { "" }) {
+                    LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
+                        val id = ++allocations
+                        events.add("allocate $id")
+                        object : EdgeLlmRunner {
+                            override val isModelLoaded = true
+
+                            override suspend fun generateStream(prompt: String) =
+                                kotlinx.coroutines.flow.flow {
+                                    finishTurn.await()
+                                    events.add("native done")
+                                    emit("Stale answer")
+                                }
+
+                            override suspend fun generate(prompt: String) = "Stale answer"
+
+                            override fun replaceConversation(systemInstruction: String) {
+                                events.add("reset $id")
+                            }
+
+                            override fun close() {
+                                events.add("close $id")
+                            }
+                        }
+                    }, dispatcher)
+                }
+            owner.select(LocalModelSelection("en-US", { testSetup() }, { true }))
+            val session =
+                createSession(
+                    speech = speech,
+                    settingsRepo = repo,
+                    ioDispatcher = dispatcher,
+                    localModelOwner = owner,
+                )
+            session.connect()
+            testScheduler.runCurrent()
+            requireNotNull(speech.resultCallback)("Hi")
+            testScheduler.runCurrent()
+            session.disconnect()
+            session.connect()
+            testScheduler.runCurrent()
+            assertFalse(session.state.value.connected)
+            assertEquals(listOf("allocate 1"), events)
+            finishTurn.complete(Unit)
+            testScheduler.runCurrent()
+            assertEquals(listOf("allocate 1", "native done", "reset 1"), events)
+            assertEquals(1, allocations)
+            assertTrue(session.state.value.connected)
+            assertFalse(speech.spoken.contains("Stale answer"))
+            session.close()
+            owner.close()
+            testScheduler.runCurrent()
         }
 
     @Test
@@ -515,6 +690,7 @@ class DeviceVoiceSessionTest {
             createOnDeviceEngine(RuntimeEnvironment.getApplication(), it, ioDispatcher)
         },
         setupProvider: suspend () -> VoiceSetup = { testSetup() },
+        localModelOwner: LocalModelOwner = (RuntimeEnvironment.getApplication() as GoModeApplication).localModelOwner,
         factory: (Request, WebSocketListener) -> WebSocket = { _, _ -> FakeWebSocket() },
     ): DeviceVoiceSession =
         DeviceVoiceSession(
@@ -522,6 +698,7 @@ class DeviceVoiceSessionTest {
             settingsRepository = settingsRepo,
             speech = speech,
             languageTag = languageTag,
+            localModelOwner = localModelOwner,
             voiceChimePlayer = NoopChime(),
             callController = calls,
             setupProvider = setupProvider,

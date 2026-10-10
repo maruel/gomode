@@ -3,9 +3,12 @@ package com.fghbuild.gomode.voice
 
 import android.webkit.CookieManager
 import com.caic.voicegateway.sdk.v1.ServiceAuthorization
+import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.service.VoiceTokenClient
+import com.fghbuild.gomode.service.readAuthoritativeServiceContext
 import com.fghbuild.gomode.service.readInitialServiceContext
 import com.fghbuild.gomode.service.resolveServiceURL
 import com.fghbuild.gomode.service.serviceOrigin
@@ -116,7 +119,12 @@ internal suspend fun prepareVoiceSetup(
     val tools = client.listTools()
     // Android owns this captured session baseline; see the canonical contract in
     // gomode/docs/ANDROID_SHELL.md. A reconnect repeats the read.
-    val serviceContextText = readInitialServiceContext(client)
+    val serviceContextText =
+        if (settings.voiceMode == VoiceMode.DEVICE && settings.onDeviceEngine == OnDeviceEngine.LOCAL_LLM) {
+            readAuthoritativeServiceContext(client)
+        } else {
+            readInitialServiceContext(client)
+        }
     val service = tokenEndpointURL?.let { voiceTokenClient.fetch(it, cookieFor(it), bearerTokenFor(it)) }
     return VoiceSetup(
         gatewayEndpointURL = gatewayEndpointURL,

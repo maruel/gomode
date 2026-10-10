@@ -164,11 +164,30 @@ fun serviceMonitoringSnapshot(
     )
 }
 
-suspend fun readInitialServiceContext(client: ServiceResourceClient): String {
-    return try {
-        val plan = serviceMonitoringPlan(client.listResources()) ?: return "No visible service items."
-        val items = client.readResource(plan.itemsResourceURI)
-        serviceMonitoringSnapshot(mapOf(plan.itemsResourceURI to items), plan).voiceContext
+// Local prefill/acquisition must not turn a failed authoritative read into fabricated absence.
+internal suspend fun readAuthoritativeServiceContext(client: ServiceResourceClient): String {
+    val resource =
+        client.listResources().firstOrNull { it.uri == GOMODE_ITEMS_RESOURCE_URI }
+            ?: return "No visible service items."
+    require(isJSONResource(resource)) {
+        "resource ${resource.uri} must advertise application/json, got ${resource.mimeType}. " +
+            "Update the service resource metadata before using local voice."
+    }
+    // Notification compatibility controls monitoring, not authoritative item facts for local prefill.
+    val plan = ServiceMonitoringPlan(itemsResourceURI = resource.uri)
+    val items = client.readResource(resource.uri)
+    return serviceMonitoringSnapshot(mapOf(resource.uri to items), plan).voiceContext
+}
+
+suspend fun readInitialServiceContext(client: ServiceResourceClient): String =
+    try {
+        val plan = serviceMonitoringPlan(client.listResources())
+        if (plan == null) {
+            "No visible service items."
+        } else {
+            val items = client.readResource(plan.itemsResourceURI)
+            serviceMonitoringSnapshot(mapOf(plan.itemsResourceURI to items), plan).voiceContext
+        }
     } catch (e: CancellationException) {
         throw e
     } catch (_: Exception) {
@@ -176,7 +195,6 @@ suspend fun readInitialServiceContext(client: ServiceResourceClient): String {
         // not prevent the otherwise independent voice transport from starting.
         "No visible service items."
     }
-}
 
 private fun isJSONResource(resource: ResourceDescriptor): Boolean =
     resource.mimeType == null || resource.mimeType == JSON_MIME_TYPE

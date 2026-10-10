@@ -1,6 +1,6 @@
 [versions]
 agp = "9.0.1"
-kotlin = "2.2.10"
+kotlin = "2.4.0"
 detekt = "1.23.7"
 ktlint = "14.2.0"
 versions = "0.51.0"
@@ -27,7 +27,8 @@ graphicsPath = "1.1.0"
 composeCompiler = "1.5.15"
 okhttp = "4.12.0"
 kotlinxSerialization = "1.7.3"
-kotlinxCoroutines = "1.9.0"
+# LiteRT-LM 0.18.0 requires this runtime; keep core and test artifacts aligned.
+kotlinxCoroutines = "1.11.0"
 robolectric = "4.16.1"
 # Robolectric maps a test's compileSdk to this Android runtime jar. The Robolectric test modules
 # resolve the jar through Gradle and hand it to Robolectric's offline resolver, so the entry must
@@ -55,6 +56,7 @@ okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhtt
 okhttp-sse = { group = "com.squareup.okhttp3", name = "okhttp-sse", version.ref = "okhttp" }
 okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "kotlinxCoroutines" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }

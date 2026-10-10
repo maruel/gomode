@@ -1,6 +1,9 @@
 // Unit tests for Go Mode shell recovery and voice account changes.
 package com.fghbuild.gomode.ui
 
+import com.fghbuild.gomode.data.OnDeviceEngine
+import com.fghbuild.gomode.data.SettingsState
+import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.ui.web.WebShellLoadState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -9,6 +12,23 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GoModeAppTest {
+    @Test
+    fun startupOnlyPreparesCredentialReadySelectedLocalLlm() {
+        val selected =
+            SettingsState(
+                activeServiceURL = "https://service.example",
+                voiceMode = VoiceMode.DEVICE,
+                onDeviceEngine = OnDeviceEngine.LOCAL_LLM,
+            )
+        assertTrue(shouldPrepareLocalModel(selected, authReady = true))
+        assertFalse(shouldPrepareLocalModel(selected, authReady = false))
+        assertFalse(shouldPrepareLocalModel(selected.copy(activeServiceURL = ""), authReady = true))
+        assertFalse(shouldPrepareLocalModel(selected.copy(voiceMode = VoiceMode.CLOUD), authReady = true))
+        for (engine in listOf(OnDeviceEngine.REMOTE_GATEWAY, OnDeviceEngine.NEUDECIDE, OnDeviceEngine.NEEDLE_WHISTLE)) {
+            assertFalse(shouldPrepareLocalModel(selected.copy(onDeviceEngine = engine), authReady = true))
+        }
+    }
+
     @Test
     fun accountSwitchInvalidatesVoiceIdentity() {
         val identity = VoiceAuthIdentity()

@@ -19,7 +19,10 @@ class MainActivity : ComponentActivity() {
         val settingsRepository = SettingsRepository(dataStore)
         setContent {
             GoModeTheme {
-                GoModeApp(settingsRepository = settingsRepository)
+                GoModeApp(
+                    settingsRepository = settingsRepository,
+                    localModelOwner = (application as GoModeApplication).localModelOwner,
+                )
             }
         }
     }

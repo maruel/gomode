@@ -13,11 +13,18 @@ import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
@@ -28,8 +35,8 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.File
-import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "LocalLlmEngine"
 
@@ -104,6 +111,9 @@ internal interface EdgeLlmRunner : AutoCloseable {
     suspend fun generateStream(prompt: String): Flow<String>
 
     suspend fun generate(prompt: String): String
+
+    // Replace only the conversation/prefill; model weights stay owned by this runner.
+    fun replaceConversation(systemInstruction: String)
 }
 
 /**
@@ -130,44 +140,84 @@ internal class LiteRtLmRunner(
                 "/data/local/tmp/llm/model.litertlm",
                 "/data/local/tmp/llm/model.task",
             )
-        val existingPath = candidatePaths.firstOrNull { File(it).exists() }
-        if (existingPath != null) {
-            val backends =
-                listOf(
-                    Backend.GOOGLE_TENSOR(),
-                    Backend.GPU(),
-                    Backend.CPU(),
-                )
-            for (backend in backends) {
-                try {
-                    val config =
-                        EngineConfig(
-                            modelPath = existingPath,
-                            backend = backend,
-                            // The context includes instructions, tool schemas, history, and output.
-                            maxNumTokens = 10_240,
-                            cacheDir = context.cacheDir.absolutePath,
-                        )
-                    val eng = Engine(config)
-                    eng.initialize()
-                    engine = eng
-                    conversation =
-                        eng.createConversation(
-                            ConversationConfig(systemInstruction = Contents.of(systemInstruction)),
-                        )
-                    Log.i(TAG, "Initialized Google AI Edge LiteRT-LM from $existingPath on ${backend.name}")
-                    break
-                } catch (
-                    @Suppress("TooGenericExceptionCaught") e: Exception,
-                ) {
-                    Log.w(TAG, "Failed initializing LiteRT-LM from $existingPath on ${backend.name}", e)
+        val existingPath = candidatePaths.firstOrNull { File(it).isFile }
+        checkNotNull(existingPath) {
+            "Local model not found. Install model weights with make android-push-model. " +
+                "Searched: ${candidatePaths.joinToString()}"
+        }
+        val backends = listOf(Backend.GOOGLE_TENSOR(), Backend.GPU(), Backend.CPU())
+        val failure =
+            IllegalStateException(
+                "Unable to load local model $existingPath on ${backends.joinToString { it.name }}. " +
+                    "Check that the weights are a compatible LiteRT-LM model; " +
+                    "reinstall with make android-push-model. " +
+                    "See LiteRT-LM backend failures in logcat for details.",
+            )
+        for (backend in backends) {
+            var attemptEngine: Engine? = null
+            try {
+                val config =
+                    EngineConfig(
+                        modelPath = existingPath,
+                        backend = backend,
+                        // The context includes instructions, tool schemas, history, and output.
+                        maxNumTokens = 10_240,
+                        cacheDir = context.cacheDir.absolutePath,
+                    )
+                val eng = Engine(config)
+                attemptEngine = eng
+                eng.initialize()
+                val conv =
+                    eng.createConversation(
+                        ConversationConfig(
+                            systemInstruction = Contents.of(systemInstruction),
+                            // Prefill instructions and tool schemas, not a fabricated warm-up turn.
+                            prefillPrefaceOnInit = true,
+                        ),
+                    )
+                Log.i(TAG, "Initialized Google AI Edge LiteRT-LM from $existingPath on ${backend.name}")
+                engine = eng
+                conversation = conv
+                break
+            } catch (e: CancellationException) {
+                throw e
+            } catch (
+                @Suppress("TooGenericExceptionCaught") e: Exception, // Try the remaining native backends.
+            ) {
+                failure.addSuppressed(e)
+                Log.w(TAG, "Failed initializing LiteRT-LM from $existingPath on ${backend.name}", e)
+            } finally {
+                // Engine.close requires initialization; failed native creation has no Kotlin-owned handle.
+                if (engine !== attemptEngine && attemptEngine?.isInitialized() == true) {
+                    try {
+                        closeNativeResource(attemptEngine)
+                    } catch (
+                        @Suppress("TooGenericExceptionCaught") e: Exception, // Retry after cleanup failure.
+                    ) {
+                        failure.addSuppressed(e)
+                    }
                 }
             }
         }
+        if (!isModelLoaded) throw failure
+    }
+
+    override fun replaceConversation(systemInstruction: String) {
+        val activeEngine = checkNotNull(engine) { "Local model engine is closed" }
+        val oldConversation = conversation
+        conversation = null
+        oldConversation?.let { closeNativeResource(it) }
+        conversation =
+            activeEngine.createConversation(
+                ConversationConfig(
+                    systemInstruction = Contents.of(systemInstruction),
+                    prefillPrefaceOnInit = true,
+                ),
+            )
     }
 
     override suspend fun generateStream(prompt: String): Flow<String> {
-        val conv = conversation ?: return emptyFlow()
+        val conv = checkNotNull(conversation) { "Local model session is closed" }
         return conv.sendMessageAsync(prompt).map { message ->
             message.contents.contents
                 .filterIsInstance<Content.Text>()
@@ -176,7 +226,7 @@ internal class LiteRtLmRunner(
     }
 
     override suspend fun generate(prompt: String): String {
-        val conv = conversation ?: return ""
+        val conv = checkNotNull(conversation) { "Local model session is closed" }
         val builder = StringBuilder()
         conv.sendMessageAsync(prompt).collect { message ->
             for (content in message.contents.contents) {
@@ -189,15 +239,26 @@ internal class LiteRtLmRunner(
     }
 
     override fun close() {
+        val oldConversation = conversation
+        val oldEngine = engine
+        conversation = null
+        engine = null
+        // Delete the conversation before its engine, and still attempt the engine if deletion fails.
         try {
-            conversation = null
-            engine?.close()
-        } catch (
-            @Suppress("TooGenericExceptionCaught") e: Exception,
-        ) {
-            Log.w(TAG, "Failed closing LiteRT-LM engine", e)
+            oldConversation?.let { closeNativeResource(it) }
         } finally {
-            engine = null
+            oldEngine?.let { closeNativeResource(it) }
+        }
+    }
+
+    private fun closeNativeResource(resource: AutoCloseable) {
+        try {
+            resource.close()
+        } catch (
+            @Suppress("TooGenericExceptionCaught") e: Exception, // Continue releasing the other native resources.
+        ) {
+            Log.w(TAG, "Failed closing LiteRT-LM resource", e)
+            throw e
         }
     }
 }
@@ -220,9 +281,34 @@ internal class LocalLlmEngine(
         get() = resolveModelName(context)
 
     override val isModelLoaded: Boolean
-        get() = runner?.isModelLoaded == true
+        get() = !closed.get() && runner?.isModelLoaded == true
+
+    private val closed = AtomicBoolean(false)
+    private val nativeOperation = Mutex()
+    private val cleanupScope = CoroutineScope(ioDispatcher)
+    private val cleanup =
+        cleanupScope
+            .async(start = CoroutineStart.LAZY) {
+                nativeOperation.withLock {
+                    try {
+                        runner?.close()
+                    } finally {
+                        runner = null
+                        sessionContext = null
+                        conversationHistory.clear()
+                        injectedContexts.clear()
+                    }
+                }
+            }.apply {
+                invokeOnCompletion { failure ->
+                    if (failure != null) Log.e(TAG, "Failed releasing local model resources", failure)
+                    cleanupScope.cancel()
+                }
+            }
 
     private var sessionContext: EngineSessionContext? = null
+
+    @Volatile
     private var runner: EdgeLlmRunner? = null
     private val conversationHistory = mutableListOf<ChatMessage>()
     private val injectedContexts = mutableListOf<String>()
@@ -233,16 +319,61 @@ internal class LocalLlmEngine(
     )
 
     override suspend fun initialize(context: EngineSessionContext) {
-        withContext(ioDispatcher) {
-            this@LocalLlmEngine.sessionContext = context
+        nativeOperation.withLock {
+            check(!closed.get()) { "Local model engine is closed" }
+            val previousRunner = runner
+            runner = null
+            sessionContext = null
             conversationHistory.clear()
             injectedContexts.clear()
-            runner?.close()
+            var preparedRunner: EdgeLlmRunner? = null
             val systemInstruction = formatSystemPrompt(context)
-            runner = runnerFactory(this@LocalLlmEngine.context, systemInstruction)
-            conversationHistory.add(ChatMessage("system", systemInstruction))
-            Log.i(TAG, "Initialized LocalLlmEngine on Google Pixel 8 Pro with ${context.tools.size} tools")
+            try {
+                withContext(NonCancellable + ioDispatcher) { previousRunner?.close() }
+                withContext(ioDispatcher) {
+                    check(!closed.get()) { "Local model engine is closed" }
+                    preparedRunner = runnerFactory(this@LocalLlmEngine.context, systemInstruction)
+                }
+                check(!closed.get()) { "Local model engine was closed during initialization" }
+                runner = preparedRunner
+                sessionContext = context
+                conversationHistory.add(ChatMessage("system", systemInstruction))
+                Log.i(TAG, "Initialized LocalLlmEngine on Google Pixel 8 Pro with ${context.tools.size} tools")
+            } finally {
+                // Also release a model if cancellation or close wins during blocking initialization.
+                if (runner !== preparedRunner) {
+                    withContext(NonCancellable + ioDispatcher) { preparedRunner?.close() }
+                }
+            }
         }
+    }
+
+    // The owner calls this after disconnect without cancelling a native turn collector.
+    suspend fun resetConversation(context: EngineSessionContext) {
+        nativeOperation.withLock {
+            replaceConversation(context)
+        }
+    }
+
+    suspend fun reconcileServiceContext(text: String) {
+        nativeOperation.withLock {
+            val previous = checkNotNull(sessionContext) { "Local model session is not initialized" }
+            if (previous.serviceContextText != text) {
+                replaceConversation(previous.copy(serviceContextText = text))
+            }
+        }
+    }
+
+    private suspend fun replaceConversation(context: EngineSessionContext) {
+        check(!closed.get()) { "Local model engine is closed" }
+        val activeRunner = checkNotNull(runner) { "Local model session is not initialized" }
+        val instruction = formatSystemPrompt(context)
+        // A blocking native prefill must finish before either reuse or disposal can proceed.
+        withContext(NonCancellable + ioDispatcher) { activeRunner.replaceConversation(instruction) }
+        sessionContext = context
+        conversationHistory.clear()
+        conversationHistory.add(ChatMessage("system", instruction))
+        injectedContexts.clear()
     }
 
     override suspend fun processTurn(
@@ -251,14 +382,15 @@ internal class LocalLlmEngine(
         onToolCall: suspend (ToolCall) -> JsonElement?,
     ): EngineTurnResult =
         withContext(ioDispatcher) {
-            val query = input.text.trim()
-            if (query.isEmpty()) return@withContext EngineTurnResult()
+            nativeOperation.withLock {
+                check(!closed.get()) { "Local model engine is closed" }
+                val query = input.text.trim()
+                if (query.isEmpty()) return@withContext EngineTurnResult()
 
-            conversationHistory.add(ChatMessage("user", query))
+                conversationHistory.add(ChatMessage("user", query))
 
-            val activeRunner = checkNotNull(runner) { "Local model session is not initialized" }
+                val activeRunner = checkNotNull(runner) { "Local model session is not initialized" }
 
-            if (activeRunner.isModelLoaded) {
                 val fullTextBuilder = StringBuilder()
                 // Buffer the turn so protocol JSON never reaches speech or the transcript.
                 activeRunner.generateStream(query).collect { chunk -> fullTextBuilder.append(chunk) }
@@ -273,38 +405,34 @@ internal class LocalLlmEngine(
                 }
                 onDelta(response)
                 conversationHistory.add(ChatMessage("assistant", response))
-                return@withContext EngineTurnResult(assistantText = response)
+                EngineTurnResult(assistantText = response)
             }
-
-            // Conversational streaming generation fallback.
-            val response = generateConversationalResponse(query)
-            val fragments = splitSentenceFragments(response)
-            fragments.forEach { fragment ->
-                onDelta(fragment)
-            }
-            conversationHistory.add(ChatMessage("assistant", response))
-            EngineTurnResult(assistantText = response)
         }
 
     override suspend fun injectContext(text: String) {
-        injectedContexts.add(text)
-        conversationHistory.add(ChatMessage("system", "Context update: $text"))
+        nativeOperation.withLock {
+            // A service update queued behind native work can outlive the voice session.
+            if (closed.get()) return
+            injectedContexts.add(text)
+            conversationHistory.add(ChatMessage("system", "Context update: $text"))
+        }
     }
 
     override fun close() {
-        runner?.close()
-        runner = null
-        conversationHistory.clear()
-        injectedContexts.clear()
-        sessionContext = null
+        // Terminal and immediately unready; deletion waits for in-flight native operations on IO.
+        // The engine owns cleanup independently of voice-session coroutine cancellation.
+        closed.set(true)
+        cleanup.start()
+    }
+
+    // Await disposal, including an in-flight initialization/turn, before allocating a replacement owner.
+    // Turns must finish: cancelling LiteRT's Flow collector does not stop native inference.
+    suspend fun closeAndJoin() {
+        close()
+        cleanup.await()
     }
 
     private fun formatSystemPrompt(context: EngineSessionContext): String {
-        val baseInstruction =
-            context.systemInstruction.ifEmpty {
-                "You are Go Mode, an on-device AI assistant running locally on Google Pixel 8 Pro. " +
-                    "Keep answers terse and helpful."
-            }
         val tools =
             buildJsonArray {
                 context.tools.forEach { tool ->
@@ -318,7 +446,10 @@ internal class LocalLlmEngine(
                 }
             }
         return buildString {
-            append(baseInstruction)
+            append(context.systemInstruction)
+            if (context.serviceContextText.isNotBlank()) {
+                append("\nService context: ").append(context.serviceContextText)
+            }
             append("\nAvailable tools: ").append(tools)
             append("\nLanguage: ").append(context.languageTag)
             append("\nTo call a tool, reply only with TOOL_CALL: {\"name\":\"<tool_name>\",\"arguments\":{...}}.")
@@ -369,44 +500,5 @@ internal class LocalLlmEngine(
         }
         val message = obj["message"] ?: obj["status"]
         return if (message is JsonPrimitive && message.isString) message.content else "Completed."
-    }
-
-    private fun generateConversationalResponse(query: String): String {
-        val lower = query.lowercase(Locale.ROOT)
-        return when {
-            lower.contains("hello") || lower.contains("hi") -> {
-                "Hello! How can I assist you on your Pixel 8 Pro today?"
-            }
-
-            lower.contains("who are you") || lower.contains("what model") -> {
-                "I am a compact Gemma model running 100% locally on your Google Pixel 8 Pro via LiteRT-LM."
-            }
-
-            lower.contains("time") -> {
-                "Please check your device clock for the precise local time."
-            }
-
-            else -> {
-                "Understood. $query. Let me know if you would like to run any actions or tools."
-            }
-        }
-    }
-
-    private fun splitSentenceFragments(text: String): List<String> {
-        val list = mutableListOf<String>()
-        var start = 0
-        for (i in text.indices) {
-            val c = text[i]
-            if (c == '.' || c == '!' || c == '?' || c == '\n') {
-                val frag = text.substring(start, i + 1).trim()
-                if (frag.isNotEmpty()) list.add(frag)
-                start = i + 1
-            }
-        }
-        if (start < text.length) {
-            val remaining = text.substring(start).trim()
-            if (remaining.isNotEmpty()) list.add(remaining)
-        }
-        return if (list.isEmpty()) listOf(text) else list
     }
 }
