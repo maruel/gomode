@@ -182,4 +182,41 @@ class SettingsRepositoryTest {
 
             assertEquals(VoiceMode.DEVICE, updated.voiceMode)
         }
+
+    @Test
+    fun `on-device voice engine defaults to remote gateway and persists engine changes`() =
+        runBlocking {
+            val store = InMemoryPreferencesDataStore()
+            val repo = SettingsRepository(store)
+            val initial = repo.awaitSettings("default engine")
+            assertEquals(OnDeviceEngine.REMOTE_GATEWAY, initial.onDeviceEngine)
+
+            repo.updateOnDeviceEngine(OnDeviceEngine.NEUDECIDE)
+            val neudecide =
+                repo.awaitSettings("neudecide engine") {
+                    it.onDeviceEngine == OnDeviceEngine.NEUDECIDE
+                }
+            assertEquals(OnDeviceEngine.NEUDECIDE, neudecide.onDeviceEngine)
+
+            val reopened = SettingsRepository(store)
+            val reopenedState =
+                reopened.awaitSettings("reopened engine") {
+                    it.onDeviceEngine == OnDeviceEngine.NEUDECIDE
+                }
+            assertEquals(OnDeviceEngine.NEUDECIDE, reopenedState.onDeviceEngine)
+
+            repo.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+            val localLlm =
+                repo.awaitSettings("local llm engine") {
+                    it.onDeviceEngine == OnDeviceEngine.LOCAL_LLM
+                }
+            assertEquals(OnDeviceEngine.LOCAL_LLM, localLlm.onDeviceEngine)
+
+            repo.updateOnDeviceEngine(OnDeviceEngine.NEEDLE_WHISTLE)
+            val needle =
+                repo.awaitSettings("needle whistle engine") {
+                    it.onDeviceEngine == OnDeviceEngine.NEEDLE_WHISTLE
+                }
+            assertEquals(OnDeviceEngine.NEEDLE_WHISTLE, needle.onDeviceEngine)
+        }
 }

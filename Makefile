@@ -41,6 +41,7 @@ help:
 	@printf '  %-27s - %s\n' 'make screenshots-check' 'Compare native Android captures with committed baselines'
 	@printf '  %-27s - %s\n' 'make screenshots-generate' 'Render native captures once without baseline checks'
 	@printf '  %-27s - %s\n' 'make android-push' 'Build and install Go Mode on connected devices'
+	@printf '  %-27s - %s\n' 'make android-push-model' 'Push LiteRT-LM model weights to a connected device'
 	@printf '  %-27s - %s\n' 'make android-setup-emulator' 'Install emulator image and create the test AVD'
 	@printf '  %-27s - %s\n' 'make android-start-emulator' 'Start or reuse the Android emulator'
 	@printf '  %-27s - %s\n' 'make android-stop-emulator' 'Stop the Android emulator'
@@ -125,6 +126,10 @@ android-stop-emulator:
 # Slow: compiles, checks, installs, and launches the app on a connected device.
 android-push: android-check
 	@python3 scripts/android_push.py
+
+# Pushes LiteRT-LM model weights to /data/local/tmp/llm/ on a connected device.
+android-push-model:
+	@python3 scripts/android_push_model.py
 
 # Slow: starts or reuses an emulator and runs shell behavior on a hosted fixture.
 android-e2e:

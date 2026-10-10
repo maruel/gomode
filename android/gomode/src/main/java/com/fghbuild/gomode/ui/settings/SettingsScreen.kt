@@ -37,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.VoiceMode
@@ -199,6 +200,9 @@ fun SettingsScreen(
             HorizontalDivider()
             if (voiceSessionActive) Text("End the voice session before changing voice settings.")
             VoiceModeSetting(settings.voiceMode, settingsRepository, enabled = !voiceSessionActive)
+            if (settings.voiceMode == VoiceMode.DEVICE) {
+                OnDeviceEngineSetting(settings.onDeviceEngine, settingsRepository, enabled = !voiceSessionActive)
+            }
             VoiceLanguageSetting(settings, settingsRepository, enabled = !voiceSessionActive)
             HorizontalDivider()
             Text("Halo", style = MaterialTheme.typography.titleMedium)
@@ -245,6 +249,50 @@ private fun VoiceModeSetting(
             enabled = enabled,
             label = { Text("On-device voice") },
             modifier = Modifier.testTag("gomode-voice-mode-device"),
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun OnDeviceEngineSetting(
+    engine: OnDeviceEngine,
+    repository: SettingsRepository,
+    enabled: Boolean,
+) {
+    val scope = rememberCoroutineScope()
+    Text("On-device engine", style = MaterialTheme.typography.titleMedium)
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        FilterChip(
+            selected = engine == OnDeviceEngine.REMOTE_GATEWAY,
+            onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.REMOTE_GATEWAY) } },
+            enabled = enabled,
+            label = { Text("Remote gateway") },
+            modifier = Modifier.testTag("gomode-engine-remote-gateway"),
+        )
+        FilterChip(
+            selected = engine == OnDeviceEngine.NEUDECIDE,
+            onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.NEUDECIDE) } },
+            enabled = enabled,
+            label = { Text("NeuDecide") },
+            modifier = Modifier.testTag("gomode-engine-neudecide"),
+        )
+        FilterChip(
+            selected = engine == OnDeviceEngine.LOCAL_LLM,
+            onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM) } },
+            enabled = enabled,
+            label = { Text("Local LLM") },
+            modifier = Modifier.testTag("gomode-engine-local-llm"),
+        )
+        FilterChip(
+            selected = engine == OnDeviceEngine.NEEDLE_WHISTLE,
+            onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.NEEDLE_WHISTLE) } },
+            enabled = enabled,
+            label = { Text("Whistle + Needle") },
+            modifier = Modifier.testTag("gomode-engine-needle-whistle"),
         )
     }
 }

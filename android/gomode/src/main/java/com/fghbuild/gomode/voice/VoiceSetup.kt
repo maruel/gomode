@@ -28,6 +28,19 @@ internal data class VoiceSetup(
     val serviceContextText: String,
 )
 
+/** Returns a standalone voice setup for offline or direct on-device engine execution. */
+internal fun standaloneVoiceSetup(): VoiceSetup =
+    VoiceSetup(
+        gatewayEndpointURL = "",
+        service = null,
+        tokenEndpointURL = null,
+        gatewayHeaders = emptyMap(),
+        mcpClient = McpClient("", "2024-11-05", { null }),
+        tools = emptyList(),
+        systemInstruction = "You are Go Mode running locally on Pixel 8 Pro.",
+        serviceContextText = "",
+    )
+
 /**
  * Resolves the active service for a voice session.
  *

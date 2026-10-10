@@ -14,6 +14,7 @@ import com.caic.voicegateway.sdk.v1.ToolResult
 import com.caic.voicegateway.sdk.v1.TurnState
 import com.caic.voicegateway.sdk.v1.TurnStatus
 import com.caic.voicegateway.sdk.v1.UserMessage
+import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.ui.web.FrontendVoiceTools
@@ -83,6 +84,9 @@ internal class DeviceVoiceSession(
     private val webSocketFactory: (Request, WebSocketListener) -> WebSocket = { request, listener ->
         deviceWebSocketClient.newWebSocket(request, listener)
     },
+    private val engineFactory: (OnDeviceEngine) -> OnDeviceVoiceEngine = { engineType ->
+        createOnDeviceEngine(appContext, engineType)
+    },
 ) : VoiceSessionController {
     private val json =
         Json {
@@ -98,6 +102,7 @@ internal class DeviceVoiceSession(
 
     private var connectJob: Job? = null
     private var webSocket: WebSocket? = null
+    private var engine: OnDeviceVoiceEngine? = null
     private var mcpClient: McpClient? = null
     private var frontendToolNames: Set<String> = emptySet()
     private var mcpTools: List<ToolDescriptor> = emptyList()
@@ -128,6 +133,8 @@ internal class DeviceVoiceSession(
         connectJob?.cancel()
         connectJob = null
         closeWebSocket()
+        engine?.close()
+        engine = null
         speech.stopListening()
         speech.stopSpeaking()
         pendingNotifications.clear()
@@ -145,6 +152,7 @@ internal class DeviceVoiceSession(
         }
         VoiceService.start(appContext)
         setStatus("Connecting…")
+        val engineType = settingsRepository.settings.value.onDeviceEngine
         connectJob =
             scope.launch {
                 try {
@@ -152,8 +160,12 @@ internal class DeviceVoiceSession(
                         try {
                             setupProvider()
                         } catch (e: VoiceSetupException) {
-                            if (ownsAttempt(attempt)) setError(e.message ?: "Voice setup failed")
-                            return@launch
+                            if (engineType == OnDeviceEngine.REMOTE_GATEWAY) {
+                                if (ownsAttempt(attempt)) setError(e.message ?: "Voice setup failed")
+                                return@launch
+                            } else {
+                                standaloneVoiceSetup()
+                            }
                         }
                     if (!ownsAttempt(attempt)) return@launch
                     mcpClient = setup.mcpClient
@@ -162,7 +174,11 @@ internal class DeviceVoiceSession(
                         setError("Could not start the voice call")
                         return@launch
                     }
-                    openWebSocket(attempt, setup)
+                    if (engineType == OnDeviceEngine.REMOTE_GATEWAY) {
+                        openWebSocket(attempt, setup)
+                    } else {
+                        openLocalEngine(attempt, setup, engineType)
+                    }
                 } catch (e: VoiceMcpAuthChangedException) {
                     if (ownsAttempt(attempt)) {
                         Log.i(TAG, "Service authentication changed during voice setup", e)
@@ -176,6 +192,38 @@ internal class DeviceVoiceSession(
                     if (ownsAttempt(attempt)) setError("Voice connection failed: ${e.message}")
                 }
             }
+    }
+
+    private suspend fun openLocalEngine(
+        attempt: Long,
+        setup: VoiceSetup,
+        engineType: OnDeviceEngine,
+    ) {
+        val localEngine = engineFactory(engineType)
+        this.engine = localEngine
+        val context =
+            EngineSessionContext(
+                languageTag = languageTag,
+                systemInstruction = setup.systemInstruction,
+                serviceContextText = setup.serviceContextText,
+                tools = mcpTools,
+                mcpClient = mcpClient,
+            )
+        setStatus("Initializing ${localEngine.descriptor.name}…")
+        localEngine.initialize(context)
+        if (!ownsAttempt(attempt)) {
+            localEngine.close()
+            return
+        }
+        frontendToolNames = FrontendVoiceTools.declarations.map { it.name }.toSet()
+        _state.update {
+            it.copy(connectStatus = null, connected = true, error = null)
+        }
+        callController.activate()
+        voiceModeChime.connected()
+        flushPendingNotifications()
+        turnIdle = true
+        speak("Ready")
     }
 
     private fun openWebSocket(
@@ -417,7 +465,111 @@ internal class DeviceVoiceSession(
                 transcript = it.transcript + TranscriptEntry(TranscriptSpeaker.USER, text, final = true),
             )
         }
-        sendUserMessage(text)
+        val currentEngine = engine
+        if (currentEngine != null && currentEngine.engineType != OnDeviceEngine.REMOTE_GATEWAY) {
+            executeLocalTurn(attempt, text, currentEngine)
+        } else {
+            sendUserMessage(text)
+        }
+    }
+
+    private fun executeLocalTurn(
+        attempt: Long,
+        text: String,
+        activeEngine: OnDeviceVoiceEngine,
+    ) {
+        scope.launch {
+            if (!ownsAttempt(attempt)) return@launch
+            _state.update { it.copy(turnState = TurnState.Thinking) }
+            try {
+                activeEngine.processTurn(
+                    input = UserTurnInput(text = text),
+                    onDelta = { delta ->
+                        if (ownsAttempt(attempt)) {
+                            handleAssistantText(delta)
+                        }
+                    },
+                    onToolCall = { toolCall ->
+                        if (ownsAttempt(attempt)) {
+                            handleToolCallLocal(toolCall, attempt)
+                        } else {
+                            null
+                        }
+                    },
+                )
+                if (ownsAttempt(attempt)) {
+                    speak(segmenter.flush())
+                    turnIdle = true
+                    _state.update { it.copy(turnState = TurnState.Idle) }
+                    maybeStartListening()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (
+                @Suppress("TooGenericExceptionCaught") e: Exception,
+            ) {
+                if (ownsAttempt(attempt)) {
+                    setError("Voice turn failed: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private suspend fun handleToolCallLocal(
+        msg: ToolCall,
+        attempt: Long,
+    ): JsonElement? {
+        if (!ownsAttempt(attempt)) return null
+        val name = msg.name
+        if (name == HANG_UP_TOOL_NAME) {
+            Log.i(TAG, "Voice hang-up requested")
+            disconnect()
+            return null
+        }
+        try {
+            _state.update { it.copy(activeTool = name) }
+            val args = msg.args as? JsonObject ?: JsonObject(emptyMap())
+            val frontendResult =
+                FrontendVoiceTools.execute(name, args) {
+                    ownsAttempt(attempt)
+                }
+            if (frontendResult != null) {
+                if (!ownsAttempt(attempt)) return null
+                _state.update { it.copy(activeTool = null) }
+                return frontendResult
+            }
+            val client = mcpClient
+            if (client == null) {
+                _state.update { it.copy(activeTool = null) }
+                return errorJson("No MCP client")
+            }
+            require(name !in frontendToolNames) { "Frontend voice tool is unavailable: $name" }
+            val result = client.callTool(name, args)
+            if (!ownsAttempt(attempt)) return null
+            _state.update { it.copy(activeTool = null) }
+            if (result.isError) {
+                val errMsg = result.structuredContent["error"]?.jsonPrimitive?.content ?: "Tool error"
+                Log.e(TAG, "Tool $name failed: $errMsg")
+                _state.update {
+                    it.copy(
+                        transcript =
+                            it.transcript +
+                                TranscriptEntry(TranscriptSpeaker.ASSISTANT, "[$name] $errMsg", final = true),
+                    )
+                }
+            }
+            return result.structuredContent
+        } catch (e: CancellationException) {
+            throw e
+        } catch (
+            @Suppress("TooGenericExceptionCaught") e: Exception,
+        ) {
+            if (!ownsAttempt(attempt)) return null
+            _state.update { it.copy(activeTool = null) }
+            val errMsg = e.message ?: "Unknown error"
+            Log.e(TAG, "Tool $name threw: $errMsg", e)
+            return errorJson(errMsg)
+        }
     }
 
     private suspend fun handleToolCall(
@@ -491,6 +643,8 @@ internal class DeviceVoiceSession(
         connectJob?.cancel()
         connectJob = null
         closeWebSocket()
+        engine?.close()
+        engine = null
         speech.stopListening()
         speech.stopSpeaking()
         pendingNotifications.clear()
@@ -513,6 +667,8 @@ internal class DeviceVoiceSession(
         connectJob?.cancel()
         connectJob = null
         closeWebSocket()
+        engine?.close()
+        engine = null
         speech.stopListening()
         speech.stopSpeaking()
         pendingSpeech = 0
@@ -559,7 +715,12 @@ internal class DeviceVoiceSession(
             pendingNotifications.add(text)
             return
         }
-        sendContextUpdate(text)
+        val currentEngine = engine
+        if (currentEngine != null && currentEngine.engineType != OnDeviceEngine.REMOTE_GATEWAY) {
+            scope.launch { currentEngine.injectContext(text) }
+        } else {
+            sendContextUpdate(text)
+        }
     }
 
     override fun close() {
@@ -572,7 +733,12 @@ internal class DeviceVoiceSession(
         if (pendingNotifications.isEmpty()) return
         val text = pendingNotifications.joinToString("\n")
         pendingNotifications.clear()
-        sendContextUpdate(text)
+        val currentEngine = engine
+        if (currentEngine != null && currentEngine.engineType != OnDeviceEngine.REMOTE_GATEWAY) {
+            scope.launch { currentEngine.injectContext(text) }
+        } else {
+            sendContextUpdate(text)
+        }
     }
 
     private fun setStatus(status: String) {

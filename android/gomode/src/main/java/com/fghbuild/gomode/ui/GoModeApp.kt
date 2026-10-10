@@ -134,7 +134,14 @@ fun GoModeApp(settingsRepository: SettingsRepository) {
     val voiceMode = settings.voiceMode
     val voiceCallController = remember(context.applicationContext) { TelecomCallController(context.applicationContext) }
     val voiceSession: VoiceSessionController =
-        remember(settingsRepository, bearerStore, voiceMode, settings.voiceLanguageTag, voiceCallController) {
+        remember(
+            settingsRepository,
+            bearerStore,
+            voiceMode,
+            settings.voiceLanguageTag,
+            voiceCallController,
+            settings.onDeviceEngine,
+        ) {
             when (voiceMode) {
                 VoiceMode.DEVICE -> {
                     DeviceVoiceSession(

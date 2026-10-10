@@ -22,6 +22,10 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters += setOf("arm64-v8a", "x86_64")
+        }
     }
 
     buildTypes {
@@ -45,6 +49,7 @@ android {
     @Suppress("DEPRECATION")
     kotlinOptions {
         jvmTarget = "17"
+        freeCompilerArgs += listOf("-Xskip-metadata-version-check")
     }
 
     buildFeatures {
@@ -115,6 +120,7 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.graphics.path)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.core.telecom)
     implementation(libs.androidx.webkit)
@@ -123,6 +129,11 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
     implementation(libs.stream.webrtc)
+    implementation(libs.onnxruntime.android)
+    implementation(libs.litertlm.android) {
+        exclude(group = "org.jetbrains.kotlin")
+        exclude(group = "org.jetbrains.kotlinx")
+    }
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

@@ -4,11 +4,13 @@ package com.fghbuild.gomode.voice
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
+import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import okhttp3.Protocol
@@ -20,6 +22,7 @@ import okio.ByteString
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -311,21 +314,167 @@ class DeviceVoiceSessionTest {
         assertEquals("tail", segmenter.flush())
     }
 
+    @Test
+    fun `on-device voice session connects and runs turn with NeuDecide without network websocket`() =
+        runBlocking {
+            val speech = FakeSpeech()
+            var webSocketOpened = false
+            val repo = SettingsRepository(InMemoryPreferencesDataStore())
+            repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
+            repo.updateOnDeviceEngine(OnDeviceEngine.NEUDECIDE)
+
+            val session =
+                createSession(
+                    speech = speech,
+                    settingsRepo = repo,
+                    factory = { _, _ ->
+                        webSocketOpened = true
+                        FakeWebSocket()
+                    },
+                )
+
+            session.connect()
+            assertTrue("session connects", session.state.value.connected)
+            assertFalse("must not open network websocket in local engine mode", webSocketOpened)
+            assertEquals("speaks initial greeting", listOf("Ready"), speech.spoken)
+            assertTrue("starts listening after greeting", speech.listening)
+
+            val onResult = requireNotNull(speech.resultCallback)
+            onResult("Hello")
+            assertTrue(speech.spoken.any { it.contains("Pixel 8 Pro") })
+            assertTrue("resumes listening after turn", speech.listening)
+
+            session.disconnect()
+            assertFalse(session.state.value.connected)
+            session.close()
+        }
+
+    @Test
+    fun `on-device voice session runs local LLM engine with streaming text deltas`() =
+        runBlocking {
+            val speech = FakeSpeech()
+            val repo = SettingsRepository(InMemoryPreferencesDataStore())
+            repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
+            repo.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+
+            val session = createSession(speech = speech, settingsRepo = repo)
+            session.connect()
+            assertTrue(session.state.value.connected)
+
+            val onResult = requireNotNull(speech.resultCallback)
+            onResult("What model are you?")
+            assertTrue(
+                speech.spoken.any {
+                    it.contains("Pixel 8 Pro") &&
+                        (it.contains("Gemma") || it.contains("LiteRT-LM"))
+                },
+            )
+
+            session.disconnect()
+            session.close()
+        }
+
+    @Test
+    fun `on-device voice session runs Needle Whistle engine with confidence threshold tool dispatch`() =
+        runBlocking {
+            val speech = FakeSpeech()
+            val repo = SettingsRepository(InMemoryPreferencesDataStore())
+            repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
+            repo.updateOnDeviceEngine(OnDeviceEngine.NEEDLE_WHISTLE)
+
+            var turnProcessed = false
+            val session =
+                createSession(
+                    speech = speech,
+                    settingsRepo = repo,
+                    engineFactory = { engineType ->
+                        object : OnDeviceVoiceEngine {
+                            override val engineType = engineType
+
+                            override suspend fun initialize(context: EngineSessionContext) = Unit
+
+                            override suspend fun processTurn(
+                                input: UserTurnInput,
+                                onDelta: (String) -> Unit,
+                                onToolCall: suspend (
+                                    com.caic.voicegateway.sdk.v1.ToolCall,
+                                ) -> kotlinx.serialization.json.JsonElement?,
+                            ): EngineTurnResult {
+                                onDelta("Recognized: hang up (confidence: 0.95). Executing hang_up…")
+                                onToolCall(
+                                    com.caic.voicegateway.sdk.v1.ToolCall(
+                                        kind = com.caic.voicegateway.sdk.v1.MessageKind.ToolCall,
+                                        id = "test-call-1",
+                                        name = HANG_UP_TOOL_NAME,
+                                        args = kotlinx.serialization.json.JsonObject(emptyMap()),
+                                    ),
+                                )
+                                turnProcessed = true
+                                return EngineTurnResult(assistantText = "Done")
+                            }
+
+                            override suspend fun injectContext(text: String) = Unit
+
+                            override fun close() = Unit
+                        }
+                    },
+                )
+
+            session.connect()
+            val onResult = requireNotNull(speech.resultCallback)
+            onResult("hang up the call")
+            assertTrue("engine processed turn", turnProcessed)
+            assertFalse("hang up tool disconnected session", session.state.value.connected)
+            session.close()
+        }
+
+    @Test
+    fun `offline fallback runs on-device engine when remote gateway setup fails`() =
+        runBlocking {
+            val speech = FakeSpeech()
+            val repo = SettingsRepository(InMemoryPreferencesDataStore())
+            repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
+            repo.updateOnDeviceEngine(OnDeviceEngine.NEUDECIDE)
+
+            val session =
+                createSession(
+                    speech = speech,
+                    settingsRepo = repo,
+                    setupProvider = {
+                        throw VoiceSetupException("Gateway unreachable / offline")
+                    },
+                )
+
+            session.connect()
+            assertTrue("connects using standalone offline setup", session.state.value.connected)
+            assertNull("no error reported", session.state.value.error)
+            assertEquals(listOf("Ready"), speech.spoken)
+
+            session.disconnect()
+            session.close()
+        }
+
     private fun createSession(
         speech: DeviceSpeech,
         calls: VoiceCallController = NoopVoiceCallController(),
         languageTag: String = "en-US",
-        factory: (Request, WebSocketListener) -> WebSocket,
+        settingsRepo: SettingsRepository = SettingsRepository(InMemoryPreferencesDataStore()),
+        engineFactory: (OnDeviceEngine) -> OnDeviceVoiceEngine = {
+            createOnDeviceEngine(RuntimeEnvironment.getApplication(), it)
+        },
+        setupProvider: suspend () -> VoiceSetup = { testSetup() },
+        factory: (Request, WebSocketListener) -> WebSocket = { _, _ -> FakeWebSocket() },
     ): DeviceVoiceSession =
         DeviceVoiceSession(
             appContext = RuntimeEnvironment.getApplication(),
-            settingsRepository = SettingsRepository(InMemoryPreferencesDataStore()),
+            settingsRepository = settingsRepo,
             speech = speech,
             languageTag = languageTag,
             voiceChimePlayer = NoopChime(),
             callController = calls,
-            setupProvider = { testSetup() },
+            setupProvider = setupProvider,
             webSocketFactory = factory,
+            engineFactory = engineFactory,
         )
 
     private fun testSetup(): VoiceSetup =
@@ -354,6 +503,7 @@ class DeviceVoiceSessionTest {
         var listening = false
         var listeningStarts = 0
         var idle: (() -> Unit)? = null
+        var resultCallback: ((String) -> Unit)? = null
 
         override fun isAvailable(): Boolean = true
 
@@ -364,12 +514,14 @@ class DeviceVoiceSessionTest {
         ) {
             listeningStarts++
             listening = true
+            resultCallback = onResult
             idle = onIdle
         }
 
         override fun stopListening() {
             listening = false
             idle = null
+            resultCallback = null
         }
 
         override fun speak(

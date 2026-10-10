@@ -36,6 +36,21 @@ enum class VoiceMode {
     DEVICE,
 }
 
+/** OnDeviceEngine selects which engine handles turns in on-device voice mode. */
+enum class OnDeviceEngine {
+    /** LOCAL_LLM runs a compact conversational model locally on device. */
+    LOCAL_LLM,
+
+    /** NEEDLE_WHISTLE runs Whistle biased ASR with Needle engram action matching. */
+    NEEDLE_WHISTLE,
+
+    /** NEUDECIDE runs direct ONNX speech-to-action inference for sub-100ms tool execution. */
+    NEUDECIDE,
+
+    /** REMOTE_GATEWAY delegates turn execution to the voice gateway over WebSocket. */
+    REMOTE_GATEWAY,
+}
+
 const val DEFAULT_VOICE_LANGUAGE_TAG = "en-US"
 
 data class SettingsState(
@@ -46,6 +61,7 @@ data class SettingsState(
     val activeServiceId: String = "",
     val voiceMode: VoiceMode = VoiceMode.CLOUD,
     val voiceLanguageTag: String = DEFAULT_VOICE_LANGUAGE_TAG,
+    val onDeviceEngine: OnDeviceEngine = OnDeviceEngine.REMOTE_GATEWAY,
 )
 
 class SettingsRepository(
@@ -61,6 +77,7 @@ class SettingsRepository(
         val HALO_AUTO_CONNECT = booleanPreferencesKey("HALO_AUTO_CONNECT")
         val VOICE_MODE = stringPreferencesKey("VOICE_MODE")
         val VOICE_LANGUAGE_TAG = stringPreferencesKey("VOICE_LANGUAGE_TAG")
+        val ON_DEVICE_VOICE_ENGINE = stringPreferencesKey("ON_DEVICE_VOICE_ENGINE")
     }
 
     val settings: StateFlow<SettingsState> =
@@ -77,6 +94,7 @@ class SettingsRepository(
                     activeServiceId = active?.id ?: "",
                     voiceMode = decodeVoiceMode(prefs[Keys.VOICE_MODE]),
                     voiceLanguageTag = prefs[Keys.VOICE_LANGUAGE_TAG] ?: DEFAULT_VOICE_LANGUAGE_TAG,
+                    onDeviceEngine = decodeOnDeviceEngine(prefs[Keys.ON_DEVICE_VOICE_ENGINE]),
                 )
             }.stateIn(scope, SharingStarted.Eagerly, SettingsState())
 
@@ -158,6 +176,10 @@ class SettingsRepository(
         dataStore.edit { prefs -> prefs[Keys.VOICE_LANGUAGE_TAG] = normalized }
     }
 
+    suspend fun updateOnDeviceEngine(engine: OnDeviceEngine) {
+        dataStore.edit { prefs -> prefs[Keys.ON_DEVICE_VOICE_ENGINE] = engine.name }
+    }
+
     private fun decodeServices(prefs: Preferences): List<ServiceInstance> =
         prefs[Keys.SERVICES]?.let { encoded ->
             runCatching { json.decodeFromString<List<ServiceInstance>>(encoded) }.getOrNull()
@@ -165,6 +187,9 @@ class SettingsRepository(
 
     private fun decodeVoiceMode(value: String?): VoiceMode =
         VoiceMode.entries.firstOrNull { it.name == value } ?: VoiceMode.CLOUD
+
+    private fun decodeOnDeviceEngine(value: String?): OnDeviceEngine =
+        OnDeviceEngine.entries.firstOrNull { it.name == value } ?: OnDeviceEngine.REMOTE_GATEWAY
 
     companion object {
         const val DEFAULT_SERVICE_LABEL = "Service"

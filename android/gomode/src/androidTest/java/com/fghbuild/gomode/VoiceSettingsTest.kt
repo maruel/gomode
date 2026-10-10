@@ -16,6 +16,7 @@ import androidx.compose.ui.test.performTextReplacement
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
+import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.VoiceMode
@@ -88,6 +89,48 @@ class VoiceSettingsTest {
         composeRule.onNodeWithTag("gomode-save-voice-language").performScrollTo().assertIsEnabled()
         composeRule.runOnIdle { active.value = true }
         composeRule.onNodeWithTag("gomode-save-voice-language").assertIsNotEnabled()
+    }
+
+    @Test
+    fun onDeviceEngineChipsSaveSelectionAndDisableDuringAnActiveSession() {
+        val active = mutableStateOf(false)
+        val store = MemoryPreferences()
+        val repository = SettingsRepository(store)
+        composeRule.setContent {
+            val settings by repository.settings.collectAsState()
+            MaterialTheme {
+                SettingsScreen(
+                    settings = settings,
+                    settingsRepository = repository,
+                    voiceSessionActive = active.value,
+                    onDone = {},
+                    onOpenHalo = {},
+                )
+            }
+        }
+        // Switch to device voice mode to reveal engine selection chips.
+        composeRule.onNodeWithTag("gomode-voice-mode-device").performScrollTo().performClick()
+        composeRule.waitUntil { repository.settings.value.voiceMode == VoiceMode.DEVICE }
+
+        // Initial default engine is remote gateway.
+        composeRule.onNodeWithTag("gomode-engine-remote-gateway").performScrollTo().assertIsSelected()
+
+        // Select NeuDecide.
+        composeRule.onNodeWithTag("gomode-engine-neudecide").performScrollTo().performClick()
+        composeRule.waitUntil { repository.settings.value.onDeviceEngine == OnDeviceEngine.NEUDECIDE }
+        composeRule.onNodeWithTag("gomode-engine-neudecide").assertIsSelected()
+
+        // Verify chips disable during an active voice session.
+        composeRule.runOnIdle { active.value = true }
+        composeRule.onNodeWithTag("gomode-engine-remote-gateway").performScrollTo().assertIsNotEnabled()
+        composeRule.onNodeWithTag("gomode-engine-neudecide").assertIsNotEnabled()
+        composeRule.onNodeWithTag("gomode-engine-local-llm").assertIsNotEnabled()
+        composeRule.onNodeWithTag("gomode-engine-needle-whistle").assertIsNotEnabled()
+
+        composeRule.runOnIdle { active.value = false }
+        composeRule.onNodeWithTag("gomode-engine-local-llm").performScrollTo().performClick()
+        composeRule.waitUntil { repository.settings.value.onDeviceEngine == OnDeviceEngine.LOCAL_LLM }
+        composeRule.onNodeWithTag("gomode-engine-local-llm").assertIsSelected()
     }
 
     private class MemoryPreferences : DataStore<Preferences> {
