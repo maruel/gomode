@@ -20,6 +20,7 @@ import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.ui.web.FrontendVoiceTools
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -29,6 +30,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -84,8 +86,9 @@ internal class DeviceVoiceSession(
     private val webSocketFactory: (Request, WebSocketListener) -> WebSocket = { request, listener ->
         deviceWebSocketClient.newWebSocket(request, listener)
     },
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val engineFactory: (OnDeviceEngine) -> OnDeviceVoiceEngine = { engineType ->
-        createOnDeviceEngine(appContext, engineType)
+        createOnDeviceEngine(appContext, engineType, ioDispatcher)
     },
 ) : VoiceSessionController {
     private val json =
@@ -199,7 +202,7 @@ internal class DeviceVoiceSession(
         setup: VoiceSetup,
         engineType: OnDeviceEngine,
     ) {
-        val localEngine = engineFactory(engineType)
+        val localEngine = withContext(ioDispatcher) { engineFactory(engineType) }
         this.engine = localEngine
         val context =
             EngineSessionContext(
@@ -209,10 +212,13 @@ internal class DeviceVoiceSession(
                 tools = mcpTools,
                 mcpClient = mcpClient,
             )
-        setStatus("Initializing ${localEngine.descriptor.name}…")
-        localEngine.initialize(context)
+        val modelDisplay = localEngine.modelName ?: localEngine.descriptor.name
+        setStatus("Loading $modelDisplay…")
+        withContext(ioDispatcher) {
+            localEngine.initialize(context)
+        }
         if (!ownsAttempt(attempt)) {
-            localEngine.close()
+            withContext(ioDispatcher) { localEngine.close() }
             return
         }
         frontendToolNames = FrontendVoiceTools.declarations.map { it.name }.toSet()

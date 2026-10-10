@@ -13,9 +13,12 @@ import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -25,6 +28,68 @@ import java.util.Locale
 import java.util.UUID
 
 private const val TAG = "LocalLlmEngine"
+
+internal fun resolveModelName(
+    context: Context,
+    explicitModelPath: String? = null,
+): String {
+    val metaFile = File("/data/local/tmp/llm/model_name.txt")
+    if (metaFile.exists()) {
+        val raw = runCatching { metaFile.readText().trim() }.getOrNull()
+        if (!raw.isNullOrEmpty()) {
+            return formatModelName(raw)
+        }
+    }
+    if (explicitModelPath != null) {
+        val file = File(explicitModelPath)
+        if (file.exists()) {
+            return formatModelName(file.nameWithoutExtension)
+        }
+    }
+    val appCandidates = listOf("gemma.litertlm", "model.litertlm", "gemma.task")
+    for (name in appCandidates) {
+        if (File(context.filesDir, "models/$name").exists()) {
+            return "Gemma 4"
+        }
+    }
+    if (File("/data/local/tmp/llm/model.litertlm").exists()) {
+        return "Gemma 4 E2B"
+    }
+    return "Gemma 4"
+}
+
+internal fun formatModelName(raw: String): String {
+    val clean = raw.removeSuffix(".litertlm").removeSuffix(".task")
+    return when {
+        clean.contains("gemma-4-E2B", ignoreCase = true) || clean.contains("gemma-4-e2b", ignoreCase = true) -> {
+            "Gemma 4 E2B"
+        }
+
+        clean.contains("gemma-4-E4B", ignoreCase = true) || clean.contains("gemma-4-e4b", ignoreCase = true) -> {
+            "Gemma 4 E4B"
+        }
+
+        clean.contains("gemma3-1b", ignoreCase = true) -> {
+            "Gemma 3 1B"
+        }
+
+        clean.contains("gemma-4", ignoreCase = true) -> {
+            "Gemma 4"
+        }
+
+        clean.contains("gemma", ignoreCase = true) -> {
+            "Gemma"
+        }
+
+        clean.contains("qwen", ignoreCase = true) -> {
+            "Qwen"
+        }
+
+        else -> {
+            clean
+        }
+    }
+}
 
 /**
  * Interface abstracting Google AI Edge LiteRT-LM for testability.
@@ -136,8 +201,15 @@ internal class LiteRtLmRunner(
 internal class LocalLlmEngine(
     private val context: Context,
     private val runnerFactory: (Context) -> EdgeLlmRunner = { LiteRtLmRunner(it) },
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : OnDeviceVoiceEngine {
     override val engineType: OnDeviceEngine = OnDeviceEngine.LOCAL_LLM
+
+    override val modelName: String
+        get() = resolveModelName(context)
+
+    override val isModelLoaded: Boolean
+        get() = runner?.isModelLoaded == true
 
     private var sessionContext: EngineSessionContext? = null
     private var runner: EdgeLlmRunner? = null
@@ -150,93 +222,96 @@ internal class LocalLlmEngine(
     )
 
     override suspend fun initialize(context: EngineSessionContext) {
-        this.sessionContext = context
-        conversationHistory.clear()
-        injectedContexts.clear()
-        runner?.close()
-        runner = runnerFactory(this.context)
-        conversationHistory.add(ChatMessage("system", formatSystemPrompt(context)))
-        Log.i(TAG, "Initialized LocalLlmEngine on Google Pixel 8 Pro with ${context.tools.size} tools")
+        withContext(ioDispatcher) {
+            this@LocalLlmEngine.sessionContext = context
+            conversationHistory.clear()
+            injectedContexts.clear()
+            runner?.close()
+            runner = runnerFactory(this@LocalLlmEngine.context)
+            conversationHistory.add(ChatMessage("system", formatSystemPrompt(context)))
+            Log.i(TAG, "Initialized LocalLlmEngine on Google Pixel 8 Pro with ${context.tools.size} tools")
+        }
     }
 
     override suspend fun processTurn(
         input: UserTurnInput,
         onDelta: (String) -> Unit,
         onToolCall: suspend (ToolCall) -> JsonElement?,
-    ): EngineTurnResult {
-        val query = input.text.trim()
-        if (query.isEmpty()) return EngineTurnResult()
+    ): EngineTurnResult =
+        withContext(ioDispatcher) {
+            val query = input.text.trim()
+            if (query.isEmpty()) return@withContext EngineTurnResult()
 
-        conversationHistory.add(ChatMessage("user", query))
+            conversationHistory.add(ChatMessage("user", query))
 
-        val activeRunner = runner ?: runnerFactory(context).also { runner = it }
+            val activeRunner = runner ?: runnerFactory(context).also { runner = it }
 
-        if (activeRunner.isModelLoaded) {
-            val prompt = formatLlmPrompt(query)
-            val fullTextBuilder = StringBuilder()
-            try {
-                activeRunner.generateStream(prompt).collect { chunk ->
-                    fullTextBuilder.append(chunk)
-                    onDelta(chunk)
-                }
-            } catch (
-                @Suppress("TooGenericExceptionCaught") e: Exception,
-            ) {
-                Log.w(TAG, "Inference error during Google AI Edge LiteRT-LM generation", e)
-            }
-            val response = fullTextBuilder.toString().trim()
-            if (response.isNotEmpty()) {
-                val toolCall = extractToolCallIfPresent(response, query)
-                if (toolCall != null) {
-                    val toolResult = onToolCall(toolCall)
-                    val conclusion = formatToolConclusion(toolResult)
-                    if (conclusion.isNotEmpty()) {
-                        onDelta(" $conclusion")
+            if (activeRunner.isModelLoaded) {
+                val prompt = formatLlmPrompt(query)
+                val fullTextBuilder = StringBuilder()
+                try {
+                    activeRunner.generateStream(prompt).collect { chunk ->
+                        fullTextBuilder.append(chunk)
+                        onDelta(chunk)
                     }
-                    val fullText = "$response $conclusion".trim()
-                    conversationHistory.add(ChatMessage("assistant", fullText))
-                    return EngineTurnResult(assistantText = fullText, toolCalls = listOf(toolCall))
+                } catch (
+                    @Suppress("TooGenericExceptionCaught") e: Exception,
+                ) {
+                    Log.w(TAG, "Inference error during Google AI Edge LiteRT-LM generation", e)
                 }
-                conversationHistory.add(ChatMessage("assistant", response))
-                return EngineTurnResult(assistantText = response)
+                val response = fullTextBuilder.toString().trim()
+                if (response.isNotEmpty()) {
+                    val toolCall = extractToolCallIfPresent(response, query)
+                    if (toolCall != null) {
+                        val toolResult = onToolCall(toolCall)
+                        val conclusion = formatToolConclusion(toolResult)
+                        if (conclusion.isNotEmpty()) {
+                            onDelta(" $conclusion")
+                        }
+                        val fullText = "$response $conclusion".trim()
+                        conversationHistory.add(ChatMessage("assistant", fullText))
+                        return@withContext EngineTurnResult(assistantText = fullText, toolCalls = listOf(toolCall))
+                    }
+                    conversationHistory.add(ChatMessage("assistant", response))
+                    return@withContext EngineTurnResult(assistantText = response)
+                }
             }
+
+            // Check if query targets an available tool via indexed matching.
+            val targetTool = findTargetTool(query)
+            if (targetTool != null) {
+                val toolCallId = UUID.randomUUID().toString()
+                val arguments =
+                    buildJsonObject {
+                        put("query", query)
+                    }
+                val call =
+                    ToolCall(
+                        kind = MessageKind.ToolCall,
+                        id = toolCallId,
+                        name = targetTool.name,
+                        args = arguments,
+                    )
+
+                onDelta("I'll run ${targetTool.name} for you.")
+                val result = onToolCall(call)
+                val conclusion = formatToolConclusion(result)
+                onDelta(" $conclusion")
+
+                val fullText = "I'll run ${targetTool.name} for you. $conclusion"
+                conversationHistory.add(ChatMessage("assistant", fullText))
+                return@withContext EngineTurnResult(assistantText = fullText, toolCalls = listOf(call))
+            }
+
+            // Conversational streaming generation fallback.
+            val response = generateConversationalResponse(query)
+            val fragments = splitSentenceFragments(response)
+            fragments.forEach { fragment ->
+                onDelta(fragment)
+            }
+            conversationHistory.add(ChatMessage("assistant", response))
+            EngineTurnResult(assistantText = response)
         }
-
-        // Check if query targets an available tool via indexed matching.
-        val targetTool = findTargetTool(query)
-        if (targetTool != null) {
-            val toolCallId = UUID.randomUUID().toString()
-            val arguments =
-                buildJsonObject {
-                    put("query", query)
-                }
-            val call =
-                ToolCall(
-                    kind = MessageKind.ToolCall,
-                    id = toolCallId,
-                    name = targetTool.name,
-                    args = arguments,
-                )
-
-            onDelta("I'll run ${targetTool.name} for you.")
-            val result = onToolCall(call)
-            val conclusion = formatToolConclusion(result)
-            onDelta(" $conclusion")
-
-            val fullText = "I'll run ${targetTool.name} for you. $conclusion"
-            conversationHistory.add(ChatMessage("assistant", fullText))
-            return EngineTurnResult(assistantText = fullText, toolCalls = listOf(call))
-        }
-
-        // Conversational streaming generation fallback.
-        val response = generateConversationalResponse(query)
-        val fragments = splitSentenceFragments(response)
-        fragments.forEach { fragment ->
-            onDelta(fragment)
-        }
-        conversationHistory.add(ChatMessage("assistant", response))
-        return EngineTurnResult(assistantText = response)
-    }
 
     override suspend fun injectContext(text: String) {
         injectedContexts.add(text)

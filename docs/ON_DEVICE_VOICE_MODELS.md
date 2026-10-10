@@ -328,6 +328,7 @@ Testing on a Google Pixel 8 Pro running production Android build `CP3A.261005.00
    - The library introduces a dedicated `Backend.GOOGLE_TENSOR` hardware accelerator targeting Tensor G3 silicon directly.
    - It exposes native Kotlin Coroutine Flows (`Conversation.sendMessageAsync` returning `Flow<Message>`) and native function calling (`ToolSet`, `ToolCall`).
    - Models run without any Google account enrollment or system updates. Developers download weights (such as Gemma 4 E2B/E4B or Gemma 2 2B) directly from Hugging Face or Kaggle in `.litertlm` container format.
+   - Model initialization and file mapping execute asynchronously on `Dispatchers.IO` to prevent UI thread blocking. The voice overlay displays the active model name (e.g. `Loading Gemma 4 E2B…`) while loading.
 
 3. **16 KB Page-Size Compliance on Android 15/16**:
    - Android 15 and 16 kernels on Pixel 8 Pro enforce 16 KB page-size ELF segment alignment on all loaded native `.so` binaries. Unaligned binaries trigger runtime warnings or process termination.

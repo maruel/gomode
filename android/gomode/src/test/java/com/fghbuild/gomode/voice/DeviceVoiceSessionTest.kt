@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -375,6 +376,56 @@ class DeviceVoiceSessionTest {
         }
 
     @Test
+    fun `shows model name in connect status while initializing local engine`() =
+        runBlocking {
+            val speech = FakeSpeech()
+            val repo = SettingsRepository(InMemoryPreferencesDataStore())
+            repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
+            repo.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+
+            var statusDuringInit: String? = null
+            var sessionRef: DeviceVoiceSession? = null
+
+            val fakeEngine =
+                object : OnDeviceVoiceEngine {
+                    override val engineType = OnDeviceEngine.LOCAL_LLM
+                    override val modelName = "Gemma 4 E2B"
+
+                    override suspend fun initialize(context: EngineSessionContext) {
+                        statusDuringInit = sessionRef?.state?.value?.connectStatus
+                    }
+
+                    override suspend fun processTurn(
+                        input: UserTurnInput,
+                        onDelta: (String) -> Unit,
+                        onToolCall: suspend (
+                            com.caic.voicegateway.sdk.v1.ToolCall,
+                        ) -> kotlinx.serialization.json.JsonElement?,
+                    ): EngineTurnResult = EngineTurnResult(assistantText = "Ready")
+
+                    override suspend fun injectContext(text: String) = Unit
+
+                    override fun close() = Unit
+                }
+
+            val session =
+                createSession(
+                    speech = speech,
+                    settingsRepo = repo,
+                    engineFactory = { fakeEngine },
+                )
+            sessionRef = session
+
+            session.connect()
+            assertEquals("Loading Gemma 4 E2B…", statusDuringInit)
+            assertTrue(session.state.value.connected)
+            assertNull(session.state.value.connectStatus)
+
+            session.disconnect()
+            session.close()
+        }
+
+    @Test
     fun `on-device voice session runs Needle Whistle engine with confidence threshold tool dispatch`() =
         runBlocking {
             val speech = FakeSpeech()
@@ -459,8 +510,9 @@ class DeviceVoiceSessionTest {
         calls: VoiceCallController = NoopVoiceCallController(),
         languageTag: String = "en-US",
         settingsRepo: SettingsRepository = SettingsRepository(InMemoryPreferencesDataStore()),
+        ioDispatcher: CoroutineDispatcher = Dispatchers.Unconfined,
         engineFactory: (OnDeviceEngine) -> OnDeviceVoiceEngine = {
-            createOnDeviceEngine(RuntimeEnvironment.getApplication(), it)
+            createOnDeviceEngine(RuntimeEnvironment.getApplication(), it, ioDispatcher)
         },
         setupProvider: suspend () -> VoiceSetup = { testSetup() },
         factory: (Request, WebSocketListener) -> WebSocket = { _, _ -> FakeWebSocket() },
@@ -474,6 +526,7 @@ class DeviceVoiceSessionTest {
             callController = calls,
             setupProvider = setupProvider,
             webSocketFactory = factory,
+            ioDispatcher = ioDispatcher,
             engineFactory = engineFactory,
         )
 

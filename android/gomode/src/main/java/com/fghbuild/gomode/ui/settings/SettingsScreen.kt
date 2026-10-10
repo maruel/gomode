@@ -284,7 +284,7 @@ private fun OnDeviceEngineSetting(
             selected = engine == OnDeviceEngine.LOCAL_LLM,
             onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM) } },
             enabled = enabled,
-            label = { Text("Local LLM") },
+            label = { Text("Gemma 4") },
             modifier = Modifier.testTag("gomode-engine-local-llm"),
         )
         FilterChip(

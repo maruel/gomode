@@ -7,6 +7,7 @@ import pathlib
 import posixpath
 import subprocess
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 
@@ -62,6 +63,11 @@ def push_model(adb: str, serial: str, local_path: pathlib.Path) -> None:
     subprocess.run([adb, "-s", serial, "shell", "mkdir", "-p", DEVICE_DIR], check=True)
     print(f"Pushing {local_path} ({local_path.stat().st_size} bytes) to {serial}:{dest_path}...", flush=True)
     subprocess.run([adb, "-s", serial, "push", str(local_path.resolve()), dest_path], check=True)
+
+    with tempfile.NamedTemporaryFile() as tmp:
+        tmp.write(local_path.stem.encode("utf-8"))
+        tmp.flush()
+        subprocess.run([adb, "-s", serial, "push", tmp.name, f"{DEVICE_DIR}/model_name.txt"], check=True)
 
     verification = subprocess.run(
         [adb, "-s", serial, "shell", "ls", "-l", dest_path],

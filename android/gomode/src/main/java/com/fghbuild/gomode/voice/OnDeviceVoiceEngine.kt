@@ -5,6 +5,8 @@ import android.content.Context
 import com.caic.voicegateway.sdk.v1.ToolCall
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 
@@ -24,10 +26,10 @@ fun OnDeviceEngine.descriptor(): EngineDescriptor =
         OnDeviceEngine.LOCAL_LLM -> {
             EngineDescriptor(
                 engine = this,
-                name = "Local LLM",
-                description = "Gemma on-device conversational model via LiteRT-LM (Backend.GOOGLE_TENSOR)",
+                name = "Gemma 4",
+                description = "Gemma 4 on-device conversational model via LiteRT-LM",
                 latencyBudgetMs = 250,
-                modelSizeMb = 85,
+                modelSizeMb = 2588,
             )
         }
 
@@ -92,6 +94,12 @@ interface OnDeviceVoiceEngine {
     val descriptor: EngineDescriptor
         get() = engineType.descriptor()
 
+    val modelName: String?
+        get() = null
+
+    val isModelLoaded: Boolean
+        get() = true
+
     /** Initializes the engine before turns begin. */
     suspend fun initialize(context: EngineSessionContext)
 
@@ -116,9 +124,10 @@ interface OnDeviceVoiceEngine {
 fun createOnDeviceEngine(
     context: Context,
     engine: OnDeviceEngine,
+    ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ): OnDeviceVoiceEngine =
     when (engine) {
-        OnDeviceEngine.LOCAL_LLM -> LocalLlmEngine(context)
+        OnDeviceEngine.LOCAL_LLM -> LocalLlmEngine(context, ioDispatcher = ioDispatcher)
         OnDeviceEngine.NEEDLE_WHISTLE -> NeedleWhistleEngine(context)
         OnDeviceEngine.NEUDECIDE -> NeuDecideEngine(context)
         OnDeviceEngine.REMOTE_GATEWAY -> RemoteGatewayEngine()

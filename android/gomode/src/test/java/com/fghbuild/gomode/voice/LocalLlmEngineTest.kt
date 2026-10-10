@@ -38,15 +38,25 @@ class LocalLlmEngineTest {
         )
 
     @Test
-    fun `descriptor reports 85 MB model size and 250ms latency budget for Pixel 8 Pro`() {
+    fun `descriptor reports Gemma 4 model size and latency budget for Pixel 8 Pro`() {
         val engine = LocalLlmEngine(RuntimeEnvironment.getApplication())
         val descriptor = engine.descriptor
 
         assertEquals(OnDeviceEngine.LOCAL_LLM, descriptor.engine)
-        assertEquals("Local LLM", descriptor.name)
-        assertEquals(85, descriptor.modelSizeMb)
+        assertEquals("Gemma 4", descriptor.name)
+        assertEquals(2588, descriptor.modelSizeMb)
         assertEquals(250, descriptor.latencyBudgetMs)
         assertEquals("Google Pixel 8 Pro", descriptor.targetHardware)
+        assertEquals("Gemma 4", engine.modelName)
+    }
+
+    @Test
+    fun `formatModelName formats Gemma and Qwen model filename stems`() {
+        assertEquals("Gemma 4 E2B", formatModelName("gemma-4-E2B-it"))
+        assertEquals("Gemma 4 E4B", formatModelName("gemma-4-E4B-it.litertlm"))
+        assertEquals("Gemma 3 1B", formatModelName("Gemma3-1B-IT_int4hadamard_aot_ekv4096_G3"))
+        assertEquals("Qwen", formatModelName("Qwen2-0.5B-Instruct"))
+        assertEquals("custom-model", formatModelName("custom-model.litertlm"))
     }
 
     @Test
