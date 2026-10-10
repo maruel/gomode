@@ -62,23 +62,32 @@ internal class LiteRtLmRunner(
             )
         val existingPath = candidatePaths.firstOrNull { File(it).exists() }
         if (existingPath != null) {
-            try {
-                val config =
-                    EngineConfig(
-                        modelPath = existingPath,
-                        backend = Backend.GOOGLE_TENSOR(),
-                        maxNumTokens = 512,
-                        cacheDir = context.cacheDir.absolutePath,
-                    )
-                val eng = Engine(config)
-                eng.initialize()
-                engine = eng
-                conversation = eng.createConversation(ConversationConfig())
-                Log.i(TAG, "Initialized Google AI Edge LiteRT-LM from $existingPath on Tensor G3")
-            } catch (
-                @Suppress("TooGenericExceptionCaught") e: Exception,
-            ) {
-                Log.w(TAG, "Failed initializing LiteRT-LM from $existingPath", e)
+            val backends =
+                listOf(
+                    Backend.GOOGLE_TENSOR(),
+                    Backend.GPU(),
+                    Backend.CPU(),
+                )
+            for (backend in backends) {
+                try {
+                    val config =
+                        EngineConfig(
+                            modelPath = existingPath,
+                            backend = backend,
+                            maxNumTokens = 512,
+                            cacheDir = context.cacheDir.absolutePath,
+                        )
+                    val eng = Engine(config)
+                    eng.initialize()
+                    engine = eng
+                    conversation = eng.createConversation(ConversationConfig())
+                    Log.i(TAG, "Initialized Google AI Edge LiteRT-LM from $existingPath on ${backend.name}")
+                    break
+                } catch (
+                    @Suppress("TooGenericExceptionCaught") e: Exception,
+                ) {
+                    Log.w(TAG, "Failed initializing LiteRT-LM from $existingPath on ${backend.name}", e)
+                }
             }
         }
     }

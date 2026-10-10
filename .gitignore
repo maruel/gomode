@@ -13,6 +13,7 @@
 /e2e/screenshots/.android.publish.lock
 /go.work
 /go.work.sum
+/models/
 /sdk/gomode/kotlin/build/
 /sdk/halo/build/
 /sdk/mcp/kotlin/build/

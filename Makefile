@@ -129,7 +129,7 @@ android-push: android-check
 
 # Pushes LiteRT-LM model weights to /data/local/tmp/llm/ on a connected device.
 android-push-model:
-	@python3 scripts/android_push_model.py
+	@python3 scripts/android_push_model.py $(MODEL)
 
 # Slow: starts or reuses an emulator and runs shell behavior on a hosted fixture.
 android-e2e:

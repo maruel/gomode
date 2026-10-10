@@ -15,5 +15,5 @@ permissions, notifications, voice, settings, and Halo device integration.
 
 Run `make android-check` at the repository root after Android changes.
 Run `make android-push` to install and launch the app on a connected device.
-Run `make android-push-model` or `python3 scripts/android_push_model.py <path>`
-to push LiteRT-LM model weights to `/data/local/tmp/llm/` on the device.
+Run `make android-push-model` (or `MODEL=<path>`) to push LiteRT-LM
+model weights to `/data/local/tmp/llm/` on the device.
