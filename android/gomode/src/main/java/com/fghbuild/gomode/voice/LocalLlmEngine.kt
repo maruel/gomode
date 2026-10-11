@@ -13,6 +13,11 @@ import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.OpenApiTool
+import com.google.ai.edge.litertlm.tool
+import com.google.gson.GsonBuilder
+import com.google.gson.JsonParser
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -22,23 +27,22 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 private const val TAG = "LocalLlmEngine"
+private const val MAX_TOOL_ROUNDS = 8
+private val toolJson = GsonBuilder().serializeNulls().create()
 
 internal fun resolveModelName(
     context: Context,
@@ -108,12 +112,10 @@ internal fun formatModelName(raw: String): String {
 internal interface EdgeLlmRunner : AutoCloseable {
     val isModelLoaded: Boolean
 
-    suspend fun generateStream(prompt: String): Flow<String>
-
-    suspend fun generate(prompt: String): String
+    suspend fun generateStream(message: Message): Flow<Message>
 
     // Replace only the conversation/prefill; model weights stay owned by this runner.
-    fun replaceConversation(systemInstruction: String)
+    fun replaceConversation(config: ConversationConfig)
 }
 
 /**
@@ -121,7 +123,7 @@ internal interface EdgeLlmRunner : AutoCloseable {
  */
 internal class LiteRtLmRunner(
     private val context: Context,
-    systemInstruction: String,
+    conversationConfig: ConversationConfig,
     modelPath: String? = null,
 ) : EdgeLlmRunner {
     private var engine: Engine? = null
@@ -167,14 +169,7 @@ internal class LiteRtLmRunner(
                 val eng = Engine(config)
                 attemptEngine = eng
                 eng.initialize()
-                val conv =
-                    eng.createConversation(
-                        ConversationConfig(
-                            systemInstruction = Contents.of(systemInstruction),
-                            // Prefill instructions and tool schemas, not a fabricated warm-up turn.
-                            prefillPrefaceOnInit = true,
-                        ),
-                    )
+                val conv = eng.createConversation(conversationConfig)
                 Log.i(TAG, "Initialized Google AI Edge LiteRT-LM from $existingPath on ${backend.name}")
                 engine = eng
                 conversation = conv
@@ -202,40 +197,17 @@ internal class LiteRtLmRunner(
         if (!isModelLoaded) throw failure
     }
 
-    override fun replaceConversation(systemInstruction: String) {
+    override fun replaceConversation(config: ConversationConfig) {
         val activeEngine = checkNotNull(engine) { "Local model engine is closed" }
         val oldConversation = conversation
         conversation = null
         oldConversation?.let { closeNativeResource(it) }
-        conversation =
-            activeEngine.createConversation(
-                ConversationConfig(
-                    systemInstruction = Contents.of(systemInstruction),
-                    prefillPrefaceOnInit = true,
-                ),
-            )
+        conversation = activeEngine.createConversation(config)
     }
 
-    override suspend fun generateStream(prompt: String): Flow<String> {
+    override suspend fun generateStream(message: Message): Flow<Message> {
         val conv = checkNotNull(conversation) { "Local model session is closed" }
-        return conv.sendMessageAsync(prompt).map { message ->
-            message.contents.contents
-                .filterIsInstance<Content.Text>()
-                .joinToString("") { it.text }
-        }
-    }
-
-    override suspend fun generate(prompt: String): String {
-        val conv = checkNotNull(conversation) { "Local model session is closed" }
-        val builder = StringBuilder()
-        conv.sendMessageAsync(prompt).collect { message ->
-            for (content in message.contents.contents) {
-                if (content is Content.Text) {
-                    builder.append(content.text)
-                }
-            }
-        }
-        return builder.toString()
+        return conv.sendMessageAsync(message)
     }
 
     override fun close() {
@@ -270,8 +242,8 @@ internal class LiteRtLmRunner(
  */
 internal class LocalLlmEngine(
     private val context: Context,
-    private val runnerFactory: (Context, String) -> EdgeLlmRunner = { context, instruction ->
-        LiteRtLmRunner(context, instruction)
+    private val runnerFactory: (Context, ConversationConfig) -> EdgeLlmRunner = { context, config ->
+        LiteRtLmRunner(context, config)
     },
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : OnDeviceVoiceEngine {
@@ -284,6 +256,13 @@ internal class LocalLlmEngine(
         get() = !closed.get() && runner?.isModelLoaded == true
 
     private val closed = AtomicBoolean(false)
+    private val turnGeneration = AtomicLong()
+
+    // Invalidate queued and active turns without cancelling native inference or unloading weights.
+    fun invalidateTurns() {
+        turnGeneration.incrementAndGet()
+    }
+
     private val nativeOperation = Mutex()
     private val cleanupScope = CoroutineScope(ioDispatcher)
     private val cleanup =
@@ -332,7 +311,7 @@ internal class LocalLlmEngine(
                 withContext(NonCancellable + ioDispatcher) { previousRunner?.close() }
                 withContext(ioDispatcher) {
                     check(!closed.get()) { "Local model engine is closed" }
-                    preparedRunner = runnerFactory(this@LocalLlmEngine.context, systemInstruction)
+                    preparedRunner = runnerFactory(this@LocalLlmEngine.context, conversationConfig(context))
                 }
                 check(!closed.get()) { "Local model engine was closed during initialization" }
                 runner = preparedRunner
@@ -369,7 +348,7 @@ internal class LocalLlmEngine(
         val activeRunner = checkNotNull(runner) { "Local model session is not initialized" }
         val instruction = formatSystemPrompt(context)
         // A blocking native prefill must finish before either reuse or disposal can proceed.
-        withContext(NonCancellable + ioDispatcher) { activeRunner.replaceConversation(instruction) }
+        withContext(NonCancellable + ioDispatcher) { activeRunner.replaceConversation(conversationConfig(context)) }
         sessionContext = context
         conversationHistory.clear()
         conversationHistory.add(ChatMessage("system", instruction))
@@ -380,8 +359,11 @@ internal class LocalLlmEngine(
         input: UserTurnInput,
         onDelta: (String) -> Unit,
         onToolCall: suspend (ToolCall) -> JsonElement?,
-    ): EngineTurnResult =
-        withContext(ioDispatcher) {
+    ): EngineTurnResult {
+        val generation = turnGeneration.get()
+
+        fun currentTurn() = !closed.get() && turnGeneration.get() == generation
+        return withContext(ioDispatcher) {
             nativeOperation.withLock {
                 check(!closed.get()) { "Local model engine is closed" }
                 val query = input.text.trim()
@@ -391,23 +373,65 @@ internal class LocalLlmEngine(
 
                 val activeRunner = checkNotNull(runner) { "Local model session is not initialized" }
 
-                val fullTextBuilder = StringBuilder()
-                // Buffer the turn so protocol JSON never reaches speech or the transcript.
-                activeRunner.generateStream(query).collect { chunk -> fullTextBuilder.append(chunk) }
-                val response = fullTextBuilder.toString().trim()
-                require(response.isNotEmpty()) { "Local model returned an empty response" }
-                val toolCall = extractToolCallIfPresent(response)
-                if (toolCall != null) {
-                    val conclusion = formatToolConclusion(onToolCall(toolCall))
-                    onDelta(conclusion)
-                    conversationHistory.add(ChatMessage("assistant", conclusion))
-                    return@withContext EngineTurnResult(assistantText = conclusion, toolCalls = listOf(toolCall))
+                val text = StringBuilder()
+                val executed = mutableListOf<ToolCall>()
+                var message = Message.user(query)
+                var rounds = 0
+                while (true) {
+                    if (!currentTurn()) {
+                        return@withContext EngineTurnResult(assistantText = text.toString(), toolCalls = executed)
+                    }
+                    val roundStart = text.length
+                    val calls = mutableListOf<com.google.ai.edge.litertlm.ToolCall>()
+                    activeRunner.generateStream(message).collect { reply ->
+                        reply.contents.contents.filterIsInstance<Content.Text>().forEach {
+                            text.append(it.text)
+                            onDelta(it.text)
+                        }
+                        calls.addAll(reply.toolCalls)
+                    }
+                    if (!currentTurn()) {
+                        return@withContext EngineTurnResult(assistantText = text.toString(), toolCalls = executed)
+                    }
+                    if (calls.isEmpty()) {
+                        require(text.substring(roundStart).isNotBlank()) { "Local model returned an empty response" }
+                        break
+                    }
+                    require(rounds++ < MAX_TOOL_ROUNDS) { "Local model exceeded the tool round limit" }
+                    val tools = checkNotNull(sessionContext).tools.map { it.name }.toSet()
+                    // Validate the complete batch before executing any call.
+                    require(calls.all { it.name in tools }) { "Local model requested an unavailable tool" }
+                    val results = mutableListOf<Content.ToolResponse>()
+                    for (call in calls) {
+                        if (!currentTurn()) {
+                            return@withContext EngineTurnResult(assistantText = text.toString(), toolCalls = executed)
+                        }
+                        val args = Json.parseToJsonElement(toolJson.toJson(call.arguments)) as JsonObject
+                        val dispatched =
+                            ToolCall(
+                                kind = MessageKind.ToolCall,
+                                id = UUID.randomUUID().toString(),
+                                name = call.name,
+                                args = args,
+                            )
+                        val result = onToolCall(dispatched)
+                        executed.add(dispatched)
+                        // Hang-up invalidates the turn even when the owner retains the loaded model.
+                        if (!currentTurn()) {
+                            return@withContext EngineTurnResult(assistantText = text.toString(), toolCalls = executed)
+                        }
+                        results.add(
+                            Content.ToolResponse(call.name, JsonParser.parseString(result?.toString() ?: "null")),
+                        )
+                    }
+                    message = Message.tool(Contents.of(results))
                 }
-                onDelta(response)
+                val response = text.toString().trim()
                 conversationHistory.add(ChatMessage("assistant", response))
-                EngineTurnResult(assistantText = response)
+                EngineTurnResult(assistantText = response, toolCalls = executed)
             }
         }
+    }
 
     override suspend fun injectContext(text: String) {
         nativeOperation.withLock {
@@ -432,73 +456,35 @@ internal class LocalLlmEngine(
         cleanup.await()
     }
 
-    private fun formatSystemPrompt(context: EngineSessionContext): String {
-        val tools =
-            buildJsonArray {
-                context.tools.forEach { tool ->
-                    add(
-                        buildJsonObject {
-                            put("name", tool.name)
-                            tool.description?.let { put("description", it) }
-                            tool.inputSchema?.let { put("inputSchema", it) }
-                        },
-                    )
-                }
-            }
-        return buildString {
+    private fun formatSystemPrompt(context: EngineSessionContext): String =
+        buildString {
             append(context.systemInstruction)
             if (context.serviceContextText.isNotBlank()) {
                 append("\nService context: ").append(context.serviceContextText)
             }
-            append("\nAvailable tools: ").append(tools)
             append("\nLanguage: ").append(context.languageTag)
-            append("\nTo call a tool, reply only with TOOL_CALL: {\"name\":\"<tool_name>\",\"arguments\":{...}}.")
-            append("\nUse an available tool's exact name and arguments that match its inputSchema.")
-            append("\nDo not invent fields or wrap the call in Markdown. Otherwise reply with plain text.")
         }
-    }
 
-    private fun extractToolCallIfPresent(response: String): ToolCall? {
-        val prefix = "TOOL_CALL:"
-        if (!response.startsWith(prefix)) {
-            require(!response.contains("TOOL_CALL", ignoreCase = true)) {
-                "Local tool call must start with TOOL_CALL: and contain no preamble or Markdown"
-            }
-            return null
-        }
-        val envelope =
-            try {
-                Json.parseToJsonElement(response.removePrefix(prefix).trim()) as? JsonObject
-            } catch (e: SerializationException) {
-                throw IllegalArgumentException("Local model returned malformed tool JSON", e)
-            }
-        require(envelope != null && envelope.keys == setOf("name", "arguments")) {
-            "Local tool call must contain only name and arguments"
-        }
-        val name = envelope["name"] as? JsonPrimitive
-        require(name != null && name.isString) { "Local tool name must be a string" }
-        require(sessionContext?.tools.orEmpty().any { it.name == name.content }) {
-            "Local model requested an unavailable tool"
-        }
-        val arguments = envelope["arguments"] as? JsonObject
-        require(arguments != null) { "Local tool arguments must be an object" }
-        // The host validates the arguments against its authoritative schema.
-        return ToolCall(
-            kind = MessageKind.ToolCall,
-            id = UUID.randomUUID().toString(),
-            name = name.content,
-            args = arguments,
+    private fun conversationConfig(context: EngineSessionContext): ConversationConfig =
+        ConversationConfig(
+            systemInstruction = Contents.of(formatSystemPrompt(context)),
+            tools =
+                context.tools.map { descriptor ->
+                    tool(
+                        object : OpenApiTool {
+                            override fun getToolDescriptionJsonString(): String =
+                                buildJsonObject {
+                                    put("name", descriptor.name)
+                                    descriptor.description?.let { put("description", it) }
+                                    descriptor.inputSchema?.let { put("parameters", it) }
+                                }.toString()
+
+                            override fun execute(paramsJsonString: String): String =
+                                error("Local tools must be dispatched by the voice session")
+                        },
+                    )
+                },
+            automaticToolCalling = false,
+            prefillPrefaceOnInit = true,
         )
-    }
-
-    private fun formatToolConclusion(result: JsonElement?): String {
-        if (result == null) return "Execution finished."
-        val obj = result as? JsonObject ?: return "Completed."
-        val error = obj["error"]
-        if (error != null) {
-            return if (error is JsonPrimitive && error.isString) "Tool failed: ${error.content}" else "Tool failed."
-        }
-        val message = obj["message"] ?: obj["status"]
-        return if (message is JsonPrimitive && message.isString) message.content else "Completed."
-    }
 }

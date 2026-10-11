@@ -58,7 +58,9 @@ internal class LocalModelOwner(
     private var closed = false
     private var preparation: Deferred<PreparedLocalModel?>? = null
 
-    // Accessed only under operations. Disposal failure retains the handle and prevents replacement.
+    // Workers mutate the handle under operations. Selection changes read it only to invalidate turns.
+    // Disposal failure retains the handle and prevents replacement.
+    @Volatile
     private var allocated: LocalLlmEngine? = null
 
     @Synchronized
@@ -122,10 +124,14 @@ internal class LocalModelOwner(
     @Synchronized
     fun release(prepared: PreparedLocalModel) {
         // Drain and reset the conversation, retaining selected weights across ordinary voice disconnects.
-        if (!closed && prepared.generation == generation) schedule(reuseAllocated = true)
+        if (!closed && prepared.generation == generation) {
+            schedule(reuseAllocated = true)
+        }
     }
 
     private fun schedule(reuseAllocated: Boolean = false) {
+        // Invalidate before the disposal worker can run, including selection-before-disconnect.
+        allocated?.invalidateTurns()
         val request = ++generation
         val selected = selection
         mutableState.value = if (selected == null) LocalModelState.Idle else LocalModelState.Preparing

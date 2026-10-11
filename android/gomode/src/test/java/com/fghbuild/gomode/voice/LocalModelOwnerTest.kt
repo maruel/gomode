@@ -5,6 +5,8 @@ import android.app.Application
 import com.fghbuild.gomode.service.readAuthoritativeServiceContext
 import com.fghbuild.gomode.service.readInitialServiceContext
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
+import com.google.ai.edge.litertlm.ConversationConfig
+import com.google.ai.edge.litertlm.Message
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
@@ -45,7 +47,7 @@ class LocalModelOwnerTest {
                 LocalModelOwner(app, dispatcher, readServiceContext = { setup().serviceContextText }) {
                     LocalLlmEngine(app, { _, instruction ->
                         allocations++
-                        prefill = instruction
+                        prefill = instruction.prefillEvidence()
                         Runner()
                     }, dispatcher)
                 }
@@ -170,12 +172,12 @@ class LocalModelOwnerTest {
                     events.add("allocate $id")
                     LocalLlmEngine(app, { _, _ ->
                         object : Runner() {
-                            override suspend fun generateStream(prompt: String): Flow<String> =
+                            override suspend fun generateStream(message: Message): Flow<Message> =
                                 flow {
                                     startedTurn.complete(Unit)
                                     finishTurn.await()
                                     events.add("native done")
-                                    emit("Done")
+                                    emit(Message.model("Done"))
                                 }
 
                             override fun close() {
@@ -227,10 +229,10 @@ class LocalModelOwnerTest {
                     allocations++
                     LocalLlmEngine(app, { _, _ ->
                         object : Runner() {
-                            override suspend fun generateStream(prompt: String): Flow<String> =
+                            override suspend fun generateStream(message: Message): Flow<Message> =
                                 flow {
                                     finishTurn.await()
-                                    emit("Done")
+                                    emit(Message.model("Done"))
                                 }
 
                             override fun close() {
@@ -358,10 +360,10 @@ class LocalModelOwnerTest {
                 LocalModelOwner(app, dispatcher) {
                     LocalLlmEngine(app, { _, instruction ->
                         allocations++
-                        prefills.add(instruction)
+                        prefills.add(instruction.prefillEvidence())
                         object : Runner() {
-                            override fun replaceConversation(systemInstruction: String) {
-                                prefills.add(systemInstruction)
+                            override fun replaceConversation(config: ConversationConfig) {
+                                prefills.add(config.prefillEvidence())
                             }
                         }
                     }, dispatcher)
@@ -425,7 +427,7 @@ class LocalModelOwnerTest {
                 LocalModelOwner(app, dispatcher) {
                     LocalLlmEngine(app, { _, _ ->
                         object : Runner() {
-                            override fun replaceConversation(systemInstruction: String) {
+                            override fun replaceConversation(config: ConversationConfig) {
                                 replacements++
                             }
                         }
@@ -489,7 +491,7 @@ class LocalModelOwnerTest {
                 }) {
                     LocalLlmEngine(app, { _, _ ->
                         object : Runner() {
-                            override fun replaceConversation(systemInstruction: String) {
+                            override fun replaceConversation(config: ConversationConfig) {
                                 resets++
                             }
                         }
@@ -564,10 +566,10 @@ class LocalModelOwnerTest {
                 LocalModelOwner(app, dispatcher) {
                     LocalLlmEngine(app, { _, instruction ->
                         allocations++
-                        prefills.add(instruction)
+                        prefills.add(instruction.prefillEvidence())
                         object : Runner() {
-                            override fun replaceConversation(systemInstruction: String) {
-                                prefills.add(systemInstruction)
+                            override fun replaceConversation(config: ConversationConfig) {
+                                prefills.add(config.prefillEvidence())
                             }
                         }
                     }, dispatcher)
@@ -613,10 +615,10 @@ class LocalModelOwnerTest {
                 LocalModelOwner(app, dispatcher) {
                     LocalLlmEngine(app, { _, instruction ->
                         allocations++
-                        prefills.add(instruction)
+                        prefills.add(instruction.prefillEvidence())
                         object : Runner() {
-                            override fun replaceConversation(systemInstruction: String) {
-                                prefills.add(systemInstruction)
+                            override fun replaceConversation(config: ConversationConfig) {
+                                prefills.add(config.prefillEvidence())
                             }
                         }
                     }, dispatcher)
@@ -676,10 +678,10 @@ class LocalModelOwnerTest {
             val owner =
                 LocalModelOwner(app, dispatcher) {
                     LocalLlmEngine(app, { _, instruction ->
-                        prefills.add(instruction)
+                        prefills.add(instruction.prefillEvidence())
                         object : Runner() {
-                            override fun replaceConversation(systemInstruction: String) {
-                                prefills.add(systemInstruction)
+                            override fun replaceConversation(config: ConversationConfig) {
+                                prefills.add(config.prefillEvidence())
                             }
                         }
                     }, dispatcher)
@@ -770,11 +772,9 @@ class LocalModelOwnerTest {
     private open class Runner : EdgeLlmRunner {
         override val isModelLoaded = true
 
-        override suspend fun generateStream(prompt: String): Flow<String> = flowOf("Done")
+        override suspend fun generateStream(message: Message): Flow<Message> = flowOf(Message.model("Done"))
 
-        override suspend fun generate(prompt: String) = "Done"
-
-        override fun replaceConversation(systemInstruction: String) = Unit
+        override fun replaceConversation(config: ConversationConfig) = Unit
 
         override fun close() = Unit
     }

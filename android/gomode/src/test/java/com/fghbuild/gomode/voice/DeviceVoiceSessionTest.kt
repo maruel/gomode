@@ -7,6 +7,8 @@ import androidx.datastore.preferences.core.emptyPreferences
 import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
+import com.google.ai.edge.litertlm.ConversationConfig
+import com.google.ai.edge.litertlm.Message
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -411,12 +413,10 @@ class DeviceVoiceSessionTest {
                         object : EdgeLlmRunner {
                             override val isModelLoaded = true
 
-                            override suspend fun generateStream(prompt: String) =
-                                kotlinx.coroutines.flow.flowOf("Hello")
+                            override suspend fun generateStream(message: Message) =
+                                kotlinx.coroutines.flow.flowOf(Message.model("Hello"))
 
-                            override suspend fun generate(prompt: String) = "Hello"
-
-                            override fun replaceConversation(systemInstruction: String) = Unit
+                            override fun replaceConversation(config: ConversationConfig) = Unit
 
                             override fun close() = Unit
                         }
@@ -480,12 +480,10 @@ class DeviceVoiceSessionTest {
                         object : EdgeLlmRunner {
                             override val isModelLoaded = true
 
-                            override suspend fun generateStream(prompt: String) =
-                                kotlinx.coroutines.flow.flowOf("Hello")
+                            override suspend fun generateStream(message: Message) =
+                                kotlinx.coroutines.flow.flowOf(Message.model("Hello"))
 
-                            override suspend fun generate(prompt: String) = "Hello"
-
-                            override fun replaceConversation(systemInstruction: String) = Unit
+                            override fun replaceConversation(config: ConversationConfig) = Unit
 
                             override fun close() = Unit
                         }
@@ -553,16 +551,23 @@ class DeviceVoiceSessionTest {
                         object : EdgeLlmRunner {
                             override val isModelLoaded = true
 
-                            override suspend fun generateStream(prompt: String) =
+                            override suspend fun generateStream(message: Message) =
                                 kotlinx.coroutines.flow.flow {
                                     finishTurn.await()
                                     events.add("native done")
-                                    emit("Stale answer")
+                                    emit(Message.model("Stale answer"))
+                                    emit(
+                                        Message.model(
+                                            toolCalls =
+                                                listOf(
+                                                    com.google.ai.edge.litertlm
+                                                        .ToolCall("stale", emptyMap()),
+                                                ),
+                                        ),
+                                    )
                                 }
 
-                            override suspend fun generate(prompt: String) = "Stale answer"
-
-                            override fun replaceConversation(systemInstruction: String) {
+                            override fun replaceConversation(config: ConversationConfig) {
                                 events.add("reset $id")
                             }
 
@@ -595,6 +600,153 @@ class DeviceVoiceSessionTest {
             assertEquals(1, allocations)
             assertTrue(session.state.value.connected)
             assertFalse(speech.spoken.contains("Stale answer"))
+            session.close()
+            owner.close()
+            testScheduler.runCurrent()
+        }
+
+    @Test
+    fun `selection before disconnect invalidates native turn before async disposal`() =
+        runTest {
+            val dispatcher = StandardTestDispatcher(testScheduler)
+            Dispatchers.setMain(dispatcher)
+            val speech = FakeSpeech()
+            val repo = SettingsRepository(InMemoryPreferencesDataStore())
+            repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
+            repo.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+            val finishTurn = CompletableDeferred<Unit>()
+            var generations = 0
+            var closes = 0
+            val owner =
+                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher, readServiceContext = { "" }) {
+                    LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
+                        object : EdgeLlmRunner {
+                            override val isModelLoaded = true
+
+                            override suspend fun generateStream(message: Message) =
+                                kotlinx.coroutines.flow.flow {
+                                    generations++
+                                    finishTurn.await()
+                                    emit(
+                                        Message.model(
+                                            toolCalls =
+                                                listOf(
+                                                    com.google.ai.edge.litertlm
+                                                        .ToolCall("stale", emptyMap()),
+                                                ),
+                                        ),
+                                    )
+                                }
+
+                            override fun replaceConversation(config: ConversationConfig) = Unit
+
+                            override fun close() {
+                                closes++
+                            }
+                        }
+                    }, dispatcher)
+                }
+            owner.select(
+                LocalModelSelection("en-US", {
+                    testSetup().copy(
+                        tools =
+                            listOf(
+                                com.fghbuild.mcp.sdk.v1
+                                    .ToolDescriptor(name = "stale"),
+                            ),
+                    )
+                }, { true }),
+            )
+            val session =
+                createSession(
+                    speech = speech,
+                    settingsRepo = repo,
+                    ioDispatcher = dispatcher,
+                    localModelOwner = owner,
+                )
+            session.connect()
+            testScheduler.runCurrent()
+            requireNotNull(speech.resultCallback)("Run")
+            testScheduler.runCurrent()
+            // Complete native work before the queued selection-disposal worker starts.
+            finishTurn.complete(Unit)
+            owner.select(null)
+            session.disconnect()
+            testScheduler.runCurrent()
+            assertFalse(session.state.value.connected)
+            assertEquals(1, generations)
+            assertEquals(1, closes)
+            session.close()
+            owner.close()
+            testScheduler.runCurrent()
+        }
+
+    @Test
+    fun `native hang up releases retained model without another inference round`() =
+        runTest {
+            val dispatcher = StandardTestDispatcher(testScheduler)
+            Dispatchers.setMain(dispatcher)
+            val speech = FakeSpeech()
+            val repo = SettingsRepository(InMemoryPreferencesDataStore())
+            repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
+            repo.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+            var generations = 0
+            var resets = 0
+            val owner =
+                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher, readServiceContext = { "" }) {
+                    LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
+                        object : EdgeLlmRunner {
+                            override val isModelLoaded = true
+
+                            override suspend fun generateStream(message: Message) =
+                                kotlinx.coroutines.flow.flow {
+                                    generations++
+                                    emit(
+                                        Message.model(
+                                            toolCalls =
+                                                listOf(
+                                                    com.google.ai.edge.litertlm
+                                                        .ToolCall(HANG_UP_TOOL_NAME, emptyMap()),
+                                                    com.google.ai.edge.litertlm
+                                                        .ToolCall(HANG_UP_TOOL_NAME, emptyMap()),
+                                                ),
+                                        ),
+                                    )
+                                }
+
+                            override fun replaceConversation(config: ConversationConfig) {
+                                resets++
+                            }
+
+                            override fun close() = Unit
+                        }
+                    }, dispatcher)
+                }
+            owner.select(
+                LocalModelSelection("en-US", {
+                    testSetup().copy(
+                        tools =
+                            listOf(
+                                com.fghbuild.mcp.sdk.v1
+                                    .ToolDescriptor(name = HANG_UP_TOOL_NAME),
+                            ),
+                    )
+                }, { true }),
+            )
+            val session =
+                createSession(
+                    speech = speech,
+                    settingsRepo = repo,
+                    ioDispatcher = dispatcher,
+                    localModelOwner = owner,
+                )
+            session.connect()
+            testScheduler.runCurrent()
+            requireNotNull(speech.resultCallback)("Hang up")
+            testScheduler.runCurrent()
+            assertFalse(session.state.value.connected)
+            assertEquals(1, generations)
+            assertEquals(1, resets)
             session.close()
             owner.close()
             testScheduler.runCurrent()
