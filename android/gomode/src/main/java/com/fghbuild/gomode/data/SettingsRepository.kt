@@ -51,6 +51,15 @@ enum class OnDeviceEngine {
     REMOTE_GATEWAY,
 }
 
+// Each variant owns a separate installed weight file.
+enum class LocalLlmModel(
+    val label: String,
+    val fileName: String,
+) {
+    GEMMA_4_E2B("Gemma 4 E2B", "gemma-4-E2B-it.litertlm"),
+    GEMMA_4_E4B("Gemma 4 E4B", "gemma-4-E4B-it.litertlm"),
+}
+
 const val DEFAULT_VOICE_LANGUAGE_TAG = "en-US"
 
 data class SettingsState(
@@ -62,6 +71,7 @@ data class SettingsState(
     val voiceMode: VoiceMode = VoiceMode.CLOUD,
     val voiceLanguageTag: String = DEFAULT_VOICE_LANGUAGE_TAG,
     val onDeviceEngine: OnDeviceEngine = OnDeviceEngine.REMOTE_GATEWAY,
+    val localLlmModel: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
 )
 
 class SettingsRepository(
@@ -78,6 +88,7 @@ class SettingsRepository(
         val VOICE_MODE = stringPreferencesKey("VOICE_MODE")
         val VOICE_LANGUAGE_TAG = stringPreferencesKey("VOICE_LANGUAGE_TAG")
         val ON_DEVICE_VOICE_ENGINE = stringPreferencesKey("ON_DEVICE_VOICE_ENGINE")
+        val LOCAL_LLM_MODEL = stringPreferencesKey("LOCAL_LLM_MODEL")
     }
 
     val settings: StateFlow<SettingsState> =
@@ -95,6 +106,9 @@ class SettingsRepository(
                     voiceMode = decodeVoiceMode(prefs[Keys.VOICE_MODE]),
                     voiceLanguageTag = prefs[Keys.VOICE_LANGUAGE_TAG] ?: DEFAULT_VOICE_LANGUAGE_TAG,
                     onDeviceEngine = decodeOnDeviceEngine(prefs[Keys.ON_DEVICE_VOICE_ENGINE]),
+                    localLlmModel =
+                        LocalLlmModel.entries.firstOrNull { it.name == prefs[Keys.LOCAL_LLM_MODEL] }
+                            ?: LocalLlmModel.GEMMA_4_E2B,
                 )
             }.stateIn(scope, SharingStarted.Eagerly, SettingsState())
 
@@ -178,6 +192,10 @@ class SettingsRepository(
 
     suspend fun updateOnDeviceEngine(engine: OnDeviceEngine) {
         dataStore.edit { prefs -> prefs[Keys.ON_DEVICE_VOICE_ENGINE] = engine.name }
+    }
+
+    suspend fun updateLocalLlmModel(model: LocalLlmModel) {
+        dataStore.edit { prefs -> prefs[Keys.LOCAL_LLM_MODEL] = model.name }
     }
 
     private fun decodeServices(prefs: Preferences): List<ServiceInstance> =

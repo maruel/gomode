@@ -131,6 +131,15 @@ class VoiceSettingsTest {
         composeRule.onNodeWithTag("gomode-engine-local-llm").performScrollTo().performClick()
         composeRule.waitUntil { repository.settings.value.onDeviceEngine == OnDeviceEngine.LOCAL_LLM }
         composeRule.onNodeWithTag("gomode-engine-local-llm").assertIsSelected()
+        composeRule.onNodeWithTag("gomode-model-GEMMA_4_E2B").performScrollTo().assertIsSelected()
+        composeRule.onNodeWithTag("gomode-model-GEMMA_4_E4B").performScrollTo().performClick()
+        composeRule.waitUntil {
+            repository.settings.value.localLlmModel == com.fghbuild.gomode.data.LocalLlmModel.GEMMA_4_E4B
+        }
+        composeRule.onNodeWithTag("gomode-model-GEMMA_4_E4B").assertIsSelected()
+        composeRule.runOnIdle { active.value = true }
+        composeRule.onNodeWithTag("gomode-model-GEMMA_4_E2B").performScrollTo().assertIsNotEnabled()
+        composeRule.onNodeWithTag("gomode-model-GEMMA_4_E4B").assertIsNotEnabled()
     }
 
     private class MemoryPreferences : DataStore<Preferences> {

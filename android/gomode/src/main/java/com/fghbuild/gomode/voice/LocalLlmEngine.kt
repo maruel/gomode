@@ -5,6 +5,7 @@ import android.content.Context
 import android.util.Log
 import com.caic.voicegateway.sdk.v1.MessageKind
 import com.caic.voicegateway.sdk.v1.ToolCall
+import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
@@ -42,35 +43,39 @@ import java.util.concurrent.atomic.AtomicLong
 
 private const val TAG = "LocalLlmEngine"
 private const val MAX_TOOL_ROUNDS = 8
+private const val MALFORMED_TOOL_PREFIX = "<!tool_call>"
 private val toolJson = GsonBuilder().serializeNulls().create()
 
-internal fun resolveModelName(
+internal fun selectedModelPaths(
     context: Context,
+    model: LocalLlmModel,
     explicitModelPath: String? = null,
-): String {
-    val metaFile = File("/data/local/tmp/llm/model_name.txt")
-    if (metaFile.exists()) {
-        val raw = runCatching { metaFile.readText().trim() }.getOrNull()
-        if (!raw.isNullOrEmpty()) {
-            return formatModelName(raw)
+): List<String> {
+    val deviceDir = File("/data/local/tmp/llm")
+    val metadata = File(deviceDir, "model_name.txt")
+    val legacyName = if (metadata.isFile) metadata.readText().trim() else null
+    return buildList {
+        explicitModelPath?.let(::add)
+        add(File(context.filesDir, "models/${model.fileName}").absolutePath)
+        add(File(deviceDir, model.fileName).absolutePath)
+        // Old installs used one generic file. Never select a known different variant.
+        if (model == LocalLlmModel.GEMMA_4_E2B) {
+            add(File(context.filesDir, "models/gemma.litertlm").absolutePath)
+            add(File(context.filesDir, "models/model.litertlm").absolutePath)
+        }
+        if (acceptsLegacyModel(model, legacyName)) {
+            add(File(deviceDir, "model.litertlm").absolutePath)
         }
     }
-    if (explicitModelPath != null) {
-        val file = File(explicitModelPath)
-        if (file.exists()) {
-            return formatModelName(file.nameWithoutExtension)
-        }
-    }
-    val appCandidates = listOf("gemma.litertlm", "model.litertlm", "gemma.task")
-    for (name in appCandidates) {
-        if (File(context.filesDir, "models/$name").exists()) {
-            return "Gemma 4"
-        }
-    }
-    if (File("/data/local/tmp/llm/model.litertlm").exists()) {
-        return "Gemma 4 E2B"
-    }
-    return "Gemma 4"
+}
+
+internal fun acceptsLegacyModel(
+    model: LocalLlmModel,
+    metadata: String?,
+): Boolean {
+    val name = metadata?.let(::formatModelName)
+    val generic = name == null || name in setOf("Gemma", "Gemma 4", "gemma", "model")
+    return name == model.label || (generic && model == LocalLlmModel.GEMMA_4_E2B)
 }
 
 internal fun formatModelName(raw: String): String {
@@ -125,6 +130,7 @@ internal class LiteRtLmRunner(
     private val context: Context,
     conversationConfig: ConversationConfig,
     modelPath: String? = null,
+    model: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
 ) : EdgeLlmRunner {
     private var engine: Engine? = null
     private var conversation: Conversation? = null
@@ -133,18 +139,12 @@ internal class LiteRtLmRunner(
         get() = engine != null && conversation != null
 
     init {
-        val candidatePaths =
-            listOfNotNull(
-                modelPath,
-                File(context.filesDir, "models/gemma.litertlm").absolutePath,
-                File(context.filesDir, "models/model.litertlm").absolutePath,
-                File(context.filesDir, "models/gemma.task").absolutePath,
-                "/data/local/tmp/llm/model.litertlm",
-                "/data/local/tmp/llm/model.task",
-            )
+        val candidatePaths = selectedModelPaths(context, model, modelPath)
         val existingPath = candidatePaths.firstOrNull { File(it).isFile }
         checkNotNull(existingPath) {
-            "Local model not found. Install model weights with make android-push-model. " +
+            "${model.label} not found. Install weights with make android-push-model VARIANT=${model.name.takeLast(
+                3,
+            )}. " +
                 "Searched: ${candidatePaths.joinToString()}"
         }
         val backends = listOf(Backend.GOOGLE_TENSOR(), Backend.GPU(), Backend.CPU())
@@ -242,15 +242,14 @@ internal class LiteRtLmRunner(
  */
 internal class LocalLlmEngine(
     private val context: Context,
-    private val runnerFactory: (Context, ConversationConfig) -> EdgeLlmRunner = { context, config ->
-        LiteRtLmRunner(context, config)
-    },
+    private val runnerFactory: ((Context, ConversationConfig) -> EdgeLlmRunner)? = null,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val model: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
 ) : OnDeviceVoiceEngine {
     override val engineType: OnDeviceEngine = OnDeviceEngine.LOCAL_LLM
 
     override val modelName: String
-        get() = resolveModelName(context)
+        get() = model.label
 
     override val isModelLoaded: Boolean
         get() = !closed.get() && runner?.isModelLoaded == true
@@ -275,7 +274,6 @@ internal class LocalLlmEngine(
                         runner = null
                         sessionContext = null
                         conversationHistory.clear()
-                        injectedContexts.clear()
                     }
                 }
             }.apply {
@@ -289,13 +287,9 @@ internal class LocalLlmEngine(
 
     @Volatile
     private var runner: EdgeLlmRunner? = null
-    private val conversationHistory = mutableListOf<ChatMessage>()
-    private val injectedContexts = mutableListOf<String>()
 
-    private data class ChatMessage(
-        val role: String,
-        val content: String,
-    )
+    // Successful native messages only. Retry replays these without repeating tool dispatch.
+    private val conversationHistory = mutableListOf<Message>()
 
     override suspend fun initialize(context: EngineSessionContext) {
         nativeOperation.withLock {
@@ -304,19 +298,17 @@ internal class LocalLlmEngine(
             runner = null
             sessionContext = null
             conversationHistory.clear()
-            injectedContexts.clear()
             var preparedRunner: EdgeLlmRunner? = null
-            val systemInstruction = formatSystemPrompt(context)
             try {
                 withContext(NonCancellable + ioDispatcher) { previousRunner?.close() }
                 withContext(ioDispatcher) {
                     check(!closed.get()) { "Local model engine is closed" }
-                    preparedRunner = runnerFactory(this@LocalLlmEngine.context, conversationConfig(context))
+                    preparedRunner = runnerFactory?.invoke(this@LocalLlmEngine.context, conversationConfig(context))
+                        ?: LiteRtLmRunner(this@LocalLlmEngine.context, conversationConfig(context), model = model)
                 }
                 check(!closed.get()) { "Local model engine was closed during initialization" }
                 runner = preparedRunner
                 sessionContext = context
-                conversationHistory.add(ChatMessage("system", systemInstruction))
                 Log.i(TAG, "Initialized LocalLlmEngine on Google Pixel 8 Pro with ${context.tools.size} tools")
             } finally {
                 // Also release a model if cancellation or close wins during blocking initialization.
@@ -346,13 +338,10 @@ internal class LocalLlmEngine(
     private suspend fun replaceConversation(context: EngineSessionContext) {
         check(!closed.get()) { "Local model engine is closed" }
         val activeRunner = checkNotNull(runner) { "Local model session is not initialized" }
-        val instruction = formatSystemPrompt(context)
         // A blocking native prefill must finish before either reuse or disposal can proceed.
         withContext(NonCancellable + ioDispatcher) { activeRunner.replaceConversation(conversationConfig(context)) }
         sessionContext = context
         conversationHistory.clear()
-        conversationHistory.add(ChatMessage("system", instruction))
-        injectedContexts.clear()
     }
 
     override suspend fun processTurn(
@@ -369,8 +358,6 @@ internal class LocalLlmEngine(
                 val query = input.text.trim()
                 if (query.isEmpty()) return@withContext EngineTurnResult()
 
-                conversationHistory.add(ChatMessage("user", query))
-
                 val activeRunner = checkNotNull(runner) { "Local model session is not initialized" }
 
                 val text = StringBuilder()
@@ -382,14 +369,14 @@ internal class LocalLlmEngine(
                         return@withContext EngineTurnResult(assistantText = text.toString(), toolCalls = executed)
                     }
                     val roundStart = text.length
-                    val calls = mutableListOf<com.google.ai.edge.litertlm.ToolCall>()
-                    activeRunner.generateStream(message).collect { reply ->
-                        reply.contents.contents.filterIsInstance<Content.Text>().forEach {
-                            text.append(it.text)
-                            onDelta(it.text)
-                        }
-                        calls.addAll(reply.toolCalls)
-                    }
+                    val reply =
+                        generateReply(activeRunner, message, ::currentTurn) { delta ->
+                            text.append(delta)
+                            onDelta(delta)
+                        } ?: return@withContext EngineTurnResult(assistantText = text.toString(), toolCalls = executed)
+                    val calls = reply.toolCalls
+                    conversationHistory.add(message)
+                    conversationHistory.add(reply)
                     if (!currentTurn()) {
                         return@withContext EngineTurnResult(assistantText = text.toString(), toolCalls = executed)
                     }
@@ -427,18 +414,84 @@ internal class LocalLlmEngine(
                     message = Message.tool(Contents.of(results))
                 }
                 val response = text.toString().trim()
-                conversationHistory.add(ChatMessage("assistant", response))
                 EngineTurnResult(assistantText = response, toolCalls = executed)
             }
         }
+    }
+
+    private suspend fun generateReply(
+        activeRunner: EdgeLlmRunner,
+        message: Message,
+        currentTurn: () -> Boolean,
+        onDelta: (String) -> Unit,
+    ): Message? {
+        repeat(2) { attempt ->
+            val contents = mutableListOf<Content>()
+            val replayText = StringBuilder()
+            val calls = mutableListOf<com.google.ai.edge.litertlm.ToolCall>()
+            val channels = mutableMapOf<String, String>()
+            val prefix = StringBuilder()
+            var decided = false
+            var malformed = false
+            activeRunner.generateStream(message).collect { reply ->
+                // Gemma trims each content item in its template. Keep text chunk boundaries out of replay.
+                reply.contents.contents.forEach { content ->
+                    if (content is Content.Text) {
+                        replayText.append(content.text)
+                    } else {
+                        if (replayText.isNotEmpty()) contents.add(Content.Text(replayText.toString()))
+                        replayText.clear()
+                        contents.add(content)
+                    }
+                }
+                calls.addAll(reply.toolCalls)
+                reply.channels.forEach { (name, text) -> channels[name] = channels[name].orEmpty() + text }
+                reply.contents.contents.filterIsInstance<Content.Text>().forEach { content ->
+                    if (!malformed) {
+                        if (decided) {
+                            onDelta(content.text)
+                        } else {
+                            prefix.append(content.text)
+                            val start = prefix.toString().trimStart()
+                            when {
+                                start.startsWith(MALFORMED_TOOL_PREFIX) -> {
+                                    malformed = true
+                                }
+
+                                !MALFORMED_TOOL_PREFIX.startsWith(start) -> {
+                                    decided = true
+                                    onDelta(prefix.toString())
+                                    prefix.clear()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Always drain native work before rebuilding or handling invalidation.
+            if (!currentTurn()) return null
+            if (!malformed) {
+                if (!decided && prefix.isNotEmpty()) onDelta(prefix.toString())
+                if (replayText.isNotEmpty()) contents.add(Content.Text(replayText.toString()))
+                return Message.model(Contents.of(contents), calls, channels)
+            }
+            check(attempt == 0) { "Local model repeated a malformed tool-call prefix" }
+            Log.w(TAG, "Retrying local message after malformed tool-call prefix")
+            val config =
+                conversationConfig(
+                    checkNotNull(sessionContext),
+                ).copy(initialMessages = conversationHistory.toList())
+            withContext(NonCancellable + ioDispatcher) { activeRunner.replaceConversation(config) }
+            if (!currentTurn()) return null
+        }
+        error("Local model retry exhausted")
     }
 
     override suspend fun injectContext(text: String) {
         nativeOperation.withLock {
             // A service update queued behind native work can outlive the voice session.
             if (closed.get()) return
-            injectedContexts.add(text)
-            conversationHistory.add(ChatMessage("system", "Context update: $text"))
+            // Authoritative service facts are reconciled by the owner before the next acquisition.
         }
     }
 

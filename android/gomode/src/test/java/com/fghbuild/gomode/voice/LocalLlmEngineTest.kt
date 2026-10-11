@@ -2,6 +2,7 @@
 package com.fghbuild.gomode.voice
 
 import com.caic.voicegateway.sdk.v1.ToolCall
+import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import com.google.ai.edge.litertlm.Content
@@ -105,6 +106,162 @@ class LocalLlmEngineTest {
         assertEquals("custom-model", formatModelName("custom-model.litertlm"))
         engine.close()
     }
+
+    @Test
+    fun `variant paths and display names never select the other named model`() {
+        val app = RuntimeEnvironment.getApplication()
+        val e2b = selectedModelPaths(app, LocalLlmModel.GEMMA_4_E2B)
+        val e4b = selectedModelPaths(app, LocalLlmModel.GEMMA_4_E4B)
+        assertTrue(e2b.first().endsWith("models/gemma-4-E2B-it.litertlm"))
+        assertTrue(e4b.first().endsWith("models/gemma-4-E4B-it.litertlm"))
+        assertFalse(e4b.any { it.contains("E2B") || it.endsWith("models/model.litertlm") })
+        val engine = LocalLlmEngine(app, model = LocalLlmModel.GEMMA_4_E4B)
+        assertEquals("Gemma 4 E4B", engine.modelName)
+        engine.close()
+    }
+
+    @Test
+    fun `legacy metadata accepts generic E2B without accepting known different weights`() {
+        for (metadata in listOf(null, "model", "model.litertlm", "gemma", "gemma-4-E2B-it")) {
+            assertTrue(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, metadata))
+            assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E4B, metadata))
+        }
+        assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, "gemma-4-E4B-it"))
+        assertTrue(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E4B, "gemma-4-E4B-it"))
+        assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, "Qwen2-0.5B-Instruct"))
+    }
+
+    @Test
+    fun `split malformed prefix retries unchanged user message with successful history only`() =
+        runTest {
+            val configs = mutableListOf<ConversationConfig>()
+            val requests = mutableListOf<Message>()
+            val engine =
+                engine(configs) { request ->
+                    requests.add(request)
+                    when (requests.size) {
+                        1 -> flowOf(Message.model("Hello"), Message.model(" world"))
+                        2 -> flowOf(Message.model("  <!to"), Message.model("ol_call>garbage"), callMessage())
+                        else -> flowOf(Message.model("Recovered"))
+                    }
+                }
+            engine.initialize(sessionContext)
+            engine.processTurn(UserTurnInput("Hi"), {}, { error("No call") })
+            val deltas = mutableListOf<String>()
+            val result = engine.processTurn(UserTurnInput("Run"), deltas::add) { error("No malformed dispatch") }
+            assertEquals("Recovered", result.assistantText)
+            assertEquals(listOf("Recovered"), deltas)
+            assertEquals(requests[1].toString(), requests[2].toString())
+            assertEquals(2, configs.last().initialMessages.size)
+            assertEquals(
+                Role.USER,
+                configs
+                    .last()
+                    .initialMessages
+                    .first()
+                    .role,
+            )
+            assertTrue(
+                configs
+                    .last()
+                    .initialMessages
+                    .first()
+                    .toString()
+                    .contains("Hi"),
+            )
+            val replayedText =
+                configs
+                    .last()
+                    .initialMessages
+                    .last()
+                    .contents.contents
+                    .single() as Content.Text
+            assertEquals("Hello world", replayedText.text)
+            assertFalse(
+                configs
+                    .last()
+                    .initialMessages
+                    .toString()
+                    .contains("garbage"),
+            )
+            engine.closeAndJoin()
+        }
+
+    @Test
+    fun `malformed tool result reply retries result without redispatching tools`() =
+        runTest {
+            val configs = mutableListOf<ConversationConfig>()
+            val requests = mutableListOf<Message>()
+            var dispatches = 0
+            val engine =
+                engine(configs) { request ->
+                    requests.add(request)
+                    when (requests.size) {
+                        1 -> flowOf(callMessage())
+                        2 -> flowOf(Message.model("<!tool_call>bad"))
+                        else -> flowOf(Message.model("Done"))
+                    }
+                }
+            engine.initialize(sessionContext)
+            val result =
+                engine.processTurn(UserTurnInput("Run"), {}) {
+                    dispatches++
+                    Json.parseToJsonElement("""{"ok":true}""")
+                }
+            assertEquals(1, dispatches)
+            assertEquals("Done", result.assistantText)
+            assertEquals(Role.TOOL, requests[1].role)
+            assertEquals(requests[1].toString(), requests[2].toString())
+            assertEquals(2, configs.last().initialMessages.size)
+            assertEquals(
+                "switch_service",
+                configs
+                    .last()
+                    .initialMessages
+                    .last()
+                    .toolCalls
+                    .single()
+                    .name,
+            )
+            engine.closeAndJoin()
+        }
+
+    @Test
+    fun `repeated malformed prefix fails after one retry without speech or dispatch`() =
+        runTest {
+            var attempts = 0
+            val configs = mutableListOf<ConversationConfig>()
+            val engine =
+                engine(configs) {
+                    attempts++
+                    flowOf(Message.model("<!tool_call>bad"))
+                }
+            engine.initialize(sessionContext)
+            val failure =
+                runCatching {
+                    engine.processTurn(UserTurnInput("Run"), { error("No speech") }, { error("No dispatch") })
+                }.exceptionOrNull()
+            assertEquals("Local model repeated a malformed tool-call prefix", failure?.message)
+            assertEquals(2, attempts)
+            assertEquals(2, configs.size)
+            engine.closeAndJoin()
+        }
+
+    @Test
+    fun `partial prefix and marker after ordinary text remain ordinary speech`() =
+        runTest {
+            val engine = engine { flowOf(Message.model("<!tool")) }
+            engine.initialize(sessionContext)
+            assertEquals("<!tool", engine.processTurn(UserTurnInput("Hi"), {}, { error("No dispatch") }).assistantText)
+            engine.closeAndJoin()
+            val normal = engine { flowOf(Message.model("A marker: <!tool_call>")) }
+            normal.initialize(sessionContext)
+            assertEquals(
+                "A marker: <!tool_call>",
+                normal.processTurn(UserTurnInput("Hi"), {}, { error("No dispatch") }).assistantText,
+            )
+            normal.closeAndJoin()
+        }
 
     @Test
     fun `native declarations carry schemas and manual execution with real prefill`() =

@@ -3,6 +3,7 @@ package com.fghbuild.gomode.voice
 
 import android.content.Context
 import android.util.Log
+import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.service.readAuthoritativeServiceContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -21,6 +22,7 @@ internal class LocalModelSelection(
     val languageTag: String,
     val prepareSetup: suspend () -> VoiceSetup,
     val isCurrent: () -> Boolean,
+    val model: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
 )
 
 internal data class PreparedLocalModel(
@@ -45,7 +47,9 @@ internal class LocalModelOwner(
     context: Context,
     ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val readServiceContext: suspend (McpClient) -> String = ::readAuthoritativeServiceContext,
-    private val engineFactory: () -> LocalLlmEngine = { LocalLlmEngine(context, ioDispatcher = ioDispatcher) },
+    private val engineFactory: (LocalLlmModel) -> LocalLlmEngine = { model ->
+        LocalLlmEngine(context, ioDispatcher = ioDispatcher, model = model)
+    },
 ) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + ioDispatcher)
     private val operations = Mutex()
@@ -162,7 +166,7 @@ internal class LocalModelOwner(
                                     reusable.resetConversation(context)
                                     reusable
                                 } else {
-                                    engineFactory().also { engine ->
+                                    engineFactory(selected.model).also { engine ->
                                         allocated = engine
                                         engine.initialize(context)
                                     }

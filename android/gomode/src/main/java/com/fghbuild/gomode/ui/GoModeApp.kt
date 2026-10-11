@@ -146,6 +146,7 @@ internal fun GoModeApp(
             activeURL,
             voiceMode,
             settings.onDeviceEngine,
+            settings.localLlmModel,
             settings.voiceLanguageTag,
             bearerStore,
             bearerToken,
@@ -156,6 +157,7 @@ internal fun GoModeApp(
             if (shouldPrepareLocalModel(settings, authReady) && bootstrapState is ServiceBootstrapState.Ready) {
                 LocalModelSelection(
                     languageTag = settings.voiceLanguageTag,
+                    model = settings.localLlmModel,
                     prepareSetup = { prepareVoiceSetup(settingsRepository, settingsClient, bearerStore::tokenFor) },
                     isCurrent = {
                         val current = settingsRepository.settings.value
@@ -163,6 +165,7 @@ internal fun GoModeApp(
                             current.activeServiceId == settings.activeServiceId &&
                             current.activeServiceURL == activeURL &&
                             current.voiceLanguageTag == settings.voiceLanguageTag &&
+                            current.localLlmModel == settings.localLlmModel &&
                             bearerStore.authEpoch.value == authEpoch && bearerStore.token.value == bearerToken
                     },
                 )
@@ -184,6 +187,7 @@ internal fun GoModeApp(
             settings.voiceLanguageTag,
             voiceCallController,
             settings.onDeviceEngine,
+            settings.localLlmModel,
         ) {
             when (voiceMode) {
                 VoiceMode.DEVICE -> {

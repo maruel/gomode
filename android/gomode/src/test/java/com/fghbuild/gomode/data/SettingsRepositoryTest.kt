@@ -3,7 +3,9 @@ package com.fghbuild.gomode.data
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -71,6 +73,25 @@ class SettingsRepositoryTest {
             assertEquals("", state.activeServiceId)
             assertNull(state.haloAddress)
             assertFalse(state.haloAutoConnect)
+        }
+
+    @Test
+    fun `Gemma choice defaults to E2B and persists across repository recreation`() =
+        runBlocking {
+            val store = InMemoryPreferencesDataStore()
+            val repo = SettingsRepository(store)
+            assertEquals(LocalLlmModel.GEMMA_4_E2B, repo.settings.value.localLlmModel)
+            repo.updateLocalLlmModel(LocalLlmModel.GEMMA_4_E4B)
+            repo.awaitSettings("E4B selected") { it.localLlmModel == LocalLlmModel.GEMMA_4_E4B }
+            val restored = SettingsRepository(store)
+            restored.awaitSettings("E4B restored") { it.localLlmModel == LocalLlmModel.GEMMA_4_E4B }
+            store.edit { it[stringPreferencesKey("LOCAL_LLM_MODEL")] = "unknown" }
+            assertEquals(
+                LocalLlmModel.GEMMA_4_E2B,
+                restored
+                    .awaitSettings("invalid model defaults") { it.localLlmModel == LocalLlmModel.GEMMA_4_E2B }
+                    .localLlmModel,
+            )
         }
 
     @Test

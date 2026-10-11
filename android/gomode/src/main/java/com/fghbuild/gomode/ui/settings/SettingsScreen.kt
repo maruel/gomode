@@ -37,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
@@ -202,6 +203,9 @@ fun SettingsScreen(
             VoiceModeSetting(settings.voiceMode, settingsRepository, enabled = !voiceSessionActive)
             if (settings.voiceMode == VoiceMode.DEVICE) {
                 OnDeviceEngineSetting(settings.onDeviceEngine, settingsRepository, enabled = !voiceSessionActive)
+                if (settings.onDeviceEngine == OnDeviceEngine.LOCAL_LLM) {
+                    LocalLlmModelSetting(settings.localLlmModel, settingsRepository, enabled = !voiceSessionActive)
+                }
             }
             VoiceLanguageSetting(settings, settingsRepository, enabled = !voiceSessionActive)
             HorizontalDivider()
@@ -250,6 +254,28 @@ private fun VoiceModeSetting(
             label = { Text("On-device voice") },
             modifier = Modifier.testTag("gomode-voice-mode-device"),
         )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LocalLlmModelSetting(
+    model: LocalLlmModel,
+    repository: SettingsRepository,
+    enabled: Boolean,
+) {
+    val scope = rememberCoroutineScope()
+    Text("Gemma model", style = MaterialTheme.typography.titleMedium)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        LocalLlmModel.entries.forEach { choice ->
+            FilterChip(
+                selected = model == choice,
+                onClick = { scope.launch { repository.updateLocalLlmModel(choice) } },
+                enabled = enabled,
+                label = { Text(choice.label) },
+                modifier = Modifier.testTag("gomode-model-${choice.name}"),
+            )
+        }
     }
 }
 

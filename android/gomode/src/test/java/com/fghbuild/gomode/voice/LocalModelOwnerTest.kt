@@ -2,6 +2,7 @@
 package com.fghbuild.gomode.voice
 
 import android.app.Application
+import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.service.readAuthoritativeServiceContext
 import com.fghbuild.gomode.service.readInitialServiceContext
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
@@ -73,6 +74,38 @@ class LocalModelOwnerTest {
             owner.close()
             testScheduler.runCurrent()
             assertFalse(first.await().engine.isModelLoaded)
+        }
+
+    @Test
+    fun `changing Gemma variant drains previous weights before allocating selected variant`() =
+        runTest {
+            val dispatcher = StandardTestDispatcher(testScheduler)
+            val events = mutableListOf<String>()
+            val owner =
+                LocalModelOwner(app, dispatcher, readServiceContext = { "" }) { model ->
+                    events.add("allocate ${model.label}")
+                    LocalLlmEngine(app, { _, _ ->
+                        object : Runner() {
+                            override fun close() {
+                                events.add("close ${model.label}")
+                            }
+                        }
+                    }, dispatcher, model)
+                }
+            owner.select(LocalModelSelection("en-US", { setup() }, { true }))
+            val first = async { owner.acquire() }
+            testScheduler.runCurrent()
+            owner.select(LocalModelSelection("en-US", { setup() }, { true }, LocalLlmModel.GEMMA_4_E4B))
+            val second = async { owner.acquire() }
+            testScheduler.runCurrent()
+            assertFalse(first.await().engine.isModelLoaded)
+            assertEquals("Gemma 4 E4B", second.await().engine.modelName)
+            assertEquals(listOf("allocate Gemma 4 E2B", "close Gemma 4 E2B", "allocate Gemma 4 E4B"), events)
+            owner.release(second.await())
+            testScheduler.runCurrent()
+            assertEquals(3, events.size)
+            owner.close()
+            testScheduler.runCurrent()
         }
 
     @Test

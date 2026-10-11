@@ -313,6 +313,24 @@ flowchart TD
 | **Access Gate** | **Requires EAP account allowlist** | **None (Apache 2.0 / open weights)** | **None (Apache 2.0)** |
 | **Offline Reliability** | Fails (`UNAVAILABLE`) without EAP | 100% offline out-of-the-box | 100% offline out-of-the-box |
 
+### Select Gemma weights
+
+Install each variant separately:
+
+```sh
+make android-push-model VARIANT=E2B
+make android-push-model VARIANT=E4B
+# Use a local weight file instead of downloading it:
+make android-push-model VARIANT=E4B MODEL=/path/to/gemma-4-E4B-it.litertlm
+```
+
+In settings, select **On-device voice → Gemma 4**, then **Gemma 4 E2B** or
+**Gemma 4 E4B**. End an active voice session before changing the model.
+The app saves the choice and prepares that model at startup. Missing weights
+produce an installation error; the app does not substitute the other variant.
+Both named files can stay installed. Existing generic E2B installations remain
+readable; install named files to avoid ambiguous legacy weights.
+
 ### Empirical Findings on Physical Pixel 8 Pro
 
 Testing on a Google Pixel 8 Pro running production Android build `CP3A.261005.005` yielded the following findings:
