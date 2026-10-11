@@ -166,7 +166,7 @@ class DeviceVoiceSessionTest {
     }
 
     @Test
-    fun `idle mute and disconnect discard recognition drafts and ignore retired callbacks`() {
+    fun `mute preserves drafts while idle and disconnect discard them and retired callbacks are ignored`() {
         val speech = FakeSpeech()
         val socket = FakeWebSocket()
         var listener: WebSocketListener? = null
@@ -192,13 +192,26 @@ class DeviceVoiceSessionTest {
             session.state.value.transcript
                 .isEmpty(),
         )
-        requireNotNull(speech.partialCallback)("Another draft")
+        val beforeMutePartial = requireNotNull(speech.partialCallback)
+        val beforeMuteResult = requireNotNull(speech.resultCallback)
+        beforeMutePartial("Another draft")
+        val draft = session.state.value.transcript
+        val sentBeforeMute = socket.sent.size
         session.toggleMute()
-        assertTrue(
-            session.state.value.transcript
-                .isEmpty(),
-        )
+        assertEquals(draft, session.state.value.transcript)
+        assertFalse(session.state.value.listening)
+        assertTrue(session.state.value.muted)
+        beforeMutePartial("Late muted hypothesis")
+        beforeMuteResult("Late muted result")
+        assertEquals(draft, session.state.value.transcript)
+        assertEquals(sentBeforeMute, socket.sent.size)
         session.toggleMute()
+        assertEquals(draft, session.state.value.transcript)
+        assertTrue(session.state.value.listening)
+        beforeMutePartial("Late previous hypothesis")
+        beforeMuteResult("Late previous result")
+        assertEquals(draft, session.state.value.transcript)
+        assertEquals(sentBeforeMute, socket.sent.size)
         requireNotNull(speech.partialCallback)("New draft")
         requireNotNull(speech.partialCallback)("")
         assertTrue(

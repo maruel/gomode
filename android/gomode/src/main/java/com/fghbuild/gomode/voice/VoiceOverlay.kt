@@ -270,7 +270,7 @@ private fun ActivePanel(
 
             val activeTool = voiceState.activeTool
             Text(
-                text = activeTool ?: voiceStatusText(voiceState),
+                text = voiceStatusText(voiceState),
                 style = MaterialTheme.typography.bodyMedium,
                 color =
                     if (activeTool != null) {
@@ -343,7 +343,7 @@ private fun ActivePanel(
             }
         }
         val draft = voiceState.transcript.lastOrNull()?.takeIf { it.speaker == TranscriptSpeaker.USER && !it.final }
-        if (!transcriptExpanded && voiceState.listening && draft != null) {
+        if (!transcriptExpanded && (voiceState.listening || voiceState.muted) && draft != null) {
             Text(
                 text = "You: ${draft.text}",
                 style = MaterialTheme.typography.bodySmall,
@@ -533,11 +533,12 @@ private fun MicLevelIndicator(micLevel: Float = 0f) {
 }
 
 /**
- * Returns the status line when no tool runs. Speech outranks gateway work, and gateway work outranks muting
+ * Tool execution outranks speech, speech outranks gateway work, and gateway work outranks muting
  * because a muted user still waits for the reply.
  */
 internal fun voiceStatusText(state: VoiceState): String =
     when {
+        state.activeTool != null -> "Calling tool: ${state.activeTool}…"
         state.speaking -> "Speaking…"
         state.turnState == TurnState.Transcribing -> "Transcribing…"
         state.turnState == TurnState.Thinking -> "Thinking…"

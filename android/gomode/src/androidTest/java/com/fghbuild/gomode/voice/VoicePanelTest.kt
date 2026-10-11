@@ -17,6 +17,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
+import com.caic.voicegateway.sdk.v1.TurnState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -25,6 +26,27 @@ import org.junit.Test
 class VoicePanelTest {
     @get:Rule
     val composeRule = createComposeRule()
+
+    @Test
+    fun statusShowsToolExecutionThenReturnsToThinking() {
+        val state = mutableStateOf(VoiceState(connected = true, turnState = TurnState.Thinking))
+        composeRule.setContent {
+            MaterialTheme {
+                VoicePanel(state.value, true, {}, {}, {}, {}, {}, {}, null)
+            }
+        }
+        composeRule.onNodeWithText("Thinking…").assertIsDisplayed()
+        composeRule.runOnIdle {
+            state.value = state.value.copy(activeTool = "example_tool")
+        }
+        composeRule.onNodeWithText("Calling tool: example_tool…").assertIsDisplayed()
+        composeRule.onNodeWithText("Thinking…").assertDoesNotExist()
+        composeRule.runOnIdle {
+            state.value = state.value.copy(activeTool = null)
+        }
+        composeRule.onNodeWithText("Thinking…").assertIsDisplayed()
+        composeRule.onNodeWithText("Calling tool: example_tool…").assertDoesNotExist()
+    }
 
     @Test
     fun audioOutputShowsTheConfirmedRouteAndOffersHeadphones() {
@@ -104,6 +126,19 @@ class VoicePanelTest {
                 state.value.copy(transcript = listOf(TranscriptEntry(TranscriptSpeaker.USER, "Send the message")))
         }
         composeRule.onNodeWithText("You: Send a").assertDoesNotExist()
+        composeRule.onNodeWithText("You: Send the message").assertIsDisplayed()
+        composeRule.runOnIdle {
+            state.value = state.value.copy(muted = true, listening = false)
+        }
+        composeRule.onNodeWithTag("gomode-voice-recognition-draft").assertIsDisplayed()
+        composeRule.onNodeWithText("You: Send the message").assertIsDisplayed()
+        composeRule.onNodeWithTag("gomode-voice-transcript-toggle").performClick()
+        composeRule.onNodeWithTag("gomode-voice-transcript").assertIsDisplayed()
+        composeRule.runOnIdle {
+            state.value = state.value.copy(muted = false, listening = true)
+        }
+        composeRule.onNodeWithTag("gomode-voice-transcript").assertIsDisplayed()
+        composeRule.onNodeWithTag("gomode-voice-transcript-toggle").performClick()
         composeRule.onNodeWithText("You: Send the message").assertIsDisplayed()
         composeRule.runOnIdle {
             state.value =

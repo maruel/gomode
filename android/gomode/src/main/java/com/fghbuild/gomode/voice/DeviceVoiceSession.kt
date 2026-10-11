@@ -731,7 +731,7 @@ internal class DeviceVoiceSession(
         if (muted) {
             speech.stopListening()
             _state.update {
-                it.copy(muted = true, listening = false, micLevel = 0f, transcript = it.transcript.withoutUserDraft())
+                it.copy(muted = true, listening = false, micLevel = 0f)
             }
             return
         }
