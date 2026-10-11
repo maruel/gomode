@@ -804,6 +804,7 @@ class LocalModelOwnerTest {
 
     private open class Runner : EdgeLlmRunner {
         override val isModelLoaded = true
+        override val backendName = "test"
 
         override suspend fun generateStream(message: Message): Flow<Message> = flowOf(Message.model("Done"))
 

@@ -31,6 +31,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.shadows.ShadowLog
 import java.io.File
 import java.lang.reflect.Modifier
 
@@ -70,6 +71,7 @@ class LocalLlmEngineTest {
                 configs.add(config)
                 object : EdgeLlmRunner {
                     override val isModelLoaded = true
+                    override val backendName = "test"
 
                     override suspend fun generateStream(message: Message): Flow<Message> = reply(message)
 
@@ -244,6 +246,9 @@ class LocalLlmEngineTest {
             assertEquals("Local model repeated a malformed tool-call prefix", failure?.message)
             assertEquals(2, attempts)
             assertEquals(2, configs.size)
+            val logs = ShadowLog.getLogsForTag("LocalLlmEngine").map { it.msg }
+            assertTrue(logs.any { it.startsWith("local_retry ") && it.contains("outcome=failed") })
+            assertTrue(logs.single { it.startsWith("local_turn ") }.contains("retries=1 outcome=failed"))
             engine.closeAndJoin()
         }
 
@@ -261,6 +266,34 @@ class LocalLlmEngineTest {
                 normal.processTurn(UserTurnInput("Hi"), {}, { error("No dispatch") }).assistantText,
             )
             normal.closeAndJoin()
+        }
+
+    @Test
+    fun `turn and retry diagnostics include safe metadata without conversation content`() =
+        runTest {
+            var generations = 0
+            val engine =
+                engine {
+                    when (++generations) {
+                        1 -> flowOf(callMessage(args = mapOf("service" to "private-argument")))
+                        2 -> flowOf(Message.model("<!tool_call>private-malformed-text"))
+                        else -> flowOf(Message.model("private-assistant-text"))
+                    }
+                }
+            engine.initialize(sessionContext)
+            engine.processTurn(UserTurnInput("private-user-prompt"), {}) {
+                Json.parseToJsonElement("""{"message":"private-tool-result"}""")
+            }
+            val logs = ShadowLog.getLogsForTag("LocalLlmEngine").map { it.msg }
+            val summary = logs.single { it.startsWith("local_turn ") }
+            assertTrue(summary.contains("model=GEMMA_4_E2B backend=test"))
+            assertTrue(summary.contains("duration_ms="))
+            assertTrue(summary.contains("tool_rounds=1 retries=1 outcome=completed"))
+            assertTrue(logs.any { it.startsWith("local_retry ") && it.contains("outcome=started") })
+            assertTrue(logs.any { it.startsWith("local_retry ") && it.contains("outcome=recovered") })
+            assertFalse(logs.joinToString().contains("private-"))
+            assertFalse(logs.joinToString().contains("switch_service"))
+            engine.closeAndJoin()
         }
 
     @Test
@@ -494,6 +527,8 @@ class LocalLlmEngineTest {
             engine.closeAndJoin()
             assertEquals(0, dispatches)
             assertEquals(1, generations)
+            val summary = ShadowLog.getLogsForTag("LocalLlmEngine").single { it.msg.startsWith("local_turn ") }.msg
+            assertTrue(summary.contains("outcome=invalidated"))
         }
 
     @Test
@@ -638,6 +673,7 @@ class LocalLlmEngineTest {
     private fun lifecycleRunner(onClose: () -> Unit) =
         object : EdgeLlmRunner {
             override val isModelLoaded = true
+            override val backendName = "test"
 
             override suspend fun generateStream(message: Message): Flow<Message> = error("No turn")
 
@@ -724,6 +760,7 @@ class LocalLlmEngineTest {
                         initialization?.cancel()
                         object : EdgeLlmRunner {
                             override val isModelLoaded = true
+                            override val backendName = "test"
 
                             override suspend fun generateStream(message: Message): Flow<Message> = error("No turn")
 

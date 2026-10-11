@@ -2,6 +2,7 @@
 package com.fghbuild.gomode.voice
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import com.caic.voicegateway.sdk.v1.MessageKind
 import com.caic.voicegateway.sdk.v1.ToolCall
@@ -45,6 +46,31 @@ private const val TAG = "LocalLlmEngine"
 private const val MAX_TOOL_ROUNDS = 8
 private const val MALFORMED_TOOL_PREFIX = "<!tool_call>"
 private val toolJson = GsonBuilder().serializeNulls().create()
+
+private enum class TurnOutcome { CANCELLED, COMPLETED, FAILED, INVALIDATED }
+
+private enum class RetryOutcome { CANCELLED, FAILED, INVALIDATED, RECOVERED }
+
+// Diagnostic fields exclude prompts, generated text, tool names, arguments, and exception messages.
+private class LocalTurnDiagnostics(
+    val model: String,
+    val backend: String,
+) {
+    private val started = SystemClock.elapsedRealtime()
+    var toolRounds = 0
+    var retries = 0
+    var outcome = TurnOutcome.FAILED
+
+    fun metadata(): String = "model=$model backend=$backend"
+
+    fun finish() {
+        Log.i(
+            TAG,
+            "local_turn ${metadata()} duration_ms=${SystemClock.elapsedRealtime() - started} " +
+                "tool_rounds=$toolRounds retries=$retries outcome=${outcome.name.lowercase()}",
+        )
+    }
+}
 
 internal fun selectedModelPaths(
     context: Context,
@@ -116,6 +142,7 @@ internal fun formatModelName(raw: String): String {
  */
 internal interface EdgeLlmRunner : AutoCloseable {
     val isModelLoaded: Boolean
+    val backendName: String
 
     suspend fun generateStream(message: Message): Flow<Message>
 
@@ -134,6 +161,7 @@ internal class LiteRtLmRunner(
 ) : EdgeLlmRunner {
     private var engine: Engine? = null
     private var conversation: Conversation? = null
+    override val backendName: String
 
     override val isModelLoaded: Boolean
         get() = engine != null && conversation != null
@@ -153,6 +181,7 @@ internal class LiteRtLmRunner(
                     "reinstall with make android-push-model. " +
                     "See LiteRT-LM backend failures in logcat for details.",
             )
+        var initializedBackend: String? = null
         for (backend in backends) {
             var attemptEngine: Engine? = null
             try {
@@ -171,6 +200,7 @@ internal class LiteRtLmRunner(
                 Log.i(TAG, "Initialized Google AI Edge LiteRT-LM from $existingPath on ${backend.name}")
                 engine = eng
                 conversation = conv
+                initializedBackend = backend.name
                 break
             } catch (e: CancellationException) {
                 throw e
@@ -192,7 +222,7 @@ internal class LiteRtLmRunner(
                 }
             }
         }
-        if (!isModelLoaded) throw failure
+        backendName = initializedBackend ?: throw failure
     }
 
     override fun replaceConversation(config: ConversationConfig) {
@@ -349,7 +379,6 @@ internal class LocalLlmEngine(
     ): EngineTurnResult {
         val generation = turnGeneration.get()
 
-        fun currentTurn() = !closed.get() && turnGeneration.get() == generation
         return withContext(ioDispatcher) {
             nativeOperation.withLock {
                 check(!closed.get()) { "Local model engine is closed" }
@@ -358,61 +387,90 @@ internal class LocalLlmEngine(
 
                 val activeRunner = checkNotNull(runner) { "Local model session is not initialized" }
 
-                val text = StringBuilder()
-                val executed = mutableListOf<ToolCall>()
-                var message = Message.user(query)
-                var rounds = 0
-                while (true) {
-                    if (!currentTurn()) {
-                        return@withContext EngineTurnResult(assistantText = text.toString(), toolCalls = executed)
-                    }
-                    val roundStart = text.length
-                    val reply =
-                        generateReply(activeRunner, message, ::currentTurn) { delta ->
-                            text.append(delta)
-                            onDelta(delta)
-                        } ?: return@withContext EngineTurnResult(assistantText = text.toString(), toolCalls = executed)
-                    val calls = reply.toolCalls
-                    conversationHistory.add(message)
-                    conversationHistory.add(reply)
-                    if (!currentTurn()) {
-                        return@withContext EngineTurnResult(assistantText = text.toString(), toolCalls = executed)
-                    }
-                    if (calls.isEmpty()) {
-                        require(text.substring(roundStart).isNotBlank()) { "Local model returned an empty response" }
-                        break
-                    }
-                    require(rounds++ < MAX_TOOL_ROUNDS) { "Local model exceeded the tool round limit" }
-                    val tools = checkNotNull(sessionContext).tools.map { it.name }.toSet()
-                    // Validate the complete batch before executing any call.
-                    require(calls.all { it.name in tools }) { "Local model requested an unavailable tool" }
-                    val results = mutableListOf<Content.ToolResponse>()
-                    for (call in calls) {
-                        if (!currentTurn()) {
-                            return@withContext EngineTurnResult(assistantText = text.toString(), toolCalls = executed)
-                        }
-                        val args = Json.parseToJsonElement(toolJson.toJson(call.arguments)) as JsonObject
-                        val dispatched =
-                            ToolCall(
-                                kind = MessageKind.ToolCall,
-                                id = UUID.randomUUID().toString(),
-                                name = call.name,
-                                args = args,
-                            )
-                        val result = onToolCall(dispatched)
-                        executed.add(dispatched)
-                        // Hang-up invalidates the turn even when the owner retains the loaded model.
-                        if (!currentTurn()) {
-                            return@withContext EngineTurnResult(assistantText = text.toString(), toolCalls = executed)
-                        }
-                        results.add(
-                            Content.ToolResponse(call.name, JsonParser.parseString(result?.toString() ?: "null")),
-                        )
-                    }
-                    message = Message.tool(Contents.of(results))
+                val diagnostics = LocalTurnDiagnostics(model.name, activeRunner.backendName)
+
+                fun validateTurn(): Boolean {
+                    val current = !closed.get() && turnGeneration.get() == generation
+                    if (!current) diagnostics.outcome = TurnOutcome.INVALIDATED
+                    return current
                 }
-                val response = text.toString().trim()
-                EngineTurnResult(assistantText = response, toolCalls = executed)
+                try {
+                    val text = StringBuilder()
+                    val executed = mutableListOf<ToolCall>()
+                    var message = Message.user(query)
+                    while (true) {
+                        if (!validateTurn()) {
+                            return@withContext EngineTurnResult(assistantText = text.toString(), toolCalls = executed)
+                        }
+                        val roundStart = text.length
+                        val reply =
+                            generateReply(activeRunner, message, diagnostics, ::validateTurn) { delta ->
+                                text.append(delta)
+                                onDelta(delta)
+                            }
+                                ?: return@withContext EngineTurnResult(
+                                    assistantText = text.toString(),
+                                    toolCalls = executed,
+                                )
+                        val calls = reply.toolCalls
+                        conversationHistory.add(message)
+                        conversationHistory.add(reply)
+                        if (!validateTurn()) {
+                            return@withContext EngineTurnResult(assistantText = text.toString(), toolCalls = executed)
+                        }
+                        if (calls.isEmpty()) {
+                            require(
+                                text.substring(roundStart).isNotBlank(),
+                            ) { "Local model returned an empty response" }
+                            break
+                        }
+                        require(
+                            diagnostics.toolRounds < MAX_TOOL_ROUNDS,
+                        ) { "Local model exceeded the tool round limit" }
+                        diagnostics.toolRounds++
+                        val tools = checkNotNull(sessionContext).tools.map { it.name }.toSet()
+                        // Validate the complete batch before executing any call.
+                        require(calls.all { it.name in tools }) { "Local model requested an unavailable tool" }
+                        val results = mutableListOf<Content.ToolResponse>()
+                        for (call in calls) {
+                            if (!validateTurn()) {
+                                return@withContext EngineTurnResult(
+                                    assistantText = text.toString(),
+                                    toolCalls = executed,
+                                )
+                            }
+                            val args = Json.parseToJsonElement(toolJson.toJson(call.arguments)) as JsonObject
+                            val dispatched =
+                                ToolCall(
+                                    kind = MessageKind.ToolCall,
+                                    id = UUID.randomUUID().toString(),
+                                    name = call.name,
+                                    args = args,
+                                )
+                            val result = onToolCall(dispatched)
+                            executed.add(dispatched)
+                            // Hang-up invalidates the turn even when the owner retains the loaded model.
+                            if (!validateTurn()) {
+                                return@withContext EngineTurnResult(
+                                    assistantText = text.toString(),
+                                    toolCalls = executed,
+                                )
+                            }
+                            results.add(
+                                Content.ToolResponse(call.name, JsonParser.parseString(result?.toString() ?: "null")),
+                            )
+                        }
+                        message = Message.tool(Contents.of(results))
+                    }
+                    val response = text.toString().trim()
+                    diagnostics.outcome = TurnOutcome.COMPLETED
+                    EngineTurnResult(assistantText = response, toolCalls = executed)
+                } catch (e: CancellationException) {
+                    diagnostics.outcome = TurnOutcome.CANCELLED
+                    throw e
+                } finally {
+                    diagnostics.finish()
+                }
             }
         }
     }
@@ -420,69 +478,88 @@ internal class LocalLlmEngine(
     private suspend fun generateReply(
         activeRunner: EdgeLlmRunner,
         message: Message,
-        currentTurn: () -> Boolean,
+        diagnostics: LocalTurnDiagnostics,
+        validateTurn: () -> Boolean,
         onDelta: (String) -> Unit,
     ): Message? {
-        repeat(2) { attempt ->
-            val contents = mutableListOf<Content>()
-            val replayText = StringBuilder()
-            val calls = mutableListOf<com.google.ai.edge.litertlm.ToolCall>()
-            val channels = mutableMapOf<String, String>()
-            val prefix = StringBuilder()
-            var decided = false
-            var malformed = false
-            activeRunner.generateStream(message).collect { reply ->
-                // Gemma trims each content item in its template. Keep text chunk boundaries out of replay.
-                reply.contents.contents.forEach { content ->
-                    if (content is Content.Text) {
-                        replayText.append(content.text)
-                    } else {
-                        if (replayText.isNotEmpty()) contents.add(Content.Text(replayText.toString()))
-                        replayText.clear()
-                        contents.add(content)
-                    }
-                }
-                calls.addAll(reply.toolCalls)
-                reply.channels.forEach { (name, text) -> channels[name] = channels[name].orEmpty() + text }
-                reply.contents.contents.filterIsInstance<Content.Text>().forEach { content ->
-                    if (!malformed) {
-                        if (decided) {
-                            onDelta(content.text)
+        var retried = false
+        var retryOutcome = RetryOutcome.FAILED
+        try {
+            repeat(2) { attempt ->
+                val contents = mutableListOf<Content>()
+                val replayText = StringBuilder()
+                val calls = mutableListOf<com.google.ai.edge.litertlm.ToolCall>()
+                val channels = mutableMapOf<String, String>()
+                val prefix = StringBuilder()
+                var decided = false
+                var malformed = false
+                activeRunner.generateStream(message).collect { reply ->
+                    // Gemma trims each content item in its template. Keep text chunk boundaries out of replay.
+                    reply.contents.contents.forEach { content ->
+                        if (content is Content.Text) {
+                            replayText.append(content.text)
                         } else {
-                            prefix.append(content.text)
-                            val start = prefix.toString().trimStart()
-                            when {
-                                start.startsWith(MALFORMED_TOOL_PREFIX) -> {
-                                    malformed = true
-                                }
+                            if (replayText.isNotEmpty()) contents.add(Content.Text(replayText.toString()))
+                            replayText.clear()
+                            contents.add(content)
+                        }
+                    }
+                    calls.addAll(reply.toolCalls)
+                    reply.channels.forEach { (name, text) -> channels[name] = channels[name].orEmpty() + text }
+                    reply.contents.contents.filterIsInstance<Content.Text>().forEach { content ->
+                        if (!malformed) {
+                            if (decided) {
+                                onDelta(content.text)
+                            } else {
+                                prefix.append(content.text)
+                                val start = prefix.toString().trimStart()
+                                when {
+                                    start.startsWith(MALFORMED_TOOL_PREFIX) -> {
+                                        malformed = true
+                                    }
 
-                                !MALFORMED_TOOL_PREFIX.startsWith(start) -> {
-                                    decided = true
-                                    onDelta(prefix.toString())
-                                    prefix.clear()
+                                    !MALFORMED_TOOL_PREFIX.startsWith(start) -> {
+                                        decided = true
+                                        onDelta(prefix.toString())
+                                        prefix.clear()
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                // Always drain native work before rebuilding or handling invalidation.
+                if (!validateTurn()) {
+                    retryOutcome = RetryOutcome.INVALIDATED
+                    return null
+                }
+                if (!malformed) {
+                    if (!decided && prefix.isNotEmpty()) onDelta(prefix.toString())
+                    if (replayText.isNotEmpty()) contents.add(Content.Text(replayText.toString()))
+                    retryOutcome = RetryOutcome.RECOVERED
+                    return Message.model(Contents.of(contents), calls, channels)
+                }
+                check(attempt == 0) { "Local model repeated a malformed tool-call prefix" }
+                retried = true
+                diagnostics.retries++
+                Log.w(TAG, "local_retry ${diagnostics.metadata()} outcome=started reason=malformed_tool_prefix")
+                val config =
+                    conversationConfig(
+                        checkNotNull(sessionContext),
+                    ).copy(initialMessages = conversationHistory.toList())
+                withContext(NonCancellable + ioDispatcher) { activeRunner.replaceConversation(config) }
+                if (!validateTurn()) {
+                    retryOutcome = RetryOutcome.INVALIDATED
+                    return null
+                }
             }
-            // Always drain native work before rebuilding or handling invalidation.
-            if (!currentTurn()) return null
-            if (!malformed) {
-                if (!decided && prefix.isNotEmpty()) onDelta(prefix.toString())
-                if (replayText.isNotEmpty()) contents.add(Content.Text(replayText.toString()))
-                return Message.model(Contents.of(contents), calls, channels)
-            }
-            check(attempt == 0) { "Local model repeated a malformed tool-call prefix" }
-            Log.w(TAG, "Retrying local message after malformed tool-call prefix")
-            val config =
-                conversationConfig(
-                    checkNotNull(sessionContext),
-                ).copy(initialMessages = conversationHistory.toList())
-            withContext(NonCancellable + ioDispatcher) { activeRunner.replaceConversation(config) }
-            if (!currentTurn()) return null
+            error("Local model retry exhausted")
+        } catch (e: CancellationException) {
+            retryOutcome = RetryOutcome.CANCELLED
+            throw e
+        } finally {
+            if (retried) Log.i(TAG, "local_retry ${diagnostics.metadata()} outcome=${retryOutcome.name.lowercase()}")
         }
-        error("Local model retry exhausted")
     }
 
     override suspend fun injectContext(text: String) {

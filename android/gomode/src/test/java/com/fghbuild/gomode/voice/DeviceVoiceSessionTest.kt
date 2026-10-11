@@ -412,6 +412,7 @@ class DeviceVoiceSessionTest {
                         allocations++
                         object : EdgeLlmRunner {
                             override val isModelLoaded = true
+                            override val backendName = "test"
 
                             override suspend fun generateStream(message: Message) =
                                 kotlinx.coroutines.flow.flowOf(Message.model("Hello"))
@@ -479,6 +480,7 @@ class DeviceVoiceSessionTest {
                         allocations++
                         object : EdgeLlmRunner {
                             override val isModelLoaded = true
+                            override val backendName = "test"
 
                             override suspend fun generateStream(message: Message) =
                                 kotlinx.coroutines.flow.flowOf(Message.model("Hello"))
@@ -550,6 +552,7 @@ class DeviceVoiceSessionTest {
                         events.add("allocate $id")
                         object : EdgeLlmRunner {
                             override val isModelLoaded = true
+                            override val backendName = "test"
 
                             override suspend fun generateStream(message: Message) =
                                 kotlinx.coroutines.flow.flow {
@@ -622,6 +625,7 @@ class DeviceVoiceSessionTest {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
                         object : EdgeLlmRunner {
                             override val isModelLoaded = true
+                            override val backendName = "test"
 
                             override suspend fun generateStream(message: Message) =
                                 kotlinx.coroutines.flow.flow {
@@ -697,6 +701,7 @@ class DeviceVoiceSessionTest {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
                         object : EdgeLlmRunner {
                             override val isModelLoaded = true
+                            override val backendName = "test"
 
                             override suspend fun generateStream(message: Message) =
                                 kotlinx.coroutines.flow.flow {

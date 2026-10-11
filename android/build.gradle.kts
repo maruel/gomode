@@ -13,6 +13,19 @@ plugins {
     alias(libs.plugins.versions)
 }
 
+// make android-check uses --quiet. Keep failing test names and full exceptions visible.
+subprojects {
+    tasks.withType<Test>().configureEach {
+        testLogging {
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            quiet {
+                events("failed")
+                exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            }
+        }
+    }
+}
+
 // Reject unstable candidates (alpha, beta, rc) when checking for updates.
 fun isStable(version: String): Boolean {
     val upper = version.uppercase()
