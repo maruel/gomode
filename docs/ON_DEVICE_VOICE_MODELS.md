@@ -315,14 +315,14 @@ flowchart TD
 
 ### Select Gemma weights
 
-Install each variant separately:
+Install both variants:
 
 ```sh
-make android-push-model VARIANT=E2B
-make android-push-model VARIANT=E4B
-# Use a local weight file instead of downloading it:
-make android-push-model VARIANT=E4B MODEL=/path/to/gemma-4-E4B-it.litertlm
+make android-push-model
 ```
+
+The command downloads missing weights into `models/` and syncs both files to
+the device. Repeated runs skip unchanged files.
 
 In settings, select **On-device voice → Gemma 4**, then **Gemma 4 E2B** or
 **Gemma 4 E4B**. End an active voice session before changing the model.

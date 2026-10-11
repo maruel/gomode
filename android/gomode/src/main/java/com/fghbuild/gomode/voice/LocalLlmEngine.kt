@@ -142,9 +142,7 @@ internal class LiteRtLmRunner(
         val candidatePaths = selectedModelPaths(context, model, modelPath)
         val existingPath = candidatePaths.firstOrNull { File(it).isFile }
         checkNotNull(existingPath) {
-            "${model.label} not found. Install weights with make android-push-model VARIANT=${model.name.takeLast(
-                3,
-            )}. " +
+            "${model.label} not found. Install weights with make android-push-model. " +
                 "Searched: ${candidatePaths.joinToString()}"
         }
         val backends = listOf(Backend.GOOGLE_TENSOR(), Backend.GPU(), Backend.CPU())
