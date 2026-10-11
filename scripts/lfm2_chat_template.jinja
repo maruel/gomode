@@ -1,0 +1,65 @@
+{# Adapted from LiteRT-LM v0.18.0 models/lfm2/chat_template.jinja (Apache-2.0).
+   LFM2.5-2.6B always starts generation inside its reasoning channel. #}
+{%- macro format_content(content) -%}
+    {%- if content is string -%}
+        {{- content -}}
+    {%- else -%}
+        {%- for item in content -%}
+            {%- if item['type'] == 'text' -%}
+                {{- item['text'] -}}
+            {%- elif item['type'] == 'tool_response' -%}
+                {{- item['response'] | tojson -}}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+{%- endmacro -%}
+{%- macro render_tool_calls(tool_calls) -%}
+    {%- set calls = namespace(items=[]) -%}
+    {%- for tool_call in tool_calls -%}
+        {%- set func = tool_call['function'] if 'function' in tool_call else tool_call -%}
+        {%- set args = namespace(items=[]) -%}
+        {%- for name, value in func['arguments'] | dictsort -%}
+            {%- set args.items = args.items + [name + '=' + (value | tojson)] -%}
+        {%- endfor -%}
+        {%- set calls.items = calls.items + [func['name'] + '(' + (args.items | join(', ')) + ')'] -%}
+    {%- endfor -%}
+    {{- '<|tool_call_start|>[' + (calls.items | join(', ')) + ']<|tool_call_end|>' -}}
+{%- endmacro -%}
+{{- bos_token -}}
+{%- set first_system = messages[0]['role'] == 'system' -%}
+{%- set turns = messages[1:] if first_system else messages -%}
+{%- set system = namespace(text=format_content(messages[0]['content']) if first_system else '') -%}
+{%- if tools -%}
+    {%- set declarations = namespace(items=[]) -%}
+    {%- for tool in tools -%}
+        {%- set declarations.items = declarations.items + [tool if tool is string else tool | tojson] -%}
+    {%- endfor -%}
+    {%- set system.text = system.text + ('\n' if system.text else '') + 'List of tools: [' +
+        (declarations.items | join(', ')) + ']' -%}
+{%- endif -%}
+{%- if system.text -%}
+    {{- '<|im_start|>system\n' + system.text + '<|im_end|>\n' -}}
+{%- endif -%}
+{%- for message in turns -%}
+    {{- '<|im_start|>' + message['role'] + '\n' -}}
+    {%- if message['role'] == 'assistant' and 'tool_calls' in message and message['tool_calls'] -%}
+        {{- render_tool_calls(message['tool_calls']) -}}
+    {%- endif -%}
+    {%- if message['role'] == 'tool' -%}
+        {%- set results = namespace(items=[]) -%}
+        {%- if message['content'] is string -%}
+            {{- message['content'] -}}
+        {%- else -%}
+            {%- for item in message['content'] -%}
+                {%- set results.items = results.items + [format_content([item])] -%}
+            {%- endfor -%}
+            {{- '[' + (results.items | join(', ')) + ']' -}}
+        {%- endif -%}
+    {%- else -%}
+        {{- format_content(message['content']) -}}
+    {%- endif -%}
+    {{- '<|im_end|>\n' -}}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+    {{- '<|im_start|>assistant\n<think>' -}}
+{%- endif -%}

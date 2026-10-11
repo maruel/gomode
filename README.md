@@ -24,3 +24,5 @@ to a host through `/.well-known/gomode.json` and renders its web frontend.
   shell.
 
 See [the server library guide](docs/SERVER_LIBRARY.md) to integrate a host.
+See [on-device models](docs/ON_DEVICE_VOICE_MODELS.md#lfm25-26b-16k-int4fp16-export)
+for local-agent candidates and the LFM2.5-2.6B LiteRT export tooling.

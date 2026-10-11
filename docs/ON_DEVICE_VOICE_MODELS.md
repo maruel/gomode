@@ -1,6 +1,8 @@
 # On-Device Voice and Action Models
 
-Investigation of 100% on-device language models, direct speech-to-action models, and mobile execution feasibility on the Google Pixel 8 Pro.
+Investigation of on-device language models, direct speech-to-action models,
+and mobile execution on the Google Pixel 8 Pro. Vendor and community measurements
+are not repository measurements. Hypotheses are not device validation.
 
 ## Sub-300M Parameter Language Models
 
@@ -292,7 +294,7 @@ flowchart TD
 
     subgraph InProcessRuntime["In-Process Edge Runtimes (Open Weights)"]
         Gemma["Gemma 4 / Gemma 2 / Llama<br/>(Open weights on Hugging Face)"] --> LiteRTLM["LiteRT-LM Engine<br/>(com.google.ai.edge.litertlm)"]
-        LiteRTLM -->|"Backend.GOOGLE_TENSOR"| TPU["Tensor G3 GPU / TPU"]
+        LiteRTLM -->|"Artifact-specific backend"| Accel["GPU / CPU / Google Tensor"]
         LiteRTLM --> App2["gomode (LocalLlmEngine)"]
 
         NeuDecide["NeuDecide 55.5M<br/>(ONNX FastConformer)"] --> ORT["ONNX Runtime<br/>(onnxruntime-android)"]
@@ -307,7 +309,7 @@ flowchart TD
 | **Target Models** | Gemini Nano | Gemma 4, Gemma 2, Phi, Llama | FastConformer + Needle (55.5M) |
 | **Package ID** | `com.google.mlkit:genai-prompt` | `com.google.ai.edge.litertlm:litertlm-android` | `com.microsoft.onnxruntime:onnxruntime-android` |
 | **Process Boundary** | IPC to `com.google.android.aicore` | In-process native library (`liblitertlm_jni.so`) | In-process native library (`libonnxruntime.so`) |
-| **Hardware Backend** | System TPU via Private Compute Core | `Backend.GOOGLE_TENSOR`, `GPU`, `CPU` | CPU multi-threaded (Cortex-X3/A715) |
+| **Hardware Backend** | System TPU via Private Compute Core | Artifact-specific `GOOGLE_TENSOR`, `GPU`, `CPU` | CPU multi-threaded (Cortex-X3/A715) |
 | **Model Distribution** | Google Play System Updates (background) | Bundled in app or downloaded from Hugging Face | Bundled in app or local storage (`.onnx`) |
 | **APK Size Overhead** | **0 MB** | ~15 MB engine binary + model file | ~12 MB engine binary + 43 MB weights |
 | **Access Gate** | **Requires EAP account allowlist** | **None (Apache 2.0 / open weights)** | **None (Apache 2.0)** |
@@ -331,7 +333,137 @@ produce an installation error; the app does not substitute the other variant.
 Both named files can stay installed. Existing generic E2B installations remain
 readable; install named files to avoid ambiguous legacy weights.
 
-### Empirical Findings on Physical Pixel 8 Pro
+## Mobile Agent Alternatives
+
+Tool routing and agent execution are different workloads. A function-calling
+model selects a tool and its arguments. An agent also interprets tool results,
+executes dependent steps, and recovers from failures.
+
+| Model | Role | Constraint |
+| :--- | :--- | :--- |
+| [LFM2.5-2.6B](https://huggingface.co/LiquidAI/LFM2.5-2.6B) | Mobile-oriented agent with multi-turn agentic RL | Always reasons before answering; LFM license |
+| [LFM2.5-1.2B-Instruct](https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct) | Lower-footprint conversation and tool use | Less evidence for long-horizon execution |
+| [Hammer 2.1](https://huggingface.co/MadeAgents/Hammer2.1-3b) | Multi-step and multi-turn function calling | 1.5B is CC-BY-NC-4.0; 3B uses Qwen Research terms |
+| [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) | General-purpose tools and vision | Community LiteRT bundle returns tool calls as text |
+| [Granite 4.1-3B](https://huggingface.co/ibm-granite/granite-4.1-3b) | Apache-2.0 tool-enabled assistant | Phone performance is not established here |
+| [FunctionGemma 270M](https://ai.google.dev/gemma/docs/mobile-actions) | Fine-tuned fixed-action router | Not a replacement for a conversational planner |
+
+[Liquid's comparison](https://www.liquid.ai/blog/lfm2-5-2-6b) reports BFCL v4
+scores of 56.88 for LFM2.5-2.6B, 36.98 for Gemma 4 E2B, and 46.39 for E4B.
+ToolSandbox scores are 77.83, 52.40, and 65.00. These server-side vendor results
+do not establish Android quantization quality or task reliability.
+
+Liquid reports 70 tokens/s for LFM2.5-1.2B-Instruct on Galaxy S25 Ultra CPU
+with llama.cpp Q4_0, 1K prefill, and 100 decoded tokens. That is not a Tensor G3
+measurement. The [LFM license](https://www.liquid.ai/lfm-license) requires a
+separate commercial license at $10M or more annual revenue.
+
+## LFM2.5-2.6B 16K INT4/FP16 Export
+
+[`scripts/export_lfm_litert.py`](../scripts/export_lfm_litert.py) re-exports the
+original checkpoint. It does not convert a GGUF or resize an existing 4K bundle.
+The target uses INT4 blockwise-32 min/max fully connected weights, INT8 embedding
+lookup weights, floating-point convolutions, and a 16,384-token FP16 cache.
+FP16 cache storage and the `fp32_fp16` activation preference do not mean every
+graph operation executes in FP16. Conversion keeps the source weights and
+float computations FP32. The Android GPU delegate decides how to lower them.
+
+### Prepare and export
+
+Use a Linux conversion host with `uv`, network access, sufficient RAM, and disk
+space for the original checkpoint and intermediate graphs. The exporter loads
+about 10.8 GB of FP32 weights before converter allocations. Use a 64 GB host
+as the conservative recommendation; an idle 32 GB host may suffice. These are
+capacity estimates, not measured full-conversion peaks. The generated
+`work/` directory retains intermediate files for diagnosis. Python 3.12,
+the exporter revision, and dependencies are isolated by the script's uv lock.
+
+Prepare the recipe, template, metadata, and environment record without fetching
+weights:
+
+```sh
+uv run --frozen --script scripts/export_lfm_litert.py \
+  --prepare-only --output-dir /tmp/lfm-export-inputs
+```
+
+Run the full conversion:
+
+```sh
+make export-lfm-litert
+```
+
+The default output directory is `models/lfm2.5-2.6b-16k-fp16/`. To choose another:
+
+```sh
+uv run --frozen --script scripts/export_lfm_litert.py --output-dir /path/to/export
+```
+
+The script refuses to overwrite a published bundle. It publishes
+`LFM2.5-2.6B_int4_16k_fp16.litertlm` only after checking the LFM model type,
+context limit, tool-aware template, capability flags, presence of executor
+metadata, INT4 weights, INT8 embeddings, and FP16 cache inputs and outputs
+across prefill/decode signatures. `manifest.json`
+records source revisions, the bundle checksum, and pending native validation.
+The LFM license is copied alongside the output.
+
+The conversion-only adapters align FP16 attention-cache reads with the query
+compute dtype and cast short-convolution state around float computation. Without
+these casts, tracing fails on attention dtype mismatch or MLIR rejects a
+mixed-dtype convolution-state concatenate. The min/max blockwise scale floor
+can underflow through FP16 for all-zero weights, including the padding-token
+row. The tooling gives those weights a positive representable scale before
+quantization. It rejects scale underflow for nonzero weights.
+
+### Existing 4K bundle and runtime support
+
+The [community bundle](https://huggingface.co/litert-community/LFM2.5-2.6B),
+inspected at revision `b25501d2e9c6fd4e87cab606dc022f0fdf3d3970`, contains a
+1.67 GB INT4 file. Its recipe uses OCTAV, not this tooling's min/max recipe.
+Its metadata selects `generic_model`, caps context at 4,096, and omits the
+function-calling capability flag. Its template renders tools but drops
+structured assistant calls and native tool-result content parts. A local Jinja
+probe reproduces both omissions. It is not an agent-ready drop-in bundle.
+
+[LiteRT-LM v0.18.0's LFM processor](https://github.com/google-ai-edge/LiteRT-LM/blob/v0.18.0/runtime/conversation/model_data_processor/lfm2_data_processor.cc)
+already parses Python-like calls between `<|tool_call_start|>` and
+`<|tool_call_end|>`. The export template preserves calls and results and starts
+assistant generation with `<think>`. Reasoning uses the separate `thought`
+channel. The LFM processor rejects constrained decoding; parsing does not
+provide grammar-enforced schema correctness.
+
+The community card reports Pixel 8a Tensor G3 GPU decode at 11.0–11.2 tokens/s
+and first-token latency at 3.04–3.06 s for a 261-token prompt. CPU decode is
+7.4–10.2 tokens/s. These results apply to the community 4K bundle, not the new
+16K FP16 export. Its reported GSM8K sample is 83% INT4 versus 92% BF16; this
+is not an agent benchmark.
+
+### Context and validation limits
+
+The [original checkpoint](https://huggingface.co/LiquidAI/LFM2.5-2.6B/blob/main/config.json)
+supports 131,072 positions. Its eight attention layers use eight KV heads with
+64 dimensions per head. Raw KV storage is 256 MiB at 16K FP16, or 512 MiB at
+32K FP16. FP32 doubles those sizes. Weights, convolution state, scratch buffers,
+and backend allocations add to them.
+
+A larger fixed cache requires a graph re-export, not a metadata-only change.
+Multiple-capacity or dynamic-cache exports are alternatives, but their LFM
+Android compatibility is not established. Tool pruning, retrieval, and history
+compaction reduce occupied context; they do not enlarge it. Reasoning shares
+the total budget with instructions, schemas, service facts, history, and output.
+
+This tooling does not enable LFM in Go Mode's settings or installer. Android
+integration needs model-specific context and sampler settings and validated
+GPU/CPU selection; `GOOGLE_TENSOR` compatibility is not established for this
+artifact. The current engine uses 10,240 tokens and Gemma sampler defaults.
+It already keeps thought-channel text separate from spoken replies.
+
+Preparation and a reduced-width 30-layer LFM export exercise the tooling.
+The full 2.6B conversion, LiteRT-LM native tool-result continuation, long-context
+quality, and Pixel 8 Pro GPU behavior remain acceptance checks. Measure first
+correct action latency, multi-step completion, memory, and sustained thermal
+behavior, not just first-token latency or decode throughput.
+
+## Empirical Findings on Physical Pixel 8 Pro
 
 Testing on a Google Pixel 8 Pro running production Android build `CP3A.261005.005` yielded the following findings:
 
@@ -343,7 +475,7 @@ Testing on a Google Pixel 8 Pro running production Android build `CP3A.261005.00
 
 2. **LiteRT-LM Runtime Readiness**:
    - Google designated **LiteRT-LM** (`com.google.ai.edge.litertlm:litertlm-android:0.18.0`) as the production successor to MediaPipe LLM Inference (`tasks-genai`, which is now in maintenance mode).
-   - The library introduces a dedicated `Backend.GOOGLE_TENSOR` hardware accelerator targeting Tensor G3 silicon directly.
+   - The library exposes `Backend.GOOGLE_TENSOR`, `GPU`, and `CPU`. Backend compatibility depends on the exported artifact; selecting a backend does not prove TPU execution.
    - It exposes native Kotlin Coroutine Flows (`Conversation.sendMessageAsync` returning `Flow<Message>`) and native function calling (`ToolSet`, `ToolCall`).
    - Models run without any Google account enrollment or system updates. Developers download weights (such as Gemma 4 E2B/E4B or Gemma 2 2B) directly from Hugging Face or Kaggle in `.litertlm` container format.
    - Model initialization and file mapping execute asynchronously on `Dispatchers.IO` to prevent UI thread blocking. The voice overlay displays the active model name (e.g. `Loading Gemma 4 E2B…`) while loading.

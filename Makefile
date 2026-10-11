@@ -1,6 +1,6 @@
 # Build and verification targets for the standalone Go Mode contracts and shell.
 .DEFAULT_GOAL := help
-.PHONY: help build fix verify test test-race android-check android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-push android-e2e screenshots-check screenshots-generate screenshots-update generate-sdks refresh-generated benchmark coverage test-smoke upgrade git-hooks tools
+.PHONY: help build fix verify test test-race android-check android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-push android-e2e screenshots-check screenshots-generate screenshots-update generate-sdks refresh-generated benchmark coverage test-smoke upgrade git-hooks tools export-lfm-litert
 
 RUFF_VERSION=0.16.8
 UV_BIN := $(shell uv tool dir --bin 2>/dev/null)
@@ -46,6 +46,7 @@ help:
 	@printf '  %-27s - %s\n' 'make android-start-emulator' 'Start or reuse the Android emulator'
 	@printf '  %-27s - %s\n' 'make android-stop-emulator' 'Stop the Android emulator'
 	@printf '  %-27s - %s\n' 'make android-sdk' 'Install required Android SDK packages'
+	@printf '  %-27s - %s\n' 'make export-lfm-litert' 'Export LFM2.5-2.6B INT4 with a 16K FP16 cache'
 	@printf '  %-27s - %s\n' 'make generate-sdks' 'Regenerate protocol SDKs after DTO or route changes'
 	@printf '  %-27s - %s\n' 'make refresh-generated' 'Regenerate SDKs and AGENTS file indexes'
 	@printf '  %-27s - %s\n' 'make upgrade' 'Upgrade Go and pnpm dependencies'
@@ -127,6 +128,10 @@ android-stop-emulator:
 android-push: android-sdk
 	@cd ./android && ./gradlew :gomode:assembleDebug --quiet
 	@python3 scripts/android_push.py
+
+# Offline conversion tooling; does not install or enable the model in Android.
+export-lfm-litert:
+	@uv run --frozen --script scripts/export_lfm_litert.py
 
 # Pushes LiteRT-LM model weights to /data/local/tmp/llm/ on a connected device.
 android-push-model:
