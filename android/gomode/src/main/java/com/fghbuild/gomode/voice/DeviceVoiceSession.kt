@@ -100,6 +100,7 @@ internal class DeviceVoiceSession(
         }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val attemptGeneration = AtomicLong()
+    private var listeningGeneration = 0L
     private val voiceModeChime = VoiceModeChime(voiceChimePlayer)
 
     private val _state = MutableStateFlow(VoiceState())
@@ -405,7 +406,14 @@ internal class DeviceVoiceSession(
 
     private fun handleAssistantText(delta: String) {
         if (delta.isEmpty()) return
-        _state.update { it.copy(transcript = it.transcript.appendChunk(TranscriptSpeaker.ASSISTANT, delta)) }
+        if (_state.value.listening) speech.stopListening()
+        turnIdle = false
+        _state.update {
+            it.copy(
+                listening = false,
+                transcript = it.transcript.withoutUserDraft().appendChunk(TranscriptSpeaker.ASSISTANT, delta),
+            )
+        }
         segmenter.push(delta).forEach(::speak)
     }
 
@@ -453,17 +461,25 @@ internal class DeviceVoiceSession(
         if (pendingSpeech > 0 || speakerActive) return
         if (_state.value.listening) return
         val attempt = attemptGeneration.get()
+        val recognition = ++listeningGeneration
+
+        fun currentRecognition() = ownsAttempt(attempt) && recognition == listeningGeneration && _state.value.listening
         _state.update { it.copy(listening = true) }
         speech.startListening(
-            onResult = { text -> handleUserUtterance(attempt, text) },
-            onIdle = { handleListeningIdle(attempt) },
-            onError = { message -> reportAttemptError(attempt, message) },
+            onResult = { text -> if (currentRecognition()) handleUserUtterance(attempt, text) },
+            onPartial = { text ->
+                if (currentRecognition()) {
+                    _state.update { it.copy(transcript = it.transcript.replaceUserDraft(text, final = false)) }
+                }
+            },
+            onIdle = { if (currentRecognition()) handleListeningIdle(attempt) },
+            onError = { message -> if (currentRecognition()) reportAttemptError(attempt, message) },
         )
     }
 
     private fun handleListeningIdle(attempt: Long) {
         if (attempt != attemptGeneration.get()) return
-        _state.update { it.copy(listening = false) }
+        _state.update { it.copy(listening = false, transcript = it.transcript.withoutUserDraft()) }
         maybeStartListening()
     }
 
@@ -478,7 +494,7 @@ internal class DeviceVoiceSession(
         _state.update {
             it.copy(
                 listening = false,
-                transcript = it.transcript + TranscriptEntry(TranscriptSpeaker.USER, text, final = true),
+                transcript = it.transcript.replaceUserDraft(text, final = true),
             )
         }
         val currentEngine = engine
@@ -673,7 +689,13 @@ internal class DeviceVoiceSession(
         VoiceService.stop(appContext)
         otherSetup = null
         // Preserve transcript so the user can review it after disconnecting.
-        _state.value = VoiceState(transcript = _state.value.transcript.map { it.copy(final = true) })
+        _state.value =
+            VoiceState(
+                transcript =
+                    _state.value.transcript
+                        .withoutUserDraft()
+                        .map { it.copy(final = true) },
+            )
     }
 
     override fun setError(message: String) {
@@ -699,6 +721,7 @@ internal class DeviceVoiceSession(
                 turnState = TurnState.Idle,
                 error = message,
                 errorId = it.errorId + 1,
+                transcript = it.transcript.withoutUserDraft(),
             )
         }
     }
@@ -707,7 +730,9 @@ internal class DeviceVoiceSession(
         muted = !muted
         if (muted) {
             speech.stopListening()
-            _state.update { it.copy(muted = true, listening = false, micLevel = 0f) }
+            _state.update {
+                it.copy(muted = true, listening = false, micLevel = 0f, transcript = it.transcript.withoutUserDraft())
+            }
             return
         }
         _state.update { it.copy(muted = false) }
@@ -740,6 +765,16 @@ internal class DeviceVoiceSession(
         disconnect()
         speech.close()
     }
+
+    private fun List<TranscriptEntry>.withoutUserDraft(): List<TranscriptEntry> =
+        if (lastOrNull()?.let { it.speaker == TranscriptSpeaker.USER && !it.final } == true) dropLast(1) else this
+
+    private fun List<TranscriptEntry>.replaceUserDraft(
+        text: String,
+        final: Boolean,
+    ): List<TranscriptEntry> =
+        withoutUserDraft() +
+            if (text.isBlank()) emptyList() else listOf(TranscriptEntry(TranscriptSpeaker.USER, text, final))
 
     private fun flushPendingNotifications() {
         if (pendingNotifications.isEmpty()) return

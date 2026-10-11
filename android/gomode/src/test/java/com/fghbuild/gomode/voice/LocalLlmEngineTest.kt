@@ -8,8 +8,10 @@ import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ConversationConfig
+import com.google.ai.edge.litertlm.LiteRtLmJniException
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.Role
+import com.google.ai.edge.litertlm.SamplerConfig
 import com.google.ai.edge.litertlm.ToolManager
 import com.google.gson.JsonParser
 import kotlinx.coroutines.CompletableDeferred
@@ -84,6 +86,14 @@ class LocalLlmEngineTest {
             },
         )
 
+    private fun assertRecommendedSampler(config: ConversationConfig): SamplerConfig {
+        val sampler = checkNotNull(config.samplerConfig)
+        assertEquals(64, sampler.topK)
+        assertEquals(0.95, sampler.topP, 0.0)
+        assertEquals(1.0, sampler.temperature, 0.0)
+        return sampler
+    }
+
     private fun callMessage(
         name: String = "switch_service",
         args: Map<String, Any?> = mapOf("service" to "media"),
@@ -154,6 +164,10 @@ class LocalLlmEngineTest {
             assertEquals("Recovered", result.assistantText)
             assertEquals(listOf("Recovered"), deltas)
             assertEquals(requests[1].toString(), requests[2].toString())
+            val initialSampler = assertRecommendedSampler(configs.first())
+            val retrySampler = assertRecommendedSampler(configs.last())
+            assertTrue(retrySampler.seed >= 2)
+            assertTrue(retrySampler.seed != initialSampler.seed)
             assertEquals(2, configs.last().initialMessages.size)
             assertEquals(
                 Role.USER,
@@ -253,6 +267,185 @@ class LocalLlmEngineTest {
         }
 
     @Test
+    fun `native parser failure on second turn retries that message with prior history`() =
+        runTest {
+            val requests = mutableListOf<Message>()
+            val configs = mutableListOf<ConversationConfig>()
+            val engine =
+                engine(configs) { request ->
+                    requests.add(request)
+                    when (requests.size) {
+                        1 -> flowOf(Message.model("First answer"))
+                        2 -> flow { throw nativeParseFailure() }
+                        else -> flowOf(Message.model("Second answer"))
+                    }
+                }
+            engine.initialize(sessionContext)
+            engine.processTurn(UserTurnInput("First request"), {}, { error("No tool") })
+            val deltas = mutableListOf<String>()
+            val result = engine.processTurn(UserTurnInput("Second request"), deltas::add) { error("No tool") }
+            assertEquals("Second answer", result.assistantText)
+            assertEquals(listOf("Second answer"), deltas)
+            assertEquals(requests[1].toString(), requests[2].toString())
+            assertEquals(2, configs.last().initialMessages.size)
+            assertTrue(
+                configs
+                    .last()
+                    .initialMessages
+                    .first()
+                    .toString()
+                    .contains("First request"),
+            )
+            assertFalse(ShadowLog.getLogsForTag("LocalLlmEngine").joinToString { it.msg }.contains("private-output"))
+            engine.closeAndJoin()
+        }
+
+    @Test
+    fun `successive native retries use fresh seeds and keep recommended sampling on reset`() =
+        runTest {
+            val configs = mutableListOf<ConversationConfig>()
+            var attempts = 0
+            val engine =
+                engine(configs) {
+                    attempts++
+                    if (attempts % 2 == 1) flow { throw nativeParseFailure() } else flowOf(Message.model("Recovered"))
+                }
+            engine.initialize(sessionContext)
+            engine.processTurn(UserTurnInput("First request"), {}, { error("No tool") })
+            engine.processTurn(UserTurnInput("Second request"), {}, { error("No tool") })
+            assertEquals(3, configs.size)
+            val seeds = configs.map { assertRecommendedSampler(it).seed }
+            assertEquals(3, seeds.distinct().size)
+            assertTrue(seeds.drop(1).all { it >= 2 })
+            engine.resetConversation(sessionContext)
+            assertEquals(seeds.last(), assertRecommendedSampler(configs.last()).seed)
+            engine.closeAndJoin()
+        }
+
+    @Test
+    fun `native parse retries stop after one attempt and expose no parser dump`() =
+        runTest {
+            var attempts = 0
+            val engine =
+                engine {
+                    attempts++
+                    flow { throw nativeParseFailure() }
+                }
+            engine.initialize(sessionContext)
+            val failure =
+                runCatching {
+                    engine.processTurn(UserTurnInput("Request"), { error("No speech") }, { error("No tool") })
+                }.exceptionOrNull()
+            assertEquals("Local model could not form a valid tool call. Try again.", failure?.message)
+            assertEquals(2, attempts)
+            engine.closeAndJoin()
+        }
+
+    @Test
+    fun `native parser recovery reuses tool result without repeating side effects`() =
+        runTest {
+            val requests = mutableListOf<Message>()
+            val configs = mutableListOf<ConversationConfig>()
+            var dispatches = 0
+            val engine =
+                engine(configs) { message ->
+                    requests.add(message)
+                    when (requests.size) {
+                        1 -> flowOf(callMessage())
+                        2 -> flow { throw nativeParseFailure() }
+                        else -> flowOf(Message.model("Done"))
+                    }
+                }
+            engine.initialize(sessionContext)
+            engine.processTurn(UserTurnInput("Run"), {}) {
+                dispatches++
+                JsonObject(emptyMap())
+            }
+            assertEquals(1, dispatches)
+            assertEquals(Role.TOOL, requests[1].role)
+            assertEquals(requests[1].toString(), requests[2].toString())
+            assertEquals(
+                "switch_service",
+                configs
+                    .last()
+                    .initialMessages
+                    .last()
+                    .toolCalls
+                    .single()
+                    .name,
+            )
+            engine.closeAndJoin()
+        }
+
+    @Test
+    fun `native parser failure after close does not retry`() =
+        runTest {
+            val configs = mutableListOf<ConversationConfig>()
+            var active: LocalLlmEngine? = null
+            val engine =
+                engine(configs) {
+                    flow {
+                        active?.close()
+                        throw nativeParseFailure()
+                    }
+                }
+            active = engine
+            engine.initialize(sessionContext)
+            engine.processTurn(UserTurnInput("Run"), { error("No speech") }, { error("No tool") })
+            assertEquals(1, configs.size)
+            engine.closeAndJoin()
+        }
+
+    @Test
+    fun `parse failure after streamed speech does not retry or expose generated arguments`() =
+        runTest {
+            var attempts = 0
+            val engine =
+                engine {
+                    attempts++
+                    flow {
+                        emit(Message.model("Already spoken."))
+                        throw nativeParseFailure()
+                    }
+                }
+            engine.initialize(sessionContext)
+            val deltas = mutableListOf<String>()
+            val failure =
+                runCatching {
+                    engine.processTurn(UserTurnInput("Request"), deltas::add) { error("No tool") }
+                }.exceptionOrNull()
+            assertEquals("Local model could not form a valid tool call. Try again.", failure?.message)
+            assertEquals(1, attempts)
+            assertEquals(listOf("Already spoken."), deltas)
+            engine.closeAndJoin()
+        }
+
+    @Test
+    fun `other native failures do not retry`() =
+        runTest {
+            var attempts = 0
+            val engine =
+                engine {
+                    attempts++
+                    flow { throw LiteRtLmJniException("Status Code: 3. Message: Context is full") }
+                }
+            engine.initialize(sessionContext)
+            val failure =
+                runCatching {
+                    engine.processTurn(UserTurnInput("Request"), {}, { error("No tool") })
+                }.exceptionOrNull()
+            assertTrue(failure is LiteRtLmJniException)
+            assertEquals(1, attempts)
+            engine.closeAndJoin()
+        }
+
+    private fun nativeParseFailure() =
+        LiteRtLmJniException(
+            "Status Code: 3. Message: Failed to parse tool calls from code block: private-output\n" +
+                "full response: <|tool_call>private-output<tool_call|>",
+        )
+
+    @Test
     fun `partial prefix and marker after ordinary text remain ordinary speech`() =
         runTest {
             val engine = engine { flowOf(Message.model("<!tool")) }
@@ -303,6 +496,7 @@ class LocalLlmEngineTest {
             val engine = engine(configs)
             engine.initialize(sessionContext)
             val config = configs.single()
+            assertRecommendedSampler(config)
             assertFalse(config.automaticToolCalling)
             assertTrue(config.prefillPrefaceOnInit)
             val description =

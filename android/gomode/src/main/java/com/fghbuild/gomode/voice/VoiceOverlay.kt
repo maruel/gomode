@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -49,16 +50,23 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.caic.voicegateway.sdk.v1.TurnState
@@ -334,6 +342,16 @@ private fun ActivePanel(
                 }
             }
         }
+        val draft = voiceState.transcript.lastOrNull()?.takeIf { it.speaker == TranscriptSpeaker.USER && !it.final }
+        if (!transcriptExpanded && voiceState.listening && draft != null) {
+            Text(
+                text = "You: ${draft.text}",
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().testTag("gomode-voice-recognition-draft"),
+            )
+        }
         if (transcriptExpanded) {
             TranscriptLog(
                 entries = voiceState.transcript,
@@ -421,16 +439,37 @@ private fun TranscriptLog(
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
+    var followingTail by remember { mutableStateOf(true) }
+    val manualScroll =
+        remember(listState) {
+            object : NestedScrollConnection {
+                override fun onPreScroll(
+                    available: Offset,
+                    source: NestedScrollSource,
+                ): Offset {
+                    if (source == NestedScrollSource.UserInput && available.y != 0f) followingTail = false
+                    return Offset.Zero
+                }
+            }
+        }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }.collect { (scrolling, forward) ->
+            if (!scrolling && !forward) followingTail = true
+        }
+    }
     val lastEntryText = entries.lastOrNull()?.text
-    LaunchedEffect(entries.size, lastEntryText) {
-        if (entries.isNotEmpty()) {
-            listState.scrollToItem(entries.size - 1)
+    LaunchedEffect(entries.size, lastEntryText, followingTail) {
+        if (entries.isEmpty()) {
+            followingTail = true
+        } else if (followingTail) {
+            // A bottom sentinel reaches the end even when the last message is taller than the viewport.
+            listState.scrollToItem(entries.size)
         }
     }
     if (entries.isNotEmpty()) {
         LazyColumn(
             state = listState,
-            modifier = modifier.height(TranscriptHeight),
+            modifier = modifier.height(TranscriptHeight).nestedScroll(manualScroll),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             itemsIndexed(entries) { _, entry ->
@@ -454,6 +493,9 @@ private fun TranscriptLog(
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.fillMaxWidth(),
                 )
+            }
+            item {
+                Spacer(Modifier.fillMaxWidth().height(1.dp).testTag("gomode-voice-transcript-end"))
             }
         }
     }

@@ -120,6 +120,145 @@ class DeviceVoiceSessionTest {
     }
 
     @Test
+    fun `partial recognition replaces draft and final recognition submits one message`() {
+        val speech = FakeSpeech()
+        val socket = FakeWebSocket()
+        var listener: WebSocketListener? = null
+        val session =
+            createSession(speech) { _, captured ->
+                listener = captured
+                socket
+            }
+        session.connect()
+        val connected = requireNotNull(listener)
+        connected.onOpen(socket, upgradeResponse())
+        connected.onMessage(socket, """{"kind":"session.ready"}""")
+        connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+        val partial = requireNotNull(speech.partialCallback)
+        val result = requireNotNull(speech.resultCallback)
+        val sentBefore = socket.sent.size
+        partial("Send a")
+        partial("Send the message")
+        assertEquals(
+            listOf(TranscriptEntry(TranscriptSpeaker.USER, "Send the message", final = false)),
+            session.state.value.transcript,
+        )
+        assertEquals(sentBefore, socket.sent.size)
+        result("Send the final message")
+        assertEquals(
+            listOf(TranscriptEntry(TranscriptSpeaker.USER, "Send the final message", final = true)),
+            session.state.value.transcript,
+        )
+        assertEquals(sentBefore + 1, socket.sent.size)
+        result("Duplicate result")
+        partial("Late partial")
+        connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+        partial("Stale partial from previous utterance")
+        result("Stale final from previous utterance")
+        assertEquals(
+            "Send the final message",
+            session.state.value.transcript
+                .single()
+                .text,
+        )
+        assertEquals(sentBefore + 1, socket.sent.size)
+        session.close()
+    }
+
+    @Test
+    fun `idle mute and disconnect discard recognition drafts and ignore retired callbacks`() {
+        val speech = FakeSpeech()
+        val socket = FakeWebSocket()
+        var listener: WebSocketListener? = null
+        val session =
+            createSession(speech) { _, captured ->
+                listener = captured
+                socket
+            }
+        session.connect()
+        val connected = requireNotNull(listener)
+        connected.onOpen(socket, upgradeResponse())
+        connected.onMessage(socket, """{"kind":"session.ready"}""")
+        connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+        val retired = requireNotNull(speech.partialCallback)
+        retired("Unfinished")
+        requireNotNull(speech.idle).invoke()
+        assertTrue(
+            session.state.value.transcript
+                .isEmpty(),
+        )
+        retired("Late hypothesis")
+        assertTrue(
+            session.state.value.transcript
+                .isEmpty(),
+        )
+        requireNotNull(speech.partialCallback)("Another draft")
+        session.toggleMute()
+        assertTrue(
+            session.state.value.transcript
+                .isEmpty(),
+        )
+        session.toggleMute()
+        requireNotNull(speech.partialCallback)("New draft")
+        requireNotNull(speech.partialCallback)("")
+        assertTrue(
+            session.state.value.transcript
+                .isEmpty(),
+        )
+        val beforeDisconnect = requireNotNull(speech.partialCallback)
+        beforeDisconnect("Disconnected draft")
+        session.disconnect()
+        beforeDisconnect("Late disconnected draft")
+        assertTrue(
+            session.state.value.transcript
+                .isEmpty(),
+        )
+        session.close()
+    }
+
+    @Test
+    fun `incoming assistant text retires recognition without committing the draft`() {
+        val speech = FakeSpeech()
+        val socket = FakeWebSocket()
+        var listener: WebSocketListener? = null
+        val session =
+            createSession(speech) { _, captured ->
+                listener = captured
+                socket
+            }
+        session.connect()
+        val connected = requireNotNull(listener)
+        connected.onOpen(socket, upgradeResponse())
+        connected.onMessage(socket, """{"kind":"session.ready"}""")
+        connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+        val partial = requireNotNull(speech.partialCallback)
+        val result = requireNotNull(speech.resultCallback)
+        partial("Unfinished user draft")
+        connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Notice."}""")
+        partial("Late partial")
+        result("Late final")
+        assertFalse(session.state.value.listening)
+        assertFalse(speech.listening)
+        assertEquals(
+            "Notice.",
+            session.state.value.transcript
+                .single()
+                .text,
+        )
+        assertEquals(
+            TranscriptSpeaker.ASSISTANT,
+            session.state.value.transcript
+                .single()
+                .speaker,
+        )
+        connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+        assertTrue(session.state.value.listening)
+        partial("Retired callback after idle")
+        assertEquals(1, session.state.value.transcript.size)
+        session.close()
+    }
+
+    @Test
     fun `device session sends the selected speech language`() {
         val socket = FakeWebSocket()
         var listener: WebSocketListener? = null
@@ -891,17 +1030,20 @@ class DeviceVoiceSessionTest {
         var listeningStarts = 0
         var idle: (() -> Unit)? = null
         var resultCallback: ((String) -> Unit)? = null
+        var partialCallback: ((String) -> Unit)? = null
 
         override fun isAvailable(): Boolean = true
 
         override fun startListening(
             onResult: (String) -> Unit,
+            onPartial: (String) -> Unit,
             onIdle: () -> Unit,
             onError: (String) -> Unit,
         ) {
             listeningStarts++
             listening = true
             resultCallback = onResult
+            partialCallback = onPartial
             idle = onIdle
         }
 
@@ -909,6 +1051,7 @@ class DeviceVoiceSessionTest {
             listening = false
             idle = null
             resultCallback = null
+            partialCallback = null
         }
 
         override fun speak(

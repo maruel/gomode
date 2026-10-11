@@ -23,11 +23,12 @@ internal interface DeviceSpeech {
     fun isAvailable(): Boolean
 
     /**
-     * startListening begins one utterance. onResult reports final text, onIdle
-     * reports a normal end with no text, and onError reports a failure.
+     * startListening begins one utterance. onPartial replaces the live hypothesis.
+     * onResult reports final text, onIdle reports no text, and onError reports a failure.
      */
     fun startListening(
         onResult: (String) -> Unit,
+        onPartial: (String) -> Unit,
         onIdle: () -> Unit,
         onError: (String) -> Unit,
     )
@@ -125,6 +126,7 @@ internal class AndroidDeviceSpeech(
 
     override fun startListening(
         onResult: (String) -> Unit,
+        onPartial: (String) -> Unit,
         onIdle: () -> Unit,
         onError: (String) -> Unit,
     ) {
@@ -146,7 +148,7 @@ internal class AndroidDeviceSpeech(
                     override fun onEndOfSpeech() = Unit
 
                     override fun onError(error: Int) {
-                        if (generation != recognitionGeneration) return
+                        if (generation != recognitionGeneration || !listening) return
                         listening = false
                         // Silence and a missed match are normal half-duplex outcomes.
                         if (error == SpeechRecognizer.ERROR_NO_MATCH ||
@@ -159,7 +161,7 @@ internal class AndroidDeviceSpeech(
                     }
 
                     override fun onResults(results: Bundle?) {
-                        if (generation != recognitionGeneration) return
+                        if (generation != recognitionGeneration || !listening) return
                         listening = false
                         val text =
                             results
@@ -169,7 +171,15 @@ internal class AndroidDeviceSpeech(
                         if (text.isNotBlank()) onResult(text) else onIdle()
                     }
 
-                    override fun onPartialResults(partialResults: Bundle?) = Unit
+                    override fun onPartialResults(partialResults: Bundle?) {
+                        if (generation != recognitionGeneration || !listening) return
+                        onPartial(
+                            partialResults
+                                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                                ?.firstOrNull()
+                                .orEmpty(),
+                        )
+                    }
 
                     override fun onEvent(
                         eventType: Int,
@@ -197,7 +207,7 @@ internal class AndroidDeviceSpeech(
         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
         }
 

@@ -2,14 +2,21 @@
 package com.fghbuild.gomode.voice
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeDown
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -77,6 +84,90 @@ class VoicePanelTest {
         assertTrue(composeRule.onAllNodesWithTag("gomode-voice-transcript").fetchSemanticsNodes().isEmpty())
         composeRule.onNodeWithTag("gomode-voice-transcript-toggle").performClick()
         composeRule.onNodeWithTag("gomode-voice-transcript").assertIsDisplayed()
+    }
+
+    @Test
+    fun recognitionDraftRevisesWhileTheTranscriptIsCollapsed() {
+        val state = mutableStateOf(VoiceState(connected = true, listening = true))
+        composeRule.setContent {
+            MaterialTheme {
+                VoicePanel(state.value, true, {}, {}, {}, {}, {}, {}, null)
+            }
+        }
+        composeRule.runOnIdle {
+            state.value = state.value.copy(transcript = listOf(TranscriptEntry(TranscriptSpeaker.USER, "Send a")))
+        }
+        composeRule.onNodeWithTag("gomode-voice-recognition-draft").assertIsDisplayed()
+        composeRule.onNodeWithText("You: Send a").assertIsDisplayed()
+        composeRule.runOnIdle {
+            state.value =
+                state.value.copy(transcript = listOf(TranscriptEntry(TranscriptSpeaker.USER, "Send the message")))
+        }
+        composeRule.onNodeWithText("You: Send a").assertDoesNotExist()
+        composeRule.onNodeWithText("You: Send the message").assertIsDisplayed()
+        composeRule.runOnIdle {
+            state.value =
+                state.value.copy(
+                    listening = false,
+                    transcript =
+                        listOf(
+                            TranscriptEntry(TranscriptSpeaker.USER, "Send the message", final = true),
+                        ),
+                )
+        }
+        composeRule.onNodeWithTag("gomode-voice-recognition-draft").assertDoesNotExist()
+    }
+
+    @Test
+    fun longSpeakingResponseFollowsItsBottomWithoutOverridingManualScroll() {
+        val longText = (1..100).joinToString("\n") { "Response paragraph $it." }
+        val state =
+            mutableStateOf(
+                VoiceState(
+                    connected = true,
+                    speaking = true,
+                    transcript = listOf(TranscriptEntry(TranscriptSpeaker.ASSISTANT, longText)),
+                ),
+            )
+        composeRule.setContent {
+            MaterialTheme {
+                VoicePanel(state.value, true, {}, {}, {}, {}, {}, {}, null)
+            }
+        }
+        composeRule.onNodeWithTag("gomode-voice-transcript-toggle").performClick()
+        composeRule.onNodeWithTag("gomode-voice-transcript-end").assertIsDisplayed()
+
+        fun appendResponse() {
+            composeRule.runOnIdle {
+                state.value =
+                    state.value.copy(
+                        transcript =
+                            listOf(
+                                TranscriptEntry(
+                                    TranscriptSpeaker.ASSISTANT,
+                                    state.value.transcript
+                                        .single()
+                                        .text + "\nNew paragraph.",
+                                ),
+                            ),
+                    )
+            }
+        }
+        appendResponse()
+        composeRule.onNodeWithTag("gomode-voice-transcript-end").assertIsDisplayed()
+        val transcript = composeRule.onNodeWithTag("gomode-voice-transcript")
+        transcript.performTouchInput { swipeDown() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("gomode-voice-transcript-end").assertIsNotDisplayed()
+        val before = transcript.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+        appendResponse()
+        composeRule.waitForIdle()
+        val after = transcript.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+        assertEquals(before, after, 0.01f)
+        composeRule.onNodeWithTag("gomode-voice-transcript-end").assertIsNotDisplayed()
+        transcript.performScrollToNode(hasTestTag("gomode-voice-transcript-end"))
+        appendResponse()
+        composeRule.onNodeWithTag("gomode-voice-transcript-end").assertIsDisplayed()
     }
 
     @Test

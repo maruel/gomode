@@ -15,8 +15,10 @@ import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.LiteRtLmJniException
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.OpenApiTool
+import com.google.ai.edge.litertlm.SamplerConfig
 import com.google.ai.edge.litertlm.tool
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonParser
@@ -41,10 +43,14 @@ import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.random.Random
 
 private const val TAG = "LocalLlmEngine"
 private const val MAX_TOOL_ROUNDS = 8
 private const val MALFORMED_TOOL_PREFIX = "<!tool_call>"
+private const val NATIVE_TOOL_PARSE_ERROR =
+    "Status Code: 3. Message: Failed to parse tool calls from code block:"
+private const val INVALID_TOOL_REPLY = "Local model could not form a valid tool call. Try again."
 private val toolJson = GsonBuilder().serializeNulls().create()
 
 private enum class TurnOutcome { CANCELLED, COMPLETED, FAILED, INVALIDATED }
@@ -291,6 +297,7 @@ internal class LocalLlmEngine(
     }
 
     private val nativeOperation = Mutex()
+    private var samplerSeed = 0
     private val cleanupScope = CoroutineScope(ioDispatcher)
     private val cleanup =
         cleanupScope
@@ -493,56 +500,77 @@ internal class LocalLlmEngine(
                 val prefix = StringBuilder()
                 var decided = false
                 var malformed = false
-                activeRunner.generateStream(message).collect { reply ->
-                    // Gemma trims each content item in its template. Keep text chunk boundaries out of replay.
-                    reply.contents.contents.forEach { content ->
-                        if (content is Content.Text) {
-                            replayText.append(content.text)
-                        } else {
-                            if (replayText.isNotEmpty()) contents.add(Content.Text(replayText.toString()))
-                            replayText.clear()
-                            contents.add(content)
-                        }
-                    }
-                    calls.addAll(reply.toolCalls)
-                    reply.channels.forEach { (name, text) -> channels[name] = channels[name].orEmpty() + text }
-                    reply.contents.contents.filterIsInstance<Content.Text>().forEach { content ->
-                        if (!malformed) {
-                            if (decided) {
-                                onDelta(content.text)
+                var nativeParseFailure = false
+                var emittedText = false
+                try {
+                    activeRunner.generateStream(message).collect { reply ->
+                        // Gemma trims each content item in its template. Keep text chunk boundaries out of replay.
+                        reply.contents.contents.forEach { content ->
+                            if (content is Content.Text) {
+                                replayText.append(content.text)
                             } else {
-                                prefix.append(content.text)
-                                val start = prefix.toString().trimStart()
-                                when {
-                                    start.startsWith(MALFORMED_TOOL_PREFIX) -> {
-                                        malformed = true
-                                    }
+                                if (replayText.isNotEmpty()) contents.add(Content.Text(replayText.toString()))
+                                replayText.clear()
+                                contents.add(content)
+                            }
+                        }
+                        calls.addAll(reply.toolCalls)
+                        reply.channels.forEach { (name, text) -> channels[name] = channels[name].orEmpty() + text }
+                        reply.contents.contents.filterIsInstance<Content.Text>().forEach { content ->
+                            if (!malformed) {
+                                if (decided) {
+                                    emittedText = true
+                                    onDelta(content.text)
+                                } else {
+                                    prefix.append(content.text)
+                                    val start = prefix.toString().trimStart()
+                                    when {
+                                        start.startsWith(MALFORMED_TOOL_PREFIX) -> {
+                                            malformed = true
+                                        }
 
-                                    !MALFORMED_TOOL_PREFIX.startsWith(start) -> {
-                                        decided = true
-                                        onDelta(prefix.toString())
-                                        prefix.clear()
+                                        !MALFORMED_TOOL_PREFIX.startsWith(start) -> {
+                                            decided = true
+                                            emittedText = true
+                                            onDelta(prefix.toString())
+                                            prefix.clear()
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+                } catch (e: LiteRtLmJniException) {
+                    // LiteRT includes the generated tool call in this parser error. Never display or log it.
+                    if (e.message?.startsWith(NATIVE_TOOL_PARSE_ERROR) != true) throw e
+                    nativeParseFailure = true
                 }
                 // Always drain native work before rebuilding or handling invalidation.
                 if (!validateTurn()) {
                     retryOutcome = RetryOutcome.INVALIDATED
                     return null
                 }
-                if (!malformed) {
+                if (!malformed && !nativeParseFailure) {
                     if (!decided && prefix.isNotEmpty()) onDelta(prefix.toString())
                     if (replayText.isNotEmpty()) contents.add(Content.Text(replayText.toString()))
                     retryOutcome = RetryOutcome.RECOVERED
                     return Message.model(Contents.of(contents), calls, channels)
                 }
-                check(attempt == 0) { "Local model repeated a malformed tool-call prefix" }
+                if (nativeParseFailure) {
+                    // Speech cannot be retracted. Retry only when this generation emitted no text.
+                    check(attempt == 0 && !emittedText) { INVALID_TOOL_REPLY }
+                } else {
+                    check(attempt == 0) { "Local model repeated a malformed tool-call prefix" }
+                }
                 retried = true
                 diagnostics.retries++
-                Log.w(TAG, "local_retry ${diagnostics.metadata()} outcome=started reason=malformed_tool_prefix")
+                val previousSeed = samplerSeed
+                do {
+                    // std::default_random_engine aliases seeds 0 and 1. Avoid both on recovery.
+                    samplerSeed = Random.nextInt(2, Int.MAX_VALUE)
+                } while (samplerSeed == previousSeed)
+                val reason = if (nativeParseFailure) "native_tool_parse" else "malformed_tool_prefix"
+                Log.w(TAG, "local_retry ${diagnostics.metadata()} outcome=started reason=$reason seed=$samplerSeed")
                 val config =
                     conversationConfig(
                         checkNotNull(sessionContext),
@@ -596,6 +624,9 @@ internal class LocalLlmEngine(
     private fun conversationConfig(context: EngineSessionContext): ConversationConfig =
         ConversationConfig(
             systemInstruction = Contents.of(formatSystemPrompt(context)),
+            // Google's Gemma 4 defaults; recovery changes only the seed.
+            // https://ai.google.dev/gemma/docs/core/model_card_4
+            samplerConfig = SamplerConfig(topK = 64, topP = 0.95, temperature = 1.0, seed = samplerSeed),
             tools =
                 context.tools.map { descriptor ->
                     tool(
