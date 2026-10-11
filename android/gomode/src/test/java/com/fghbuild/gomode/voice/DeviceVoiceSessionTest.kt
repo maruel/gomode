@@ -15,7 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -476,12 +476,12 @@ class DeviceVoiceSessionTest {
 
     @Test
     fun `on-device voice session connects and runs turn with NeuDecide without network websocket`() =
-        runBlocking {
+        runTest {
             val speech = FakeSpeech()
             var webSocketOpened = false
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
             repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
-            repo.updateOnDeviceEngine(OnDeviceEngine.NEUDECIDE)
+            selectEngine(repo, OnDeviceEngine.NEUDECIDE)
 
             val session =
                 createSession(
@@ -517,7 +517,7 @@ class DeviceVoiceSessionTest {
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
             repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
-            repo.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+            selectEngine(repo, OnDeviceEngine.LOCAL_LLM)
 
             val owner = LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher, readServiceContext = { "" })
             owner.select(LocalModelSelection("en-US", { testSetup() }, { true }))
@@ -553,7 +553,7 @@ class DeviceVoiceSessionTest {
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
             repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
-            repo.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+            selectEngine(repo, OnDeviceEngine.LOCAL_LLM)
 
             var allocations = 0
             var discoveries = 0
@@ -621,7 +621,7 @@ class DeviceVoiceSessionTest {
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
             repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
-            repo.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+            selectEngine(repo, OnDeviceEngine.LOCAL_LLM)
             val finishSetup = CompletableDeferred<Unit>()
             val calls = FakeVoiceCallController()
             val application = RuntimeEnvironment.getApplication()
@@ -693,7 +693,7 @@ class DeviceVoiceSessionTest {
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
             repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
-            repo.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+            selectEngine(repo, OnDeviceEngine.LOCAL_LLM)
             val finishTurn = CompletableDeferred<Unit>()
             var allocations = 0
             val events = mutableListOf<String>()
@@ -768,7 +768,7 @@ class DeviceVoiceSessionTest {
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
             repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
-            repo.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+            selectEngine(repo, OnDeviceEngine.LOCAL_LLM)
             val finishTurn = CompletableDeferred<Unit>()
             var generations = 0
             var closes = 0
@@ -845,7 +845,7 @@ class DeviceVoiceSessionTest {
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
             repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
-            repo.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+            selectEngine(repo, OnDeviceEngine.LOCAL_LLM)
             var generations = 0
             var resets = 0
             val owner =
@@ -911,11 +911,11 @@ class DeviceVoiceSessionTest {
 
     @Test
     fun `on-device voice session runs Needle Whistle engine with confidence threshold tool dispatch`() =
-        runBlocking {
+        runTest {
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
             repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
-            repo.updateOnDeviceEngine(OnDeviceEngine.NEEDLE_WHISTLE)
+            selectEngine(repo, OnDeviceEngine.NEEDLE_WHISTLE)
 
             var turnProcessed = false
             val session =
@@ -965,11 +965,11 @@ class DeviceVoiceSessionTest {
 
     @Test
     fun `offline fallback runs on-device engine when remote gateway setup fails`() =
-        runBlocking {
+        runTest {
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
             repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
-            repo.updateOnDeviceEngine(OnDeviceEngine.NEUDECIDE)
+            selectEngine(repo, OnDeviceEngine.NEUDECIDE)
 
             val session =
                 createSession(
@@ -988,6 +988,15 @@ class DeviceVoiceSessionTest {
             session.disconnect()
             session.close()
         }
+
+    private suspend fun selectEngine(
+        repository: SettingsRepository,
+        engine: OnDeviceEngine,
+    ) {
+        repository.updateOnDeviceEngine(engine)
+        // Saving preferences does not wait for the repository's IO collector to publish them.
+        repository.settings.first { it.onDeviceEngine == engine }
+    }
 
     private fun createSession(
         speech: DeviceSpeech,
