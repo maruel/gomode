@@ -123,8 +123,9 @@ android-start-emulator: android-setup-emulator
 android-stop-emulator:
 	@python3 scripts/android_stop_emulator.py
 
-# Slow: compiles, checks, installs, and launches the app on a connected device.
-android-push: android-check
+# Builds, installs, and launches the app without running the android-check validation gate.
+android-push: android-sdk
+	@cd ./android && ./gradlew :gomode:assembleDebug --quiet
 	@python3 scripts/android_push.py
 
 # Pushes LiteRT-LM model weights to /data/local/tmp/llm/ on a connected device.
