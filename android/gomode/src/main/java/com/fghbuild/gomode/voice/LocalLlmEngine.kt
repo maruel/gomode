@@ -308,6 +308,7 @@ internal class LocalLlmEngine(
                     } finally {
                         runner = null
                         sessionContext = null
+                        toolValidator = null
                         conversationHistory.clear()
                     }
                 }
@@ -319,6 +320,7 @@ internal class LocalLlmEngine(
             }
 
     private var sessionContext: EngineSessionContext? = null
+    private var toolValidator: ToolCallValidator? = null
 
     @Volatile
     private var runner: EdgeLlmRunner? = null
@@ -332,10 +334,12 @@ internal class LocalLlmEngine(
             val previousRunner = runner
             runner = null
             sessionContext = null
+            toolValidator = null
             conversationHistory.clear()
             var preparedRunner: EdgeLlmRunner? = null
             try {
                 withContext(NonCancellable + ioDispatcher) { previousRunner?.close() }
+                val preparedValidator = withContext(ioDispatcher) { ToolCallValidator(context.tools) }
                 withContext(ioDispatcher) {
                     check(!closed.get()) { "Local model engine is closed" }
                     preparedRunner = runnerFactory?.invoke(this@LocalLlmEngine.context, conversationConfig(context))
@@ -344,6 +348,7 @@ internal class LocalLlmEngine(
                 check(!closed.get()) { "Local model engine was closed during initialization" }
                 runner = preparedRunner
                 sessionContext = context
+                toolValidator = preparedValidator
                 Log.i(TAG, "Initialized LocalLlmEngine on Google Pixel 8 Pro with ${context.tools.size} tools")
             } finally {
                 // Also release a model if cancellation or close wins during blocking initialization.
@@ -373,9 +378,11 @@ internal class LocalLlmEngine(
     private suspend fun replaceConversation(context: EngineSessionContext) {
         check(!closed.get()) { "Local model engine is closed" }
         val activeRunner = checkNotNull(runner) { "Local model session is not initialized" }
+        val preparedValidator = withContext(ioDispatcher) { ToolCallValidator(context.tools) }
         // A blocking native prefill must finish before either reuse or disposal can proceed.
         withContext(NonCancellable + ioDispatcher) { activeRunner.replaceConversation(conversationConfig(context)) }
         sessionContext = context
+        toolValidator = preparedValidator
         conversationHistory.clear()
     }
 
@@ -393,6 +400,7 @@ internal class LocalLlmEngine(
                 if (query.isEmpty()) return@withContext EngineTurnResult()
 
                 val activeRunner = checkNotNull(runner) { "Local model session is not initialized" }
+                val validator = checkNotNull(toolValidator)
 
                 val diagnostics = LocalTurnDiagnostics(model.name, activeRunner.backendName)
 
@@ -435,25 +443,45 @@ internal class LocalLlmEngine(
                             diagnostics.toolRounds < MAX_TOOL_ROUNDS,
                         ) { "Local model exceeded the tool round limit" }
                         diagnostics.toolRounds++
-                        val tools = checkNotNull(sessionContext).tools.map { it.name }.toSet()
-                        // Validate the complete batch before executing any call.
-                        require(calls.all { it.name in tools }) { "Local model requested an unavailable tool" }
+                        val requested =
+                            calls.map { call ->
+                                ToolCall(
+                                    kind = MessageKind.ToolCall,
+                                    id = UUID.randomUUID().toString(),
+                                    name = call.name,
+                                    args = Json.parseToJsonElement(toolJson.toJson(call.arguments)) as JsonObject,
+                                )
+                            }
+                        // Reject the whole batch before side effects; Gemma can submit a corrected batch.
+                        val errors = requested.map { validator.validate(it.name, it.args as JsonObject) }
+                        if (errors.any { it != null }) {
+                            message =
+                                Message.tool(
+                                    Contents.of(
+                                        requested.mapIndexed { index, call ->
+                                            val error =
+                                                errors[index]
+                                                    ?: (
+                                                        "Call not executed: batch validation failed. " +
+                                                            "Submit a corrected batch."
+                                                    )
+                                            Content.ToolResponse(
+                                                call.name,
+                                                JsonParser.parseString(errorJson(error).toString()),
+                                            )
+                                        },
+                                    ),
+                                )
+                            continue
+                        }
                         val results = mutableListOf<Content.ToolResponse>()
-                        for (call in calls) {
+                        for (dispatched in requested) {
                             if (!validateTurn()) {
                                 return@withContext EngineTurnResult(
                                     assistantText = text.toString(),
                                     toolCalls = executed,
                                 )
                             }
-                            val args = Json.parseToJsonElement(toolJson.toJson(call.arguments)) as JsonObject
-                            val dispatched =
-                                ToolCall(
-                                    kind = MessageKind.ToolCall,
-                                    id = UUID.randomUUID().toString(),
-                                    name = call.name,
-                                    args = args,
-                                )
                             val result = onToolCall(dispatched)
                             executed.add(dispatched)
                             // Hang-up invalidates the turn even when the owner retains the loaded model.
@@ -464,7 +492,10 @@ internal class LocalLlmEngine(
                                 )
                             }
                             results.add(
-                                Content.ToolResponse(call.name, JsonParser.parseString(result?.toString() ?: "null")),
+                                Content.ToolResponse(
+                                    dispatched.name,
+                                    JsonParser.parseString(result?.toString() ?: "null"),
+                                ),
                             )
                         }
                         message = Message.tool(Contents.of(results))

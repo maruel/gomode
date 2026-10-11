@@ -55,7 +55,8 @@ class LocalLlmEngineTest {
                         description = "Switch active service",
                         inputSchema =
                             Json.parseToJsonElement(
-                                """{"type":"object","properties":{"service":{"type":"string"}},"required":["service"]}""",
+                                """{"type":"object","properties":{"service":{"type":"string"}},""" +
+                                    """"required":["service"],"additionalProperties":false}""",
                             ),
                     ),
                 ),
@@ -581,6 +582,131 @@ class LocalLlmEngineTest {
         }
 
     @Test
+    fun `invalid argument batch executes nothing and corrected call uses unchanged arguments`() =
+        runTest {
+            var round = 0
+            val engine =
+                engine { request ->
+                    when (round++) {
+                        0 -> {
+                            flowOf(
+                                Message.model(
+                                    toolCalls =
+                                        callMessage().toolCalls +
+                                            callMessage(args = mapOf("query" to "private-value")).toolCalls,
+                                ),
+                            )
+                        }
+
+                        1 -> {
+                            val feedback = request.toString()
+                            assertTrue(feedback.contains("query"))
+                            assertTrue(feedback.contains("not executed"))
+                            flowOf(callMessage(args = mapOf("service" to "corrected")))
+                        }
+
+                        else -> {
+                            flowOf(Message.model("Done"))
+                        }
+                    }
+                }
+            engine.initialize(sessionContext)
+            val calls = mutableListOf<ToolCall>()
+            val result =
+                engine.processTurn(UserTurnInput("Switch"), {}) {
+                    calls.add(it)
+                    JsonObject(emptyMap())
+                }
+            assertEquals(1, calls.size)
+            assertEquals(Json.parseToJsonElement("""{"service":"corrected"}"""), calls.single().args)
+            assertEquals(calls, result.toolCalls)
+            assertEquals("Done", result.assistantText)
+            engine.closeAndJoin()
+        }
+
+    @Test
+    fun `schema replacement changes validation and malformed schemas fail before native preparation`() =
+        runTest {
+            val configs = mutableListOf<ConversationConfig>()
+            var round = 0
+            val engine =
+                engine(configs) {
+                    when (round++) {
+                        0 -> flowOf(callMessage(args = mapOf("service" to "old")))
+                        1 -> flowOf(callMessage(args = mapOf("service" to "new")))
+                        else -> flowOf(Message.model("Done"))
+                    }
+                }
+            val malformed =
+                sessionContext.copy(
+                    tools =
+                        listOf(
+                            ToolDescriptor(
+                                name = "switch_service",
+                                inputSchema = Json.parseToJsonElement("""{"required":"service"}"""),
+                            ),
+                        ),
+                )
+            assertTrue(runCatching { engine.initialize(malformed) }.isFailure)
+            assertTrue(configs.isEmpty())
+            assertFalse(engine.isModelLoaded)
+            engine.initialize(sessionContext)
+            val replacement =
+                sessionContext.copy(
+                    tools =
+                        listOf(
+                            ToolDescriptor(
+                                name = "switch_service",
+                                inputSchema =
+                                    Json.parseToJsonElement(
+                                        """{"properties":{"service":{"enum":["new"]}},"required":["service"]}""",
+                                    ),
+                            ),
+                        ),
+                )
+            engine.resetConversation(replacement)
+            val calls = mutableListOf<ToolCall>()
+            engine.processTurn(UserTurnInput("Switch"), {}) {
+                calls.add(it)
+                null
+            }
+            assertEquals(1, calls.size)
+            assertEquals(Json.parseToJsonElement("""{"service":"new"}"""), calls.single().args)
+            engine.closeAndJoin()
+        }
+
+    @Test
+    fun `unknown native tool receives correction feedback without dispatch`() =
+        runTest {
+            var round = 0
+            val engine =
+                engine { request ->
+                    when (round++) {
+                        0 -> {
+                            flowOf(callMessage("unknown"))
+                        }
+
+                        1 -> {
+                            assertTrue(request.toString().contains("Unknown tool"))
+                            flowOf(callMessage())
+                        }
+
+                        else -> {
+                            flowOf(Message.model("Done"))
+                        }
+                    }
+                }
+            engine.initialize(sessionContext)
+            val calls = mutableListOf<ToolCall>()
+            engine.processTurn(UserTurnInput("Switch"), {}) {
+                calls.add(it)
+                null
+            }
+            assertEquals(listOf("switch_service"), calls.map { it.name })
+            engine.closeAndJoin()
+        }
+
+    @Test
     fun `native arguments preserve nested arrays booleans null and number precision`() =
         runTest {
             val args =
@@ -603,7 +729,11 @@ class LocalLlmEngineTest {
                         flowOf(Message.model("Done"))
                     }
                 }
-            engine.initialize(sessionContext.copy(tools = listOf(ToolDescriptor(name = "configure"))))
+            engine.initialize(
+                sessionContext.copy(
+                    tools = listOf(ToolDescriptor(name = "configure", inputSchema = Json.parseToJsonElement("{}"))),
+                ),
+            )
             var dispatched: ToolCall? = null
             engine.processTurn(UserTurnInput("Configure it"), {}) {
                 dispatched = it
@@ -636,6 +766,7 @@ class LocalLlmEngineTest {
                     }
                 }.exceptionOrNull()
             assertTrue(failure is IllegalArgumentException)
+            assertTrue(failure?.message.orEmpty().contains("round limit"))
             assertEquals(0, dispatches)
             invalid.closeAndJoin()
             val looping = engine { flowOf(callMessage()) }
@@ -667,7 +798,14 @@ class LocalLlmEngineTest {
                         flowOf(Message.model("The service rejected the change."))
                     }
                 }
-            engine.initialize(sessionContext)
+            engine.initialize(
+                sessionContext.copy(
+                    tools =
+                        listOf(
+                            ToolDescriptor(name = "switch_service", inputSchema = Json.parseToJsonElement("{}")),
+                        ),
+                ),
+            )
             val calls = mutableListOf<ToolCall>()
             val result =
                 engine.processTurn(UserTurnInput("Run twice"), {}) {

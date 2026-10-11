@@ -1045,7 +1045,12 @@ class DeviceVoiceSessionTest {
                         tools =
                             listOf(
                                 com.fghbuild.mcp.sdk.v1
-                                    .ToolDescriptor(name = "stale"),
+                                    .ToolDescriptor(
+                                        name = "stale",
+                                        inputSchema =
+                                            kotlinx.serialization.json.Json
+                                                .parseToJsonElement("{}"),
+                                    ),
                             ),
                     )
                 }, { true }),
@@ -1122,7 +1127,12 @@ class DeviceVoiceSessionTest {
                         tools =
                             listOf(
                                 com.fghbuild.mcp.sdk.v1
-                                    .ToolDescriptor(name = HANG_UP_TOOL_NAME),
+                                    .ToolDescriptor(
+                                        name = HANG_UP_TOOL_NAME,
+                                        inputSchema =
+                                            kotlinx.serialization.json.Json
+                                                .parseToJsonElement("{}"),
+                                    ),
                             ),
                     )
                 }, { true }),

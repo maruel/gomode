@@ -78,7 +78,7 @@ class VoicePanelTest {
     }
 
     @Test
-    fun transcriptIsCollapsedByDefaultAndCanBeExpanded() {
+    fun transcriptIsExpandedByDefaultAndCanBeCollapsed() {
         composeRule.setContent {
             MaterialTheme {
                 VoicePanel(
@@ -103,6 +103,8 @@ class VoicePanelTest {
             }
         }
 
+        composeRule.onNodeWithTag("gomode-voice-transcript").assertIsDisplayed()
+        composeRule.onNodeWithTag("gomode-voice-transcript-toggle").performClick()
         assertTrue(composeRule.onAllNodesWithTag("gomode-voice-transcript").fetchSemanticsNodes().isEmpty())
         composeRule.onNodeWithTag("gomode-voice-transcript-toggle").performClick()
         composeRule.onNodeWithTag("gomode-voice-transcript").assertIsDisplayed()
@@ -119,6 +121,7 @@ class VoicePanelTest {
         composeRule.runOnIdle {
             state.value = state.value.copy(transcript = listOf(TranscriptEntry(TranscriptSpeaker.USER, "Send a")))
         }
+        composeRule.onNodeWithTag("gomode-voice-transcript-toggle").performClick()
         composeRule.onNodeWithTag("gomode-voice-recognition-draft").assertIsDisplayed()
         composeRule.onNodeWithText("You: Send a").assertIsDisplayed()
         composeRule.runOnIdle {
@@ -169,7 +172,6 @@ class VoicePanelTest {
                 VoicePanel(state.value, true, {}, {}, {}, {}, {}, {}, null)
             }
         }
-        composeRule.onNodeWithTag("gomode-voice-transcript-toggle").performClick()
         composeRule.onNodeWithTag("gomode-voice-transcript-end").assertIsDisplayed()
 
         fun appendResponse() {

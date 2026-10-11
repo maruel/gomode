@@ -255,7 +255,7 @@ private fun ActivePanel(
     onClearTranscript: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
-    var transcriptExpanded by rememberSaveable { mutableStateOf(false) }
+    var transcriptExpanded by rememberSaveable { mutableStateOf(true) }
 
     Column(
         modifier = Modifier.padding(start = 16.dp, top = 0.dp, end = 16.dp, bottom = 12.dp),

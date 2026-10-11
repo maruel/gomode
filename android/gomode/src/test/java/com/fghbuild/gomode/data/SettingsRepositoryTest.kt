@@ -95,6 +95,22 @@ class SettingsRepositoryTest {
         }
 
     @Test
+    fun `audio output choice defaults to automatic and survives repository recreation`() =
+        runBlocking {
+            val store = InMemoryPreferencesDataStore()
+            val repo = SettingsRepository(store)
+            assertNull(repo.awaitSettings("default output").voiceAudioDeviceType)
+            // Android's stable speaker and earpiece type values, not a session's transient device IDs.
+            repo.updateVoiceAudioDeviceType(2)
+            repo.awaitSettings("speaker saved") { it.voiceAudioDeviceType == 2 }
+            val restored = SettingsRepository(store)
+            restored.awaitSettings("speaker restored") { it.voiceAudioDeviceType == 2 }
+            restored.updateVoiceAudioDeviceType(1)
+            val reopened = SettingsRepository(store).awaitSettings("earpiece restored") { it.voiceAudioDeviceType == 1 }
+            assertEquals(1, reopened.voiceAudioDeviceType)
+        }
+
+    @Test
     fun `addService creates active web service`() =
         runBlocking {
             val repo = createRepo()

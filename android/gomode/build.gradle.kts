@@ -128,6 +128,10 @@ dependencies {
     implementation(libs.androidx.credentials.play.services.auth)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.json.schema.validator) {
+        // MCP tool schemas and arguments are JSON, never YAML.
+        exclude(group = "com.fasterxml.jackson.dataformat", module = "jackson-dataformat-yaml")
+    }
     implementation(libs.okhttp)
     implementation(libs.stream.webrtc)
     implementation(libs.onnxruntime.android)

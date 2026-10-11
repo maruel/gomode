@@ -5,6 +5,12 @@ import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.ui.web.WebShellLoadState
+import com.fghbuild.gomode.voice.AudioDevice
+import com.fghbuild.gomode.voice.VoiceState
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -12,6 +18,69 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GoModeAppTest {
+    @Test
+    fun savedOutputUsesCurrentCallIdsAndLeavesUnavailableRoutesAlone() =
+        runTest {
+            val states =
+                MutableStateFlow(
+                    VoiceState(
+                        connected = true,
+                        availableDevices = listOf(AudioDevice(41, 2, "Speaker"), AudioDevice(42, 1, "Earpiece")),
+                        selectedDeviceId = 41,
+                    ),
+                )
+            assertEquals(42, preferredVoiceAudioDevice(states, 1))
+            assertNull(preferredVoiceAudioDevice(states, 2))
+            assertNull(preferredVoiceAudioDevice(states, 7))
+            assertNull(preferredVoiceAudioDevice(states, null))
+            states.value = states.value.copy(connected = false)
+            assertNull(preferredVoiceAudioDevice(states, 1))
+            states.value =
+                states.value.copy(connected = true, availableDevices = listOf(AudioDevice(99, 1, "Earpiece")))
+            assertEquals(99, preferredVoiceAudioDevice(states, 1))
+        }
+
+    @Test
+    fun restoredEndpointWaitsForAnOutstandingSwitch() =
+        runTest {
+            val states =
+                MutableStateFlow(
+                    VoiceState(connected = true, audioSwitching = true, selectedDeviceId = 41),
+                )
+            val selection = async { preferredVoiceAudioDevice(states, 1) }
+            yield()
+            assertFalse(selection.isCompleted)
+            states.value = states.value.copy(availableDevices = listOf(AudioDevice(99, 1, "Earpiece")))
+            yield()
+            assertFalse(selection.isCompleted)
+            states.value = states.value.copy(audioSwitching = false, audioError = "Could not switch audio device")
+            assertEquals(99, selection.await())
+        }
+
+    @Test
+    fun failedExplicitSwitchDoesNotBecomeASavedPreference() =
+        runTest {
+            val states =
+                MutableStateFlow(
+                    VoiceState(connected = true, audioSwitching = true, selectedDeviceId = 41),
+                )
+            val confirmation = async { awaitVoiceAudioSelection(states, 42) }
+            yield()
+            assertFalse(confirmation.isCompleted)
+            states.value = states.value.copy(audioSwitching = false, audioError = "Could not switch audio device")
+            assertFalse(confirmation.await())
+            assertEquals("Could not switch audio device", states.value.audioError)
+            states.value = states.value.copy(selectedDeviceId = 42, audioError = null)
+            assertTrue(awaitVoiceAudioSelection(states, 42))
+            assertNull(
+                preferredVoiceAudioDevice(
+                    MutableStateFlow(states.value.copy(availableDevices = listOf(AudioDevice(42, 1, "Earpiece")))),
+                    1,
+                ),
+            )
+            assertFalse(awaitVoiceAudioSelection(MutableStateFlow(states.value.copy(connected = false)), 42))
+        }
+
     @Test
     fun startupOnlyPreparesCredentialReadySelectedLocalLlm() {
         val selected =

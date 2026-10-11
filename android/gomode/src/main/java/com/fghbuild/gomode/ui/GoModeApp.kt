@@ -74,8 +74,12 @@ import com.fghbuild.gomode.voice.VoicePanel
 import com.fghbuild.gomode.voice.VoiceService
 import com.fghbuild.gomode.voice.VoiceSession
 import com.fghbuild.gomode.voice.VoiceSessionController
+import com.fghbuild.gomode.voice.VoiceState
 import com.fghbuild.gomode.voice.prepareVoiceSetup
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerializationException
 import java.io.IOException
@@ -245,6 +249,13 @@ internal fun GoModeApp(
         if (changed || !authReady) voiceSession.disconnect()
     }
     val voiceState by voiceSession.state.collectAsStateWithLifecycle()
+    var audioSelectionJob by remember(voiceSession) { mutableStateOf<Job?>(null) }
+    LaunchedEffect(voiceSession, voiceState.connected, voiceState.availableDevices, settings.voiceAudioDeviceType) {
+        preferredVoiceAudioDevice(
+            voiceSession.state,
+            settings.voiceAudioDeviceType,
+        )?.let(voiceSession::selectAudioDevice)
+    }
     val serviceMonitor =
         remember(scope, bearerStore) {
             ServiceMonitor(scope = scope) { endpointURL, protocolVersion ->
@@ -440,7 +451,19 @@ internal fun GoModeApp(
                     },
                     onDisconnect = { voiceSession.disconnect() },
                     onToggleMute = { voiceSession.toggleMute() },
-                    onSelectDevice = { voiceSession.selectAudioDevice(it) },
+                    onSelectDevice = { id ->
+                        val device = voiceState.availableDevices.firstOrNull { it.id == id }
+                        if (device != null) {
+                            audioSelectionJob?.cancel()
+                            voiceSession.selectAudioDevice(id)
+                            audioSelectionJob =
+                                scope.launch {
+                                    if (awaitVoiceAudioSelection(voiceSession.state, id)) {
+                                        settingsRepository.updateVoiceAudioDeviceType(device.type)
+                                    }
+                                }
+                        }
+                    },
                     onClearTranscript = { voiceSession.clearTranscript() },
                     onOpenSettings = { activeNativeScreen = NativeScreen.Settings },
                     serviceStatusText = serviceMonitorState.error?.let { "Service updates are reconnecting." },
@@ -449,6 +472,32 @@ internal fun GoModeApp(
             }
         }
     }
+}
+
+// Save only confirmed user choices. A failed request leaves both the saved preference and route error intact.
+internal suspend fun awaitVoiceAudioSelection(
+    states: StateFlow<VoiceState>,
+    deviceId: Int,
+): Boolean {
+    val state =
+        states.first {
+            !it.connected || (!it.audioSwitching && (it.selectedDeviceId == deviceId || it.audioError != null))
+        }
+    return state.connected && state.selectedDeviceId == deviceId && state.audioError == null
+}
+
+// Device IDs belong to a call. Restore the saved output type only when it is available.
+internal suspend fun preferredVoiceAudioDevice(
+    states: StateFlow<VoiceState>,
+    type: Int?,
+): Int? {
+    // A list change can arrive while Telecom rejects route requests. Wait once; do not retry routing errors.
+    val state = states.first { !it.audioSwitching }
+    if (!state.connected) return null
+    return state.availableDevices
+        .firstOrNull { it.type == type }
+        ?.id
+        ?.takeIf { it != state.selectedDeviceId }
 }
 
 internal fun shouldPrepareLocalModel(

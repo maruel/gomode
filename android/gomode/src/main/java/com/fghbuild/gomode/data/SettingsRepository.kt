@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -72,6 +73,7 @@ data class SettingsState(
     val voiceLanguageTag: String = DEFAULT_VOICE_LANGUAGE_TAG,
     val onDeviceEngine: OnDeviceEngine = OnDeviceEngine.REMOTE_GATEWAY,
     val localLlmModel: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
+    val voiceAudioDeviceType: Int? = null,
 )
 
 class SettingsRepository(
@@ -89,6 +91,7 @@ class SettingsRepository(
         val VOICE_LANGUAGE_TAG = stringPreferencesKey("VOICE_LANGUAGE_TAG")
         val ON_DEVICE_VOICE_ENGINE = stringPreferencesKey("ON_DEVICE_VOICE_ENGINE")
         val LOCAL_LLM_MODEL = stringPreferencesKey("LOCAL_LLM_MODEL")
+        val VOICE_AUDIO_DEVICE_TYPE = intPreferencesKey("VOICE_AUDIO_DEVICE_TYPE")
     }
 
     val settings: StateFlow<SettingsState> =
@@ -103,6 +106,7 @@ class SettingsRepository(
                     haloAutoConnect = prefs[Keys.HALO_AUTO_CONNECT] ?: false,
                     services = services,
                     activeServiceId = active?.id ?: "",
+                    voiceAudioDeviceType = prefs[Keys.VOICE_AUDIO_DEVICE_TYPE],
                     voiceMode = decodeVoiceMode(prefs[Keys.VOICE_MODE]),
                     voiceLanguageTag = prefs[Keys.VOICE_LANGUAGE_TAG] ?: DEFAULT_VOICE_LANGUAGE_TAG,
                     onDeviceEngine = decodeOnDeviceEngine(prefs[Keys.ON_DEVICE_VOICE_ENGINE]),
@@ -192,6 +196,10 @@ class SettingsRepository(
 
     suspend fun updateOnDeviceEngine(engine: OnDeviceEngine) {
         dataStore.edit { prefs -> prefs[Keys.ON_DEVICE_VOICE_ENGINE] = engine.name }
+    }
+
+    suspend fun updateVoiceAudioDeviceType(type: Int) {
+        dataStore.edit { prefs -> prefs[Keys.VOICE_AUDIO_DEVICE_TYPE] = type }
     }
 
     suspend fun updateLocalLlmModel(model: LocalLlmModel) {
