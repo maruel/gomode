@@ -367,6 +367,7 @@ internal class DeviceVoiceSession(
                     val msg = json.decodeFromString(TurnStatus.serializer(), text)
                     _state.update { it.copy(turnState = msg.state) }
                     if (msg.state == TurnState.Idle) {
+                        finalizeAssistantReply()
                         speak(segmenter.flush())
                         turnIdle = true
                         maybeStartListening()
@@ -378,6 +379,8 @@ internal class DeviceVoiceSession(
                 }
 
                 MessageKind.Interrupted -> {
+                    finalizeAssistantReply()
+                    segmenter.clear()
                     speakerActive = false
                     speech.stopSpeaking()
                     pendingSpeech = 0
@@ -430,6 +433,40 @@ internal class DeviceVoiceSession(
         )
     }
 
+    private fun appendToolDiagnostic(
+        name: String,
+        message: String,
+    ) {
+        val diagnostic = TranscriptEntry(TranscriptSpeaker.ASSISTANT, "[$name] $message", final = true)
+        _state.update { state ->
+            val reply =
+                state.transcript.lastOrNull()?.takeIf {
+                    it.speaker == TranscriptSpeaker.ASSISTANT && !it.final
+                }
+            // Keep the streamed reply at the tail so later deltas extend it and scrolling follows it.
+            state.copy(
+                transcript =
+                    if (reply == null) {
+                        state.transcript + diagnostic
+                    } else {
+                        state.transcript.dropLast(1) + diagnostic + reply
+                    },
+            )
+        }
+    }
+
+    // Generation owns transcript boundaries; playback can finish between streamed fragments.
+    private fun finalizeAssistantReply() {
+        _state.update { state ->
+            val last = state.transcript.lastOrNull()
+            if (last?.speaker != TranscriptSpeaker.ASSISTANT || last.final) {
+                state
+            } else {
+                state.copy(transcript = state.transcript.dropLast(1) + last.copy(final = true))
+            }
+        }
+    }
+
     // Speech callbacks carry the attempt that started them so a delayed callback
     // from a superseded session cannot change the current one.
     private fun onSpeechDone(attempt: Long) {
@@ -437,12 +474,7 @@ internal class DeviceVoiceSession(
         pendingSpeech = maxOf(0, pendingSpeech - 1)
         if (pendingSpeech > 0) return
         speakerActive = false
-        _state.update {
-            it.copy(
-                speaking = false,
-                transcript = it.transcript.map { entry -> entry.copy(final = true) },
-            )
-        }
+        _state.update { it.copy(speaking = false) }
         flushPendingNotifications()
         maybeStartListening()
     }
@@ -530,6 +562,7 @@ internal class DeviceVoiceSession(
                     },
                 )
                 if (ownsAttempt(attempt)) {
+                    finalizeAssistantReply()
                     speak(segmenter.flush())
                     turnIdle = true
                     _state.update { it.copy(turnState = TurnState.Idle) }
@@ -582,13 +615,7 @@ internal class DeviceVoiceSession(
             if (result.isError) {
                 val errMsg = result.structuredContent["error"]?.jsonPrimitive?.content ?: "Tool error"
                 Log.e(TAG, "Tool $name failed: $errMsg")
-                _state.update {
-                    it.copy(
-                        transcript =
-                            it.transcript +
-                                TranscriptEntry(TranscriptSpeaker.ASSISTANT, "[$name] $errMsg", final = true),
-                    )
-                }
+                appendToolDiagnostic(name, errMsg)
             }
             return result.structuredContent
         } catch (e: CancellationException) {
@@ -643,13 +670,7 @@ internal class DeviceVoiceSession(
             if (result.isError) {
                 val errMsg = result.structuredContent["error"]?.jsonPrimitive?.content ?: "Tool error"
                 Log.e(TAG, "Tool $name failed: $errMsg")
-                _state.update {
-                    it.copy(
-                        transcript =
-                            it.transcript +
-                                TranscriptEntry(TranscriptSpeaker.ASSISTANT, "[$name] $errMsg", final = true),
-                    )
-                }
+                appendToolDiagnostic(name, errMsg)
             }
             sendToolResult(id, name, result.structuredContent)
         } catch (e: VoiceMcpAuthChangedException) {

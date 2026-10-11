@@ -490,6 +490,28 @@ class LocalLlmEngineTest {
         }
 
     @Test
+    fun `local prompt adds voice rules after host instructions and retains service facts`() =
+        runTest {
+            val configs = mutableListOf<ConversationConfig>()
+            val engine = engine(configs)
+            engine.initialize(
+                sessionContext.copy(
+                    systemInstruction = "Explain status in detail.",
+                    serviceContextText = "One job is waiting.",
+                ),
+            )
+            val prompt = configs.single().systemInstruction.toString()
+            assertTrue(prompt.contains("Explain status in detail."))
+            assertTrue(prompt.contains("One job is waiting."))
+            assertTrue(prompt.contains("plain text"))
+            assertTrue(prompt.contains("Do not use Markdown"))
+            assertTrue(prompt.contains("raw logs"))
+            assertTrue(prompt.contains("unless the user asks"))
+            assertTrue(prompt.indexOf("Voice response rules:") > prompt.indexOf("Explain status in detail."))
+            engine.closeAndJoin()
+        }
+
+    @Test
     fun `native declarations carry schemas and manual execution with real prefill`() =
         runTest {
             val configs = mutableListOf<ConversationConfig>()

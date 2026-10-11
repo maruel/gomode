@@ -20,11 +20,15 @@ import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import okio.ByteString
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -89,6 +93,239 @@ class DeviceVoiceSessionTest {
         assertTrue(socket.closed)
         assertFalse(session.state.value.connected)
     }
+
+    @Test
+    fun `speech fragments do not split a gateway reply and muted replies finalize on idle`() {
+        val speech = FakeSpeech()
+        val socket = FakeWebSocket()
+        var listener: WebSocketListener? = null
+        val session =
+            createSession(speech) { _, captured ->
+                listener = captured
+                socket
+            }
+        session.connect()
+        val connected = requireNotNull(listener)
+        connected.onOpen(socket, upgradeResponse())
+        connected.onMessage(socket, """{"kind":"session.ready"}""")
+        connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"First sentence. "}""")
+        assertFalse(
+            session.state.value.transcript
+                .single()
+                .final,
+        )
+        connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Second sentence."}""")
+        assertEquals(
+            listOf(TranscriptEntry(TranscriptSpeaker.ASSISTANT, "First sentence. Second sentence.")),
+            session.state.value.transcript,
+        )
+        connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+        assertTrue(
+            session.state.value.transcript
+                .single()
+                .final,
+        )
+        session.toggleMute()
+        connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Muted reply."}""")
+        assertFalse(
+            session.state.value.transcript
+                .last()
+                .final,
+        )
+        connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+        assertTrue(
+            session.state.value.transcript
+                .last()
+                .final,
+        )
+        assertEquals(2, session.state.value.transcript.size)
+        session.close()
+    }
+
+    @Test
+    fun `gateway reply finalizes before playback ends and listening waits for playback`() {
+        val speech = FakeSpeech(completeSpeechImmediately = false)
+        val socket = FakeWebSocket()
+        var listener: WebSocketListener? = null
+        val session =
+            createSession(speech) { _, captured ->
+                listener = captured
+                socket
+            }
+        session.connect()
+        val connected = requireNotNull(listener)
+        connected.onOpen(socket, upgradeResponse())
+        connected.onMessage(socket, """{"kind":"session.ready"}""")
+        connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"First sentence. "}""")
+        speech.speechCompletions.removeAt(0).invoke()
+        assertFalse(
+            session.state.value.transcript
+                .single()
+                .final,
+        )
+        connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Last fragment"}""")
+        connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+        assertEquals(
+            listOf(TranscriptEntry(TranscriptSpeaker.ASSISTANT, "First sentence. Last fragment", final = true)),
+            session.state.value.transcript,
+        )
+        assertTrue(session.state.value.speaking)
+        assertFalse(speech.listening)
+        speech.speechCompletions.removeAt(0).invoke()
+        assertFalse(session.state.value.speaking)
+        assertTrue(speech.listening)
+        session.close()
+    }
+
+    @Test
+    fun `interruption closes the reply without leaking its unfinished speech into the next reply`() {
+        val speech = FakeSpeech()
+        val socket = FakeWebSocket()
+        var listener: WebSocketListener? = null
+        val session =
+            createSession(speech) { _, captured ->
+                listener = captured
+                socket
+            }
+        session.connect()
+        val connected = requireNotNull(listener)
+        connected.onOpen(socket, upgradeResponse())
+        connected.onMessage(socket, """{"kind":"session.ready"}""")
+        connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Interrupted fragment"}""")
+        connected.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
+        assertTrue(
+            session.state.value.transcript
+                .single()
+                .final,
+        )
+        connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"New reply."}""")
+        connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+        assertEquals(listOf("New reply."), speech.spoken)
+        assertEquals(2, session.state.value.transcript.size)
+        session.close()
+    }
+
+    @Test
+    fun `local reply remains one finalized row across speech fragments and tool errors`() =
+        runTest {
+            MockWebServer().use { server ->
+                server.enqueue(toolFailureResponse())
+                server.start()
+                val speech = FakeSpeech()
+                val repo = SettingsRepository(InMemoryPreferencesDataStore())
+                selectEngine(repo, OnDeviceEngine.NEUDECIDE)
+                val session =
+                    createSession(
+                        speech = speech,
+                        settingsRepo = repo,
+                        setupProvider = { toolSetup(server) },
+                        engineFactory = { engineType ->
+                            object : OnDeviceVoiceEngine {
+                                override val engineType = engineType
+
+                                override suspend fun initialize(context: EngineSessionContext) = Unit
+
+                                override suspend fun processTurn(
+                                    input: UserTurnInput,
+                                    onDelta: (String) -> Unit,
+                                    onToolCall: suspend (com.caic.voicegateway.sdk.v1.ToolCall) ->
+                                    kotlinx.serialization.json.JsonElement?,
+                                ): EngineTurnResult {
+                                    onDelta("First sentence. ")
+                                    val result =
+                                        onToolCall(
+                                            com.caic.voicegateway.sdk.v1.ToolCall(
+                                                kind = com.caic.voicegateway.sdk.v1.MessageKind.ToolCall,
+                                                id = "call-1",
+                                                name = "example_tool",
+                                                args = kotlinx.serialization.json.JsonObject(emptyMap()),
+                                            ),
+                                        )
+                                    assertEquals(
+                                        "Unavailable",
+                                        result
+                                            ?.jsonObject
+                                            ?.get("error")
+                                            ?.jsonPrimitive
+                                            ?.content,
+                                    )
+                                    onDelta("Second sentence.")
+                                    return EngineTurnResult(assistantText = "First sentence. Second sentence.")
+                                }
+
+                                override suspend fun injectContext(text: String) = Unit
+
+                                override fun close() = Unit
+                            }
+                        },
+                    )
+                session.connect()
+                requireNotNull(speech.resultCallback)("Hello")
+                val finished =
+                    session.state.first {
+                        it.transcript.lastOrNull()?.final == true &&
+                            it.transcript.size == 3
+                    }
+                assertEquals(
+                    listOf(
+                        TranscriptEntry(TranscriptSpeaker.USER, "Hello", final = true),
+                        TranscriptEntry(TranscriptSpeaker.ASSISTANT, "[example_tool] Unavailable", final = true),
+                        TranscriptEntry(TranscriptSpeaker.ASSISTANT, "First sentence. Second sentence.", final = true),
+                    ),
+                    finished.transcript,
+                )
+                session.close()
+            }
+        }
+
+    @Test
+    fun `gateway tool diagnostic does not close or split the generated reply`() =
+        runTest {
+            MockWebServer().use { server ->
+                server.enqueue(toolFailureResponse())
+                server.start()
+                val speech = FakeSpeech()
+                val socket = FakeWebSocket()
+                var listener: WebSocketListener? = null
+                val session =
+                    createSession(
+                        speech = speech,
+                        setupProvider = { toolSetup(server) },
+                        factory = { _, captured ->
+                            listener = captured
+                            socket
+                        },
+                    )
+                session.connect()
+                val connected = requireNotNull(listener)
+                connected.onOpen(socket, upgradeResponse())
+                connected.onMessage(socket, """{"kind":"session.ready"}""")
+                connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"First sentence. "}""")
+                connected.onMessage(socket, """{"kind":"tool.call","id":"call-1","name":"example_tool","args":{}}""")
+                session.state.first { it.transcript.size == 2 }
+                connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Second sentence."}""")
+                connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+                assertEquals(
+                    listOf(
+                        TranscriptEntry(TranscriptSpeaker.ASSISTANT, "[example_tool] Unavailable", final = true),
+                        TranscriptEntry(TranscriptSpeaker.ASSISTANT, "First sentence. Second sentence.", final = true),
+                    ),
+                    session.state.value.transcript,
+                )
+                session.close()
+            }
+        }
+
+    private fun toolSetup(server: MockWebServer): VoiceSetup =
+        testSetup().copy(mcpClient = McpClient(server.url("/mcp").toString(), "2026-07-28", { null }))
+
+    private fun toolFailureResponse(): MockResponse =
+        MockResponse().setBody(
+            """
+            {"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","content":[],
+              "isError":true,"structuredContent":{"error":"Unavailable"}}}
+            """.trimIndent(),
+        )
 
     @Test
     fun `gateway error remains visible after idle and socket closure`() {
@@ -1046,8 +1283,11 @@ class DeviceVoiceSessionTest {
             .message("Switching Protocols")
             .build()
 
-    private class FakeSpeech : DeviceSpeech {
+    private class FakeSpeech(
+        private val completeSpeechImmediately: Boolean = true,
+    ) : DeviceSpeech {
         val spoken = mutableListOf<String>()
+        val speechCompletions = mutableListOf<() -> Unit>()
         var listening = false
         var listeningStarts = 0
         var idle: (() -> Unit)? = null
@@ -1082,7 +1322,7 @@ class DeviceVoiceSessionTest {
             onError: (String) -> Unit,
         ) {
             spoken.add(text)
-            onDone()
+            if (completeSpeechImmediately) onDone() else speechCompletions.add(onDone)
         }
 
         override fun stopSpeaking() = Unit

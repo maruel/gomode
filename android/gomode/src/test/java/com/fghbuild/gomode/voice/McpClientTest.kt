@@ -6,6 +6,8 @@ import com.fghbuild.mcp.sdk.v1.SubscriptionFilter
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -19,6 +21,56 @@ import org.junit.Test
 import java.util.concurrent.TimeUnit
 
 class McpClientTest {
+    @Test
+    fun `tool arguments pass unchanged and HTTP success does not hide invalid params`() =
+        runTest {
+            val server = MockWebServer()
+            server.start()
+            try {
+                server.enqueue(
+                    MockResponse().setBody(
+                        """
+                        {"jsonrpc":"2.0","id":1,"result":{
+                          "resultType":"complete","content":[],"structuredContent":{"state":"waiting"}
+                        }}
+                        """.trimIndent(),
+                    ),
+                )
+                val errorMessage = "invalid arguments: json: unknown field \"query\""
+                server.enqueue(
+                    MockResponse().setResponseCode(200).setBody(
+                        """{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":${Json.encodeToString(
+                            errorMessage,
+                        )}}}""",
+                    ),
+                )
+                val client = McpClient(server.url("/mcp").toString(), "2026-07-28", { null })
+                val validArgs = Json.parseToJsonElement("""{"item":6}""").jsonObject
+                assertEquals(
+                    "waiting",
+                    client
+                        .callTool("item_detail", validArgs)
+                        .structuredContent["state"]
+                        ?.jsonPrimitive
+                        ?.content,
+                )
+                val generatedArgs = Json.parseToJsonElement("""{"query":"item 6"}""").jsonObject
+                val failure = runCatching { client.callTool("item_detail", generatedArgs) }.exceptionOrNull()
+                assertTrue(failure is IllegalStateException)
+                assertEquals(errorMessage, failure?.message)
+                for (args in listOf(validArgs, generatedArgs)) {
+                    val request = requireNotNull(server.takeRequest(5, TimeUnit.SECONDS))
+                    val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                    assertEquals("tools/call", body["method"]?.jsonPrimitive?.content)
+                    val params = requireNotNull(body["params"]).jsonObject
+                    assertEquals("item_detail", params["name"]?.jsonPrimitive?.content)
+                    assertEquals(args, params["arguments"])
+                }
+            } finally {
+                server.shutdown()
+            }
+        }
+
     @Test
     fun `MCP request sends bearer and cookie only to the original service`() =
         runBlocking {
