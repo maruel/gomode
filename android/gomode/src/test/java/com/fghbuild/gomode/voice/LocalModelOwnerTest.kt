@@ -122,6 +122,26 @@ class LocalModelOwnerTest {
             owner.release(third.await())
             testScheduler.runCurrent()
             assertEquals(5, events.size)
+            owner.select(LocalModelSelection("en-US", { setup() }, { true }, LocalLlmModel.LFM_2_5_1_2B))
+            val fourth = async { owner.acquire() }
+            testScheduler.runCurrent()
+            assertFalse(third.await().engine.isModelLoaded)
+            assertEquals("LFM 2.5 1.2B", fourth.await().engine.modelName)
+            assertEquals(
+                listOf(
+                    "allocate Gemma 4 E2B",
+                    "close Gemma 4 E2B",
+                    "allocate Gemma 4 E4B",
+                    "close Gemma 4 E4B",
+                    "allocate LFM 2.5 2.6B",
+                    "close LFM 2.5 2.6B",
+                    "allocate LFM 2.5 1.2B",
+                ),
+                events,
+            )
+            owner.release(fourth.await())
+            testScheduler.runCurrent()
+            assertEquals(7, events.size)
             owner.close()
             testScheduler.runCurrent()
         }

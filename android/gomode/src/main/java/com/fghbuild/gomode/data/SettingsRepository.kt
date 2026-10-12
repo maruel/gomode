@@ -60,6 +60,7 @@ enum class LocalLlmModel(
     val topK: Int = 64,
     val topP: Double = 0.95,
     val temperature: Double = 1.0,
+    val alias: String? = null,
 ) {
     GEMMA_4_E2B(
         label = "Gemma 4 E2B",
@@ -77,6 +78,15 @@ enum class LocalLlmModel(
         topP = 0.95,
         temperature = 1.0,
     ),
+    LFM_2_5_1_2B(
+        label = "LFM 2.5 1.2B",
+        fileName = "LFM2.5-1.2B-Instruct_int4_16k_fp16.litertlm",
+        maxNumTokens = 16_384,
+        topK = 50,
+        topP = 1.0,
+        temperature = 0.1,
+        alias = "LFM2.5-1.2B-Instruct",
+    ),
     LFM_2_5_2_6B(
         label = "LFM 2.5 2.6B",
         fileName = "LFM2.5-2.6B_int4_16k_fp16.litertlm",
@@ -84,7 +94,21 @@ enum class LocalLlmModel(
         topK = 50,
         topP = 1.0,
         temperature = 0.1,
+        alias = "LFM2.5-2.6B",
     ),
+    ;
+
+    fun matches(raw: String): Boolean {
+        val clean = raw.removeSuffix(".litertlm")
+        val fileStem = fileName.removeSuffix(".litertlm")
+        return clean.equals(label, ignoreCase = true) ||
+            clean.equals(fileStem, ignoreCase = true) ||
+            clean.equals(alias, ignoreCase = true)
+    }
+
+    companion object {
+        fun fromRawName(raw: String): LocalLlmModel? = entries.firstOrNull { it.matches(raw) }
+    }
 }
 
 const val DEFAULT_VOICE_LANGUAGE_TAG = "en-US"

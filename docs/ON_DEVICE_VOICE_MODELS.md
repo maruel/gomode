@@ -48,10 +48,11 @@ For a 150M model in 4-bit quantization (~75 MB weight read per token), the ~34 G
 *   *Thermal behavior:* A 100 MB working set remains within CPU cache hierarchies. Power consumption remains low, preventing thermal throttling.
 *   *Capabilities:* Sub-300M models succeed at intent extraction, structured JSON generation, and single-turn tool selection. They fail at deep factual recall and multi-step reasoning.
 
-#### Profile B: 1B to 3B Models via `llama.cpp` CPU
+#### Profile B: 1B to 3B Models via CPU and GPU
 
-*   *Measured baseline:* Community benchmarks of `llama.cpp` CPU execution on Tensor G3 report **5 to 6 tokens per second** for 1B to 2.6B models (Gemma-2-2B, Phi-2) at `Q4_0`.
-*   *GPU limits:* Mali-G715 OpenCL and Vulkan backends suffer from driver overhead and poor GEMV kernel scheduling, reducing generation speed to 1 to 2 tok/s.
+*   *Measured baseline (CPU):* Community benchmarks of `llama.cpp` CPU execution on Tensor G3 report **5 to 6 tokens per second** for 1B to 2.6B models (Gemma-2-2B, Phi-2) at `Q4_0`.
+*   *Vulkan driver limits:* Generic `llama.cpp` Vulkan backends on Mali-G715 suffer from driver overhead and poor GEMV kernel scheduling, reducing generation speed to 1 to 2 tok/s.
+*   *LiteRT OpenCL acceleration:* In contrast, LiteRT-LM's OpenCL runtime (MLDrift) achieves **11.0 to 11.2 tok/s decode** on LFM 2.6B and **21.0 to 21.2 tok/s decode** with **188 to 193 tok/s prefill** on LFM 1.2B on Tensor G3, provided context length stays bounded (≤ 4,096 tokens).
 
 #### Profile C: System Gemini Nano via Android AICore
 
@@ -328,7 +329,7 @@ the device. It also pushes the default `make export-lfm-litert` output when it
 exists. Repeated runs skip unchanged files.
 
 In settings, select **On-device voice → Gemma 4**, then **Gemma 4 E2B**,
-**Gemma 4 E4B**, or **LFM 2.5 2.6B**. End an active voice session before changing the model.
+**Gemma 4 E4B**, **LFM 2.5 1.2B**, or **LFM 2.5 2.6B**. End an active voice session before changing the model.
 The app saves the choice and prepares that model at startup. Missing weights
 produce an installation error; the app does not substitute the other variant.
 Both named files can stay installed. Existing generic E2B installations remain
@@ -359,10 +360,11 @@ with llama.cpp Q4_0, 1K prefill, and 100 decoded tokens. That is not a Tensor G3
 measurement. The [LFM license](https://www.liquid.ai/lfm-license) requires a
 separate commercial license at $10M or more annual revenue.
 
-## LFM2.5-2.6B 16K INT4/FP16 Export
+## LFM2.5 16K INT4/FP16 Export
 
 [`scripts/export_lfm_litert.py`](../scripts/export_lfm_litert.py) re-exports the
-original checkpoint. It does not convert a GGUF or resize an existing 4K bundle.
+original checkpoint (supporting `1.2b` by default, or `2.6b` via `--variant`).
+It does not convert a GGUF or resize an existing 4K bundle.
 The target uses INT4 blockwise-32 min/max fully connected weights, INT8 embedding
 lookup weights, floating-point convolutions, and a 16,384-token FP16 cache.
 FP16 cache storage and the `fp32_fp16` activation preference do not mean every
@@ -372,10 +374,9 @@ float computations FP32. The Android GPU delegate decides how to lower them.
 ### Prepare and export
 
 Use a Linux conversion host with `uv`, network access, sufficient RAM, and disk
-space for the original checkpoint and intermediate graphs. The exporter loads
-about 10.8 GB of FP32 weights before converter allocations. Use a 64 GB host
-as the conservative recommendation; an idle 32 GB host may suffice. These are
-capacity estimates, not measured full-conversion peaks. The generated
+space for the original checkpoint and intermediate graphs. The 1.2B variant requires
+substantially less memory (~5 GB RAM during export) than the 2.6B variant (~32–64 GB).
+These are capacity estimates, not measured full-conversion peaks. The generated
 `work/` directory retains intermediate files for diagnosis. Python 3.12,
 the exporter revision, and dependencies are isolated by the script's uv lock.
 
@@ -384,26 +385,27 @@ weights:
 
 ```sh
 uv run --frozen --script scripts/export_lfm_litert.py \
-  --prepare-only --output-dir /tmp/lfm-export-inputs
+  --variant 1.2b --prepare-only --output-dir /tmp/lfm-export-inputs
 ```
 
-Run the full conversion:
+Run the full conversion (defaults to 1.2B):
 
 ```sh
 make export-lfm-litert
 ```
 
-The default output directory is `models/lfm2.5-2.6b-16k-fp16/`. To choose another:
+Or choose a specific variant and output directory:
 
 ```sh
-uv run --frozen --script scripts/export_lfm_litert.py --output-dir /path/to/export
+uv run --frozen --script scripts/export_lfm_litert.py --variant 1.2b --output-dir /path/to/export
+uv run --frozen --script scripts/export_lfm_litert.py --variant 2.6b --output-dir /path/to/export
 ```
 
 The script refuses to overwrite a published bundle. It publishes
-`LFM2.5-2.6B_int4_16k_fp16.litertlm` only after checking the LFM model type,
-context limit, tool-aware template, capability flags, presence of executor
-metadata, INT4 weights, INT8 embeddings, and FP16 cache inputs and outputs
-across prefill/decode signatures. `manifest.json`
+`LFM2.5-1.2B-Instruct_int4_16k_fp16.litertlm` (or `LFM2.5-2.6B_int4_16k_fp16.litertlm`)
+only after checking the LFM model type, context limit, tool-aware template,
+capability flags, presence of executor metadata, INT4 weights, INT8 embeddings,
+and FP16 cache inputs and outputs across prefill/decode signatures. `manifest.json`
 records source revisions, the bundle checksum, and pending native validation.
 The LFM license is copied alongside the output.
 
@@ -438,11 +440,15 @@ assistant generation with `<think>`. Reasoning uses the separate `thought`
 channel. The LFM processor rejects constrained decoding; parsing does not
 provide grammar-enforced schema correctness.
 
-The community card reports Pixel 8a Tensor G3 GPU decode at 11.0–11.2 tokens/s
-and first-token latency at 3.04–3.06 s for a 261-token prompt. CPU decode is
-7.4–10.2 tokens/s. These results apply to the community 4K bundle, not the new
-16K FP16 export. Its reported GSM8K sample is 83% INT4 versus 92% BF16; this
-is not an agent benchmark.
+The community [LFM2.5-2.6B card](https://huggingface.co/litert-community/LFM2.5-2.6B)
+reports Pixel 8a Tensor G3 GPU decode at 11.0–11.2 tokens/s and first-token latency
+at 3.04–3.06 s for a 261-token prompt. CPU decode is 7.4–10.2 tokens/s.
+The companion [LFM2.5-1.2B-Instruct card](https://huggingface.co/litert-community/LFM2.5-1.2B-Instruct)
+reports Pixel 8a Tensor G3 GPU prefill at 188–193 tokens/s, decode at 21.0–21.2 tokens/s,
+and TTFT at 1.41–1.44 s, compared to 38–54 tokens/s prefill and 15.2–24.3 tokens/s decode
+on CPU. Both cards benchmark GPU (OpenCL) and CPU (XNNPACK); neither card supports
+the Tensor TPU (`Backend.GOOGLE_TENSOR()`). Both community targets cap context at
+4,096 tokens.
 
 ### Context and validation limits
 
@@ -497,3 +503,11 @@ Testing on a Google Pixel 8 Pro running production Android build `CP3A.261005.00
      - `androidx.graphics:graphics-path:1.1.0` (`libandroidx.graphics.path.so`)
      - `com.google.mlkit:genai-prompt:1.0.0-beta4` (pure Java/Kotlin IPC; zero native binaries)
    - The application build file configures `ndk.abiFilters = setOf("arm64-v8a", "x86_64")` to exclude legacy unaligned 32-bit libraries.
+
+4. **Physical Memory Exhaustion with 16K LFM on GPU (`dumpsys activity exit-info`)**:
+   - Initializing `LFM2.5-2.6B_int4_16k_fp16.litertlm` with `maxNumTokens = 16_384` on `Backend.GPU()` drove resident memory to **12 GB RSS**, exhausting the physical RAM of the Pixel 8 Pro.
+   - The memory spike triggered low-memory kills of sandboxed WebView processes (`LOW_MEMORY`) and system-level termination of `com.fghbuild.gomode` (`reason=13 (OTHER KILLS BY SYSTEM)`, `subreason=26 (UNDELIVERED BROADCAST)`). Memory contention stalled the main thread looper during system broadcast dispatch.
+   - Verified requirements for stable on-device LFM execution on Tensor G3:
+     - **Context Window Ceiling:** Community LFM models enforce a 4,096 token maximum (and 1,024 on iOS Metal). Pre-allocating 16K static KV cache and intermediate activation buffers on mobile GPU exceeds device memory limits.
+     - **GPU Conv-State Lowering:** Exporting short-convolution state shifts without operations rejected by mobile OpenCL delegates (such as `GATHER_ND` and `INT64`) requires `litert-torch >= 0.9.3` with valid-token masking and one-hot matmul state selection (the `_int4_gpu` recipe).
+     - **TPU Incompatibility:** Google Tensor TPU (`Backend.GOOGLE_TENSOR()`) lacks microkernels for dynamic 1D causal convolution state shifting and rejects LFM graphs. LFM execution requires `Backend.GPU()` (OpenCL) or `Backend.CPU()` (XNNPACK).

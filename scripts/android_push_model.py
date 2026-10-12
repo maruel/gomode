@@ -10,8 +10,11 @@ import urllib.request
 from android_devices import adb_path, selected_device_serial
 
 DEVICE_DIR = "/data/local/tmp/llm"
-# Default output of scripts/export_lfm_litert.py.
-LFM_EXPORT = pathlib.Path("models/lfm2.5-2.6b-16k-fp16/LFM2.5-2.6B_int4_16k_fp16.litertlm")
+# Default outputs of scripts/export_lfm_litert.py.
+LFM_EXPORTS = (
+    pathlib.Path("models/lfm2.5-1.2b-16k-fp16/LFM2.5-1.2B-Instruct_int4_16k_fp16.litertlm"),
+    pathlib.Path("models/lfm2.5-2.6b-16k-fp16/LFM2.5-2.6B_int4_16k_fp16.litertlm"),
+)
 
 
 def model_url(variant: str) -> str:
@@ -63,14 +66,18 @@ def main() -> int:
             continue
         path = download_model(url, size)
         subprocess.run([adb, "-s", serial, "push", str(path), target], check=True)
-    if not LFM_EXPORT.is_file():
-        print(f"Skipping LFM: {LFM_EXPORT} not found; run make export-lfm-litert", flush=True)
-        return 0
-    target = f"{DEVICE_DIR}/{LFM_EXPORT.name}"
-    if device_size(adb, serial, target) == LFM_EXPORT.stat().st_size:
-        print(f"Already on device: {target}", flush=True)
-    else:
-        subprocess.run([adb, "-s", serial, "push", str(LFM_EXPORT), target], check=True)
+    pushed_any_lfm = False
+    for lfm_export in LFM_EXPORTS:
+        if not lfm_export.is_file():
+            continue
+        pushed_any_lfm = True
+        target = f"{DEVICE_DIR}/{lfm_export.name}"
+        if device_size(adb, serial, target) == lfm_export.stat().st_size:
+            print(f"Already on device: {target}", flush=True)
+        else:
+            subprocess.run([adb, "-s", serial, "push", str(lfm_export), target], check=True)
+    if not pushed_any_lfm:
+        print("Skipping LFM: no exported LFM model found; run make export-lfm-litert", flush=True)
     return 0
 
 

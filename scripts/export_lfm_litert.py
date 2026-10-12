@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --frozen --script
-# Export LFM2.5-2.6B with INT4 weights, a 16K FP16 cache, and native LiteRT tools.
+# Export LFM2.5 models with INT4 weights, a 16K FP16 cache, and native LiteRT tools.
 # /// script
 # requires-python = ">=3.12,<3.13"
 # dependencies = [
@@ -20,6 +20,7 @@
 
 import argparse
 import contextlib
+import dataclasses
 import hashlib
 import importlib.metadata
 import json
@@ -45,11 +46,47 @@ from litert_torch.generative.export_hf import export
 from litert_torch.generative.export_hf.core import attention
 from litert_torch.generative.export_hf.model_ext.lfm2 import short_conv
 
-MODEL_ID = "LiquidAI/LFM2.5-2.6B"
-MODEL_REVISION = "654f9463ce32b05d0429d76fe1f580b27d4c1ac0"
+
+@dataclasses.dataclass(frozen=True)
+class LfmVariantConfig:
+    variant: str
+    model_id: str
+    model_revision: str
+    output_name: str
+    default_output_dir: pathlib.Path
+    attention_layers: int
+    conv_layers: int
+    expected_kv: int
+    expected_conv: int
+
+
+VARIANTS: dict[str, LfmVariantConfig] = {
+    "1.2b": LfmVariantConfig(
+        variant="1.2b",
+        model_id="LiquidAI/LFM2.5-1.2B-Instruct",
+        model_revision="0f604ada3f766f9f257460c4c9f0b5d6f69d431b",
+        output_name="LFM2.5-1.2B-Instruct_int4_16k_fp16.litertlm",
+        default_output_dir=pathlib.Path("models/lfm2.5-1.2b-16k-fp16"),
+        attention_layers=6,
+        conv_layers=10,
+        expected_kv=12,
+        expected_conv=10,
+    ),
+    "2.6b": LfmVariantConfig(
+        variant="2.6b",
+        model_id="LiquidAI/LFM2.5-2.6B",
+        model_revision="654f9463ce32b05d0429d76fe1f580b27d4c1ac0",
+        output_name="LFM2.5-2.6B_int4_16k_fp16.litertlm",
+        default_output_dir=pathlib.Path("models/lfm2.5-2.6b-16k-fp16"),
+        attention_layers=8,
+        conv_layers=22,
+        expected_kv=16,
+        expected_conv=22,
+    ),
+}
+
 EXPORTER_REVISION = "71f57fa06a74401e4030e3a09ca06e60442cf0bf"
 CONTEXT_LENGTH = 16_384
-OUTPUT_NAME = "LFM2.5-2.6B_int4_16k_fp16.litertlm"
 TEMPLATE_PATH = pathlib.Path(__file__).with_name("lfm2_chat_template.jinja")
 SHORT_CONV_FORWARD = short_conv.Lfm2ShortConv.forward
 QUANTIZATION_SCALES = uniform_quantize_tensor.tensor_zp_scale_from_min_max
@@ -84,19 +121,22 @@ def validate_template(template: str) -> None:
         raise ValueError("Chat template must prefill the mandatory thinking prefix")
 
 
-def prepare(output_dir: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+def prepare(output_dir: pathlib.Path, variant: LfmVariantConfig) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
     snapshot = pathlib.Path(
         snapshot_download(
-            MODEL_ID,
-            revision=MODEL_REVISION,
+            variant.model_id,
+            revision=variant.model_revision,
             allow_patterns=["*.json", "*.jinja", "LICENSE"],
         )
     )
     config = json.loads((snapshot / "config.json").read_text(encoding="utf-8"))
     if config["model_type"] != "lfm2" or config["max_position_embeddings"] < CONTEXT_LENGTH:
         raise ValueError("Checkpoint does not support LFM2 at 16K context")
-    if config["layer_types"].count("full_attention") != 8 or config["layer_types"].count("conv") != 22:
-        raise ValueError("Unexpected LFM2.5-2.6B layer layout")
+    if (
+        config["layer_types"].count("full_attention") != variant.attention_layers
+        or config["layer_types"].count("conv") != variant.conv_layers
+    ):
+        raise ValueError(f"Unexpected {variant.variant} layer layout")
 
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
     validate_template(template)
@@ -207,7 +247,7 @@ def lfm_fp16_export() -> Iterator[None]:
         transformers.AttentionInterface.register("lrt_transposed_attention", attention.transposed_attention)
 
 
-def validate_bundle(path: pathlib.Path) -> None:
+def validate_bundle(path: pathlib.Path, variant: LfmVariantConfig) -> None:
     """Check the packaged metadata and every exported cache signature before publication."""
     header = litertlm_peek.read_litertlm_header(str(path), sys.stdout)
     sections = header.SectionMetadata()
@@ -283,25 +323,38 @@ def validate_bundle(path: pathlib.Path) -> None:
                         if entry.Name().decode().startswith("kv_cache_"):
                             if graph.Tensors(entry.TensorIndex()).Type() != tflite.TensorType.FLOAT16:
                                 raise ValueError(f"Cache output {entry.Name().decode()} is not FP16")
-                    if kv_count != 16 or conv_count != 22:
+                    if kv_count != variant.expected_kv or conv_count != variant.expected_conv:
                         raise ValueError(
-                            f"Signature has {kv_count} KV inputs and {conv_count} conv inputs; expected 16/22"
+                            f"Signature has {kv_count} KV inputs and {conv_count} conv inputs; "
+                            f"expected {variant.expected_kv}/{variant.expected_conv}"
                         )
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Export LFM2.5-2.6B to 16K FP16 LiteRT-LM.")
-    parser.add_argument("--output-dir", type=pathlib.Path, default=pathlib.Path("models/lfm2.5-2.6b-16k-fp16"))
+    parser = argparse.ArgumentParser(description="Export LFM2.5 models to 16K FP16 LiteRT-LM.")
+    parser.add_argument(
+        "--variant",
+        choices=sorted(VARIANTS.keys()),
+        default="1.2b",
+        help="LFM variant to export (default: 1.2b)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=pathlib.Path,
+        default=None,
+        help="Output directory (defaults to models/lfm2.5-<variant>-16k-fp16)",
+    )
     parser.add_argument(
         "--prepare-only", action="store_true", help="Validate and write export inputs without downloading weights."
     )
     args = parser.parse_args()
-    output_dir = args.output_dir.resolve()
+    variant = VARIANTS[args.variant]
+    output_dir = (args.output_dir or variant.default_output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    target = output_dir / OUTPUT_NAME
+    target = output_dir / variant.output_name
     if target.exists():
         parser.error(f"Refusing to overwrite {target}")
-    snapshot, recipe_path, metadata_path = prepare(output_dir)
+    snapshot, recipe_path, metadata_path = prepare(output_dir, variant)
     options = {
         "cache_length": CONTEXT_LENGTH,
         "experimental_use_fp16": True,
@@ -315,12 +368,12 @@ def main() -> int:
         distribution.metadata["Name"]: distribution.version for distribution in importlib.metadata.distributions()
     }
     write_json(output_dir / "environment.json", versions)
-    print(f"Prepared 16K INT4/FP16 export inputs in {output_dir}", flush=True)
+    print(f"Prepared 16K INT4/FP16 export inputs for {variant.variant} in {output_dir}", flush=True)
     if args.prepare_only:
         return 0
 
     # Download the original BF16 checkpoint, never an existing quantized bundle.
-    snapshot_download(MODEL_ID, revision=MODEL_REVISION, allow_patterns=["*.safetensors"])
+    snapshot_download(variant.model_id, revision=variant.model_revision, allow_patterns=["*.safetensors"])
     work_dir = output_dir / "work"
     with lfm_fp16_export():
         export.export(model=str(snapshot), output_dir=str(work_dir), **options)
@@ -328,14 +381,14 @@ def main() -> int:
     if len(bundles) != 1:
         raise RuntimeError(f"Expected one exported bundle in {work_dir}, found {len(bundles)}")
     bundle = bundles[0]
-    validate_bundle(bundle)
+    validate_bundle(bundle, variant)
     with bundle.open("rb") as stream:
         checksum = hashlib.file_digest(stream, "sha256").hexdigest()
     write_json(
         output_dir / "manifest.json",
         {
-            "model": MODEL_ID,
-            "model_revision": MODEL_REVISION,
+            "model": variant.model_id,
+            "model_revision": variant.model_revision,
             "exporter_revision": EXPORTER_REVISION,
             "file": target.name,
             "sha256": checksum,

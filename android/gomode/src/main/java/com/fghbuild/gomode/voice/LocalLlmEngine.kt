@@ -105,52 +105,26 @@ internal fun acceptsLegacyModel(
     model: LocalLlmModel,
     metadata: String?,
 ): Boolean {
-    val name = metadata?.let(::formatModelName)
-    val generic = name == null || name in setOf("Gemma", "Gemma 4", "gemma", "model")
-    return name == model.label || (generic && model == LocalLlmModel.GEMMA_4_E2B)
+    if (metadata == null) return model == LocalLlmModel.GEMMA_4_E2B
+    val matched = LocalLlmModel.fromRawName(metadata)
+    if (matched != null) return matched == model
+    val generic =
+        metadata.removeSuffix(".litertlm").lowercase() in setOf("gemma", "gemma 4", "model")
+    return generic && model == LocalLlmModel.GEMMA_4_E2B
 }
 
-internal fun formatModelName(raw: String): String {
-    val clean = raw.removeSuffix(".litertlm").removeSuffix(".task")
-    return when {
-        clean.contains("gemma-4-E2B", ignoreCase = true) || clean.contains("gemma-4-e2b", ignoreCase = true) -> {
-            "Gemma 4 E2B"
-        }
-
-        clean.contains("gemma-4-E4B", ignoreCase = true) || clean.contains("gemma-4-e4b", ignoreCase = true) -> {
-            "Gemma 4 E4B"
-        }
-
-        clean.contains("gemma3-1b", ignoreCase = true) -> {
-            "Gemma 3 1B"
-        }
-
-        clean.contains("gemma-4", ignoreCase = true) -> {
-            "Gemma 4"
-        }
-
-        clean.contains("gemma", ignoreCase = true) -> {
-            "Gemma"
-        }
-
-        clean.contains("lfm", ignoreCase = true) -> {
-            "LFM 2.5 2.6B"
-        }
-
-        clean.contains("qwen", ignoreCase = true) -> {
-            "Qwen"
-        }
-
-        else -> {
-            clean
-        }
-    }
-}
+internal fun formatModelName(raw: String): String =
+    LocalLlmModel.fromRawName(raw)?.label ?: raw.removeSuffix(".litertlm")
 
 internal fun backendsFor(model: LocalLlmModel): List<Backend> =
     when (model) {
-        LocalLlmModel.LFM_2_5_2_6B -> listOf(Backend.GPU(), Backend.CPU())
-        else -> listOf(Backend.GOOGLE_TENSOR(), Backend.GPU(), Backend.CPU())
+        LocalLlmModel.LFM_2_5_1_2B,
+        LocalLlmModel.LFM_2_5_2_6B,
+        -> listOf(Backend.GPU(), Backend.CPU())
+
+        LocalLlmModel.GEMMA_4_E2B,
+        LocalLlmModel.GEMMA_4_E4B,
+        -> listOf(Backend.GOOGLE_TENSOR(), Backend.GPU(), Backend.CPU())
     }
 
 /**

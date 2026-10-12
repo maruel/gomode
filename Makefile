@@ -46,7 +46,7 @@ help:
 	@printf '  %-27s - %s\n' 'make android-start-emulator' 'Start or reuse the Android emulator'
 	@printf '  %-27s - %s\n' 'make android-stop-emulator' 'Stop the Android emulator'
 	@printf '  %-27s - %s\n' 'make android-sdk' 'Install required Android SDK packages'
-	@printf '  %-27s - %s\n' 'make export-lfm-litert' 'Export LFM2.5-2.6B INT4 with a 16K FP16 cache'
+	@printf '  %-27s - %s\n' 'make export-lfm-litert' 'Export LFM2.5 INT4 with a 16K FP16 cache (default: 1.2B)'
 	@printf '  %-27s - %s\n' 'make generate-sdks' 'Regenerate protocol SDKs after DTO or route changes'
 	@printf '  %-27s - %s\n' 'make refresh-generated' 'Regenerate SDKs and AGENTS file indexes'
 	@printf '  %-27s - %s\n' 'make upgrade' 'Upgrade Go and pnpm dependencies'

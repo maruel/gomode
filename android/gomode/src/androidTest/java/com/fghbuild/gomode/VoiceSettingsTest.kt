@@ -136,7 +136,11 @@ class VoiceSettingsTest {
         composeRule.waitUntil {
             repository.settings.value.localLlmModel == com.fghbuild.gomode.data.LocalLlmModel.GEMMA_4_E4B
         }
-        composeRule.onNodeWithTag("gomode-model-GEMMA_4_E4B").assertIsSelected()
+        composeRule.onNodeWithTag("gomode-model-LFM_2_5_1_2B").performScrollTo().performClick()
+        composeRule.waitUntil {
+            repository.settings.value.localLlmModel == com.fghbuild.gomode.data.LocalLlmModel.LFM_2_5_1_2B
+        }
+        composeRule.onNodeWithTag("gomode-model-LFM_2_5_1_2B").assertIsSelected()
         composeRule.onNodeWithTag("gomode-model-LFM_2_5_2_6B").performScrollTo().performClick()
         composeRule.waitUntil {
             repository.settings.value.localLlmModel == com.fghbuild.gomode.data.LocalLlmModel.LFM_2_5_2_6B
@@ -145,6 +149,7 @@ class VoiceSettingsTest {
         composeRule.runOnIdle { active.value = true }
         composeRule.onNodeWithTag("gomode-model-GEMMA_4_E2B").performScrollTo().assertIsNotEnabled()
         composeRule.onNodeWithTag("gomode-model-GEMMA_4_E4B").performScrollTo().assertIsNotEnabled()
+        composeRule.onNodeWithTag("gomode-model-LFM_2_5_1_2B").performScrollTo().assertIsNotEnabled()
         composeRule.onNodeWithTag("gomode-model-LFM_2_5_2_6B").performScrollTo().assertIsNotEnabled()
     }
 
