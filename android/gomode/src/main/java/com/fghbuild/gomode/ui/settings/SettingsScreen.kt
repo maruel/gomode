@@ -265,7 +265,7 @@ private fun LocalLlmModelSetting(
     enabled: Boolean,
 ) {
     val scope = rememberCoroutineScope()
-    Text("Gemma model", style = MaterialTheme.typography.titleMedium)
+    Text("Model", style = MaterialTheme.typography.titleMedium)
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
         LocalLlmModel.entries.forEach { choice ->
             FilterChip(

@@ -56,9 +56,35 @@ enum class OnDeviceEngine {
 enum class LocalLlmModel(
     val label: String,
     val fileName: String,
+    val maxNumTokens: Int = 10_240,
+    val topK: Int = 64,
+    val topP: Double = 0.95,
+    val temperature: Double = 1.0,
 ) {
-    GEMMA_4_E2B("Gemma 4 E2B", "gemma-4-E2B-it.litertlm"),
-    GEMMA_4_E4B("Gemma 4 E4B", "gemma-4-E4B-it.litertlm"),
+    GEMMA_4_E2B(
+        label = "Gemma 4 E2B",
+        fileName = "gemma-4-E2B-it.litertlm",
+        maxNumTokens = 10_240,
+        topK = 64,
+        topP = 0.95,
+        temperature = 1.0,
+    ),
+    GEMMA_4_E4B(
+        label = "Gemma 4 E4B",
+        fileName = "gemma-4-E4B-it.litertlm",
+        maxNumTokens = 10_240,
+        topK = 64,
+        topP = 0.95,
+        temperature = 1.0,
+    ),
+    LFM_2_5_2_6B(
+        label = "LFM 2.5 2.6B",
+        fileName = "LFM2.5-2.6B_int4_16k_fp16.litertlm",
+        maxNumTokens = 16_384,
+        topK = 50,
+        topP = 1.0,
+        temperature = 0.1,
+    ),
 }
 
 const val DEFAULT_VOICE_LANGUAGE_TAG = "en-US"

@@ -115,6 +115,9 @@ class LocalLlmEngineTest {
         assertEquals("Gemma 4 E2B", formatModelName("gemma-4-E2B-it"))
         assertEquals("Gemma 4 E4B", formatModelName("gemma-4-E4B-it.litertlm"))
         assertEquals("Gemma 3 1B", formatModelName("Gemma3-1B-IT_int4hadamard_aot_ekv4096_G3"))
+        assertEquals("LFM 2.5 2.6B", formatModelName("LFM2.5-2.6B_int4_16k_fp16.litertlm"))
+        assertEquals("LFM 2.5 2.6B", formatModelName("LFM2.5-2.6B"))
+        assertEquals("LFM 2.5 2.6B", formatModelName("lfm"))
         assertEquals("Qwen", formatModelName("Qwen2-0.5B-Instruct"))
         assertEquals("custom-model", formatModelName("custom-model.litertlm"))
         engine.close()
@@ -125,12 +128,19 @@ class LocalLlmEngineTest {
         val app = RuntimeEnvironment.getApplication()
         val e2b = selectedModelPaths(app, LocalLlmModel.GEMMA_4_E2B)
         val e4b = selectedModelPaths(app, LocalLlmModel.GEMMA_4_E4B)
+        val lfm = selectedModelPaths(app, LocalLlmModel.LFM_2_5_2_6B)
         assertTrue(e2b.first().endsWith("models/gemma-4-E2B-it.litertlm"))
         assertTrue(e4b.first().endsWith("models/gemma-4-E4B-it.litertlm"))
+        assertTrue(lfm.first().endsWith("models/LFM2.5-2.6B_int4_16k_fp16.litertlm"))
+        assertTrue(lfm[1].endsWith("/data/local/tmp/llm/LFM2.5-2.6B_int4_16k_fp16.litertlm"))
         assertFalse(e4b.any { it.contains("E2B") || it.endsWith("models/model.litertlm") })
+        assertFalse(lfm.any { it.contains("gemma") || it.endsWith("models/model.litertlm") })
         val engine = LocalLlmEngine(app, model = LocalLlmModel.GEMMA_4_E4B)
         assertEquals("Gemma 4 E4B", engine.modelName)
+        val lfmEngine = LocalLlmEngine(app, model = LocalLlmModel.LFM_2_5_2_6B)
+        assertEquals("LFM 2.5 2.6B", lfmEngine.modelName)
         engine.close()
+        lfmEngine.close()
     }
 
     @Test
@@ -138,9 +148,13 @@ class LocalLlmEngineTest {
         for (metadata in listOf(null, "model", "model.litertlm", "gemma", "gemma-4-E2B-it")) {
             assertTrue(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, metadata))
             assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E4B, metadata))
+            assertFalse(acceptsLegacyModel(LocalLlmModel.LFM_2_5_2_6B, metadata))
         }
         assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, "gemma-4-E4B-it"))
         assertTrue(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E4B, "gemma-4-E4B-it"))
+        assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, "LFM2.5-2.6B"))
+        assertTrue(acceptsLegacyModel(LocalLlmModel.LFM_2_5_2_6B, "LFM2.5-2.6B"))
+        assertTrue(acceptsLegacyModel(LocalLlmModel.LFM_2_5_2_6B, "lfm"))
         assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, "Qwen2-0.5B-Instruct"))
     }
 
@@ -1135,5 +1149,41 @@ class LocalLlmEngineTest {
             val broken = engine(onClose = { error("Native deletion failed") })
             broken.initialize(sessionContext)
             assertEquals("Native deletion failed", runCatching { broken.closeAndJoin() }.exceptionOrNull()?.message)
+        }
+
+    @Test
+    fun `lfm model configures 16K context disciplined sampler and excludes TPU backend`() =
+        runTest {
+            val configs = mutableListOf<ConversationConfig>()
+            val engine =
+                LocalLlmEngine(
+                    RuntimeEnvironment.getApplication(),
+                    { _, config ->
+                        configs.add(config)
+                        object : EdgeLlmRunner {
+                            override val isModelLoaded = true
+                            override val backendName = "GPU"
+
+                            override suspend fun generateStream(message: Message) = flowOf(Message.model("Ready."))
+
+                            override fun replaceConversation(config: ConversationConfig) {
+                                configs.add(config)
+                            }
+
+                            override fun close() = Unit
+                        }
+                    },
+                    model = LocalLlmModel.LFM_2_5_2_6B,
+                )
+            engine.initialize(sessionContext)
+            val config = configs.single()
+            val sampler = checkNotNull(config.samplerConfig)
+            assertEquals(50, sampler.topK)
+            assertEquals(1.0, sampler.topP, 0.0)
+            assertEquals(0.1, sampler.temperature, 0.0)
+            assertEquals(16_384, LocalLlmModel.LFM_2_5_2_6B.maxNumTokens)
+            val backends = backendsFor(LocalLlmModel.LFM_2_5_2_6B)
+            assertEquals(listOf("GPU", "CPU"), backends.map { it.name })
+            engine.closeAndJoin()
         }
 }

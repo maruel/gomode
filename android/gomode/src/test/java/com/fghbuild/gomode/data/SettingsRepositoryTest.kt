@@ -85,10 +85,13 @@ class SettingsRepositoryTest {
             repo.awaitSettings("E4B selected") { it.localLlmModel == LocalLlmModel.GEMMA_4_E4B }
             val restored = SettingsRepository(store)
             restored.awaitSettings("E4B restored") { it.localLlmModel == LocalLlmModel.GEMMA_4_E4B }
+            restored.updateLocalLlmModel(LocalLlmModel.LFM_2_5_2_6B)
+            val lfmRestored = SettingsRepository(store)
+            lfmRestored.awaitSettings("LFM restored") { it.localLlmModel == LocalLlmModel.LFM_2_5_2_6B }
             store.edit { it[stringPreferencesKey("LOCAL_LLM_MODEL")] = "unknown" }
             assertEquals(
                 LocalLlmModel.GEMMA_4_E2B,
-                restored
+                lfmRestored
                     .awaitSettings("invalid model defaults") { it.localLlmModel == LocalLlmModel.GEMMA_4_E2B }
                     .localLlmModel,
             )

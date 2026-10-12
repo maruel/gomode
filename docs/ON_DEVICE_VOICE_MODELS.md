@@ -327,8 +327,8 @@ The command downloads missing weights into `models/` and syncs both files to
 the device. It also pushes the default `make export-lfm-litert` output when it
 exists. Repeated runs skip unchanged files.
 
-In settings, select **On-device voice → Gemma 4**, then **Gemma 4 E2B** or
-**Gemma 4 E4B**. End an active voice session before changing the model.
+In settings, select **On-device voice → Gemma 4**, then **Gemma 4 E2B**,
+**Gemma 4 E4B**, or **LFM 2.5 2.6B**. End an active voice session before changing the model.
 The app saves the choice and prepares that model at startup. Missing weights
 produce an installation error; the app does not substitute the other variant.
 Both named files can stay installed. Existing generic E2B installations remain
@@ -458,11 +458,11 @@ Android compatibility is not established. Tool pruning, retrieval, and history
 compaction reduce occupied context; they do not enlarge it. Reasoning shares
 the total budget with instructions, schemas, service facts, history, and output.
 
-`make android-push-model` copies the export to `/data/local/tmp/llm/`, but Go
-Mode's settings cannot select it. Android integration needs model-specific context and sampler settings and validated
-GPU/CPU selection; `GOOGLE_TENSOR` compatibility is not established for this
-artifact. The current engine uses 10,240 tokens and Gemma sampler defaults.
-It already keeps thought-channel text separate from spoken replies.
+`make android-push-model` copies the export to `/data/local/tmp/llm/`.
+In settings, selecting **LFM 2.5 2.6B** applies 16K context (`maxNumTokens = 16_384`),
+LFM sampler defaults (topK = 50, topP = 1.0, temperature = 0.1), and GPU/CPU backend
+selection (`GOOGLE_TENSOR` compatibility is not established for this artifact). The engine
+separates thought-channel text from spoken replies.
 
 Preparation and a reduced-width 30-layer LFM export exercise the tooling.
 The full 2.6B conversion, LiteRT-LM native tool-result continuation, long-context

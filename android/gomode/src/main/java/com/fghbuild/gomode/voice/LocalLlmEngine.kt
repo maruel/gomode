@@ -133,6 +133,10 @@ internal fun formatModelName(raw: String): String {
             "Gemma"
         }
 
+        clean.contains("lfm", ignoreCase = true) -> {
+            "LFM 2.5 2.6B"
+        }
+
         clean.contains("qwen", ignoreCase = true) -> {
             "Qwen"
         }
@@ -142,6 +146,12 @@ internal fun formatModelName(raw: String): String {
         }
     }
 }
+
+internal fun backendsFor(model: LocalLlmModel): List<Backend> =
+    when (model) {
+        LocalLlmModel.LFM_2_5_2_6B -> listOf(Backend.GPU(), Backend.CPU())
+        else -> listOf(Backend.GOOGLE_TENSOR(), Backend.GPU(), Backend.CPU())
+    }
 
 /**
  * Interface abstracting Google AI Edge LiteRT-LM for testability.
@@ -157,7 +167,7 @@ internal interface EdgeLlmRunner : AutoCloseable {
 }
 
 /**
- * LiteRT-LM production runner targeting Gemma models on Tensor G3.
+ * LiteRT-LM production runner targeting Gemma and LFM models on Tensor G3.
  */
 internal class LiteRtLmRunner(
     private val context: Context,
@@ -179,7 +189,7 @@ internal class LiteRtLmRunner(
             "${model.label} not found. Install weights with make android-push-model. " +
                 "Searched: ${candidatePaths.joinToString()}"
         }
-        val backends = listOf(Backend.GOOGLE_TENSOR(), Backend.GPU(), Backend.CPU())
+        val backends = backendsFor(model)
         val failure =
             IllegalStateException(
                 "Unable to load local model $existingPath on ${backends.joinToString { it.name }}. " +
@@ -196,7 +206,7 @@ internal class LiteRtLmRunner(
                         modelPath = existingPath,
                         backend = backend,
                         // The context includes instructions, tool schemas, history, and output.
-                        maxNumTokens = 10_240,
+                        maxNumTokens = model.maxNumTokens,
                         cacheDir = context.cacheDir.absolutePath,
                     )
                 val eng = Engine(config)
@@ -664,9 +674,14 @@ internal class LocalLlmEngine(
     private fun conversationConfig(context: EngineSessionContext): ConversationConfig =
         ConversationConfig(
             systemInstruction = Contents.of(formatSystemPrompt(context)),
-            // Google's Gemma 4 defaults; recovery changes only the seed.
-            // https://ai.google.dev/gemma/docs/core/model_card_4
-            samplerConfig = SamplerConfig(topK = 64, topP = 0.95, temperature = 1.0, seed = samplerSeed),
+            // Model defaults; recovery changes only the seed.
+            samplerConfig =
+                SamplerConfig(
+                    topK = model.topK,
+                    topP = model.topP,
+                    temperature = model.temperature,
+                    seed = samplerSeed,
+                ),
             tools =
                 context.tools.map { descriptor ->
                     tool(
