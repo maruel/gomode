@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download and sync Gemma 4 E2B and E4B weights to a connected Android device."""
+"""Sync Gemma 4 E2B and E4B weights and a local LFM export to a connected Android device."""
 
 import argparse
 import pathlib
@@ -10,6 +10,8 @@ import urllib.request
 from android_devices import adb_path, selected_device_serial
 
 DEVICE_DIR = "/data/local/tmp/llm"
+# Default output of scripts/export_lfm_litert.py.
+LFM_EXPORT = pathlib.Path("models/lfm2.5-2.6b-16k-fp16/LFM2.5-2.6B_int4_16k_fp16.litertlm")
 
 
 def model_url(variant: str) -> str:
@@ -61,6 +63,14 @@ def main() -> int:
             continue
         path = download_model(url, size)
         subprocess.run([adb, "-s", serial, "push", str(path), target], check=True)
+    if not LFM_EXPORT.is_file():
+        print(f"Skipping LFM: {LFM_EXPORT} not found; run make export-lfm-litert", flush=True)
+        return 0
+    target = f"{DEVICE_DIR}/{LFM_EXPORT.name}"
+    if device_size(adb, serial, target) == LFM_EXPORT.stat().st_size:
+        print(f"Already on device: {target}", flush=True)
+    else:
+        subprocess.run([adb, "-s", serial, "push", str(LFM_EXPORT), target], check=True)
     return 0
 
 

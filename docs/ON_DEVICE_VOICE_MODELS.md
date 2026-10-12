@@ -324,7 +324,8 @@ make android-push-model
 ```
 
 The command downloads missing weights into `models/` and syncs both files to
-the device. Repeated runs skip unchanged files.
+the device. It also pushes the default `make export-lfm-litert` output when it
+exists. Repeated runs skip unchanged files.
 
 In settings, select **On-device voice → Gemma 4**, then **Gemma 4 E2B** or
 **Gemma 4 E4B**. End an active voice session before changing the model.
@@ -457,8 +458,8 @@ Android compatibility is not established. Tool pruning, retrieval, and history
 compaction reduce occupied context; they do not enlarge it. Reasoning shares
 the total budget with instructions, schemas, service facts, history, and output.
 
-This tooling does not enable LFM in Go Mode's settings or installer. Android
-integration needs model-specific context and sampler settings and validated
+`make android-push-model` copies the export to `/data/local/tmp/llm/`, but Go
+Mode's settings cannot select it. Android integration needs model-specific context and sampler settings and validated
 GPU/CPU selection; `GOOGLE_TENSOR` compatibility is not established for this
 artifact. The current engine uses 10,240 tokens and Gemma sampler defaults.
 It already keeps thought-channel text separate from spoken replies.
