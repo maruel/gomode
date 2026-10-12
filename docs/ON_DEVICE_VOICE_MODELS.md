@@ -409,10 +409,16 @@ The LFM license is copied alongside the output.
 The conversion-only adapters align FP16 attention-cache reads with the query
 compute dtype and cast short-convolution state around float computation. Without
 these casts, tracing fails on attention dtype mismatch or MLIR rejects a
-mixed-dtype convolution-state concatenate. The min/max blockwise scale floor
-can underflow through FP16 for all-zero weights, including the padding-token
-row. The tooling gives those weights a positive representable scale before
-quantization. It rejects scale underflow for nonzero weights.
+mixed-dtype convolution-state concatenate. Blockwise scales round through BF16
+and FP16. Tiny nonzero blocks and all-zero weights, including the padding-token
+row, can acquire zero scales. The tooling replaces zero scales with the smallest
+positive FP16 subnormal, approximately `5.96e-8`, before quantizing weights.
+Weight codes and serialized scales then agree. Zero weights remain exact;
+tiny nonzero weights round to this scale's grid and can become zero. Other
+scales remain unchanged. Preserved FP16 subnormal scales retain upstream
+rounding and can clip a block's largest weights. A reduced-width 30-layer export
+exercises tiny nonzero short-convolution projection weights; CPU/XNNPACK accepts this floor. GPU
+acceptance and full-model quality remain unverified.
 
 ### Existing 4K bundle and runtime support
 

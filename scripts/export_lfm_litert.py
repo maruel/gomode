@@ -183,12 +183,14 @@ def nonzero_quantization_scales(
     )
     zero = scale == 0
     if np.any(zero):
-        # Blockwise scales round through FP16. The upstream 1e-9 floor
-        # underflows for all-zero weights, including the padding-token row.
-        # Preserve exact zero weights with a representable positive scale.
-        if np.any(zero & ((min_value != 0) | (max_value != 0))):
-            raise ValueError("Nonzero weights have underflowed quantization scales")
-        scale = np.where(zero, np.float32(np.finfo(np.float16).tiny), scale)
+        if not (symmetric and signed and uniform_quantize_tensor.is_blockwise(granularity)):
+            raise ValueError("Zero scale outside signed symmetric blockwise quantization")
+        # The upstream BF16 -> FP16 rounding underflows for zero and tiny
+        # nonzero blocks. Use the smallest FP16 subnormal, not the much larger
+        # normal floor. This survives serialization and works on CPU/XNNPACK.
+        # Repair before quantizing weights so their codes use this same scale.
+        floor = np.float32(np.nextafter(np.float16(0), np.float16(1)))
+        scale = np.where(zero, floor, scale)
     return zero_point, scale
 
 
