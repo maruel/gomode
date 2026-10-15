@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.Message
 import android.util.Log
 import android.webkit.JavascriptInterface
+import android.webkit.MimeTypeMap
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -79,7 +80,8 @@ internal fun WebShellScreen(
     val authHandler =
         remember(bearerStore) { ServiceAuthMessageHandler(bearerStore) { currentOnAuthInvalidated.value() } }
     val fileChooserLauncher =
-        rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val uris = ActivityResultContracts.GetMultipleContents().parseResult(result.resultCode, result.data)
             fileChooserCallback?.onReceiveValue(uris.toTypedArray())
             fileChooserCallback = null
         }
@@ -242,8 +244,12 @@ internal fun WebShellScreen(
                         ): Boolean {
                             fileChooserCallback?.onReceiveValue(emptyArray())
                             fileChooserCallback = filePathCallback
-                            val mimeTypes = fileChooserParams.acceptTypes.filter { it.isNotBlank() }
-                            fileChooserLauncher.launch(mimeTypes.firstOrNull() ?: "*/*")
+                            fileChooserLauncher.launch(
+                                webFileChooserIntent(
+                                    fileChooserParams.acceptTypes,
+                                    fileChooserParams.mode == FileChooserParams.MODE_OPEN_MULTIPLE,
+                                ),
+                            )
                             return true
                         }
 
@@ -349,6 +355,33 @@ internal fun WebShellScreen(
                 modifier = Modifier.align(Alignment.Center).testTag("gomode-web-loading"),
             )
         }
+    }
+}
+
+internal fun webFileChooserIntent(
+    acceptTypes: Array<String>,
+    allowMultiple: Boolean,
+): Intent {
+    val mimeTypes =
+        acceptTypes
+            .flatMap { it.split(',') }
+            .map { it.trim().lowercase() }
+            .filter { it.isNotEmpty() }
+            .map { type ->
+                if (type.startsWith('.')) {
+                    MimeTypeMap.getSingleton().getMimeTypeFromExtension(type.drop(1)) ?: "*/*"
+                } else {
+                    type
+                }
+            }.distinct()
+    return Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+        addCategory(Intent.CATEGORY_OPENABLE)
+        // Always use the document browser, including for images stored in Screenshots or Downloads.
+        type = "*/*"
+        if (mimeTypes.isNotEmpty() && "*/*" !in mimeTypes) {
+            putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes.toTypedArray())
+        }
+        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple)
     }
 }
 

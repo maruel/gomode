@@ -1,9 +1,11 @@
 // Unit tests for Go Mode WebView recovery and new-window routing helpers.
 package com.fghbuild.gomode.ui.web
 
+import android.content.Intent
 import android.net.Uri
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -12,6 +14,38 @@ import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 class WebShellScreenTest {
+    @Test
+    fun attachmentsBrowseDocumentsWithAllAcceptedFileTypes() {
+        val intent = webFileChooserIntent(arrayOf("image/*", "application/pdf"), true)
+
+        assertEquals(Intent.ACTION_OPEN_DOCUMENT, intent.action)
+        assertEquals(true, intent.hasCategory(Intent.CATEGORY_OPENABLE))
+        assertEquals("*/*", intent.type)
+        assertArrayEquals(arrayOf("image/*", "application/pdf"), intent.getStringArrayExtra(Intent.EXTRA_MIME_TYPES))
+        assertEquals(true, intent.getBooleanExtra(Intent.EXTRA_ALLOW_MULTIPLE, false))
+    }
+
+    @Test
+    fun attachmentExtensionsIncludeScreenshotsAndDocuments() {
+        val intent = webFileChooserIntent(arrayOf(".png, .pdf", "image/jpeg"), false)
+
+        assertArrayEquals(
+            arrayOf("image/png", "application/pdf", "image/jpeg"),
+            intent.getStringArrayExtra(Intent.EXTRA_MIME_TYPES),
+        )
+        assertEquals(false, intent.getBooleanExtra(Intent.EXTRA_ALLOW_MULTIPLE, false))
+    }
+
+    @Test
+    fun unrestrictedOrUnknownAttachmentTypesAllowBrowsingAllFiles() {
+        for (acceptTypes in listOf(emptyArray(), arrayOf(""), arrayOf("image/*", "*/*"), arrayOf(".unknownext"))) {
+            val intent = webFileChooserIntent(acceptTypes, false)
+
+            assertEquals("*/*", intent.type)
+            assertNull(intent.getStringArrayExtra(Intent.EXTRA_MIME_TYPES))
+        }
+    }
+
     @Test
     fun hostBridgeExposesNativeVoiceConnectionState() {
         val bridge = GoModeHostBridge()
