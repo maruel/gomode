@@ -63,9 +63,9 @@ if ((${#eslint_files[@]} > 0)); then
   pnpm exec eslint --max-warnings 0 -- "${eslint_files[@]}"
 fi
 if ((${#python_files[@]} > 0)); then
-  ruff check --quiet -- "${python_files[@]}"
-  ruff format --check --quiet -- "${python_files[@]}"
+  uv run --locked ruff check --quiet -- "${python_files[@]}"
+  uv run --locked ruff format --check --quiet -- "${python_files[@]}"
 fi
 
-python3 scripts/lint_binaries.py
-python3 scripts/update_agents_file_index.py --check
+uv run --locked python scripts/lint_binaries.py
+uv run --locked python scripts/update_agents_file_index.py --check

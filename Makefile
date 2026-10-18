@@ -2,21 +2,17 @@
 .DEFAULT_GOAL := help
 .PHONY: help build fix verify test test-race android-check android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-push android-e2e screenshots-check screenshots-generate screenshots-update generate-sdks refresh-generated benchmark coverage test-smoke upgrade git-hooks tools export-lfm-litert
 
-RUFF_VERSION=0.16.8
-UV_BIN := $(shell uv tool dir --bin 2>/dev/null)
-export PATH := $(if $(UV_BIN),$(UV_BIN):)$(PATH)
-
 # Read-only verification lanes. Each command is passed through two shells, so
 # keep single quotes out of these values.
 VERIFY_GO = go test -run=^$$ ./... && go test -race -run=^$$ ./voicegateway/voicertc && go vet ./... && go tool golangci-lint run ./... && go mod tidy -diff && go build ./...
-VERIFY_PY = ruff check --quiet scripts && ruff format --check --quiet scripts
-VERIFY_SH = files=$$(git ls-files "*.sh" "scripts/hooks/*"); [ -z "$$files" ] || go tool shfmt -l $$files
-VERIFY_MISC = python3 scripts/lint_binaries.py && python3 scripts/update_agents_file_index.py --check && git diff --check
+VERIFY_PY = uv run --locked ruff check --quiet scripts && uv run --locked ruff format --check --quiet scripts
+VERIFY_SH = files=$$(git ls-files "*.sh" "scripts/hooks/*"); [ -z "$$files" ] || go tool shfmt -d $$files
+VERIFY_MISC = uv run --locked python scripts/lint_binaries.py && uv run --locked python scripts/update_agents_file_index.py --check && git diff --check
 VERIFY_ANDROID = cd ./android && ./gradlew :gomode:ktlintCheck :halo-sdk:ktlintCheck :gomode:detekt :gomode:lintDebug :oauth-sdk:assemble --quiet
 
 tools:
-	@command -v uv >/dev/null 2>&1 || { echo 'uv is required to install Ruff; see https://docs.astral.sh/uv/' >&2; exit 1; }
-	@ruff --version 2>/dev/null | grep -Fqw "$(RUFF_VERSION)" || uv tool install --force --quiet ruff==$(RUFF_VERSION)
+	@command -v uv > /dev/null 2>&1 || { echo 'uv is required for Python development tools; see https://docs.astral.sh/uv/' >&2; exit 1; }
+	@uv sync --locked --quiet
 
 node_modules/.modules.yaml: package.json pnpm-lock.yaml
 	@pnpm install --frozen-lockfile --silent
@@ -29,6 +25,7 @@ help:
 	@printf '  %-27s - %s\n' 'make fix' 'Format Go and Android code'
 	@printf '  %-27s - %s\n' 'make verify' 'Check Go, browser, Python, shell, and Android code'
 	@printf '  %-27s - %s\n' 'make git-hooks' 'Install versioned Git hooks'
+	@printf '  %-27s - %s\n' 'make tools' 'Sync pinned Python development tools with uv'
 	@printf '  %-27s - %s\n' 'make test' 'Run Go, browser, and Android unit tests'
 	@printf '  %-27s - %s\n' 'make test-race' 'Run race-safe voice gateway concurrency tests'
 	@printf '  %-27s - %s\n' 'make build' 'Build Go packages and Android app and SDKs'
@@ -55,11 +52,11 @@ fix: tools android-sdk node_modules/.modules.yaml
 	@go tool golangci-lint fmt
 	@pnpm exec eslint web/src web/tests scripts/quiet-test-reporter.mjs --fix
 	@pnpm exec prettier --write --log-level warn web/src web/tests scripts/quiet-test-reporter.mjs eslint.config.js package.json .github/workflows
-	@ruff check --quiet --fix scripts
-	@ruff format --quiet scripts
-	@go tool shfmt -w scripts/check-staged.sh scripts/install-git-hooks.sh scripts/hooks/*
+	@uv run --locked ruff check --quiet --fix scripts
+	@uv run --locked ruff format --quiet scripts
+	@files=$$(git ls-files '*.sh' 'scripts/hooks/*'); [ -z "$$files" ] || go tool shfmt -w $$files
 	@cd ./android && ./gradlew :gomode:ktlintFormat :halo-sdk:ktlintFormat --quiet
-	@python3 scripts/update_agents_file_index.py
+	@uv run --locked python scripts/update_agents_file_index.py
 
 verify: tools android-sdk node_modules/.modules.yaml
 	@go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
@@ -69,7 +66,7 @@ git-hooks:
 	@./scripts/install-git-hooks.sh
 
 test: android-sdk node_modules/.modules.yaml
-	@./scripts/run-concurrently.sh go,browser,python,android 'go test ./...' 'pnpm --silent test' 'python3 -m unittest discover -s scripts -p "test_*.py"' 'cd ./android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet'
+	@./scripts/run-concurrently.sh go,browser,python,android 'go test ./...' 'pnpm --silent test' 'uv run --locked python -m unittest discover -s scripts -p "test_*.py"' 'cd ./android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet'
 
 # The Opus codec is deliberately disabled in race builds, so skip the two
 # tests that require it while running the rest of the voice gateway suite.
@@ -107,27 +104,27 @@ generate-sdks:
 	@go run ./internal/cmd/gen-sdk
 
 refresh-generated: generate-sdks
-	@python3 scripts/update_agents_file_index.py
+	@uv run --locked python scripts/update_agents_file_index.py
 
 # Installs the Android SDK packages required by the app build.
 android-sdk:
-	@python3 scripts/android_sdk.py check
+	@uv run --locked python scripts/android_sdk.py check
 
 # Slow: installs an emulator system image and creates the Go Mode test AVD.
 android-setup-emulator:
-	@python3 scripts/android_sdk.py setup-emulator
+	@uv run --locked python scripts/android_sdk.py setup-emulator
 
 # Slow: starts or reuses the headless Go Mode test emulator.
 android-start-emulator: android-setup-emulator
-	@python3 scripts/android_start_emulator.py --auto-reuse
+	@uv run --locked python scripts/android_start_emulator.py --auto-reuse
 
 android-stop-emulator:
-	@python3 scripts/android_stop_emulator.py
+	@uv run --locked python scripts/android_stop_emulator.py
 
 # Builds, installs, and launches the app without running the android-check validation gate.
 android-push: android-sdk
 	@cd ./android && ./gradlew :gomode:assembleDebug --quiet
-	@python3 scripts/android_push.py
+	@uv run --locked python scripts/android_push.py
 
 # Offline conversion tooling; does not install or enable the model in Android.
 export-lfm-litert:
@@ -135,20 +132,20 @@ export-lfm-litert:
 
 # Pushes LiteRT-LM model weights to /data/local/tmp/llm/ on a connected device.
 android-push-model:
-	@python3 scripts/android_push_model.py
+	@uv run --locked python scripts/android_push_model.py
 
 # Slow: starts or reuses an emulator and runs shell behavior on a hosted fixture.
 android-e2e:
-	@python3 scripts/android_start_emulator.py --reuse-connected-device
-	@python3 scripts/android_e2e.py
+	@uv run --locked python scripts/android_start_emulator.py --reuse-connected-device
+	@uv run --locked python scripts/android_e2e.py
 
 # Slow: runs the device voice session against the local voice gateway fixture.
 android-voice-e2e: android-sdk
-	@python3 scripts/android_start_emulator.py --reuse-connected-device
-	@python3 scripts/android_e2e.py --voice
+	@uv run --locked python scripts/android_start_emulator.py --reuse-connected-device
+	@uv run --locked python scripts/android_e2e.py --voice
 
 # Slow: runs the real app on the emulator, two passes for update/check.
 # Encodes at most two lossless WebP files concurrently and publishes a catalog.
 screenshots-check screenshots-generate screenshots-update: android-sdk
-	@python3 scripts/android_start_emulator.py --auto-reuse
-	@python3 scripts/android_screenshots.py $(subst screenshots-,,$@)
+	@uv run --locked python scripts/android_start_emulator.py --auto-reuse
+	@uv run --locked python scripts/android_screenshots.py $(subst screenshots-,,$@)
