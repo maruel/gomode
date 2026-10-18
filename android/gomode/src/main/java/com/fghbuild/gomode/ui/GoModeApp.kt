@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.media.AudioDeviceInfo
 import android.webkit.CookieManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -64,6 +65,7 @@ import com.fghbuild.gomode.ui.settings.SettingsScreen
 import com.fghbuild.gomode.ui.web.ServiceBearerStore
 import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.ui.web.WebShellScreen
+import com.fghbuild.gomode.voice.AudioDevice
 import com.fghbuild.gomode.voice.DeviceVoiceSession
 import com.fghbuild.gomode.voice.LocalModelOwner
 import com.fghbuild.gomode.voice.LocalModelSelection
@@ -250,11 +252,19 @@ internal fun GoModeApp(
     }
     val voiceState by voiceSession.state.collectAsStateWithLifecycle()
     var audioSelectionJob by remember(voiceSession) { mutableStateOf<Job?>(null) }
-    LaunchedEffect(voiceSession, voiceState.connected, voiceState.availableDevices, settings.voiceAudioDeviceType) {
-        preferredVoiceAudioDevice(
-            voiceSession.state,
-            settings.voiceAudioDeviceType,
-        )?.let(voiceSession::selectAudioDevice)
+    var knownAudioDevices by remember(voiceSession) { mutableStateOf(emptySet<Int>()) }
+    LaunchedEffect(voiceSession, voiceState.connected, voiceState.availableDevices) {
+        val previousIds = knownAudioDevices
+        val id = preferredVoiceAudioDevice(voiceSession.state, settings.voiceAudioDeviceType, previousIds)
+        knownAudioDevices = if (voiceState.connected) voiceState.availableDevices.map { it.id }.toSet() else emptySet()
+        if (id != null) voiceSession.selectAudioDevice(id)
+        val bluetooth =
+            voiceState.availableDevices.firstOrNull {
+                it.isBluetooth() && it.id !in previousIds && (id == null || it.id == id)
+            }
+        if (bluetooth != null && awaitVoiceAudioSelection(voiceSession.state, bluetooth.id)) {
+            settingsRepository.updateVoiceAudioDeviceType(bluetooth.type)
+        }
     }
     val serviceMonitor =
         remember(scope, bearerStore) {
@@ -490,15 +500,20 @@ internal suspend fun awaitVoiceAudioSelection(
 internal suspend fun preferredVoiceAudioDevice(
     states: StateFlow<VoiceState>,
     type: Int?,
+    previousIds: Set<Int>,
 ): Int? {
     // A list change can arrive while Telecom rejects route requests. Wait once; do not retry routing errors.
     val state = states.first { !it.audioSwitching }
     if (!state.connected) return null
-    return state.availableDevices
-        .firstOrNull { it.type == type }
-        ?.id
-        ?.takeIf { it != state.selectedDeviceId }
+    val preferred =
+        state.availableDevices.firstOrNull { it.isBluetooth() && it.id !in previousIds }
+            ?: state.availableDevices.firstOrNull { it.type == type }
+    return preferred?.id?.takeIf { it != state.selectedDeviceId }
 }
+
+private fun AudioDevice.isBluetooth(): Boolean =
+    type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+        type == AudioDeviceInfo.TYPE_BLE_HEADSET || type == AudioDeviceInfo.TYPE_BLE_SPEAKER
 
 internal fun shouldPrepareLocalModel(
     settings: SettingsState,

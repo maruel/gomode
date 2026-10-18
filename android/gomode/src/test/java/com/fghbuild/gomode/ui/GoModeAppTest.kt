@@ -19,6 +19,26 @@ import org.junit.Test
 
 class GoModeAppTest {
     @Test
+    fun bluetoothWinsAtStartupAndOnArrivalButAllowsAManualSpeakerChoice() =
+        runTest {
+            val speaker = AudioDevice(1, 2, "Speaker")
+            val bluetooth = AudioDevice(2, 7, "Car")
+            val states =
+                MutableStateFlow(
+                    VoiceState(
+                        connected = true,
+                        availableDevices = listOf(speaker, bluetooth),
+                        selectedDeviceId = 1,
+                    ),
+                )
+            assertEquals(2, preferredVoiceAudioDevice(states, 2, emptySet()))
+            assertEquals(2, preferredVoiceAudioDevice(states, 2, setOf(1)))
+            assertNull(preferredVoiceAudioDevice(states, 2, setOf(1, 2)))
+            states.value = states.value.copy(availableDevices = listOf(speaker, AudioDevice(3, 26, "LE headset")))
+            assertEquals(3, preferredVoiceAudioDevice(states, 2, setOf(1, 2)))
+        }
+
+    @Test
     fun savedOutputUsesCurrentCallIdsAndLeavesUnavailableRoutesAlone() =
         runTest {
             val states =
@@ -29,15 +49,15 @@ class GoModeAppTest {
                         selectedDeviceId = 41,
                     ),
                 )
-            assertEquals(42, preferredVoiceAudioDevice(states, 1))
-            assertNull(preferredVoiceAudioDevice(states, 2))
-            assertNull(preferredVoiceAudioDevice(states, 7))
-            assertNull(preferredVoiceAudioDevice(states, null))
+            assertEquals(42, preferredVoiceAudioDevice(states, 1, emptySet()))
+            assertNull(preferredVoiceAudioDevice(states, 2, emptySet()))
+            assertNull(preferredVoiceAudioDevice(states, 7, emptySet()))
+            assertNull(preferredVoiceAudioDevice(states, null, emptySet()))
             states.value = states.value.copy(connected = false)
-            assertNull(preferredVoiceAudioDevice(states, 1))
+            assertNull(preferredVoiceAudioDevice(states, 1, emptySet()))
             states.value =
                 states.value.copy(connected = true, availableDevices = listOf(AudioDevice(99, 1, "Earpiece")))
-            assertEquals(99, preferredVoiceAudioDevice(states, 1))
+            assertEquals(99, preferredVoiceAudioDevice(states, 1, emptySet()))
         }
 
     @Test
@@ -47,7 +67,7 @@ class GoModeAppTest {
                 MutableStateFlow(
                     VoiceState(connected = true, audioSwitching = true, selectedDeviceId = 41),
                 )
-            val selection = async { preferredVoiceAudioDevice(states, 1) }
+            val selection = async { preferredVoiceAudioDevice(states, 1, emptySet()) }
             yield()
             assertFalse(selection.isCompleted)
             states.value = states.value.copy(availableDevices = listOf(AudioDevice(99, 1, "Earpiece")))
@@ -76,6 +96,7 @@ class GoModeAppTest {
                 preferredVoiceAudioDevice(
                     MutableStateFlow(states.value.copy(availableDevices = listOf(AudioDevice(42, 1, "Earpiece")))),
                     1,
+                    emptySet(),
                 ),
             )
             assertFalse(awaitVoiceAudioSelection(MutableStateFlow(states.value.copy(connected = false)), 42))

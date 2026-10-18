@@ -378,6 +378,36 @@ function resolveVoiceChoice(metadata: VoiceChoicesResp, mode: VoiceMode, selecte
   return choice.id;
 }
 
+// Browsers expose no transport type. Match explicit Bluetooth labels and common
+// AirPods labels; opaque device names are restored by their saved device ID.
+function bluetoothAudioDevice(device: AudioDevice, rememberedId: string | null): boolean {
+  return (
+    device.deviceId !== "default" &&
+    device.deviceId !== "communications" &&
+    (device.deviceId === rememberedId || /\b(bluetooth|airpods|bt)\b/i.test(device.label))
+  );
+}
+
+type AudioDevicePreference = "BluetoothInput" | "BluetoothOutput" | "Input" | "Output";
+
+function savedAudioDevice(kind: AudioDevicePreference): string | null {
+  try {
+    return localStorage.getItem(`gomode.voice${kind}Device`);
+  } catch (error) {
+    console.warn("Could not load voice audio device", error);
+    return null;
+  }
+}
+
+function rememberAudioDevice(kind: AudioDevicePreference, deviceId: string): void {
+  try {
+    if (deviceId) localStorage.setItem(`gomode.voice${kind}Device`, deviceId);
+    else localStorage.removeItem(`gomode.voice${kind}Device`);
+  } catch (error) {
+    console.warn("Could not save voice audio device", error);
+  }
+}
+
 // VoiceSession
 
 export class VoiceSession {
@@ -419,6 +449,10 @@ export class VoiceSession {
   private _connectionAttempt = 0;
   private _audioSelectionAttempt = 0;
   private _deviceEnumerationAttempt = 0;
+  private _pendingAudioInput: string | null = null;
+  private _pendingAudioOutput: string | null = null;
+  private _inputPreferenceProvisional = false;
+  private _outputPreferenceProvisional = false;
   private _voiceModeActive = false;
   private readonly _chime: VoiceChimePlayer;
 
@@ -589,6 +623,8 @@ export class VoiceSession {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       if (attempt !== this._deviceEnumerationAttempt) return;
+      const previousInputs = this.state.audioInputs;
+      const previousOutputs = this.state.audioOutputs;
       const inputs: AudioDevice[] = [];
       const outputs: AudioDevice[] = [];
       for (const d of devices) {
@@ -611,6 +647,38 @@ export class VoiceSession {
         s.audioOutputs = outputs;
         s.audioDevicesError = null;
       });
+      // Drop concrete queued routes when their devices disappear. The system
+      // default uses an empty ID and stays valid independently of enumeration.
+      if (this._pendingAudioInput && !inputs.some((d) => d.deviceId === this._pendingAudioInput))
+        this._pendingAudioInput = null;
+      if (this._pendingAudioOutput && !outputs.some((d) => d.deviceId === this._pendingAudioOutput))
+        this._pendingAudioOutput = null;
+      // Only arrivals override a manual selection. Re-enumeration alone leaves it alone.
+      const preferred = (
+        available: AudioDevice[],
+        previous: AudioDevice[],
+        current: string,
+        kind: "Input" | "Output",
+      ) => {
+        const rememberedBluetooth = savedAudioDevice(`Bluetooth${kind}`);
+        const bluetooth = available.filter((d) => bluetoothAudioDevice(d, rememberedBluetooth));
+        const arrived = bluetooth.find(
+          (d) => !previous.some((old) => old.deviceId === d.deviceId && bluetoothAudioDevice(old, rememberedBluetooth)),
+        );
+        const lastBluetooth = arrived ?? bluetooth[0];
+        if (lastBluetooth) rememberAudioDevice(`Bluetooth${kind}`, lastBluetooth.deviceId);
+        const provisional = kind === "Input" ? this._inputPreferenceProvisional : this._outputPreferenceProvisional;
+        return (
+          arrived?.deviceId ??
+          (!current && !provisional
+            ? available.find((d) => d.deviceId === savedAudioDevice(kind))?.deviceId
+            : undefined)
+        );
+      };
+      this._pendingAudioOutput =
+        preferred(outputs, previousOutputs, this.state.selectedOutputId, "Output") ?? this._pendingAudioOutput;
+      this._pendingAudioInput =
+        preferred(inputs, previousInputs, this.state.selectedInputId, "Input") ?? this._pendingAudioInput;
       const curOut = this.state.selectedOutputId;
       if (curOut && !outputs.some((d) => d.deviceId === curOut)) {
         if (this.state.audioSwitching !== null) {
@@ -620,7 +688,7 @@ export class VoiceSession {
               s.audioOutputError = "Speaker disconnected. Choose another speaker.";
             });
         } else {
-          await this.selectOutputDevice("");
+          await this._selectOutputDevice("", false);
         }
       }
       const curSel = this.state.selectedInputId;
@@ -634,9 +702,11 @@ export class VoiceSession {
             });
         } else {
           // Keep the displayed choice until a replacement track is working.
-          await this.selectInputDevice("");
+          await this._selectInputDevice("", false);
         }
       }
+      if (attempt !== this._deviceEnumerationAttempt) return;
+      await this._applyPendingAudioDevices();
     } catch (error) {
       if (attempt !== this._deviceEnumerationAttempt) return;
       this._update((s) => {
@@ -645,8 +715,31 @@ export class VoiceSession {
     }
   }
 
+  // Arrivals can occur during a manual switch or a previous automatic switch.
+  // Consume each requested route once; failures stay visible until the user retries.
+  private async _applyPendingAudioDevices(): Promise<void> {
+    if (this.state.audioSwitching !== null) return;
+    const output = this._pendingAudioOutput;
+    this._pendingAudioOutput = null;
+    const needsOutput =
+      output !== this.state.selectedOutputId ||
+      this._outputPreferenceProvisional ||
+      (this._speakerAudio !== null && this._speakerAudio.sinkId !== output);
+    if (output !== null && needsOutput && "setSinkId" in HTMLMediaElement.prototype)
+      await this._selectOutputDevice(output, true);
+    if (this.state.audioSwitching !== null) return;
+    const input = this._pendingAudioInput;
+    this._pendingAudioInput = null;
+    if (input && input !== this.state.selectedInputId) await this._selectInputDevice(input, true);
+  }
+
   /** Select an audio input device. If connected, replaces the mic track. */
   async selectInputDevice(deviceId: string): Promise<void> {
+    this._pendingAudioInput = null;
+    await this._selectInputDevice(deviceId, true);
+  }
+
+  private async _selectInputDevice(deviceId: string, remember: boolean): Promise<void> {
     if (this.state.audioSwitching !== null) return;
     const selection = ++this._audioSelectionAttempt;
     const pc = this._pc;
@@ -688,6 +781,8 @@ export class VoiceSession {
           s.selectedInputId = deviceId;
           s.audioInputError = null;
         });
+        if (remember) rememberAudioDevice("Input", deviceId);
+        this._inputPreferenceProvisional = false;
         this._monitorMicrophone(pc, newStream);
       } catch (error) {
         if (this._micStream !== newStream) newStream?.getTracks().forEach((track) => track.stop());
@@ -696,16 +791,19 @@ export class VoiceSession {
             s.audioInputError = `Could not switch microphone: ${String(error)}`;
           });
       } finally {
-        if (selection === this._audioSelectionAttempt)
+        if (selection === this._audioSelectionAttempt) {
           this._update((s) => {
             s.audioSwitching = null;
           });
+          void this._applyPendingAudioDevices();
+        }
       }
     } else {
       this._update((s) => {
         s.selectedInputId = deviceId;
         s.audioInputError = null;
       });
+      this._inputPreferenceProvisional = remember;
     }
   }
 
@@ -739,6 +837,11 @@ export class VoiceSession {
 
   /** Select an audio output device. Applies immediately if connected. */
   async selectOutputDevice(deviceId: string): Promise<void> {
+    this._pendingAudioOutput = null;
+    await this._selectOutputDevice(deviceId, true);
+  }
+
+  private async _selectOutputDevice(deviceId: string, remember: boolean): Promise<void> {
     if (this.state.audioSwitching !== null) return;
     const selection = ++this._audioSelectionAttempt;
     const audio = this._speakerAudio;
@@ -755,16 +858,25 @@ export class VoiceSession {
         s.selectedOutputId = deviceId;
         s.audioOutputError = null;
       });
+      // Before remote audio exists, this is a provisional route selection.
+      if (audio) {
+        if (remember) rememberAudioDevice("Output", deviceId);
+        this._outputPreferenceProvisional = false;
+      } else {
+        this._outputPreferenceProvisional = remember;
+      }
     } catch (error) {
       if (this._speakerAudio === audio && selection === this._audioSelectionAttempt)
         this._update((s) => {
           s.audioOutputError = `Could not switch speaker: ${String(error)}`;
         });
     } finally {
-      if (selection === this._audioSelectionAttempt)
+      if (selection === this._audioSelectionAttempt) {
         this._update((s) => {
           s.audioSwitching = null;
         });
+        void this._applyPendingAudioDevices();
+      }
     }
   }
 
@@ -844,16 +956,28 @@ export class VoiceSession {
         audio: inputId ? { deviceId: { exact: inputId } } : true,
         video: false,
       };
+      // Initial acquisition owns input routing too: devicechange must queue any
+      // arrival until the first stream has been installed on the PeerConnection.
+      this._update((s) => {
+        s.audioSwitching = "input";
+      });
       const micStream = await navigator.mediaDevices.getUserMedia(micConstraints);
       if (attempt !== this._connectionAttempt) {
         micStream.getTracks().forEach((track) => track.stop());
         return;
       }
       this._micStream = micStream;
+      if (this._inputPreferenceProvisional) {
+        rememberAudioDevice("Input", inputId);
+        this._inputPreferenceProvisional = false;
+      }
       for (const t of micStream.getAudioTracks()) {
         t.enabled = !this.state.muted;
         pc.addTrack(t, micStream);
       }
+      this._update((s) => {
+        s.audioSwitching = null;
+      });
       await this.enumerateDevices();
       if (attempt !== this._connectionAttempt) return;
       const activeMicStream = this._micStream;
@@ -867,7 +991,10 @@ export class VoiceSession {
         const audio = new Audio();
         this._speakerAudio = audio;
         audio.srcObject = evt.streams[0] ?? new MediaStream([evt.track]);
-        if (this.state.selectedOutputId) void this.selectOutputDevice(this.state.selectedOutputId);
+        if (this.state.selectedOutputId || this._outputPreferenceProvisional) {
+          this._pendingAudioOutput ??= this.state.selectedOutputId;
+          void this._applyPendingAudioDevices();
+        }
         audio.play().catch(() => {
           // Autoplay may be blocked; user interaction will resume.
         });
@@ -1089,6 +1216,8 @@ export class VoiceSession {
     this._connectionAttempt++;
     this._audioSelectionAttempt++;
     this._deviceEnumerationAttempt++;
+    this._pendingAudioInput = null;
+    this._pendingAudioOutput = null;
     this._reconnectEnabled = false;
     if (this._reconnectTimer !== null) {
       clearTimeout(this._reconnectTimer);
@@ -1285,6 +1414,10 @@ export class VoiceSession {
   private _setError(message: string): void {
     this._leaveVoiceMode();
     this._connectionAttempt++;
+    this._audioSelectionAttempt++;
+    this._deviceEnumerationAttempt++;
+    this._pendingAudioInput = null;
+    this._pendingAudioOutput = null;
     this._releaseAll();
     if (this._setupTimer !== null) clearTimeout(this._setupTimer);
     this._setupTimer = null;
@@ -1295,6 +1428,7 @@ export class VoiceSession {
       s.listening = false;
       s.speaking = false;
       s.error = message;
+      s.audioSwitching = null;
     });
   }
 
