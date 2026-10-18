@@ -493,7 +493,11 @@ internal class VoiceSession(
                                             if (!ownsAttempt(attempt)) return@launch
                                             val resp =
                                                 voiceGatewayClient.voiceRTCOffer(
-                                                    VoiceRTCOfferReq(sdp = offerSDP, service = serviceAuth),
+                                                    VoiceRTCOfferReq(
+                                                        sdp = offerSDP,
+                                                        service = serviceAuth,
+                                                        choiceID = setup.choiceID,
+                                                    ),
                                                     headers = voiceGatewayHeaders,
                                                 )
                                             if (!ownsAttempt(attempt)) {

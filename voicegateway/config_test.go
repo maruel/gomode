@@ -14,6 +14,32 @@ import (
 
 func TestLoadConfig(t *testing.T) {
 	t.Parallel()
+	t.Run("text only", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(path, []byte(`backend = "local-stack"
+[local_stack]
+text_only = true
+`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		for _, speech := range []LocalStackConfig{
+			{TextOnly: true, ASR: LocalStackASRConfig{Engine: LocalStackASRWhistle}},
+			{TextOnly: true, TTS: LocalStackTTSConfig{Voice: "Jasper"}},
+		} {
+			cfg.LocalStack = speech
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "text_only") {
+				t.Fatalf("speech settings with text_only: %v", err)
+			}
+		}
+	})
 	t.Run("RunInfra LLM", func(t *testing.T) {
 		t.Parallel()
 		path := filepath.Join(t.TempDir(), "config.toml")
@@ -607,5 +633,60 @@ func TestValidateWhistleASR(t *testing.T) {
 		if err := validateLocalStackASR(cfg); err == nil {
 			t.Fatal("accepted incompatible Whistle config")
 		}
+	}
+}
+
+func TestChoiceConfig(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(`default_choice_id = "remote"
+[[choices]]
+id = "live"
+label = "Gemini Live"
+backend = "gemini-live"
+[[choices]]
+id = "remote"
+label = "Remote LLM"
+backend = "local-stack"
+[choices.local_stack.llm]
+provider = "openaicompatible"
+remote = "https://example.com/v1/chat/completions"
+api_key_name = "REMOTE_KEY"
+[[choices]]
+id = "local"
+label = "Local LLM"
+backend = "local-stack"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	choices, id := cfg.VoiceChoices()
+	if id != "remote" || len(choices) != 3 || choices[1].LocalStack.LLM.APIKeyName != "REMOTE_KEY" {
+		t.Fatalf("choices %s %+v", id, choices)
+	}
+	cfg.DefaultChoiceID = "missing"
+	if cfg.Validate() == nil {
+		t.Fatal("unknown default accepted")
+	}
+	cfg.DefaultChoiceID = "live"
+	cfg.Choices[2].ID = "live"
+	if cfg.Validate() == nil {
+		t.Fatal("duplicate ID accepted")
+	}
+	cfg.Choices[2].ID = "local"
+	cfg.Choices[2].Label = " "
+	if cfg.Validate() == nil {
+		t.Fatal("empty label accepted")
+	}
+	cfg.Choices[2].Label = "Local"
+	cfg.Choices[2].LocalStack.LLM.APIKeyName = "KEY"
+	if cfg.Validate() == nil {
+		t.Fatal("invalid per-choice model config accepted")
 	}
 }

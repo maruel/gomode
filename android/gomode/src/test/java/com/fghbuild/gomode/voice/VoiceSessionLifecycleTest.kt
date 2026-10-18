@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import com.caic.voicegateway.sdk.v1.MessageKind
 import com.caic.voicegateway.sdk.v1.ToolCall
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.service.ServiceSettingsClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
@@ -52,6 +53,66 @@ class VoiceSessionLifecycleTest {
     fun tearDown() {
         Dispatchers.resetMain()
     }
+
+    @Test
+    fun changedChoiceDuringDiscoveryStopsSetupBeforeMCP() =
+        runBlocking {
+            val discoveryStarted = CountDownLatch(1)
+            val releaseDiscovery = CountDownLatch(1)
+            val server = MockWebServer()
+            server.dispatcher =
+                object : Dispatcher() {
+                    override fun dispatch(request: RecordedRequest): MockResponse =
+                        when (request.path) {
+                            "/.well-known/gomode.json" -> {
+                                MockResponse().setBody(
+                                    """
+                                    {"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":1,
+                                    "toolGroups":[{"name":"fixture","endpoint":"/mcp","protocolVersion":"2026-07-28",
+                                    "authRequired":false}],"voiceGateway":{"required":false,"url":"/"}}}
+                                    """.trimIndent(),
+                                )
+                            }
+
+                            "/api/voicegateway/v1/voice/choices" -> {
+                                discoveryStarted.countDown()
+                                releaseDiscovery.await(5, TimeUnit.SECONDS)
+                                MockResponse().setBody(
+                                    """
+                                    {"choices":[{"id":"live","label":"Gemini Live","transports":["webrtc"]}],
+                                    "defaultChoiceID":"live"}
+                                    """.trimIndent(),
+                                )
+                            }
+
+                            else -> {
+                                MockResponse().setResponseCode(500)
+                            }
+                        }
+                }
+            server.start()
+            try {
+                val base = server.url("/").toString().trimEnd('/')
+                val repository = SettingsRepository(InMemoryPreferencesDataStore())
+                repository.addService("Fixture", base)
+                repository.settings.first { it.activeServiceURL == base }
+                val attempt =
+                    async(Dispatchers.IO) {
+                        runCatching { prepareVoiceSetup(repository, ServiceSettingsClient(), { null }) }
+                    }
+                assertTrue(discoveryStarted.await(5, TimeUnit.SECONDS))
+                repository.updateVoiceChoice(base, "remote")
+                repository.settings.first { it.voiceChoices[base] == "remote" }
+                releaseDiscovery.countDown()
+                assertTrue(attempt.await().exceptionOrNull() is VoiceSetupException)
+                assertEquals("/.well-known/gomode.json", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+                assertEquals("/api/voicegateway/v1/voice/choices", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+                assertNull(server.takeRequest(100, TimeUnit.MILLISECONDS))
+            } finally {
+                releaseDiscovery.countDown()
+                server.shutdown()
+            }
+        }
 
     @Test
     fun selectingAnUnavailableAudioDeviceReportsFailure() {

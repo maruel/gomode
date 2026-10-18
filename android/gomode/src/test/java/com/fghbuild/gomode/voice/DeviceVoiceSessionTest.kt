@@ -703,6 +703,26 @@ class DeviceVoiceSessionTest {
     }
 
     @Test
+    fun `text handshake pins selected choice and preserves authentication headers`() {
+        var request: Request? = null
+        val session =
+            createSession(
+                FakeSpeech(),
+                setupProvider = {
+                    testSetup().copy(choiceID = "local", gatewayHeaders = mapOf("Authorization" to "Bearer scoped"))
+                },
+            ) { captured, _ ->
+                request = captured
+                FakeWebSocket()
+            }
+        session.connect()
+        val handshake = requireNotNull(request)
+        assertEquals("local", handshake.url.queryParameter("choiceID"))
+        assertEquals("Bearer scoped", handshake.header("Authorization"))
+        session.close()
+    }
+
+    @Test
     fun `sentence segmenter splits on sentence boundaries`() {
         val segmenter = SentenceSegmenter()
         assertEquals(listOf("One."), segmenter.push("One. Two"))

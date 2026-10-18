@@ -1,56 +1,80 @@
-# Example standalone voice gateway configuration for a user service.
-# Copy this file to ~/.config/voice-gateway/config.toml. The gateway reads that
-# path by default when XDG_CONFIG_HOME is unset. For a root-managed service,
-# put it at /etc/voice-gateway/config.toml and pass that path with -config.
-# Replace the trusted issuer before accepting clients.
+# Voice gateway configuration.
+# Copy to ~/.config/voice-gateway/config.toml.
+#
+# With systemd, put API keys in ~/.config/systemd/user/voice-gateway.env,
+# beside voice-gateway.service. See voice-gateway.env.example for the format.
+# Each choice below documents the environment variable it needs.
 
-backend = "local-stack"
+# Choices are offered together at one gateway URL. Clients can select a choice;
+# sessions that omit a choice use this ID.
+default_choice_id = "gemini"
 
-# For Gemini Live instead, change backend to "gemini-live", set
-# model = "gemini-3.8-live" at the top level, and supply GEMINI_API_KEY.
-
+# Shared listener and trusted hosts.
 [server]
-# Put an HTTPS reverse proxy in front of this loopback signaling listener.
+# Use an HTTPS reverse proxy for secure signaling.
 http = "127.0.0.1:3479"
 # The WebRTC UDP port must be reachable by clients (directly or through NAT).
 webrtc_udp_port = 3478
 
-[[trusted_issuers]]
-service = "replace-with-host-service"
-issuer = "https://host.example"
-oauth = true
+# [[trusted_issuers]]
+# service = "replace-with-host-service"
+# issuer = "https://host.example"
+# oauth = true
 
-# The local-stack defaults start separate llama.cpp ASR and LLM servers and
-# a KittenTTS worker. If you select an alternate ASR or TTS engine below,
-# start its server yourself at the configured remote address before using voice.
-# The gateway does not start or check alternate servers at startup. See
-# docs/VOICE_LOCAL_STACK.md for platform-specific choices.
-#
-# [local_stack.asr]
+[[choices]]
+# Gemini Live: reads GEMINI_API_KEY from the environment.
+id = "gemini"
+label = "Gemini Live"
+backend = "gemini-live"
+model = "gemini-3.8-live"
+
+# Remote LLM: reads DEEPSEEK_API_KEY from the environment.
+[[choices]]
+id = "remote"
+label = "Remote LLM"
+backend = "local-stack"
+
+# Clients handle speech; the gateway starts only the LLM.
+[choices.local_stack]
+text_only = true
+
+[choices.local_stack.llm]
+provider = "deepseek"
+model = "deepseek-flash"
+
+# Local LLM: starts a managed llama.cpp LLM server, without ASR or TTS.
+# Prerequisites: docs/VOICE_LOCAL_STACK.md.
+[[choices]]
+id = "local"
+label = "Local LLM"
+backend = "local-stack"
+
+[choices.local_stack]
+text_only = true
+
+# Optional local-choice settings. Keep these before any further [[choices]].
+# To let the gateway handle speech, set text_only = false before configuring
+# ASR or TTS. Defaults start llama.cpp ASR and a KittenTTS worker. Alternate
+# speech servers must be started separately. See docs/VOICE_LOCAL_STACK.md.
+
+# [choices.local_stack.asr]
 # engine = "openai-audio"
 # remote = "http://127.0.0.1:8000"
 # model = "mlx-community/parakeet-tdt-0.6b-v3"
-#
-# [local_stack.llm]
+
+# [choices.local_stack.llm]
 # provider = "llamacpp"
 # remote = "http://127.0.0.1:8080"
 # model = "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"
-#
-# For a remote chat completions LLM, replace the LLM table above with:
-# [local_stack.llm]
-# provider = "openaicompatible"
-# remote = "https://api.runinfra.ai/v1/chat/completions"
-# model = "qwen3-8-27b"
-# api_key_name = "RUNINFRA_GATEWAY_KEY" # supply this environment variable
-#
-# [local_stack.tts]
+
+# [choices.local_stack.tts]
 # engine = "openai-audio"
 # remote = "http://127.0.0.1:8000"
 # model = "mlx-community/Kokoro-82M-bf16"
 # voice = "af_heart"
 
 # To select a different managed KittenTTS model and voice instead:
-# [local_stack.tts]
+# [choices.local_stack.tts]
 # engine = "kittentts"
 # model = "KittenML/kitten-tts-2"
 # voice = "Luna"

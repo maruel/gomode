@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,9 +54,10 @@ const (
 	backendOutputFrameBytes = backendOutputSampleRate * 2 * int(frameDuration/time.Millisecond) / 1000 // 960 bytes
 )
 
-// Bridge manages active WebRTC voice sessions for a single configured backend.
+// Bridge manages voice choices and sessions on one shared WebRTC transport.
 type Bridge struct {
-	backend        backendConnector
+	backends       map[string]backendConnector
+	choices        voicev1.VoiceChoicesResp
 	activityLogDir string
 	udpMux         ice.UDPMux
 	voiceNet       *ipv4Net
@@ -81,23 +83,41 @@ type Bridge struct {
 // NewBridge creates a Bridge that multiplexes WebRTC traffic through a single
 // UDP port and eagerly verifies its UPnP publication.
 //
-// A gateway instance serves exactly the backend named in cfg. geminiAPIKey is
-// only consumed by the Gemini Live backend.
+// Configured choices share the UDP listener. geminiAPIKey is only consumed by
+// Gemini Live choices. Backend initialization is atomic: a failure closes all
+// backends already initialized.
 func NewBridge(ctx context.Context, cfg *voicegateway.Config, geminiAPIKey string, udpPort int, activityLogDir string) (*Bridge, error) {
 	if activityLogDir == "" {
 		return nil, errors.New("voice activity log directory is required")
 	}
-	backend, err := backendForConfig(ctx, cfg, geminiAPIKey)
-	if err != nil {
+	if err := cfg.ValidateEmbedded(); err != nil {
 		return nil, err
 	}
-	b, err := newBridgeWithBackend(ctx, backend, udpPort, activityLogDir)
-	if err != nil {
-		if cerr := backend.Close(); cerr != nil {
-			slog.WarnContext(ctx, "voicertc: close backend", "err", cerr)
+	configs, defaultID := cfg.VoiceChoices()
+	backends := make(map[string]backendConnector, len(configs))
+	advertised := voicev1.VoiceChoicesResp{Choices: make([]voicev1.VoiceChoice, 0, len(configs)), DefaultChoiceID: defaultID}
+	cleanup := func() error {
+		errs := make([]error, 0, len(backends))
+		for _, backend := range backends {
+			errs = append(errs, backend.Close())
 		}
-		return nil, err
+		return errors.Join(errs...)
 	}
+	for i := range configs {
+		ch := &configs[i]
+		backend, err := backendForConfig(ctx, &voicegateway.Config{Backend: ch.Backend, Model: ch.Model, LocalStack: ch.LocalStack}, geminiAPIKey)
+		if err != nil {
+			return nil, errors.Join(fmt.Errorf("initialize choice %q: %w", ch.ID, err), cleanup())
+		}
+		backends[ch.ID] = backend
+		advertised.Choices = append(advertised.Choices, voicev1.VoiceChoice{ID: ch.ID, Label: ch.Label, Transports: backendTransports(backend)})
+	}
+	b, err := newBridgeWithBackend(ctx, backends[defaultID], udpPort, activityLogDir)
+	if err != nil {
+		return nil, errors.Join(err, cleanup())
+	}
+	b.backends = backends
+	b.choices = advertised
 	if _, err := b.ensureWebRTCAPI(ctx); err != nil {
 		b.CloseAll(ctx)
 		return nil, fmt.Errorf("initialize WebRTC API: %w", err)
@@ -131,7 +151,8 @@ func newBridgeWithBackend(ctx context.Context, backend backendConnector, udpPort
 	slog.InfoContext(ctx, "voicertc: listening", "udpPort", addr.Port, "hostIP", hostIP)
 	textCtx, textCancel := context.WithCancel(context.WithoutCancel(ctx))
 	return &Bridge{
-		backend:             backend,
+		backends:            map[string]backendConnector{"default": backend},
+		choices:             defaultBackendChoices(backend),
 		activityLogDir:      activityLogDir,
 		udpMux:              mux,
 		voiceNet:            voiceNet,
@@ -144,8 +165,57 @@ func newBridgeWithBackend(ctx context.Context, backend backendConnector, udpPort
 	}, nil
 }
 
+func defaultBackendChoices(backend backendConnector) voicev1.VoiceChoicesResp {
+	return voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{{ID: "default", Label: "Default", Transports: backendTransports(backend)}}, DefaultChoiceID: "default"}
+}
+
+func backendTransports(backend backendConnector) []voicev1.VoiceTransport {
+	if local, ok := backend.(*localStackBackend); ok {
+		if local.asr == nil || local.tts == nil {
+			return []voicev1.VoiceTransport{voicev1.VoiceTransportText}
+		}
+		return []voicev1.VoiceTransport{voicev1.VoiceTransportText, voicev1.VoiceTransportWebRTC}
+	}
+	return []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}
+}
+
 // HandleOffer processes a WebRTC SDP offer and returns the SDP answer.
 func (b *Bridge) HandleOffer(ctx context.Context, sdpOffer string) (sdpAnswer, sessionID string, err error) {
+	return b.HandleChoiceOffer(ctx, sdpOffer, "")
+}
+
+// VoiceChoices returns the choices available on this bridge.
+func (b *Bridge) VoiceChoices() voicev1.VoiceChoicesResp {
+	out := b.choices
+	out.Choices = make([]voicev1.VoiceChoice, len(b.choices.Choices))
+	for i, ch := range b.choices.Choices {
+		ch.Transports = append([]voicev1.VoiceTransport(nil), ch.Transports...)
+		out.Choices[i] = ch
+	}
+	return out
+}
+
+func (b *Bridge) choiceBackend(id string) (backendConnector, error) {
+	if id == "" {
+		id = b.choices.DefaultChoiceID
+	}
+	backend, ok := b.backends[id]
+	if !ok {
+		return nil, fmt.Errorf("unknown voice choice %q", id)
+	}
+	return backend, nil
+}
+
+// HandleChoiceOffer opens a session bound to the selected backend.
+func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID string) (sdpAnswer, sessionID string, err error) {
+	connector, err := b.choiceBackend(choiceID)
+	if err != nil {
+		return "", "", err
+	}
+	if !slices.Contains(backendTransports(connector), voicev1.VoiceTransportWebRTC) {
+		return "", "", errors.New("text-only choice does not support WebRTC audio")
+	}
+
 	if !strings.Contains(sdpOffer, "m=audio ") {
 		return "", "", errors.New("SDP offer must include an audio track")
 	}
@@ -153,7 +223,6 @@ func (b *Bridge) HandleOffer(ctx context.Context, sdpOffer string) (sdpAnswer, s
 	if err != nil {
 		return "", "", err
 	}
-	connector := b.backend
 
 	// Create PeerConnection using the shared UDP mux. The gateway publishes a
 	// host candidate rewritten to the UPnP external address when available; the
@@ -474,19 +543,28 @@ func (b *Bridge) CloseAll(ctx context.Context) {
 			slog.WarnContext(ctx, "voicertc: delete UPnP mapping", "err", err)
 		}
 	}
-	if err := b.backend.Close(); err != nil {
-		slog.Warn("voicertc: close backend", "err", err)
+	for _, backend := range b.backends {
+		if err := backend.Close(); err != nil {
+			slog.Warn("voicertc: close backend", "err", err)
+		}
 	}
 }
 
 // ServeTextSession upgrades the HTTP request to a client-speech text session
 // that shares the bridge's language model. When the configured backend has no
 // language model, it writes a 503 response and returns the error.
-//
-// A gateway keeps its configured voice backend: text sessions are additive and
-// do not replace the WebRTC audio sessions other clients use.
 func (b *Bridge) ServeTextSession(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-	backend, ok := b.backend.(*localStackBackend)
+	return b.ServeTextChoice(ctx, w, r, "")
+}
+
+// ServeTextChoice runs a text session bound to the selected backend.
+func (b *Bridge) ServeTextChoice(ctx context.Context, w http.ResponseWriter, r *http.Request, choiceID string) error {
+	connector, err := b.choiceBackend(choiceID)
+	if err != nil {
+		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, err.Error())
+		return err
+	}
+	backend, ok := connector.(*localStackBackend)
 	if !ok {
 		err := errors.New("configured voice backend does not serve text sessions")
 		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, err.Error())
@@ -592,7 +670,7 @@ type udpCandidate struct {
 	port int
 }
 
-// backendForConfig constructs the single backend a gateway instance serves.
+// backendForConfig constructs one configured backend.
 func backendForConfig(ctx context.Context, cfg *voicegateway.Config, geminiAPIKey string) (backendConnector, error) {
 	switch cfg.Backend {
 	case voicegateway.BackendGeminiLive:

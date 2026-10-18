@@ -57,7 +57,8 @@ For a Linux user service, start from
 models under the user's cache directory. The unit searches `~/.local/bin` and
 `~/.cargo/bin` for `uv`, which KittenTTS requires. If `uv` is installed
 elsewhere, add its directory to the unit's `PATH`. Replace the example trusted
-issuer, then run `systemctl --user daemon-reload` and
+issuer and configure API credentials as described below, then run
+`systemctl --user daemon-reload` and
 `systemctl --user enable --now voice-gateway.service`. The gateway watches its
 executable and config directory with fsnotify. On a rebuild or config edit, it
 shuts down gracefully and exits 0. The unit's `Restart=always` starts it again.
@@ -71,7 +72,35 @@ port reachable to clients. For a root-managed service, use
 `/etc/voice-gateway/config.toml` with an explicit `-config` flag and adapt the
 unit's binary, user, cache, and install paths.
 
-**NAT traversal:** the gateway uses one UDP port for ICE. At startup it
+### API credentials
+
+The user service reads `~/.config/systemd/user/voice-gateway.env`, beside
+`voice-gateway.service`, through `EnvironmentFile`. This file is optional for
+local-only deployments. Create it
+from the [credential template](../contrib/voice-gateway.env.example), then edit
+it and uncomment the keys your choices need:
+
+```sh
+install -d -m 700 ~/.config/systemd/user
+install -m 600 contrib/voice-gateway.env.example ~/.config/systemd/user/voice-gateway.env
+```
+
+- Gemini Live reads `GEMINI_API_KEY`.
+- The native `deepseek` LLM provider reads `DEEPSEEK_API_KEY`; leave
+  `api_key_name` unset for this provider.
+- An `openaicompatible` LLM endpoint reads the variable named by its
+  `api_key_name`, such as `RUNINFRA_GATEWAY_KEY` in the example config.
+
+Use `NAME=value` assignments without `export` or shell substitutions. Keep real
+keys in this private file rather than the unit or TOML config. A systemd user
+service does not automatically inherit exports from your interactive shell.
+After installing the updated unit, run `systemctl --user daemon-reload` and
+`systemctl --user restart voice-gateway.service`. Changes to the environment
+file require a service restart; they do not require a daemon reload.
+
+### NAT traversal
+
+The gateway uses one UDP port for ICE. At startup it
 requests a UPnP IGD mapping for that port, including an OS-assigned port from
 `server.webrtc_udp_port = 0`, and advertises the router's external IPv4
 address on success. UPnP does not replace TURN: UDP-blocking networks and
@@ -178,14 +207,38 @@ These platform rules follow
 
 ## Backends
 
-Each instance runs one `backend`:
+A gateway offers named `[[choices]]` together at one URL, sharing one WebRTC
+UDP port. Set `default_choice_id` to the ID used when a client omits its choice;
+when unset, the first configured choice is the default. IDs should stay stable
+so clients can save selections. Each choice has its own model configuration:
 
-- `gemini-live`: full duplex. The top-level `model` key defaults to
-  `voicegateway.DefaultGeminiModel`; bare IDs get the `models/` prefix. Setup
-  rules: [`voicegateway/voicertc/AGENTS.md`](../voicegateway/voicertc/AGENTS.md).
+- `gemini-live`: full duplex WebRTC audio. Its `model` defaults to
+  `voicegateway.DefaultGeminiModel`; bare IDs get the `models/` prefix. Supply
+  `GEMINI_API_KEY`. Setup rules:
+  [`voicegateway/voicertc/AGENTS.md`](../voicegateway/voicertc/AGENTS.md).
 - `local-stack`: half-duplex ASR, LLM, and TTS:
-  [VOICE_LOCAL_STACK.md](VOICE_LOCAL_STACK.md). It also serves text sessions on
-  the shared WebSocket with the same LLM, so a web frontend keeps its audio
-  sessions while clients that perform their own speech use the text route.
+  [VOICE_LOCAL_STACK.md](VOICE_LOCAL_STACK.md). Its LLM can run locally or use
+  a remote provider. It also supports text sessions with client speech. Set
+  `[choices.local_stack] text_only = true` to serve only text sessions without
+  initializing ASR or TTS. Such choices appear only in client-speech modes.
 
-Clients select a backend by gateway URL, not by provider name.
+See [contrib/config.toml](../contrib/config.toml) for Gemini Live, remote LLM,
+and local LLM offered simultaneously, with client speech for the LLM choices.
+All configured backends initialize before
+serving; a failed initialization stops startup and closes initialized backends.
+A configuration with top-level `backend`, `model`, and `local_stack` exposes
+one choice with ID `default`.
+
+`GET /api/voicegateway/v1/voice/choices` returns public metadata:
+`choices` with `id`, `label`, and `transports` (`webrtc` and/or `text`), plus
+`defaultChoiceID`. It contains no credentials or model endpoint addresses.
+Standalone gateways allow trusted host origins through CORS; embedded hosts
+apply their existing authentication middleware.
+
+Pass optional `choiceID` in WebRTC offer and browser text-ticket JSON requests.
+Native text clients pass `?choiceID=...` on `/voice/text`. Unknown choices and
+unsupported transports return 400 before opening a session or issuing a ticket.
+An omitted choice selects the gateway default. A browser ticket binds its
+selected choice; the redemption URL cannot override it. Each session retains
+its backend throughout its lifetime, and session close/diagnostics keep the
+same service identity authorization as the offer.

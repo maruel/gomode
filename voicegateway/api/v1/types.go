@@ -16,6 +16,8 @@ type StatusResp struct {
 
 // VoiceRTCOfferReq is the request body for POST /api/voicegateway/v1/voice/rtc/offer.
 type VoiceRTCOfferReq struct {
+	// ChoiceID selects a gateway choice; empty uses the advertised default.
+	ChoiceID string `json:"choiceID,omitempty"`
 	// SDP is the browser/client WebRTC offer session description from RTCSessionDescription.sdp after createOffer and setLocalDescription.
 	SDP string `json:"sdp"`
 	// Service authorizes a session on a standalone gateway. Embedded gateways use host authentication.
@@ -33,6 +35,8 @@ func (r *VoiceRTCOfferReq) Validate() error {
 // VoiceTextTicketReq authorizes a browser text-session WebSocket upgrade.
 // Embedded hosts authenticate this HTTP request before dispatch.
 type VoiceTextTicketReq struct {
+	// ChoiceID selects a text-capable choice, bound to the issued ticket.
+	ChoiceID string `json:"choiceID,omitempty"`
 	// Service authorizes a session on a standalone gateway.
 	Service *ServiceAuthorization `json:"service,omitempty"`
 }
@@ -223,4 +227,27 @@ type VoiceRTCDiagnosticsResp struct {
 	Server VoiceRTCServerDiagnostics `json:"server"`
 	// Client echoes the client diagnostics included in the request.
 	Client VoiceRTCClientDiagnostics `json:"client,omitzero"`
+}
+
+// VoiceTransport identifies how clients communicate with a voice choice.
+type VoiceTransport string
+
+const (
+	// VoiceTransportText carries text with client speech recognition and synthesis.
+	VoiceTransportText VoiceTransport = "text"
+	// VoiceTransportWebRTC carries audio through WebRTC.
+	VoiceTransportWebRTC VoiceTransport = "webrtc"
+)
+
+// VoiceChoice describes a selectable backend without exposing its credentials.
+type VoiceChoice struct {
+	ID         string           `json:"id"`
+	Label      string           `json:"label"`
+	Transports []VoiceTransport `json:"transports"`
+}
+
+// VoiceChoicesResp advertises the available voice choices and default selection.
+type VoiceChoicesResp struct {
+	Choices         []VoiceChoice `json:"choices"`
+	DefaultChoiceID string        `json:"defaultChoiceID"`
 }

@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.serialization.Serializable
@@ -113,6 +114,16 @@ enum class LocalLlmModel(
 
 const val DEFAULT_VOICE_LANGUAGE_TAG = "en-US"
 
+sealed interface SettingsLoadState {
+    data object Loading : SettingsLoadState
+
+    data object Ready : SettingsLoadState
+
+    data class Failed(
+        val message: String,
+    ) : SettingsLoadState
+}
+
 data class SettingsState(
     val activeServiceURL: String = "",
     val haloAddress: String? = null,
@@ -124,6 +135,8 @@ data class SettingsState(
     val onDeviceEngine: OnDeviceEngine = OnDeviceEngine.REMOTE_GATEWAY,
     val localLlmModel: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
     val voiceAudioDeviceType: Int? = null,
+    val voiceChoices: Map<String, String> = emptyMap(),
+    val loadState: SettingsLoadState = SettingsLoadState.Loading,
 )
 
 class SettingsRepository(
@@ -137,6 +150,7 @@ class SettingsRepository(
         val ACTIVE_SERVICE_ID = stringPreferencesKey("ACTIVE_SERVICE_ID")
         val HALO_ADDRESS = stringPreferencesKey("HALO_ADDRESS")
         val HALO_AUTO_CONNECT = booleanPreferencesKey("HALO_AUTO_CONNECT")
+        val VOICE_CHOICES = stringPreferencesKey("VOICE_CHOICES")
         val VOICE_MODE = stringPreferencesKey("VOICE_MODE")
         val VOICE_LANGUAGE_TAG = stringPreferencesKey("VOICE_LANGUAGE_TAG")
         val ON_DEVICE_VOICE_ENGINE = stringPreferencesKey("ON_DEVICE_VOICE_ENGINE")
@@ -152,6 +166,8 @@ class SettingsRepository(
                 val active = services.firstOrNull { it.id == activeId } ?: services.firstOrNull()
                 SettingsState(
                     activeServiceURL = active?.url ?: "",
+                    loadState = SettingsLoadState.Ready,
+                    voiceChoices = decodeVoiceChoices(prefs),
                     haloAddress = prefs[Keys.HALO_ADDRESS],
                     haloAutoConnect = prefs[Keys.HALO_AUTO_CONNECT] ?: false,
                     services = services,
@@ -163,6 +179,10 @@ class SettingsRepository(
                     localLlmModel =
                         LocalLlmModel.entries.firstOrNull { it.name == prefs[Keys.LOCAL_LLM_MODEL] }
                             ?: LocalLlmModel.GEMMA_4_E2B,
+                )
+            }.catch {
+                emit(
+                    SettingsState(loadState = SettingsLoadState.Failed("Unable to read saved settings: ${it.message}")),
                 )
             }.stateIn(scope, SharingStarted.Eagerly, SettingsState())
 
@@ -255,6 +275,20 @@ class SettingsRepository(
     suspend fun updateLocalLlmModel(model: LocalLlmModel) {
         dataStore.edit { prefs -> prefs[Keys.LOCAL_LLM_MODEL] = model.name }
     }
+
+    suspend fun updateVoiceChoice(
+        gatewayURL: String,
+        choiceID: String,
+    ) {
+        require(choiceID.isNotBlank()) { "Select a voice choice" }
+        dataStore.edit { prefs ->
+            prefs[Keys.VOICE_CHOICES] =
+                json.encodeToString(decodeVoiceChoices(prefs) + (normalizeURL(gatewayURL) to choiceID))
+        }
+    }
+
+    private fun decodeVoiceChoices(prefs: Preferences): Map<String, String> =
+        prefs[Keys.VOICE_CHOICES]?.let { json.decodeFromString<Map<String, String>>(it) } ?: emptyMap()
 
     private fun decodeServices(prefs: Preferences): List<ServiceInstance> =
         prefs[Keys.SERVICES]?.let { encoded ->

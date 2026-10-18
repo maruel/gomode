@@ -45,6 +45,24 @@ type DiagnosticMediaBridge interface {
 	DiagnoseVoiceRTC(ctx context.Context, sessionID string, client *voicev1.VoiceRTCClientDiagnostics) voicev1.VoiceRTCDiagnosticsResp
 }
 
+// VoiceChoiceProvider advertises the choices available through a transport.
+type VoiceChoiceProvider interface {
+	VoiceChoices() voicev1.VoiceChoicesResp
+}
+
+// ChoiceMediaBridge advertises and selects named voice backends.
+// The MediaBridge methods continue to operate on the default choice.
+type ChoiceMediaBridge interface {
+	VoiceChoiceProvider
+	HandleChoiceOffer(ctx context.Context, sdp, choiceID string) (sdpAnswer, sessionID string, err error)
+}
+
+// ChoiceTextSessionServer selects a named backend for a text session.
+type ChoiceTextSessionServer interface {
+	VoiceChoiceProvider
+	ServeTextChoice(ctx context.Context, w http.ResponseWriter, r *http.Request, choiceID string) error
+}
+
 // NewHandler returns a reusable voice gateway HTTP handler. textSessions may be
 // nil when no backend serves text voice sessions.
 func NewHandler(
@@ -87,6 +105,7 @@ func newHandler(cfg *Config, bridge MediaBridgeProvider, textSessions TextSessio
 	if includeHealth {
 		mux.HandleFunc("GET /api/voicegateway/v1/voice/health", h.handleHealth)
 	}
+	mux.HandleFunc("GET /api/voicegateway/v1/voice/choices", h.handleChoices)
 	mux.HandleFunc("POST /api/voicegateway/v1/voice/rtc/offer", h.handleOffer)
 	mux.HandleFunc("POST /api/voicegateway/v1/voice/rtc/{sessionID}/diagnostics", h.handleDiagnostics)
 	mux.HandleFunc("POST /api/voicegateway/v1/voice/rtc/{sessionID}", h.handleClose)
@@ -111,7 +130,7 @@ func allowTrustedIssuerOrigins(cfg *Config, next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			if r.Method == http.MethodOptions {
-				w.Header().Set("Access-Control-Allow-Methods", "POST")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST")
 				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 				w.WriteHeader(http.StatusNoContent)
 				return
@@ -138,6 +157,79 @@ func (h *handler) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	voiceapi.WriteJSON(w, http.StatusOK, HealthResp{Status: "ok"})
 }
 
+// voiceChoices advertises only transports supplied to this handler. A text
+// server without choice routing serves the default choice alone.
+func (h *handler) voiceChoices() voicev1.VoiceChoicesResp {
+	bridge := h.mediaBridge()
+	media := voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{}, DefaultChoiceID: "default"}
+	if provider, ok := bridge.(ChoiceMediaBridge); ok {
+		media = provider.VoiceChoices()
+	} else if bridge != nil {
+		media.Choices = []voicev1.VoiceChoice{{ID: "default", Label: "Default", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}}}
+	}
+	text := voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{}}
+	if provider, ok := h.textSessions.(ChoiceTextSessionServer); ok {
+		text = provider.VoiceChoices()
+	} else if h.textSessions != nil {
+		text.Choices = []voicev1.VoiceChoice{{ID: media.DefaultChoiceID, Label: "Default", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText}}}
+		text.DefaultChoiceID = media.DefaultChoiceID
+	}
+	choices := voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{}, DefaultChoiceID: media.DefaultChoiceID}
+	if bridge == nil {
+		choices.DefaultChoiceID = text.DefaultChoiceID
+	}
+	for _, ch := range media.Choices {
+		if slices.Contains(ch.Transports, voicev1.VoiceTransportWebRTC) {
+			choices.Choices = append(choices.Choices, voicev1.VoiceChoice{ID: ch.ID, Label: ch.Label, Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}})
+		}
+	}
+	for _, ch := range text.Choices {
+		if !slices.Contains(ch.Transports, voicev1.VoiceTransportText) {
+			continue
+		}
+		i := slices.IndexFunc(choices.Choices, func(c voicev1.VoiceChoice) bool { return c.ID == ch.ID })
+		if i < 0 {
+			choices.Choices = append(choices.Choices, voicev1.VoiceChoice{ID: ch.ID, Label: ch.Label, Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText}})
+		} else {
+			choices.Choices[i].Transports = append([]voicev1.VoiceTransport{voicev1.VoiceTransportText}, choices.Choices[i].Transports...)
+		}
+	}
+	if len(choices.Choices) == 0 {
+		choices.DefaultChoiceID = ""
+	} else if !slices.ContainsFunc(choices.Choices, func(c voicev1.VoiceChoice) bool { return c.ID == choices.DefaultChoiceID }) {
+		choices.DefaultChoiceID = choices.Choices[0].ID
+	}
+	return choices
+}
+
+func (h *handler) handleChoices(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	voiceapi.WriteJSON(w, http.StatusOK, h.voiceChoices())
+}
+
+func (h *handler) selectChoice(w http.ResponseWriter, id string, transport voicev1.VoiceTransport) (string, bool) {
+	choices := h.voiceChoices()
+	if len(choices.Choices) == 0 {
+		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "voice sessions unavailable")
+		return "", false
+	}
+	if id == "" {
+		id = choices.DefaultChoiceID
+	}
+	for _, ch := range choices.Choices {
+		if ch.ID != id {
+			continue
+		}
+		if slices.Contains(ch.Transports, transport) {
+			return id, true
+		}
+		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "voice choice does not support the requested transport")
+		return "", false
+	}
+	voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "unknown voice choice")
+	return "", false
+}
+
 func (h *handler) handleOffer(w http.ResponseWriter, r *http.Request) {
 	var req voicev1.VoiceRTCOfferReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -157,7 +249,17 @@ func (h *handler) handleOffer(w http.ResponseWriter, r *http.Request) {
 		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "voice bridge unavailable")
 		return
 	}
-	sdpAnswer, sessionID, err := bridge.HandleOffer(r.Context(), req.SDP)
+	choiceID, ok := h.selectChoice(w, req.ChoiceID, voicev1.VoiceTransportWebRTC)
+	if !ok {
+		return
+	}
+	var sdpAnswer, sessionID string
+	var err error
+	if choices, ok := bridge.(ChoiceMediaBridge); ok {
+		sdpAnswer, sessionID, err = choices.HandleChoiceOffer(r.Context(), req.SDP, choiceID)
+	} else {
+		sdpAnswer, sessionID, err = bridge.HandleOffer(r.Context(), req.SDP)
+	}
 	if err != nil {
 		slog.ErrorContext(r.Context(), "offer failed", "err", err)
 		voiceapi.WriteError(w, http.StatusInternalServerError, voiceapi.CodeVoiceOfferFailed, "offer failed")
@@ -237,6 +339,10 @@ func (h *handler) handleTextTicket(w http.ResponseWriter, r *http.Request) {
 		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "text voice sessions unavailable")
 		return
 	}
+	choiceID, ok := h.selectChoice(w, req.ChoiceID, voicev1.VoiceTransportText)
+	if !ok {
+		return
+	}
 	now := time.Now()
 	h.textTicketMu.Lock()
 	for ticket, entry := range h.textTickets {
@@ -250,7 +356,7 @@ func (h *handler) handleTextTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ticket := rand.Text()
-	h.textTickets[ticket] = textTicket{origin: origin, expires: now.Add(30 * time.Second)}
+	h.textTickets[ticket] = textTicket{origin: origin, choiceID: choiceID, expires: now.Add(30 * time.Second)}
 	h.textTicketMu.Unlock()
 	w.Header().Set("Cache-Control", "no-store")
 	voiceapi.WriteJSON(w, http.StatusOK, voicev1.VoiceTextTicketResp{Ticket: ticket})
@@ -291,7 +397,7 @@ func (h *handler) handleBrowserTextSession(w http.ResponseWriter, r *http.Reques
 	r = r.Clone(r.Context())
 	r.Header.Del("Origin")
 	r.Header.Set("Sec-WebSocket-Protocol", "gomode.text.v1")
-	h.serveTextSession(w, r)
+	h.serveTextSession(w, r, entry.choiceID)
 }
 
 func (h *handler) handleTextSession(w http.ResponseWriter, r *http.Request) {
@@ -305,17 +411,27 @@ func (h *handler) handleTextSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	h.serveTextSession(w, r)
+	choiceID, ok := h.selectChoice(w, r.URL.Query().Get("choiceID"), voicev1.VoiceTransportText)
+	if !ok {
+		return
+	}
+	h.serveTextSession(w, r, choiceID)
 }
 
-func (h *handler) serveTextSession(w http.ResponseWriter, r *http.Request) {
+func (h *handler) serveTextSession(w http.ResponseWriter, r *http.Request, choiceID string) {
 	if h.textSessions == nil {
 		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "text voice sessions unavailable")
 		return
 	}
 	// ServeTextSession owns the response and writes its own errors; a returned
 	// error is only for diagnosis.
-	if err := h.textSessions.ServeTextSession(r.Context(), w, r); err != nil {
+	var err error
+	if choices, ok := h.textSessions.(ChoiceTextSessionServer); ok {
+		err = choices.ServeTextChoice(r.Context(), w, r, choiceID)
+	} else {
+		err = h.textSessions.ServeTextSession(r.Context(), w, r)
+	}
+	if err != nil {
 		slog.ErrorContext(r.Context(), "text voice session failed", "err", err)
 	}
 }
@@ -508,8 +624,9 @@ func (h *handler) verifyOAuthToken(ctx context.Context, issuer *TrustedIssuerCon
 }
 
 type textTicket struct {
-	origin  string
-	expires time.Time
+	choiceID string
+	origin   string
+	expires  time.Time
 }
 
 type serviceSessionIdentity struct {

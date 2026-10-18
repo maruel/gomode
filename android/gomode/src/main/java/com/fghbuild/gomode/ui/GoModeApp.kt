@@ -563,6 +563,9 @@ private fun GoModeContent(
                 voiceSessionActive = voiceSessionActive,
                 onDone = { onSetNativeScreen(null) },
                 onOpenHalo = { onSetNativeScreen(NativeScreen.Halo) },
+                bearerTokenFor = bearerStore::tokenFor,
+                bearerToken = bearerStore.token.collectAsStateWithLifecycle().value,
+                authEpoch = bearerStore.authEpoch.collectAsStateWithLifecycle().value,
             )
         }
 

@@ -60,6 +60,37 @@ or final, and for a runtime with useful partial results.
 
 ## Configuration
 
+### Client speech without ASR or TTS
+
+Set `text_only = true` to run only the LLM. The gateway does not initialize
+ASR or TTS adapters, download their models, or start their processes. This
+choice advertises only the text transport, so browser and Android users select
+it with client speech enabled. WebRTC audio sessions are rejected.
+
+```toml
+[[choices]]
+id = "remote"
+label = "DeepSeek"
+backend = "local-stack"
+
+[choices.local_stack]
+text_only = true
+
+[choices.local_stack.llm]
+provider = "deepseek"
+model = "deepseek-flash"
+```
+
+Supply `DEEPSEEK_API_KEY` to the gateway environment. To use a local LLM instead,
+omit the LLM table; only the managed llama.cpp LLM server starts. For a
+single-backend config, set `text_only` under `[local_stack]`.
+
+### Gateway speech
+
+Omitting `text_only` or setting it to `false` enables gateway speech and starts
+the configured ASR and TTS alongside the LLM. ASR and TTS settings cannot be
+combined with `text_only = true`.
+
 ```toml
 backend = "local-stack"
 

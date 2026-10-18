@@ -36,6 +36,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -56,8 +57,17 @@ private val deviceWebSocketClient: OkHttpClient by lazy {
 }
 
 /** textSessionWebSocketURL maps a gateway base URL to the text session WebSocket URL. */
-internal fun textSessionWebSocketURL(gatewayEndpointURL: String): String {
-    val httpURL = gatewayEndpointURL.trimEnd('/') + TEXT_SESSION_PATH
+internal fun textSessionWebSocketURL(
+    gatewayEndpointURL: String,
+    choiceID: String? = null,
+): String {
+    val httpURL =
+        (gatewayEndpointURL.trimEnd('/') + TEXT_SESSION_PATH)
+            .toHttpUrl()
+            .newBuilder()
+            .apply { choiceID?.let { addQueryParameter("choiceID", it) } }
+            .build()
+            .toString()
     return when {
         httpURL.startsWith("https://") -> "wss://" + httpURL.removePrefix("https://")
         httpURL.startsWith("http://") -> "ws://" + httpURL.removePrefix("http://")
@@ -250,7 +260,7 @@ internal class DeviceVoiceSession(
         val request =
             Request
                 .Builder()
-                .url(textSessionWebSocketURL(setup.gatewayEndpointURL))
+                .url(textSessionWebSocketURL(setup.gatewayEndpointURL, setup.choiceID))
                 .apply { webSocketHeaders(setup).forEach { (name, value) -> header(name, value) } }
                 .build()
         val listener =

@@ -5,6 +5,7 @@ import android.webkit.CookieManager
 import com.caic.voicegateway.sdk.v1.ServiceAuthorization
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.service.VoiceTokenClient
@@ -23,6 +24,7 @@ internal class VoiceSetupException(
 internal data class VoiceSetup(
     val gatewayEndpointURL: String,
     val service: ServiceAuthorization?,
+    val choiceID: String? = null,
     val tokenEndpointURL: String?,
     val gatewayHeaders: Map<String, String>,
     val mcpClient: McpClient,
@@ -57,6 +59,7 @@ internal suspend fun prepareVoiceSetup(
     voiceTokenClient: VoiceTokenClient = VoiceTokenClient(),
 ): VoiceSetup {
     val settings = settingsRepository.settings.value
+    requireLoadedVoiceSettings(settings)
     if (settings.activeServiceURL.isBlank()) {
         throw VoiceSetupException("Service URL is not configured")
     }
@@ -101,6 +104,15 @@ internal suspend fun prepareVoiceSetup(
         throw VoiceSetupException("Sign in to the hosted service before using voice")
     }
 
+    val gatewayHeaders = serviceAuthHeaders(gatewayEndpointURL, bearerTokenFor)
+    val choiceID =
+        if (usesGatewayVoice(settings)) {
+            discoverVoiceChoices(settings.activeServiceURL, serviceSettings, bearerTokenFor).selection(settings).id
+        } else {
+            null
+        }
+    ensureVoiceSettingsCurrent(settings, settingsRepository.settings.value)
+
     val mcpCredentials =
         VoiceMcpCredentials(
             cookieFor(mcpEndpointURL),
@@ -126,11 +138,16 @@ internal suspend fun prepareVoiceSetup(
             readInitialServiceContext(client)
         }
     val service = tokenEndpointURL?.let { voiceTokenClient.fetch(it, cookieFor(it), bearerTokenFor(it)) }
+    ensureVoiceSettingsCurrent(settings, settingsRepository.settings.value)
+    if (gatewayHeaders != serviceAuthHeaders(gatewayEndpointURL, bearerTokenFor)) {
+        throw VoiceSetupException("Service authentication changed. Try connecting again.")
+    }
     return VoiceSetup(
         gatewayEndpointURL = gatewayEndpointURL,
+        choiceID = choiceID,
         service = service,
         tokenEndpointURL = tokenEndpointURL,
-        gatewayHeaders = serviceAuthHeaders(gatewayEndpointURL, bearerTokenFor),
+        gatewayHeaders = gatewayHeaders,
         mcpClient = client,
         tools = tools,
         systemInstruction = systemInstruction,
@@ -148,3 +165,16 @@ internal fun serviceAuthHeaders(
         cookieFor(url)?.takeIf { it.isNotBlank() }?.let { put("Cookie", it) }
         bearerTokenFor(url)?.takeIf { it.isNotBlank() }?.let { put("Authorization", "Bearer $it") }
     }
+
+// Setup owns a snapshot: later settings must not change the provider of an in-flight attempt.
+internal fun ensureVoiceSettingsCurrent(
+    captured: SettingsState,
+    current: SettingsState,
+) {
+    if (captured.activeServiceId != current.activeServiceId ||
+        captured.activeServiceURL != current.activeServiceURL || captured.voiceMode != current.voiceMode ||
+        captured.onDeviceEngine != current.onDeviceEngine || captured.voiceChoices != current.voiceChoices
+    ) {
+        throw VoiceSetupException("Voice settings changed. Try connecting again.")
+    }
+}

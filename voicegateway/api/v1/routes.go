@@ -51,6 +51,7 @@ func (r *Route) CategoryName() string {
 // /api/voicegateway/v1/voice/text and /api/voicegateway/v1/voice/text/browser,
 // which carry no JSON request or response body.
 var Routes = []Route{
+	{Name: "voiceChoices", Doc: "Lists available voice choices and their supported transports.", Method: "GET", Path: "/api/voicegateway/v1/voice/choices", Resp: reflect.TypeFor[VoiceChoicesResp]()},
 	{
 		Name:   "voiceTextTicket",
 		Doc:    "Authorizes a browser text-session upgrade with a short-lived, single-use ticket.",

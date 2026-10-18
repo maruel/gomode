@@ -69,7 +69,7 @@ func mainImpl(args []string) (err error) {
 
 	geminiAPIKey := os.Getenv("GEMINI_API_KEY")
 	var bridge *voicertc.Bridge
-	if cfg.Backend == voicegateway.BackendGeminiLive && geminiAPIKey == "" {
+	if len(cfg.Choices) == 0 && cfg.Backend == voicegateway.BackendGeminiLive && geminiAPIKey == "" {
 		log.WarnContext(ctx, "voice media disabled", "reason", "GEMINI_API_KEY is not configured")
 	} else {
 		cacheDir, err := os.UserCacheDir()

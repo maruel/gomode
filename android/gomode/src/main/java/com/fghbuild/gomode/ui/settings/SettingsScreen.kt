@@ -39,9 +39,11 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.OnDeviceEngine
+import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.voice.usesGatewayVoice
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -52,6 +54,9 @@ fun SettingsScreen(
     voiceSessionActive: Boolean,
     onDone: () -> Unit,
     onOpenHalo: () -> Unit,
+    bearerTokenFor: (String) -> String? = { null },
+    bearerToken: String? = null,
+    authEpoch: Long = 0,
 ) {
     val scope = rememberCoroutineScope()
     var editingServiceId by remember { mutableStateOf<String?>(null) }
@@ -199,6 +204,9 @@ fun SettingsScreen(
                 }
             }
             HorizontalDivider()
+            (settings.loadState as? SettingsLoadState.Failed)?.message?.let {
+                Text(it, modifier = Modifier.testTag("gomode-settings-error"))
+            }
             if (voiceSessionActive) Text("End the voice session before changing voice settings.")
             VoiceModeSetting(settings.voiceMode, settingsRepository, enabled = !voiceSessionActive)
             if (settings.voiceMode == VoiceMode.DEVICE) {
@@ -206,6 +214,16 @@ fun SettingsScreen(
                 if (settings.onDeviceEngine == OnDeviceEngine.LOCAL_LLM) {
                     LocalLlmModelSetting(settings.localLlmModel, settingsRepository, enabled = !voiceSessionActive)
                 }
+            }
+            if (settings.activeServiceURL.isNotBlank() && usesGatewayVoice(settings)) {
+                VoiceChoiceSetting(
+                    settings,
+                    settingsRepository,
+                    !voiceSessionActive,
+                    bearerTokenFor,
+                    bearerToken,
+                    authEpoch,
+                )
             }
             VoiceLanguageSetting(settings, settingsRepository, enabled = !voiceSessionActive)
             HorizontalDivider()

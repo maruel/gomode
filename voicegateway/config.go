@@ -17,7 +17,7 @@ import (
 	"github.com/maruel/gomode"
 )
 
-// Internal backend IDs. A gateway instance serves exactly one of these. They are
+// Internal backend IDs select the implementation for each choice. They are
 // gateway implementation details: they appear in gateway config, logs, and
 // tests, but never in the client contract.
 const (
@@ -41,14 +41,39 @@ const DefaultGeminiModel = "gemini-3.8-live"
 
 // Config is the static voice gateway configuration.
 //
-// A gateway instance serves exactly one backend. Operators run multiple
-// instances (and point clients at different URLs) to offer multiple profiles.
+// Choices offers independently configured backends on one endpoint. When empty,
+// Backend, Model and LocalStack define the default choice.
 type Config struct {
-	Server         ServerConfig          `toml:"server"`
-	Model          string                `toml:"model"`
-	Backend        string                `toml:"backend"`
-	LocalStack     LocalStackConfig      `toml:"local_stack"`
-	TrustedIssuers []TrustedIssuerConfig `toml:"trusted_issuers"`
+	Choices         []ChoiceConfig        `toml:"choices"`
+	DefaultChoiceID string                `toml:"default_choice_id"`
+	Server          ServerConfig          `toml:"server"`
+	Model           string                `toml:"model"`
+	Backend         string                `toml:"backend"`
+	LocalStack      LocalStackConfig      `toml:"local_stack"`
+	TrustedIssuers  []TrustedIssuerConfig `toml:"trusted_issuers"`
+}
+
+// ChoiceConfig defines one named backend offered to clients. IDs remain stable
+// across configuration changes so clients can save their selection.
+type ChoiceConfig struct {
+	ID         string           `toml:"id"`
+	Label      string           `toml:"label"`
+	Backend    string           `toml:"backend"`
+	Model      string           `toml:"model"`
+	LocalStack LocalStackConfig `toml:"local_stack"`
+}
+
+// VoiceChoices returns the configured choices and default ID. A single-backend
+// configuration exposes the stable ID "default".
+func (c *Config) VoiceChoices() ([]ChoiceConfig, string) {
+	if len(c.Choices) == 0 {
+		return []ChoiceConfig{{ID: "default", Label: "Default", Backend: c.Backend, Model: c.Model, LocalStack: c.LocalStack}}, "default"
+	}
+	id := c.DefaultChoiceID
+	if id == "" {
+		id = c.Choices[0].ID
+	}
+	return slices.Clone(c.Choices), id
 }
 
 // DefaultConfig returns the standalone voice gateway defaults.
@@ -112,16 +137,40 @@ func (c *Config) validate(requireHTTP bool) error {
 	if c.Server.WebRTCUDPPort < -1 || c.Server.WebRTCUDPPort > 65535 {
 		errs = append(errs, fmt.Errorf("server.webrtc_udp_port must be between -1 and 65535, got %d", c.Server.WebRTCUDPPort))
 	}
-	switch {
-	case c.Backend == "":
-		errs = append(errs, errors.New("backend is required"))
-	case !slices.Contains(knownBackends, c.Backend):
-		errs = append(errs, fmt.Errorf("backend %q is not a known backend", c.Backend))
+	choices, defaultID := c.VoiceChoices()
+	seen := make(map[string]struct{}, len(choices))
+	for i := range choices {
+		ch := &choices[i]
+		if ch.ID == "" || len(ch.ID) > 128 || strings.ContainsFunc(ch.ID, func(r rune) bool {
+			return !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.", r)
+		}) {
+			errs = append(errs, fmt.Errorf("choices[%d].id must be a nonempty URL-safe identifier", i))
+		}
+		if _, ok := seen[ch.ID]; ok {
+			errs = append(errs, fmt.Errorf("duplicate choice ID %q", ch.ID))
+		}
+		seen[ch.ID] = struct{}{}
+		if strings.TrimSpace(ch.Label) == "" {
+			errs = append(errs, fmt.Errorf("choice %q label is required", ch.ID))
+		}
+		if ch.Backend == "" {
+			errs = append(errs, errors.New("backend is required"))
+		} else if !slices.Contains(knownBackends, ch.Backend) {
+			errs = append(errs, fmt.Errorf("backend %q is not a known backend", ch.Backend))
+		}
+		if err := ch.LocalStack.validate(); err != nil {
+			errs = append(errs, fmt.Errorf("choice %q: %w", ch.ID, err))
+		}
+	}
+	if _, ok := seen[defaultID]; !ok {
+		errs = append(errs, fmt.Errorf("default_choice_id %q does not name a choice", defaultID))
+	}
+	if len(c.Choices) == 0 && c.DefaultChoiceID != "" && c.DefaultChoiceID != "default" {
+		errs = append(errs, errors.New("default_choice_id requires choices"))
 	}
 	for i, issuer := range c.TrustedIssuers {
 		errs = append(errs, validateTrustedIssuer(i, &issuer))
 	}
-	errs = append(errs, c.LocalStack.validate())
 	return errors.Join(errs...)
 }
 
@@ -133,13 +182,21 @@ type ServerConfig struct {
 
 // LocalStackConfig configures local model adapters.
 type LocalStackConfig struct {
-	ASR LocalStackASRConfig `toml:"asr"`
-	LLM LocalStackLLMConfig `toml:"llm"`
-	TTS LocalStackTTSConfig `toml:"tts"`
+	// TextOnly disables gateway speech processing. Clients transcribe and speak;
+	// the choice serves text sessions only and never initializes ASR or TTS.
+	TextOnly bool                `toml:"text_only"`
+	ASR      LocalStackASRConfig `toml:"asr"`
+	LLM      LocalStackLLMConfig `toml:"llm"`
+	TTS      LocalStackTTSConfig `toml:"tts"`
 }
 
 func (c *LocalStackConfig) validate() error {
+	var speechErr error
+	if c.TextOnly && (c.ASR != (LocalStackASRConfig{}) || c.TTS != (LocalStackTTSConfig{})) {
+		speechErr = errors.New("local_stack.text_only cannot be combined with asr or tts settings")
+	}
 	return errors.Join(
+		speechErr,
 		validateLocalStackASR(c.ASR),
 		validateBaseURL("local_stack.asr.remote", c.ASR.Remote),
 		validateLocalStackProvider("local_stack.llm", c.LLM.Provider, c.LLM.Remote),

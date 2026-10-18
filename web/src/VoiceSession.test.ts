@@ -178,7 +178,7 @@ afterEach(() => {
 });
 
 beforeEach(() => {
-  localStorage.removeItem("gomode.voiceLanguage");
+  localStorage.clear();
   closeRequests = [];
   offerRequests = [];
   diagnosticRequests = [];
@@ -187,6 +187,13 @@ beforeEach(() => {
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     const authorization = new Headers(init?.headers).get("Authorization");
+    if (url.endsWith("/voice/choices"))
+      return new Response(
+        JSON.stringify({
+          choices: [{ id: "gemini", label: "Gemini Live", transports: ["webrtc", "text"] }],
+          defaultChoiceID: "gemini",
+        }),
+      );
     if (url.endsWith("/voice/rtc/offer")) {
       offerRequests.push({ url, authorization, body: JSON.parse(String(init?.body)) });
       return offerResponse ?? new Response(JSON.stringify({ sdp: "answer-sdp", sessionID: "session-1" }));
@@ -545,7 +552,8 @@ describe("VoiceSession", () => {
     offerResponse = offer.promise.then((answer) => new Response(JSON.stringify(answer)));
     const fetchOffer = globalThis.fetch;
     globalThis.fetch = async (input, init) => {
-      if (String(input).endsWith("/voice/rtc/offer")) return fetchOffer(input, init);
+      if (String(input).endsWith("/voice/rtc/offer") || String(input).endsWith("/voice/choices"))
+        return fetchOffer(input, init);
       closeRequests.push({ url: String(input), authorization: new Headers(init?.headers).get("Authorization") });
       return new Response(JSON.stringify({ error: { code: "UNAVAILABLE", message: "gateway unavailable" } }), {
         status: 503,
@@ -795,12 +803,61 @@ describe("VoiceSession", () => {
     session.disconnect();
   });
 
+  it("revalidates a removed selection before creating an offer", async () => {
+    const session = new VoiceSession();
+    await session.loadVoiceChoices();
+    session.selectChoice("gemini");
+    const gatewayFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) =>
+      String(input).endsWith("/voice/choices")
+        ? new Response(
+            JSON.stringify({
+              choices: [{ id: "local", label: "Local LLM", transports: ["webrtc"] }],
+              defaultChoiceID: "local",
+            }),
+          )
+        : gatewayFetch(input, init);
+    await session.connect();
+    expect(offerRequests).toHaveLength(0);
+    expect(session.state.choiceID).toBe("gemini");
+    expect(session.state.error).toContain("selected voice choice is unavailable");
+    expect(session.state.choicesError).toContain("selected voice choice is unavailable");
+    session.disconnect();
+  });
+
+  it("pins the selected gateway and choice through setup and reconnect", async () => {
+    configureVoiceGateway("https://original.example", null);
+    const session = new VoiceSession();
+    await session.loadVoiceChoices();
+    session.selectChoice("gemini");
+    const instructions = deferred<string>();
+    mcpMocks.mcpServerInstructions.mockReturnValueOnce(instructions.promise);
+    const connecting = session.connect();
+    await vi.waitFor(() => expect(mcpMocks.mcpServerInstructions).toHaveBeenCalledOnce());
+    configureVoiceGateway("https://replacement.example", null);
+    instructions.resolve("instructions");
+    await connecting;
+    expect(offerRequests[0]?.url).toContain("https://original.example/");
+    vi.useFakeTimers();
+    try {
+      triggerIceState("failed");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(() => expect(offerRequests).toHaveLength(2));
+      expect(offerRequests[1]?.url).toContain("https://original.example/");
+      expect(offerRequests[1]?.body).toMatchObject({ choiceID: "gemini" });
+    } finally {
+      session.disconnect();
+      vi.useRealTimers();
+    }
+  });
+
   it("sends the complete local SDP after ICE gathering", async () => {
     const session = new VoiceSession();
 
     await session.connect();
 
     expect(offerRequests[0]?.body).toEqual({
+      choiceID: "gemini",
       sdp: "v=0\r\na=candidate:1 1 udp 2130706431 192.0.2.2 50000 typ host\r\n",
     });
   });
@@ -822,6 +879,7 @@ describe("VoiceSession", () => {
     await session.connect();
 
     expect(offerRequests[0]?.body).toEqual({
+      choiceID: "gemini",
       sdp: "v=0\r\na=candidate:1 1 udp 2130706431 192.0.2.2 50000 typ host\r\n",
       service,
     });
@@ -956,7 +1014,11 @@ describe("VoiceSession", () => {
       {
         url: "https://old-voice.example.com/api/voicegateway/v1/voice/rtc/offer",
         authorization: null,
-        body: { sdp: "v=0\r\na=candidate:1 1 udp 2130706431 192.0.2.2 50000 typ host\r\n", service },
+        body: {
+          choiceID: "gemini",
+          sdp: "v=0\r\na=candidate:1 1 udp 2130706431 192.0.2.2 50000 typ host\r\n",
+          service,
+        },
       },
     ]);
     session.disconnect();
@@ -1028,6 +1090,7 @@ describe("VoiceSession", () => {
     session.disconnect();
 
     expect(offerRequests[0]?.body).toEqual({
+      choiceID: "gemini",
       sdp: "v=0\r\na=candidate:1 1 udp 2130706431 192.0.2.2 50000 typ host\r\n",
     });
     await vi.waitFor(() =>
@@ -1180,6 +1243,7 @@ describe("VoiceSession", () => {
       await connect;
 
       expect(offerRequests[0]?.body).toEqual({
+        choiceID: "gemini",
         sdp: "v=0\r\na=candidate:1 1 udp 2130706431 192.0.2.2 50000 typ host\r\na=candidate:2 1 udp 1694498815 203.0.113.2 50000 typ srflx raddr 192.0.2.2 rport 50000\r\n",
       });
       expect(FakePeerConnection.last?.iceGatheringState).toBe("gathering");

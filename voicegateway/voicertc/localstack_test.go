@@ -825,6 +825,92 @@ func TestLocalStackModelsForConfig(t *testing.T) {
 	}
 }
 
+func TestLocalStackTextOnly(t *testing.T) {
+	t.Parallel()
+	cfg := &voicegateway.LocalStackConfig{TextOnly: true}
+	var started []string
+	server := &fakeManagedLlamaServer{url: "http://127.0.0.1:12345"}
+	models, err := localStackModelsForConfigWithStarter(t.Context(), cfg, func(_ context.Context, model string) (managedLlamaServer, error) {
+		started = append(started, model)
+		return server, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(started) != 1 || started[0] != defaultLocalStackLLMModel {
+		t.Fatalf("started models = %v, want only the LLM", started)
+	}
+	if models.asr != nil {
+		t.Fatal("text-only model setup initialized ASR")
+	}
+	if err := models.runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !server.closed {
+		t.Fatal("LLM server was not closed")
+	}
+
+	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if _, err := io.WriteString(w, `data: {"choices":[{"index":0,"delta":{"content":"Hello."},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`); err != nil {
+			t.Error(err)
+		}
+	}))
+	t.Cleanup(llmServer.Close)
+	config := voicegateway.DefaultConfig()
+	config.Backend = voicegateway.BackendLocalStack
+	config.LocalStack = voicegateway.LocalStackConfig{
+		TextOnly: true,
+		LLM:      voicegateway.LocalStackLLMConfig{Provider: "openaicompatible", Remote: llmServer.URL + "/v1/chat/completions", Model: "test-model"},
+	}
+	bridge, err := NewBridge(t.Context(), &config, "", 0, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { bridge.CloseAll(t.Context()) })
+	choices := bridge.VoiceChoices()
+	if len(choices.Choices) != 1 || !slices.Equal(choices.Choices[0].Transports, []voicev1.VoiceTransport{voicev1.VoiceTransportText}) {
+		t.Fatalf("text-only choices = %+v", choices)
+	}
+	if _, _, err := bridge.HandleOffer(t.Context(), "m=audio "); err == nil || !strings.Contains(err.Error(), "text-only") {
+		t.Fatalf("text-only offer error = %v", err)
+	}
+	backend := bridge.backends["default"]
+	if _, err := backend.connect(t.Context(), "unsupported", &captureSink{}); err == nil {
+		t.Fatal("text-only backend accepted audio")
+	}
+	handler := voicegateway.NewEmbeddedHandler(func() voicegateway.MediaBridge { return bridge }, bridge)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), "POST", "/api/voicegateway/v1/voice/rtc/offer", strings.NewReader(`{"sdp":"m=audio "}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("audio offer status = %d: %s", rec.Code, rec.Body)
+	}
+	conn := dialTextSession(t, bridge)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	t.Cleanup(cancel)
+	writeMessage(t, ctx, conn, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})
+	expectKind(t, ctx, conn, voicev1.MessageKindSessionReady)
+	writeMessage(t, ctx, conn, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "Hi"})
+	expectTurnStatus(t, ctx, conn, voicev1.TurnStateThinking)
+	var reply voicev1.AssistantTextDelta
+	if err := json.Unmarshal(expectKind(t, ctx, conn, voicev1.MessageKindAssistantTextDelta), &reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply.Text != "Hello." {
+		t.Fatalf("reply = %+v", reply)
+	}
+	expectTurnStatus(t, ctx, conn, voicev1.TurnStateIdle)
+}
+
 func TestLocalStackProviderCleanup(t *testing.T) { //nolint:paralleltest // The test registers a provider in the process-wide genai registry.
 	const name = "gomode-test-cleanup"
 	t.Cleanup(func() { delete(providers.All, name) })

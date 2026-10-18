@@ -10,6 +10,7 @@ Type notation: `JSONValue` means any valid JSON value.
 
 | Method | Path | Description | Request | Response |
 |--------|------|-------------|---------|----------|
+| GET | `/api/voicegateway/v1/voice/choices` | Lists available voice choices and their supported transports. |  | `VoiceChoicesResp` |
 | POST | `/api/voicegateway/v1/voice/text/ticket` | Authorizes a browser text-session upgrade with a short-lived, single-use ticket. | `VoiceTextTicketReq` | `VoiceTextTicketResp` |
 | POST | `/api/voicegateway/v1/voice/rtc/offer` | Exchanges a WebRTC SDP offer for an answer, opening a voice gateway session. | `VoiceRTCOfferReq` | `VoiceRTCAnswerResp` |
 | POST | `/api/voicegateway/v1/voice/rtc/{sessionID}/diagnostics` | Returns structured WebRTC connectivity diagnostics for a voice bridge session. | `VoiceRTCDiagnosticsReq` | `VoiceRTCDiagnosticsResp` |
@@ -186,6 +187,34 @@ VoiceRTCSignalingState is a WebRTC peer connection signaling state.
 | `have-remote-pranswer` |  |
 | `closed` |  |
 
+### VoiceTransport
+
+VoiceTransport identifies how clients communicate with a voice choice.
+
+| Value | Description |
+|-------|-------------|
+| `text` | VoiceTransportText carries text with client speech recognition and synthesis. |
+| `webrtc` | VoiceTransportWebRTC carries audio through WebRTC. |
+
+### VoiceChoice
+
+VoiceChoice describes a selectable backend without exposing its credentials.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `id` | `string` |  | yes |
+| `label` | `string` |  | yes |
+| `transports` | `VoiceTransport[]` |  | yes |
+
+### VoiceChoicesResp
+
+VoiceChoicesResp advertises the available voice choices and default selection.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `choices` | `VoiceChoice[]` |  | yes |
+| `defaultChoiceID` | `string` |  | yes |
+
 ### ServiceAuthorization
 
 ServiceAuthorization identifies the host and carries its scoped gateway token.
@@ -204,6 +233,7 @@ Embedded hosts authenticate this HTTP request before dispatch.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
+| `choiceID` | `string` | ChoiceID selects a text-capable choice, bound to the issued ticket. |  |
 | `service` | `ServiceAuthorization` | Service authorizes a session on a standalone gateway. |  |
 
 ### VoiceTextTicketResp
@@ -223,6 +253,7 @@ VoiceRTCOfferReq is the request body for POST /api/voicegateway/v1/voice/rtc/off
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
+| `choiceID` | `string` | ChoiceID selects a gateway choice; empty uses the advertised default. |  |
 | `sdp` | `string` | SDP is the browser/client WebRTC offer session description from RTCSessionDescription.sdp after createOffer and setLocalDescription. | yes |
 | `service` | `ServiceAuthorization` | Service authorizes a session on a standalone gateway. Embedded gateways use host authentication. |  |
 

@@ -110,6 +110,10 @@ public final class ApiClient {
     }
 
     // JSON endpoints
+    /// Lists available voice choices and their supported transports.
+    public func voiceChoices(headers: [String: String] = [:]) async throws -> VoiceChoicesResp {
+        try await request("GET", path: "/api/voicegateway/v1/voice/choices", headers: headers)
+    }
     /// Authorizes a browser text-session upgrade with a short-lived, single-use ticket.
     public func voiceTextTicket(req: VoiceTextTicketReq, headers: [String: String] = [:]) async throws -> VoiceTextTicketResp {
         try await request("POST", path: "/api/voicegateway/v1/voice/text/ticket", body: try encoder.encode(req), headers: headers)

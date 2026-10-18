@@ -572,6 +572,49 @@ object VoiceRTCSignalingStateSerializer : KSerializer<VoiceRTCSignalingState> {
     }
 }
 
+@Serializable(with = VoiceTransportSerializer::class)
+sealed interface VoiceTransport {
+    val value: String
+    @Serializable
+    data object Text : VoiceTransport {
+        override val value = "text"
+    }
+    @Serializable
+    data object WebRTC : VoiceTransport {
+        override val value = "webrtc"
+    }
+    @Serializable
+    data class Other(override val value: String) : VoiceTransport
+}
+
+object VoiceTransportSerializer : KSerializer<VoiceTransport> {
+    override val descriptor = PrimitiveSerialDescriptor("VoiceTransport", PrimitiveKind.STRING)
+    override fun serialize(encoder: Encoder, value: VoiceTransport) = encoder.encodeString(value.value)
+    override fun deserialize(decoder: Decoder): VoiceTransport {
+        val v = decoder.decodeString()
+        return when (v) {
+            "text" -> VoiceTransport.Text
+            "webrtc" -> VoiceTransport.WebRTC
+            else -> VoiceTransport.Other(v)
+        }
+    }
+}
+
+/** VoiceChoice describes a selectable backend without exposing its credentials. */
+@Serializable
+data class VoiceChoice(
+    val id: String,
+    val label: String,
+    val transports: List<VoiceTransport>,
+)
+
+/** VoiceChoicesResp advertises the available voice choices and default selection. */
+@Serializable
+data class VoiceChoicesResp(
+    val choices: List<VoiceChoice>,
+    @SerialName("defaultChoiceID") val defaultChoiceID: String,
+)
+
 /** ServiceAuthorization identifies the host and carries its scoped gateway token. */
 @Serializable
 data class ServiceAuthorization(
@@ -587,6 +630,8 @@ data class ServiceAuthorization(
  */
 @Serializable
 data class VoiceTextTicketReq(
+    /** ChoiceID selects a text-capable choice, bound to the issued ticket. */
+    @SerialName("choiceID") val choiceID: String? = null,
     /** Service authorizes a session on a standalone gateway. */
     val service: ServiceAuthorization? = null,
 )
@@ -603,6 +648,8 @@ data class VoiceTextTicketResp(val ticket: String)
 /** VoiceRTCOfferReq is the request body for POST /api/voicegateway/v1/voice/rtc/offer. */
 @Serializable
 data class VoiceRTCOfferReq(
+    /** ChoiceID selects a gateway choice; empty uses the advertised default. */
+    @SerialName("choiceID") val choiceID: String? = null,
     /** SDP is the browser/client WebRTC offer session description from RTCSessionDescription.sdp after createOffer and setLocalDescription. */
     val sdp: String,
     /** Service authorizes a session on a standalone gateway. Embedded gateways use host authentication. */

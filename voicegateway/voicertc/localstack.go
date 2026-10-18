@@ -116,6 +116,9 @@ func (b *localStackBackend) Close() error {
 }
 
 func (b *localStackBackend) connect(ctx context.Context, sessionID string, sink backendSink) (backendSession, error) {
+	if b.asr == nil || b.tts == nil {
+		return nil, errors.New("text-only choice does not support WebRTC audio")
+	}
 	return b.newSession(ctx, sessionID, sink, false), nil
 }
 

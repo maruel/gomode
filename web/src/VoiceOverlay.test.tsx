@@ -18,6 +18,8 @@ const enumerateDevicesMock = vi.spyOn(voiceSession, "enumerateDevices").mockReso
 const prepareAudioMock = vi.spyOn(voiceSession, "prepareAudio").mockImplementation(() => {});
 const setVoiceActiveMock = vi.spyOn(notifications, "setVoiceActive");
 
+vi.spyOn(voiceSession, "loadVoiceChoices").mockResolvedValue();
+
 let restoreBrowserSpeech: () => void;
 beforeEach(() => {
   restoreBrowserSpeech = installBrowserSpeech("Chrome desktop");
@@ -37,6 +39,10 @@ beforeEach(() => {
     transcript: [],
     languageTag: "en-US",
     mode: "cloud",
+    choices: [],
+    choiceID: null,
+    choicesStatus: "ready",
+    choicesError: null,
     audioInputs: [],
     audioOutputs: [],
     selectedInputId: "",

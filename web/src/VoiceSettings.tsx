@@ -1,6 +1,6 @@
 // Automatically saved browser voice mode and language controls shared by the overlay and host settings.
 
-import { createEffect, createSignal, createUniqueId, onCleanup, Show, type Accessor } from "solid-js";
+import { createEffect, createSignal, createUniqueId, onCleanup, Show, For, on, type Accessor } from "solid-js";
 import { browserSpeechAvailable } from "./BrowserSpeech";
 import { voiceSession, type VoiceMode } from "./VoiceSession";
 import styles from "./VoiceSettings.module.css";
@@ -12,6 +12,10 @@ export interface VoiceSettingsMessages {
   cloudVoice: string;
   cloudVoiceDescription: string;
   endSessionToChange: string;
+  voiceChoice: string;
+  choicesLoading: string;
+  choicesRetry: string;
+  choiceUnavailable: string;
   voiceLanguage: string;
   voiceMode: string;
 }
@@ -24,6 +28,10 @@ export const defaultVoiceSettingsMessages: VoiceSettingsMessages = {
   cloudVoice: "Cloud voice",
   cloudVoiceDescription: "The voice gateway receives your microphone audio and sends back spoken replies.",
   endSessionToChange: "End the voice session before changing voice settings.",
+  voiceChoice: "Voice choice",
+  choicesLoading: "Loading voice choices…",
+  choicesRetry: "Retry loading voice choices",
+  choiceUnavailable: "Choose an available voice choice",
   voiceLanguage: "Voice language (e.g. en-US)",
   voiceMode: "Voice mode",
 };
@@ -33,6 +41,11 @@ export default function VoiceSettings(props: {
   onError?: (error: string | null) => void;
   onLanguageError?: (error: string | null) => void;
 }) {
+  createEffect(
+    on(voiceSession.gatewayIdentity, () => {
+      void voiceSession.loadVoiceChoices();
+    }),
+  );
   const messages = () => {
     const value = props.messages;
     return { ...defaultVoiceSettingsMessages, ...(typeof value === "function" ? value() : value) };
@@ -46,7 +59,8 @@ export default function VoiceSettings(props: {
   });
   const [languageError, setLanguageError] = createSignal<string | null>(null);
   const [modeError, setModeError] = createSignal<string | null>(null);
-  const error = () => languageError() ?? modeError();
+  const [choiceError, setChoiceError] = createSignal<string | null>(null);
+  const error = () => languageError() ?? modeError() ?? choiceError() ?? voiceSession.state.choicesError;
   createEffect(() => props.onError?.(error()));
   createEffect(() => props.onLanguageError?.(languageError()));
   const errorId = createUniqueId();
@@ -130,6 +144,46 @@ export default function VoiceSettings(props: {
           {supported ? messages().browserSpeechPrivacy : messages().browserSpeechUnavailable}
         </p>
       </fieldset>
+      <label>
+        {messages().voiceChoice}
+        <select
+          disabled={active() || voiceSession.state.choicesStatus !== "ready"}
+          value={voiceSession.state.choiceID ?? ""}
+          onChange={(event) => {
+            try {
+              voiceSession.selectChoice(event.currentTarget.value);
+              setChoiceError(null);
+            } catch (err) {
+              event.currentTarget.value = voiceSession.state.choiceID ?? "";
+              setChoiceError(err instanceof Error ? err.message : String(err));
+            }
+          }}
+          aria-describedby={error() === null ? undefined : errorId}
+        >
+          <Show when={!voiceSession.compatibleChoices.some((choice) => choice.id === voiceSession.state.choiceID)}>
+            <option value={voiceSession.state.choiceID ?? ""} disabled>
+              {messages().choiceUnavailable}
+            </option>
+          </Show>
+          <For each={voiceSession.compatibleChoices}>
+            {(choice) => <option value={choice.id}>{choice.label}</option>}
+          </For>
+        </select>
+      </label>
+      <Show when={voiceSession.state.choicesStatus === "loading"}>
+        <p role="status">{messages().choicesLoading}</p>
+      </Show>
+      <Show when={voiceSession.state.choicesStatus === "error"}>
+        <button
+          type="button"
+          disabled={active()}
+          onClick={() => {
+            void voiceSession.loadVoiceChoices();
+          }}
+        >
+          {messages().choicesRetry}
+        </button>
+      </Show>
       <label>
         {messages().voiceLanguage}
         <input

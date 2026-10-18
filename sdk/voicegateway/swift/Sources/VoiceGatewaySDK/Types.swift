@@ -332,6 +332,40 @@ public struct VoiceRTCSignalingState: Codable, Equatable, Hashable {
     }
 }
 
+public struct VoiceTransport: Codable, Equatable, Hashable {
+    public let value: String
+
+    public init(_ value: String) { self.value = value }
+
+    public static let Text = VoiceTransport("text")
+    public static let WebRTC = VoiceTransport("webrtc")
+
+    public static func other(_ value: String) -> VoiceTransport { VoiceTransport(value) }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        value = try c.decode(String.self)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(value)
+    }
+}
+
+/// VoiceChoice describes a selectable backend without exposing its credentials.
+public struct VoiceChoice: Codable {
+    public let id: String
+    public let label: String
+    public let transports: [VoiceTransport]
+}
+
+/// VoiceChoicesResp advertises the available voice choices and default selection.
+public struct VoiceChoicesResp: Codable {
+    public let choices: [VoiceChoice]
+    public let defaultChoiceID: String
+}
+
 /// ServiceAuthorization identifies the host and carries its scoped gateway token.
 public struct ServiceAuthorization: Codable {
     public let kind: String
@@ -343,6 +377,8 @@ public struct ServiceAuthorization: Codable {
 /// VoiceTextTicketReq authorizes a browser text-session WebSocket upgrade.
 /// Embedded hosts authenticate this HTTP request before dispatch.
 public struct VoiceTextTicketReq: Codable {
+    /// ChoiceID selects a text-capable choice, bound to the issued ticket.
+    public let choiceID: String?
     /// Service authorizes a session on a standalone gateway.
     public let service: ServiceAuthorization?
 }
@@ -357,6 +393,8 @@ public struct VoiceTextTicketResp: Codable {
 
 /// VoiceRTCOfferReq is the request body for POST /api/voicegateway/v1/voice/rtc/offer.
 public struct VoiceRTCOfferReq: Codable {
+    /// ChoiceID selects a gateway choice; empty uses the advertised default.
+    public let choiceID: String?
     /// SDP is the browser/client WebRTC offer session description from RTCSessionDescription.sdp after createOffer and setLocalDescription.
     public let sdp: String
     /// Service authorizes a session on a standalone gateway. Embedded gateways use host authentication.

@@ -141,13 +141,23 @@ shell opens a WebSocket to the gateway text route, sends `session.setup` and
 through the skill's MCP endpoint. The gateway sends no audio. Contract:
 [VOICE_GATEWAY.md](VOICE_GATEWAY.md#text-sessions).
 
-Only one mode is active at a time. The gateway keeps its configured voice
-backend, so the web frontend keeps its audio sessions while clients using the
-on-device mode share the same language model.
+Native Settings shows **Gateway voice** for Cloud voice and the on-device
+Remote gateway engine. It lists the named choices advertised by the active
+gateway, filtered to WebRTC or text support for the selected speech mode. A
+gateway can offer Gemini Live, a remote LLM, and a local LLM together. Selection
+is saved per gateway URL and each new session pins its selected choice. A first
+connection uses the compatible advertised default, or the first compatible
+choice; switching speech modes visibly selects a compatible choice. If a saved
+choice is removed, reconnecting is blocked until the user selects an available
+choice. Discovery errors include Retry, and choices cannot change during an
+active session. Fully native engines keep their own model selection and do not
+query gateway choices.
 
 ## Voice Session Setup
 
-1. Resolve `webShell.voiceGateway.url` against the service URL.
+1. Resolve `webShell.voiceGateway.url` against the service URL and discover a
+   compatible gateway voice choice. External gateway metadata requests carry no
+   hosted-service credentials; embedded gateways use the service credentials.
 2. For an external gateway, fetch a token from `tokenEndpoint`.
 3. Post the offer to the signaling route.
 4. Open the `voice-gateway` data channel.

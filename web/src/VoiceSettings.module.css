@@ -22,6 +22,7 @@
   font-size: 0.85rem;
 }
 
+.settings select,
 .settings input[type="text"] {
   width: 8rem;
   min-width: 0;
@@ -46,6 +47,12 @@
   font-size: 0.85rem;
 }
 
+.settings select {
+  width: fit-content;
+  max-width: 100%;
+}
+
+.settings select:disabled,
 .settings input:disabled {
   cursor: default;
   opacity: 0.6;

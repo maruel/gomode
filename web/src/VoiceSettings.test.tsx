@@ -8,11 +8,23 @@ import { installBrowserSpeech } from "../tests/browser-speech";
 import VoiceSettings from "./VoiceSettings";
 import { voiceSession } from "./VoiceSession";
 
+vi.spyOn(voiceSession, "loadVoiceChoices").mockResolvedValue();
+
 let restore: () => void;
 beforeEach(() => {
   localStorage.clear();
   restore = installBrowserSpeech("Chrome desktop");
-  voiceSession.setState((s) => ({ ...s, mode: "cloud", languageTag: "en-US", connected: false, connectStatus: null }));
+  voiceSession.setState((s) => ({
+    ...s,
+    choices: [],
+    choiceID: null,
+    choicesStatus: "ready",
+    choicesError: null,
+    mode: "cloud",
+    languageTag: "en-US",
+    connected: false,
+    connectStatus: null,
+  }));
 });
 afterEach(() => {
   vi.useRealTimers();

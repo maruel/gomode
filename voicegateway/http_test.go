@@ -448,3 +448,214 @@ func newTestPublicKey(t *testing.T) string {
 	}
 	return encoded
 }
+
+// choiceBridge exercises HTTP selection independently of model providers.
+type choiceBridge struct {
+	fakeMediaBridge
+	rtcChoice  string
+	textChoice string
+}
+
+func (b *choiceBridge) VoiceChoices() voicev1.VoiceChoicesResp {
+	return voicev1.VoiceChoicesResp{DefaultChoiceID: "live", Choices: []voicev1.VoiceChoice{
+		{ID: "live", Label: "Live", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}},
+		{ID: "remote", Label: "Remote", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText, voicev1.VoiceTransportWebRTC}},
+	}}
+}
+func (b *choiceBridge) HandleChoiceOffer(ctx context.Context, sdp, id string) (string, string, error) {
+	b.rtcChoice = id
+	return b.HandleOffer(ctx, sdp)
+}
+func (b *choiceBridge) ServeTextSession(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+	return b.ServeTextChoice(ctx, w, r, "")
+}
+func (b *choiceBridge) ServeTextChoice(_ context.Context, w http.ResponseWriter, _ *http.Request, id string) error {
+	b.textChoice = id
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func TestVoiceChoices(t *testing.T) {
+	t.Parallel()
+	b := &choiceBridge{}
+	cfg, service := testServiceAuth(t)
+	h, err := NewHandler(&cfg, b, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), method, path, strings.NewReader(body)))
+		return w
+	}
+	w := request("GET", "/api/voicegateway/v1/voice/choices", "")
+	var choices voicev1.VoiceChoicesResp
+	if err := json.Unmarshal(w.Body.Bytes(), &choices); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != 200 || len(choices.Choices) != 2 || choices.DefaultChoiceID != "live" {
+		t.Fatalf("choices: %d %s", w.Code, w.Body)
+	}
+	for _, tc := range []struct {
+		id     string
+		status int
+	}{{"", 200}, {"remote", 200}, {"missing", 400}} {
+		w := request("POST", "/api/voicegateway/v1/voice/rtc/offer", `{"sdp":"offer","choiceID":"`+tc.id+`","service":`+service+`}`)
+		if w.Code != tc.status {
+			t.Fatalf("offer %q: %d %s", tc.id, w.Code, w.Body)
+		}
+		if tc.status == 200 {
+			want := tc.id
+			if want == "" {
+				want = "live"
+			}
+			if b.rtcChoice != want {
+				t.Fatalf("routed %q to %q", tc.id, b.rtcChoice)
+			}
+		}
+	}
+	for _, id := range []string{"", "live", "missing"} {
+		if w := request("POST", "/api/voicegateway/v1/voice/text/ticket", `{"choiceID":"`+id+`","service":`+service+`}`); w.Code != 400 {
+			t.Fatalf("ticket %q: %d %s", id, w.Code, w.Body)
+		}
+	}
+	w = request("POST", "/api/voicegateway/v1/voice/text/ticket", `{"choiceID":"remote","service":`+service+`}`)
+	if w.Code != 200 {
+		t.Fatalf("ticket: %d %s", w.Code, w.Body)
+	}
+	var ticket voicev1.VoiceTextTicketResp
+	if err := json.Unmarshal(w.Body.Bytes(), &ticket); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v1/voice/text/browser?choiceID=live", http.NoBody)
+	r.Header.Set("Sec-WebSocket-Protocol", "gomode.text.v1, gomode.ticket."+ticket.Ticket)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 204 || b.textChoice != "remote" {
+		t.Fatalf("bound ticket: %d choice %q", w.Code, b.textChoice)
+	}
+	// Native selection retains the authenticated handshake and rejects unsupported transports.
+	var auth voicev1.ServiceAuthorization
+	if err := json.Unmarshal([]byte(service), &auth); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		id     string
+		status int
+	}{{"remote", 204}, {"live", 400}, {"missing", 400}} {
+		r := httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v1/voice/text?choiceID="+tc.id, http.NoBody)
+		r.Header.Set("Authorization", "Bearer "+auth.Token)
+		r.Header.Set("X-Service-Kind", auth.Kind)
+		r.Header.Set("X-Service-Origin", auth.BaseURL)
+		r.Header.Set("X-Service-Instance", auth.InstanceID)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != tc.status {
+			t.Fatalf("native %q: %d %s", tc.id, w.Code, w.Body)
+		}
+	}
+}
+
+func TestEmbeddedChoiceCapabilities(t *testing.T) {
+	t.Parallel()
+	t.Run("named text server without media", func(t *testing.T) {
+		t.Parallel()
+		text := &choiceBridge{}
+		h := NewEmbeddedHandler(nil, text)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v1/voice/choices", http.NoBody))
+		var choices voicev1.VoiceChoicesResp
+		if err := json.Unmarshal(w.Body.Bytes(), &choices); err != nil {
+			t.Fatal(err)
+		}
+		if choices.DefaultChoiceID != "remote" || len(choices.Choices) != 1 || len(choices.Choices[0].Transports) != 1 || choices.Choices[0].Transports[0] != voicev1.VoiceTransportText {
+			t.Fatalf("text-only choices: %+v", choices)
+		}
+		w = httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v1/voice/text", http.NoBody))
+		if w.Code != http.StatusNoContent || text.textChoice != "remote" {
+			t.Fatalf("text-only default: %d %q", w.Code, text.textChoice)
+		}
+	})
+	for _, tc := range []struct {
+		name        string
+		media       bool
+		singleMedia bool
+		text        bool
+		defaultID   string
+	}{
+		{name: "media choices without text server", media: true, defaultID: "live"},
+		{name: "media choices with default-only text server", media: true, text: true, defaultID: "live"},
+		{name: "default-only text server", text: true, defaultID: "default"},
+		{name: "single media with default-only text server", media: true, singleMedia: true, text: true, defaultID: "default"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var media MediaBridgeProvider
+			if tc.media {
+				media = func() MediaBridge {
+					if tc.singleMedia {
+						return &fakeMediaBridge{}
+					}
+					return &choiceBridge{}
+				}
+			}
+			calls := 0
+			var text TextSessionServer
+			if tc.text {
+				text = textSessionServerFunc(func(_ context.Context, w http.ResponseWriter, _ *http.Request) error {
+					calls++
+					w.WriteHeader(http.StatusNoContent)
+					return nil
+				})
+			}
+			h := NewEmbeddedHandler(media, text)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v1/voice/choices", http.NoBody))
+			var choices voicev1.VoiceChoicesResp
+			if err := json.Unmarshal(w.Body.Bytes(), &choices); err != nil {
+				t.Fatal(err)
+			}
+			if choices.DefaultChoiceID != tc.defaultID {
+				t.Fatalf("default %q", choices.DefaultChoiceID)
+			}
+			for _, ch := range choices.Choices {
+				supportsText := false
+				for _, transport := range ch.Transports {
+					if transport == voicev1.VoiceTransportText {
+						supportsText = true
+					}
+				}
+				want := tc.text && ch.ID == tc.defaultID
+				if supportsText != want {
+					t.Errorf("choice %s text = %v, want %v", ch.ID, supportsText, want)
+				}
+			}
+			for _, id := range []string{"", "remote"} {
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v1/voice/text?choiceID="+id, http.NoBody))
+				if tc.text && id == "" {
+					if w.Code != http.StatusNoContent {
+						t.Fatalf("default text: %d %s", w.Code, w.Body)
+					}
+				} else if w.Code < 400 {
+					t.Fatalf("unsupported text choice %q accepted", id)
+				}
+			}
+			wantCalls := 0
+			if tc.text {
+				wantCalls = 1
+			}
+			if calls != wantCalls {
+				t.Fatalf("legacy text called %d times, want %d", calls, wantCalls)
+			}
+			if tc.text && tc.media {
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "POST", "/api/voicegateway/v1/voice/text/ticket", strings.NewReader(`{"choiceID":"remote"}`)))
+				if w.Code != http.StatusBadRequest {
+					t.Fatalf("unroutable text ticket: %d %s", w.Code, w.Body)
+				}
+			}
+		})
+	}
+}

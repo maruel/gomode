@@ -143,6 +143,8 @@ dependencies {
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.robolectric)
     add(robolectricSdkJar.name, libs.robolectric.android.all)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
+    androidTestImplementation(libs.okhttp.mockwebserver)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.rules)

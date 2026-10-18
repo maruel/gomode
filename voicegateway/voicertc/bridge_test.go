@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maruel/gopus"
 	"github.com/pion/webrtc/v4"
@@ -28,7 +29,8 @@ func TestBridgeSetOnSessionClosed(t *testing.T) {
 	textCtx, textCancel := context.WithCancel(t.Context())
 	t.Cleanup(textCancel)
 	b := &Bridge{
-		backend:    backend,
+		backends:   map[string]backendConnector{"default": backend},
+		choices:    defaultBackendChoices(backend),
 		textCtx:    textCtx,
 		textCancel: textCancel,
 		sessions: map[string]*session{
@@ -909,4 +911,41 @@ func TestWriteSampleHasBinding(t *testing.T) {
 	}
 
 	t.Log("WriteSample binding OK")
+}
+
+func testBridgeChoiceRuntime(t *testing.T) {
+	t.Parallel()
+	first := &fakeBackendConnector{}
+	second := &fakeBackendConnector{}
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	t.Cleanup(cancel)
+	b, err := newBridgeWithBackend(ctx, first, 0, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstID, secondID string
+	t.Cleanup(func() {
+		b.CloseAll(ctx)
+		if first.session == nil || second.session == nil || first.session.id != firstID || second.session.id != secondID {
+			t.Error("sessions were not routed to their selected backends")
+		}
+		if !first.closed || !second.closed {
+			t.Fatal("shutdown did not close all choice backends")
+		}
+	})
+	b.backends["second"] = second
+	b.choices.Choices = append(b.choices.Choices, voicev1.VoiceChoice{ID: "second", Label: "Second", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}})
+	if _, _, err := b.HandleChoiceOffer(ctx, "", "missing"); err == nil {
+		t.Fatal("unknown choice accepted")
+	}
+	one := connectVoiceRTCClient(ctx, t, b.HandleOffer, &voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})
+	two := connectVoiceRTCClient(ctx, t, func(ctx context.Context, sdp string) (string, string, error) {
+		return b.HandleChoiceOffer(ctx, sdp, "second")
+	}, &voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})
+	firstID, secondID = one.sessionID, two.sessionID
+	b.Close(one.sessionID)
+	diagnostics := b.DiagnoseVoiceRTC(ctx, two.sessionID, &voicev1.VoiceRTCClientDiagnostics{})
+	if !diagnostics.Server.SessionFound {
+		t.Fatal("closing first choice closed second session")
+	}
 }

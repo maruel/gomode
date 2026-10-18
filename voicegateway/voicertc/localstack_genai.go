@@ -39,18 +39,20 @@ func localStackBackendForConfig(ctx context.Context, cfg *voicegateway.LocalStac
 	}
 	var tts ttsAdapter
 	var ttsRuntime io.Closer
-	if cfg.TTS.Engine == voicegateway.LocalStackTTSOpenAIAudio {
-		synth, err := speech.NewHTTPSynthesizer(http.DefaultClient, cfg.TTS.Remote, cfg.TTS.Model, cfg.TTS.Voice)
-		if err != nil {
-			return nil, errors.Join(err, models.runtime.Close())
+	if !cfg.TextOnly {
+		if cfg.TTS.Engine == voicegateway.LocalStackTTSOpenAIAudio {
+			synth, err := speech.NewHTTPSynthesizer(http.DefaultClient, cfg.TTS.Remote, cfg.TTS.Model, cfg.TTS.Voice)
+			if err != nil {
+				return nil, errors.Join(err, models.runtime.Close())
+			}
+			tts = &speechTTSAdapter{synthesizer: synth}
+		} else {
+			kitten, err := kittentts.New(ctx, kittentts.Config{Model: cfg.TTS.Model, Voice: cfg.TTS.Voice})
+			if err != nil {
+				return nil, errors.Join(err, models.runtime.Close())
+			}
+			tts, ttsRuntime = &speechTTSAdapter{synthesizer: kitten}, kitten
 		}
-		tts = &speechTTSAdapter{synthesizer: synth}
-	} else {
-		kitten, err := kittentts.New(ctx, kittentts.Config{Model: cfg.TTS.Model, Voice: cfg.TTS.Voice})
-		if err != nil {
-			return nil, errors.Join(err, models.runtime.Close())
-		}
-		tts, ttsRuntime = &speechTTSAdapter{synthesizer: kitten}, kitten
 	}
 	b := newLocalStackBackend(
 		func() vadSegmenter { return &energyVAD{} },
@@ -92,35 +94,37 @@ func localStackModelsForConfigWithStarter(
 	}
 	var asr localStackEndpoint
 	var asrAdapter asrAdapter
-	switch cfg.ASR.Engine {
-	case voicegateway.LocalStackASRWhistle:
-		w, err := whistle.New(ctx, cfg.ASR.Model)
-		if err != nil {
-			return localStackModels{}, err
+	if !cfg.TextOnly {
+		switch cfg.ASR.Engine {
+		case voicegateway.LocalStackASRWhistle:
+			w, err := whistle.New(ctx, cfg.ASR.Model)
+			if err != nil {
+				return localStackModels{}, err
+			}
+			asr.runtime = w
+			asrAdapter = &speechASRAdapter{recognizer: w}
+		case voicegateway.LocalStackASROpenAIAudio, voicegateway.LocalStackASRWhisperCPP:
+			protocol := speech.OpenAI
+			if cfg.ASR.Engine == voicegateway.LocalStackASRWhisperCPP {
+				protocol = speech.WhisperCPP
+			}
+			recognizer, err := speech.NewHTTPRecognizer(http.DefaultClient, cfg.ASR.Remote, cfg.ASR.Model, protocol)
+			if err != nil {
+				return localStackModels{}, err
+			}
+			asrAdapter = &speechASRAdapter{recognizer: recognizer}
+		default:
+			var err error
+			asr, err = resolveLocalStackEndpoint(ctx, "local_stack.asr", cfg.ASR.Provider, cfg.ASR.Remote, cfg.ASR.Model, defaultLocalStackASRModel, start)
+			if err != nil {
+				return localStackModels{}, err
+			}
+			recognizer, err := speech.NewProviderRecognizer(asr.provider)
+			if err != nil {
+				return localStackModels{}, errors.Join(err, asr.runtime.Close())
+			}
+			asrAdapter = &speechASRAdapter{recognizer: recognizer}
 		}
-		asr.runtime = w
-		asrAdapter = &speechASRAdapter{recognizer: w}
-	case voicegateway.LocalStackASROpenAIAudio, voicegateway.LocalStackASRWhisperCPP:
-		protocol := speech.OpenAI
-		if cfg.ASR.Engine == voicegateway.LocalStackASRWhisperCPP {
-			protocol = speech.WhisperCPP
-		}
-		recognizer, err := speech.NewHTTPRecognizer(http.DefaultClient, cfg.ASR.Remote, cfg.ASR.Model, protocol)
-		if err != nil {
-			return localStackModels{}, err
-		}
-		asrAdapter = &speechASRAdapter{recognizer: recognizer}
-	default:
-		var err error
-		asr, err = resolveLocalStackEndpoint(ctx, "local_stack.asr", cfg.ASR.Provider, cfg.ASR.Remote, cfg.ASR.Model, defaultLocalStackASRModel, start)
-		if err != nil {
-			return localStackModels{}, err
-		}
-		recognizer, err := speech.NewProviderRecognizer(asr.provider)
-		if err != nil {
-			return localStackModels{}, errors.Join(err, asr.runtime.Close())
-		}
-		asrAdapter = &speechASRAdapter{recognizer: recognizer}
 	}
 	llm, err := resolveLocalStackEndpoint(ctx, "local_stack.llm", cfg.LLM.Provider, cfg.LLM.Remote, cfg.LLM.Model, defaultLocalStackLLMModel, start, llmOpts...)
 	if err != nil {

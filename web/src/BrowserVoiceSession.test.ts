@@ -50,6 +50,13 @@ beforeEach(() => {
   FakeWebSocket.instances = [];
   requests = [];
   globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/voice/choices"))
+      return new Response(
+        JSON.stringify({
+          choices: [{ id: "remote", label: "Remote LLM", transports: ["text"] }],
+          defaultChoiceID: "remote",
+        }),
+      );
     requests.push({
       url: String(input),
       authorization: new Headers(init?.headers).get("Authorization"),
@@ -96,6 +103,7 @@ describe("browser voice sessions", () => {
     session.selectLanguage("fr-CA");
     const socket = await readySocket();
     expect(requests[0]?.body).toEqual({
+      choiceID: "remote",
       service: { kind: "web", instanceID: "one", baseURL: "https://host.example", token: "scoped-token" },
     });
     expect(socket.url.toString()).toBe("wss://gateway.example/api/voicegateway/v1/voice/text/browser");
@@ -105,11 +113,32 @@ describe("browser voice sessions", () => {
     expect(localStorage.getItem("gomode.voiceLanguage")).toBe("fr-CA");
   });
 
+  it("binds an explicitly saved local choice to the text ticket", async () => {
+    const gatewayFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) =>
+      String(input).endsWith("/voice/choices")
+        ? new Response(
+            JSON.stringify({
+              choices: [
+                { id: "remote", label: "Remote LLM", transports: ["text"] },
+                { id: "local", label: "Local LLM", transports: ["text"] },
+              ],
+              defaultChoiceID: "remote",
+            }),
+          )
+        : gatewayFetch(input, init);
+    await session.loadVoiceChoices();
+    session.selectChoice("local");
+    await readySocket();
+    expect(requests[0]?.body).toEqual({ choiceID: "local" });
+    expect(localStorage.getItem("gomode.voiceChoice.https://gateway.example")).toBe("local");
+  });
+
   it("authenticates same-origin ticket issuance with the host bearer provider", async () => {
     configureVoiceGateway("/", null, () => "host-bearer");
     await readySocket();
     expect(requests[0]?.authorization).toBe("Bearer host-bearer");
-    expect(requests[0]?.body).toEqual({});
+    expect(requests[0]?.body).toEqual({ choiceID: "remote" });
   });
 
   it("listens only after the assistant finishes speaking and keeps one copy of user text", async () => {
@@ -209,13 +238,17 @@ describe("browser voice sessions", () => {
     let finish: (value: Response) => void = () => {
       throw new Error("ticket not requested");
     };
-    globalThis.fetch = () =>
-      new Promise((resolve) => {
-        finish = resolve;
-      });
+    const gatewayFetch = globalThis.fetch;
+    let ticketRequested = false;
+    globalThis.fetch = (input, init) =>
+      String(input).endsWith("/voice/choices")
+        ? gatewayFetch(input, init)
+        : new Promise((resolve) => {
+            ticketRequested = true;
+            finish = resolve;
+          });
     const connect = session.connect();
-    await vi.waitFor(() => expect(session.state.connectStatus).not.toBeNull());
-    await Promise.resolve();
+    await vi.waitFor(() => expect(ticketRequested).toBe(true));
     session.disconnect();
     finish(new Response(JSON.stringify({ ticket: "late" })));
     await connect;

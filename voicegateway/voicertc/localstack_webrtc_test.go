@@ -19,6 +19,7 @@ import (
 
 func TestVoiceRTCLocalStackPlaceholders(t *testing.T) {
 	t.Parallel()
+	t.Run("choices", testBridgeChoiceRuntime)
 
 	t.Run("ASR", func(t *testing.T) {
 		t.Parallel()

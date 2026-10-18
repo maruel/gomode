@@ -1,5 +1,6 @@
 // Browser voice sessions via WebRTC and speech, dispatching MCP and frontend tools.
 
+import { createSignal, untrack } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 
 // TODO: Cleanup imports.
@@ -33,6 +34,8 @@ import {
   MessageKindTurnStatus,
   TurnStateIdle,
   type ServiceAuthorization,
+  type VoiceChoice,
+  type VoiceChoicesResp,
 } from "../../sdk/voicegateway/ts/v1/types.gen";
 
 import { mcpClient, type McpToolDescriptor } from "./McpClient";
@@ -70,6 +73,7 @@ const GO_MODE_SYSTEM_INSTRUCTION =
 export const MAX_RECOVERY_CONTEXT_CHARS = 8000;
 
 let gatewayBaseURL: string | null = null;
+const [gatewayVersion, setGatewayVersion] = createSignal(0);
 type ServiceAuthorizationProvider = () => Promise<ServiceAuthorization>;
 let serviceAuthorizationProvider: ServiceAuthorizationProvider | null = null;
 let gatewayBearerTokenProvider: (() => string | null | Promise<string | null>) | null = null;
@@ -85,6 +89,7 @@ export function configureVoiceGateway(
   gatewayBaseURL = u.origin;
   serviceAuthorizationProvider = provider;
   gatewayBearerTokenProvider = tokenProvider ?? null;
+  setGatewayVersion((version) => version + 1);
 }
 
 type BearerTokenProvider = () => string | null | Promise<string | null>;
@@ -109,6 +114,7 @@ export const voiceGatewayApi = voicegatewaySDK.createApiClient((path, init) =>
 );
 
 interface GatewaySnapshot {
+  version: number;
   origin: string;
   serviceProvider: ServiceAuthorizationProvider | null;
   bearerProvider: BearerTokenProvider | null;
@@ -120,6 +126,7 @@ function gatewaySnapshot(): GatewaySnapshot {
   const serviceProvider = serviceAuthorizationProvider;
   const bearerProvider = gatewayBearerTokenProvider;
   return {
+    version: untrack(gatewayVersion),
     origin,
     serviceProvider,
     bearerProvider,
@@ -263,6 +270,10 @@ function voiceChannelOpen(channel: VoiceChannel): boolean {
 
 export interface VoiceState {
   mode: VoiceMode;
+  choices: VoiceChoice[];
+  choiceID: string | null;
+  choicesStatus: "idle" | "loading" | "ready" | "error";
+  choicesError: string | null;
   connectStatus: string | null;
   connectPhase: "setup" | "waiting" | "signaling" | "reconnecting" | null;
   connected: boolean;
@@ -322,6 +333,51 @@ function savedVoiceLanguage(): string {
   }
 }
 
+function choiceStorageKey(origin: string): string {
+  return `gomode.voiceChoice.${origin}`;
+}
+
+function savedVoiceChoice(origin: string): string | null {
+  return localStorage.getItem(choiceStorageKey(origin));
+}
+
+function compatibleChoices(choices: VoiceChoice[], mode: VoiceMode): VoiceChoice[] {
+  return choices.filter((choice) => choice.transports.includes(mode === "browser" ? "text" : "webrtc"));
+}
+
+function validateVoiceChoices(value: VoiceChoicesResp): VoiceChoicesResp {
+  if (
+    !Array.isArray(value.choices) ||
+    typeof value.defaultChoiceID !== "string" ||
+    value.choices.some(
+      (choice) =>
+        typeof choice.id !== "string" ||
+        choice.id === "" ||
+        typeof choice.label !== "string" ||
+        choice.label === "" ||
+        !Array.isArray(choice.transports) ||
+        choice.transports.length === 0 ||
+        choice.transports.some((transport) => transport !== "text" && transport !== "webrtc"),
+    ) ||
+    new Set(value.choices.map((choice) => choice.id)).size !== value.choices.length ||
+    !value.choices.some((choice) => choice.id === value.defaultChoiceID)
+  )
+    throw new Error("The voice gateway returned invalid choices");
+  return value;
+}
+
+function resolveVoiceChoice(metadata: VoiceChoicesResp, mode: VoiceMode, selected: string | null): string {
+  const compatible = compatibleChoices(metadata.choices, mode);
+  if (selected !== null) {
+    if (!compatible.some((choice) => choice.id === selected))
+      throw new Error("The selected voice choice is unavailable for this voice mode. Choose another voice choice.");
+    return selected;
+  }
+  const choice = compatible.find((choice) => choice.id === metadata.defaultChoiceID) ?? compatible[0];
+  if (!choice) throw new Error("The voice gateway has no choices for this voice mode");
+  return choice.id;
+}
+
 // VoiceSession
 
 export class VoiceSession {
@@ -329,6 +385,11 @@ export class VoiceSession {
   /** Public store updater (also the seam tests use to arrange session state). */
   readonly setState: (fn: (s: VoiceState) => VoiceState) => void;
 
+  private _choicesVersion = -1;
+  private _choicesRequest: { version: number; promise: Promise<void> } | null = null;
+  private _choicesAttempt = 0;
+  private _sessionGateway: GatewaySnapshot | null = null;
+  private _sessionChoiceID: string | null = null;
   private _frontendToolNames = new Set<string>();
   private _pc: RTCPeerConnection | null = null;
   private _dc: RTCDataChannel | null = null;
@@ -364,6 +425,10 @@ export class VoiceSession {
   constructor(chime?: VoiceChimePlayer) {
     const [state, setState] = createStore<VoiceState>({
       mode: savedVoiceMode(),
+      choices: [],
+      choiceID: null,
+      choicesStatus: "idle",
+      choicesError: null,
       connectStatus: null,
       connectPhase: null,
       connected: false,
@@ -394,6 +459,104 @@ export class VoiceSession {
   // Public API
   // -----------------------------------------------------------------------
 
+  /** Reactive gateway identity for settings; configuring a host does not start network requests. */
+  readonly gatewayIdentity = gatewayVersion;
+
+  get compatibleChoices(): VoiceChoice[] {
+    return compatibleChoices(this.state.choices, this.state.mode);
+  }
+
+  /** Discover settings choices on demand, keeping obsolete responses out of the current gateway. */
+  async loadVoiceChoices(): Promise<void> {
+    const snapshot = gatewaySnapshot();
+    if (this._choicesRequest?.version === snapshot.version) return this._choicesRequest.promise;
+    const attempt = ++this._choicesAttempt;
+    const promise = this._loadVoiceChoices(snapshot, attempt);
+    this._choicesRequest = { version: snapshot.version, promise };
+    await promise;
+    if (this._choicesRequest?.promise === promise) this._choicesRequest = null;
+  }
+
+  private async _loadVoiceChoices(snapshot: GatewaySnapshot, attempt: number): Promise<void> {
+    try {
+      this._update((s) => {
+        s.choicesStatus = "loading";
+        s.choicesError = null;
+      });
+      if (this._choicesVersion !== snapshot.version) {
+        const choiceID = savedVoiceChoice(snapshot.origin);
+        this._choicesVersion = snapshot.version;
+        this._update((s) => {
+          s.choices = [];
+          s.choiceID = choiceID;
+        });
+      }
+      const metadata = validateVoiceChoices(await snapshot.api.voiceChoices());
+      if (snapshot.version !== untrack(gatewayVersion) || attempt !== this._choicesAttempt) return;
+      this._update((s) => {
+        s.choices = metadata.choices;
+        s.choicesStatus = "ready";
+      });
+      const choiceID = resolveVoiceChoice(metadata, this.state.mode, this.state.choiceID);
+      this._update((s) => {
+        s.choiceID = choiceID;
+      });
+    } catch (error) {
+      if (snapshot.version !== untrack(gatewayVersion) || attempt !== this._choicesAttempt) return;
+      this._update((s) => {
+        if (s.choicesStatus === "loading") s.choicesStatus = "error";
+        s.choicesError = error instanceof Error ? error.message : String(error);
+      });
+    }
+  }
+
+  /** Persist an explicit choice only after validating it against the current gateway and transport. */
+  selectChoice(choiceID: string): void {
+    if (this.state.connected || this.state.connectStatus !== null)
+      throw new Error("End the session before changing voice choice");
+    if (this._choicesVersion !== untrack(gatewayVersion) || this.state.choicesStatus !== "ready")
+      throw new Error("Load voice choices before selecting one");
+    if (!this.compatibleChoices.some((choice) => choice.id === choiceID))
+      throw new Error("Choose an available voice choice");
+    localStorage.setItem(choiceStorageKey(gatewaySnapshot().origin), choiceID);
+    this._update((s) => {
+      s.choiceID = choiceID;
+      s.choicesError = null;
+    });
+  }
+
+  private async _resolveSessionChoice(snapshot: GatewaySnapshot, attempt: number): Promise<string | null> {
+    const metadata = validateVoiceChoices(await snapshot.api.voiceChoices());
+    if (attempt !== this._connectionAttempt) return null;
+    if (snapshot.version === untrack(gatewayVersion)) {
+      // A connect-time refresh owns publication over an older settings request.
+      this._choicesAttempt++;
+      this._choicesVersion = snapshot.version;
+      this._update((s) => {
+        s.choices = metadata.choices;
+        s.choiceID = this._sessionChoiceID;
+        s.choicesStatus = "ready";
+        s.choicesError = null;
+      });
+    }
+    let choiceID: string;
+    try {
+      choiceID = resolveVoiceChoice(metadata, this.state.mode, this._sessionChoiceID);
+    } catch (error) {
+      if (snapshot.version === untrack(gatewayVersion))
+        this._update((s) => {
+          s.choicesError = error instanceof Error ? error.message : String(error);
+        });
+      throw error;
+    }
+    this._sessionChoiceID = choiceID;
+    if (snapshot.version === untrack(gatewayVersion))
+      this._update((s) => {
+        s.choiceID = choiceID;
+      });
+    return choiceID;
+  }
+
   /** Persist the transport preference without disrupting an active session. */
   selectMode(mode: VoiceMode): void {
     if (mode !== "browser" && mode !== "cloud") throw new Error("Invalid voice mode");
@@ -403,6 +566,12 @@ export class VoiceSession {
       throw new Error("Browser speech is unavailable. Use Cloud voice.");
     localStorage.setItem("gomode.voiceMode", mode);
     this.setState((s) => ({ ...s, mode }));
+    if (this.state.choicesStatus === "ready") {
+      const available = this.compatibleChoices.some((choice) => choice.id === this.state.choiceID);
+      this._update((s) => {
+        s.choicesError = available ? null : "Choose an available voice choice for this voice mode.";
+      });
+    }
   }
 
   /** Save the language for the next session. An active session keeps its language. */
@@ -612,6 +781,16 @@ export class VoiceSession {
   /** Start a new voice session via WebRTC data channel through the host backend. */
   async connect(): Promise<void> {
     this.prepareAudio();
+    this._sessionGateway = gatewaySnapshot();
+    try {
+      this._sessionChoiceID =
+        this._choicesVersion === this._sessionGateway.version
+          ? this.state.choiceID
+          : savedVoiceChoice(this._sessionGateway.origin);
+    } catch (error) {
+      this._setError(error instanceof Error ? error.message : String(error));
+      return;
+    }
     this._reconnectEnabled = true;
     await this._connect(false);
   }
@@ -638,6 +817,9 @@ export class VoiceSession {
     this._setStatus("setup", "Setting up WebRTC…");
 
     try {
+      const snapshot = this._sessionGateway!;
+      const choiceID = await this._resolveSessionChoice(snapshot, attempt);
+      if (choiceID === null) return;
       const [systemInstruction, mcpTools, serviceItemsText] = await Promise.all([
         mcpClient.serverInstructions(),
         mcpClient.listTools(),
@@ -743,10 +925,9 @@ export class VoiceSession {
       const offerSDP = await completeLocalOffer(pc, offer);
       if (attempt !== this._connectionAttempt) return;
       this._lastOfferSDP = offerSDP;
-      const snapshot = gatewaySnapshot();
       const service = snapshot.serviceProvider === null ? null : await snapshot.serviceProvider();
       if (attempt !== this._connectionAttempt) return;
-      const request = service === null ? { sdp: offerSDP } : { sdp: offerSDP, service };
+      const request = service === null ? { sdp: offerSDP, choiceID } : { sdp: offerSDP, choiceID, service };
       const resp = await snapshot.api.voiceRTCOffer(request);
       if (attempt !== this._connectionAttempt) {
         void closeVoiceGatewaySession(snapshot, resp.sessionID, service).catch((error: unknown) =>
@@ -796,7 +977,9 @@ export class VoiceSession {
       return;
     }
     try {
-      const snapshot = gatewaySnapshot();
+      const snapshot = this._sessionGateway!;
+      const choiceID = await this._resolveSessionChoice(snapshot, attempt);
+      if (choiceID === null) return;
       const [systemInstruction, tools, serviceItems, service] = await Promise.all([
         mcpClient.serverInstructions(),
         mcpClient.listTools(),
@@ -804,7 +987,7 @@ export class VoiceSession {
         snapshot.serviceProvider?.() ?? Promise.resolve(null),
       ]);
       if (attempt !== this._connectionAttempt) return;
-      const response = await snapshot.api.voiceTextTicket(service === null ? {} : { service });
+      const response = await snapshot.api.voiceTextTicket(service === null ? { choiceID } : { choiceID, service });
       if (attempt !== this._connectionAttempt) return;
       const url = new URL("/api/voicegateway/v1/voice/text/browser", snapshot.origin);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";

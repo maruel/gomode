@@ -201,6 +201,28 @@ export const VoiceRTCSignalingStateHaveLocalPranswer = "have-local-pranswer";
 export const VoiceRTCSignalingStateHaveRemotePranswer = "have-remote-pranswer";
 export const VoiceRTCSignalingStateClosed = "closed";
 
+export type VoiceTransport =
+  | "text"
+  | "webrtc";
+/**
+ * Supported values.
+ */
+export const VoiceTransportText = "text";
+export const VoiceTransportWebRTC = "webrtc";
+
+/** VoiceChoice describes a selectable backend without exposing its credentials. */
+export interface VoiceChoice {
+  id: string;
+  label: string;
+  transports: VoiceTransport[];
+}
+
+/** VoiceChoicesResp advertises the available voice choices and default selection. */
+export interface VoiceChoicesResp {
+  choices: VoiceChoice[];
+  defaultChoiceID: string;
+}
+
 /** ServiceAuthorization identifies the host and carries its scoped gateway token. */
 export interface ServiceAuthorization {
   kind: string;
@@ -214,6 +236,8 @@ export interface ServiceAuthorization {
  * Embedded hosts authenticate this HTTP request before dispatch.
  */
 export interface VoiceTextTicketReq {
+  /** ChoiceID selects a text-capable choice, bound to the issued ticket. */
+  choiceID?: string;
   /** Service authorizes a session on a standalone gateway. */
   service?: ServiceAuthorization;
 }
@@ -230,6 +254,8 @@ export interface VoiceTextTicketResp {
 
 /** VoiceRTCOfferReq is the request body for POST /api/voicegateway/v1/voice/rtc/offer. */
 export interface VoiceRTCOfferReq {
+  /** ChoiceID selects a gateway choice; empty uses the advertised default. */
+  choiceID?: string;
   /** SDP is the browser/client WebRTC offer session description from RTCSessionDescription.sdp after createOffer and setLocalDescription. */
   sdp: string;
   /** Service authorizes a session on a standalone gateway. Embedded gateways use host authentication. */

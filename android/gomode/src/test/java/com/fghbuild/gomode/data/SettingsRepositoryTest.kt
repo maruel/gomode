@@ -63,6 +63,35 @@ class SettingsRepositoryTest {
         }
 
     @Test
+    fun `voice choice survives recreation and stays isolated per gateway`() =
+        runBlocking {
+            val store = InMemoryPreferencesDataStore()
+            val repository = SettingsRepository(store)
+            repository.updateVoiceChoice("https://first.example/", "live")
+            repository.updateVoiceChoice("https://second.example", "local")
+            val restored =
+                SettingsRepository(store).awaitSettings("gateway choices restored") {
+                    it.voiceChoices.size ==
+                        2
+                }
+            assertEquals("live", restored.voiceChoices["https://first.example"])
+            assertEquals("local", restored.voiceChoices["https://second.example"])
+        }
+
+    @Test
+    fun `unreadable voice choice preferences surface an error instead of a default`() =
+        runBlocking {
+            val store = InMemoryPreferencesDataStore()
+            store.edit { it[stringPreferencesKey("VOICE_CHOICES")] = "invalid JSON" }
+            val state =
+                SettingsRepository(store).awaitSettings("saved selection read failure") {
+                    it.loadState is SettingsLoadState.Failed
+                }
+            assertTrue(state.loadState is SettingsLoadState.Failed)
+            assertTrue((state.loadState as SettingsLoadState.Failed).message.contains("Unable to read saved settings"))
+        }
+
+    @Test
     fun `initial settings have no active service`() =
         runBlocking {
             val repo = createRepo()

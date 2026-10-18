@@ -87,6 +87,8 @@ class ApiClient(
     }
 
     // JSON endpoints
+    /** Lists available voice choices and their supported transports. */
+    suspend fun voiceChoices(headers: Map<String, String> = emptyMap()): VoiceChoicesResp = request("GET", "/api/voicegateway/v1/voice/choices", headers = headers)
     /** Authorizes a browser text-session upgrade with a short-lived, single-use ticket. */
     suspend fun voiceTextTicket(req: VoiceTextTicketReq, headers: Map<String, String> = emptyMap()): VoiceTextTicketResp = request("POST", "/api/voicegateway/v1/voice/text/ticket", json.encodeToString(req), headers = headers)
     /** Exchanges a WebRTC SDP offer for an answer, opening a voice gateway session. */
