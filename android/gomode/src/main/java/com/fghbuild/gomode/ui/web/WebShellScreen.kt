@@ -1,7 +1,6 @@
 // WebView shell with host state, origin-scoped auth, and frontend voice tools.
 package com.fghbuild.gomode.ui.web
 
-import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ActivityNotFoundException
@@ -41,8 +40,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.ContextCompat
-import androidx.core.content.PermissionChecker
 import androidx.core.net.toUri
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
@@ -79,6 +76,11 @@ internal fun WebShellScreen(
     val currentOnAuthInvalidated = rememberUpdatedState(onAuthInvalidated)
     val authHandler =
         remember(bearerStore) { ServiceAuthMessageHandler(bearerStore) { currentOnAuthInvalidated.value() } }
+    val mediaPermissions = remember(context) { WebMediaPermissions(context) }
+    val mediaPermissionLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            mediaPermissions.onPermissionsResult()
+        }
     val fileChooserLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val uris = ActivityResultContracts.GetMultipleContents().parseResult(result.resultCode, result.data)
@@ -144,6 +146,7 @@ internal fun WebShellScreen(
                             if (currentHostURL != hostURL || currentServiceID != serviceID) return
 
                             authHandler.onNavigation(url)
+                            mediaPermissions.onNavigation()
                             FrontendVoiceTools.clear(view)
 
                             automaticRetryState = automaticTimeoutRetryStateOnPageStarted(automaticRetryState)
@@ -206,35 +209,18 @@ internal fun WebShellScreen(
                 webChromeClient =
                     object : WebChromeClient() {
                         override fun onPermissionRequest(request: PermissionRequest) {
-                            if (currentHostURL != hostURL ||
-                                !isTrustedPermissionOrigin(request.origin, hostURL) ||
-                                hostView.url?.toUri()?.let { isTrustedPermissionOrigin(it, hostURL) } != true
-                            ) {
-                                request.deny()
-                                return
+                            val missing =
+                                mediaPermissions.request(request, hostURL) {
+                                    currentHostURL == hostURL && currentServiceID == serviceID &&
+                                        hostView.url?.toUri()?.let { isTrustedPermissionOrigin(it, hostURL) } == true
+                                }
+                            if (missing.isNotEmpty()) {
+                                mediaPermissionLauncher.launch(missing)
                             }
-                            val grantedResources =
-                                request.resources
-                                    .filter { resource ->
-                                        when (resource) {
-                                            PermissionRequest.RESOURCE_AUDIO_CAPTURE -> {
-                                                hasPermission(context, Manifest.permission.RECORD_AUDIO)
-                                            }
+                        }
 
-                                            PermissionRequest.RESOURCE_VIDEO_CAPTURE -> {
-                                                hasPermission(context, Manifest.permission.CAMERA)
-                                            }
-
-                                            else -> {
-                                                false
-                                            }
-                                        }
-                                    }.toTypedArray()
-                            if (grantedResources.isEmpty() || grantedResources.size != request.resources.size) {
-                                request.deny()
-                                return
-                            }
-                            request.grant(grantedResources)
+                        override fun onPermissionRequestCanceled(request: PermissionRequest) {
+                            mediaPermissions.cancel(request)
                         }
 
                         override fun onShowFileChooser(
@@ -326,6 +312,7 @@ internal fun WebShellScreen(
 
     DisposableEffect(webView) {
         onDispose {
+            mediaPermissions.onNavigation()
             authHandler.onNavigation(null)
             FrontendVoiceTools.clear(webView)
             webView.destroy()
@@ -395,11 +382,6 @@ private fun WebView.enableWebAuthentication() {
         Log.w(TAG, "Installed Android WebView does not support WebAuthn.")
     }
 }
-
-private fun hasPermission(
-    context: Context,
-    permission: String,
-): Boolean = ContextCompat.checkSelfPermission(context, permission) == PermissionChecker.PERMISSION_GRANTED
 
 internal fun acceptsFrontendVoiceTools(
     sourceOrigin: Uri,
