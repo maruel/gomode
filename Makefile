@@ -1,6 +1,6 @@
 # Build and verification targets for the standalone Go Mode contracts and shell.
 .DEFAULT_GOAL := help
-.PHONY: help build fix verify test test-race android-check android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-push android-e2e screenshots-check screenshots-generate screenshots-update generate-sdks refresh-generated benchmark coverage test-smoke upgrade git-hooks tools export-lfm-litert
+.PHONY: help build fix verify test test-race android-check android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-push android-e2e screenshots-check screenshots-generate screenshots-update generate-sdks refresh-generated benchmark coverage test-smoke upgrade git-hooks export-lfm-litert
 
 # Read-only verification lanes. Each command is passed through two shells, so
 # keep single quotes out of these values.
@@ -9,10 +9,6 @@ VERIFY_PY = uv run --locked ruff check --quiet scripts && uv run --locked ruff f
 VERIFY_SH = files=$$(git ls-files "*.sh" "scripts/hooks/*"); [ -z "$$files" ] || go tool shfmt -d $$files
 VERIFY_MISC = uv run --locked python scripts/lint_binaries.py && uv run --locked python scripts/update_agents_file_index.py --check && git diff --check
 VERIFY_ANDROID = cd ./android && ./gradlew :gomode:ktlintCheck :halo-sdk:ktlintCheck :gomode:detekt :gomode:lintDebug :oauth-sdk:assemble --quiet
-
-tools:
-	@command -v uv > /dev/null 2>&1 || { echo 'uv is required for Python development tools; see https://docs.astral.sh/uv/' >&2; exit 1; }
-	@uv sync --locked --quiet
 
 node_modules/.modules.yaml: package.json pnpm-lock.yaml
 	@pnpm install --frozen-lockfile --silent
@@ -25,7 +21,6 @@ help:
 	@printf '  %-27s - %s\n' 'make fix' 'Format Go and Android code'
 	@printf '  %-27s - %s\n' 'make verify' 'Check Go, browser, Python, shell, and Android code'
 	@printf '  %-27s - %s\n' 'make git-hooks' 'Install versioned Git hooks'
-	@printf '  %-27s - %s\n' 'make tools' 'Sync pinned Python development tools with uv'
 	@printf '  %-27s - %s\n' 'make test' 'Run Go, browser, and Android unit tests'
 	@printf '  %-27s - %s\n' 'make test-race' 'Run race-safe voice gateway concurrency tests'
 	@printf '  %-27s - %s\n' 'make build' 'Build Go packages and Android app and SDKs'
@@ -48,7 +43,7 @@ help:
 	@printf '  %-27s - %s\n' 'make refresh-generated' 'Regenerate SDKs and AGENTS file indexes'
 	@printf '  %-27s - %s\n' 'make upgrade' 'Upgrade Go and pnpm dependencies'
 
-fix: tools android-sdk node_modules/.modules.yaml
+fix: android-sdk node_modules/.modules.yaml
 	@go tool golangci-lint fmt
 	@pnpm exec eslint web/src web/tests scripts/quiet-test-reporter.mjs --fix
 	@pnpm exec prettier --write --log-level warn web/src web/tests scripts/quiet-test-reporter.mjs eslint.config.js package.json .github/workflows
@@ -58,7 +53,7 @@ fix: tools android-sdk node_modules/.modules.yaml
 	@cd ./android && ./gradlew :gomode:ktlintFormat :halo-sdk:ktlintFormat --quiet
 	@uv run --locked python scripts/update_agents_file_index.py
 
-verify: tools android-sdk node_modules/.modules.yaml
+verify: android-sdk node_modules/.modules.yaml
 	@go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 	@./scripts/run-concurrently.sh go,format,lint,ts,python,shell,misc,android '$(VERIFY_GO)' 'pnpm exec prettier --check --log-level warn web/src web/tests scripts/quiet-test-reporter.mjs eslint.config.js package.json .github/workflows' 'pnpm exec eslint --max-warnings 0 web/src web/tests scripts/quiet-test-reporter.mjs' 'pnpm typecheck' '$(VERIFY_PY)' '$(VERIFY_SH)' '$(VERIFY_MISC)' '$(VERIFY_ANDROID)'
 

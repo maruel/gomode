@@ -21,10 +21,10 @@ Keep `web/src` host neutral and configure its MCP endpoint in each host.
 
 ## Python tools
 
-Run `make tools` to sync the development environment from `uv.lock`. Python tools
-and repository scripts use `uv run --locked`; pinned tool versions live in the
-`dev` dependency group in `pyproject.toml`. Refresh the lock with `uv lock` after
-changing dependencies.
+Python tools and repository scripts use `uv run --locked`, which manages the
+development environment automatically. Pinned tool versions live in the `dev`
+dependency group in `pyproject.toml`, with their resolution in `uv.lock`. Refresh
+the lock with `uv lock` after changing dependencies.
 
 <!-- BEGIN FILE INDEX -->
 ## File Index
