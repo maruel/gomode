@@ -180,7 +180,9 @@ func (h *handler) voiceChoices() voicev1.VoiceChoicesResp {
 	}
 	for _, ch := range media.Choices {
 		if slices.Contains(ch.Transports, voicev1.VoiceTransportWebRTC) {
-			choices.Choices = append(choices.Choices, voicev1.VoiceChoice{ID: ch.ID, Label: ch.Label, Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}})
+			ch.Transports = []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}
+			ch.Voices = slices.Clone(ch.Voices)
+			choices.Choices = append(choices.Choices, ch)
 		}
 	}
 	for _, ch := range text.Choices {

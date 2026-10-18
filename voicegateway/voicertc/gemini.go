@@ -18,7 +18,21 @@ import (
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
+// geminiVoices is the sorted prebuilt voice catalog supported by Gemini Live.
+// Sources checked 2026-10-18:
+// https://ai.google.dev/gemini-api/docs/live-api/capabilities#change-voice-and-language
+// https://ai.google.dev/gemini-api/docs/speech-generation#prebuilt-voices
+var geminiVoices = []string{
+	"Achernar", "Achird", "Algenib", "Algieba", "Alnilam", "Aoede",
+	"Autonoe", "Callirrhoe", "Charon", "Despina", "Enceladus", "Erinome",
+	"Fenrir", "Gacrux", "Iapetus", "Kore", "Laomedeia", "Leda", "Orus",
+	"Puck", "Pulcherrima", "Rasalgethi", "Sadachbia", "Sadaltager", "Schedar",
+	"Sulafat", "Umbriel", "Vindemiatrix", "Zephyr", "Zubenelgenubi",
+}
+
 const (
+	defaultGeminiVoice = "Orus"
+
 	// geminiWSEndpoint is the Gemini Live BidiGenerateContent WebSocket URL.
 	geminiWSEndpoint = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 

@@ -25,6 +25,7 @@ internal data class VoiceSetup(
     val gatewayEndpointURL: String,
     val service: ServiceAuthorization?,
     val choiceID: String? = null,
+    val voiceName: String = "",
     val tokenEndpointURL: String?,
     val gatewayHeaders: Map<String, String>,
     val mcpClient: McpClient,
@@ -57,6 +58,7 @@ internal suspend fun prepareVoiceSetup(
     settingsClient: ServiceSettingsClient,
     bearerTokenFor: (String) -> String?,
     voiceTokenClient: VoiceTokenClient = VoiceTokenClient(),
+    pinnedVoice: GatewayVoiceSelection? = null,
 ): VoiceSetup {
     val settings = settingsRepository.settings.value
     requireLoadedVoiceSettings(settings)
@@ -105,9 +107,13 @@ internal suspend fun prepareVoiceSetup(
     }
 
     val gatewayHeaders = serviceAuthHeaders(gatewayEndpointURL, bearerTokenFor)
-    val choiceID =
+    val selection =
         if (usesGatewayVoice(settings)) {
-            discoverVoiceChoices(settings.activeServiceURL, serviceSettings, bearerTokenFor).selection(settings).id
+            discoverVoiceChoices(
+                settings.activeServiceURL,
+                serviceSettings,
+                bearerTokenFor,
+            ).resolve(settings, pinnedVoice)
         } else {
             null
         }
@@ -144,7 +150,8 @@ internal suspend fun prepareVoiceSetup(
     }
     return VoiceSetup(
         gatewayEndpointURL = gatewayEndpointURL,
-        choiceID = choiceID,
+        choiceID = selection?.choiceID,
+        voiceName = selection?.voiceName.orEmpty(),
         service = service,
         tokenEndpointURL = tokenEndpointURL,
         gatewayHeaders = gatewayHeaders,
@@ -173,7 +180,8 @@ internal fun ensureVoiceSettingsCurrent(
 ) {
     if (captured.activeServiceId != current.activeServiceId ||
         captured.activeServiceURL != current.activeServiceURL || captured.voiceMode != current.voiceMode ||
-        captured.onDeviceEngine != current.onDeviceEngine || captured.voiceChoices != current.voiceChoices
+        captured.onDeviceEngine != current.onDeviceEngine || captured.voiceChoices != current.voiceChoices ||
+        captured.speakingVoices != current.speakingVoices
     ) {
         throw VoiceSetupException("Voice settings changed. Try connecting again.")
     }

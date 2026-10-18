@@ -156,6 +156,7 @@ let offerRequests: Array<{ url: string; authorization: string | null; body: unkn
 let diagnosticRequests: Array<{ url: string; authorization: string | null }> = [];
 let offerResponse: Promise<Response> | null = null;
 let diagnosticResponse: VoiceRTCDiagnosticsResp | null = null;
+let offeredVoices: string[] | null = null;
 
 function serviceToken(subject: string, serial: number): string {
   const claims = {
@@ -184,13 +185,23 @@ beforeEach(() => {
   diagnosticRequests = [];
   offerResponse = null;
   diagnosticResponse = null;
+  offeredVoices = null;
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     const authorization = new Headers(init?.headers).get("Authorization");
     if (url.endsWith("/voice/choices"))
       return new Response(
         JSON.stringify({
-          choices: [{ id: "gemini", label: "Gemini Live", transports: ["webrtc", "text"] }],
+          choices: [
+            {
+              id: "gemini",
+              label: "Gemini Live",
+              transports: ["webrtc", "text"],
+              ...(offeredVoices === null
+                ? {}
+                : { voices: offeredVoices, ...(offeredVoices.length === 0 ? {} : { defaultVoice: "Orus" }) }),
+            },
+          ],
           defaultChoiceID: "gemini",
         }),
       );
@@ -1473,6 +1484,145 @@ describe("VoiceSession", () => {
     expect(setup.voice.language).toBe("en-US");
     expect(setup.context.systemInstruction).toContain("service item updates");
     expect(setup.context.systemInstruction).toMatch(/\n\ninstructions$/);
+  });
+
+  it("uses metadata speaking defaults and leaves catalog-less setup to the gateway", async () => {
+    for (const catalog of [null, ["Aoede", "Orus"]]) {
+      offeredVoices = null;
+      const session = new VoiceSession();
+      await session.loadVoiceChoices();
+      offeredVoices = catalog;
+      await session.connect();
+      const channel = FakePeerConnection.dataChannels.at(-1);
+      channel?.onopen?.();
+      expect(JSON.parse(channel?.send.mock.calls[0]?.[0] as string).voice.name).toBe(catalog === null ? "" : "Orus");
+      session.disconnect();
+    }
+  });
+
+  it("pins the saved speaking voice during delayed setup and reconnect", async () => {
+    offeredVoices = ["Aoede", "Orus"];
+    configureVoiceGateway("https://original.example", null);
+    const session = new VoiceSession();
+    await session.loadVoiceChoices();
+    session.selectSpeakingVoice("Aoede");
+    const instructions = deferred<string>();
+    mcpMocks.mcpServerInstructions.mockReturnValueOnce(instructions.promise);
+    const connecting = session.connect();
+    await vi.waitFor(() => expect(mcpMocks.mcpServerInstructions).toHaveBeenCalledOnce());
+    localStorage.setItem('gomode.speakingVoice.["https://original.example","gemini"]', "Orus");
+    configureVoiceGateway("https://replacement.example", null);
+    instructions.resolve("instructions");
+    await connecting;
+    FakePeerConnection.dataChannels[0]?.onopen?.();
+    expect(JSON.parse(FakePeerConnection.dataChannels[0]?.send.mock.calls[0]?.[0] as string).voice.name).toBe("Aoede");
+    expect(() => session.selectSpeakingVoice("Orus")).toThrow("End the session");
+    vi.useFakeTimers();
+    try {
+      triggerIceState("failed");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(() => expect(offerRequests).toHaveLength(2));
+      FakePeerConnection.dataChannels[1]?.onopen?.();
+      expect(JSON.parse(FakePeerConnection.dataChannels[1]?.send.mock.calls[0]?.[0] as string).voice.name).toBe(
+        "Aoede",
+      );
+      expect(offerRequests[1]?.url).toContain("https://original.example/");
+    } finally {
+      session.disconnect();
+      vi.useRealTimers();
+    }
+  });
+
+  for (const catalog of [null, []]) {
+    it(`blocks reconnect when a named voice catalog becomes ${catalog === null ? "omitted" : "empty"}`, async () => {
+      offeredVoices = ["Aoede", "Orus"];
+      const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
+      await session.loadVoiceChoices();
+      session.selectSpeakingVoice("Aoede");
+      await session.connect();
+      const channel = FakePeerConnection.dataChannels[0];
+      channel?.onopen?.();
+      channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindSessionReady }) }));
+      expect(session.state.connected).toBe(true);
+      offeredVoices = catalog;
+      vi.useFakeTimers();
+      try {
+        triggerIceState("failed");
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.waitFor(() => expect(session.state.error).toContain("speaking voice is unavailable"));
+        expect(offerRequests).toHaveLength(1);
+        expect(session.state.voiceName).toBe("Aoede");
+      } finally {
+        session.disconnect();
+        vi.useRealTimers();
+      }
+    });
+  }
+
+  it("blocks a catalog-less recovery if metadata newly requires a named voice", async () => {
+    const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
+    await session.connect();
+    FakePeerConnection.dataChannels[0]?.onopen?.();
+    offeredVoices = ["Aoede", "Orus"];
+    vi.useFakeTimers();
+    try {
+      triggerIceState("failed");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(() => expect(session.state.error).toContain("speaking voice is unavailable"));
+      expect(offerRequests).toHaveLength(1);
+      expect(session.state.voiceName).toBe("");
+    } finally {
+      session.disconnect();
+      vi.useRealTimers();
+    }
+    // A new connection can resolve the newly advertised default explicitly.
+    await session.loadVoiceChoices();
+    await session.connect();
+    FakePeerConnection.dataChannels.at(-1)?.onopen?.();
+    expect(JSON.parse(FakePeerConnection.dataChannels.at(-1)?.send.mock.calls[0]?.[0] as string).voice.name).toBe(
+      "Orus",
+    );
+    session.disconnect();
+  });
+
+  it("blocks removed speaking voices until an available replacement is saved", async () => {
+    offeredVoices = ["Aoede", "Orus"];
+    const session = new VoiceSession();
+    await session.loadVoiceChoices();
+    session.selectSpeakingVoice("Aoede");
+    offeredVoices = ["Orus"];
+    await session.connect();
+    expect(offerRequests).toHaveLength(0);
+    expect(session.state.error).toContain("saved speaking voice is unavailable");
+    expect(session.state.voiceName).toBe("Aoede");
+    expect(session.state.voiceError).toContain("saved speaking voice is unavailable");
+    session.selectSpeakingVoice("Orus");
+    await session.connect();
+    FakePeerConnection.dataChannels[0]?.onopen?.();
+    expect(JSON.parse(FakePeerConnection.dataChannels[0]?.send.mock.calls[0]?.[0] as string).voice.name).toBe("Orus");
+    session.disconnect();
+  });
+
+  it("reports speaking-voice reads that fail during fresh connection discovery", async () => {
+    offeredVoices = ["Aoede", "Orus"];
+    const session = new VoiceSession();
+    const read = window.Storage.prototype.getItem;
+    const load = vi.spyOn(window.Storage.prototype, "getItem").mockImplementation(function (this: Storage, key) {
+      if (key.startsWith("gomode.speakingVoice.")) throw new Error("Voice storage unavailable");
+      return read.call(this, key);
+    });
+    try {
+      await session.connect();
+      expect(offerRequests).toHaveLength(0);
+      expect(session.state.error).toBe("Voice storage unavailable");
+      expect(session.state.voiceStatus).toBe("error");
+    } finally {
+      load.mockRestore();
+      session.disconnect();
+    }
+    await session.loadVoiceChoices();
+    expect(session.state.voiceName).toBe("Orus");
+    expect(session.state.voiceError).toBeNull();
   });
 
   it("saves a regional language and sends it to the gateway", async () => {

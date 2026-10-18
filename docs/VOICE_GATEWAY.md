@@ -231,7 +231,11 @@ one choice with ID `default`.
 
 `GET /api/voicegateway/v1/voice/choices` returns public metadata:
 `choices` with `id`, `label`, and `transports` (`webrtc` and/or `text`), plus
-`defaultChoiceID`. It contains no credentials or model endpoint addresses.
+`defaultChoiceID`. Audio choices that support voice selection also include a
+`voices` catalog and `defaultVoice`. Clients send a selected catalog name in
+`session.setup.voice.name`; omitting it uses the advertised default (Orus for
+Gemini Live). Text-only choices omit voice metadata. Discovery contains no
+credentials or model endpoint addresses.
 Standalone gateways allow trusted host origins through CORS; embedded hosts
 apply their existing authentication middleware.
 

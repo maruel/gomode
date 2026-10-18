@@ -13,6 +13,8 @@ export interface VoiceSettingsMessages {
   cloudVoiceDescription: string;
   endSessionToChange: string;
   voiceChoice: string;
+  speakingVoice: string;
+  speakingVoiceUnavailable: string;
   choicesLoading: string;
   choicesRetry: string;
   choiceUnavailable: string;
@@ -29,6 +31,8 @@ export const defaultVoiceSettingsMessages: VoiceSettingsMessages = {
   cloudVoiceDescription: "The voice gateway receives your microphone audio and sends back spoken replies.",
   endSessionToChange: "End the voice session before changing voice settings.",
   voiceChoice: "Voice choice",
+  speakingVoice: "Speaking voice",
+  speakingVoiceUnavailable: "Choose an available speaking voice",
   choicesLoading: "Loading voice choices…",
   choicesRetry: "Retry loading voice choices",
   choiceUnavailable: "Choose an available voice choice",
@@ -60,7 +64,22 @@ export default function VoiceSettings(props: {
   const [languageError, setLanguageError] = createSignal<string | null>(null);
   const [modeError, setModeError] = createSignal<string | null>(null);
   const [choiceError, setChoiceError] = createSignal<string | null>(null);
-  const error = () => languageError() ?? modeError() ?? choiceError() ?? voiceSession.state.choicesError;
+  const [voiceSaveError, setVoiceSaveError] = createSignal<string | null>(null);
+  createEffect(
+    on(
+      () => [voiceSession.gatewayIdentity(), voiceSession.state.choiceID, voiceSession.state.mode],
+      () => {
+        setVoiceSaveError(null);
+      },
+    ),
+  );
+  const error = () =>
+    languageError() ??
+    modeError() ??
+    choiceError() ??
+    voiceSaveError() ??
+    voiceSession.state.choicesError ??
+    voiceSession.state.voiceError;
   createEffect(() => props.onError?.(error()));
   createEffect(() => props.onLanguageError?.(languageError()));
   const errorId = createUniqueId();
@@ -170,10 +189,38 @@ export default function VoiceSettings(props: {
           </For>
         </select>
       </label>
+      <Show when={voiceSession.speakingVoices.length > 0}>
+        <label>
+          {messages().speakingVoice}
+          <select
+            disabled={
+              active() || voiceSession.state.choicesStatus !== "ready" || voiceSession.state.voiceStatus !== "ready"
+            }
+            value={voiceSession.state.voiceName ?? ""}
+            onChange={(event) => {
+              try {
+                voiceSession.selectSpeakingVoice(event.currentTarget.value);
+                setVoiceSaveError(null);
+              } catch (err) {
+                event.currentTarget.value = voiceSession.state.voiceName ?? "";
+                setVoiceSaveError(err instanceof Error ? err.message : String(err));
+              }
+            }}
+            aria-describedby={error() === null ? undefined : errorId}
+          >
+            <Show when={!voiceSession.speakingVoices.includes(voiceSession.state.voiceName ?? "")}>
+              <option value={voiceSession.state.voiceName ?? ""} disabled>
+                {messages().speakingVoiceUnavailable}
+              </option>
+            </Show>
+            <For each={voiceSession.speakingVoices}>{(name) => <option value={name}>{name}</option>}</For>
+          </select>
+        </label>
+      </Show>
       <Show when={voiceSession.state.choicesStatus === "loading"}>
         <p role="status">{messages().choicesLoading}</p>
       </Show>
-      <Show when={voiceSession.state.choicesStatus === "error"}>
+      <Show when={voiceSession.state.choicesStatus === "error" || voiceSession.state.voiceStatus === "error"}>
         <button
           type="button"
           disabled={active()}

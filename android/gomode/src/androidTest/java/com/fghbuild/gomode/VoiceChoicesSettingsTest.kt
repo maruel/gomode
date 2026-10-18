@@ -7,6 +7,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -38,7 +39,8 @@ class VoiceChoicesSettingsTest {
             MockWebServer().use { server ->
                 server.start()
                 val base = server.url("/").toString().trimEnd('/')
-                val repository = SettingsRepository(MemoryPreferences())
+                val store = MemoryPreferences()
+                val repository = SettingsRepository(store)
                 repository.addService("Choices fixture", base)
                 repository.settings.first { it.activeServiceURL == base }
                 val active = mutableStateOf(false)
@@ -49,7 +51,8 @@ class VoiceChoicesSettingsTest {
                     """.trimIndent()
                 val catalog =
                     """
-                    {"choices":[{"id":"live","label":"Gemini Live","transports":["webrtc"]},
+                    {"choices":[{"id":"live","label":"Gemini Live","transports":["webrtc"],
+                    "voices":["Kore","Orus"],"defaultVoice":"Orus"},
                     {"id":"remote","label":"Remote LLM","transports":["webrtc","text"]},
                     {"id":"local","label":"Local LLM","transports":["text"]}],"defaultChoiceID":"live"}
                     """.trimIndent()
@@ -82,7 +85,35 @@ class VoiceChoicesSettingsTest {
                 }
                 composeRule.onNodeWithTag("gomode-voice-choice-live").performScrollTo().assertIsSelected()
                 composeRule.onNodeWithTag("gomode-voice-choice-local").assertDoesNotExist()
-                composeRule.onNodeWithTag("gomode-voice-choice-remote").performClick()
+                composeRule.onNodeWithTag("gomode-speaking-voice").performScrollTo().assertTextContains("Orus")
+                composeRule.runOnIdle { store.failWrites = true }
+                composeRule.onNodeWithTag("gomode-speaking-voice").performClick()
+                composeRule.onNodeWithTag("gomode-speaking-voice-Kore").performClick()
+                composeRule.waitUntil {
+                    composeRule
+                        .onAllNodes(hasTestTag("gomode-speaking-voice-save-error"))
+                        .fetchSemanticsNodes()
+                        .isNotEmpty()
+                }
+                composeRule.onNodeWithTag("gomode-speaking-voice").assertTextContains("Orus")
+                composeRule.runOnIdle { store.failWrites = false }
+                composeRule.onNodeWithTag("gomode-speaking-voice").performClick()
+                composeRule.onNodeWithTag("gomode-speaking-voice-Kore").performClick()
+                composeRule.waitUntil {
+                    repository.settings.value.speakingVoices[base]
+                        ?.get("live") == "Kore"
+                }
+                composeRule.onNodeWithTag("gomode-speaking-voice-save-error").assertDoesNotExist()
+                composeRule.runOnIdle { active.value = true }
+                composeRule.onNodeWithTag("gomode-speaking-voice").assertTextContains("Kore").assertIsNotEnabled()
+                composeRule.runOnIdle { active.value = false }
+                composeRule.onNodeWithTag("gomode-voice-choice-remote").performScrollTo().performClick()
+                composeRule.waitUntil { repository.settings.value.voiceChoices[base] == "remote" }
+                composeRule.onNodeWithTag("gomode-speaking-voice").assertDoesNotExist()
+                composeRule.onNodeWithTag("gomode-voice-choice-live").performClick()
+                composeRule.waitUntil { repository.settings.value.voiceChoices[base] == "live" }
+                composeRule.onNodeWithTag("gomode-speaking-voice").performScrollTo().assertTextContains("Kore")
+                composeRule.onNodeWithTag("gomode-voice-choice-remote").performScrollTo().performClick()
                 composeRule.waitUntil { repository.settings.value.voiceChoices[base] == "remote" }
                 composeRule.onNodeWithTag("gomode-voice-mode-device").performScrollTo().performClick()
                 composeRule.waitUntil { repository.settings.value.voiceMode == VoiceMode.DEVICE }
@@ -98,10 +129,12 @@ class VoiceChoicesSettingsTest {
         }
 
     private class MemoryPreferences : DataStore<Preferences> {
+        var failWrites = false
         private val current = MutableStateFlow(emptyPreferences())
         override val data: Flow<Preferences> = current
 
         override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences {
+            if (failWrites) throw java.io.IOException("Fixture write failure")
             val next = transform(current.value)
             current.value = next
             return next

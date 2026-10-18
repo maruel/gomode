@@ -192,6 +192,7 @@ internal class VoiceSession(
     private var dataChannel: DataChannel? = null
     private var rtcSessionID: String? = null
     private var voiceTokenEndpointURL: String? = null
+    private var pinnedVoice: GatewayVoiceSelection? = null
     private var lastOfferSDP = ""
     private var lastAnswerSDP = ""
     private var pcFactory: PeerConnectionFactory? = null
@@ -330,6 +331,7 @@ internal class VoiceSession(
         lastOfferSDP = ""
         lastAnswerSDP = ""
         if (!preserveTranscript) {
+            pinnedVoice = null
             recoveryPolicy.reset()
             recoveryContext = ""
             clearTranscript()
@@ -351,12 +353,23 @@ internal class VoiceSession(
                 try {
                     val setup =
                         try {
-                            prepareVoiceSetup(settingsRepository, settingsClient, bearerTokenFor)
+                            prepareVoiceSetup(
+                                settingsRepository,
+                                settingsClient,
+                                bearerTokenFor,
+                                pinnedVoice = pinnedVoice,
+                            )
                         } catch (e: VoiceSetupException) {
                             if (ownsAttempt(attempt)) setError(e.message ?: "Voice setup failed")
                             return@launch
                         }
                     if (!ownsAttempt(attempt)) return@launch
+                    pinnedVoice =
+                        GatewayVoiceSelection(
+                            setup.gatewayEndpointURL,
+                            requireNotNull(setup.choiceID),
+                            setup.voiceName,
+                        )
                     mcpClient = setup.mcpClient
                     mcpTools = setup.tools
                     voiceTokenEndpointURL = setup.tokenEndpointURL
@@ -455,7 +468,7 @@ internal class VoiceSession(
                                     if (dc.state() == DataChannel.State.OPEN) {
                                         recoveryPolicy.reset()
                                         setStatus("Waiting for server…")
-                                        sendSetupMessage(systemInstruction, serviceContextText)
+                                        sendSetupMessage(systemInstruction, serviceContextText, setup.voiceName)
                                     }
                                 }
                             }
@@ -926,6 +939,7 @@ internal class VoiceSession(
     }
 
     override fun disconnect() {
+        pinnedVoice = null
         val attempt = invalidateAttempt()
         val deferAudioRelease = deferDisconnectAudio(attempt)
         reconnectJob?.cancel()
@@ -1020,10 +1034,17 @@ internal class VoiceSession(
     private fun sendSetupMessage(
         systemInstruction: String,
         serviceContextText: String,
+        voiceName: String,
     ) {
         frontendToolNames = FrontendVoiceTools.declarations.map { it.name }.toSet()
         val setup =
-            gatewaySessionSetup(voiceToolDeclarations(mcpTools), systemInstruction, serviceContextText, languageTag)
+            gatewaySessionSetup(
+                voiceToolDeclarations(mcpTools),
+                systemInstruction,
+                serviceContextText,
+                languageTag,
+                voiceName,
+            )
         Log.i(TAG, "sending setup message")
         send(json.encodeToString(SessionSetup.serializer(), setup))
     }
@@ -1457,11 +1478,12 @@ internal fun gatewaySessionSetup(
     systemInstruction: String,
     serviceContextText: String,
     languageTag: String,
+    voiceName: String = "",
 ) = SessionSetup(
     kind = MessageKind.SessionSetup,
     voice =
         VoiceConfig(
-            name = "Orus",
+            name = voiceName,
             language = languageTag,
         ),
     tools = tools,

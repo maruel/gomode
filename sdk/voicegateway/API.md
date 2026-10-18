@@ -205,6 +205,8 @@ VoiceChoice describes a selectable backend without exposing its credentials.
 | `id` | `string` |  | yes |
 | `label` | `string` |  | yes |
 | `transports` | `VoiceTransport[]` |  | yes |
+| `voices` | `string[]` | Voices lists supported audio voice names. Omitted when the choice does not offer voice selection. |  |
+| `defaultVoice` | `string` | DefaultVoice is the voice used when session.setup.voice.name is omitted. |  |
 
 ### VoiceChoicesResp
 

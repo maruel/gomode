@@ -110,7 +110,7 @@ func NewBridge(ctx context.Context, cfg *voicegateway.Config, geminiAPIKey strin
 			return nil, errors.Join(fmt.Errorf("initialize choice %q: %w", ch.ID, err), cleanup())
 		}
 		backends[ch.ID] = backend
-		advertised.Choices = append(advertised.Choices, voicev1.VoiceChoice{ID: ch.ID, Label: ch.Label, Transports: backendTransports(backend)})
+		advertised.Choices = append(advertised.Choices, backendChoice(backend, ch.ID, ch.Label))
 	}
 	b, err := newBridgeWithBackend(ctx, backends[defaultID], udpPort, activityLogDir)
 	if err != nil {
@@ -166,7 +166,16 @@ func newBridgeWithBackend(ctx context.Context, backend backendConnector, udpPort
 }
 
 func defaultBackendChoices(backend backendConnector) voicev1.VoiceChoicesResp {
-	return voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{{ID: "default", Label: "Default", Transports: backendTransports(backend)}}, DefaultChoiceID: "default"}
+	return voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{backendChoice(backend, "default", "Default")}, DefaultChoiceID: "default"}
+}
+
+func backendChoice(backend backendConnector, id, label string) voicev1.VoiceChoice {
+	ch := voicev1.VoiceChoice{ID: id, Label: label, Transports: backendTransports(backend)}
+	if _, ok := backend.(*geminiBridgeBackend); ok {
+		ch.Voices = append([]string(nil), geminiVoices...)
+		ch.DefaultVoice = defaultGeminiVoice
+	}
+	return ch
 }
 
 func backendTransports(backend backendConnector) []voicev1.VoiceTransport {
@@ -190,6 +199,7 @@ func (b *Bridge) VoiceChoices() voicev1.VoiceChoicesResp {
 	out.Choices = make([]voicev1.VoiceChoice, len(b.choices.Choices))
 	for i, ch := range b.choices.Choices {
 		ch.Transports = append([]voicev1.VoiceTransport(nil), ch.Transports...)
+		ch.Voices = append([]string(nil), ch.Voices...)
 		out.Choices[i] = ch
 	}
 	return out

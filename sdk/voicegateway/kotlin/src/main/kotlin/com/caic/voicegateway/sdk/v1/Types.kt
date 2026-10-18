@@ -606,6 +606,10 @@ data class VoiceChoice(
     val id: String,
     val label: String,
     val transports: List<VoiceTransport>,
+    /** Voices lists supported audio voice names. Omitted when the choice does not offer voice selection. */
+    val voices: List<String>? = null,
+    /** DefaultVoice is the voice used when session.setup.voice.name is omitted. */
+    val defaultVoice: String? = null,
 )
 
 /** VoiceChoicesResp advertises the available voice choices and default selection. */

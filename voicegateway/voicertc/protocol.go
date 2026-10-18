@@ -77,7 +77,7 @@ func buildGeminiSetup(msg *voicev1.SessionSetup, model string) ([]byte, error) {
 	}
 	voiceName := msg.Voice.Name
 	if voiceName == "" {
-		voiceName = "Orus"
+		voiceName = defaultGeminiVoice
 	}
 	decls := make([]geminiFunctionDeclaration, 0, len(msg.Tools))
 	for _, tool := range msg.Tools {

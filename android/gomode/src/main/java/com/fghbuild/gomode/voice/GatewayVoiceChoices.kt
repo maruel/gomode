@@ -21,6 +21,52 @@ internal data class GatewayVoiceChoices(
     fun compatible(settings: SettingsState): List<VoiceChoice> =
         catalog.choices.filter { voiceTransport(settings) in it.transports }
 
+    fun speakingVoice(
+        settings: SettingsState,
+        choice: VoiceChoice,
+    ): String {
+        if (settings.voiceMode != VoiceMode.CLOUD) return ""
+        val voices = speakingVoices(choice)
+        if (voices.isEmpty()) return ""
+        val saved = settings.speakingVoices[gatewayURL]?.get(choice.id)
+        if (saved != null && saved !in voices) {
+            throw VoiceSetupException("Saved speaking voice is unavailable. Select a speaking voice in Settings.")
+        }
+        return saved ?: requireNotNull(choice.defaultVoice)
+    }
+
+    fun speakingVoices(choice: VoiceChoice): List<String> {
+        val voices = choice.voices.orEmpty()
+        if (voices.isNotEmpty() &&
+            (voices.any { it.isBlank() } || voices.toSet().size != voices.size || choice.defaultVoice !in voices)
+        ) {
+            throw VoiceSetupException("Gateway returned invalid speaking voices")
+        }
+        return voices
+    }
+
+    fun resolve(
+        settings: SettingsState,
+        pinned: GatewayVoiceSelection? = null,
+    ): GatewayVoiceSelection {
+        if (pinned == null) {
+            val choice = selection(settings)
+            return GatewayVoiceSelection(gatewayURL, choice.id, speakingVoice(settings, choice))
+        }
+        requireLoadedVoiceSettings(settings)
+        if (gatewayURL != pinned.gatewayURL) {
+            throw VoiceSetupException("Gateway voice choice changed. Start a new voice session.")
+        }
+        val choice =
+            catalog.choices.firstOrNull { it.id == pinned.choiceID && voiceTransport(settings) in it.transports }
+                ?: throw VoiceSetupException("Session voice choice is unavailable. Start a new voice session.")
+        val voices = if (settings.voiceMode == VoiceMode.CLOUD) speakingVoices(choice) else emptyList()
+        if (pinned.voiceName.isNotEmpty() && pinned.voiceName !in voices) {
+            throw VoiceSetupException("Session speaking voice is unavailable. Start a new voice session.")
+        }
+        return pinned
+    }
+
     fun selection(settings: SettingsState): VoiceChoice {
         requireLoadedVoiceSettings(settings)
         val saved = settings.voiceChoices[gatewayURL]
@@ -76,3 +122,9 @@ internal fun requireLoadedVoiceSettings(settings: SettingsState) {
         is SettingsLoadState.Failed -> throw VoiceSetupException(state.message)
     }
 }
+
+internal data class GatewayVoiceSelection(
+    val gatewayURL: String,
+    val choiceID: String,
+    val voiceName: String,
+)

@@ -274,6 +274,9 @@ export interface VoiceState {
   choiceID: string | null;
   choicesStatus: "idle" | "loading" | "ready" | "error";
   choicesError: string | null;
+  voiceName: string | null;
+  voiceError: string | null;
+  voiceStatus: "idle" | "ready" | "error";
   connectStatus: string | null;
   connectPhase: "setup" | "waiting" | "signaling" | "reconnecting" | null;
   connected: boolean;
@@ -345,6 +348,32 @@ function compatibleChoices(choices: VoiceChoice[], mode: VoiceMode): VoiceChoice
   return choices.filter((choice) => choice.transports.includes(mode === "browser" ? "text" : "webrtc"));
 }
 
+function validVoiceCatalog(choice: VoiceChoice): boolean {
+  if (choice.voices === undefined) return choice.defaultVoice === undefined || choice.defaultVoice === "";
+  if (!Array.isArray(choice.voices)) return false;
+  if (choice.voices.length === 0) return choice.defaultVoice === undefined || choice.defaultVoice === "";
+  return (
+    choice.voices.every((name) => typeof name === "string" && name.trim() !== "") &&
+    new Set(choice.voices).size === choice.voices.length &&
+    typeof choice.defaultVoice === "string" &&
+    choice.voices.includes(choice.defaultVoice)
+  );
+}
+
+function speakingVoiceStorageKey(origin: string, choiceID: string): string {
+  return `gomode.speakingVoice.${JSON.stringify([origin, choiceID])}`;
+}
+
+function savedSpeakingVoice(origin: string, choice: VoiceChoice, mode: VoiceMode): string {
+  if (mode !== "cloud" || !choice.voices?.length) return "";
+  return localStorage.getItem(speakingVoiceStorageKey(origin, choice.id)) ?? choice.defaultVoice!;
+}
+
+function speakingVoiceError(choice: VoiceChoice, name: string): string | null {
+  const available = choice.voices?.length ? choice.voices.includes(name) : name === "";
+  return available ? null : "The saved speaking voice is unavailable. Choose another speaking voice.";
+}
+
 function validateVoiceChoices(value: VoiceChoicesResp): VoiceChoicesResp {
   if (
     !Array.isArray(value.choices) ||
@@ -357,7 +386,8 @@ function validateVoiceChoices(value: VoiceChoicesResp): VoiceChoicesResp {
         choice.label === "" ||
         !Array.isArray(choice.transports) ||
         choice.transports.length === 0 ||
-        choice.transports.some((transport) => transport !== "text" && transport !== "webrtc"),
+        choice.transports.some((transport) => transport !== "text" && transport !== "webrtc") ||
+        !validVoiceCatalog(choice),
     ) ||
     new Set(value.choices.map((choice) => choice.id)).size !== value.choices.length ||
     !value.choices.some((choice) => choice.id === value.defaultChoiceID)
@@ -420,6 +450,7 @@ export class VoiceSession {
   private _choicesAttempt = 0;
   private _sessionGateway: GatewaySnapshot | null = null;
   private _sessionChoiceID: string | null = null;
+  private _sessionVoiceName: string | null = null;
   private _frontendToolNames = new Set<string>();
   private _pc: RTCPeerConnection | null = null;
   private _dc: RTCDataChannel | null = null;
@@ -463,6 +494,9 @@ export class VoiceSession {
       choiceID: null,
       choicesStatus: "idle",
       choicesError: null,
+      voiceName: null,
+      voiceError: null,
+      voiceStatus: "idle",
       connectStatus: null,
       connectPhase: null,
       connected: false,
@@ -500,6 +534,47 @@ export class VoiceSession {
     return compatibleChoices(this.state.choices, this.state.mode);
   }
 
+  get speakingVoices(): string[] {
+    if (this.state.mode !== "cloud") return [];
+    return this.state.choices.find((choice) => choice.id === this.state.choiceID)?.voices ?? [];
+  }
+
+  private _restoreSpeakingVoice(origin: string, choice: VoiceChoice): void {
+    try {
+      const name = savedSpeakingVoice(origin, choice, this.state.mode);
+      this._update((s) => {
+        s.voiceName = name;
+        s.voiceError = this.state.mode === "cloud" ? speakingVoiceError(choice, name) : null;
+        s.voiceStatus = "ready";
+      });
+    } catch (error) {
+      this._update((s) => {
+        s.voiceName = null;
+        s.voiceError = error instanceof Error ? error.message : String(error);
+        s.voiceStatus = "error";
+      });
+    }
+  }
+
+  /** Save a supported speaking voice for this gateway and backend choice. */
+  selectSpeakingVoice(name: string): void {
+    if (this.state.connected || this.state.connectStatus !== null)
+      throw new Error("End the session before changing speaking voice");
+    if (
+      this._choicesVersion !== untrack(gatewayVersion) ||
+      this.state.choicesStatus !== "ready" ||
+      this.state.voiceStatus !== "ready" ||
+      !this.speakingVoices.includes(name)
+    )
+      throw new Error("Choose an available speaking voice");
+    const choiceID = this.state.choiceID!;
+    localStorage.setItem(speakingVoiceStorageKey(gatewaySnapshot().origin, choiceID), name);
+    this._update((s) => {
+      s.voiceName = name;
+      s.voiceError = null;
+    });
+  }
+
   /** Discover settings choices on demand, keeping obsolete responses out of the current gateway. */
   async loadVoiceChoices(): Promise<void> {
     const snapshot = gatewaySnapshot();
@@ -516,6 +591,8 @@ export class VoiceSession {
       this._update((s) => {
         s.choicesStatus = "loading";
         s.choicesError = null;
+        s.voiceStatus = "idle";
+        s.voiceError = null;
       });
       if (this._choicesVersion !== snapshot.version) {
         const choiceID = savedVoiceChoice(snapshot.origin);
@@ -535,6 +612,10 @@ export class VoiceSession {
       this._update((s) => {
         s.choiceID = choiceID;
       });
+      this._restoreSpeakingVoice(
+        snapshot.origin,
+        metadata.choices.find((choice) => choice.id === choiceID)!,
+      );
     } catch (error) {
       if (snapshot.version !== untrack(gatewayVersion) || attempt !== this._choicesAttempt) return;
       this._update((s) => {
@@ -557,6 +638,10 @@ export class VoiceSession {
       s.choiceID = choiceID;
       s.choicesError = null;
     });
+    this._restoreSpeakingVoice(
+      gatewaySnapshot().origin,
+      this.state.choices.find((choice) => choice.id === choiceID)!,
+    );
   }
 
   private async _resolveSessionChoice(snapshot: GatewaySnapshot, attempt: number): Promise<string | null> {
@@ -584,10 +669,32 @@ export class VoiceSession {
       throw error;
     }
     this._sessionChoiceID = choiceID;
-    if (snapshot.version === untrack(gatewayVersion))
-      this._update((s) => {
-        s.choiceID = choiceID;
-      });
+    const choice = metadata.choices.find((choice) => choice.id === choiceID)!;
+    let voiceError: string | null = null;
+    try {
+      const name =
+        this.state.mode !== "cloud"
+          ? ""
+          : (this._sessionVoiceName ?? savedSpeakingVoice(snapshot.origin, choice, this.state.mode));
+      this._sessionVoiceName = name;
+      voiceError = this.state.mode === "cloud" ? speakingVoiceError(choice, name) : null;
+      if (snapshot.version === untrack(gatewayVersion))
+        this._update((s) => {
+          s.choiceID = choiceID;
+          s.voiceName = name;
+          s.voiceError = voiceError;
+          s.voiceStatus = "ready";
+        });
+    } catch (error) {
+      if (snapshot.version === untrack(gatewayVersion))
+        this._update((s) => {
+          s.voiceName = null;
+          s.voiceError = error instanceof Error ? error.message : String(error);
+          s.voiceStatus = "error";
+        });
+      throw error;
+    }
+    if (voiceError !== null) throw new Error(voiceError);
     return choiceID;
   }
 
@@ -605,6 +712,8 @@ export class VoiceSession {
       this._update((s) => {
         s.choicesError = available ? null : "Choose an available voice choice for this voice mode.";
       });
+      const choice = this.state.choices.find((choice) => choice.id === this.state.choiceID);
+      if (choice) this._restoreSpeakingVoice(gatewaySnapshot().origin, choice);
     }
   }
 
@@ -894,13 +1003,25 @@ export class VoiceSession {
   async connect(): Promise<void> {
     this.prepareAudio();
     this._sessionGateway = gatewaySnapshot();
+    this._sessionVoiceName = null;
     try {
       this._sessionChoiceID =
         this._choicesVersion === this._sessionGateway.version
           ? this.state.choiceID
           : savedVoiceChoice(this._sessionGateway.origin);
+      if (this._choicesVersion === this._sessionGateway.version) {
+        const choice = this.state.choices.find((choice) => choice.id === this._sessionChoiceID);
+        if (choice && (this.state.mode !== "cloud" || choice.voices?.length))
+          this._sessionVoiceName = savedSpeakingVoice(this._sessionGateway.origin, choice, this.state.mode);
+      }
     } catch (error) {
-      this._setError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      this._update((s) => {
+        s.voiceName = null;
+        s.voiceError = message;
+        s.voiceStatus = "error";
+      });
+      this._setError(message);
       return;
     }
     this._reconnectEnabled = true;
@@ -1459,6 +1580,7 @@ export class VoiceSession {
       systemInstruction,
       serviceContext,
       this.state.languageTag,
+      this._sessionVoiceName ?? "",
     );
     this._send(JSON.stringify(setup));
   }
@@ -1835,11 +1957,12 @@ function gatewaySessionSetup(
   systemInstruction: string,
   serviceContext: string,
   languageTag: string,
+  voiceName: string,
 ): SessionSetup {
   return {
     kind: MessageKindSessionSetup,
     voice: {
-      name: "Orus",
+      name: voiceName,
       language: languageTag,
     },
     tools,

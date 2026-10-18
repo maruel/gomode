@@ -136,6 +136,7 @@ data class SettingsState(
     val localLlmModel: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
     val voiceAudioDeviceType: Int? = null,
     val voiceChoices: Map<String, String> = emptyMap(),
+    val speakingVoices: Map<String, Map<String, String>> = emptyMap(),
     val loadState: SettingsLoadState = SettingsLoadState.Loading,
 )
 
@@ -150,6 +151,7 @@ class SettingsRepository(
         val ACTIVE_SERVICE_ID = stringPreferencesKey("ACTIVE_SERVICE_ID")
         val HALO_ADDRESS = stringPreferencesKey("HALO_ADDRESS")
         val HALO_AUTO_CONNECT = booleanPreferencesKey("HALO_AUTO_CONNECT")
+        val SPEAKING_VOICES = stringPreferencesKey("SPEAKING_VOICES")
         val VOICE_CHOICES = stringPreferencesKey("VOICE_CHOICES")
         val VOICE_MODE = stringPreferencesKey("VOICE_MODE")
         val VOICE_LANGUAGE_TAG = stringPreferencesKey("VOICE_LANGUAGE_TAG")
@@ -168,6 +170,7 @@ class SettingsRepository(
                     activeServiceURL = active?.url ?: "",
                     loadState = SettingsLoadState.Ready,
                     voiceChoices = decodeVoiceChoices(prefs),
+                    speakingVoices = decodeSpeakingVoices(prefs),
                     haloAddress = prefs[Keys.HALO_ADDRESS],
                     haloAutoConnect = prefs[Keys.HALO_AUTO_CONNECT] ?: false,
                     services = services,
@@ -286,6 +289,23 @@ class SettingsRepository(
                 json.encodeToString(decodeVoiceChoices(prefs) + (normalizeURL(gatewayURL) to choiceID))
         }
     }
+
+    suspend fun updateSpeakingVoice(
+        gatewayURL: String,
+        choiceID: String,
+        voiceName: String,
+    ) {
+        require(choiceID.isNotBlank() && voiceName.isNotBlank()) { "Select a speaking voice" }
+        dataStore.edit { prefs ->
+            val gateway = normalizeURL(gatewayURL)
+            val saved = decodeSpeakingVoices(prefs)
+            val choices = saved[gateway].orEmpty() + (choiceID to voiceName)
+            prefs[Keys.SPEAKING_VOICES] = json.encodeToString(saved + (gateway to choices))
+        }
+    }
+
+    private fun decodeSpeakingVoices(prefs: Preferences): Map<String, Map<String, String>> =
+        prefs[Keys.SPEAKING_VOICES]?.let { json.decodeFromString<Map<String, Map<String, String>>>(it) } ?: emptyMap()
 
     private fun decodeVoiceChoices(prefs: Preferences): Map<String, String> =
         prefs[Keys.VOICE_CHOICES]?.let { json.decodeFromString<Map<String, String>>(it) } ?: emptyMap()

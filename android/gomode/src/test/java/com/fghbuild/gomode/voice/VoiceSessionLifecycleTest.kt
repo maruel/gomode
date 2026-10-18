@@ -55,62 +55,85 @@ class VoiceSessionLifecycleTest {
     }
 
     @Test
-    fun changedChoiceDuringDiscoveryStopsSetupBeforeMCP() =
+    fun changedOrUnavailableVoiceDuringDiscoveryStopsSetupBeforeMCP() =
         runBlocking {
-            val discoveryStarted = CountDownLatch(1)
-            val releaseDiscovery = CountDownLatch(1)
-            val server = MockWebServer()
-            server.dispatcher =
-                object : Dispatcher() {
-                    override fun dispatch(request: RecordedRequest): MockResponse =
-                        when (request.path) {
-                            "/.well-known/gomode.json" -> {
-                                MockResponse().setBody(
-                                    """
-                                    {"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":1,
-                                    "toolGroups":[{"name":"fixture","endpoint":"/mcp","protocolVersion":"2026-07-28",
-                                    "authRequired":false}],"voiceGateway":{"required":false,"url":"/"}}}
-                                    """.trimIndent(),
-                                )
-                            }
+            listOf("choice", "speaking voice", "recovery catalog").forEach { change ->
+                val discoveryStarted = CountDownLatch(1)
+                val releaseDiscovery = CountDownLatch(1)
+                val server = MockWebServer()
+                server.dispatcher =
+                    object : Dispatcher() {
+                        override fun dispatch(request: RecordedRequest): MockResponse =
+                            when (request.path) {
+                                "/.well-known/gomode.json" -> {
+                                    MockResponse().setBody(
+                                        """
+                                        {"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":1,
+                                        "toolGroups":[{"name":"fixture","endpoint":"/mcp","protocolVersion":"2026-07-28",
+                                        "authRequired":false}],"voiceGateway":{"required":false,"url":"/"}}}
+                                        """.trimIndent(),
+                                    )
+                                }
 
-                            "/api/voicegateway/v1/voice/choices" -> {
-                                discoveryStarted.countDown()
-                                releaseDiscovery.await(5, TimeUnit.SECONDS)
-                                MockResponse().setBody(
-                                    """
-                                    {"choices":[{"id":"live","label":"Gemini Live","transports":["webrtc"]}],
-                                    "defaultChoiceID":"live"}
-                                    """.trimIndent(),
-                                )
-                            }
+                                "/api/voicegateway/v1/voice/choices" -> {
+                                    discoveryStarted.countDown()
+                                    releaseDiscovery.await(5, TimeUnit.SECONDS)
+                                    MockResponse().setBody(
+                                        """
+                                        {"choices":[{"id":"live","label":"Gemini Live","transports":["webrtc"]}],
+                                        "defaultChoiceID":"live"}
+                                        """.trimIndent(),
+                                    )
+                                }
 
-                            else -> {
-                                MockResponse().setResponseCode(500)
+                                else -> {
+                                    MockResponse().setResponseCode(500)
+                                }
+                            }
+                    }
+                server.start()
+                try {
+                    val base = server.url("/").toString().trimEnd('/')
+                    val repository = SettingsRepository(InMemoryPreferencesDataStore())
+                    repository.addService("Fixture", base)
+                    repository.settings.first { it.activeServiceURL == base }
+                    val attempt =
+                        async(Dispatchers.IO) {
+                            runCatching {
+                                prepareVoiceSetup(
+                                    repository,
+                                    ServiceSettingsClient(),
+                                    { null },
+                                    pinnedVoice =
+                                        if (change == "recovery catalog") {
+                                            GatewayVoiceSelection(base, "live", "Orus")
+                                        } else {
+                                            null
+                                        },
+                                )
                             }
                         }
-                }
-            server.start()
-            try {
-                val base = server.url("/").toString().trimEnd('/')
-                val repository = SettingsRepository(InMemoryPreferencesDataStore())
-                repository.addService("Fixture", base)
-                repository.settings.first { it.activeServiceURL == base }
-                val attempt =
-                    async(Dispatchers.IO) {
-                        runCatching { prepareVoiceSetup(repository, ServiceSettingsClient(), { null }) }
+                    assertTrue(discoveryStarted.await(5, TimeUnit.SECONDS))
+                    when (change) {
+                        "speaking voice" -> {
+                            repository.updateSpeakingVoice(base, "live", "Kore")
+                            repository.settings.first { it.speakingVoices[base]?.get("live") == "Kore" }
+                        }
+
+                        "choice" -> {
+                            repository.updateVoiceChoice(base, "remote")
+                            repository.settings.first { it.voiceChoices[base] == "remote" }
+                        }
                     }
-                assertTrue(discoveryStarted.await(5, TimeUnit.SECONDS))
-                repository.updateVoiceChoice(base, "remote")
-                repository.settings.first { it.voiceChoices[base] == "remote" }
-                releaseDiscovery.countDown()
-                assertTrue(attempt.await().exceptionOrNull() is VoiceSetupException)
-                assertEquals("/.well-known/gomode.json", server.takeRequest(5, TimeUnit.SECONDS)?.path)
-                assertEquals("/api/voicegateway/v1/voice/choices", server.takeRequest(5, TimeUnit.SECONDS)?.path)
-                assertNull(server.takeRequest(100, TimeUnit.MILLISECONDS))
-            } finally {
-                releaseDiscovery.countDown()
-                server.shutdown()
+                    releaseDiscovery.countDown()
+                    assertTrue(attempt.await().exceptionOrNull() is VoiceSetupException)
+                    assertEquals("/.well-known/gomode.json", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+                    assertEquals("/api/voicegateway/v1/voice/choices", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+                    assertNull(server.takeRequest(100, TimeUnit.MILLISECONDS))
+                } finally {
+                    releaseDiscovery.countDown()
+                    server.shutdown()
+                }
             }
         }
 

@@ -41,6 +41,108 @@ class VoiceChoicesTest {
         )
     private val settings = SettingsState(loadState = SettingsLoadState.Ready)
 
+    private fun audioCatalog(
+        voices: List<String>? = listOf("Kore", "Orus"),
+        default: String? = "Orus",
+    ) = GatewayVoiceChoices(
+        gateway,
+        VoiceChoicesResp(
+            listOf(VoiceChoice("live", "Gemini Live", listOf(VoiceTransport.WebRTC), voices, default)),
+            "live",
+        ),
+    )
+
+    @Test
+    fun `speaking voice uses advertised default and restores each choice preference`() {
+        val catalog = audioCatalog()
+        assertEquals("Orus", catalog.resolve(settings).voiceName)
+        val saved = settings.copy(speakingVoices = mapOf(gateway to mapOf("live" to "Kore", "other" to "Orus")))
+        assertEquals("Kore", catalog.resolve(saved).voiceName)
+        assertEquals(
+            "Orus",
+            catalog
+                .resolve(
+                    saved.copy(
+                        speakingVoices =
+                            mapOf(
+                                "https://other.example" to
+                                    mapOf("live" to "Kore"),
+                            ),
+                    ),
+                ).voiceName,
+        )
+    }
+
+    @Test
+    fun `removed voice blocks cloud but client speech and absent catalogs use no voice`() {
+        val saved = settings.copy(speakingVoices = mapOf(gateway to mapOf("live" to "removed")))
+        assertThrows(VoiceSetupException::class.java) { audioCatalog().resolve(saved) }
+        assertEquals("", audioCatalog(null, null).resolve(saved).voiceName)
+        assertEquals("", audioCatalog(emptyList(), null).resolve(saved).voiceName)
+        assertEquals(
+            "",
+            audioCatalog().speakingVoice(
+                saved.copy(voiceMode = VoiceMode.DEVICE),
+                audioCatalog().catalog.choices.single(),
+            ),
+        )
+    }
+
+    @Test
+    fun `voice catalog requires unique nonempty names and a supported default`() {
+        listOf(
+            audioCatalog(listOf("Kore", "Kore"), "Kore"),
+            audioCatalog(listOf(""), ""),
+            audioCatalog(listOf("Kore"), "Orus"),
+            audioCatalog(listOf("Kore"), null),
+        ).forEach { catalog ->
+            assertThrows(VoiceSetupException::class.java) { catalog.resolve(settings) }
+        }
+    }
+
+    @Test
+    fun `recovery retains resolved voice and fails when scope or voice catalog disappears`() {
+        val pinned = audioCatalog().resolve(settings)
+        assertEquals("Orus", audioCatalog(default = "Kore").resolve(settings, pinned).voiceName)
+        listOf(audioCatalog(null, null), audioCatalog(emptyList(), null), audioCatalog(listOf("Kore"), "Kore"))
+            .forEach { catalog ->
+                assertThrows(VoiceSetupException::class.java) { catalog.resolve(settings, pinned) }
+            }
+        assertThrows(VoiceSetupException::class.java) {
+            audioCatalog().copy(gatewayURL = "https://other.example").resolve(settings, pinned)
+        }
+        assertThrows(VoiceSetupException::class.java) {
+            audioCatalog().resolve(settings, pinned.copy(choiceID = "other"))
+        }
+        assertEquals("Kore", audioCatalog(default = "Kore").resolve(settings).voiceName)
+    }
+
+    @Test
+    fun `recovery uses pinned choice and voice after advertised defaults change`() {
+        val original = audioCatalog()
+        val pinned = original.resolve(settings)
+        val oldChoice =
+            original.catalog.choices
+                .single()
+                .copy(defaultVoice = "Kore")
+        val alternative = oldChoice.copy(id = "alternative", defaultVoice = "Kore")
+        val updated = original.copy(catalog = VoiceChoicesResp(listOf(oldChoice, alternative), "alternative"))
+        val recovered = updated.resolve(settings, pinned)
+        assertEquals("live", recovered.choiceID)
+        assertEquals("Orus", recovered.voiceName)
+        assertEquals("alternative", updated.resolve(settings).choiceID)
+        assertEquals("Kore", updated.resolve(settings).voiceName)
+        val incompatible = oldChoice.copy(transports = listOf(VoiceTransport.Text))
+        assertThrows(VoiceSetupException::class.java) {
+            updated
+                .copy(catalog = VoiceChoicesResp(listOf(incompatible, alternative), "alternative"))
+                .resolve(settings, pinned)
+        }
+        assertThrows(VoiceSetupException::class.java) {
+            updated.copy(catalog = VoiceChoicesResp(listOf(alternative), "alternative")).resolve(settings, pinned)
+        }
+    }
+
     @Test
     fun `default and saved choices respect the speech transport`() {
         assertEquals(listOf("live", "remote"), choices.compatible(settings).map { it.id })
@@ -80,6 +182,12 @@ class VoiceChoicesTest {
         }
         assertThrows(VoiceSetupException::class.java) {
             ensureVoiceSettingsCurrent(captured, captured.copy(voiceChoices = mapOf(gateway to "remote")))
+        }
+        assertThrows(VoiceSetupException::class.java) {
+            ensureVoiceSettingsCurrent(
+                captured,
+                captured.copy(speakingVoices = mapOf(gateway to mapOf("live" to "Kore"))),
+            )
         }
     }
 

@@ -244,6 +244,10 @@ type VoiceChoice struct {
 	ID         string           `json:"id"`
 	Label      string           `json:"label"`
 	Transports []VoiceTransport `json:"transports"`
+	// Voices lists supported audio voice names. Omitted when the choice does not offer voice selection.
+	Voices []string `json:"voices,omitempty"`
+	// DefaultVoice is the voice used when session.setup.voice.name is omitted.
+	DefaultVoice string `json:"defaultVoice,omitempty"`
 }
 
 // VoiceChoicesResp advertises the available voice choices and default selection.

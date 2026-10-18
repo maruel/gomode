@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
+import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.voice.GatewayVoiceChoices
 import com.fghbuild.gomode.voice.discoverVoiceChoices
@@ -115,6 +116,11 @@ internal fun VoiceChoiceSetting(
                     } finally {
                         saving = false
                     }
+                }
+            }
+            if (settings.voiceMode == VoiceMode.CLOUD) {
+                selection.getOrNull()?.let { choice ->
+                    SpeakingVoiceSetting(state.choices, choice, settings, repository, enabled && !saving)
                 }
             }
         }

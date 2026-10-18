@@ -92,6 +92,39 @@ class SettingsRepositoryTest {
         }
 
     @Test
+    fun `speaking voices restore by gateway and choice with existing preferences intact`() =
+        runBlocking {
+            val store = InMemoryPreferencesDataStore()
+            store.edit { it[stringPreferencesKey("VOICE_CHOICES")] = """{"https://first.example":"live"}""" }
+            val repository = SettingsRepository(store)
+            repository.awaitSettings("existing preferences") { it.loadState == SettingsLoadState.Ready }
+            assertTrue(
+                repository.settings.value.speakingVoices
+                    .isEmpty(),
+            )
+            repository.updateSpeakingVoice("https://first.example/", "live", "Kore")
+            repository.updateSpeakingVoice("https://first.example", "other", "Orus")
+            repository.updateSpeakingVoice("https://second.example", "live", "Puck")
+            val restored = SettingsRepository(store).awaitSettings("restored voices") { it.speakingVoices.size == 2 }
+            assertEquals("Kore", restored.speakingVoices["https://first.example"]?.get("live"))
+            assertEquals("Orus", restored.speakingVoices["https://first.example"]?.get("other"))
+            assertEquals("Puck", restored.speakingVoices["https://second.example"]?.get("live"))
+            assertEquals("live", restored.voiceChoices["https://first.example"])
+        }
+
+    @Test
+    fun `unreadable speaking voice does not silently choose a default`() =
+        runBlocking {
+            val store = InMemoryPreferencesDataStore()
+            store.edit { it[stringPreferencesKey("SPEAKING_VOICES")] = "invalid JSON" }
+            val state =
+                SettingsRepository(
+                    store,
+                ).awaitSettings("read error") { it.loadState is SettingsLoadState.Failed }
+            assertTrue(state.loadState is SettingsLoadState.Failed)
+        }
+
+    @Test
     fun `initial settings have no active service`() =
         runBlocking {
             val repo = createRepo()

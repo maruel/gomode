@@ -458,7 +458,7 @@ type choiceBridge struct {
 
 func (b *choiceBridge) VoiceChoices() voicev1.VoiceChoicesResp {
 	return voicev1.VoiceChoicesResp{DefaultChoiceID: "live", Choices: []voicev1.VoiceChoice{
-		{ID: "live", Label: "Live", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}},
+		{ID: "live", Label: "Live", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}, Voices: []string{"Kore", "Orus"}, DefaultVoice: "Orus"},
 		{ID: "remote", Label: "Remote", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText, voicev1.VoiceTransportWebRTC}},
 	}}
 }
@@ -495,6 +495,12 @@ func TestVoiceChoices(t *testing.T) {
 	}
 	if w.Code != 200 || len(choices.Choices) != 2 || choices.DefaultChoiceID != "live" {
 		t.Fatalf("choices: %d %s", w.Code, w.Body)
+	}
+	if ch := choices.Choices[0]; len(ch.Voices) != 2 || ch.Voices[0] != "Kore" || ch.DefaultVoice != "Orus" {
+		t.Fatalf("audio metadata lost in HTTP composition: %+v", ch)
+	}
+	if ch := choices.Choices[1]; len(ch.Voices) != 0 || ch.DefaultVoice != "" {
+		t.Fatalf("unexpected local voice metadata: %+v", ch)
 	}
 	for _, tc := range []struct {
 		id     string
@@ -570,6 +576,9 @@ func TestEmbeddedChoiceCapabilities(t *testing.T) {
 		}
 		if choices.DefaultChoiceID != "remote" || len(choices.Choices) != 1 || len(choices.Choices[0].Transports) != 1 || choices.Choices[0].Transports[0] != voicev1.VoiceTransportText {
 			t.Fatalf("text-only choices: %+v", choices)
+		}
+		if ch := choices.Choices[0]; len(ch.Voices) != 0 || ch.DefaultVoice != "" {
+			t.Fatalf("unexpected text-only voice metadata: %+v", ch)
 		}
 		w = httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v1/voice/text", http.NoBody))

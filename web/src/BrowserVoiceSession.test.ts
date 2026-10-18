@@ -109,6 +109,7 @@ describe("browser voice sessions", () => {
     expect(socket.url.toString()).toBe("wss://gateway.example/api/voicegateway/v1/voice/text/browser");
     expect(socket.protocols).toEqual(["gomode.text.v1", "gomode.ticket.one-time-ticket"]);
     expect(JSON.parse(socket.sent[0] ?? "{}").voice.language).toBe("fr-CA");
+    expect(JSON.parse(socket.sent[0] ?? "{}").voice.name).toBe("");
     expect(new VoiceSession(chime).state.mode).toBe("browser");
     expect(localStorage.getItem("gomode.voiceLanguage")).toBe("fr-CA");
   });

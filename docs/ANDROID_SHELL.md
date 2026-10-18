@@ -150,7 +150,13 @@ connection uses the compatible advertised default, or the first compatible
 choice; switching speech modes visibly selects a compatible choice. If a saved
 choice is removed, reconnecting is blocked until the user selects an available
 choice. Discovery errors include Retry, and choices cannot change during an
-active session. Fully native engines keep their own model selection and do not
+active session. For a Cloud choice that advertises speaking voices, the
+**Speaking voice** dropdown saves a voice separately for each gateway and choice.
+The advertised default applies until a voice is saved. A removed saved voice
+blocks connecting until another voice is selected; active sessions and their
+recovery connections retain the resolved voice. Choices without a voice catalog
+use the gateway's voice default. Client speech modes keep the device's own
+speech synthesis. Fully native engines keep their own model selection and do not
 query gateway choices.
 
 ## Voice Session Setup

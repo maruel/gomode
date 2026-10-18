@@ -84,6 +84,7 @@ func TestServeTextSessionCloseLogging(t *testing.T) { //nolint:paralleltest // T
 
 func TestBridge(t *testing.T) {
 	t.Parallel()
+	t.Run("VoiceChoices", testBridgeVoiceMetadata)
 
 	t.Run("ServeTextSession", func(t *testing.T) {
 		t.Parallel()

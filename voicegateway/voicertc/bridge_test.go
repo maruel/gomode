@@ -10,6 +10,7 @@ import (
 	"errors"
 	"math"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -158,6 +159,9 @@ func TestTranslateGatewayClientMessage(t *testing.T) {
 		}
 		if msg.Setup.Model != "models/gemini-3.8-live" {
 			t.Errorf("model = %q, want models/gemini-3.8-live", msg.Setup.Model)
+		}
+		if voice := msg.Setup.GenerationConfig.SpeechConfig.VoiceConfig.PrebuiltVoiceConfig.VoiceName; voice != "Kore" {
+			t.Errorf("voice = %q, want Kore", voice)
 		}
 		if strings.Contains(string(got), "thinkingConfig") {
 			t.Errorf("setup = %s, want no thinkingConfig", got)
@@ -947,5 +951,59 @@ func testBridgeChoiceRuntime(t *testing.T) {
 	diagnostics := b.DiagnoseVoiceRTC(ctx, two.sessionID, &voicev1.VoiceRTCClientDiagnostics{})
 	if !diagnostics.Server.SessionFound {
 		t.Fatal("closing first choice closed second session")
+	}
+}
+
+func TestBuildGeminiSetup(t *testing.T) {
+	t.Parallel()
+	data, err := buildGeminiSetup(&voicev1.SessionSetup{Context: voicev1.Context{SystemInstruction: "test"}}, voicegateway.DefaultGeminiModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg geminiSetupMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatal(err)
+	}
+	if voice := msg.Setup.GenerationConfig.SpeechConfig.VoiceConfig.PrebuiltVoiceConfig.VoiceName; voice != "Orus" {
+		t.Fatalf("default voice = %q, want Orus", voice)
+	}
+}
+
+func testBridgeVoiceMetadata(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		backend backendConnector
+		voices  bool
+	}{
+		{name: "Gemini audio", backend: &geminiBridgeBackend{apiKey: "test", model: voicegateway.DefaultGeminiModel}, voices: true},
+		{name: "local audio", backend: newLocalStackBackend(nil, fixedASR{text: "test"}, smokeLLM{text: "test"}, placeholderTTS{})},
+		{name: "local text", backend: newLocalStackBackend(nil, nil, smokeLLM{text: "test"}, nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			b, err := newBridgeWithBackend(t.Context(), tc.backend, 0, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { b.CloseAll(t.Context()) })
+			first := b.VoiceChoices()
+			ch := first.Choices[0]
+			if !tc.voices {
+				if len(ch.Voices) != 0 || ch.DefaultVoice != "" {
+					t.Fatalf("unexpected voice metadata: %+v", ch)
+				}
+				return
+			}
+			if len(ch.Voices) != 30 || ch.DefaultVoice != "Orus" || !slices.IsSorted(ch.Voices) || !slices.Contains(ch.Voices, "Kore") || !slices.Contains(ch.Voices, "Orus") {
+				t.Fatalf("invalid catalog: %+v", ch)
+			}
+			ch.Voices[0] = "changed"
+			ch.Transports[0] = voicev1.VoiceTransportText
+			next := b.VoiceChoices().Choices[0]
+			if next.Voices[0] != "Achernar" || next.Transports[0] != voicev1.VoiceTransportWebRTC {
+				t.Fatalf("metadata was mutated through an advertised copy: %+v", next)
+			}
+		})
 	}
 }

@@ -2,6 +2,7 @@
 package com.fghbuild.gomode.voice
 
 import com.caic.voicegateway.sdk.v1.ApiClient
+import com.caic.voicegateway.sdk.v1.SessionSetup
 import com.caic.voicegateway.sdk.v1.VoiceRTCConnectivityIssue
 import com.caic.voicegateway.sdk.v1.VoiceRTCConnectivitySide
 import com.caic.voicegateway.sdk.v1.VoiceRTCDiagnosticsResp
@@ -10,6 +11,9 @@ import com.caic.voicegateway.sdk.v1.VoiceRTCServerDiagnostics
 import com.fghbuild.gomode.service.credentialedHTTPClient
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
@@ -112,6 +116,22 @@ class VoiceSessionTest {
 
         assertTrue(instruction.isNotBlank())
         assertFalse(instruction.contains("\n\n"))
+    }
+
+    @Test
+    fun sessionSetupSerializesSelectedVoiceAndLeavesClientSpeechVoiceEmpty() {
+        val selected = gatewaySessionSetup(emptyList(), "", "", "fr-CA", "Kore")
+        val payload = Json.parseToJsonElement(Json.encodeToString(SessionSetup.serializer(), selected)).jsonObject
+        assertEquals(
+            "Kore",
+            payload
+                .getValue("voice")
+                .jsonObject
+                .getValue("name")
+                .jsonPrimitive.content,
+        )
+        assertEquals("fr-CA", selected.voice.language)
+        assertEquals("", gatewaySessionSetup(emptyList(), "", "", "en-US").voice.name)
     }
 
     @Test
