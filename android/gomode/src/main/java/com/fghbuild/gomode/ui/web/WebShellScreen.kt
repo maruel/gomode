@@ -10,6 +10,7 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Message
 import android.util.Log
+import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.MimeTypeMap
 import android.webkit.PermissionRequest
@@ -91,6 +92,12 @@ internal fun WebShellScreen(
         remember(context, serviceID, hostURL) {
             WebView(context).apply {
                 id = R.id.web_shell
+                // WebView uses native layout params for CSS viewport sizing, even inside AndroidView.
+                layoutParams =
+                    ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    )
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.mediaPlaybackRequiresUserGesture = false

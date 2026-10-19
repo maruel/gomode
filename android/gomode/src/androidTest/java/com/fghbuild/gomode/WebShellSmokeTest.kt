@@ -41,6 +41,13 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
                     visibleBounds.height() > windowBounds.height / 2
             }
         assertTrue("Hosted WebView does not fill the activity viewport", fillsViewport)
+        waitForDom("CSS viewport height matches the hosted viewport") {
+            """
+            window.innerHeight > 0 &&
+              Math.abs(parseFloat(getComputedStyle(document.querySelector('main')).minHeight) -
+                window.innerHeight) < 1
+            """.trimIndent()
+        }
 
         executeDom("push SPA route") {
             """
