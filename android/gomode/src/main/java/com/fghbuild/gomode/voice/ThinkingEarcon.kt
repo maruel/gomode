@@ -1,4 +1,4 @@
-// Streams the shared piano score while a half-duplex voice turn is thinking.
+// Streams the shared piano score while a voice turn is thinking.
 package com.fghbuild.gomode.voice
 
 import android.content.Context

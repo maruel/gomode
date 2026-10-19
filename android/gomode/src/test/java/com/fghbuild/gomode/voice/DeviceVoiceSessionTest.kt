@@ -2,6 +2,9 @@
 package com.fghbuild.gomode.voice
 
 import android.net.Uri
+import android.os.Bundle
+import android.os.Looper
+import android.speech.SpeechRecognizer
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
@@ -52,6 +55,8 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.shadows.ShadowSpeechRecognizer
+import java.time.Duration
 import java.util.concurrent.TimeUnit
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -65,6 +70,57 @@ class DeviceVoiceSessionTest {
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+    }
+
+    @Test
+    fun `Android speech end sends recognized text to the remote LLM without a final callback`() {
+        ShadowSpeechRecognizer.setIsOnDeviceRecognitionAvailable(true)
+        val socket = FakeWebSocket()
+        var listener: WebSocketListener? = null
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US")
+        val session =
+            createSession(speech) { _, captured ->
+                listener = captured
+                socket
+            }
+        try {
+            session.connect()
+            val backend = requireNotNull(listener)
+            backend.onOpen(socket, upgradeResponse())
+            backend.onMessage(socket, """{"kind":"session.ready"}""")
+            backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+            shadowOf(Looper.getMainLooper()).idle()
+            val disconnected = shadowOf(checkNotNull(ShadowSpeechRecognizer.getLatestSpeechRecognizer()))
+            disconnected.triggerOnError(SpeechRecognizer.ERROR_SERVER_DISCONNECTED)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(250))
+            assertTrue("recognizer recovery must preserve the remote LLM connection", session.state.value.connected)
+            assertNull(session.state.value.error)
+            val recognizer = shadowOf(checkNotNull(ShadowSpeechRecognizer.getLatestSpeechRecognizer()))
+            recognizer.triggerOnPartialResults(
+                Bundle().apply {
+                    putStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION, arrayListOf("What is next"))
+                },
+            )
+            recognizer.triggerOnEndOfSpeech()
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+            assertEquals(1, socket.sent.count { it.contains("user.message") && it.contains("What is next") })
+            assertEquals(
+                TranscriptEntry(TranscriptSpeaker.USER, "What is next", final = true),
+                session.state.value.transcript
+                    .single(),
+            )
+            backend.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
+            backend.onMessage(socket, """{"kind":"assistant.text.delta","text":"Your next step."}""")
+            assertEquals(
+                "Your next step.",
+                session.state.value.transcript
+                    .last()
+                    .text,
+            )
+        } finally {
+            session.close()
+            shadowOf(Looper.getMainLooper()).idle()
+        }
     }
 
     @Test
@@ -107,23 +163,30 @@ class DeviceVoiceSessionTest {
                     }
                 val catalog = ServiceCatalog(backgroundScope)
                 val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { entries }
+                val speech = FakeSpeech(completeSpeechImmediately = false)
                 val call = FakeVoiceCallController()
                 val socket = FakeWebSocket()
                 val listener = CompletableDeferred<WebSocketListener>()
                 var transports = 0
+                var pendingSwitch: CompletableDeferred<Unit>? = null
+                val switchBlocked = CompletableDeferred<Unit>()
                 lateinit var session: DeviceVoiceSession
                 session =
                     DeviceVoiceSession(
                         RuntimeEnvironment.getApplication(),
                         repository,
                         languageTag = "en-US",
-                        speech = FakeSpeech(),
+                        speech = speech,
                         callController = call,
                         voiceConversation = owner,
                         switchServer = { id ->
                             repository.switchService(id)
                             repository.settings.first { it.activeServiceId == id }
                             session.injectText(owner.contextText())
+                            pendingSwitch?.let {
+                                switchBlocked.complete(Unit)
+                                it.await()
+                            }
                         },
                         webSocketFactory = { _, captured ->
                             transports++
@@ -138,6 +201,20 @@ class DeviceVoiceSessionTest {
                     backend.onMessage(socket, """{"kind":"session.ready"}""")
                     backend.onMessage(socket, """{"kind":"assistant.text.delta","text":"Remember cedar."}""")
                     backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+                    assertTrue(session.state.value.speaking)
+                    repository.switchService(second)
+                    repository.settings.first { it.activeServiceId == second }
+                    session.injectText(owner.contextText())
+                    val queuedAt = socket.sent.size
+                    requireNotNull(speech.partialCallback)("Continue")
+                    requireNotNull(speech.resultCallback)("Continue")
+                    val admitted = socket.sent.drop(queuedAt)
+                    assertTrue(admitted.first().contains("context.update"))
+                    assertTrue(admitted.first().contains(second))
+                    assertTrue(admitted.last().contains("user.message"))
+                    backend.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
+                    backend.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
+                    backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
                     for (target in listOf(second, first)) {
                         backend.onMessage(
                             socket,
@@ -146,17 +223,43 @@ class DeviceVoiceSessionTest {
                         repository.settings.first { it.activeServiceId == target }
                         assertTrue(socket.sent.last().contains("tool.result"))
                         val toolResultIndex = socket.sent.lastIndex
+                        val usersBefore = socket.sent.count { it.contains("user.message") }
+                        val cancellationsBefore = socket.sent.count { it.contains("turn.cancel") }
+                        requireNotNull(speech.resultCallback)("Use this service")
+                        assertEquals(cancellationsBefore + 1, socket.sent.count { it.contains("turn.cancel") })
+                        assertEquals(usersBefore, socket.sent.count { it.contains("user.message") })
+                        backend.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
+                        val resumed = socket.sent.drop(toolResultIndex + 1)
+                        assertTrue(resumed[resumed.lastIndex - 1].contains("context.update"))
+                        assertTrue(resumed[resumed.lastIndex - 1].contains(target))
+                        assertTrue(resumed.last().contains("user.message"))
+                        backend.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
                         backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
-                        assertTrue(socket.sent.last().contains("context.update"))
-                        assertTrue(socket.sent.last().contains(target))
-                        assertTrue(socket.sent.lastIndex > toolResultIndex)
                         assertEquals(
                             "Remember cedar.",
                             session.state.value.transcript
-                                .single()
+                                .first()
                                 .text,
                         )
                     }
+                    val finishSwitch = CompletableDeferred<Unit>()
+                    pendingSwitch = finishSwitch
+                    backend.onMessage(
+                        socket,
+                        """{"kind":"tool.call","id":"delayed","name":"switch_server","args":{"server_id":"$second"}}""",
+                    )
+                    switchBlocked.await()
+                    val usersBefore = socket.sent.count { it.contains("user.message") }
+                    requireNotNull(speech.resultCallback)("Continue after the switch")
+                    assertEquals(com.caic.voicegateway.sdk.v1.TurnState.Thinking, session.state.value.turnState)
+                    backend.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
+                    assertEquals(com.caic.voicegateway.sdk.v1.TurnState.Thinking, session.state.value.turnState)
+                    assertEquals(usersBefore, socket.sent.count { it.contains("user.message") })
+                    finishSwitch.complete(Unit)
+                    assertTrue(socket.sent[socket.sent.lastIndex - 2].contains("tool.result"))
+                    assertTrue(socket.sent[socket.sent.lastIndex - 1].contains("context.update"))
+                    assertTrue(socket.sent.last().contains("user.message"))
+                    assertEquals(com.caic.voicegateway.sdk.v1.TurnState.Thinking, session.state.value.turnState)
                     assertEquals(1, transports)
                     assertEquals(1, call.started)
                     assertEquals(1, call.activated)
@@ -173,7 +276,7 @@ class DeviceVoiceSessionTest {
         }
 
     @Test
-    fun `listens only after the assistant turn and speech finish`() {
+    fun `listens throughout assistant generation and playback`() {
         val speech = FakeSpeech()
         val socket = FakeWebSocket()
         var listener: WebSocketListener? = null
@@ -191,7 +294,7 @@ class DeviceVoiceSessionTest {
         connected.onMessage(socket, """{"kind":"session.ready"}""")
         assertTrue(session.state.value.connected)
         assertTrue(socket.sent.any { it.contains("\"kind\":\"user.message\"") })
-        assertFalse("must not listen during the greeting turn", speech.listening)
+        assertTrue("listens during the greeting turn", speech.listening)
 
         connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Hello."}""")
         assertEquals(listOf("Hello."), speech.spoken)
@@ -201,7 +304,7 @@ class DeviceVoiceSessionTest {
                 .single()
                 .text,
         )
-        assertFalse("still in the greeting turn", speech.listening)
+        assertTrue("still listening during the greeting turn", speech.listening)
 
         connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
         assertTrue("starts listening after the turn and speech end", speech.listening)
@@ -260,7 +363,7 @@ class DeviceVoiceSessionTest {
     }
 
     @Test
-    fun `gateway reply finalizes before playback ends and listening waits for playback`() {
+    fun `gateway reply finalizes while playback and listening overlap`() {
         val speech = FakeSpeech(completeSpeechImmediately = false)
         val socket = FakeWebSocket()
         var listener: WebSocketListener? = null
@@ -287,7 +390,7 @@ class DeviceVoiceSessionTest {
             session.state.value.transcript,
         )
         assertTrue(session.state.value.speaking)
-        assertFalse(speech.listening)
+        assertTrue(speech.listening)
         speech.speechCompletions.removeAt(0).invoke()
         assertFalse(session.state.value.speaking)
         assertTrue(speech.listening)
@@ -654,7 +757,62 @@ class DeviceVoiceSessionTest {
     }
 
     @Test
-    fun `incoming assistant text retires recognition without committing the draft`() {
+    fun `barge in stops queued playback and suppresses stale reply until replacement turn`() {
+        val speech = FakeSpeech(completeSpeechImmediately = false)
+        val socket = FakeWebSocket()
+        var listener: WebSocketListener? = null
+        val session =
+            createSession(speech) { _, captured ->
+                listener = captured
+                socket
+            }
+        session.connect()
+        val connected = requireNotNull(listener)
+        connected.onOpen(socket, upgradeResponse())
+        connected.onMessage(socket, """{"kind":"session.ready"}""")
+        connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"First. Second."}""")
+        assertTrue(session.state.value.listening)
+        assertTrue(session.state.value.speaking)
+        val retiredPlayback = speech.speechCompletions.toList()
+        val stopsBefore = speech.stops
+        val partial = requireNotNull(speech.partialCallback)
+        partial("Wait")
+        partial("Wait please")
+        assertFalse(session.state.value.speaking)
+        assertTrue(session.state.value.listening)
+        assertEquals(stopsBefore + 1, speech.stops)
+        assertEquals(1, socket.sent.count { it.contains("turn.cancel") })
+        connected.onMessage(socket, """{"kind":"tool.call","id":"late","name":"example_tool","args":{}}""")
+        assertTrue(
+            "Retire a cancelled tool without executing it",
+            socket.sent.any {
+                it.contains("tool.result") && it.contains("late") && it.contains("Turn was interrupted")
+            },
+        )
+        connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Discard this."}""")
+        requireNotNull(speech.resultCallback)("Wait please")
+        // A status already in flight from the cancelled reply cannot reopen playback.
+        connected.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
+        connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Also discard this."}""")
+        connected.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
+        connected.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
+        connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Replacement."}""")
+        assertEquals(listOf("First.", "Second.", "Replacement."), speech.spoken)
+        retiredPlayback.forEach { it() }
+        assertTrue("late playback callbacks cannot finish the replacement", session.state.value.speaking)
+        assertEquals(
+            listOf(
+                TranscriptEntry(TranscriptSpeaker.ASSISTANT, "First. Second.", final = true),
+                TranscriptEntry(TranscriptSpeaker.USER, "Wait please", final = true),
+                TranscriptEntry(TranscriptSpeaker.ASSISTANT, "Replacement."),
+            ),
+            session.state.value.transcript,
+        )
+        session.close()
+    }
+
+    @Test
+    fun `rapid utterances cancel pending turns and acknowledge only their own cancellations`() {
         val speech = FakeSpeech()
         val socket = FakeWebSocket()
         var listener: WebSocketListener? = null
@@ -667,33 +825,118 @@ class DeviceVoiceSessionTest {
         val connected = requireNotNull(listener)
         connected.onOpen(socket, upgradeResponse())
         connected.onMessage(socket, """{"kind":"session.ready"}""")
-        connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
-        val partial = requireNotNull(speech.partialCallback)
-        val result = requireNotNull(speech.resultCallback)
-        partial("Unfinished user draft")
-        connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Notice."}""")
-        partial("Late partial")
-        result("Late final")
-        assertFalse(session.state.value.listening)
-        assertFalse(speech.listening)
+        requireNotNull(speech.partialCallback)("A")
+        requireNotNull(speech.resultCallback)("A")
+        requireNotNull(speech.partialCallback)("B")
+        assertEquals("Cancel greeting and pending A", 2, socket.sent.count { it.contains("turn.cancel") })
+        requireNotNull(speech.resultCallback)("B")
+        connected.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
+        connected.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
+        connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Discard A."}""")
+        assertTrue(speech.spoken.isEmpty())
+        connected.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
+        connected.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
+        requireNotNull(speech.partialCallback)("C")
+        assertEquals("Cancel replacement B before its first delta", 3, socket.sent.count { it.contains("turn.cancel") })
+        connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Discard B."}""")
+        assertTrue(speech.spoken.isEmpty())
+        requireNotNull(speech.resultCallback)("C")
+        connected.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
+        connected.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
+        connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Final reply."}""")
+        assertEquals(listOf("Final reply."), speech.spoken)
         assertEquals(
-            "Notice.",
+            listOf("A", "B", "C", "Final reply."),
             session.state.value.transcript
-                .single()
-                .text,
+                .map { it.text },
         )
-        assertEquals(
-            TranscriptSpeaker.ASSISTANT,
-            session.state.value.transcript
-                .single()
-                .speaker,
-        )
-        connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
-        assertTrue(session.state.value.listening)
-        partial("Retired callback after idle")
-        assertEquals(1, session.state.value.transcript.size)
         session.close()
     }
+
+    @Test
+    fun `local barge in drains inference and ignores stale deltas tools and completion`() =
+        runTest {
+            val speech = FakeSpeech(completeSpeechImmediately = false)
+            val repo = SettingsRepository(InMemoryPreferencesDataStore())
+            selectEngine(repo, OnDeviceEngine.NEUDECIDE)
+            val release = CompletableDeferred<Unit>()
+            val turns = mutableListOf<String>()
+            var staleToolRequested = false
+            val session =
+                createSession(
+                    speech = speech,
+                    settingsRepo = repo,
+                    engineFactory = { engineType ->
+                        object : OnDeviceVoiceEngine {
+                            override val engineType = engineType
+
+                            override suspend fun initialize(context: EngineSessionContext) = Unit
+
+                            override suspend fun processTurn(
+                                input: UserTurnInput,
+                                onDelta: (String) -> Unit,
+                                onToolCall: suspend (com.caic.voicegateway.sdk.v1.ToolCall) ->
+                                kotlinx.serialization.json.JsonElement?,
+                            ): EngineTurnResult {
+                                turns.add(input.text)
+                                if (input.text == "First") {
+                                    onDelta("First reply.")
+                                    release.await()
+                                    onDelta("Stale reply.")
+                                    val cancellation =
+                                        onToolCall(
+                                            com.caic.voicegateway.sdk.v1.ToolCall(
+                                                kind = com.caic.voicegateway.sdk.v1.MessageKind.ToolCall,
+                                                id = "stale",
+                                                name = HANG_UP_TOOL_NAME,
+                                                args = kotlinx.serialization.json.JsonObject(emptyMap()),
+                                            ),
+                                        )
+                                    assertEquals(
+                                        "Turn was interrupted",
+                                        cancellation
+                                            ?.jsonObject
+                                            ?.get("error")
+                                            ?.jsonPrimitive
+                                            ?.content,
+                                    )
+                                    staleToolRequested = true
+                                } else {
+                                    onDelta("Replacement.")
+                                }
+                                return EngineTurnResult()
+                            }
+
+                            override suspend fun injectContext(text: String) {
+                                turns.add("context:$text")
+                            }
+
+                            override fun close() = Unit
+                        }
+                    },
+                )
+            session.connect()
+            requireNotNull(speech.resultCallback)("First")
+            requireNotNull(speech.partialCallback)("Second")
+            requireNotNull(speech.resultCallback)("Second")
+            assertEquals(listOf("First"), turns)
+            release.complete(Unit)
+            assertEquals(listOf("First", "Second"), turns)
+            assertTrue(staleToolRequested)
+            assertTrue(session.state.value.connected)
+            assertTrue(session.state.value.listening)
+            assertEquals(listOf("Ready", "First reply.", "Replacement."), speech.spoken)
+            assertTrue(
+                session.state.value.transcript
+                    .none { it.text.contains("Stale") },
+            )
+            session.injectText("New focus")
+            assertFalse(turns.contains("context:New focus"))
+            requireNotNull(speech.partialCallback)("Third")
+            requireNotNull(speech.resultCallback)("Third")
+            assertEquals(listOf("context:New focus", "Third"), turns.takeLast(2))
+            session.close()
+        }
 
     @Test
     fun `device session sends the selected speech language`() {
@@ -1596,7 +1839,7 @@ class DeviceVoiceSessionTest {
     }
 
     @Test
-    fun `slow local turns keep thinking audio until completion and disconnect cancels it`() =
+    fun `slow local turns play thinking music while listening through reconnect and close`() =
         runTest {
             Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
             val speech = FakeSpeech()
@@ -1639,8 +1882,11 @@ class DeviceVoiceSessionTest {
             assertFalse("thinking audio waits for the grace period", earcon.playing)
             advanceTimeBy(1)
             runCurrent()
-            assertTrue(earcon.playing)
-            assertFalse(speech.listening)
+            assertTrue("thinking music plays while the microphone listens", earcon.playing)
+            assertTrue(speech.listening)
+            requireNotNull(speech.partialCallback)("Wait")
+            assertFalse("barge-in silences thinking music", earcon.playing)
+            assertTrue(speech.listening)
             finish.complete(Unit)
             assertFalse(earcon.playing)
             assertTrue(speech.listening)
@@ -1648,7 +1894,7 @@ class DeviceVoiceSessionTest {
             requireNotNull(speech.resultCallback)("Another slow turn")
             advanceTimeBy(1_000)
             runCurrent()
-            assertTrue(earcon.playing)
+            assertTrue("thinking music plays while the microphone listens", earcon.playing)
             session.connect()
             assertFalse("reconnecting ends the old thinking cue", earcon.playing)
             finish.complete(Unit)
@@ -1656,7 +1902,7 @@ class DeviceVoiceSessionTest {
             requireNotNull(speech.resultCallback)("One last turn")
             advanceTimeBy(1_000)
             runCurrent()
-            assertTrue(earcon.playing)
+            assertTrue("thinking music plays while the microphone listens", earcon.playing)
             session.close()
             assertFalse(earcon.playing)
             finish.complete(Unit)
@@ -1664,7 +1910,7 @@ class DeviceVoiceSessionTest {
         }
 
     @Test
-    fun `thinking audio stops for speech idle interruption mute error and disconnect`() =
+    fun `gateway thinking music survives listening restarts and stops for speech mute and teardown`() =
         runTest {
             Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
             val speech = FakeSpeech(completeSpeechImmediately = false)
@@ -1685,8 +1931,8 @@ class DeviceVoiceSessionTest {
                 connected.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
                 advanceTimeBy(1_000)
                 runCurrent()
-                assertTrue(earcon.playing)
-                assertFalse(speech.listening)
+                assertTrue("thinking music plays while the microphone listens", earcon.playing)
+                assertTrue(speech.listening)
             }
             connected.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
             advanceTimeBy(199)
@@ -1698,12 +1944,17 @@ class DeviceVoiceSessionTest {
             assertFalse("ending a quick turn cancels the pending earcon", earcon.playing)
             requireNotNull(speech.resultCallback)("Start")
             thinking()
+            val starts = speech.listeningStarts
+            requireNotNull(speech.idle).invoke()
+            assertEquals(starts + 1, speech.listeningStarts)
+            assertTrue(speech.listening)
+            assertTrue("recognition restarts must not silence thinking music", earcon.playing)
             connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Hello."}""")
             assertFalse(earcon.playing)
             speech.speechCompletions.removeAt(0).invoke()
             advanceTimeBy(1_000)
             runCurrent()
-            assertTrue(earcon.playing)
+            assertTrue("thinking music plays while the microphone listens", earcon.playing)
             connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
             assertFalse(earcon.playing)
             assertTrue(speech.listening)
@@ -1714,7 +1965,7 @@ class DeviceVoiceSessionTest {
             session.setMicrophoneMode(MicrophoneMode.LISTENING)
             advanceTimeBy(1_000)
             runCurrent()
-            assertTrue(earcon.playing)
+            assertTrue("thinking music plays while the microphone listens", earcon.playing)
             connected.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
             assertFalse(earcon.playing)
             requireNotNull(speech.resultCallback)("Again")
@@ -1816,6 +2067,7 @@ class DeviceVoiceSessionTest {
         val spoken = mutableListOf<String>()
         val speechCompletions = mutableListOf<() -> Unit>()
         var listening = false
+        var stops = 0
         var listeningStarts = 0
         var idle: (() -> Unit)? = null
         var resultCallback: ((String) -> Unit)? = null
@@ -1852,7 +2104,9 @@ class DeviceVoiceSessionTest {
             if (completeSpeechImmediately) onDone() else speechCompletions.add(onDone)
         }
 
-        override fun stopSpeaking() = Unit
+        override fun stopSpeaking() {
+            stops++
+        }
 
         override fun close() = Unit
     }

@@ -11,6 +11,7 @@ import com.caic.voicegateway.sdk.v1.MessageKind
 import com.caic.voicegateway.sdk.v1.SessionSetup
 import com.caic.voicegateway.sdk.v1.ToolCall
 import com.caic.voicegateway.sdk.v1.ToolResult
+import com.caic.voicegateway.sdk.v1.TurnCancel
 import com.caic.voicegateway.sdk.v1.TurnState
 import com.caic.voicegateway.sdk.v1.TurnStatus
 import com.caic.voicegateway.sdk.v1.UserMessage
@@ -36,6 +37,8 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -55,7 +58,7 @@ private const val TAG = "GoModeDeviceVoice"
 private const val TEXT_SESSION_PATH = "/api/voicegateway/v1/voice/text"
 
 private val VoiceState.needsThinkingAudio: Boolean
-    get() = connected && turnState == TurnState.Thinking && !listening && !speaking && !muted
+    get() = connected && turnState == TurnState.Thinking && !speaking && !muted
 
 private val deviceWebSocketClient: OkHttpClient by lazy {
     OkHttpClient
@@ -88,8 +91,8 @@ internal fun textSessionWebSocketURL(
  * DeviceVoiceSession runs the on-device voice mode: [SpeechRecognizer] transcribes,
  * [TextToSpeech] speaks, and the gateway runs only the text LLM turn and tools.
  *
- * It is half-duplex. The session listens only after the assistant turn and its
- * speech finish, so the microphone stays closed while the device speaks.
+ * Microphone capture and recognition stay active during generation and playback.
+ * A nonblank recognition hypothesis cancels playback and the current reply.
  */
 internal class DeviceVoiceSession(
     private val appContext: Context,
@@ -125,6 +128,7 @@ internal class DeviceVoiceSession(
     private val attemptGeneration = AtomicLong()
     private val pendingGatewayTools = mutableMapOf<Long, Int>()
     private var awaitingModelTurn = false
+    private var pendingUserUtterance: String? = null
     private var listeningGeneration = 0L
     private val voiceModeChime = VoiceModeChime(voiceChimePlayer)
 
@@ -163,9 +167,18 @@ internal class DeviceVoiceSession(
     private var frontendToolNames: Set<String> = emptySet()
     private var conversationID = UUID.randomUUID().toString()
 
+    // Keep one-shot capture muted across gaps between streamed speech fragments.
+    private var muteOnceActive = false
     private var speakerActive = false
     private var turnIdle = false
     private var pendingSpeech = 0
+    private var speechGeneration = 0L
+    private val localTurnGeneration = AtomicLong()
+    private val localTurnLock = Mutex()
+    private var suppressReply = false
+    private var awaitingReply = false
+    private var pendingCancellations = 0
+    private var remoteTurnActive = false
     private val pendingNotifications = ArrayList<String>()
     private val segmenter = SentenceSegmenter()
 
@@ -188,7 +201,9 @@ internal class DeviceVoiceSession(
         conversationID: String?,
     ) {
         thinkingEarcon.setThinking(false)
-        _state.update { it.copy(turnState = TurnState.Idle) }
+        _state.update {
+            it.copy(turnState = TurnState.Idle, connected = false, listening = false, speaking = false)
+        }
         val attempt = invalidateAttempt()
         awaitingModelTurn = false
         connectJob?.cancel()
@@ -198,9 +213,14 @@ internal class DeviceVoiceSession(
         speech.stopListening()
         speech.stopSpeaking()
         pendingNotifications.clear()
+        muteOnceActive = false
         speakerActive = false
         turnIdle = false
         pendingSpeech = 0
+        suppressReply = false
+        awaitingReply = false
+        pendingCancellations = 0
+        remoteTurnActive = false
         segmenter.clear()
         otherSetup = null
         if (!preserveTranscript) {
@@ -298,6 +318,7 @@ internal class DeviceVoiceSession(
         flushPendingNotifications()
         turnIdle = true
         speak("Ready")
+        maybeStartListening()
     }
 
     private fun openWebSocket(
@@ -416,6 +437,7 @@ internal class DeviceVoiceSession(
                     voiceModeChime.connected()
                     flushPendingNotifications()
                     sendUserMessage("Say exactly one word: Ready")
+                    maybeStartListening()
                 }
 
                 MessageKind.AssistantTextDelta -> {
@@ -425,31 +447,59 @@ internal class DeviceVoiceSession(
 
                 MessageKind.TurnStatus -> {
                     val msg = json.decodeFromString(TurnStatus.serializer(), text)
-                    if (msg.state != TurnState.Thinking) thinkingEarcon.setThinking(false)
-                    _state.update { it.copy(turnState = msg.state) }
-                    if (msg.state == TurnState.Idle) {
+                    if (msg.state == TurnState.Thinking && pendingCancellations == 0 &&
+                        (!suppressReply || awaitingReply)
+                    ) {
+                        suppressReply = false
+                        awaitingReply = false
+                        remoteTurnActive = true
+                        turnIdle = false
+                    }
+                    if (!suppressReply) {
+                        if (msg.state != TurnState.Thinking) thinkingEarcon.setThinking(false)
+                        _state.update { it.copy(turnState = msg.state) }
+                    }
+                    if (msg.state == TurnState.Idle && !awaitingReply && pendingCancellations == 0) {
                         if (!pendingGatewayTools.containsKey(attempt)) awaitingModelTurn = false
                         flushPendingNotifications()
                         finalizeAssistantReply()
                         speak(segmenter.flush())
+                        remoteTurnActive = false
                         turnIdle = true
                         finishReply()
                     }
                 }
 
                 MessageKind.ToolCall -> {
-                    handleToolCall(json.decodeFromString(ToolCall.serializer(), text), attempt, origin)
+                    val msg = json.decodeFromString(ToolCall.serializer(), text)
+                    if (suppressReply) {
+                        // Retire calls in flight at cancellation without starting side
+                        // effects or leaving the gateway waiting for their results.
+                        sendToolResult(msg.id, msg.name, errorJson("Turn was interrupted"))
+                    } else {
+                        handleToolCall(msg, attempt, origin)
+                    }
                 }
 
                 MessageKind.Interrupted -> {
-                    if (!pendingGatewayTools.containsKey(attempt)) awaitingModelTurn = false
+                    if (pendingCancellations > 0) {
+                        pendingCancellations--
+                    } else {
+                        remoteTurnActive = false
+                        awaitingReply = false
+                    }
                     finalizeAssistantReply()
                     segmenter.clear()
-                    speakerActive = false
-                    speech.stopSpeaking()
-                    pendingSpeech = 0
-                    turnIdle = true
-                    _state.update { it.copy(speaking = false, activeTool = null, turnState = TurnState.Idle) }
+                    stopPlayback()
+                    turnIdle = !remoteTurnActive
+                    flushAfterRemoteInterruption()
+                    _state.update {
+                        it.copy(
+                            speaking = false,
+                            activeTool = null,
+                            turnState = if (turnIdle && pendingUserUtterance == null) TurnState.Idle else it.turnState,
+                        )
+                    }
                     finishReply()
                 }
 
@@ -472,29 +522,27 @@ internal class DeviceVoiceSession(
     }
 
     private fun handleAssistantText(delta: String) {
-        if (delta.isEmpty()) return
-        if (_state.value.listening) speech.stopListening()
+        if (delta.isEmpty() || suppressReply) return
         turnIdle = false
         _state.update {
-            it.copy(
-                listening = false,
-                transcript = it.transcript.withoutUserDraft().appendChunk(TranscriptSpeaker.ASSISTANT, delta),
-            )
+            it.copy(transcript = it.transcript.appendChunk(TranscriptSpeaker.ASSISTANT, delta))
         }
         segmenter.push(delta).forEach(::speak)
     }
 
     private fun speak(fragment: String) {
-        if (fragment.isBlank()) return
+        if (fragment.isBlank() || suppressReply) return
         thinkingEarcon.setThinking(false)
         val attempt = attemptGeneration.get()
+        val playback = speechGeneration
         pendingSpeech++
         speakerActive = true
         _state.update { it.copy(speaking = true) }
+        applyMicrophoneMode()
         speech.speak(
             fragment,
-            onDone = { onSpeechDone(attempt) },
-            onError = { message -> reportAttemptError(attempt, message) },
+            onDone = { if (playback == speechGeneration) onSpeechDone(attempt) },
+            onError = { message -> if (playback == speechGeneration) reportAttemptError(attempt, message) },
         )
     }
 
@@ -546,7 +594,8 @@ internal class DeviceVoiceSession(
 
     // A playback gap between streamed fragments does not finish the reply.
     private fun finishReply() {
-        if (!turnIdle || pendingSpeech > 0 || speakerActive) return
+        if (!turnIdle || pendingSpeech > 0 || speakerActive || remoteTurnActive || pendingUserUtterance != null) return
+        muteOnceActive = false
         _state.update { it.copy(microphoneMode = it.microphoneMode.afterReply()) }
         maybeStartListening()
     }
@@ -559,13 +608,9 @@ internal class DeviceVoiceSession(
         setError(message)
     }
 
-    // Normal mode adds no user mute; device speech remains half-duplex in every microphone mode.
     private fun maybeStartListening() {
-        if (!_state.value.connected || _state.value.muted) return
-        if (!turnIdle) return
-        if (pendingSpeech > 0 || speakerActive) return
+        if (!_state.value.connected || _state.value.muted || muteOnceActive) return
         if (_state.value.listening) return
-        thinkingEarcon.setThinking(false)
         val attempt = attemptGeneration.get()
         val recognition = ++listeningGeneration
 
@@ -575,6 +620,7 @@ internal class DeviceVoiceSession(
             onResult = { text -> if (currentRecognition()) handleUserUtterance(attempt, text) },
             onPartial = { text ->
                 if (currentRecognition()) {
+                    if (text.isNotBlank()) interruptReply()
                     _state.update { it.copy(transcript = it.transcript.replaceUserDraft(text, final = false)) }
                 }
             },
@@ -594,20 +640,64 @@ internal class DeviceVoiceSession(
         text: String,
     ) {
         if (attempt != attemptGeneration.get()) return
-        speech.stopListening()
+        interruptReply()
         turnIdle = false
         segmenter.clear()
         _state.update {
             it.copy(
                 listening = false,
+                turnState = TurnState.Thinking,
                 transcript = it.transcript.replaceUserDraft(text, final = true),
             )
         }
         val currentEngine = engine
         if (currentEngine != null && currentEngine.engineType != OnDeviceEngine.REMOTE_GATEWAY) {
             executeLocalTurn(attempt, text, currentEngine)
+        } else if (voiceConversation != null && pendingNotifications.isNotEmpty() && awaitingModelTurn) {
+            // Keep the replacement behind canceled model/tool work so its focus
+            // update reaches the gateway before the next user message.
+            pendingUserUtterance = text
         } else {
+            awaitingReply = true
             sendUserMessage(text)
+        }
+        maybeStartListening()
+    }
+
+    private fun stopPlayback() {
+        speechGeneration++
+        speech.stopSpeaking()
+        pendingSpeech = 0
+        speakerActive = false
+        _state.update { it.copy(speaking = false) }
+    }
+
+    private fun interruptReply() {
+        val remote = engine == null || engine?.engineType == OnDeviceEngine.REMOTE_GATEWAY
+        if (suppressReply && (!remote || !remoteTurnActive)) return
+        val generating =
+            if (remote) {
+                remoteTurnActive || awaitingModelTurn || pendingGatewayTools.containsKey(attemptGeneration.get())
+            } else {
+                !turnIdle
+            }
+        val activeReply = generating || pendingSpeech > 0 || speakerActive
+        suppressReply = true
+        awaitingReply = false
+        remoteTurnActive = false
+        turnIdle = true
+        localTurnGeneration.incrementAndGet()
+        finalizeAssistantReply()
+        segmenter.clear()
+        _state.update { it.copy(turnState = TurnState.Idle, activeTool = null) }
+        if (!activeReply) return
+        stopPlayback()
+        // Playback may be the last owner holding context after generation finishes.
+        // Active model turns and tools keep their existing notification guards.
+        flushPendingNotifications()
+        if (remote) {
+            pendingCancellations++
+            send(json.encodeToString(TurnCancel.serializer(), TurnCancel(MessageKind.TurnCancel, "user speech")))
         }
     }
 
@@ -616,47 +706,64 @@ internal class DeviceVoiceSession(
         text: String,
         activeEngine: OnDeviceVoiceEngine,
     ) {
+        val turn = localTurnGeneration.incrementAndGet()
+        suppressReply = false
         scope.launch {
-            if (!ownsAttempt(attempt)) return@launch
-            if (voiceConversation?.isCurrent() == false) {
-                disconnect()
-                return@launch
-            }
-            awaitingModelTurn = true
-            _state.update { it.copy(turnState = TurnState.Thinking) }
-            try {
-                activeEngine.processTurn(
-                    input = UserTurnInput(text = text),
-                    onDelta = { delta ->
-                        if (ownsAttempt(attempt)) {
-                            handleAssistantText(delta)
-                        }
-                    },
-                    onToolCall = { toolCall ->
-                        if (ownsAttempt(attempt)) {
-                            withContext(Dispatchers.Main) { handleToolCallLocal(toolCall, attempt) }
-                        } else {
-                            null
-                        }
-                    },
-                )
-                if (ownsAttempt(attempt)) {
-                    awaitingModelTurn = false
-                    thinkingEarcon.setThinking(false)
-                    finalizeAssistantReply()
-                    speak(segmenter.flush())
-                    turnIdle = true
-                    _state.update { it.copy(turnState = TurnState.Idle) }
-                    flushPendingNotifications()
-                    finishReply()
+            localTurnLock.withLock {
+                fun currentTurn() = ownsAttempt(attempt) && turn == localTurnGeneration.get()
+                if (!currentTurn()) return@withLock
+                if (voiceConversation?.isCurrent() == false) {
+                    disconnect()
+                    return@withLock
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (
-                @Suppress("TooGenericExceptionCaught") e: Exception,
-            ) {
-                if (ownsAttempt(attempt)) {
-                    setError("Voice turn failed: ${e.message}")
+                awaitingModelTurn = true
+                _state.update { it.copy(turnState = TurnState.Thinking) }
+                // Engine callbacks arrive in order; join the last Main delivery before
+                // tools or completion so finalization cannot overtake a queued text delta.
+                var lastDelta: Job? = null
+                try {
+                    activeEngine.processTurn(
+                        input = UserTurnInput(text = text),
+                        onDelta = { delta ->
+                            lastDelta =
+                                scope.launch {
+                                    if (currentTurn()) handleAssistantText(delta)
+                                }
+                        },
+                        onToolCall = { toolCall ->
+                            lastDelta?.join()
+                            withContext(Dispatchers.Main) {
+                                if (currentTurn()) {
+                                    handleToolCallLocal(toolCall, attempt, turn)
+                                } else {
+                                    errorJson("Turn was interrupted")
+                                }
+                            }
+                        },
+                    )
+                    lastDelta?.join()
+                    if (currentTurn()) {
+                        awaitingModelTurn = false
+                        thinkingEarcon.setThinking(false)
+                        finalizeAssistantReply()
+                        speak(segmenter.flush())
+                        turnIdle = true
+                        _state.update { it.copy(turnState = TurnState.Idle) }
+                        finishReply()
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (
+                    @Suppress("TooGenericExceptionCaught") e: Exception,
+                ) {
+                    if (currentTurn()) {
+                        setError("Voice turn failed: ${e.message}")
+                    }
+                } finally {
+                    if (ownsAttempt(attempt)) {
+                        awaitingModelTurn = false
+                        flushPendingNotifications()
+                    }
                 }
             }
         }
@@ -665,11 +772,13 @@ internal class DeviceVoiceSession(
     private suspend fun handleToolCallLocal(
         msg: ToolCall,
         attempt: Long,
-    ): JsonElement? {
-        if (!ownsAttempt(attempt)) return null
+        turn: Long,
+    ): JsonElement {
+        fun currentTurn() = ownsAttempt(attempt) && turn == localTurnGeneration.get()
+        if (!currentTurn()) return errorJson("Turn was interrupted")
         if (voiceConversation?.isCurrent() == false) {
             disconnect()
-            return null
+            return errorJson("Conversation authorization changed")
         }
         val name = msg.name
         // Pin this call to its conversation before native/frontend dispatch can suspend.
@@ -685,23 +794,23 @@ internal class DeviceVoiceSession(
                     onDisconnect = ::disconnect,
                 )
             if (serverResult != null) {
-                if (!ownsAttempt(attempt)) return null
+                if (!currentTurn()) return errorJson("Turn was interrupted")
                 _state.update { it.copy(activeTool = null) }
                 return serverResult
             }
             val args = msg.args as? JsonObject ?: JsonObject(emptyMap())
             if (voiceConversation != null) {
-                val result = voiceConversation.execute(name, args, sessionID, languageTag) { ownsAttempt(attempt) }
-                if (!ownsAttempt(attempt)) return null
+                val result = voiceConversation.execute(name, args, sessionID, languageTag) { currentTurn() }
+                if (!currentTurn()) return errorJson("Turn was interrupted")
                 _state.update { it.copy(activeTool = null) }
                 return result?.structuredContent ?: errorJson("Unknown catalog tool")
             }
             val frontendResult =
                 frontendTools.execute(name, args) {
-                    ownsAttempt(attempt)
+                    currentTurn()
                 }
             if (frontendResult != null) {
-                if (!ownsAttempt(attempt)) return null
+                if (!currentTurn()) return errorJson("Turn was interrupted")
                 _state.update { it.copy(activeTool = null) }
                 return frontendResult
             }
@@ -712,7 +821,7 @@ internal class DeviceVoiceSession(
             }
             require(name !in frontendToolNames) { "Frontend voice tool is unavailable: $name" }
             val result = client.callTool(name, args, sessionID, locale = languageTag)
-            if (!ownsAttempt(attempt)) return null
+            if (!currentTurn()) return errorJson("Turn was interrupted")
             _state.update { it.copy(activeTool = null) }
             if (result.isError) {
                 val errMsg = result.structuredContent["error"]?.jsonPrimitive?.content ?: "Tool error"
@@ -725,10 +834,10 @@ internal class DeviceVoiceSession(
         } catch (
             @Suppress("TooGenericExceptionCaught") e: Exception,
         ) {
-            if (!ownsAttempt(attempt)) return null
+            if (!currentTurn()) return errorJson("Turn was interrupted")
             if (voiceConversation?.isCurrent() == false) {
                 disconnect()
-                return null
+                return errorJson("Conversation authorization changed")
             }
             _state.update { it.copy(activeTool = null) }
             val errMsg = e.message ?: "Unknown error"
@@ -749,7 +858,7 @@ internal class DeviceVoiceSession(
         } finally {
             val pending = (pendingGatewayTools[attempt] ?: 1) - 1
             if (pending == 0) pendingGatewayTools.remove(attempt) else pendingGatewayTools[attempt] = pending
-            if (voiceConversation != null && ownsAttempt(attempt)) flushPendingNotifications()
+            if (voiceConversation != null && ownsAttempt(attempt)) flushAfterRemoteInterruption()
         }
     }
 
@@ -854,9 +963,14 @@ internal class DeviceVoiceSession(
         speech.stopListening()
         speech.stopSpeaking()
         pendingNotifications.clear()
+        muteOnceActive = false
         speakerActive = false
         turnIdle = false
         pendingSpeech = 0
+        suppressReply = false
+        awaitingReply = false
+        pendingCancellations = 0
+        remoteTurnActive = false
         segmenter.clear()
         voiceModeChime.disconnected { }
         callController.endLocal()
@@ -903,8 +1017,14 @@ internal class DeviceVoiceSession(
     }
 
     override fun setMicrophoneMode(mode: MicrophoneMode) {
+        if (mode != MicrophoneMode.MUTE_ONCE) muteOnceActive = false
         _state.update { it.copy(microphoneMode = mode) }
-        if (_state.value.muted) {
+        applyMicrophoneMode()
+    }
+
+    private fun applyMicrophoneMode() {
+        if (_state.value.microphoneMode == MicrophoneMode.MUTE_ONCE && speakerActive) muteOnceActive = true
+        if (_state.value.muted || muteOnceActive) {
             speech.stopListening()
             _state.update { it.copy(listening = false, micLevel = 0f) }
         } else {
@@ -977,18 +1097,33 @@ internal class DeviceVoiceSession(
         ) {
             return
         }
-        if (pendingNotifications.isEmpty()) return
-        val text = pendingNotifications.joinToString("\n")
-        pendingNotifications.clear()
-        val currentEngine = engine
-        if (currentEngine != null && currentEngine.engineType != OnDeviceEngine.REMOTE_GATEWAY) {
-            val attempt = attemptGeneration.get()
-            scope.launch {
-                if (ownsAttempt(attempt)) currentEngine.injectContext(text)
+        if (pendingNotifications.isNotEmpty()) {
+            val text = pendingNotifications.joinToString("\n")
+            pendingNotifications.clear()
+            val currentEngine = engine
+            if (currentEngine != null && currentEngine.engineType != OnDeviceEngine.REMOTE_GATEWAY) {
+                val attempt = attemptGeneration.get()
+                scope.launch {
+                    if (ownsAttempt(attempt)) currentEngine.injectContext(text)
+                }
+            } else {
+                sendContextUpdate(text)
             }
-        } else {
-            sendContextUpdate(text)
         }
+        pendingUserUtterance?.let { text ->
+            pendingUserUtterance = null
+            awaitingReply = true
+            sendUserMessage(text)
+        }
+    }
+
+    private fun flushAfterRemoteInterruption() {
+        if (suppressReply && !remoteTurnActive && !awaitingReply && pendingCancellations == 0 &&
+            !pendingGatewayTools.containsKey(attemptGeneration.get())
+        ) {
+            awaitingModelTurn = false
+        }
+        flushPendingNotifications()
     }
 
     private fun setStatus(status: String) {
@@ -1008,6 +1143,8 @@ internal class DeviceVoiceSession(
     }
 
     private fun sendUserMessage(text: String) {
+        remoteTurnActive = true
+        turnIdle = false
         send(json.encodeToString(UserMessage.serializer(), gatewayUserMessage(text)))
     }
 
@@ -1037,6 +1174,9 @@ internal class DeviceVoiceSession(
     }
 
     private fun invalidateAttempt(): Long {
+        pendingUserUtterance = null
+        speechGeneration++
+        localTurnGeneration.incrementAndGet()
         val attempt = attemptGeneration.incrementAndGet()
         return attempt
     }

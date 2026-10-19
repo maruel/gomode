@@ -4,18 +4,29 @@ package com.fghbuild.gomode.voice
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
+import android.media.AudioFormat
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.ParcelFileDescriptor
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import java.util.Locale
 
 private const val TAG = "GoModeDeviceSpeech"
+
+// Give final decoding a short grace period after speech ends, then submit the
+// latest hypothesis instead of waiting indefinitely on a provider callback.
+private const val FINAL_RESULT_GRACE_MS = 750L
+private const val RECOGNITION_RECOVERY_DELAY_MS = 250L
 
 /** DeviceSpeech runs speech recognition and synthesis on the device. */
 internal interface DeviceSpeech {
@@ -55,10 +66,14 @@ internal class AndroidDeviceSpeech(
     private val context: Context,
     private val languageTag: String,
 ) : DeviceSpeech {
+    private val captureScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val microphone = MicrophoneAudioSource(captureScope)
     private val main = Handler(Looper.getMainLooper())
     private var recognizer: SpeechRecognizer? = null
     private var listening = false
     private var recognitionGeneration = 0
+    private var finalizationTimeout: Runnable? = null
+    private var pendingRecovery: Runnable? = null
     private var engine: TextToSpeech? = null
     private var engineReady = false
     private var engineFailure: String? = null
@@ -130,85 +145,172 @@ internal class AndroidDeviceSpeech(
         onIdle: () -> Unit,
         onError: (String) -> Unit,
     ) {
-        main.post {
-            cancelListening()
-            val generation = ++recognitionGeneration
-            val speechRecognizer =
-                recognizer ?: SpeechRecognizer.createOnDeviceSpeechRecognizer(context).also { recognizer = it }
-            speechRecognizer.setRecognitionListener(
-                object : RecognitionListener {
-                    override fun onReadyForSpeech(params: Bundle?) = Unit
+        main.post { startListeningAttempt(onResult, onPartial, onIdle, onError, allowRecovery = true) }
+    }
 
-                    override fun onBeginningOfSpeech() = Unit
+    @Suppress("TooGenericExceptionCaught") // Platform and pipe startup failures terminate recognition through onError.
+    private fun startListeningAttempt(
+        onResult: (String) -> Unit,
+        onPartial: (String) -> Unit,
+        onIdle: () -> Unit,
+        onError: (String) -> Unit,
+        allowRecovery: Boolean,
+    ) {
+        cancelListening()
+        val generation = ++recognitionGeneration
+        val speechRecognizer =
+            recognizer ?: SpeechRecognizer.createOnDeviceSpeechRecognizer(context).also { recognizer = it }
+        speechRecognizer.setRecognitionListener(
+            object : RecognitionListener {
+                private var lastPartial = ""
 
-                    override fun onRmsChanged(rmsdB: Float) = Unit
+                private fun submit(text: String) {
+                    if (text.isNotBlank()) onResult(text) else onIdle()
+                }
 
-                    override fun onBufferReceived(buffer: ByteArray?) = Unit
+                override fun onReadyForSpeech(params: Bundle?) = Unit
 
-                    override fun onEndOfSpeech() = Unit
+                override fun onBeginningOfSpeech() = Unit
 
-                    override fun onError(error: Int) {
-                        if (generation != recognitionGeneration || !listening) return
-                        listening = false
-                        // Silence and a missed match are normal half-duplex outcomes.
-                        if (error == SpeechRecognizer.ERROR_NO_MATCH ||
-                            error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
-                        ) {
-                            onIdle()
+                override fun onRmsChanged(rmsdB: Float) = Unit
+
+                override fun onBufferReceived(buffer: ByteArray?) = Unit
+
+                override fun onEndOfSpeech() {
+                    if (generation != recognitionGeneration || !listening || finalizationTimeout != null) return
+                    val timeout =
+                        Runnable {
+                            if (generation == recognitionGeneration && listening) {
+                                cancelListening()
+                                submit(lastPartial)
+                            }
+                        }
+                    finalizationTimeout = timeout
+                    main.postDelayed(timeout, FINAL_RESULT_GRACE_MS)
+                    // End-of-speech already starts provider finalization. Keep
+                    // audio alive while it finishes; the timer bounds that wait.
+                }
+
+                override fun onError(error: Int) {
+                    if (generation != recognitionGeneration || !listening) return
+                    finishListening()
+                    if (error == SpeechRecognizer.ERROR_SERVER_DISCONNECTED) {
+                        speechRecognizer.destroy()
+                        if (recognizer === speechRecognizer) recognizer = null
+                        if (!allowRecovery) {
+                            onError("Speech recognition service disconnected")
                             return
                         }
-                        onError("Speech recognition error $error")
+                        // Route or input replacement can disconnect the platform
+                        // service. Rebind once without tearing down the LLM session.
+                        val recovery =
+                            Runnable {
+                                pendingRecovery = null
+                                if (generation == recognitionGeneration) {
+                                    startListeningAttempt(onResult, onPartial, onIdle, onError, allowRecovery = false)
+                                }
+                            }
+                        pendingRecovery = recovery
+                        main.postDelayed(recovery, RECOGNITION_RECOVERY_DELAY_MS)
+                        return
                     }
-
-                    override fun onResults(results: Bundle?) {
-                        if (generation != recognitionGeneration || !listening) return
-                        listening = false
-                        val text =
-                            results
-                                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                                ?.firstOrNull()
-                                .orEmpty()
-                        if (text.isNotBlank()) onResult(text) else onIdle()
+                    // A recognizer may report no match after already supplying
+                    // useful text. Preserve that utterance instead of erasing it.
+                    if (error == SpeechRecognizer.ERROR_NO_MATCH ||
+                        error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+                    ) {
+                        submit(lastPartial)
+                        return
                     }
+                    onError("Speech recognition error $error")
+                }
 
-                    override fun onPartialResults(partialResults: Bundle?) {
-                        if (generation != recognitionGeneration || !listening) return
-                        onPartial(
-                            partialResults
-                                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                                ?.firstOrNull()
-                                .orEmpty(),
-                        )
+                override fun onResults(results: Bundle?) {
+                    if (generation != recognitionGeneration || !listening) return
+                    finishListening()
+                    val text =
+                        results
+                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            ?.firstOrNull()
+                            .orEmpty()
+                    submit(text.ifBlank { lastPartial })
+                }
+
+                override fun onPartialResults(partialResults: Bundle?) {
+                    if (generation != recognitionGeneration || !listening) return
+                    val text =
+                        partialResults
+                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            ?.firstOrNull()
+                            .orEmpty()
+                    if (text.isNotBlank()) {
+                        lastPartial = text
+                        onPartial(text)
                     }
+                }
 
-                    override fun onEvent(
-                        eventType: Int,
-                        params: Bundle?,
-                    ) = Unit
-                },
-            )
-            listening = true
-            speechRecognizer.startListening(recognitionIntent())
+                override fun onEvent(
+                    eventType: Int,
+                    params: Bundle?,
+                ) = Unit
+            },
+        )
+        listening = true
+        try {
+            val source =
+                microphone.open { message ->
+                    if (listening) {
+                        cancelListening()
+                        microphone.stop()
+                        onError(message)
+                    }
+                }
+            speechRecognizer.startListening(recognitionIntent(source))
+        } catch (e: Exception) {
+            cancelListening()
+            microphone.stop()
+            onError("Speech recognition could not start: ${e.message}")
         }
     }
 
     override fun stopListening() {
-        main.post { cancelListening() }
+        main.post {
+            cancelListening()
+            microphone.stop()
+        }
+    }
+
+    private fun finishListening() {
+        finalizationTimeout?.let(main::removeCallbacks)
+        finalizationTimeout = null
+        listening = false
+        microphone.finishUtterance()
     }
 
     private fun cancelListening() {
-        if (!listening) return
-        listening = false
+        pendingRecovery?.let(main::removeCallbacks)
+        pendingRecovery = null
         recognitionGeneration++
-        recognizer?.cancel()
+        if (!listening) return
+        finishListening()
+        val cancelled = recognizer
+        recognizer = null
+        cancelled?.cancel()
+        // Retire the listener transport so callbacks from a canceled input
+        // cannot be delivered to a replacement recognizer's listener.
+        cancelled?.destroy()
     }
 
-    private fun recognitionIntent(): Intent =
+    private fun recognitionIntent(source: ParcelFileDescriptor): Intent =
         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, languageTag)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, source)
+            putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1)
+            putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
+            putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, 16_000)
         }
 
     override fun speak(
@@ -284,6 +386,8 @@ internal class AndroidDeviceSpeech(
     override fun close() {
         main.post {
             cancelListening()
+            microphone.stop()
+            captureScope.cancel()
             recognizer?.destroy()
             recognizer = null
             queuedSpeech.clear()

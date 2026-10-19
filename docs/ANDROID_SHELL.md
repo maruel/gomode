@@ -235,7 +235,10 @@ audio. Setup: [Voice Session Setup](#voice-session-setup).
 shell opens a WebSocket to the gateway text route, sends `session.setup` and
 `user.message`, synthesizes `assistant.text.delta`, and executes `tool.call`
 through the skill's MCP endpoint. The gateway sends no audio. Contract:
-[VOICE_GATEWAY.md](VOICE_GATEWAY.md#text-sessions).
+[VOICE_GATEWAY.md](VOICE_GATEWAY.md#text-sessions). The shell owns microphone
+capture through [MicrophoneAudioSource](../android/gomode/src/main/java/com/fghbuild/gomode/voice/MicrophoneAudioSource.kt)
+and continues recognizing during assistant playback. Recognized user speech
+interrupts the current reply.
 
 Native Settings shows **Gateway voice** for Cloud voice and the on-device
 Remote gateway engine. It lists the named choices advertised by the active

@@ -63,6 +63,6 @@ data and authorization policy stay in the hosts.
   [PLAN_ANDROID_VOICE_FIXTURE.md](PLAN_ANDROID_VOICE_FIXTURE.md).
 - Hold/resume for Telecom calls once the gateway preserves a paused
   conversation.
-- On-device barge-in while the device speaks needs a reliable speech-route
-  signal. Device mode stays half-duplex until the `telecom-routing` endpoints
-  identify the active output.
+- Verify on-device acoustic barge-in on physical speaker, headset, and car
+  routes alongside the `telecom-routing` endpoint checks. Capture ownership:
+  [MicrophoneAudioSource.kt](../android/gomode/src/main/java/com/fghbuild/gomode/voice/MicrophoneAudioSource.kt).
