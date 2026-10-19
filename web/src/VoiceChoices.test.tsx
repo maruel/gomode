@@ -48,6 +48,29 @@ async function readySelect(): Promise<HTMLElement> {
 }
 
 describe("voice choices", () => {
+  it("selects a compatible default when switching from an audio-only choice to browser speech", async () => {
+    render(() => <VoiceSettings />);
+    const select = await readySelect();
+    expect(select).toHaveValue("gemini");
+    await userEvent.setup().click(screen.getByRole("radio", { name: "Browser speech" }));
+    await readySelect();
+    expect(select).toHaveValue("remote");
+    expect(voiceSession.state.choiceID).toBe("remote");
+    expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+    const restored = new VoiceSession();
+    await restored.loadVoiceChoices();
+    expect(restored.state.choiceID).toBe("remote");
+  });
+
+  it("uses a compatible default for a saved choice from another mode without overwriting it", async () => {
+    localStorage.setItem("gomode.voiceChoice.https://voice.example", "gemini");
+    voiceSession.selectMode("browser");
+    render(() => <VoiceSettings />);
+    expect(await readySelect()).toHaveValue("remote");
+    expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+    expect(localStorage.getItem("gomode.voiceChoice.https://voice.example")).toBe("gemini");
+  });
+
   it("filters by transport, saves explicit choices per gateway, and restores them", async () => {
     const user = userEvent.setup();
     render(() => <VoiceSettings />);
@@ -93,10 +116,12 @@ describe("voice choices", () => {
     await readySelect();
     expect(speaking()).toHaveValue("Aoede");
     await user.click(screen.getByRole("radio", { name: "Browser speech" }));
+    await readySelect();
     expect(screen.queryByRole("combobox", { name: "Speaking voice" })).not.toBeInTheDocument();
     expect(voiceSession.state.voiceName).toBe("");
     await user.click(screen.getByRole("radio", { name: "Cloud voice" }));
-    expect(screen.getByRole("combobox", { name: "Speaking voice" })).toHaveValue("Aoede");
+    await readySelect();
+    expect(screen.getByRole("combobox", { name: "Speaking voice" })).toHaveValue("Leda");
     voiceSession.setState((s) => ({ ...s, connectStatus: "Connecting…" }));
     expect(screen.getByRole("combobox", { name: "Speaking voice" })).toBeDisabled();
     expect(() => voiceSession.selectSpeakingVoice("Orus")).toThrow("End the session");

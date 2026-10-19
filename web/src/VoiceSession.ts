@@ -399,9 +399,9 @@ function validateVoiceChoices(value: VoiceChoicesResp): VoiceChoicesResp {
 function resolveVoiceChoice(metadata: VoiceChoicesResp, mode: VoiceMode, selected: string | null): string {
   const compatible = compatibleChoices(metadata.choices, mode);
   if (selected !== null) {
-    if (!compatible.some((choice) => choice.id === selected))
-      throw new Error("The selected voice choice is unavailable for this voice mode. Choose another voice choice.");
-    return selected;
+    if (!metadata.choices.some((choice) => choice.id === selected))
+      throw new Error("The selected voice choice is unavailable. Choose another voice choice.");
+    if (compatible.some((choice) => choice.id === selected)) return selected;
   }
   const choice = compatible.find((choice) => choice.id === metadata.defaultChoiceID) ?? compatible[0];
   if (!choice) throw new Error("The voice gateway has no choices for this voice mode");
@@ -707,13 +707,8 @@ export class VoiceSession {
       throw new Error("Browser speech is unavailable. Use Cloud voice.");
     localStorage.setItem("gomode.voiceMode", mode);
     this.setState((s) => ({ ...s, mode }));
-    if (this.state.choicesStatus === "ready") {
-      const available = this.compatibleChoices.some((choice) => choice.id === this.state.choiceID);
-      this._update((s) => {
-        s.choicesError = available ? null : "Choose an available voice choice for this voice mode.";
-      });
-      const choice = this.state.choices.find((choice) => choice.id === this.state.choiceID);
-      if (choice) this._restoreSpeakingVoice(gatewaySnapshot().origin, choice);
+    if (this._choicesVersion === untrack(gatewayVersion) && this.state.choicesStatus === "ready") {
+      void this.loadVoiceChoices();
     }
   }
 

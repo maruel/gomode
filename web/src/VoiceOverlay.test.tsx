@@ -63,6 +63,16 @@ afterEach(() => {
 });
 
 describe("VoiceOverlay status", () => {
+  it("shows a shared connection and settings error once, including when settings are open", async () => {
+    const error = "The selected voice choice is unavailable";
+    voiceSession.setState((s) => ({ ...s, error, choicesError: error }));
+    render(() => <VoiceOverlay />);
+    expect(screen.getAllByText(error).filter((el) => !el.closest("[hidden]"))).toHaveLength(1);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Voice settings" }));
+    expect(screen.getAllByText(error).filter((el) => !el.closest("[hidden]"))).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Close voice settings" })).toBeInTheDocument();
+  });
+
   it("does not show cloud audio-device errors during browser speech", () => {
     voiceSession.setState((s) => ({
       ...s,

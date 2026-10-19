@@ -332,7 +332,14 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
             </div>
           </Show>
 
-          <Show when={session.state.error !== null && session.state.error} keyed>
+          <Show
+            when={
+              session.state.error !== null &&
+              !(settingsOpen() && settingsError() === session.state.error) &&
+              session.state.error
+            }
+            keyed
+          >
             {(err) => (
               <ErrorPanel
                 error={err}
@@ -376,7 +383,7 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
               onClearTranscript={() => session.clearTranscript()}
             />
           </Show>
-          <Show when={!settingsOpen() && settingsError()}>
+          <Show when={!settingsOpen() && settingsError() !== session.state.error && settingsError()}>
             {(error) => (
               <p role="alert" class={styles.statusError}>
                 {error()}

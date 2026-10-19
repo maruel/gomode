@@ -93,6 +93,38 @@ function finishTurn(socket: FakeWebSocket, text: string): void {
 }
 
 describe("browser voice sessions", () => {
+  it("uses a text choice and one-shot Android recognition when an audio-only choice was saved", async () => {
+    Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Chrome Android" });
+    localStorage.setItem("gomode.voiceChoice.https://gateway.example", "gemini");
+    const gatewayFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) =>
+      String(input).endsWith("/voice/choices")
+        ? new Response(
+            JSON.stringify({
+              choices: [
+                { id: "gemini", label: "Gemini Live", transports: ["webrtc"] },
+                { id: "remote", label: "Remote LLM", transports: ["text"] },
+              ],
+              defaultChoiceID: "gemini",
+            }),
+          )
+        : gatewayFetch(input, init);
+    const socket = await readySocket();
+    expect(requests[0]?.body).toEqual({ choiceID: "remote" });
+    finishTurn(socket, "Ready");
+    fakeSynthesis.complete();
+    const recognition = FakeRecognition.instances[0];
+    expect(recognition?.continuous).toBe(false);
+    recognition?.result([["I", false]]);
+    recognition?.result([["I need help", true]]);
+    recognition?.end();
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toEqual({ kind: "user.message", text: "I need help" });
+    finishTurn(socket, "Okay.");
+    fakeSynthesis.complete();
+    expect(session.state.listening).toBe(true);
+    expect(FakeRecognition.instances).toHaveLength(2);
+  });
+
   it("uses a one-time subprotocol ticket and sends selected language without WebRTC audio", async () => {
     configureVoiceGateway("https://gateway.example", async () => ({
       kind: "web",
