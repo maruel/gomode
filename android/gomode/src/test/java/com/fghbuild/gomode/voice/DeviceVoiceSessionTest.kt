@@ -1177,12 +1177,14 @@ class DeviceVoiceSessionTest {
         }
 
     @Test
-    fun `on-device voice session runs Needle Whistle engine with confidence threshold tool dispatch`() =
+    fun `local engine dispatches native hang up and server listing commands`() =
         runTest {
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
             repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
             selectEngine(repo, OnDeviceEngine.NEEDLE_WHISTLE)
+            val serverId = repo.addService("Home", "https://home.example")
+            repo.settings.first { it.activeServiceId == serverId }
 
             var turnProcessed = false
             val session =
@@ -1202,7 +1204,16 @@ class DeviceVoiceSessionTest {
                                     com.caic.voicegateway.sdk.v1.ToolCall,
                                 ) -> kotlinx.serialization.json.JsonElement?,
                             ): EngineTurnResult {
-                                onDelta("Recognized: hang up (confidence: 0.95). Executing hang_up…")
+                                val servers =
+                                    onToolCall(
+                                        com.caic.voicegateway.sdk.v1.ToolCall(
+                                            kind = com.caic.voicegateway.sdk.v1.MessageKind.ToolCall,
+                                            id = "list-local",
+                                            name = "list_servers",
+                                            args = kotlinx.serialization.json.JsonObject(emptyMap()),
+                                        ),
+                                    )
+                                assertTrue(servers.toString().contains(serverId))
                                 onToolCall(
                                     com.caic.voicegateway.sdk.v1.ToolCall(
                                         kind = com.caic.voicegateway.sdk.v1.MessageKind.ToolCall,
@@ -1291,6 +1302,69 @@ class DeviceVoiceSessionTest {
             ioDispatcher = ioDispatcher,
             engineFactory = engineFactory,
         )
+
+    @Test
+    fun `native tools reject non-object arguments over the device transport`() =
+        runTest {
+            val socket = FakeWebSocket()
+            var listener: WebSocketListener? = null
+            val session =
+                createSession(FakeSpeech()) { _, captured ->
+                    listener = captured
+                    socket
+                }
+            try {
+                session.connect()
+                val connected = requireNotNull(listener)
+                connected.onOpen(socket, upgradeResponse())
+                connected.onMessage(socket, """{"kind":"session.ready"}""")
+                for (payload in listOf("[]", "42", "null")) {
+                    connected.onMessage(
+                        socket,
+                        """{"kind":"tool.call","id":"bad","name":"list_servers","args":$payload}""",
+                    )
+                    assertTrue(socket.sent.last().contains("JSON object"))
+                }
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
+    fun `server switch persists selection and ends the device voice transport`() =
+        runTest {
+            val repo = SettingsRepository(InMemoryPreferencesDataStore())
+            val first = repo.addService("First", "https://first.example")
+            val second = repo.addService("Second", "https://second.example")
+            repo.settings.first { it.activeServiceId == second }
+            val socket = FakeWebSocket()
+            var listener: WebSocketListener? = null
+            val session =
+                createSession(FakeSpeech(), settingsRepo = repo) { _, captured ->
+                    listener = captured
+                    socket
+                }
+            try {
+                session.connect()
+                val connected = requireNotNull(listener)
+                connected.onOpen(socket, upgradeResponse())
+                connected.onMessage(socket, """{"kind":"session.ready"}""")
+                connected.onMessage(
+                    socket,
+                    """{"kind":"tool.call","id":"switch","name":"switch_server","args":{"server_id":"$first"}}""",
+                )
+                repo.settings.first { it.activeServiceId == first }
+                assertTrue(socket.closed)
+                assertFalse(session.state.value.connected)
+                connected.onMessage(
+                    socket,
+                    """{"kind":"tool.call","id":"stale","name":"switch_server","args":{"server_id":"$second"}}""",
+                )
+                assertEquals(first, repo.settings.value.activeServiceId)
+            } finally {
+                session.close()
+            }
+        }
 
     private fun testSetup(): VoiceSetup =
         VoiceSetup(

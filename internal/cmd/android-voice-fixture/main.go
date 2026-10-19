@@ -35,6 +35,7 @@ func (f *fixture) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/gomode.json", f.handleSettings)
 	mux.HandleFunc("POST /api/mcp", f.handleMCP)
+	mux.HandleFunc("GET /api/voicegateway/v1/voice/choices", f.handleChoices)
 	mux.HandleFunc("GET /api/voicegateway/v1/voice/health", f.handleHealth)
 	mux.HandleFunc("GET /api/voicegateway/v1/voice/text", f.handleTextSession)
 	mux.HandleFunc("POST /api/voicegateway/v1/voice/rtc/offer", f.handleOffer)
@@ -121,6 +122,17 @@ func (f *fixture) handleMCP(w http.ResponseWriter, r *http.Request) {
 
 func (f *fixture) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]any{"status": "ok"})
+}
+
+func (f *fixture) handleChoices(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, voicev1.VoiceChoicesResp{
+		Choices: []voicev1.VoiceChoice{{
+			ID:         "fixture",
+			Label:      "Fixture text",
+			Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText},
+		}},
+		DefaultChoiceID: "fixture",
+	})
 }
 
 // handleOffer rejects cloud mode. The fixture has no WebRTC stack, so it must

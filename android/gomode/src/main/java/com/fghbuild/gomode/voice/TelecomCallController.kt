@@ -36,6 +36,7 @@ private val callAddress = "gomode://voice".toUri()
  */
 internal class TelecomCallController(
     private val context: Context,
+    private val onTelecomEnded: () -> Unit,
 ) : VoiceCallController {
     private val callsManager = CallsManager(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -83,13 +84,17 @@ internal class TelecomCallController(
                         onDisconnect = {
                             if (activeCall == generation) {
                                 endedByTelecom = true
+                                onTelecomEnded()
                                 onTelecomDisconnect()
                             }
                         },
                         onSetActive = {},
                         onSetInactive = {
                             // Telecom yields to a cellular or VoIP call; voice disconnects.
-                            if (activeCall == generation) onTelecomDisconnect()
+                            if (activeCall == generation) {
+                                onTelecomEnded()
+                                onTelecomDisconnect()
+                            }
                         },
                         block = {
                             if (activeCall == generation) {

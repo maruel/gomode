@@ -134,7 +134,11 @@ internal suspend fun prepareVoiceSetup(
             bearerTokenProvider = mcpCredentials::bearerForRequest,
         )
     val systemInstruction = client.serverInstructions()
-    val tools = client.listTools()
+    val serviceTools = client.listTools()
+    require(serviceTools.none { it.name in nativeVoiceToolNames }) {
+        "MCP tool conflicts with a reserved native voice tool."
+    }
+    val tools = serviceTools + nativeVoiceTools(settings)
     // Android owns this captured session baseline; see the canonical contract in
     // gomode/docs/ANDROID_SHELL.md. A reconnect repeats the read.
     val serviceContextText =

@@ -234,9 +234,8 @@ class SettingsRepository(
     suspend fun switchService(id: String) {
         dataStore.edit { prefs ->
             val services = decodeServices(prefs)
-            if (services.any { it.id == id }) {
-                prefs[Keys.ACTIVE_SERVICE_ID] = id
-            }
+            require(services.any { it.id == id }) { "Unknown service ID: $id" }
+            prefs[Keys.ACTIVE_SERVICE_ID] = id
         }
     }
 

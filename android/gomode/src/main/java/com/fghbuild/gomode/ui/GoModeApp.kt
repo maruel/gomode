@@ -71,6 +71,7 @@ import com.fghbuild.gomode.voice.LocalModelOwner
 import com.fghbuild.gomode.voice.LocalModelSelection
 import com.fghbuild.gomode.voice.LocalModelState
 import com.fghbuild.gomode.voice.McpClient
+import com.fghbuild.gomode.voice.ServerVoiceSwitch
 import com.fghbuild.gomode.voice.TelecomCallController
 import com.fghbuild.gomode.voice.VoicePanel
 import com.fghbuild.gomode.voice.VoiceService
@@ -135,16 +136,32 @@ internal fun GoModeApp(
     var bootstrapState by remember(activeURL) {
         mutableStateOf<ServiceBootstrapState>(ServiceBootstrapState.Unvalidated())
     }
-    var webLoadState by remember(activeURL) { mutableStateOf<WebShellLoadState>(WebShellLoadState.Loading) }
+    var webLoadState by remember(settings.activeServiceId, activeURL) {
+        mutableStateOf<WebShellLoadState>(WebShellLoadState.Loading)
+    }
     var webReloadToken by remember { mutableStateOf(0) }
 
     LaunchedEffect(activeURL, reloadToken, settingsClient) {
         if (activeURL.isBlank()) return@LaunchedEffect
+        bootstrapState = ServiceBootstrapState.Unvalidated()
         bootstrapState = fetchBootstrapState(activeURL, settingsClient)
     }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val serverVoiceSwitch = remember(settingsRepository, scope) { ServerVoiceSwitch(settingsRepository, scope) }
+    val pendingServerSwitch = serverVoiceSwitch.pending.collectAsStateWithLifecycle().value
+    val switchVoiceServer: suspend (String) -> Unit =
+        remember(serverVoiceSwitch, settings.activeServiceId, activeURL) {
+            { id ->
+                val current = settingsRepository.settings.value
+                check(current.activeServiceId == settings.activeServiceId && current.activeServiceURL == activeURL) {
+                    "Active server changed before the voice command could switch servers"
+                }
+                activeNativeScreen = null
+                serverVoiceSwitch.switchServer(id)
+            }
+        }
     val voiceMode = settings.voiceMode
     val localSelection =
         remember(
@@ -184,11 +201,15 @@ internal fun GoModeApp(
         onDispose { localModelOwner.clearSelection(localSelection) }
     }
     val localModelState by localModelOwner.state.collectAsStateWithLifecycle()
-    val voiceCallController = remember(context.applicationContext) { TelecomCallController(context.applicationContext) }
+    val voiceCallController =
+        remember(context.applicationContext, serverVoiceSwitch) {
+            TelecomCallController(context.applicationContext, onTelecomEnded = serverVoiceSwitch::cancel)
+        }
     val voiceSession: VoiceSessionController =
         remember(
             settingsRepository,
             bearerStore,
+            switchVoiceServer,
             voiceMode,
             settings.voiceLanguageTag,
             voiceCallController,
@@ -205,6 +226,7 @@ internal fun GoModeApp(
                         languageTag = settings.voiceLanguageTag,
                         localModelOwner = localModelOwner,
                         callController = voiceCallController,
+                        switchServer = switchVoiceServer,
                     )
                 }
 
@@ -216,6 +238,7 @@ internal fun GoModeApp(
                         bearerTokenFor = bearerStore::tokenFor,
                         languageTag = settings.voiceLanguageTag,
                         callController = voiceCallController,
+                        switchServer = switchVoiceServer,
                     )
                 }
             }
@@ -230,7 +253,10 @@ internal fun GoModeApp(
                     context: Context?,
                     intent: Intent?,
                 ) {
-                    if (intent?.action == VoiceService.ACTION_HANG_UP) voiceSession.disconnect()
+                    if (intent?.action == VoiceService.ACTION_HANG_UP) {
+                        serverVoiceSwitch.cancel()
+                        voiceSession.disconnect()
+                    }
                 }
             }
         ContextCompat.registerReceiver(
@@ -241,10 +267,7 @@ internal fun GoModeApp(
         )
         onDispose { context.unregisterReceiver(receiver) }
     }
-    // Voice is tied to the selected service instance, unlike transient WebView recovery.
-    LaunchedEffect(settings.activeServiceId, activeURL, voiceSession) {
-        voiceSession.disconnect()
-    }
+    // Replacing bearerStore creates a fresh session; disposal closes the previous service's session.
     val voiceAuthIdentity = remember(bearerStore) { VoiceAuthIdentity() }
     LaunchedEffect(bearerToken, authEpoch, authReady, voiceSession) {
         val changed = voiceAuthIdentity.update(bearerToken, authEpoch)
@@ -310,6 +333,7 @@ internal fun GoModeApp(
     val shellRecovery =
         shellRecoveryState(
             bootstrapError = (bootstrapState as? ServiceBootstrapState.Error)?.message,
+            bootstrapFailure = (bootstrapState as? ServiceBootstrapState.Unvalidated)?.reason,
             webLoadState = webLoadState,
         ).takeIf { activeNativeScreen == null && activeURL.isNotBlank() }
     val voiceSessionActive =
@@ -333,6 +357,47 @@ internal fun GoModeApp(
             ?.url
             ?.isNotBlank() == true
     val voiceAvailable = authReady && (voiceSessionActive || (configuredVoiceAvailable && shellRecovery == null))
+    LaunchedEffect(
+        settings,
+        pendingServerSwitch,
+        bearerToken,
+        authEpoch,
+        authReady,
+        bootstrapState,
+        webLoadState,
+        localModelState,
+        voiceSession,
+    ) {
+        if (pendingServerSwitch == null ||
+            pendingServerSwitch !== serverVoiceSwitch.pending.value
+        ) {
+            return@LaunchedEffect
+        }
+        val current = settingsRepository.settings.value
+        val ready =
+            current == settings && bearerToken == bearerStore.token.value &&
+                authEpoch == bearerStore.authEpoch.value && authReady && configuredVoiceAvailable &&
+                webLoadState == WebShellLoadState.Ready &&
+                (!shouldPrepareLocalModel(settings, authReady) || localModelState == LocalModelState.Ready)
+        if (serverVoiceSwitch.takeReady(settings, ready)) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                voiceSession.connect()
+            } else {
+                scope.launch { snackbarHostState.showSnackbar("Microphone permission is required to reconnect voice") }
+            }
+        } else if (settings.activeServiceId == pendingServerSwitch.target.id &&
+            (
+                bootstrapState is ServiceBootstrapState.Error ||
+                    (bootstrapState as? ServiceBootstrapState.Unvalidated)?.reason != null ||
+                    (bootstrapState is ServiceBootstrapState.Ready && !configuredVoiceAvailable)
+            )
+        ) {
+            serverVoiceSwitch.cancel()
+            scope.launch { snackbarHostState.showSnackbar("Voice is unavailable on the selected server") }
+        }
+    }
     val density = LocalDensity.current
     val keyboardOpen = WindowInsets.ime.getBottom(density) > 0
 
@@ -399,6 +464,7 @@ internal fun GoModeApp(
                     bearerStore = bearerStore,
                     bootstrapState = bootstrapState,
                     onSetNativeScreen = { activeNativeScreen = it },
+                    onSelectService = serverVoiceSwitch::cancel,
                     activeNativeScreen = activeNativeScreen,
                     voiceConnected = voiceState.connected,
                     voiceSessionActive = voiceSessionActive,
@@ -439,11 +505,27 @@ internal fun GoModeApp(
                 }
             }
             // Keep failures visible even when the keyboard or shell recovery hides idle controls.
-            if (voiceState.error != null || (!keyboardOpen && (shellRecovery == null || voiceSessionActive))) {
+            if (pendingServerSwitch != null || voiceState.error != null ||
+                (!keyboardOpen && (shellRecovery == null || voiceSessionActive))
+            ) {
                 VoicePanel(
-                    voiceState = voiceState,
-                    voiceEnabled = voiceAvailable,
+                    voiceState =
+                        if (pendingServerSwitch != null) {
+                            voiceState.copy(
+                                error = null,
+                                connectStatus =
+                                    if (authReady) {
+                                        "Reconnecting voice to ${pendingServerSwitch.target.label}…"
+                                    } else {
+                                        "Waiting for ${pendingServerSwitch.target.label} sign-in to reconnect voice…"
+                                    },
+                            )
+                        } else {
+                            voiceState
+                        },
+                    voiceEnabled = pendingServerSwitch != null || voiceAvailable,
                     onConnect = {
+                        serverVoiceSwitch.cancel()
                         if (bearerStore.authReady.value) {
                             if (ContextCompat.checkSelfPermission(
                                     context,
@@ -459,7 +541,10 @@ internal fun GoModeApp(
                             }
                         }
                     },
-                    onDisconnect = { voiceSession.disconnect() },
+                    onDisconnect = {
+                        serverVoiceSwitch.cancel()
+                        voiceSession.disconnect()
+                    },
                     onToggleMute = { voiceSession.toggleMute() },
                     onSelectDevice = { id ->
                         val device = voiceState.availableDevices.firstOrNull { it.id == id }
@@ -556,6 +641,7 @@ private fun GoModeContent(
     bootstrapState: ServiceBootstrapState,
     activeNativeScreen: NativeScreen?,
     onSetNativeScreen: (NativeScreen?) -> Unit,
+    onSelectService: () -> Unit,
     voiceConnected: Boolean,
     voiceSessionActive: Boolean,
     webReloadToken: Int,
@@ -578,6 +664,7 @@ private fun GoModeContent(
                 voiceSessionActive = voiceSessionActive,
                 onDone = { onSetNativeScreen(null) },
                 onOpenHalo = { onSetNativeScreen(NativeScreen.Halo) },
+                onSelectService = onSelectService,
                 bearerTokenFor = bearerStore::tokenFor,
                 bearerToken = bearerStore.token.collectAsStateWithLifecycle().value,
                 authEpoch = bearerStore.authEpoch.collectAsStateWithLifecycle().value,
@@ -643,12 +730,21 @@ internal data class ShellRecoveryState(
 internal fun shellRecoveryState(
     bootstrapError: String?,
     webLoadState: WebShellLoadState,
+    bootstrapFailure: String? = null,
 ): ShellRecoveryState? =
     when {
         bootstrapError != null -> {
             ShellRecoveryState(
                 title = "Could not use service",
                 message = bootstrapError,
+                retryTarget = ShellRecoveryRetryTarget.BOOTSTRAP,
+            )
+        }
+
+        bootstrapFailure != null -> {
+            ShellRecoveryState(
+                title = "Could not load voice settings",
+                message = bootstrapFailure,
                 retryTarget = ShellRecoveryRetryTarget.BOOTSTRAP,
             )
         }

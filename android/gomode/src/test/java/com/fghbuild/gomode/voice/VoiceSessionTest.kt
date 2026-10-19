@@ -8,6 +8,7 @@ import com.caic.voicegateway.sdk.v1.VoiceRTCConnectivitySide
 import com.caic.voicegateway.sdk.v1.VoiceRTCDiagnosticsResp
 import com.caic.voicegateway.sdk.v1.VoiceRTCOfferReq
 import com.caic.voicegateway.sdk.v1.VoiceRTCServerDiagnostics
+import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.service.credentialedHTTPClient
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import kotlinx.coroutines.runBlocking
@@ -57,30 +58,14 @@ class VoiceSessionTest {
         }
 
     @Test
-    fun voiceToolDeclarationsAddLocalHangUp() {
+    fun voiceToolDeclarationsPreserveNativeAndServiceCommands() {
         val tools =
             voiceToolDeclarations(
-                listOf(
-                    ToolDescriptor(name = "tasks_list", description = "List tasks"),
-                ),
+                nativeVoiceTools(SettingsState()) + ToolDescriptor(name = "tasks_list", description = "List tasks"),
             )
 
         assertEquals(listOf("hang_up", "tasks_list"), tools.map { it.name })
         assertTrue(tools.first().description.contains("End the current voice conversation"))
-    }
-
-    @Test
-    fun voiceToolDeclarationsRejectMCPHangUpName() {
-        val error =
-            runCatching {
-                voiceToolDeclarations(listOf(ToolDescriptor(name = "hang_up")))
-            }.exceptionOrNull()
-
-        assertTrue(error is IllegalArgumentException)
-        assertEquals(
-            "MCP tool \"hang_up\" conflicts with the reserved voice command.",
-            error?.message,
-        )
     }
 
     @Test

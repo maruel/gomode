@@ -16,6 +16,14 @@ unit tests, and coverage.
 
 Mandatory: Run `make git-hooks` to install git hooks before making any change.
 
+Android changes MUST run applicable instrumented tests on an emulator, in addition
+to `make android-check`. If no emulator or AVD is present, provision and start one
+with `make android-start-emulator`, then run the tests. An absent emulator, system
+image, or connected device is NOT a reason to skip Android tests. Use
+`make android-e2e` for hosted-shell coverage, `make android-voice-e2e` for the voice
+transport fixture, and focused `connectedDebugAndroidTest` class selections for
+native behavior.
+
 The TypeScript package `@maruel/gomode` exports source for Solid/Vite hosts.
 Keep `web/src` host neutral and configure its MCP endpoint in each host.
 

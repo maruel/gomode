@@ -54,6 +54,7 @@ fun SettingsScreen(
     voiceSessionActive: Boolean,
     onDone: () -> Unit,
     onOpenHalo: () -> Unit,
+    onSelectService: () -> Unit = {},
     bearerTokenFor: (String) -> String? = { null },
     bearerToken: String? = null,
     authEpoch: Long = 0,
@@ -119,6 +120,7 @@ fun SettingsScreen(
                                 } else {
                                     TextButton(
                                         onClick = {
+                                            onSelectService()
                                             scope.launch {
                                                 settingsRepository.switchService(service.id)
                                                 onDone()

@@ -56,7 +56,7 @@ class DeviceVoiceSessionFixtureTest {
                     appContext = context,
                     settingsRepository = repository,
                     languageTag = "en-US",
-                    callController = TelecomCallController(context),
+                    callController = TelecomCallController(context, onTelecomEnded = {}),
                 )
             try {
                 session.connect(preserveTranscript = false)

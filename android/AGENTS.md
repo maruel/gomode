@@ -13,7 +13,12 @@ Read `gomode/AGENTS.md` before editing the app. Keep product task, document,
 and database UI in the hosted frontend. Native code owns WebView bootstrap,
 permissions, notifications, voice, settings, and Halo device integration.
 
-Run `make android-check` at the repository root after Android changes.
+Run `make android-check` at the repository root after Android changes. Also run
+applicable instrumented tests on an emulator: `make android-e2e` for the shell,
+`make android-voice-e2e` for voice transport, and focused native test classes.
+If no emulator is present, run `make android-start-emulator` to provision and start
+one. Missing emulator images, AVDs, or connected devices do not justify skipping
+instrumented test execution.
 Run `make android-push` to install and launch the app on a connected device.
 Run `make android-push-model` to download and sync Gemma 4 E2B and E4B
 weights to `/data/local/tmp/llm/` on the device.

@@ -167,10 +167,30 @@ query gateway choices.
 2. For an external gateway, fetch a token from `tokenEndpoint`.
 3. Post the offer to the signaling route.
 4. Open the `voice-gateway` data channel.
-5. Declare the active MCP tools plus the native `hang_up` tool.
+5. Declare the active MCP tools plus native `hang_up`, `list_servers`, and `switch_server` tools.
 6. Read and bound the `gomode://items` baseline.
 7. Send the baseline in `session.setup.context.text` before the first response.
-8. Execute tool calls through the skill's MCP endpoint.
+8. Execute native commands on the device and service tools through the skill's MCP endpoint.
+
+Cloud voice, device speech with a gateway, and the local LLM share the native
+`hang_up` command. They also expose `list_servers` and `switch_server` when more
+than one server is saved.
+`list_servers` returns saved server IDs, names, and active status; `switch_server`
+selects a saved ID using the same settings as the native server picker. Switching
+to another server loads that server's hosted frontend and automatically starts
+a fresh voice session with its tools, instructions, and credentials once the page
+and authentication are ready. The old Telecom call and its notification end
+during the handoff. If sign-in is required, the voice panel waits while you sign
+in; its Cancel button stops the pending reconnection. The destination session
+creates a new Telecom call and notification when it connects. Selecting
+the already active server keeps the conversation connected. Changing the selected
+server or voice settings cancels a pending reconnection; connection failures stay
+visible and can be retried manually.
+
+The names `hang_up`, `list_servers`, and `switch_server` are reserved for native
+voice commands; hosted MCP and frontend tools must use other names. The
+experimental NeuDecide and Needle/Whistle keyword engines do not support the
+server tools' argument schemas and do not advertise these tools.
 
 Car call control: [HFP_CALL_CONTROL.md](HFP_CALL_CONTROL.md).
 

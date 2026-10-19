@@ -160,6 +160,18 @@ class GoModeAppTest {
     }
 
     @Test
+    fun completedManifestFailureOffersRetryEvenWhenTheHostedPageLoaded() {
+        val recovery =
+            shellRecoveryState(
+                bootstrapError = null,
+                webLoadState = WebShellLoadState.Ready,
+                bootstrapFailure = "Could not fetch service settings: offline",
+            )
+        assertEquals(ShellRecoveryRetryTarget.BOOTSTRAP, recovery?.retryTarget)
+        assertEquals("Could not fetch service settings: offline", recovery?.message)
+    }
+
+    @Test
     fun webFailureOffersServiceRetryAndMarksVoiceUnavailable() {
         val recovery =
             shellRecoveryState(

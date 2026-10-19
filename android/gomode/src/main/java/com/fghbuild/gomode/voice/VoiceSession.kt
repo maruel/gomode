@@ -82,36 +82,20 @@ private const val SETUP_TIMEOUT_MS = 15_000L
 private const val ICE_GATHERING_TIMEOUT_MS = 10_000L
 private const val ICE_DISCONNECTED_GRACE_MS = 5_000L
 private const val MAX_RECONNECT_ATTEMPTS = 3
-internal const val HANG_UP_TOOL_NAME = "hang_up"
 
 /** Conservative data-channel/model-safe bound for a recovery context update. */
 internal const val MAX_RECOVERY_CONTEXT_CHARS = 8_000
 private val sdpWhitespaceRegex = Regex("\\s+")
 
-/**
- * Voice-local tool declarations, kept outside the service MCP tool set.
- * Keep this list and its dispatcher in sync with frontend/src/gomode/VoiceSession.ts.
- */
-internal fun voiceToolDeclarations(mcpTools: List<ToolDescriptor>): List<ToolDeclaration> =
+/** Combines prepared service/native tools with the current hosted frontend declarations. */
+internal fun voiceToolDeclarations(tools: List<ToolDescriptor>): List<ToolDeclaration> =
     buildList {
-        require(mcpTools.none { it.name == HANG_UP_TOOL_NAME }) {
-            "MCP tool \"$HANG_UP_TOOL_NAME\" conflicts with the reserved voice command."
-        }
         val frontendTools = FrontendVoiceTools.declarations
-        require(mcpTools.none { mcp -> frontendTools.any { it.name == mcp.name } }) {
-            "MCP tool conflicts with a frontend voice tool."
+        require(tools.none { tool -> frontendTools.any { it.name == tool.name } }) {
+            "Voice tool conflicts with a frontend voice tool."
         }
         addAll(frontendTools)
-        add(
-            ToolDeclaration(
-                name = HANG_UP_TOOL_NAME,
-                description =
-                    "End the current voice conversation immediately when the user asks to hang up, " +
-                        "end the call, or stop voice mode.",
-                parameters = JsonObject(emptyMap()),
-            ),
-        )
-        mcpTools.forEach { tool ->
+        tools.forEach { tool ->
             add(
                 ToolDeclaration(
                     name = tool.name,
@@ -179,6 +163,7 @@ internal class VoiceSession(
     private val languageTag: String,
     voiceChimePlayer: VoiceChimePlayer = AndroidVoiceChime(),
     private val callController: VoiceCallController = NoopVoiceCallController(),
+    private val switchServer: suspend (String) -> Unit = { id -> settingsRepository.switchService(id) },
 ) : VoiceSessionController {
     private val audioManager = appContext.getSystemService(AudioManager::class.java)
     private val json =
@@ -217,7 +202,7 @@ internal class VoiceSession(
     private var usableICECandidateWaiter: CompletableDeferred<Unit>? = null
     private var mcpClient: McpClient? = null
     private var frontendToolNames: Set<String> = emptySet()
-    private var mcpTools: List<ToolDescriptor> = emptyList()
+    private var sessionTools: List<ToolDescriptor> = emptyList()
     private var deviceCallback: AudioDeviceCallback? = null
     private var scoReceiver: BroadcastReceiver? = null
     private var audioFocusRequest: AudioFocusRequest? = null
@@ -274,7 +259,7 @@ internal class VoiceSession(
         rtcSessionID = null
         voiceTokenEndpointURL = null
         mcpClient = null
-        mcpTools = emptyList()
+        sessionTools = emptyList()
         if (!deferAudioRelease) finishDisconnectAudio(attempt)
         callController.endLocal()
         telecomCallActive = false
@@ -324,7 +309,7 @@ internal class VoiceSession(
         rtcSessionID = null
         voiceTokenEndpointURL = null
         mcpClient = null
-        mcpTools = emptyList()
+        sessionTools = emptyList()
         lastIceConnectionState = "new"
         lastIceGatheringState = "new"
         lastSignalingState = "new"
@@ -371,7 +356,7 @@ internal class VoiceSession(
                             setup.voiceName,
                         )
                     mcpClient = setup.mcpClient
-                    mcpTools = setup.tools
+                    sessionTools = setup.tools
                     voiceTokenEndpointURL = setup.tokenEndpointURL
                     val systemInstruction = setup.systemInstruction
                     val serviceContextText = setup.serviceContextText
@@ -960,7 +945,7 @@ internal class VoiceSession(
         rtcSessionID = null
         voiceTokenEndpointURL = null
         mcpClient = null
-        mcpTools = emptyList()
+        sessionTools = emptyList()
         // Preserve transcript so the user can review it after disconnecting.
         _state.value = VoiceState(transcript = _state.value.transcript.map { it.copy(final = true) })
     }
@@ -1039,7 +1024,7 @@ internal class VoiceSession(
         frontendToolNames = FrontendVoiceTools.declarations.map { it.name }.toSet()
         val setup =
             gatewaySessionSetup(
-                voiceToolDeclarations(mcpTools),
+                voiceToolDeclarations(sessionTools),
                 systemInstruction,
                 serviceContextText,
                 languageTag,
@@ -1153,13 +1138,22 @@ internal class VoiceSession(
         if (!ownsAttempt(attempt) || dataChannel !== originChannel) return
         val id = msg.id
         val name = msg.name
-        if (name == HANG_UP_TOOL_NAME) {
-            Log.i(TAG, "Voice hang-up requested")
-            disconnect()
-            return
-        }
         try {
             _state.update { it.copy(activeTool = name) }
+            val serverResult =
+                executeNativeVoiceTool(
+                    name,
+                    msg.args,
+                    settingsRepository,
+                    switchServer = switchServer,
+                    onDisconnect = ::disconnect,
+                )
+            if (serverResult != null) {
+                if (!ownsAttempt(attempt) || dataChannel !== originChannel) return
+                _state.update { it.copy(activeTool = null) }
+                sendToolResult(id, name, serverResult, attempt, originChannel)
+                return
+            }
             val frontendResult =
                 FrontendVoiceTools.execute(name, msg.args as? JsonObject ?: JsonObject(emptyMap())) {
                     ownsAttempt(attempt) && dataChannel === originChannel

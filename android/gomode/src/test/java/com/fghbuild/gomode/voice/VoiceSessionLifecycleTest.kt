@@ -6,7 +6,9 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import com.caic.voicegateway.sdk.v1.MessageKind
 import com.caic.voicegateway.sdk.v1.ToolCall
+import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -134,6 +136,81 @@ class VoiceSessionLifecycleTest {
                     releaseDiscovery.countDown()
                     server.shutdown()
                 }
+            }
+        }
+
+    @Test
+    fun serverToolsFollowEngineCapabilitiesAndRejectHostOverrides() =
+        runBlocking {
+            val server = MockWebServer()
+            var hostTool = "host_tool"
+            server.dispatcher =
+                object : Dispatcher() {
+                    override fun dispatch(request: RecordedRequest): MockResponse {
+                        if (request.path == "/.well-known/gomode.json") {
+                            return MockResponse().setBody(
+                                """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":1,
+                            "toolGroups":[{"name":"fixture","endpoint":"/mcp","protocolVersion":"2026-07-28",
+                            "authRequired":false}],"voiceGateway":{"required":false,"url":"/"}}}""",
+                            )
+                        }
+                        val rpc = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+                        val result =
+                            when (rpc.getValue("method").toString()) {
+                                "\"server/discover\"" -> {
+                                    """{"supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},
+                            "serverInfo":{"name":"fixture","version":"1"}}"""
+                                }
+
+                                "\"tools/list\"" -> {
+                                    """{"tools":[{"name":"$hostTool","inputSchema":{"type":"object"}}]}"""
+                                }
+
+                                "\"resources/list\"" -> {
+                                    """{"resources":[]}"""
+                                }
+
+                                else -> {
+                                    error("Unexpected method: $rpc")
+                                }
+                            }
+                        val fields = result.trim().removeSurrounding("{", "}")
+                        return MockResponse().setBody(
+                            """{"jsonrpc":"2.0","id":${rpc.getValue("id")},"result":{
+                        "resultType":"complete","ttlMs":0,"cacheScope":"private",$fields}}""",
+                        )
+                    }
+                }
+            server.start()
+            try {
+                val repository = SettingsRepository(InMemoryPreferencesDataStore())
+                repository.addService("Other", "https://other.example")
+                repository.addService("Fixture", server.url("/").toString())
+                repository.updateVoiceMode(VoiceMode.DEVICE)
+                for (engine in listOf(
+                    OnDeviceEngine.LOCAL_LLM,
+                    OnDeviceEngine.NEUDECIDE,
+                    OnDeviceEngine.NEEDLE_WHISTLE,
+                )) {
+                    repository.updateOnDeviceEngine(engine)
+                    repository.settings.first { it.voiceMode == VoiceMode.DEVICE && it.onDeviceEngine == engine }
+                    val setup = prepareVoiceSetup(repository, ServiceSettingsClient(), { null })
+                    val names = setup.tools.map { it.name }
+                    assertTrue("host tools remain available", "host_tool" in names)
+                    assertEquals(engine == OnDeviceEngine.LOCAL_LLM, "list_servers" in names)
+                    assertEquals(engine == OnDeviceEngine.LOCAL_LLM, "switch_server" in names)
+                }
+                for (name in listOf("hang_up", "list_servers", "switch_server")) {
+                    hostTool = name
+                    val error =
+                        runCatching {
+                            prepareVoiceSetup(repository, ServiceSettingsClient(), { null })
+                        }.exceptionOrNull()
+                    assertTrue(error is IllegalArgumentException)
+                    assertTrue(error?.message.orEmpty().contains("reserved native voice tool"))
+                }
+            } finally {
+                server.shutdown()
             }
         }
 
@@ -321,6 +398,89 @@ class VoiceSessionLifecycleTest {
                 assertEquals(false, session.state.value.connected)
             } finally {
                 server.shutdown()
+            }
+        }
+
+    @Test
+    fun nativeServerToolsRejectNonObjectArgumentsOnTheDataChannel() =
+        runBlocking {
+            val settings = SettingsRepository(InMemoryPreferencesDataStore())
+            val id = settings.addService("Home", "https://home.example")
+            settings.settings.first { it.activeServiceId == id }
+            val session = VoiceSession(RuntimeEnvironment.getApplication(), settings, languageTag = "en-US")
+            val channel = RecordingDataChannel()
+            VoiceSession::class.java.getDeclaredField("dataChannel").apply {
+                isAccessible = true
+                set(session, channel)
+            }
+            try {
+                for (payload in listOf("[]", "42", "null")) {
+                    invokeHandleToolCall(
+                        session,
+                        ToolCall(MessageKind.ToolCall, payload, "list_servers", Json.parseToJsonElement(payload)),
+                        channel,
+                    )
+                    val result =
+                        Json
+                            .parseToJsonElement(channel.sent.last())
+                            .jsonObject
+                            .getValue("result")
+                            .jsonObject
+                    assertTrue(result.getValue("error").toString().contains("JSON object"))
+                }
+                assertEquals(id, settings.settings.value.activeServiceId)
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
+    fun serverSwitchDisconnectsAndOldChannelCannotSwitchAgain() =
+        runBlocking {
+            val settings = SettingsRepository(InMemoryPreferencesDataStore())
+            val first = settings.addService("First", "https://first.example")
+            val second = settings.addService("Second", "https://second.example")
+            settings.settings.first { it.activeServiceId == second }
+            val session = VoiceSession(RuntimeEnvironment.getApplication(), settings, languageTag = "en-US")
+            val channel = RecordingDataChannel()
+            VoiceSession::class.java.getDeclaredField("dataChannel").apply {
+                isAccessible = true
+                set(session, channel)
+            }
+            try {
+                invokeHandleToolCall(
+                    session,
+                    ToolCall(MessageKind.ToolCall, "list", "list_servers", JsonObject(emptyMap())),
+                    channel,
+                )
+                assertTrue(channel.sent.single().contains(first))
+                invokeHandleToolCall(
+                    session,
+                    ToolCall(
+                        MessageKind.ToolCall,
+                        "switch",
+                        "switch_server",
+                        Json.parseToJsonElement("""{"server_id":"$first"}"""),
+                    ),
+                    channel,
+                )
+                settings.settings.first { it.activeServiceId == first }
+                assertEquals(false, session.state.value.connected)
+                assertNull(session.state.value.activeTool)
+                invokeHandleToolCall(
+                    session,
+                    ToolCall(
+                        MessageKind.ToolCall,
+                        "stale",
+                        "switch_server",
+                        Json.parseToJsonElement("""{"server_id":"$second"}"""),
+                    ),
+                    channel,
+                )
+                assertEquals(first, settings.settings.value.activeServiceId)
+                assertEquals(1, channel.sent.size)
+            } finally {
+                session.close()
             }
         }
 

@@ -210,11 +210,11 @@ class SettingsRepositoryTest {
         }
 
     @Test
-    fun `switchService ignores unknown service id`() =
+    fun `switchService rejects unknown service id`() =
         runBlocking {
             val repo = createRepo()
             val id = repo.addService(label = "Local", url = "http://localhost:2242")
-            repo.switchService("missing")
+            assertTrue(runCatching { repo.switchService("missing") }.exceptionOrNull() is IllegalArgumentException)
             val state = repo.awaitSettings("activeServiceId == $id") { it.activeServiceId == id }
 
             assertEquals(id, state.activeServiceId)

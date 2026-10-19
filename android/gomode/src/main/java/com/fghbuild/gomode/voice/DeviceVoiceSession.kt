@@ -92,6 +92,7 @@ internal class DeviceVoiceSession(
     private val speech: DeviceSpeech = AndroidDeviceSpeech(appContext, languageTag),
     voiceChimePlayer: VoiceChimePlayer = AndroidVoiceChime(),
     private val callController: VoiceCallController = NoopVoiceCallController(),
+    private val switchServer: suspend (String) -> Unit = { id -> settingsRepository.switchService(id) },
     private val setupProvider: suspend () -> VoiceSetup = {
         prepareVoiceSetup(settingsRepository, settingsClient, bearerTokenFor)
     },
@@ -127,7 +128,7 @@ internal class DeviceVoiceSession(
         get() = preparedLocalModel?.setup ?: otherSetup
     private val mcpClient: McpClient?
         get() = setup?.mcpClient
-    private val mcpTools: List<ToolDescriptor>
+    private val sessionTools: List<ToolDescriptor>
         get() = setup?.tools.orEmpty()
     private var frontendToolNames: Set<String> = emptySet()
 
@@ -233,7 +234,7 @@ internal class DeviceVoiceSession(
                 languageTag = languageTag,
                 systemInstruction = setup.systemInstruction,
                 serviceContextText = setup.serviceContextText,
-                tools = mcpTools,
+                tools = sessionTools,
                 mcpClient = mcpClient,
             )
         val modelDisplay = localEngine.modelName ?: localEngine.descriptor.name
@@ -282,7 +283,7 @@ internal class DeviceVoiceSession(
                             json.encodeToString(
                                 SessionSetup.serializer(),
                                 gatewaySessionSetup(
-                                    voiceToolDeclarations(mcpTools),
+                                    voiceToolDeclarations(sessionTools),
                                     setup.systemInstruction,
                                     setup.serviceContextText,
                                     languageTag,
@@ -596,13 +597,21 @@ internal class DeviceVoiceSession(
     ): JsonElement? {
         if (!ownsAttempt(attempt)) return null
         val name = msg.name
-        if (name == HANG_UP_TOOL_NAME) {
-            Log.i(TAG, "Voice hang-up requested")
-            disconnect()
-            return null
-        }
         try {
             _state.update { it.copy(activeTool = name) }
+            val serverResult =
+                executeNativeVoiceTool(
+                    name,
+                    msg.args,
+                    settingsRepository,
+                    switchServer = switchServer,
+                    onDisconnect = ::disconnect,
+                )
+            if (serverResult != null) {
+                if (!ownsAttempt(attempt)) return null
+                _state.update { it.copy(activeTool = null) }
+                return serverResult
+            }
             val args = msg.args as? JsonObject ?: JsonObject(emptyMap())
             val frontendResult =
                 FrontendVoiceTools.execute(name, args) {
@@ -649,13 +658,22 @@ internal class DeviceVoiceSession(
         if (!ownsAttempt(attempt) || webSocket !== origin) return
         val id = msg.id
         val name = msg.name
-        if (name == HANG_UP_TOOL_NAME) {
-            Log.i(TAG, "Voice hang-up requested")
-            disconnect()
-            return
-        }
         try {
             _state.update { it.copy(activeTool = name) }
+            val serverResult =
+                executeNativeVoiceTool(
+                    name,
+                    msg.args,
+                    settingsRepository,
+                    switchServer = switchServer,
+                    onDisconnect = ::disconnect,
+                )
+            if (serverResult != null) {
+                if (!ownsAttempt(attempt) || webSocket !== origin) return
+                _state.update { it.copy(activeTool = null) }
+                sendToolResult(id, name, serverResult)
+                return
+            }
             val frontendResult =
                 FrontendVoiceTools.execute(name, msg.args as? JsonObject ?: JsonObject(emptyMap())) {
                     ownsAttempt(attempt) && webSocket === origin

@@ -85,6 +85,18 @@ class FrontendVoiceToolsTest {
             }
         }
 
+    @Test
+    fun frontendCannotOverrideNativeVoiceTools() {
+        for (name in listOf("hang_up", "list_servers", "switch_server")) {
+            val error =
+                runCatching {
+                    FrontendVoiceTools.register(view, """[{"name":"$name","description":"Override","parameters":{}}]""")
+                }.exceptionOrNull()
+            assertEquals(true, error is IllegalArgumentException)
+        }
+        assertEquals(listOf("select_item"), FrontendVoiceTools.declarations.map { it.name })
+    }
+
     private class ToolWebView : WebView(RuntimeEnvironment.getApplication()) {
         var script = ""
         var deferResult = false

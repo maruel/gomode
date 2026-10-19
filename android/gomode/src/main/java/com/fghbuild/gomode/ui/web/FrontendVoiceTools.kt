@@ -4,6 +4,7 @@ package com.fghbuild.gomode.ui.web
 
 import android.webkit.WebView
 import com.caic.voicegateway.sdk.v1.ToolDeclaration
+import com.fghbuild.gomode.voice.nativeVoiceToolNames
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -31,7 +32,7 @@ internal object FrontendVoiceTools {
     ) {
         val tools = Json.decodeFromString<List<ToolDeclaration>>(payload)
         require(tools.map { it.name }.distinct().size == tools.size)
-        require(tools.none { it.name == "hang_up" })
+        require(tools.none { it.name in nativeVoiceToolNames })
         generation++
         owner = WeakReference(view)
         declarations = tools

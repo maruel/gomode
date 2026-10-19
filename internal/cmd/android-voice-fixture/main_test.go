@@ -89,6 +89,29 @@ func TestFixtureServesSettings(t *testing.T) {
 	}
 }
 
+func TestFixtureVoiceChoices(t *testing.T) {
+	t.Parallel()
+	srv := newFixture(t)
+	resp, err := httpGet(t, srv.URL+"/api/voicegateway/v1/voice/choices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var catalog voicev1.VoiceChoicesResp
+	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Choices) != 1 || catalog.Choices[0].ID != catalog.DefaultChoiceID {
+		t.Fatalf("catalog must select its single fixture choice: %+v", catalog)
+	}
+	if got := catalog.Choices[0].Transports; len(got) != 1 || got[0] != voicev1.VoiceTransportText {
+		t.Fatalf("fixture transports = %v, want text only", got)
+	}
+}
+
 // TestFixtureMCPResultsAreComplete pins the fields the app's generated DTOs
 // require; a missing one fails deserialization on the device.
 func TestFixtureMCPResultsAreComplete(t *testing.T) {
