@@ -45,6 +45,7 @@ help:
 
 fix: android-sdk node_modules/.modules.yaml
 	@go tool golangci-lint fmt
+	@go tool golangci-lint run --show-stats=false --fix ./...
 	@pnpm exec eslint web/src web/tests scripts/quiet-test-reporter.mjs --fix
 	@pnpm exec prettier --write --log-level warn web/src web/tests scripts/quiet-test-reporter.mjs eslint.config.js package.json .github/workflows
 	@uv run --locked ruff check --quiet --fix scripts
