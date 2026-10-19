@@ -48,7 +48,7 @@ fix: android-sdk node_modules/.modules.yaml
 	@pnpm exec eslint web/src web/tests scripts/quiet-test-reporter.mjs --fix
 	@pnpm exec prettier --write --log-level warn web/src web/tests scripts/quiet-test-reporter.mjs eslint.config.js package.json .github/workflows
 	@uv run --locked ruff check --quiet --fix scripts
-	@uv run --locked ruff format --quiet scripts
+	@uv run --locked ruff format scripts >/dev/null
 	@files=$$(git ls-files '*.sh' 'scripts/hooks/*'); [ -z "$$files" ] || go tool shfmt -w $$files
 	@cd ./android && ./gradlew :gomode:ktlintFormat :halo-sdk:ktlintFormat --quiet
 	@uv run --locked python scripts/update_agents_file_index.py
