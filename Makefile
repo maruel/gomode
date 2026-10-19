@@ -73,10 +73,10 @@ git-hooks:
 test: android-sdk node_modules/.modules.yaml
 	@./scripts/run-concurrently.sh go,browser,android 'go test ./...' '$(FRONTEND_TEST) $(FRONTEND_TEST_FILES)' 'cd ./android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet'
 
-# The Opus codec is deliberately disabled in race builds, so skip the two
+# The Opus codec is deliberately disabled in race builds, so skip the
 # tests that require it while running the rest of the voice gateway suite.
 test-race:
-	@go test -race -skip 'TestVoiceRTCLocalStackPlaceholders|TestEncodeDecodeRoundtrip' ./voicegateway/voicertc
+	@go test -race -skip 'TestBrowserOpusDTX|TestVoiceRTCLocalStackPlaceholders|TestEncodeDecodeRoundtrip' ./voicegateway/voicertc
 
 build: android-sdk node_modules/.modules.yaml
 	@pnpm exec node scripts/css_module_types.mjs --source-path web/src

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 
@@ -41,6 +42,10 @@ const (
 
 	// wsReadLimit is the max WebSocket message size (16 MiB for audio chunks).
 	wsReadLimit = 16 * 1024 * 1024
+
+	// Keep idle transports responsive without submitting audio to Gemini.
+	geminiPingInterval = 30 * time.Second
+	geminiPongTimeout  = 10 * time.Second
 
 	// geminiResponseModalityAudio requests audio-only output. Native audio
 	// models support only AUDIO; text arrives as output transcription.
@@ -119,7 +124,7 @@ func geminiQualifyModel(name string) string {
 //     user.message; protocol.go maps those to completed Gemini clientContent
 //     turns because systemInstruction is passive context and does not itself
 //     start generation.
-//  6. Realtime microphone PCM is forwarded as Gemini realtimeInput audio.
+//  6. Microphone PCM passes through a quiet-audio gate before realtimeInput.
 //     Gemini serverContent audio is extracted into the RTP output buffer, while
 //     transcription/tool-call messages are translated back to gateway messages.
 type geminiBridgeBackend struct {
@@ -165,6 +170,9 @@ type geminiBridgeSession struct {
 	mu                sync.Mutex
 	ws                *websocket.Conn
 	assistantSpeaking bool
+
+	audioMu   sync.Mutex
+	audioGate geminiAudioGate
 }
 
 func (s *geminiBridgeSession) acceptClientMessage(ctx context.Context, data []byte) error {
@@ -185,23 +193,33 @@ func (s *geminiBridgeSession) acceptClientMessage(ctx context.Context, data []by
 }
 
 func (s *geminiBridgeSession) acceptMicPCM(ctx context.Context, pcm []byte) error {
-	b64 := base64.StdEncoding.EncodeToString(pcm)
-	chunk := geminiAudioChunk{}
-	chunk.RealtimeInput.Audio = geminiBlob{
-		MimeType: fmt.Sprintf("audio/pcm;rate=%d", micSampleRate),
-		Data:     b64,
-	}
-	msg, err := json.Marshal(chunk)
-	if err != nil {
-		return fmt.Errorf("marshal audio: %w", err)
-	}
+	s.audioMu.Lock()
+	defer s.audioMu.Unlock()
 	s.mu.Lock()
 	wsConn := s.ws
 	s.mu.Unlock()
 	if wsConn == nil {
 		return nil
 	}
-	return wsConn.Write(ctx, websocket.MessageText, msg)
+	for audio, end := range s.audioGate.push(pcm) {
+		chunk := geminiAudioChunk{}
+		if end {
+			chunk.RealtimeInput.AudioStreamEnd = true
+		} else {
+			chunk.RealtimeInput.Audio = geminiBlob{
+				MimeType: fmt.Sprintf("audio/pcm;rate=%d", micSampleRate),
+				Data:     base64.StdEncoding.EncodeToString(audio),
+			}
+		}
+		msg, err := json.Marshal(chunk)
+		if err != nil {
+			return fmt.Errorf("marshal audio: %w", err)
+		}
+		if err := wsConn.Write(ctx, websocket.MessageText, msg); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *geminiBridgeSession) close() error {
@@ -216,16 +234,23 @@ func (s *geminiBridgeSession) close() error {
 }
 
 func (s *geminiBridgeSession) rxLoop(ctx context.Context) {
+	s.mu.Lock()
+	wsConn := s.ws
+	s.mu.Unlock()
+	if wsConn == nil {
+		return
+	}
+	readCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	go func() { cancel(geminiKeepAlive(readCtx, wsConn)) }()
+
 	for {
-		s.mu.Lock()
-		wsConn := s.ws
-		s.mu.Unlock()
-		if wsConn == nil {
-			return
-		}
-		_, data, err := wsConn.Read(ctx)
+		_, data, err := wsConn.Read(readCtx)
 		if err != nil {
 			if ctx.Err() == nil {
+				if cause := context.Cause(readCtx); cause != nil {
+					err = cause
+				}
 				slog.WarnContext(ctx, "voicertc: gemini read failed", "session", s.id, "err", err)
 				s.sink.sendGatewayError(ctx, "Connection to Gemini lost: "+geminiCloseReason(err))
 			}
@@ -252,6 +277,31 @@ func (s *geminiBridgeSession) rxLoop(ctx context.Context) {
 				slog.WarnContext(ctx, "voicertc: provider→dc send failed", "session", s.id, "err", err)
 				s.sink.cancelSession()
 				return
+			}
+		}
+	}
+}
+
+// geminiKeepAlive uses WebSocket control frames, which add no model input.
+// rxLoop must keep reading to process pongs, even while audio is paused.
+// Its context cancels this worker on session shutdown or a read failure;
+// a failed ping in turn cancels the reader with its cause for error delivery.
+func geminiKeepAlive(ctx context.Context, ws *websocket.Conn) error {
+	t := time.NewTicker(geminiPingInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
+			pingCtx, cancel := context.WithTimeout(ctx, geminiPongTimeout)
+			err := ws.Ping(pingCtx)
+			cancel()
+			if ctx.Err() != nil {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("gemini keepalive failed: %w", err)
 			}
 		}
 	}
@@ -673,7 +723,7 @@ type geminiRealtimeInput struct {
 	MediaChunks []geminiBlob `json:"mediaChunks,omitempty"`
 	// Audio is the realtime audio input stream.
 	Audio geminiBlob `json:"audio,omitzero"`
-	// AudioStreamEnd marks microphone shutdown while automatic activity detection is enabled.
+	// AudioStreamEnd pauses audio while automatic activity detection is enabled.
 	AudioStreamEnd bool `json:"audioStreamEnd,omitzero"`
 	// Video is the realtime video input stream.
 	Video geminiBlob `json:"video,omitzero"`

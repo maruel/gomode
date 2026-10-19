@@ -54,6 +54,14 @@ const (
 	backendOutputFrameBytes = backendOutputSampleRate * 2 * int(frameDuration/time.Millisecond) / 1000 // 960 bytes
 )
 
+// opusReceiveCodec asks the client's encoder to use DTX on the mobile uplink.
+// These are receive preferences, not settings for the gateway's own encoder.
+// https://datatracker.ietf.org/doc/html/rfc7587#section-7.1
+var opusReceiveCodec = webrtc.RTPCodecCapability{
+	MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2,
+	SDPFmtpLine: "minptime=10;useinbandfec=1;usedtx=1",
+}
+
 // Bridge manages voice choices and sessions on one shared WebRTC transport.
 type Bridge struct {
 	backends       map[string]backendConnector
@@ -400,6 +408,16 @@ func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID strin
 	}); err != nil {
 		return "", "", fmt.Errorf("set remote description: %w", err)
 	}
+	// Pion copies the offer's fmtp into transceiver preferences during
+	// SetRemoteDescription. Restore our receive preferences before answering;
+	// registering them in the MediaEngine alone does not request uplink DTX.
+	for _, tr := range pc.GetTransceivers() {
+		if tr.Kind() == webrtc.RTPCodecTypeAudio {
+			if err := tr.SetCodecPreferences([]webrtc.RTPCodecParameters{{RTPCodecCapability: opusReceiveCodec}}); err != nil {
+				return "", "", fmt.Errorf("set Opus receive preferences: %w", err)
+			}
+		}
+	}
 
 	// Create answer.
 	answer, err := pc.CreateAnswer(nil)
@@ -643,7 +661,15 @@ func (b *Bridge) ensureWebRTCAPI(ctx context.Context) (*webrtc.API, error) {
 			return nil, fmt.Errorf("set ICE address rewrite: %w", err)
 		}
 	}
-	b.api = webrtc.NewAPI(webrtc.WithSettingEngine(se))
+	// The gateway encodes and decodes only Opus.
+	m := &webrtc.MediaEngine{}
+	if err := m.RegisterCodec(webrtc.RTPCodecParameters{
+		RTPCodecCapability: opusReceiveCodec,
+		PayloadType:        111,
+	}, webrtc.RTPCodecTypeAudio); err != nil {
+		return nil, fmt.Errorf("register Opus: %w", err)
+	}
+	b.api = webrtc.NewAPI(webrtc.WithSettingEngine(se), webrtc.WithMediaEngine(m))
 	b.upnpMapping = mapping
 	b.advertisedEndpoints = advertisedEndpoints
 	slog.InfoContext(ctx, "voicertc: WebRTC API ready", "udpPort", b.udpPort, "hostIP", b.hostIP, "advertisedEndpoints", udpEndpointStrings(advertisedEndpoints), "upnpMapped", mapping != nil)
@@ -857,50 +883,6 @@ func (s *session) clearAssistantAudio() {
 	s.audioBufStartedAt = time.Time{}
 	s.audioFirstRTPLogged = false
 	s.audioMu.Unlock()
-}
-
-// audioRxLoop reads Opus RTP from the client's mic track, decodes to PCM,
-// and forwards PCM to the active backend.
-func (s *session) audioRxLoop(ctx context.Context, track *webrtc.TrackRemote) {
-	dec, err := newDecoder()
-	if err != nil {
-		slog.ErrorContext(ctx, "voicertc: decoder init failed", "session", s.id, "err", err)
-		s.sendError("Microphone unavailable: voice codec failed to initialise")
-		return
-	}
-	for {
-		pkt, _, readErr := track.ReadRTP()
-		if readErr != nil {
-			if ctx.Err() == nil {
-				slog.WarnContext(ctx, "voicertc: audio read failed", "session", s.id, "err", readErr)
-				s.sendError("Microphone lost: " + readErr.Error())
-			}
-			return
-		}
-		pcm, decErr := dec.Decode(pkt.Payload)
-		if decErr != nil {
-			slog.DebugContext(ctx, "voicertc: opus decode failed", "session", s.id, "err", decErr)
-			continue
-		}
-		// Convert int16 PCM to little-endian bytes for the backend adapter.
-		pcmBytes := make([]byte, len(pcm)*2)
-		for i, sample := range pcm {
-			binary.LittleEndian.PutUint16(pcmBytes[i*2:], uint16(sample)) //nolint:gosec // PCM int16→uint16 reinterpret is intentional
-		}
-
-		s.mu.Lock()
-		backendSession := s.backend
-		s.mu.Unlock()
-		if backendSession == nil {
-			return
-		}
-		if err := backendSession.acceptMicPCM(ctx, pcmBytes); err != nil {
-			if ctx.Err() == nil {
-				slog.WarnContext(ctx, "voicertc: audio→backend write failed", "session", s.id, "err", err)
-			}
-			return
-		}
-	}
 }
 
 func (s *session) startAudioOutput(ctx context.Context) error {

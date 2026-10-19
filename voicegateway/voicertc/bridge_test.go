@@ -8,14 +8,22 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/maruel/gopus"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
@@ -682,6 +690,71 @@ func TestBackendConnector(t *testing.T) {
 	})
 }
 
+// TestBrowserOpusDTX measures Chromium's real libwebrtc encoder.
+func TestBrowserOpusDTX(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	t.Cleanup(cancel)
+	b, err := newBridgeWithBackend(ctx, &fakeBackendConnector{}, 0, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { b.CloseAll(ctx) })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/html")
+			if _, err := w.Write([]byte("<!doctype html><title>Opus DTX test</title>")); err != nil {
+				t.Error(err)
+			}
+			return
+		}
+		var req struct{ SDP string }
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			t.Error(err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		sdp, _, err := b.HandleOffer(r.Context(), req.SDP)
+		if err != nil {
+			t.Error(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !strings.Contains(sdp, "usedtx=1") {
+			t.Error("gateway answer did not request uplink DTX")
+		}
+		// The control changes only the receive preference, keeping the same audio path.
+		if r.URL.Query().Get("dtx") == "0" {
+			sdp = strings.ReplaceAll(sdp, "usedtx=1", "usedtx=0")
+		}
+		if err := json.NewEncoder(w).Encode(map[string]string{"sdp": sdp}); err != nil {
+			t.Error(err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := newDTXBrowser(ctx, t)
+	c.navigate(srv.URL)
+	var res struct {
+		Result           struct{ Value []browserDTXResult }
+		ExceptionDetails json.RawMessage
+	}
+	c.call("Runtime.evaluate", map[string]any{
+		"expression": browserDTXMeasurement, "awaitPromise": true, "returnByValue": true,
+	}, c.session, &res)
+	if len(res.ExceptionDetails) != 0 || len(res.Result.Value) != 2 {
+		t.Fatalf("browser measurement failed: %+v", res)
+	}
+	ctl, dtx := res.Result.Value[0], res.Result.Value[1]
+	t.Logf("continuous: %+v; DTX: %+v", ctl, dtx)
+	if ctl.Quiet.Packets < 50 || dtx.Quiet.Packets*2 >= ctl.Quiet.Packets || dtx.Quiet.Bytes*2 >= ctl.Quiet.Bytes {
+		t.Fatal("DTX did not halve quiet-uplink packets and bytes")
+	}
+	if dtx.Speech.Packets < 20 || dtx.Resumed.Packets < 20 {
+		t.Fatal("DTX suppressed active or resumed speech")
+	}
+}
+
 type fakeBackendConnector struct {
 	connected bool
 	closed    bool
@@ -977,8 +1050,8 @@ func testBridgeVoiceMetadata(t *testing.T) {
 		voices  bool
 	}{
 		{name: "Gemini audio", backend: &geminiBridgeBackend{apiKey: "test", model: voicegateway.DefaultGeminiModel}, voices: true},
-		{name: "local audio", backend: newLocalStackBackend(nil, fixedASR{text: "test"}, smokeLLM{text: "test"}, placeholderTTS{})},
-		{name: "local text", backend: newLocalStackBackend(nil, nil, smokeLLM{text: "test"}, nil)},
+		{name: "local audio", backend: newLocalStackBackend(nil, fixedASR{text: "test"}, &smokeLLM{text: "test"}, placeholderTTS{})},
+		{name: "local text", backend: newLocalStackBackend(nil, nil, &smokeLLM{text: "test"}, nil)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1007,3 +1080,474 @@ func testBridgeVoiceMetadata(t *testing.T) {
 		})
 	}
 }
+
+type voiceRTCTestSession struct {
+	wg                sync.WaitGroup
+	sessionID         string
+	dc                *webrtc.DataChannel
+	micTrack          *webrtc.TrackLocalStaticSample
+	messages          chan voiceRTCMessage
+	signalErrs        chan error
+	mediaErrs         chan error
+	remoteAudioEnergy chan float64
+}
+
+type voiceRTCMessage struct {
+	kind voicev1.MessageKind
+	data []byte
+}
+
+// voiceRTCOffer exchanges a client SDP offer for the gateway answer and session ID.
+type voiceRTCOffer func(ctx context.Context, sdp string) (sdpAnswer, sessionID string, err error)
+
+func newVoiceRTCTestSession(ctx context.Context, t *testing.T, b backendConnector) *voiceRTCTestSession {
+	br, err := newBridgeWithBackend(ctx, b, 0, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { br.CloseAll(ctx) })
+	return connectVoiceRTCClient(ctx, t, br.HandleOffer, &voicev1.SessionSetup{
+		Kind:  voicev1.MessageKindSessionSetup,
+		Voice: voicev1.VoiceConfig{Name: "local", Language: "en"},
+	})
+}
+
+// connectVoiceRTCClient opens a client peer connection through offer, sends
+// setup, and returns once the gateway reports session.ready.
+func connectVoiceRTCClient(ctx context.Context, t *testing.T, fn voiceRTCOffer, cfg *voicev1.SessionSetup) *voiceRTCTestSession {
+	ctx, cancel := context.WithCancel(ctx)
+	t.Cleanup(cancel)
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &voiceRTCTestSession{
+		messages:          make(chan voiceRTCMessage, 16),
+		signalErrs:        make(chan error, 1),
+		mediaErrs:         make(chan error, 1),
+		remoteAudioEnergy: make(chan float64, 1),
+	}
+	t.Cleanup(func() {
+		cancel()
+		if err := pc.Close(); err != nil {
+			t.Error(err)
+		}
+		s.wg.Wait()
+	})
+	tracks := make(chan *webrtc.TrackRemote, 1)
+	s.wg.Go(func() {
+		select {
+		case tr := <-tracks:
+			s.collectAudioEnergy(tr)
+		case <-ctx.Done():
+		}
+	})
+	pc.OnTrack(func(tr *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		if tr.Kind() == webrtc.RTPCodecTypeAudio {
+			select {
+			case tracks <- tr:
+			case <-ctx.Done():
+			}
+		}
+	})
+
+	mic, err := webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus},
+		"audio",
+		"local-mic",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pc.AddTrack(mic); err != nil {
+		t.Fatal(err)
+	}
+
+	open := make(chan struct{})
+	dc, err := pc.CreateDataChannel("voice-gateway", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dc.OnOpen(func() {
+		close(open)
+	})
+	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+		var env voicev1.MessageEnvelope
+		if err := json.Unmarshal(msg.Data, &env); err != nil {
+			select {
+			case s.signalErrs <- err:
+			default:
+			}
+			return
+		}
+		select {
+		case s.messages <- voiceRTCMessage{kind: env.Kind, data: append([]byte(nil), msg.Data...)}:
+		default:
+			select {
+			case s.signalErrs <- fmt.Errorf("voice message channel full after %s", env.Kind):
+			default:
+			}
+		}
+	})
+
+	sdp, err := pc.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := webrtc.GatheringCompletePromise(pc)
+	if err := pc.SetLocalDescription(sdp); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+
+	desc := pc.LocalDescription()
+	if desc == nil {
+		t.Fatal("missing local description")
+	}
+	ans, id, err := fn(ctx, desc.SDP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id == "" {
+		t.Fatal("empty gateway session ID")
+	}
+	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: ans}); err != nil {
+		t.Fatal(err)
+	}
+
+	s.sessionID = id
+	s.dc = dc
+	s.micTrack = mic
+	select {
+	case <-open:
+	case err := <-s.signalErrs:
+		t.Fatal(err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	s.send(ctx, t, cfg)
+	s.waitMessage(ctx, t, voicev1.MessageKindSessionReady)
+	return s
+}
+
+func (s *voiceRTCTestSession) collectAudioEnergy(tr *webrtc.TrackRemote) {
+	dec, err := gopus.NewDecoder(encoderSampleRate, 1)
+	if err != nil {
+		select {
+		case s.mediaErrs <- err:
+		default:
+		}
+		return
+	}
+	for {
+		pkt, _, err := tr.ReadRTP()
+		if err != nil {
+			return
+		}
+		pcm, err := decode48(dec, pkt.Payload)
+		if err != nil {
+			select {
+			case s.mediaErrs <- err:
+			default:
+			}
+			continue
+		}
+		var energy float64
+		for _, v := range pcm {
+			energy += float64(v) * float64(v)
+		}
+		if len(pcm) != 0 {
+			energy /= float64(len(pcm))
+		}
+		if energy > 1_000 {
+			select {
+			case s.remoteAudioEnergy <- energy:
+			default:
+			}
+			return
+		}
+	}
+}
+
+func (s *voiceRTCTestSession) send(ctx context.Context, t *testing.T, msg any) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	s.wg.Go(func() { done <- s.dc.SendText(string(data)) })
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+}
+
+func (s *voiceRTCTestSession) waitMessage(ctx context.Context, t *testing.T, want voicev1.MessageKind) []byte {
+	for {
+		select {
+		case msg := <-s.messages:
+			if msg.kind == voicev1.MessageKindError {
+				t.Fatalf("gateway returned error while waiting for %s: %s", want, msg.data)
+			}
+			if msg.kind == want {
+				return msg.data
+			}
+		case err := <-s.signalErrs:
+			t.Fatal(err)
+		case <-ctx.Done():
+			t.Fatalf("%v while waiting for %s", ctx.Err(), want)
+		}
+	}
+}
+
+func (s *voiceRTCTestSession) writeMicAudio(ctx context.Context, t *testing.T, n int) {
+	enc, err := newEncoder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pos := 0
+	for f := range n {
+		pcm := make([]int16, encoderFrameSamples)
+		if f < 10 {
+			for i := range pcm {
+				pcm[i] = int16(12000 * math.Sin(2*math.Pi*440*float64(pos)/float64(encoderSampleRate)))
+				pos++
+			}
+		}
+		pkt, err := enc.Encode(pcm)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.micTrack.WriteSample(media.Sample{Data: pkt, Duration: frameDuration}); err != nil {
+			t.Fatal(err)
+		}
+		tm := time.NewTimer(frameDuration)
+		select {
+		case <-tm.C:
+		case <-ctx.Done():
+			tm.Stop()
+			t.Fatal(ctx.Err())
+		}
+	}
+}
+
+type browserDTXResult struct {
+	Speech, Quiet, Resumed struct{ Packets, Bytes uint64 }
+}
+
+// dtxBrowser owns an isolated Chromium process and its synchronous DevTools connection.
+type dtxBrowser struct {
+	t       *testing.T
+	ctx     context.Context
+	cmd     *exec.Cmd
+	ws      *websocket.Conn
+	session string
+	id      int
+	loaded  bool
+	wg      sync.WaitGroup
+	exited  chan struct{}
+	exitErr error
+}
+
+func newDTXBrowser(ctx context.Context, t *testing.T) *dtxBrowser {
+	exe, err := exec.LookPath("chromium")
+	if err != nil {
+		t.Skip("Chromium is not installed; run this test on a browser-equipped host")
+	}
+	dir := t.TempDir()
+	// Cleanup owns shutdown; test cancellation must not kill Chromium before its children exit.
+	cmd := exec.Command(exe, "--headless", "--no-sandbox", "--disable-gpu", //nolint:gosec // Test-owned executable from LookPath; arguments never contain user input.
+		"--autoplay-policy=no-user-gesture-required", "--remote-debugging-port=0", "--user-data-dir="+dir, "about:blank")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	c := &dtxBrowser{t: t, ctx: ctx, cmd: cmd, exited: make(chan struct{})}
+	c.wg.Go(func() { c.exitErr = cmd.Wait(); close(c.exited) })
+	t.Cleanup(c.close)
+	var addr string
+	for addr == "" {
+		data, err := os.ReadFile(filepath.Join(dir, "DevToolsActivePort")) //nolint:gosec // Chromium writes this fixed filename inside the test-owned temporary profile.
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		if lines := strings.Fields(string(data)); len(lines) == 2 {
+			addr = "ws://127.0.0.1:" + lines[0] + lines[1]
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-c.exited:
+			t.Fatalf("Chromium exited before opening DevTools: %v", c.exitErr)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	ws, res, err := websocket.Dial(ctx, addr, nil)
+	if res != nil && res.Body != nil {
+		if err := res.Body.Close(); err != nil {
+			t.Error(err)
+		}
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.ws = ws
+	ws.SetReadLimit(1 << 20)
+	var dst struct{ TargetID string }
+	c.call("Target.createTarget", map[string]string{"url": "about:blank"}, "", &dst)
+	var att struct{ SessionID string }
+	c.call("Target.attachToTarget", map[string]any{"targetId": dst.TargetID, "flatten": true}, "", &att)
+	c.session = att.SessionID
+	return c
+}
+
+func (c *dtxBrowser) close() {
+	if c.ws != nil {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(c.ctx), time.Second)
+		err := c.ws.Write(ctx, websocket.MessageText, []byte(`{"id":1000000,"method":"Browser.close"}`))
+		cancel()
+		if err != nil {
+			c.t.Errorf("request Chromium shutdown: %v", err)
+		}
+		if err := c.ws.CloseNow(); err != nil {
+			c.t.Errorf("close DevTools: %v", err)
+		}
+	}
+	select {
+	case <-c.exited:
+		if c.exitErr != nil {
+			c.t.Errorf("Chromium exit: %v", c.exitErr)
+		}
+	case <-time.After(5 * time.Second):
+		c.t.Error("Chromium did not stop within five seconds")
+		if err := c.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			c.t.Error(err)
+		}
+	}
+	c.wg.Wait()
+}
+
+func (c *dtxBrowser) navigate(u string) {
+	c.loaded = false
+	c.call("Page.enable", nil, c.session, nil)
+	c.call("Page.navigate", map[string]string{"url": u}, c.session, nil)
+	for !c.loaded {
+		c.call("Runtime.evaluate", map[string]string{"expression": "document.readyState"}, c.session, nil)
+	}
+}
+
+func (c *dtxBrowser) call(m string, p any, sid string, v any) {
+	c.id++
+	data, err := json.Marshal(struct {
+		ID        int    `json:"id"`
+		Method    string `json:"method"`
+		Params    any    `json:"params,omitempty"`
+		SessionID string `json:"sessionId,omitempty"`
+	}{c.id, m, p, sid})
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	if err := c.ws.Write(c.ctx, websocket.MessageText, data); err != nil {
+		c.t.Fatal(err)
+	}
+	for {
+		_, data, err := c.ws.Read(c.ctx)
+		if err != nil {
+			c.t.Fatal(err)
+		}
+		var msg struct {
+			ID        int
+			Method    string
+			SessionID string
+			Result    json.RawMessage
+			Error     json.RawMessage
+		}
+		if err := json.Unmarshal(data, &msg); err != nil {
+			c.t.Fatal(err)
+		}
+		if msg.Method == "Page.loadEventFired" && msg.SessionID == c.session {
+			c.loaded = true
+		}
+		if msg.ID != c.id {
+			continue
+		}
+		if len(msg.Error) != 0 {
+			c.t.Fatalf("DevTools %s: %s", m, msg.Error)
+		}
+		if v != nil {
+			if err := json.Unmarshal(msg.Result, v); err != nil {
+				c.t.Fatal(err)
+			}
+		}
+		return
+	}
+}
+
+const browserDTXMeasurement = `(async () => {
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  async function run(dtx) {
+    const ac = new AudioContext({sampleRate: 48000});
+    const source = ac.createOscillator();
+    const gain = ac.createGain();
+    const dest = ac.createMediaStreamDestination();
+    dest.channelCount = 1;
+    source.frequency.value = 440;
+    gain.gain.value = 0.2;
+    source.connect(gain).connect(dest);
+    const pc = new RTCPeerConnection();
+    try {
+      pc.addTrack(dest.stream.getAudioTracks()[0]);
+      const dc = pc.createDataChannel('voice-gateway');
+      const ready = new Promise((resolve, reject) => {
+        dc.onopen = () => dc.send(JSON.stringify({kind: 'session.setup', voice: {name: 'local', language: 'en'}}));
+        dc.onmessage = ev => {
+          const msg = JSON.parse(ev.data);
+          if (msg.kind === 'session.ready') resolve();
+          if (msg.kind === 'error') reject(new Error(msg.message));
+        };
+      });
+      source.start();
+      await ac.resume();
+      await pc.setLocalDescription(await pc.createOffer());
+      if (pc.iceGatheringState !== 'complete') await new Promise(resolve => {
+        pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') resolve(); };
+      });
+      const res = await fetch('/offer?dtx=' + (dtx ? '1' : '0'), {
+        method: 'POST', body: JSON.stringify({sdp: pc.localDescription.sdp})
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const answer = await res.json();
+      await pc.setRemoteDescription({type: 'answer', sdp: answer.sdp});
+      await ready;
+      async function stats() {
+        const reports = await pc.getStats();
+        const r = [...reports.values()].find(r => r.type === 'outbound-rtp' && r.kind === 'audio');
+        if (!r) throw new Error('No outbound audio stats');
+        return {packets: r.packetsSent, bytes: r.bytesSent};
+      }
+      async function measure(ms) {
+        const a = await stats(); await sleep(ms); const b = await stats();
+        return {packets: b.packets-a.packets, bytes: b.bytes-a.bytes};
+      }
+      await sleep(750);
+      const speech = await measure(1500);
+      gain.gain.value = 0;
+      await sleep(1000);
+      const quiet = await measure(2000);
+      gain.gain.value = 0.2;
+      const resumed = await measure(1000);
+      return {speech, quiet, resumed};
+    } finally {
+      pc.close(); source.stop(); await ac.close();
+    }
+  }
+  return [await run(false), await run(true)];
+})()`

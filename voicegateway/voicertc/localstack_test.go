@@ -960,6 +960,91 @@ func TestLocalStackProviderCleanup(t *testing.T) { //nolint:paralleltest // The 
 	}
 }
 
+func TestVoiceRTCLocalStackPlaceholders(t *testing.T) {
+	t.Parallel()
+	t.Run("choices", testBridgeChoiceRuntime)
+
+	t.Run("ASR", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+		t.Cleanup(cancel)
+		s := newVoiceRTCTestSession(ctx, t, newLocalStackBackend(
+			func() vadSegmenter { return &energyVAD{} },
+			fixedASR{text: "smoke transcript"}, &smokeLLM{text: "ack"}, placeholderTTS{},
+		))
+		s.writeMicAudio(ctx, t, 24)
+		data := s.waitMessage(ctx, t, voicev1.MessageKindTranscriptDelta)
+		var msg voicev1.TranscriptDelta
+		if err := json.Unmarshal(data, &msg); err != nil {
+			t.Fatal(err)
+		}
+		if msg.Speaker != voicev1.SpeakerUser || msg.Text != "smoke transcript" {
+			t.Fatalf("transcript = %+v, want user smoke transcript", msg)
+		}
+	})
+
+	t.Run("LLM", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+		t.Cleanup(cancel)
+		s := newVoiceRTCTestSession(ctx, t, newLocalStackBackend(
+			func() vadSegmenter { return &energyVAD{} },
+			fixedASR{text: "hello"}, &smokeLLM{text: "smoke llm response"}, placeholderTTS{},
+		))
+		s.writeMicAudio(ctx, t, 24)
+		data := s.waitMessage(ctx, t, voicev1.MessageKindAssistantTextDelta)
+		var msg voicev1.AssistantTextDelta
+		if err := json.Unmarshal(data, &msg); err != nil {
+			t.Fatal(err)
+		}
+		if msg.Text != "smoke llm response" {
+			t.Fatalf("assistant text = %q, want smoke llm response", msg.Text)
+		}
+	})
+
+	t.Run("TTS", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+		t.Cleanup(cancel)
+		s := newVoiceRTCTestSession(ctx, t, newLocalStackBackend(
+			func() vadSegmenter { return &energyVAD{} },
+			fixedASR{text: "hello"}, &smokeLLM{text: "smoke tts response"}, placeholderTTS{},
+		))
+		s.writeMicAudio(ctx, t, 24)
+		s.waitMessage(ctx, t, voicev1.MessageKindSpeechStarted)
+		select {
+		case energy := <-s.remoteAudioEnergy:
+			if energy < 1_000 {
+				t.Fatalf("assistant RTP audio energy = %.0f, want audible signal", energy)
+			}
+		case err := <-s.mediaErrs:
+			t.Fatal(err)
+		case err := <-s.signalErrs:
+			t.Fatal(err)
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	})
+	t.Run("speech with no trailing packets", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		t.Cleanup(cancel)
+		s := newVoiceRTCTestSession(ctx, t, newLocalStackBackend(
+			func() vadSegmenter { return &energyVAD{} },
+			fixedASR{text: "DTX turn"}, &smokeLLM{text: "ack"}, placeholderTTS{},
+		))
+		s.writeMicAudio(ctx, t, 10)
+		started := time.Now()
+		s.waitMessage(ctx, t, voicev1.MessageKindTranscriptDelta)
+		if elapsed := time.Since(started); elapsed > time.Second {
+			t.Fatalf("turn ending took %s after the microphone stopped sending", elapsed)
+		}
+		// Speech can resume on the same track after idle synthesis.
+		s.writeMicAudio(ctx, t, 10)
+		s.waitMessage(ctx, t, voicev1.MessageKindTranscriptDelta)
+	})
+}
+
 type cleanupGenAIProvider struct {
 	fakeGenAIProvider
 
@@ -1613,3 +1698,25 @@ func TestLocalStackSessionClosedRejectsTurns(t *testing.T) {
 	}
 	sess.startUserMessage(t.Context(), "after close")
 }
+
+type smokeLLM struct {
+	text string
+}
+
+func (l *smokeLLM) newConversation(string, []voicev1.ToolDeclaration) llmConversation {
+	return &smokeLLMConversation{text: l.text}
+}
+
+type smokeLLMConversation struct {
+	text string
+}
+
+func (c *smokeLLMConversation) user(context.Context, string) (llmStep, error) {
+	return newLLMStep([]string{c.text}, llmReply{text: c.text}, nil), nil
+}
+
+func (c *smokeLLMConversation) toolResult(context.Context, string, string, json.RawMessage) (llmStep, error) {
+	return newLLMStep([]string{c.text}, llmReply{text: c.text}, nil), nil
+}
+
+func (c *smokeLLMConversation) addContext(string) {}

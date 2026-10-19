@@ -106,6 +106,98 @@ requests a UPnP IGD mapping for that port, including an OS-assigned port from
 address on success. UPnP does not replace TURN: UDP-blocking networks and
 double NAT still fail.
 
+## Mobile uplink bandwidth
+
+The gateway requests Opus discontinuous transmission (DTX) through `usedtx=1`
+in its SDP answer. The encoding work stays in the Android or browser client's
+existing WebRTC stack; no additional client speech model or capture path is
+required. This is a receiver preference defined by
+[RFC 7587](https://datatracker.ietf.org/doc/html/rfc7587#section-7.1).
+DTX reduces quiet-period packets while retaining occasional comfort-noise
+updates. ICE, RTCP, and data-channel traffic still run. Background noise can
+prevent the encoder from entering DTX.
+
+The [microphone receiver](../voicegateway/voicertc/microphone.go) uses RTP media
+time and bounded read deadlines to reconstruct missing silence inside the
+gateway. This keeps local-stack turn endings and Gemini's silence tail moving
+even when no more packets arrive. It allows scheduling jitter, bounds catch-up
+work, handles RTP wraparound, and ignores duplicate or reordered packets.
+It is not a jitter buffer: prolonged network stalls can also end a turn.
+Reconstructed idle PCM passes through the Gemini gate, which suppresses it
+after its trailing silence is flushed.
+
+`go test ./voicegateway/voicertc -run '^TestBrowserOpusDTX$' -count=1 -v`
+compares a real Chromium/libwebrtc sender with DTX enabled and disabled. It
+uses a generated tone, quiet input, and resumed tone on local WebRTC sessions.
+It requires a `chromium` executable and skips when none is installed. One
+two-second quiet-window measurement on Chromium 155 reduced outbound RTP
+packets from 100 to 10 and reported RTP bytes from 300 to 20, while active and
+resumed tone remained transmitted. These are controlled browser measurements,
+not total 5G traffic, a physical Android-device measurement, a speech-quality
+benchmark, or a battery-life estimate. Quiet continuous Opus packets are
+already small, so reducing packet overhead is an important part of the gain.
+
+## Gemini Live input cost
+
+Findings checked October 19, 2026 for the Gemini Developer API used by this
+gateway; Vertex AI has separate pricing.
+
+The [published Live prices](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.8-live)
+list audio input at $3 per million tokens (approximately $0.005/minute),
+and audio output at $12 per million tokens (approximately $0.018/minute).
+Suppressing quiet input targets the input portion of cost. For example,
+omitting 40 minutes of audio from an hour of microphone capture corresponds
+to roughly $0.20 less newly submitted audio at the published minute estimate.
+This is an estimate, not a measured bill reduction: context, tool/text traffic,
+output, and actual token accounting still contribute to the session cost.
+The price page does not promise a silence exemption; do not assume that
+server-side speech detection makes transmitted silence free.
+
+The [automatic VAD guide](https://ai.google.dev/gemini-api/docs/live-api/capabilities#automatic-vad)
+supports pausing input and flushing buffered audio with `audioStreamEnd`,
+then resuming audio on the same connection. The
+[wire reference](https://ai.google.dev/api/live#bidigeneratecontentrealtimeinput)
+requires automatic activity detection for this signal. Explicit
+`activityStart`/`activityEnd` instead require disabling automatic detection.
+Changing `turnCoverage` only groups turn content; it does not prevent audio
+from reaching Google. Muting input whenever the assistant speaks would also
+prevent user interruptions.
+
+The gateway therefore gates quiet PCM in the
+[Gemini adapter](../voicegateway/voicertc/gemini_audio.go). The source owns its
+threshold, frame duration, prefix, and trailing silence settings. Gemini
+continues to classify speech and handle turn endings and interruptions.
+Filtering happens before base64 encoding and upstream WebSocket writes and
+applies equally to browser and native WebRTC clients. Client-to-gateway Opus
+uses the DTX preference described above. Text sessions send no microphone PCM
+to Gemini.
+
+This conservative energy gate passes noise above its threshold; it cannot
+isolate speech in a noisy car. Very quiet speech below the threshold can be
+lost outside the retained prefix and tail. A speech classifier would need
+recorded speech/noise evaluation before replacing the gate. The WebRTC receiver
+advances its audio-duration tail with bounded reconstructed silence during
+packet gaps and microphone shutdown after audio has started.
+
+Protocol shapes were compared with `live.go`, `types.go`, and
+`live_converters.go` in
+[googleapis/go-genai at f1d0c6ce6e75](https://github.com/googleapis/go-genai/tree/f1d0c6ce6e75ad0ef9fcc8bc7c15d73b56c28a79).
+The WebSocket regression covers quiet idle input, quiet speech onset, short
+pauses, long silence, exact prefix/tail audio, repeated resumption, split PCM
+samples, and upstream write failure. It does not contact a paid Gemini model.
+
+To validate financial impact, replay identical representative recordings in
+separate continuous-input and gated sessions with the same model, setup,
+tools, and output policy. Compare submitted PCM duration, provider
+`usageMetadata` audio breakdowns, transcriptions, interruption success,
+response latency, and billed usage. Include quiet speakers, noisy cars,
+assistant echo, and microphone mute/unmute. Token counts alone do not prove
+equivalent speech quality or a particular percentage reduction in total cost.
+Context compression and shorter replies are separate optimizations;
+[session management](https://ai.google.dev/gemini-api/docs/live-api/session-management#context-window-compression)
+documents compression but changing retained history needs its own quality
+evaluation.
+
 ## Authorization
 
 The host is the authorization server; it authenticates users and mints voice
