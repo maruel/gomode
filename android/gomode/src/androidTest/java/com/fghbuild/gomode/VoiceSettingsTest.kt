@@ -22,6 +22,7 @@ import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.ui.settings.SettingsScreen
 import com.fghbuild.gomode.voice.ServerVoiceSwitch
+import com.fghbuild.gomode.voice.VoiceState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -74,7 +75,7 @@ class VoiceSettingsTest {
             composeRule.waitUntil { repository.settings.value.activeServiceId == target }
             composeRule.runOnIdle {
                 assertNull(handoff.pending.value)
-                assertFalse(handoff.takeReady(repository.settings.value, ready = true))
+                assertFalse(handoff.shouldConnect(repository.settings.value, ready = true, VoiceState()))
             }
         } finally {
             scope.cancel()

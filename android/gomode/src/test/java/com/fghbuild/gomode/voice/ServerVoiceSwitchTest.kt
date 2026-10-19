@@ -30,7 +30,7 @@ import java.io.IOException
 @OptIn(ExperimentalCoroutinesApi::class)
 class ServerVoiceSwitchTest {
     @Test
-    fun `waits for destination readiness and starts at most once`() =
+    fun `waits for destination readiness and keeps interrupted setup pending until connected`() =
         runTest {
             val repository = SettingsRepository(MemoryStore())
             val target = repository.addService("Home", "https://home.example")
@@ -44,14 +44,42 @@ class ServerVoiceSwitchTest {
                     ?.target
                     ?.id,
             )
-            assertFalse("old server readiness cannot start a new session", handoff.takeReady(before, true))
+            assertFalse(
+                "old server readiness cannot start a new session",
+                handoff.shouldConnect(before, true, VoiceState()),
+            )
             val after = repository.awaitService(target)
-            assertFalse("destination must finish page loading and auth", handoff.takeReady(after, false))
-            assertTrue(handoff.takeReady(after, true))
+            assertFalse(
+                "destination must finish page loading and auth",
+                handoff.shouldConnect(after, false, VoiceState()),
+            )
+            assertTrue(handoff.shouldConnect(after, true, VoiceState()))
+            assertFalse(handoff.shouldConnect(after, true, VoiceState(connectStatus = "Connecting…")))
+            assertFalse(handoff.shouldConnect(after, false, VoiceState()))
+            assertTrue(
+                "auth interruption must permit a fresh attempt",
+                handoff.shouldConnect(after, true, VoiceState()),
+            )
+            assertFalse(handoff.shouldConnect(after, true, VoiceState(connected = true)))
             assertNull(handoff.pending.value)
-            assertFalse(handoff.takeReady(after, true))
+            assertFalse(handoff.shouldConnect(after, true, VoiceState()))
             handoff.switchServer(target)
             assertNull("selecting the active server does not restart voice", handoff.pending.value)
+        }
+
+    @Test
+    fun `destination connection failure stops automatic retries`() =
+        runTest {
+            val repository = SettingsRepository(MemoryStore())
+            val target = repository.addService("Home", "https://home.example")
+            val source = repository.addService("Work", "https://work.example")
+            repository.awaitService(source)
+            val handoff = ServerVoiceSwitch(repository, backgroundScope)
+            handoff.switchServer(target)
+            val after = repository.awaitService(target)
+            assertFalse(handoff.shouldConnect(after, true, VoiceState(error = "Gateway unavailable")))
+            assertNull(handoff.pending.value)
+            assertFalse(handoff.shouldConnect(after, true, VoiceState()))
         }
 
     @Test
@@ -76,7 +104,7 @@ class ServerVoiceSwitchTest {
             oldSession.cancelAndJoin()
             gate.complete(Unit)
             runCurrent()
-            assertTrue(handoff.takeReady(repository.awaitService(target), true))
+            assertTrue(handoff.shouldConnect(repository.awaitService(target), true, VoiceState()))
         }
 
     @Test
@@ -95,7 +123,7 @@ class ServerVoiceSwitchTest {
             handoff.cancel()
             gate.complete(Unit)
             switching.await()
-            assertFalse(handoff.takeReady(repository.awaitService(target), true))
+            assertFalse(handoff.shouldConnect(repository.awaitService(target), true, VoiceState()))
             assertNull(handoff.pending.value)
         }
 
@@ -115,7 +143,7 @@ class ServerVoiceSwitchTest {
                 )
             for (edit in edits) {
                 handoff.switchServer(target)
-                assertFalse(handoff.takeReady(edit(repository.awaitService(target)), true))
+                assertFalse(handoff.shouldConnect(edit(repository.awaitService(target)), true, VoiceState()))
                 assertNull(handoff.pending.value)
                 repository.switchService(source)
                 repository.awaitService(source)
@@ -136,7 +164,7 @@ class ServerVoiceSwitchTest {
             assertNull(handoff.pending.value)
             assertEquals(source, repository.settings.value.activeServiceId)
             handoff.switchServer(target)
-            assertTrue(handoff.takeReady(repository.awaitService(target), true))
+            assertTrue(handoff.shouldConnect(repository.awaitService(target), true, VoiceState()))
         }
 
     private suspend fun SettingsRepository.awaitService(id: String): SettingsState =

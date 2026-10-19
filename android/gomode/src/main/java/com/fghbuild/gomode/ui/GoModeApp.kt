@@ -367,6 +367,9 @@ internal fun GoModeApp(
         webLoadState,
         localModelState,
         voiceSession,
+        voiceState.connected,
+        voiceState.connectStatus,
+        voiceState.error,
     ) {
         if (pendingServerSwitch == null ||
             pendingServerSwitch !== serverVoiceSwitch.pending.value
@@ -379,12 +382,13 @@ internal fun GoModeApp(
                 authEpoch == bearerStore.authEpoch.value && authReady && configuredVoiceAvailable &&
                 webLoadState == WebShellLoadState.Ready &&
                 (!shouldPrepareLocalModel(settings, authReady) || localModelState == LocalModelState.Ready)
-        if (serverVoiceSwitch.takeReady(settings, ready)) {
+        if (serverVoiceSwitch.shouldConnect(settings, ready, voiceState)) {
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
                 PackageManager.PERMISSION_GRANTED
             ) {
                 voiceSession.connect()
             } else {
+                serverVoiceSwitch.cancel()
                 scope.launch { snackbarHostState.showSnackbar("Microphone permission is required to reconnect voice") }
             }
         } else if (settings.activeServiceId == pendingServerSwitch.target.id &&

@@ -42,10 +42,11 @@ internal class ServerVoiceSwitch(
         mutablePending.value = null
     }
 
-    // Consume once, only after the destination has its own page, auth, and voice setup ready.
-    fun takeReady(
+    // Keep the handoff until connected: a page reload can invalidate auth during setup.
+    fun shouldConnect(
         settings: SettingsState,
         ready: Boolean,
+        voice: VoiceState,
     ): Boolean {
         val request = mutablePending.value ?: return false
         val source = request.source
@@ -66,8 +67,10 @@ internal class ServerVoiceSwitch(
             cancel()
             return false
         }
-        if (!ready) return false
-        cancel()
-        return true
+        if (voice.connected || voice.error != null) {
+            cancel()
+            return false
+        }
+        return ready && voice.connectStatus == null
     }
 }
