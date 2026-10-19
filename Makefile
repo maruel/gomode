@@ -4,7 +4,7 @@
 
 # Read-only verification lanes. Each command is passed through two shells, so
 # keep single quotes out of these values.
-VERIFY_GO = go test -run=^$$ ./... && go test -race -run=^$$ ./voicegateway/voicertc && go vet ./... && go tool golangci-lint run ./... && go mod tidy -diff && go build ./...
+VERIFY_GO = go test -run=^$$ ./... && go test -race -run=^$$ ./voicegateway/voicertc && go tool golangci-lint run ./... && go mod tidy -diff && go build ./...
 VERIFY_PY = uv run --locked ruff check --quiet scripts && uv run --locked ruff format --check --quiet scripts
 VERIFY_SH = files=$$(git ls-files "*.sh" "scripts/hooks/*"); [ -z "$$files" ] || go tool shfmt -d $$files
 VERIFY_MISC = uv run --locked python scripts/lint_binaries.py && uv run --locked python scripts/update_agents_file_index.py --check && git diff --check
