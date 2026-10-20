@@ -8,9 +8,11 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextReplacement
+import androidx.datastore.preferences.core.edit
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.GrantPermissionRule
 import androidx.test.uiautomator.UiDevice
+import kotlinx.coroutines.runBlocking
 import org.junit.Rule
 import org.junit.rules.TestRule
 import org.junit.runners.model.Statement
@@ -31,7 +33,7 @@ abstract class GoModeE2eTestBase {
                     validateDeviceBeforeSetup()
                     enableSoftKeyboardWithHardwareKeyboard()
                     val context = InstrumentationRegistry.getInstrumentation().targetContext
-                    context.filesDir.resolve("datastore/gomode_settings.preferences_pb").delete()
+                    runBlocking { context.goModeSettingsDataStore.edit { it.clear() } }
                     base.evaluate()
                 }
             }

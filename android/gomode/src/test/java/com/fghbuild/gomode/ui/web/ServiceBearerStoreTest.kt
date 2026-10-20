@@ -38,10 +38,10 @@ class ServiceBearerStoreTest {
         assertTrue(store.receive(origin, true, serviceURL, token("first")))
         store.onNavigation("https://service.test:8443/other")
         assertEquals("first", store.tokenFor(serviceURL))
-        assertEquals(0L, store.authEpoch.value)
+        assertEquals(1L, store.authEpoch.value)
         store.onNavigation("https://evil.test")
         assertNull(store.tokenFor(serviceURL))
-        assertEquals(1L, store.authEpoch.value)
+        assertEquals(2L, store.authEpoch.value)
         assertFalse(store.receive(origin, true, serviceURL, token("in-flight")))
 
         store.onNavigation(serviceURL)
@@ -53,6 +53,22 @@ class ServiceBearerStoreTest {
         store.deactivate()
         assertNull(store.tokenFor(serviceURL))
         assertFalse(store.receive(origin, true, serviceURL, token("stale")))
+    }
+
+    @Test
+    fun acceptedBearerTransitionsAdvanceEpochSynchronouslyEvenWhenTheTokenReturnsToItsOriginalValue() {
+        val store = ServiceBearerStore(serviceURL)
+        store.onNavigation(serviceURL)
+        assertTrue(store.receive(origin, true, serviceURL, token("account")))
+        val originalEpoch = store.authEpoch.value
+        assertTrue(store.receive(origin, true, serviceURL, """{"bearerToken":null}"""))
+        assertTrue(store.authEpoch.value > originalEpoch)
+        val logoutEpoch = store.authEpoch.value
+        assertTrue(store.receive(origin, true, serviceURL, token("account")))
+        assertTrue(store.authEpoch.value > logoutEpoch)
+        val currentEpoch = store.authEpoch.value
+        assertTrue(store.receive(origin, true, serviceURL, token("account")))
+        assertEquals(currentEpoch, store.authEpoch.value)
     }
 
     @Test
@@ -160,6 +176,21 @@ class ServiceBearerStoreTest {
         assertTrue(store.receive(origin, true, serviceURL, settled(false)))
         assertFalse(store.authReady.value)
         assertNull(store.tokenFor("https://service.test:8443/api/mcp"))
+    }
+
+    @Test
+    fun replacementBearerAfterPageUnavailabilityInvalidatesSharedIdentitySynchronously() {
+        val store = ServiceBearerStore(serviceURL)
+        var sharedChanges = 0
+        val handler = ServiceAuthMessageHandler(store, { sharedChanges++ }) {}
+        handler.onNavigation(serviceURL)
+        assertTrue(handler.receive(origin, true, serviceURL, token("account-a")))
+        assertEquals(0, sharedChanges)
+        handler.onNavigation(null)
+        assertEquals(0, sharedChanges)
+        handler.onNavigation(serviceURL)
+        assertTrue(handler.receive(origin, true, serviceURL, token("account-b")))
+        assertEquals(1, sharedChanges)
     }
 
     private fun token(value: String): String = """{"bearerToken":"$value"}"""

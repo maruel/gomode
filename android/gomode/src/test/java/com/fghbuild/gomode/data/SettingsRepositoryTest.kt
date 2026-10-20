@@ -221,6 +221,28 @@ class SettingsRepositoryTest {
         }
 
     @Test
+    fun `cycling uses saved order and persisted selection without waiting for UI updates`() =
+        runBlocking {
+            val repo = createRepo()
+            repo.cycleService()
+            assertTrue(repo.awaitSettings("empty services").services.isEmpty())
+            val first = repo.addService("First", "https://first.example")
+            repo.cycleService()
+            repo.awaitSettings("single service unchanged") { it.activeServiceId == first }
+            val second = repo.addService("Second", "https://second.example")
+            val third = repo.addService("Third", "https://third.example")
+            repo.cycleService()
+            val wrapped = repo.awaitSettings("last service wraps to first") { it.activeServiceId == first }
+            assertEquals(listOf(first, second, third), wrapped.services.map { it.id })
+            repo.cycleService()
+            repo.cycleService()
+            assertEquals(
+                third,
+                repo.awaitSettings("rapid cycles reach third") { it.activeServiceId == third }.activeServiceId,
+            )
+        }
+
+    @Test
     fun `updateHaloAddress stores and clears address`() =
         runBlocking {
             val repo = createRepo()

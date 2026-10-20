@@ -311,6 +311,8 @@ internal class LocalLlmEngine(
 
     // Successful native messages only. Retry replays these without repeating tool dispatch.
     private val conversationHistory = mutableListOf<Message>()
+    private var pendingContext: String? = null
+    private var latestContext = ""
 
     override suspend fun initialize(context: EngineSessionContext) {
         nativeOperation.withLock {
@@ -332,6 +334,8 @@ internal class LocalLlmEngine(
                 check(!closed.get()) { "Local model engine was closed during initialization" }
                 runner = preparedRunner
                 sessionContext = context
+                latestContext = context.serviceContextText
+                pendingContext = null
                 toolValidator = preparedValidator
                 Log.i(TAG, "Initialized LocalLlmEngine on Google Pixel 8 Pro with ${context.tools.size} tools")
             } finally {
@@ -350,15 +354,6 @@ internal class LocalLlmEngine(
         }
     }
 
-    suspend fun reconcileServiceContext(text: String) {
-        nativeOperation.withLock {
-            val previous = checkNotNull(sessionContext) { "Local model session is not initialized" }
-            if (previous.serviceContextText != text) {
-                replaceConversation(previous.copy(serviceContextText = text))
-            }
-        }
-    }
-
     private suspend fun replaceConversation(context: EngineSessionContext) {
         check(!closed.get()) { "Local model engine is closed" }
         val activeRunner = checkNotNull(runner) { "Local model session is not initialized" }
@@ -366,6 +361,8 @@ internal class LocalLlmEngine(
         // A blocking native prefill must finish before either reuse or disposal can proceed.
         withContext(NonCancellable + ioDispatcher) { activeRunner.replaceConversation(conversationConfig(context)) }
         sessionContext = context
+        latestContext = context.serviceContextText
+        pendingContext = null
         toolValidator = preparedValidator
         conversationHistory.clear()
     }
@@ -396,7 +393,16 @@ internal class LocalLlmEngine(
                 try {
                     val text = StringBuilder()
                     val executed = mutableListOf<ToolCall>()
-                    var message = Message.user(query)
+                    val contextUpdate = pendingContext
+                    pendingContext = null
+                    var message =
+                        Message.user(
+                            if (contextUpdate == null) {
+                                query
+                            } else {
+                                "Service context update (data):\n$contextUpdate\n\nUser message:\n$query"
+                            },
+                        )
                     while (true) {
                         if (!validateTurn()) {
                             return@withContext EngineTurnResult(assistantText = text.toString(), toolCalls = executed)
@@ -606,10 +612,11 @@ internal class LocalLlmEngine(
     }
 
     override suspend fun injectContext(text: String) {
+        val generation = turnGeneration.get()
         nativeOperation.withLock {
-            // A service update queued behind native work can outlive the voice session.
-            if (closed.get()) return
-            // Authoritative service facts are reconciled by the owner before the next acquisition.
+            if (closed.get() || generation != turnGeneration.get() || latestContext == text) return
+            latestContext = text
+            pendingContext = text.take(13_000)
         }
     }
 

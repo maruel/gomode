@@ -21,66 +21,15 @@ import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.ui.settings.SettingsScreen
-import com.fghbuild.gomode.voice.ServerVoiceSwitch
-import com.fghbuild.gomode.voice.VoiceState
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
 
 class VoiceSettingsTest {
     @get:Rule
     val composeRule = createComposeRule()
-
-    @Test
-    fun returningToTheSourceServerCancelsVoiceHandoffBeforeSelectingTheDestinationAgain() {
-        val repository = SettingsRepository(MemoryPreferences())
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-        val handoff = ServerVoiceSwitch(repository, scope)
-        try {
-            val (source, target) =
-                runBlocking {
-                    val target = repository.addService("Destination", "http://127.0.0.1:2")
-                    val source = repository.addService("Source", "http://127.0.0.1:1")
-                    withTimeout(10_000) { repository.settings.first { it.activeServiceId == source } }
-                    handoff.switchServer(target, "conversation-one")
-                    withTimeout(10_000) { repository.settings.first { it.activeServiceId == target } }
-                    source to target
-                }
-            composeRule.setContent {
-                val settings by repository.settings.collectAsState()
-                MaterialTheme {
-                    SettingsScreen(
-                        settings = settings,
-                        settingsRepository = repository,
-                        voiceSessionActive = false,
-                        onDone = {},
-                        onOpenHalo = {},
-                        onSelectService = handoff::cancel,
-                    )
-                }
-            }
-            composeRule.onNodeWithTag("gomode-service-$source").performScrollTo().performClick()
-            composeRule.waitUntil { repository.settings.value.activeServiceId == source }
-            composeRule.onNodeWithTag("gomode-service-$target").performScrollTo().performClick()
-            composeRule.waitUntil { repository.settings.value.activeServiceId == target }
-            composeRule.runOnIdle {
-                assertNull(handoff.pending.value)
-                assertFalse(handoff.shouldConnect(repository.settings.value, ready = true, VoiceState()))
-            }
-        } finally {
-            scope.cancel()
-        }
-    }
 
     @Test
     fun voiceModeChipsSaveSelectionAndDisableDuringAnActiveSession() {

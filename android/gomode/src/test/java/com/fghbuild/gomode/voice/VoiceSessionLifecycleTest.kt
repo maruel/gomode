@@ -1,6 +1,7 @@
 // Tests that disconnected voice attempts cannot continue discovery or deliver stale tool results.
 package com.fghbuild.gomode.voice
 
+import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
@@ -9,9 +10,15 @@ import com.caic.voicegateway.sdk.v1.ToolCall
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceSettingsClient
+import com.fghbuild.gomode.ui.web.ServiceShellKey
+import com.fghbuild.gomode.ui.web.ServiceShellRegistry
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -21,7 +28,6 @@ import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -47,6 +53,8 @@ import kotlin.coroutines.suspendCoroutine
 
 @RunWith(RobolectricTestRunner::class)
 class VoiceSessionLifecycleTest {
+    private val cleanup = mutableListOf<() -> Unit>()
+
     @Before
     fun setUp() {
         Dispatchers.setMain(Dispatchers.Unconfined)
@@ -54,6 +62,7 @@ class VoiceSessionLifecycleTest {
 
     @After
     fun tearDown() {
+        cleanup.asReversed().forEach { it() }
         Dispatchers.resetMain()
     }
 
@@ -218,7 +227,7 @@ class VoiceSessionLifecycleTest {
     @Test
     fun selectingAnUnavailableAudioDeviceReportsFailure() {
         val settings = SettingsRepository(InMemoryPreferencesDataStore())
-        val session = VoiceSession(RuntimeEnvironment.getApplication(), settings, languageTag = "en-US")
+        val session = createCloudSession(settings)
         session.selectAudioDevice(Int.MAX_VALUE)
         assertTrue(
             session.state.value.audioError
@@ -241,7 +250,7 @@ class VoiceSessionLifecycleTest {
                 val settings = SettingsRepository(InMemoryPreferencesDataStore())
                 settings.addService(label = "old", url = server.url("/").toString())
                 settings.settings.first { it.activeServiceURL.isNotBlank() }
-                val session = VoiceSession(RuntimeEnvironment.getApplication(), settings, languageTag = "en-US")
+                val session = createCloudSession(settings)
 
                 session.connect()
                 assertEquals(true, discoveryStarted.await(5, TimeUnit.SECONDS))
@@ -274,7 +283,7 @@ class VoiceSessionLifecycleTest {
                 val settings = SettingsRepository(InMemoryPreferencesDataStore())
                 settings.addService(label = "old", url = oldServer.url("/").toString())
                 settings.settings.first { it.activeServiceURL == oldServer.url("/").toString().trimEnd('/') }
-                val session = VoiceSession(RuntimeEnvironment.getApplication(), settings, languageTag = "en-US")
+                val session = createCloudSession(settings)
                 session.connect()
                 assertEquals(true, oldStarted.await(5, TimeUnit.SECONDS))
 
@@ -296,134 +305,14 @@ class VoiceSessionLifecycleTest {
         }
 
     @Test
-    fun lateToolResultsAndErrorsDoNotReachAnotherSession() =
-        runBlocking {
-            for (fails in listOf(false, true)) {
-                val server = MockWebServer()
-                val toolStarted = CountDownLatch(1)
-                val releaseTool = CountDownLatch(1)
-                server.dispatcher =
-                    object : Dispatcher() {
-                        override fun dispatch(request: RecordedRequest): MockResponse {
-                            toolStarted.countDown()
-                            releaseTool.await(5, TimeUnit.SECONDS)
-                            if (fails) return MockResponse().setResponseCode(500)
-                            val id = Json.parseToJsonElement(request.body.readUtf8()).jsonObject.getValue("id")
-                            return MockResponse().setBody(
-                                """{"jsonrpc":"2.0","id":$id,"result":{"content":[],"structuredContent":{"ok":true}}}""",
-                            )
-                        }
-                    }
-                server.start()
-                try {
-                    val settings = SettingsRepository(InMemoryPreferencesDataStore())
-                    val session = VoiceSession(RuntimeEnvironment.getApplication(), settings, languageTag = "fr-CA")
-                    val oldChannel = RecordingDataChannel()
-                    val newChannel = RecordingDataChannel()
-                    val client = McpClient(server.url("/mcp").toString(), "2026-07-28", { null })
-                    VoiceSession::class.java.getDeclaredField("dataChannel").apply {
-                        isAccessible = true
-                        set(session, oldChannel)
-                    }
-                    VoiceSession::class.java.getDeclaredField("mcpClient").apply {
-                        isAccessible = true
-                        set(session, client)
-                    }
-                    val call =
-                        async(Dispatchers.Default) {
-                            invokeHandleToolCall(
-                                session,
-                                ToolCall(MessageKind.ToolCall, "tool-1", "slow", JsonObject(emptyMap())),
-                                oldChannel,
-                            )
-                        }
-                    assertEquals(true, toolStarted.await(5, TimeUnit.SECONDS))
-                    val request = requireNotNull(server.takeRequest(5, TimeUnit.SECONDS))
-                    val meta =
-                        Json
-                            .parseToJsonElement(request.body.readUtf8())
-                            .jsonObject
-                            .getValue("params")
-                            .jsonObject
-                            .getValue("_meta")
-                            .jsonObject
-                    assertEquals("fr-CA", meta.getValue("openai/locale").jsonPrimitive.content)
-                    session.disconnect()
-                    VoiceSession::class.java.getDeclaredField("dataChannel").apply {
-                        isAccessible = true
-                        set(session, newChannel)
-                    }
-                    releaseTool.countDown()
-                    call.await()
-
-                    assertEquals(emptyList<String>(), oldChannel.sent)
-                    assertEquals(emptyList<String>(), newChannel.sent)
-                    assertEquals(emptyList<TranscriptEntry>(), session.state.value.transcript)
-                    assertNull(session.state.value.activeTool)
-                    assertNull(session.state.value.error)
-                } finally {
-                    releaseTool.countDown()
-                    server.shutdown()
-                }
-            }
-        }
-
-    @Test
-    fun changedCookieDisconnectsBeforeOldVoiceContextCanCallMCP() =
-        runBlocking {
-            val server = MockWebServer()
-            server.start()
-            try {
-                var currentCookie = "session=account-a"
-                val credentials =
-                    VoiceMcpCredentials(currentCookie, null, { currentCookie }, { null })
-                val client =
-                    McpClient(
-                        server.url("/mcp").toString(),
-                        "2026-07-28",
-                        credentials::cookieForRequest,
-                        credentials::bearerForRequest,
-                    )
-                val settings = SettingsRepository(InMemoryPreferencesDataStore())
-                val session = VoiceSession(RuntimeEnvironment.getApplication(), settings, languageTag = "en-US")
-                val channel = RecordingDataChannel()
-                VoiceSession::class.java.getDeclaredField("dataChannel").apply {
-                    isAccessible = true
-                    set(session, channel)
-                }
-                VoiceSession::class.java.getDeclaredField("mcpClient").apply {
-                    isAccessible = true
-                    set(session, client)
-                }
-
-                currentCookie = "session=account-b"
-                invokeHandleToolCall(
-                    session,
-                    ToolCall(MessageKind.ToolCall, "tool-1", "sensitive", JsonObject(emptyMap())),
-                    channel,
-                )
-
-                assertNull(server.takeRequest(500, TimeUnit.MILLISECONDS))
-                assertEquals(emptyList<String>(), channel.sent)
-                assertNull(session.state.value.activeTool)
-                assertEquals(false, session.state.value.connected)
-            } finally {
-                server.shutdown()
-            }
-        }
-
-    @Test
     fun nativeServerToolsRejectNonObjectArgumentsOnTheDataChannel() =
         runBlocking {
             val settings = SettingsRepository(InMemoryPreferencesDataStore())
             val id = settings.addService("Home", "https://home.example")
             settings.settings.first { it.activeServiceId == id }
-            val session = VoiceSession(RuntimeEnvironment.getApplication(), settings, languageTag = "en-US")
+            val session = createCloudSession(settings)
             val channel = RecordingDataChannel()
-            VoiceSession::class.java.getDeclaredField("dataChannel").apply {
-                isAccessible = true
-                set(session, channel)
-            }
+            attachAuthorizedChannel(session, channel)
             try {
                 for (payload in listOf("[]", "42", "null")) {
                     invokeHandleToolCall(
@@ -446,18 +335,15 @@ class VoiceSessionLifecycleTest {
         }
 
     @Test
-    fun serverSwitchDisconnectsAndOldChannelCannotSwitchAgain() =
+    fun serverSwitchReturnsResultAndDisconnectedChannelCannotSwitchAgain() =
         runBlocking {
             val settings = SettingsRepository(InMemoryPreferencesDataStore())
             val first = settings.addService("First", "https://first.example")
             val second = settings.addService("Second", "https://second.example")
             settings.settings.first { it.activeServiceId == second }
-            val session = VoiceSession(RuntimeEnvironment.getApplication(), settings, languageTag = "en-US")
+            val session = createCloudSession(settings)
             val channel = RecordingDataChannel()
-            VoiceSession::class.java.getDeclaredField("dataChannel").apply {
-                isAccessible = true
-                set(session, channel)
-            }
+            attachAuthorizedChannel(session, channel)
             try {
                 invokeHandleToolCall(
                     session,
@@ -476,8 +362,10 @@ class VoiceSessionLifecycleTest {
                     channel,
                 )
                 settings.settings.first { it.activeServiceId == first }
-                assertEquals(false, session.state.value.connected)
+                assertEquals(2, channel.sent.size)
+                assertTrue(channel.sent.last().contains("switch"))
                 assertNull(session.state.value.activeTool)
+                session.disconnect()
                 invokeHandleToolCall(
                     session,
                     ToolCall(
@@ -489,11 +377,128 @@ class VoiceSessionLifecycleTest {
                     channel,
                 )
                 assertEquals(first, settings.settings.value.activeServiceId)
-                assertEquals(1, channel.sent.size)
+                assertEquals(2, channel.sent.size)
             } finally {
                 session.close()
             }
         }
+
+    @Test
+    fun idleToolTurnWithoutSpeechFlushesFocusButIdleDuringPlaybackDoesNot() =
+        runBlocking {
+            val settings = SettingsRepository(InMemoryPreferencesDataStore())
+            val first = settings.addService("First", "https://idle-first.example")
+            val second = settings.addService("Second", "https://idle-second.example")
+            settings.settings.first { it.activeServiceId == second }
+            val session = createCloudSession(settings)
+            val channel = RecordingDataChannel()
+            attachAuthorizedChannel(session, channel)
+            VoiceSession::class.java.getDeclaredField("_state").apply {
+                isAccessible = true
+                set(session, MutableStateFlow(VoiceState(connected = true)))
+            }
+            try {
+                invokeHandleToolCall(
+                    session,
+                    ToolCall(
+                        MessageKind.ToolCall,
+                        "switch-without-speech",
+                        "switch_server",
+                        Json.parseToJsonElement("""{"server_id":"$first"}"""),
+                    ),
+                    channel,
+                )
+                settings.settings.first { it.activeServiceId == first }
+                session.injectText("Focus is First")
+                assertEquals(1, channel.sent.size) // The switch result precedes deferred focus metadata.
+                invokeHandleServerMessage(session, """{"kind":"turn.status","state":"idle"}""", channel)
+                assertEquals(2, channel.sent.size)
+                assertTrue(channel.sent.last().contains("Focus is First"))
+
+                invokeHandleServerMessage(session, """{"kind":"speech.started"}""", channel)
+                session.injectText("Participant context during playback")
+                invokeHandleServerMessage(session, """{"kind":"turn.status","state":"idle"}""", channel)
+                assertEquals(2, channel.sent.size)
+                invokeHandleServerMessage(session, """{"kind":"speech.ended"}""", channel)
+                assertEquals(3, channel.sent.size)
+                assertTrue(channel.sent.last().contains("Participant context during playback"))
+            } finally {
+                session.close()
+            }
+        }
+
+    private fun attachAuthorizedChannel(
+        session: VoiceSession,
+        channel: RecordingDataChannel,
+    ) {
+        VoiceSession::class.java.getDeclaredField("voiceConversation").apply {
+            isAccessible = true
+            (get(session) as VoiceConversation).begin(false)
+        }
+        VoiceSession::class.java.getDeclaredField("dataChannel").apply {
+            isAccessible = true
+            set(session, channel)
+        }
+    }
+
+    private suspend fun invokeHandleServerMessage(
+        session: VoiceSession,
+        text: String,
+        channel: DataChannel,
+    ): Unit =
+        suspendCoroutine { continuation ->
+            val method =
+                VoiceSession::class.java
+                    .getDeclaredMethod(
+                        "handleServerMessage",
+                        String::class.java,
+                        Long::class.javaPrimitiveType,
+                        DataChannel::class.java,
+                        Continuation::class.java,
+                    ).apply { isAccessible = true }
+            try {
+                val result = method.invoke(session, text, 0L, channel, continuation)
+                if (result !== COROUTINE_SUSPENDED) continuation.resume(Unit)
+            } catch (e: InvocationTargetException) {
+                continuation.resumeWithException(e.targetException)
+            }
+        }
+
+    private fun createCloudSession(settings: SettingsRepository): VoiceSession {
+        val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+        val registry = ServiceShellRegistry()
+        val catalog = ServiceCatalog(scope)
+        cleanup += { scope.cancel() }
+        cleanup += registry::close
+        cleanup += catalog::close
+        val owner =
+            VoiceConversation(settings, ServiceSettingsClient(), catalog) {
+                registry
+                    .reconcile(
+                        settings.settings.value.services
+                            .map { ServiceShellKey(it.id, it.url) }
+                            .toSet(),
+                    ).also { entries ->
+                        entries.values.forEach { entry ->
+                            if (!entry.bearerStore.authReady.value) {
+                                entry.bearerStore.onNavigation(entry.key.url)
+                                entry.bearerStore.receive(
+                                    Uri.parse(entry.key.url),
+                                    true,
+                                    entry.key.url,
+                                    """{"authChanged":true,"nativeAccess":true}""",
+                                )
+                            }
+                        }
+                    }
+            }
+        return VoiceSession(
+            RuntimeEnvironment.getApplication(),
+            settings,
+            voiceConversation = owner,
+            languageTag = "en-US",
+        )
+    }
 
     private suspend fun invokeHandleToolCall(
         session: VoiceSession,

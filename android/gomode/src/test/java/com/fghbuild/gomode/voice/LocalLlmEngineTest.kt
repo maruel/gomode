@@ -944,38 +944,105 @@ class LocalLlmEngineTest {
         }
 
     @Test
-    fun `schemas survive resets and unchanged context does not replace prefill`() =
+    fun `context updates preserve native prefill and enter the next user turn`() =
         runTest {
             val configs = mutableListOf<ConversationConfig>()
-            val engine = engine(configs)
+            val messages = mutableListOf<Message>()
+            val engine =
+                engine(configs) { message ->
+                    messages += message
+                    flowOf(Message.model("Ready."))
+                }
             engine.initialize(sessionContext.copy(serviceContextText = "Current item: alpha"))
-            engine.reconcileServiceContext("Current item: alpha")
+            engine.processTurn(UserTurnInput("Remember cedar"), {}) { error("No tool") }
+            engine.injectContext("Current item: beta")
+            engine.processTurn(UserTurnInput("Recall it"), {}) { error("No tool") }
             assertEquals(1, configs.size)
-            engine.reconcileServiceContext("Current item: beta")
-            assertEquals(2, configs.size)
-            assertTrue(
-                configs
-                    .last()
-                    .systemInstruction
-                    .toString()
-                    .contains("beta"),
-            )
-            assertFalse(
-                configs
-                    .last()
-                    .systemInstruction
-                    .toString()
-                    .contains("alpha"),
-            )
-            assertEquals(
-                "switch_service",
-                ToolManager(configs.last().tools)
-                    .getToolsDescription()
-                    .single()
-                    .asJsonObject["function"]
-                    .asJsonObject["name"]
-                    .asString,
-            )
+            assertTrue(messages.last().toString().contains("beta"))
+            assertTrue(messages.last().toString().contains("Recall it"))
+            engine.processTurn(UserTurnInput("Continue"), {}) { error("No tool") }
+            assertFalse(messages.last().toString().contains("beta"))
+            engine.closeAndJoin()
+        }
+
+    @Test
+    fun `focus context waits for the original tool result and preserves native history`() =
+        runTest {
+            val configs = mutableListOf<ConversationConfig>()
+            val messages = mutableListOf<Message>()
+            val toolStarted = CompletableDeferred<Unit>()
+            val finishTool = CompletableDeferred<Unit>()
+            var first = true
+            val engine =
+                engine(configs) { message ->
+                    messages += message
+                    if (first) {
+                        first = false
+                        flowOf(callMessage())
+                    } else {
+                        flowOf(Message.model("cedar"))
+                    }
+                }
+            engine.initialize(sessionContext)
+            val turn =
+                launch {
+                    engine.processTurn(UserTurnInput("Remember cedar and call A"), {}) {
+                        toolStarted.complete(Unit)
+                        finishTool.await()
+                        Json.parseToJsonElement("""{"source":"A","fact":"cedar"}""")
+                    }
+                }
+            toolStarted.await()
+            val update = launch { engine.injectContext("Selected server B; original call remains on A") }
+            finishTool.complete(Unit)
+            turn.join()
+            update.join()
+            engine.processTurn(UserTurnInput("Recall cedar on B"), {}) { error("No new tool") }
+            assertEquals(listOf(Role.USER, Role.TOOL, Role.USER), messages.map { it.role })
+            assertTrue(messages[1].toString().contains("cedar"))
+            assertFalse(messages[1].toString().contains("Selected server B"))
+            assertTrue(messages[2].toString().contains("Selected server B"))
+            assertEquals(1, configs.size)
+            engine.closeAndJoin()
+        }
+
+    @Test
+    fun `context queued behind a retired turn cannot reach the retained engine`() =
+        runTest {
+            val messages = mutableListOf<Message>()
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            var first = true
+            val engine =
+                engine { message ->
+                    messages += message
+                    if (first) {
+                        first = false
+                        flowOf(callMessage())
+                    } else {
+                        flowOf(Message.model("Fresh turn"))
+                    }
+                }
+            engine.initialize(sessionContext)
+            val turn =
+                launch {
+                    engine.processTurn(UserTurnInput("Hold the old turn"), {}) {
+                        entered.complete(Unit)
+                        release.await()
+                        null
+                    }
+                }
+            entered.await()
+            val update =
+                launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                    engine.injectContext("retired-account-context")
+                }
+            engine.invalidateTurns()
+            release.complete(Unit)
+            turn.join()
+            update.join()
+            engine.processTurn(UserTurnInput("Fresh user turn"), {}) { error("No fresh tool") }
+            assertFalse(messages.last().toString().contains("retired-account-context"))
             engine.closeAndJoin()
         }
 

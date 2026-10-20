@@ -54,10 +54,14 @@ fun SettingsScreen(
     voiceSessionActive: Boolean,
     onDone: () -> Unit,
     onOpenHalo: () -> Unit,
-    onSelectService: () -> Unit = {},
     bearerTokenFor: (String) -> String? = { null },
     bearerToken: String? = null,
     authEpoch: Long = 0,
+    servicesNeedingAttention: Set<String> = emptySet(),
+    serviceReadiness: Map<String, String> = emptyMap(),
+    serviceErrors: Map<String, String> = emptyMap(),
+    serviceRetryLabels: Map<String, String> = emptyMap(),
+    onRetryService: (String) -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     var editingServiceId by remember { mutableStateOf<String?>(null) }
@@ -112,7 +116,22 @@ fun SettingsScreen(
                 settings.services.forEach { service ->
                     ListItem(
                         headlineContent = { Text(service.label.ifBlank { service.url }) },
-                        supportingContent = { Text(service.url) },
+                        supportingContent = {
+                            Column {
+                                Text(service.url)
+                                serviceReadiness[service.id]?.let { readiness ->
+                                    Text(readiness, modifier = Modifier.testTag("gomode-readiness-${service.id}"))
+                                }
+                                serviceErrors[service.id]?.let { Text(it) }
+                                serviceRetryLabels[service.id]?.let { label ->
+                                    TextButton(
+                                        onClick = { onRetryService(service.id) },
+                                        modifier = Modifier.testTag("gomode-retry-${service.id}"),
+                                    ) { Text(label) }
+                                }
+                                if (service.id in servicesNeedingAttention) Text("Needs attention")
+                            }
+                        },
                         trailingContent = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 if (service.id == settings.activeServiceId) {
@@ -120,7 +139,6 @@ fun SettingsScreen(
                                 } else {
                                     TextButton(
                                         onClick = {
-                                            onSelectService()
                                             scope.launch {
                                                 settingsRepository.switchService(service.id)
                                                 onDone()

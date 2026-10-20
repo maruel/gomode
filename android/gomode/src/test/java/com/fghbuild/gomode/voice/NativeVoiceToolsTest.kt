@@ -79,7 +79,7 @@ class NativeVoiceToolsTest {
                 ) {
                     ended = true
                 }
-            assertTrue(ended)
+            assertFalse(ended)
             assertEquals(first, switched?.getValue("server_id")?.jsonPrimitive?.content)
             val state = repository.awaitSettings { it.activeServiceId == first }
             assertEquals("https://first.example", state.activeServiceURL)

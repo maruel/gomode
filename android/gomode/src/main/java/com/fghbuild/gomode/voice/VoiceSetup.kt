@@ -3,15 +3,14 @@ package com.fghbuild.gomode.voice
 
 import android.webkit.CookieManager
 import com.caic.voicegateway.sdk.v1.ServiceAuthorization
-import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
-import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.service.VoiceTokenClient
-import com.fghbuild.gomode.service.readAuthoritativeServiceContext
 import com.fghbuild.gomode.service.readInitialServiceContext
 import com.fghbuild.gomode.service.resolveServiceURL
+import com.fghbuild.gomode.service.serviceCatalogTools
 import com.fghbuild.gomode.service.serviceOrigin
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 
@@ -28,7 +27,7 @@ internal data class VoiceSetup(
     val voiceName: String = "",
     val tokenEndpointURL: String?,
     val gatewayHeaders: Map<String, String>,
-    val mcpClient: McpClient,
+    val mcpClient: McpClient?,
     val tools: List<ToolDescriptor>,
     val systemInstruction: String,
     val serviceContextText: String,
@@ -59,8 +58,17 @@ internal suspend fun prepareVoiceSetup(
     bearerTokenFor: (String) -> String?,
     voiceTokenClient: VoiceTokenClient = VoiceTokenClient(),
     pinnedVoice: GatewayVoiceSelection? = null,
+    capturedSettings: SettingsState? = null,
+    sharedCatalog: ServiceCatalog? = null,
+    ensureCurrent: () -> Unit = {},
 ): VoiceSetup {
-    val settings = settingsRepository.settings.value
+    val settings = capturedSettings ?: settingsRepository.settings.value
+
+    fun requireCurrent() {
+        if (capturedSettings == null) ensureVoiceSettingsCurrent(settings, settingsRepository.settings.value)
+        ensureCurrent()
+    }
+    requireCurrent()
     requireLoadedVoiceSettings(settings)
     if (settings.activeServiceURL.isBlank()) {
         throw VoiceSetupException("Service URL is not configured")
@@ -73,10 +81,9 @@ internal suspend fun prepareVoiceSetup(
     // Single active skill today. SKILL.md frontmatter activation across the
     // toolGroups catalog (progressive disclosure) is future work; see
     // gomode/docs/ANDROID_SHELL.md.
-    val group =
-        serviceSettings.webShell.toolGroups.firstOrNull()
-            ?: throw VoiceSetupException("Voice is not available for this service")
-    val mcpEndpointURL = resolveServiceURL(settings.activeServiceURL, group.endpoint)
+    val group = serviceSettings.webShell.toolGroups.firstOrNull()
+    if (group == null && sharedCatalog == null) throw VoiceSetupException("Voice is not available for this service")
+    val mcpEndpointURL = group?.let { resolveServiceURL(settings.activeServiceURL, it.endpoint) }
     val gatewayEndpointURL = resolveServiceURL(settings.activeServiceURL, voiceGatewayURL)
     val externalGateway = serviceOrigin(gatewayEndpointURL) != serviceOrigin(settings.activeServiceURL)
     val tokenEndpoint = serviceSettings.webShell.voiceGateway.tokenEndpoint
@@ -94,8 +101,8 @@ internal suspend fun prepareVoiceSetup(
     ) {
         throw VoiceSetupException("Voice token endpoint must be hosted by the service")
     }
-    if (group.authRequired && cookieFor(mcpEndpointURL).isNullOrBlank() &&
-        bearerTokenFor(mcpEndpointURL).isNullOrBlank()
+    if (sharedCatalog == null && group?.authRequired == true && mcpEndpointURL != null &&
+        cookieFor(mcpEndpointURL).isNullOrBlank() && bearerTokenFor(mcpEndpointURL).isNullOrBlank()
     ) {
         throw VoiceSetupException("Sign in to the hosted service before using voice")
     }
@@ -117,38 +124,29 @@ internal suspend fun prepareVoiceSetup(
         } else {
             null
         }
-    ensureVoiceSettingsCurrent(settings, settingsRepository.settings.value)
+    requireCurrent()
 
-    val mcpCredentials =
-        VoiceMcpCredentials(
-            cookieFor(mcpEndpointURL),
-            bearerTokenFor(mcpEndpointURL),
-            { cookieFor(mcpEndpointURL) },
-            { bearerTokenFor(mcpEndpointURL) },
-        )
-    val client =
-        McpClient(
-            endpointURL = mcpEndpointURL,
-            protocolVersion = group.protocolVersion,
-            cookieProvider = mcpCredentials::cookieForRequest,
-            bearerTokenProvider = mcpCredentials::bearerForRequest,
-        )
-    val systemInstruction = client.serverInstructions()
-    val serviceTools = client.listTools()
-    require(serviceTools.none { it.name in nativeVoiceToolNames }) {
-        "MCP tool conflicts with a reserved native voice tool."
-    }
-    val tools = serviceTools + nativeVoiceTools(settings)
-    // Android owns this captured session baseline; see the canonical contract in
-    // gomode/docs/ANDROID_SHELL.md. A reconnect repeats the read.
-    val serviceContextText =
-        if (settings.voiceMode == VoiceMode.DEVICE && settings.onDeviceEngine == OnDeviceEngine.LOCAL_LLM) {
-            readAuthoritativeServiceContext(client)
+    val participant =
+        if (sharedCatalog ==
+            null
+        ) {
+            prepareServiceMcp(settings.activeServiceURL, serviceSettings, bearerTokenFor)
         } else {
-            readInitialServiceContext(client)
+            null
+        }
+    val client = participant?.client
+    val systemInstruction =
+        participant?.instructions ?: "You are Go Mode, one conversation across the user's saved servers. " +
+            "Use the catalog to discover scoped instructions and tools. Server selection changes focus only."
+    val tools = (participant?.tools ?: serviceCatalogTools) + nativeVoiceTools(settings)
+    val serviceContextText =
+        if (sharedCatalog != null) {
+            sharedCatalog.contextText()
+        } else {
+            readInitialServiceContext(requireNotNull(client))
         }
     val service = tokenEndpointURL?.let { voiceTokenClient.fetch(it, cookieFor(it), bearerTokenFor(it)) }
-    ensureVoiceSettingsCurrent(settings, settingsRepository.settings.value)
+    requireCurrent()
     if (gatewayHeaders != serviceAuthHeaders(gatewayEndpointURL, bearerTokenFor)) {
         throw VoiceSetupException("Service authentication changed. Try connecting again.")
     }

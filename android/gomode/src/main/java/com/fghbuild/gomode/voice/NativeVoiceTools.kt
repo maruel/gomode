@@ -38,7 +38,7 @@ private val nativeTools =
             description =
                 "Switch the active Go Mode server when the user asks. First use list_servers to find the server ID. " +
                     "Ask which server if the name is ambiguous. " +
-                    "Voice reconnects with the selected server's tools and context.",
+                    "The same conversation continues with all ready servers available.",
             inputSchema =
                 buildJsonObject {
                     put("type", "object")
@@ -106,9 +106,7 @@ internal suspend fun executeNativeVoiceTool(
         else -> {
             val id = (args["server_id"] as? JsonPrimitive)?.takeIf { it.isString }?.content
             require(args.keys == setOf("server_id") && !id.isNullOrBlank()) { "Provide a server_id from list_servers" }
-            val changed = settingsRepository.settings.value.activeServiceId != id
             switchServer(id)
-            if (changed) onDisconnect()
             buildJsonObject { put("server_id", id) }
         }
     }

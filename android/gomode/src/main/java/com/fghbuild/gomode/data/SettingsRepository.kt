@@ -239,6 +239,16 @@ class SettingsRepository(
         }
     }
 
+    suspend fun cycleService() {
+        dataStore.edit { prefs ->
+            val services = decodeServices(prefs)
+            if (services.size < 2) return@edit
+            val currentId = prefs[Keys.ACTIVE_SERVICE_ID] ?: services.first().id
+            val currentIndex = services.indexOfFirst { it.id == currentId }.coerceAtLeast(0)
+            prefs[Keys.ACTIVE_SERVICE_ID] = services[(currentIndex + 1) % services.size].id
+        }
+    }
+
     suspend fun updateHaloAddress(address: String?) {
         dataStore.edit { prefs ->
             if (address.isNullOrBlank()) {

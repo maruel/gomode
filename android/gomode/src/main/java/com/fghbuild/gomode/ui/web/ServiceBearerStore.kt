@@ -13,6 +13,8 @@ internal class ServiceBearerStore(
 ) {
     private var active = true
     private var trustedPageActive = false
+    private var cookieIdentitySettled = false
+
     private val _token = MutableStateFlow<String?>(null)
     val token: StateFlow<String?> = _token.asStateFlow()
     private val _authEpoch = MutableStateFlow(0L)
@@ -20,7 +22,20 @@ internal class ServiceBearerStore(
     private val _authReady = MutableStateFlow(false)
     val authReady: StateFlow<Boolean> = _authReady.asStateFlow()
 
+    private val _identityEpoch = MutableStateFlow(0L)
+    val identityEpoch: StateFlow<Long> = _identityEpoch.asStateFlow()
+    private var lastBearer: String? = null
+
+    fun invalidateIdentity(accountChanged: Boolean = false) {
+        if (accountChanged) _identityEpoch.value++
+        trustedPageActive = false
+        _token.value = null
+        _authReady.value = false
+        _authEpoch.value += 1
+    }
+
     fun deactivate() {
+        lastBearer = null
         active = false
         trustedPageActive = false
         _token.value = null
@@ -30,6 +45,7 @@ internal class ServiceBearerStore(
     fun onNavigation(pageURL: String?) {
         if (!active) return
         val wasTrusted = trustedPageActive
+        cookieIdentitySettled = false
         trustedPageActive = pageURL?.let { trustedPage(it, serviceURL) } == true
         if (!trustedPageActive) {
             _token.value = null
@@ -53,14 +69,21 @@ internal class ServiceBearerStore(
         ) {
             _authReady.value = false
             _token.value = null
+            cookieIdentitySettled = false
+            _identityEpoch.value++
             _authEpoch.value += 1
             return true
         }
         if (message.opt("authChanged") == true && !message.has("authChanging") && !message.has("bearerToken") &&
             message.opt("nativeAccess") is Boolean
         ) {
+            val nativeAccess = message.getBoolean("nativeAccess")
+            if (cookieIdentitySettled || !nativeAccess) {
+                _identityEpoch.value++
+            }
+            cookieIdentitySettled = true
             _token.value = null
-            _authReady.value = message.getBoolean("nativeAccess")
+            _authReady.value = nativeAccess
             _authEpoch.value += 1
             return true
         }
@@ -88,8 +111,15 @@ internal class ServiceBearerStore(
                     return false
                 }
             }
+        if ((lastBearer != null && token != lastBearer) || (token == null && _authReady.value)) {
+            _identityEpoch.value++
+        }
+        if (token != null) lastBearer = token
+        val ready = token != null
+        // StateFlow can conflate logout followed by the same token; authority must change before observers run.
+        if (_token.value != token || _authReady.value != ready) _authEpoch.value += 1
         _token.value = token
-        _authReady.value = token != null
+        _authReady.value = ready
         return true
     }
 
@@ -103,6 +133,7 @@ internal class ServiceBearerStore(
 // Invokes native invalidation in the same WebView callback that accepts an auth change.
 internal class ServiceAuthMessageHandler(
     private val store: ServiceBearerStore,
+    private val onIdentityChanged: () -> Unit = {},
     private val onInvalidated: () -> Unit,
 ) {
     fun onNavigation(url: String?) {
@@ -119,8 +150,12 @@ internal class ServiceAuthMessageHandler(
     ): Boolean {
         val priorEpoch = store.authEpoch.value
         val priorToken = store.token.value
+        val priorIdentityEpoch = store.identityEpoch.value
         val priorReady = store.authReady.value
         val accepted = store.receive(sourceOrigin, isMainFrame, currentPageURL, payload)
+        if (store.identityEpoch.value != priorIdentityEpoch) {
+            onIdentityChanged()
+        }
         if (store.authEpoch.value != priorEpoch || store.token.value != priorToken ||
             store.authReady.value != priorReady
         ) {

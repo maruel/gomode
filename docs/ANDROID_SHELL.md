@@ -32,7 +32,39 @@ Login never depends on MCP discovery.
 
 ## Hosted Authentication
 
-The WebView exposes `window.gomodeAuth.postMessage(...)` to the exact active
+Each saved service has a shell entry keyed by service identity and URL. The entry
+owns in-memory authentication, bootstrap and load state, reload counters, and its
+frontend tool registration. Entries live within the Activity, and visited services
+retain their WebViews when selection changes or native settings opens. Preparing
+voice initializes the remaining saved pages. Only the selected page attaches to
+the screen. Cloud voice, device speech with a remote gateway, and the local
+conversational LLM keep one conversation across selection changes.
+Deleting a service, replacing its URL, or destroying the Activity releases its
+view, credentials, and pending frontend calls. Page generations
+reject callbacks from replaced or disposed WebViews.
+
+Hidden pages stay authenticated and can publish frontend declarations. Native
+permission requests, file pickers, JavaScript dialogs, external windows, and
+cross-origin navigation require selection and otherwise mark the entry as needing
+attention. Hidden pages are paused individually, cannot take focus, mute audio,
+and stop hosted camera/microphone captures, including cloned and removed tracks. Retention requires WebView audio
+muting and document-start capture-guard support; unsupported versions fail closed with an update message. Renderer
+loss invalidates dispatch and releases every affected view. Native settings shows
+page failures and offers an explicit Reload page action, including for hidden
+participants. Reload recreates only that page; the retained service owner and
+conversation remain intact. Catalog access resumes after page readiness and
+freshly validated authentication, subject to the conversation's original identity
+and MCP endpoint authorization. Manual and automatic page retries clear page
+access and settle pending frontend calls before reloading. Full-document
+navigation also clears page access; a finished document cannot reuse the
+preceding document's validation. SPA history changes preserve page access. WebViews can share a renderer, so renderer loss can affect
+several services. Recovery does not replay pending tools or promise process-death
+restoration. WebView cookies remain shared by origin: account-changing signals
+synchronously invalidate same-origin peers' native credentials and tools.
+Initial settled cookie readiness on a newly loaded page establishes only that
+entry's access; it does not revoke already authenticated same-origin peers.
+
+The WebView exposes `window.gomodeAuth.postMessage(...)` to its exact
 service origin through AndroidX WebView's message listener. The shell accepts
 messages only from the main frame while the page stays on that origin.
 
@@ -40,7 +72,7 @@ messages only from the main frame while the page stays on that origin.
 |---|---|
 | `{ "bearerToken": "token" }` | stores an in-memory bearer for MCP and voice; enables native access after validation |
 | `{ "bearerToken": null }` | clears the bearer; pauses native access |
-| `{ "authChanging": true }` | disconnects voice and pauses monitoring before logout or account switch |
+| `{ "authChanging": true }` | pauses this participant before logout/account switch; revoking the gateway sponsor ends shared voice |
 | `{ "authChanged": true, "nativeAccess": bool }` | reports a settled cookie-backed identity; `true` only for a confirmed user or a host without auth |
 
 Hosts send `authChanged` after resolving the identity on each page load. Around
@@ -51,11 +83,56 @@ the identity endpoint means logged out; a 401 from another endpoint keeps
 access paused. Bearer hosts send a new bearer after validation and clear it
 before logout. The shell stores no token on disk.
 
-An accepted identity change, or navigation off the trusted origin, stops voice
-and monitoring in the WebView callback. They restart only after a settled
-signal grants access or a validated bearer arrives. Voice MCP requests pin the
-cookie and bearer captured at connection setup and reject a changed credential
-before a tool request leaves the device.
+Frontend tools dispatch only through their owning entry while native access is
+ready. Identity changes synchronously reject pending frontend results; page
+replacement removes declarations. Entries share Android WebView cookies, so
+services sharing an origin share the cookie identity.
+
+Account generations are distinct from page availability. Navigation or renderer
+loss disables a participant's dispatch without replacing a shared gateway call.
+The call pins its sponsoring identity and credentials when connecting; explicit
+sponsor revocation, changed sponsor cookies, or sponsor removal ends the call.
+Other participants may log out without ending it. A replacement account cannot
+enter an existing conversation: synchronous checks end the call before admitting
+its context or executing its tools. First sign-in of a never-admitted participant
+is allowed. Each admitted participant pins its hosted-page cookie identity and explicit
+account epoch, plus the catalog's authorization snapshot at the resolved MCP
+endpoint. Endpoint-scoped cookies and the endpoint itself must still match that
+snapshot after page loss or catalog re-preparation before schemas, context or
+tools can enter the call. Temporary unavailability alone keeps the call alive.
+Revocation cannot erase facts already learned by the model.
+
+The local conversational LLM uses the same admitted participant identities and
+resolved MCP authorization snapshots as gateway conversations. It has no gateway
+sponsor: participant logout temporarily disables that service, while a returning
+replacement account ends the conversation before admission. Keyword engines
+retain their selected-service lifecycle and credential-pinned direct MCP requests.
+
+## Concurrent service catalog
+
+`service/ServiceCatalog.kt` owns each retained entry's independent MCP discovery,
+credential snapshot, retry worker and resource monitor. Sign-in, logout, removal,
+and failures affect that entry. Participants need a first MCP tool group; they
+need no voice gateway. Native settings show each participant's readiness and
+allow retrying a failed connection. Equal notification IDs from different
+services remain distinct, and notification titles identify their source.
+
+The catalog provides stable `discover_service`, `dispatch_service_tool` and
+`read_service_resource` tools for conversation owners. Discovery returns original
+MCP and frontend schemas, scoped server instructions, and resource descriptors.
+Dispatch names a server ID, original tool name, and explicit `mcp` or `frontend`
+kind. It refreshes MCP metadata on demand and validates arguments using the
+owning schema before execution. Requests pin the participant's credentials and
+preparation generation; frontend calls also pin the owning page revision.
+Changed identities, removed services, and replaced pages reject pending results.
+Unavailable targets never fall through to another participant or tool kind.
+
+The overview has one catalog-wide context budget with source labels. Detailed
+instructions, schemas, and resources are requested on demand. Gateway
+and local LLM conversations use this catalog across all ready participants.
+Keyword engines retain the selected service's direct tools and context. Hidden
+participants continue monitoring independently; shared conversational voice
+receives their labeled context and suppresses duplicate native notifications.
 
 ## Skills
 
@@ -113,9 +190,13 @@ On reconnect, the client sends the freshest bounded snapshot in the new
 `session.setup`; recovery context does not repeat an older snapshot. A missing
 resource yields an empty baseline.
 
-Clients seed the session from one snapshot and then send bounded changes, not
-full state. Android diffs generic items and resets its baseline when the voice
-session or service identity changes. The caic browser frontend derives its own
+Android conversational sessions seed a globally bounded, sourced catalog overview
+and selected-server focus in `session.setup`. Catalog updates stay labeled by
+service and bounded; original instructions, schemas, and resource detail are
+fetched on demand. Focus and context metadata wait until pending tool results
+have been sent and the model's tool-response turn has finished. Local engines
+diff generic items and reset their baseline when session or service identity
+changes. The caic browser frontend derives its own
 task updates outside Go Mode. Both buffer updates while the model speaks.
 
 ## Service Notifications
@@ -167,25 +248,48 @@ query gateway choices.
 2. For an external gateway, fetch a token from `tokenEndpoint`.
 3. Post the offer to the signaling route.
 4. Open the `voice-gateway` data channel.
-5. Declare the active MCP tools plus native `hang_up`, `list_servers`, and `switch_server` tools.
-6. Read and bound the `gomode://items` baseline.
-7. Send the baseline in `session.setup.context.text` before the first response.
-8. Execute native commands on the device and service tools through the skill's MCP endpoint.
+5. For gateway conversations, declare native call/server commands plus the stable
+   catalog tools `discover_service`, `dispatch_service_tool`, and
+   `read_service_resource`. Direct selected-server MCP/frontend aliases are not
+   advertised. The local LLM declares the same stable catalog tools; keyword
+   engines retain their selected-service tools.
+6. Send bounded sourced context in `session.setup.context.text` before the first
+   response. Server instructions remain scoped to their originating server.
+7. Execute catalog calls using explicit server/kind/tool identity and the owning
+   service's credentials. Pending calls keep their destination across selection.
 
-Cloud voice, device speech with a gateway, and the local LLM share the native
-`hang_up` command. They also expose `list_servers` and `switch_server` when more
-than one server is saved.
-`list_servers` returns saved server IDs, names, and active status; `switch_server`
-selects a saved ID using the same settings as the native server picker. Switching
-to another server loads that server's hosted frontend and automatically starts
-a fresh voice session with its tools, instructions, and credentials once the page
-and authentication are ready. The old Telecom call and its notification end
-during the handoff. If sign-in is required, the voice panel waits while you sign
-in; its Cancel button stops the pending reconnection. The destination session
-creates a new Telecom call and notification when it connects. Selecting
-the already active server keeps the conversation connected. Changing the selected
-server or voice settings cancels a pending reconnection; connection failures stay
-visible and can be retried manually.
+Cloud voice and device speech with a remote gateway use one conversation owner,
+independent of the selected page. Connecting pins the gateway sponsor, endpoint,
+voice choice, speaking voice, and authorization; WebRTC recovery keeps those
+values. Conversation context from all connected servers goes to the chosen
+gateway.
+
+`list_servers` returns saved server IDs, names, and active status. `switch_server`
+and the native picker change the visible page and conversational focus, preserving
+one transport, Telecom call, audio owner, transcript, and foreground notification.
+Every ready participant stays callable, including servers without a voice gateway.
+The Next app icon beside Settings cycles through saved servers in their saved
+order and wraps to the first. It works with voice active, idle, or unavailable,
+and is disabled when fewer than two servers are saved.
+Focus and participant context wait for pending tool results and model turn
+completion. An idle turn can complete without speech; active playback still
+blocks context delivery until speech ends.
+Shared voice state is published to every retained page, and native notifications
+are suppressed for every participant while shared voice is active.
+
+Local LLM preparation is keyed by model and language, independently of server
+focus. Switching during preparation or a live turn preserves the prepared model,
+LiteRT conversation, tool history and transcript. Disconnect resets conversation
+state while retaining loaded weights. Each prepared native conversation is bound
+to its authorization lifetime: canceling connection before preparation completes
+cannot let a later connection reuse ended authorization or its prefill. Reconnect
+starts fresh authorization and resets that native conversation before use. Model
+or language changes drain and replace the native owner. Account replacement ends the conversation before a fresh
+preparation admits new context. Keyword engines retain their declared capabilities.
+
+Controlled inference and emulator tests verify adapter ordering and ownership.
+Native inference continuity, screen-off call control and realistic frontend memory
+limits remain physical-device acceptance requirements.
 
 The names `hang_up`, `list_servers`, and `switch_server` are reserved for native
 voice commands; hosted MCP and frontend tools must use other names. The

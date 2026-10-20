@@ -5,6 +5,7 @@ package com.fghbuild.gomode.ui.web
 import android.webkit.WebView
 import com.caic.voicegateway.sdk.v1.ToolDeclaration
 import com.fghbuild.gomode.voice.nativeVoiceToolNames
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -16,11 +17,18 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import java.lang.ref.WeakReference
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 
-internal object FrontendVoiceTools {
+internal class FrontendVoiceTools(
+    private val canDispatch: () -> Boolean = { true },
+) {
+    private val pending = ConcurrentHashMap.newKeySet<CancellableContinuation<JsonObject>>()
     private var generation = 0L
     private var owner = WeakReference<WebView>(null)
+
+    val revision: Long
+        get() = generation
 
     @Volatile
     var declarations: List<ToolDeclaration> = emptyList()
@@ -33,16 +41,30 @@ internal object FrontendVoiceTools {
         val tools = Json.decodeFromString<List<ToolDeclaration>>(payload)
         require(tools.map { it.name }.distinct().size == tools.size)
         require(tools.none { it.name in nativeVoiceToolNames })
-        generation++
+        invalidate()
         owner = WeakReference(view)
         declarations = tools
     }
 
     fun clear(view: WebView) {
         if (owner.get() !== view) return
-        generation++
+        clear()
+    }
+
+    fun clear() {
+        invalidate()
         owner.clear()
         declarations = emptyList()
+    }
+
+    // Auth and page replacement cancel callbacks before another account can dispatch.
+    fun invalidate() {
+        generation++
+        val requests = pending.toList()
+        pending.clear()
+        requests.forEach { request ->
+            if (request.isActive) request.resume(buildJsonObject { put("error", "Hosted identity or page changed.") })
+        }
     }
 
     suspend fun execute(
@@ -52,18 +74,29 @@ internal object FrontendVoiceTools {
     ): JsonObject? =
         withContext(Dispatchers.Main) {
             if (!isCurrent()) return@withContext buildJsonObject { put("error", "Voice session ended.") }
+            if (!canDispatch()) {
+                return@withContext buildJsonObject {
+                    put(
+                        "error",
+                        "Hosted authentication is unavailable.",
+                    )
+                }
+            }
             if (declarations.none { it.name == name }) return@withContext null
             val view = owner.get() ?: return@withContext null
             val started = generation
             withTimeoutOrNull(5_000) {
                 suspendCancellableCoroutine { continuation ->
+                    pending += continuation
+                    continuation.invokeOnCancellation { pending.remove(continuation) }
                     val script =
                         "window.executeGoModeVoiceTool?.(${JsonPrimitive(name)},$args) " +
                             "?? {error:'Frontend voice tool is unavailable.'}"
                     view.evaluateJavascript(script) { result ->
+                        pending.remove(continuation)
                         if (!continuation.isActive) return@evaluateJavascript
                         val value =
-                            if (owner.get() !== view || generation != started) {
+                            if (!isCurrent() || !canDispatch() || owner.get() !== view || generation != started) {
                                 buildJsonObject { put("error", "Hosted page changed during voice tool execution.") }
                             } else {
                                 runCatching { Json.parseToJsonElement(result).jsonObject }

@@ -1,10 +1,9 @@
-// Owns selected local model preparation and drained replacement across activity and voice lifetimes.
+// Owns local model preparation and drained replacement across activity and voice lifetimes.
 package com.fghbuild.gomode.voice
 
 import android.content.Context
 import android.util.Log
 import com.fghbuild.gomode.data.LocalLlmModel
-import com.fghbuild.gomode.service.readAuthoritativeServiceContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -20,7 +19,7 @@ import kotlinx.coroutines.sync.withLock
 
 internal class LocalModelSelection(
     val languageTag: String,
-    val prepareSetup: suspend () -> VoiceSetup,
+    val prepareSetup: suspend () -> LocalConversationPreparation,
     val isCurrent: () -> Boolean,
     val model: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
 )
@@ -29,6 +28,7 @@ internal data class PreparedLocalModel(
     val generation: Long,
     val engine: LocalLlmEngine,
     val setup: VoiceSetup,
+    val lifetime: VoiceConversationLifetime,
 )
 
 internal sealed interface LocalModelState {
@@ -46,7 +46,6 @@ internal sealed interface LocalModelState {
 internal class LocalModelOwner(
     context: Context,
     ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val readServiceContext: suspend (McpClient) -> String = ::readAuthoritativeServiceContext,
     private val engineFactory: (LocalLlmModel) -> LocalLlmEngine = { model ->
         LocalLlmEngine(context, ioDispatcher = ioDispatcher, model = model)
     },
@@ -88,41 +87,27 @@ internal class LocalModelOwner(
     }
 
     suspend fun acquire(): PreparedLocalModel {
-        val pending =
+        while (true) {
+            val pending =
+                synchronized(this) {
+                    check(!closed && selection?.isCurrent() == true) { "Local model service credentials are not ready" }
+                    if (mutableState.value is LocalModelState.Failed) schedule(reuseAllocated = true)
+                    checkNotNull(preparation)
+                }
+            val prepared = checkNotNull(pending.await()) { "Local model selection changed" }
             synchronized(this) {
-                check(!closed && selection?.isCurrent() == true) { "Local model service credentials are not ready" }
-                if (mutableState.value is LocalModelState.Failed) schedule(reuseAllocated = true)
-                checkNotNull(preparation)
+                requireCurrent(prepared.generation)
+                if (prepared.lifetime.isCurrent) return prepared
+                // Acquisition may have been canceled before a controller received the prepared handle.
+                // A finished authorization cannot reuse that handle's native conversation or prefill.
+                schedule(reuseAllocated = true)
             }
-        val prepared = checkNotNull(pending.await()) { "Local model selection changed" }
-        // Acquisition work is owned independently of a cancelled connect waiter. Native prefill is not cancellable.
-        val refreshed =
-            scope
-                .async {
-                    operations.withLock {
-                        try {
-                            requireCurrent(prepared.generation)
-                            val context = readServiceContext(prepared.setup.mcpClient)
-                            requireCurrent(prepared.generation)
-                            prepared.engine.reconcileServiceContext(context)
-                            requireCurrent(prepared.generation)
-                            prepared.copy(setup = prepared.setup.copy(serviceContextText = context))
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (
-                            // Refresh failure must be visible and must not admit a stale baseline.
-                            @Suppress("TooGenericExceptionCaught") e: Exception,
-                        ) {
-                            publish(
-                                prepared.generation,
-                                LocalModelState.Failed("Local model context refresh failed: ${e.message}"),
-                            )
-                            throw e
-                        }
-                    }
-                }.await()
-        requireCurrent(refreshed.generation)
-        return refreshed
+        }
+    }
+
+    @Synchronized
+    fun restartConversation() {
+        if (!closed && selection != null) schedule(reuseAllocated = true)
     }
 
     @Synchronized
@@ -150,7 +135,8 @@ internal class LocalModelOwner(
                             allocated = null
                         }
                         if (selected == null || !selected.isCurrent() || !owns(request)) return@withLock null
-                        val setup = selected.prepareSetup()
+                        val authorized = selected.prepareSetup()
+                        val setup = authorized.setup
                         if (!selected.isCurrent() || !owns(request)) return@withLock null
                         val engine =
                             try {
@@ -184,7 +170,7 @@ internal class LocalModelOwner(
                             return@withLock null
                         }
                         publish(request, LocalModelState.Ready)
-                        PreparedLocalModel(request, engine, setup)
+                        PreparedLocalModel(request, engine, setup, authorized.lifetime)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (

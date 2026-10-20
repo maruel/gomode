@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -90,8 +91,13 @@ fun VoicePanel(
     onClearTranscript: () -> Unit,
     onOpenSettings: () -> Unit,
     serviceStatusText: String?,
+    onCycleApp: () -> Unit,
+    canCycleApps: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val appControls: @Composable () -> Unit = {
+        AppControls(onOpenSettings, onCycleApp, canCycleApps)
+    }
     Surface(
         modifier = modifier,
         tonalElevation = 4.dp,
@@ -100,19 +106,19 @@ fun VoicePanel(
             HorizontalDivider(color = MaterialTheme.colorScheme.outline)
             when {
                 voiceState.error != null -> {
-                    ErrorPanel(voiceState.error, voiceEnabled, onConnect, onDisconnect, onOpenSettings)
+                    ErrorPanel(voiceState.error, voiceEnabled, onConnect, onDisconnect, appControls)
                 }
 
                 !voiceEnabled -> {
                     IdlePanel(
                         onConnect = onConnect,
-                        onOpenSettings = onOpenSettings,
+                        appControls = appControls,
                         voiceEnabled = false,
                     )
                 }
 
                 voiceState.connectStatus != null -> {
-                    ConnectingPanel(voiceState.connectStatus, onDisconnect, onOpenSettings)
+                    ConnectingPanel(voiceState.connectStatus, onDisconnect, appControls)
                 }
 
                 voiceState.connected -> {
@@ -122,14 +128,14 @@ fun VoicePanel(
                         onToggleMute = onToggleMute,
                         onSelectDevice = onSelectDevice,
                         onClearTranscript = onClearTranscript,
-                        onOpenSettings = onOpenSettings,
+                        appControls = appControls,
                     )
                 }
 
                 else -> {
                     IdlePanel(
                         onConnect = onConnect,
-                        onOpenSettings = onOpenSettings,
+                        appControls = appControls,
                     )
                 }
             }
@@ -154,6 +160,24 @@ private fun ServiceStatusLabel(text: String?) {
 }
 
 @Composable
+private fun AppControls(
+    onOpenSettings: () -> Unit,
+    onCycleApp: () -> Unit,
+    canCycleApps: Boolean,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        SettingsButton(onOpenSettings)
+        IconButton(
+            onClick = onCycleApp,
+            enabled = canCycleApps,
+            modifier = Modifier.testTag("gomode-next-app"),
+        ) {
+            Icon(Icons.Default.SwapHoriz, contentDescription = "Next app")
+        }
+    }
+}
+
+@Composable
 private fun SettingsButton(onOpenSettings: () -> Unit) {
     IconButton(
         onClick = onOpenSettings,
@@ -170,7 +194,7 @@ private fun SettingsButton(onOpenSettings: () -> Unit) {
 @Composable
 private fun IdlePanel(
     onConnect: () -> Unit,
-    onOpenSettings: () -> Unit,
+    appControls: @Composable () -> Unit,
     voiceEnabled: Boolean = true,
 ) {
     Row(
@@ -181,7 +205,7 @@ private fun IdlePanel(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        SettingsButton(onOpenSettings)
+        appControls()
         val disabledAlpha = 0.38f
         val iconAlpha = if (voiceEnabled) 1f else disabledAlpha
         IconButton(
@@ -210,7 +234,7 @@ private fun IdlePanel(
 private fun ConnectingPanel(
     status: String,
     onDisconnect: () -> Unit,
-    onOpenSettings: () -> Unit,
+    appControls: @Composable () -> Unit,
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val alpha by infiniteTransition.animateFloat(
@@ -232,7 +256,7 @@ private fun ConnectingPanel(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        SettingsButton(onOpenSettings)
+        appControls()
         Icon(Icons.Default.Mic, contentDescription = null)
         Text(
             text = status,
@@ -252,7 +276,7 @@ private fun ActivePanel(
     onToggleMute: () -> Unit,
     onSelectDevice: (Int) -> Unit,
     onClearTranscript: () -> Unit,
-    onOpenSettings: () -> Unit,
+    appControls: @Composable () -> Unit,
 ) {
     var transcriptExpanded by rememberSaveable { mutableStateOf(true) }
 
@@ -264,7 +288,7 @@ private fun ActivePanel(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            SettingsButton(onOpenSettings)
+            appControls()
             MicLevelIndicator(micLevel = voiceState.micLevel)
 
             val activeTool = voiceState.activeTool
@@ -369,7 +393,7 @@ private fun ErrorPanel(
     voiceEnabled: Boolean,
     onReconnect: () -> Unit,
     onDismiss: () -> Unit,
-    onOpenSettings: () -> Unit,
+    appControls: @Composable () -> Unit,
 ) {
     Column(
         modifier =
@@ -389,7 +413,7 @@ private fun ErrorPanel(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            SettingsButton(onOpenSettings)
+            appControls()
             Spacer(modifier = Modifier.weight(1f))
             IconButton(onClick = onReconnect, enabled = voiceEnabled) {
                 Icon(Icons.Default.Refresh, contentDescription = "Reconnect")

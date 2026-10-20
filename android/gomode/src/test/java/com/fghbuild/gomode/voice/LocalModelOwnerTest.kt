@@ -3,8 +3,6 @@ package com.fghbuild.gomode.voice
 
 import android.app.Application
 import com.fghbuild.gomode.data.LocalLlmModel
-import com.fghbuild.gomode.service.readAuthoritativeServiceContext
-import com.fghbuild.gomode.service.readInitialServiceContext
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Message
@@ -18,9 +16,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonPrimitive
-import okhttp3.mockwebserver.MockResponse
-import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
@@ -45,7 +40,7 @@ class LocalModelOwnerTest {
             var discoveries = 0
             var prefill = ""
             val owner =
-                LocalModelOwner(app, dispatcher, readServiceContext = { setup().serviceContextText }) {
+                LocalModelOwner(app, dispatcher) {
                     LocalLlmEngine(app, { _, instruction ->
                         allocations++
                         prefill = instruction.prefillEvidence()
@@ -82,7 +77,7 @@ class LocalModelOwnerTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             val events = mutableListOf<String>()
             val owner =
-                LocalModelOwner(app, dispatcher, readServiceContext = { "" }) { model ->
+                LocalModelOwner(app, dispatcher) { model ->
                     events.add("allocate ${model.label}")
                     LocalLlmEngine(app, { _, _ ->
                         object : Runner() {
@@ -153,7 +148,7 @@ class LocalModelOwnerTest {
             var attempts = 0
             var fail = true
             val owner =
-                LocalModelOwner(app, dispatcher, readServiceContext = { setup().serviceContextText }) {
+                LocalModelOwner(app, dispatcher) {
                     LocalLlmEngine(app, { _, _ ->
                         attempts++
                         check(!fail) { "Install weights with make android-push-model" }
@@ -181,7 +176,7 @@ class LocalModelOwnerTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             var brokenRuntime = true
             val owner =
-                LocalModelOwner(app, dispatcher, readServiceContext = { setup().serviceContextText }) {
+                LocalModelOwner(app, dispatcher) {
                     LocalLlmEngine(app, { _, _ ->
                         if (brokenRuntime) throw UnsatisfiedLinkError("JNI runtime unavailable")
                         Runner()
@@ -206,7 +201,7 @@ class LocalModelOwnerTest {
             var allocations = 0
             var credentialsReady = true
             val owner =
-                LocalModelOwner(app, dispatcher, readServiceContext = { setup().serviceContextText }) {
+                LocalModelOwner(app, dispatcher) {
                     allocations++
                     LocalLlmEngine(app, { _, _ -> Runner() }, dispatcher)
                 }
@@ -238,7 +233,7 @@ class LocalModelOwnerTest {
             val events = mutableListOf<String>()
             var number = 0
             val owner =
-                LocalModelOwner(app, dispatcher, readServiceContext = { setup().serviceContextText }) {
+                LocalModelOwner(app, dispatcher) {
                     val id = ++number
                     events.add("allocate $id")
                     LocalLlmEngine(app, { _, _ ->
@@ -266,7 +261,7 @@ class LocalModelOwnerTest {
             assertTrue(startedTurn.isCompleted)
             owner.release(original)
             owner.select(
-                LocalModelSelection("fr-CA", { setup().copy(systemInstruction = "New service and account") }, { true }),
+                LocalModelSelection("fr-CA", { setup("New service and account") }, { true }),
             )
             val replacement = async { owner.acquire() }
             testScheduler.runCurrent()
@@ -296,7 +291,7 @@ class LocalModelOwnerTest {
             var allocations = 0
             var disposed = false
             val owner =
-                LocalModelOwner(app, dispatcher, readServiceContext = { setup().serviceContextText }) {
+                LocalModelOwner(app, dispatcher) {
                     allocations++
                     LocalLlmEngine(app, { _, _ ->
                         object : Runner() {
@@ -339,7 +334,7 @@ class LocalModelOwnerTest {
             var number = 0
             var ownerRef: LocalModelOwner? = null
             val owner =
-                LocalModelOwner(app, dispatcher, readServiceContext = { setup().serviceContextText }) {
+                LocalModelOwner(app, dispatcher) {
                     val id = ++number
                     LocalLlmEngine(app, { _, _ ->
                         events.add("initialize $id")
@@ -369,7 +364,7 @@ class LocalModelOwnerTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             var allocations = 0
             val owner =
-                LocalModelOwner(app, dispatcher, readServiceContext = { setup().serviceContextText }) {
+                LocalModelOwner(app, dispatcher) {
                     allocations++
                     LocalLlmEngine(app, { _, _ ->
                         object : Runner() {
@@ -400,7 +395,7 @@ class LocalModelOwnerTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             var allocations = 0
             val owner =
-                LocalModelOwner(app, dispatcher, readServiceContext = { setup().serviceContextText }) {
+                LocalModelOwner(app, dispatcher) {
                     allocations++
                     LocalLlmEngine(app, { _, _ -> Runner() }, dispatcher)
                 }
@@ -419,113 +414,12 @@ class LocalModelOwnerTest {
         }
 
     @Test
-    fun `idle facts before first acquisition and delayed reconnect reach native prefill without reloading weights`() =
-        runTest {
-            val dispatcher = StandardTestDispatcher(testScheduler)
-            val server = MockWebServer()
-            server.start()
-            val client = McpClient(server.url("/mcp").toString(), "2026-07-28", { null })
-            val prefills = mutableListOf<String>()
-            var allocations = 0
-            val owner =
-                LocalModelOwner(app, dispatcher) {
-                    LocalLlmEngine(app, { _, instruction ->
-                        allocations++
-                        prefills.add(instruction.prefillEvidence())
-                        object : Runner() {
-                            override fun replaceConversation(config: ConversationConfig) {
-                                prefills.add(config.prefillEvidence())
-                            }
-                        }
-                    }, dispatcher)
-                }
-            try {
-                enqueueFacts(server, "alpha")
-                owner.select(
-                    LocalModelSelection("fr-CA", {
-                        setup().copy(mcpClient = client, serviceContextText = readAuthoritativeServiceContext(client))
-                    }, { true }),
-                )
-                owner.state.first { it == LocalModelState.Ready }
-                assertTrue(prefills.single().contains("alpha"))
-                enqueueFacts(server, "beta") // The service changes while voice is still idle.
-                val first = owner.acquire()
-                assertTrue(first.setup.serviceContextText.contains("beta"))
-                assertFalse(prefills.last().contains("alpha"))
-                assertTrue(prefills.last().contains(first.setup.serviceContextText))
-                assertEquals(2, prefills.size)
-                assertEquals(1, allocations)
-
-                enqueueFacts(server, "beta")
-                owner.release(first)
-                owner.state.first { it == LocalModelState.Ready }
-                assertEquals(3, prefills.size) // Fresh conversation, same engine/weights.
-                assertEquals(1, allocations)
-                enqueueFacts(server, "gamma") // Reconnect is delayed after its idle prefill.
-                val reconnect = owner.acquire()
-                assertSame(first.engine, reconnect.engine)
-                assertTrue(reconnect.setup.serviceContextText.contains("gamma"))
-                assertTrue(prefills.last().contains(reconnect.setup.serviceContextText))
-                assertFalse(prefills.last().contains("beta"))
-                assertEquals(4, prefills.size)
-                assertEquals(1, allocations)
-
-                enqueueFacts(server, "gamma")
-                owner.acquire()
-                assertEquals("Unchanged facts must preserve native prefill", 4, prefills.size)
-                assertEquals(1, allocations)
-                for (instruction in prefills) {
-                    assertTrue(instruction.contains("Use the selected service"))
-                    assertTrue(instruction.contains("\"required\":[\"item\"]"))
-                    assertTrue(instruction.contains("fr-CA"))
-                }
-            } finally {
-                owner.close()
-                testScheduler.runCurrent()
-                server.shutdown()
-            }
-        }
-
-    @Test
-    fun `failed authoritative acquisition cannot fabricate empty facts or replace native prefill`() =
-        runTest {
-            val dispatcher = StandardTestDispatcher(testScheduler)
-            val server = MockWebServer()
-            server.start()
-            val client = McpClient(server.url("/mcp").toString(), "2026-07-28", { null })
-            var replacements = 0
-            val owner =
-                LocalModelOwner(app, dispatcher) {
-                    LocalLlmEngine(app, { _, _ ->
-                        object : Runner() {
-                            override fun replaceConversation(config: ConversationConfig) {
-                                replacements++
-                            }
-                        }
-                    }, dispatcher)
-                }
-            try {
-                owner.select(LocalModelSelection("en-US", { setup().copy(mcpClient = client) }, { true }))
-                owner.state.first { it == LocalModelState.Ready }
-                server.enqueue(MockResponse().setResponseCode(503))
-                val failure = runCatching { owner.acquire() }
-                assertTrue(failure.isFailure)
-                assertTrue(owner.state.value is LocalModelState.Failed)
-                assertEquals(0, replacements)
-            } finally {
-                owner.close()
-                testScheduler.runCurrent()
-                server.shutdown()
-            }
-        }
-
-    @Test
     fun `old activity disposal cannot clear a newer activity selection`() =
         runTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             var allocations = 0
             val owner =
-                LocalModelOwner(app, dispatcher, readServiceContext = { setup().serviceContextText }) {
+                LocalModelOwner(app, dispatcher) {
                     allocations++
                     LocalLlmEngine(app, { _, _ -> Runner() }, dispatcher)
                 }
@@ -548,296 +442,28 @@ class LocalModelOwnerTest {
             testScheduler.runCurrent()
         }
 
-    @Test
-    fun `late acquisition refresh after invalidation cannot reach native conversation`() =
-        runTest {
-            val dispatcher = StandardTestDispatcher(testScheduler)
-            val finishRead = CompletableDeferred<Unit>()
-            var resets = 0
-            var current = true
-            val owner =
-                LocalModelOwner(app, dispatcher, readServiceContext = {
-                    finishRead.await()
-                    "changed facts"
-                }) {
-                    LocalLlmEngine(app, { _, _ ->
-                        object : Runner() {
-                            override fun replaceConversation(config: ConversationConfig) {
-                                resets++
-                            }
-                        }
-                    }, dispatcher)
-                }
-            val selection = LocalModelSelection("en-US", { setup() }, { current })
-            owner.select(selection)
-            val acquisition = async { runCatching { owner.acquire() } }
-            testScheduler.runCurrent()
-            current = false
-            owner.clearSelection(selection)
-            finishRead.complete(Unit)
-            testScheduler.runCurrent()
-            assertTrue(acquisition.await().isFailure)
-            assertEquals(0, resets)
-            assertEquals(LocalModelState.Idle, owner.state.value)
-            owner.close()
-            testScheduler.runCurrent()
-        }
-
-    @Test
-    fun `invalid advertised items MIME fails startup before model allocation`() =
-        runTest {
-            val dispatcher = StandardTestDispatcher(testScheduler)
-            val server = MockWebServer()
-            server.start()
-            val client = McpClient(server.url("/mcp").toString(), "2026-07-28", { null })
-            var allocations = 0
-            val owner =
-                LocalModelOwner(app, dispatcher) {
-                    allocations++
-                    LocalLlmEngine(app, { _, _ -> Runner() }, dispatcher)
-                }
-            try {
-                enqueueResourceList(
-                    server,
-                    """[
-                    {"uri":"gomode://items","name":"items","mimeType":"text/plain"}
-                ]""",
-                )
-                owner.select(
-                    LocalModelSelection("en-US", {
-                        setup().copy(mcpClient = client, serviceContextText = readAuthoritativeServiceContext(client))
-                    }, { true }),
-                )
-                val result = owner.state.first { it is LocalModelState.Failed || it == LocalModelState.Ready }
-                assertTrue(result is LocalModelState.Failed)
-                val message = (result as LocalModelState.Failed).message
-                assertTrue(message.contains("gomode://items"))
-                assertTrue(message.contains("application/json"))
-                assertTrue(message.contains("text/plain"))
-                assertTrue(message.contains("Update the service resource metadata"))
-                assertEquals(0, allocations)
-                assertEquals(1, server.requestCount)
-            } finally {
-                owner.close()
-                testScheduler.runCurrent()
-                server.shutdown()
-            }
-        }
-
-    @Test
-    fun `invalid advertised items MIME fails acquisition without replacing valid native facts`() =
-        runTest {
-            val dispatcher = StandardTestDispatcher(testScheduler)
-            val server = MockWebServer()
-            server.start()
-            val client = McpClient(server.url("/mcp").toString(), "2026-07-28", { null })
-            var allocations = 0
-            val prefills = mutableListOf<String>()
-            val owner =
-                LocalModelOwner(app, dispatcher) {
-                    LocalLlmEngine(app, { _, instruction ->
-                        allocations++
-                        prefills.add(instruction.prefillEvidence())
-                        object : Runner() {
-                            override fun replaceConversation(config: ConversationConfig) {
-                                prefills.add(config.prefillEvidence())
-                            }
-                        }
-                    }, dispatcher)
-                }
-            try {
-                enqueueFacts(server, "alpha")
-                owner.select(
-                    LocalModelSelection("en-US", {
-                        setup().copy(mcpClient = client, serviceContextText = readAuthoritativeServiceContext(client))
-                    }, { true }),
-                )
-                owner.state.first { it == LocalModelState.Ready }
-                enqueueResourceList(
-                    server,
-                    """[
-                    {"uri":"gomode://items","name":"items","mimeType":"text/plain"}
-                ]""",
-                )
-                val failure = runCatching { owner.acquire() }
-                assertTrue(failure.isFailure)
-                assertTrue((owner.state.value as LocalModelState.Failed).message.contains("application/json"))
-                assertTrue(prefills.single().contains("alpha"))
-                assertFalse(prefills.single().contains("No visible service items"))
-                assertEquals(1, allocations)
-                assertEquals(3, server.requestCount)
-            } finally {
-                owner.close()
-                testScheduler.runCurrent()
-                server.shutdown()
-            }
-        }
-
-    @Test
-    fun `incompatible notifications cannot hide valid items from startup or acquisition native prefill`() =
-        runTest {
-            val dispatcher = StandardTestDispatcher(testScheduler)
-            val server = MockWebServer()
-            server.start()
-            val client = McpClient(server.url("/mcp").toString(), "2026-07-28", { null })
-            var allocations = 0
-            val prefills = mutableListOf<String>()
-            val owner =
-                LocalModelOwner(app, dispatcher) {
-                    LocalLlmEngine(app, { _, instruction ->
-                        allocations++
-                        prefills.add(instruction.prefillEvidence())
-                        object : Runner() {
-                            override fun replaceConversation(config: ConversationConfig) {
-                                prefills.add(config.prefillEvidence())
-                            }
-                        }
-                    }, dispatcher)
-                }
-            try {
-                enqueueFacts(server, "alpha", notificationsMimeType = "text/plain")
-                owner.select(
-                    LocalModelSelection("fr-CA", {
-                        setup().copy(mcpClient = client, serviceContextText = readAuthoritativeServiceContext(client))
-                    }, { true }),
-                )
-                owner.state.first { it == LocalModelState.Ready }
-                assertTrue(prefills.single().contains("alpha"))
-                enqueueFacts(server, "beta", notificationsMimeType = "text/plain")
-                val prepared = owner.acquire()
-                assertTrue(prepared.setup.serviceContextText.contains("beta"))
-                assertTrue(prefills.last().contains(prepared.setup.serviceContextText))
-                assertFalse(prefills.last().contains("alpha"))
-                assertEquals(2, prefills.size)
-                assertEquals(1, allocations)
-                assertEquals(4, server.requestCount)
-                for (instruction in prefills) {
-                    assertTrue(instruction.contains("Use the selected service"))
-                    assertTrue(instruction.contains("\"required\":[\"item\"]"))
-                    assertTrue(instruction.contains("fr-CA"))
-                }
-                for (method in listOf("resources/list", "resources/read", "resources/list", "resources/read")) {
-                    val request = server.takeRequest()
-                    assertEquals(method, request.getHeader("Mcp-Method"))
-                    if (method == "resources/read") assertEquals("gomode://items", request.getHeader("Mcp-Name"))
-                }
-                // Other transports retain their advisory monitoring-compatible fallback.
-                enqueueResourceList(
-                    server,
-                    """[
-                    {"uri":"gomode://items","name":"items","mimeType":"application/json"},
-                    {"uri":"gomode://notifications","name":"notifications","mimeType":"text/plain"}
-                ]""",
-                )
-                assertEquals("No visible service items.", readInitialServiceContext(client))
-                assertEquals(5, server.requestCount)
-            } finally {
-                owner.close()
-                testScheduler.runCurrent()
-                server.shutdown()
-            }
-        }
-
-    @Test
-    fun `truly absent items remain absent through startup and acquisition`() =
-        runTest {
-            val dispatcher = StandardTestDispatcher(testScheduler)
-            val server = MockWebServer()
-            server.start()
-            val client = McpClient(server.url("/mcp").toString(), "2026-07-28", { null })
-            val prefills = mutableListOf<String>()
-            val owner =
-                LocalModelOwner(app, dispatcher) {
-                    LocalLlmEngine(app, { _, instruction ->
-                        prefills.add(instruction.prefillEvidence())
-                        object : Runner() {
-                            override fun replaceConversation(config: ConversationConfig) {
-                                prefills.add(config.prefillEvidence())
-                            }
-                        }
-                    }, dispatcher)
-                }
-            try {
-                enqueueResourceList(server, "[]")
-                owner.select(
-                    LocalModelSelection("en-US", {
-                        setup().copy(mcpClient = client, serviceContextText = readAuthoritativeServiceContext(client))
-                    }, { true }),
-                )
-                owner.state.first { it == LocalModelState.Ready }
-                enqueueResourceList(server, "[]")
-                val prepared = owner.acquire()
-                assertEquals("No visible service items.", prepared.setup.serviceContextText)
-                assertTrue(prefills.single().contains(prepared.setup.serviceContextText))
-                assertEquals(2, server.requestCount)
-            } finally {
-                owner.close()
-                testScheduler.runCurrent()
-                server.shutdown()
-            }
-        }
-
-    private fun enqueueResourceList(
-        server: MockWebServer,
-        resources: String,
-    ) {
-        server.enqueue(
-            MockResponse().setBody(
-                """{
-            "jsonrpc":"2.0","id":1,"result":{
-                "resultType":"complete","ttlMs":0,"cacheScope":"private","resources":$resources
-            }
-        }""",
-            ),
-        )
-    }
-
-    private fun enqueueFacts(
-        server: MockWebServer,
-        title: String,
-        notificationsMimeType: String? = null,
-    ) {
-        val notifications =
-            notificationsMimeType
-                ?.let {
-                    """,{"uri":"gomode://notifications","name":"notifications","mimeType":${JsonPrimitive(it)}}"""
-                }.orEmpty()
-        enqueueResourceList(
-            server,
-            """[{"uri":"gomode://items","name":"items","mimeType":"application/json"}$notifications]""",
-        )
-        val text = JsonPrimitive("""{"items":[{"id":"item-1","title":"$title","state":"ready"}]}""")
-        server.enqueue(
-            MockResponse().setBody(
-                """{
-            "jsonrpc":"2.0","id":2,"result":{
-                "resultType":"complete","ttlMs":0,"cacheScope":"private",
-                "contents":[{"uri":"gomode://items","mimeType":"application/json","text":$text}]
-            }
-        }""",
-            ),
-        )
-    }
-
-    private fun setup() =
-        VoiceSetup(
-            gatewayEndpointURL = "https://service.example",
-            service = null,
-            tokenEndpointURL = null,
-            gatewayHeaders = emptyMap(),
-            mcpClient = McpClient("https://service.example/mcp", "2024-11-05", { null }),
-            tools =
-                listOf(
-                    ToolDescriptor(
-                        name = "choose",
-                        inputSchema =
-                            Json.parseToJsonElement(
-                                """{"type":"object","properties":{"item":{"type":"string"}},"required":["item"]}""",
-                            ),
+    private fun setup(systemInstruction: String = "Use the selected service") =
+        LocalConversationPreparation(
+            VoiceSetup(
+                gatewayEndpointURL = "https://service.example",
+                service = null,
+                tokenEndpointURL = null,
+                gatewayHeaders = emptyMap(),
+                mcpClient = McpClient("https://service.example/mcp", "2024-11-05", { null }),
+                tools =
+                    listOf(
+                        ToolDescriptor(
+                            name = "choose",
+                            inputSchema =
+                                Json.parseToJsonElement(
+                                    """{"type":"object","properties":{"item":{"type":"string"}},"required":["item"]}""",
+                                ),
+                        ),
                     ),
-                ),
-            systemInstruction = "Use the selected service",
-            serviceContextText = "current item: alpha",
+                systemInstruction = systemInstruction,
+                serviceContextText = "current item: alpha",
+            ),
+            VoiceConversationLifetime(),
         )
 
     private open class Runner : EdgeLlmRunner {

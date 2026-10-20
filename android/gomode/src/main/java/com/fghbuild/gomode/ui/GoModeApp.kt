@@ -8,7 +8,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
-import android.webkit.CookieManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -34,9 +33,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,44 +47,54 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.halo.HaloController
-import com.fghbuild.gomode.service.ServiceMonitor
+import com.fghbuild.gomode.service.CatalogNotification
+import com.fghbuild.gomode.service.CatalogService
+import com.fghbuild.gomode.service.ServiceCatalog
+import com.fghbuild.gomode.service.ServiceMonitorState
 import com.fghbuild.gomode.service.ServiceMonitoringSnapshot
-import com.fghbuild.gomode.service.ServiceNotification
 import com.fghbuild.gomode.service.ServiceNotificationPublisher
+import com.fghbuild.gomode.service.ServiceReadiness
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.service.ServiceSettingsException
 import com.fghbuild.gomode.service.compatibilityError
 import com.fghbuild.gomode.service.serviceItemVoiceChanges
 import com.fghbuild.gomode.ui.halo.HaloScreen
 import com.fghbuild.gomode.ui.settings.SettingsScreen
-import com.fghbuild.gomode.ui.web.ServiceBearerStore
+import com.fghbuild.gomode.ui.web.FrontendVoiceTools
+import com.fghbuild.gomode.ui.web.ServiceShellKey
+import com.fghbuild.gomode.ui.web.ServiceShellRegistry
+import com.fghbuild.gomode.ui.web.ServiceShellSession
+import com.fghbuild.gomode.ui.web.ServiceShellState
 import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.ui.web.WebShellScreen
+import com.fghbuild.gomode.ui.web.isTrustedPermissionOrigin
 import com.fghbuild.gomode.voice.AudioDevice
 import com.fghbuild.gomode.voice.DeviceVoiceSession
 import com.fghbuild.gomode.voice.LocalModelOwner
 import com.fghbuild.gomode.voice.LocalModelSelection
 import com.fghbuild.gomode.voice.LocalModelState
-import com.fghbuild.gomode.voice.McpClient
-import com.fghbuild.gomode.voice.ServerVoiceSwitch
 import com.fghbuild.gomode.voice.TelecomCallController
+import com.fghbuild.gomode.voice.VoiceConversation
 import com.fghbuild.gomode.voice.VoicePanel
 import com.fghbuild.gomode.voice.VoiceService
 import com.fghbuild.gomode.voice.VoiceSession
 import com.fghbuild.gomode.voice.VoiceSessionController
 import com.fghbuild.gomode.voice.VoiceState
-import com.fghbuild.gomode.voice.prepareVoiceSetup
+import com.fghbuild.gomode.voice.usesGatewayVoice
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
 import java.io.IOException
 import com.fghbuild.gomode.sdk.v1.Settings as ServiceSettings
@@ -121,75 +132,81 @@ internal fun GoModeApp(
         onDispose { haloController.close() }
     }
 
-    val settings by settingsRepository.settings.collectAsStateWithLifecycle()
+    val settings by key(settingsRepository) { settingsRepository.settings.collectAsStateWithLifecycle() }
     val settingsClient = remember { ServiceSettingsClient() }
     var activeNativeScreen by remember { mutableStateOf<NativeScreen?>(null) }
     val activeURL = settings.activeServiceURL
-    val bearerStore = remember(settings.activeServiceId, activeURL) { ServiceBearerStore(activeURL) }
-    DisposableEffect(bearerStore) {
-        onDispose { bearerStore.deactivate() }
+    val shellRegistry = remember(settingsRepository) { ServiceShellRegistry() }
+    val serviceKeys = settings.services.map { ServiceShellKey(it.id, it.url) }
+    val activeKey = ServiceShellKey(settings.activeServiceId, activeURL)
+    val serviceSessions = shellRegistry.reconcile((serviceKeys + activeKey).toSet())
+    val serviceSession = serviceSessions.getValue(activeKey)
+    var prepareAllPages by remember { mutableStateOf(false) }
+    DisposableEffect(shellRegistry) {
+        onDispose { shellRegistry.close() }
     }
-    val bearerToken by bearerStore.token.collectAsStateWithLifecycle()
-    val authEpoch by bearerStore.authEpoch.collectAsStateWithLifecycle()
-    val authReady by bearerStore.authReady.collectAsStateWithLifecycle()
-    var reloadToken by remember(activeURL) { mutableStateOf(0) }
-    var bootstrapState by remember(activeURL) {
-        mutableStateOf<ServiceBootstrapState>(ServiceBootstrapState.Unvalidated())
-    }
-    var webLoadState by remember(settings.activeServiceId, activeURL) {
-        mutableStateOf<WebShellLoadState>(WebShellLoadState.Loading)
-    }
-    var webReloadToken by remember { mutableStateOf(0) }
+    val bearerStore = serviceSession.bearerStore
+    val bearerToken by key(bearerStore) { bearerStore.token.collectAsStateWithLifecycle() }
+    val authEpoch by key(bearerStore) { bearerStore.authEpoch.collectAsStateWithLifecycle() }
+    val authReady by key(bearerStore) { bearerStore.authReady.collectAsStateWithLifecycle() }
+    val shellState by key(serviceSession) { serviceSession.state.collectAsStateWithLifecycle() }
+    val bootstrapState = shellState.bootstrap
+    val webLoadState = shellState.load
 
-    LaunchedEffect(activeURL, reloadToken, settingsClient) {
-        if (activeURL.isBlank()) return@LaunchedEffect
-        bootstrapState = ServiceBootstrapState.Unvalidated()
-        bootstrapState = fetchBootstrapState(activeURL, settingsClient)
+    serviceSessions.values.forEach { entry ->
+        key(entry) {
+            val entryState by entry.state.collectAsStateWithLifecycle()
+            LaunchedEffect(entry, entryState.bootstrapReloadToken, settingsClient) {
+                if (entry.key.url.isBlank()) return@LaunchedEffect
+                entry.updateBootstrap(ServiceBootstrapState.Unvalidated())
+                entry.updateBootstrap(fetchBootstrapState(entry.key.url, settingsClient))
+            }
+        }
     }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    val serverVoiceSwitch = remember(settingsRepository, scope) { ServerVoiceSwitch(settingsRepository, scope) }
-    val pendingServerSwitch = serverVoiceSwitch.pending.collectAsStateWithLifecycle().value
-    val switchVoiceServer: suspend (String, String) -> Unit =
-        remember(serverVoiceSwitch, settings.activeServiceId, activeURL) {
-            { id, conversationID ->
-                val current = settingsRepository.settings.value
-                check(current.activeServiceId == settings.activeServiceId && current.activeServiceURL == activeURL) {
-                    "Active server changed before the voice command could switch servers"
-                }
+    val serviceCatalog = remember(scope) { ServiceCatalog(scope) }
+    serviceCatalog.reconcile(serviceSessions, settings.services.associate { it.id to it.label })
+    DisposableEffect(serviceCatalog) {
+        onDispose { serviceCatalog.close() }
+    }
+    val catalogState by serviceCatalog.state.collectAsStateWithLifecycle()
+    val currentEntries by rememberUpdatedState(serviceSessions)
+    val voiceConversation =
+        remember(settingsRepository, settingsClient, serviceCatalog) {
+            VoiceConversation(settingsRepository, settingsClient, serviceCatalog) { currentEntries }
+        }
+    val gatewayState by key(voiceConversation) { voiceConversation.state.collectAsStateWithLifecycle() }
+    val sharedConversation =
+        usesGatewayVoice(settings) ||
+            (settings.voiceMode == VoiceMode.DEVICE && settings.onDeviceEngine == OnDeviceEngine.LOCAL_LLM)
+    val switchVoiceServer: suspend (String) -> Unit =
+        remember(settingsRepository) {
+            { id ->
                 activeNativeScreen = null
-                serverVoiceSwitch.switchServer(id, conversationID)
+                settingsRepository.switchService(id)
             }
         }
     val voiceMode = settings.voiceMode
     val localSelection =
         remember(
-            settings.activeServiceId,
-            activeURL,
+            voiceConversation,
             voiceMode,
             settings.onDeviceEngine,
             settings.localLlmModel,
             settings.voiceLanguageTag,
-            bearerStore,
-            bearerToken,
-            authEpoch,
-            authReady,
-            bootstrapState,
         ) {
-            if (shouldPrepareLocalModel(settings, authReady) && bootstrapState is ServiceBootstrapState.Ready) {
+            if (voiceMode == VoiceMode.DEVICE && settings.onDeviceEngine == OnDeviceEngine.LOCAL_LLM) {
                 LocalModelSelection(
                     languageTag = settings.voiceLanguageTag,
                     model = settings.localLlmModel,
-                    prepareSetup = { prepareVoiceSetup(settingsRepository, settingsClient, bearerStore::tokenFor) },
+                    prepareSetup = { withContext(Dispatchers.Main) { voiceConversation.prepareLocal() } },
                     isCurrent = {
                         val current = settingsRepository.settings.value
-                        shouldPrepareLocalModel(current, bearerStore.authReady.value) &&
-                            current.activeServiceId == settings.activeServiceId &&
-                            current.activeServiceURL == activeURL &&
+                        current.voiceMode == VoiceMode.DEVICE && current.onDeviceEngine == OnDeviceEngine.LOCAL_LLM &&
                             current.voiceLanguageTag == settings.voiceLanguageTag &&
-                            current.localLlmModel == settings.localLlmModel &&
-                            bearerStore.authEpoch.value == authEpoch && bearerStore.token.value == bearerToken
+                            current.localLlmModel == settings.localLlmModel
                     },
                 )
             } else {
@@ -200,15 +217,16 @@ internal fun GoModeApp(
         localModelOwner.select(localSelection)
         onDispose { localModelOwner.clearSelection(localSelection) }
     }
-    val localModelState by localModelOwner.state.collectAsStateWithLifecycle()
+    val localModelState by key(localModelOwner) { localModelOwner.state.collectAsStateWithLifecycle() }
     val voiceCallController =
-        remember(context.applicationContext, serverVoiceSwitch) {
-            TelecomCallController(context.applicationContext, onTelecomEnded = serverVoiceSwitch::cancel)
+        remember(context.applicationContext) {
+            TelecomCallController(context.applicationContext, onTelecomEnded = {})
         }
+    val voiceServiceOwner = if (sharedConversation) voiceConversation else bearerStore
     val voiceSession: VoiceSessionController =
         remember(
             settingsRepository,
-            bearerStore,
+            voiceServiceOwner,
             switchVoiceServer,
             voiceMode,
             settings.voiceLanguageTag,
@@ -222,7 +240,9 @@ internal fun GoModeApp(
                         context.applicationContext,
                         settingsRepository,
                         settingsClient,
-                        bearerTokenFor = bearerStore::tokenFor,
+                        bearerTokenFor = if (sharedConversation) voiceConversation::tokenFor else bearerStore::tokenFor,
+                        frontendTools = if (sharedConversation) FrontendVoiceTools() else serviceSession.frontendTools,
+                        voiceConversation = voiceConversation.takeIf { sharedConversation },
                         languageTag = settings.voiceLanguageTag,
                         localModelOwner = localModelOwner,
                         callController = voiceCallController,
@@ -234,8 +254,7 @@ internal fun GoModeApp(
                     VoiceSession(
                         context.applicationContext,
                         settingsRepository,
-                        settingsClient,
-                        bearerTokenFor = bearerStore::tokenFor,
+                        voiceConversation = voiceConversation,
                         languageTag = settings.voiceLanguageTag,
                         callController = voiceCallController,
                         switchServer = switchVoiceServer,
@@ -254,7 +273,6 @@ internal fun GoModeApp(
                     intent: Intent?,
                 ) {
                     if (intent?.action == VoiceService.ACTION_HANG_UP) {
-                        serverVoiceSwitch.cancel()
                         voiceSession.disconnect()
                     }
                 }
@@ -271,9 +289,9 @@ internal fun GoModeApp(
     val voiceAuthIdentity = remember(bearerStore) { VoiceAuthIdentity() }
     LaunchedEffect(bearerToken, authEpoch, authReady, voiceSession) {
         val changed = voiceAuthIdentity.update(bearerToken, authEpoch)
-        if (changed || !authReady) voiceSession.disconnect()
+        if (!sharedConversation && (changed || !authReady)) voiceSession.disconnect()
     }
-    val voiceState by voiceSession.state.collectAsStateWithLifecycle()
+    val voiceState by key(voiceSession) { voiceSession.state.collectAsStateWithLifecycle() }
     var audioSelectionJob by remember(voiceSession) { mutableStateOf<Job?>(null) }
     var knownAudioDevices by remember(voiceSession) { mutableStateOf(emptySet<Int>()) }
     LaunchedEffect(voiceSession, voiceState.connected, voiceState.availableDevices) {
@@ -289,24 +307,10 @@ internal fun GoModeApp(
             settingsRepository.updateVoiceAudioDeviceType(bluetooth.type)
         }
     }
-    val serviceMonitor =
-        remember(scope, bearerStore) {
-            ServiceMonitor(scope = scope) { endpointURL, protocolVersion ->
-                McpClient(
-                    endpointURL = endpointURL,
-                    protocolVersion = protocolVersion,
-                    cookieProvider = { CookieManager.getInstance().getCookie(endpointURL) },
-                    bearerTokenProvider = { bearerStore.tokenFor(endpointURL) },
-                )
-            }
-        }
-    DisposableEffect(serviceMonitor) {
-        onDispose { serviceMonitor.stop() }
-    }
-    val serviceMonitorState by serviceMonitor.state.collectAsStateWithLifecycle()
-    var voiceItemBaseline by remember(activeURL) { mutableStateOf<ServiceMonitoringSnapshot?>(null) }
-    LaunchedEffect(activeURL, voiceState.connected, serviceMonitorState.snapshot) {
-        if (!voiceState.connected) {
+    val serviceMonitorState = catalogState[activeKey]?.monitoring ?: ServiceMonitorState()
+    var voiceItemBaseline by remember(serviceSession) { mutableStateOf<ServiceMonitoringSnapshot?>(null) }
+    LaunchedEffect(serviceSession, voiceState.connected, serviceMonitorState.snapshot) {
+        if (sharedConversation || !voiceState.connected) {
             voiceItemBaseline = null
             return@LaunchedEffect
         }
@@ -340,14 +344,34 @@ internal fun GoModeApp(
         voiceState.connected || voiceState.connectStatus != null ||
             voiceState.listening || voiceState.speaking
     val notificationPublisher = remember(context) { ServiceNotificationPublisher(context.applicationContext) }
-    var pendingNotifications by remember { mutableStateOf(emptyList<ServiceNotification>()) }
+    LaunchedEffect(sharedConversation, voiceConversation, gatewayState, catalogState, activeKey, voiceState.connected) {
+        if (sharedConversation && gatewayState != null) {
+            if (!voiceConversation.isCurrent()) {
+                voiceSession.disconnect()
+                if (localSelection != null) localModelOwner.restartConversation()
+            } else if (voiceSessionActive) {
+                voiceSession.injectText(voiceConversation.contextText())
+            }
+        }
+    }
+    val currentSharedConversation by rememberUpdatedState(sharedConversation)
+    val currentVoiceActive by rememberUpdatedState(voiceSessionActive)
+    val currentServiceKey by rememberUpdatedState(activeKey)
+    var notificationPermissionPending by remember { mutableStateOf(false) }
+    var pendingNotifications by remember { mutableStateOf(emptyList<CatalogNotification>()) }
     val notificationPermissionLauncher =
         rememberLauncherForActivityResult(
             ActivityResultContracts.RequestPermission(),
         ) { granted ->
             // Voice mode already announced these events; do not post duplicate native alerts.
-            if (granted && !voiceSessionActive) pendingNotifications.forEach(notificationPublisher::publish)
+            if (granted) {
+                pendingNotifications
+                    .filter(serviceCatalog::canDeliver)
+                    .filter { !currentVoiceActive || (!currentSharedConversation && it.source != currentServiceKey) }
+                    .forEach { notificationPublisher.publish(it.notification) }
+            }
             pendingNotifications = emptyList()
+            notificationPermissionPending = false
         }
     val configuredVoiceAvailable =
         (bootstrapState as? ServiceBootstrapState.Ready)
@@ -356,83 +380,32 @@ internal fun GoModeApp(
             ?.voiceGateway
             ?.url
             ?.isNotBlank() == true
-    val voiceAvailable = authReady && (voiceSessionActive || (configuredVoiceAvailable && shellRecovery == null))
-    LaunchedEffect(
-        settings,
-        pendingServerSwitch,
-        bearerToken,
-        authEpoch,
-        authReady,
-        bootstrapState,
-        webLoadState,
-        localModelState,
-        voiceSession,
-        voiceState.connected,
-        voiceState.connectStatus,
-        voiceState.error,
-    ) {
-        if (pendingServerSwitch == null ||
-            pendingServerSwitch !== serverVoiceSwitch.pending.value
-        ) {
-            return@LaunchedEffect
-        }
-        val current = settingsRepository.settings.value
-        val ready =
-            current == settings && bearerToken == bearerStore.token.value &&
-                authEpoch == bearerStore.authEpoch.value && authReady && configuredVoiceAvailable &&
-                webLoadState == WebShellLoadState.Ready &&
-                (!shouldPrepareLocalModel(settings, authReady) || localModelState == LocalModelState.Ready)
-        if (serverVoiceSwitch.shouldConnect(settings, ready, voiceState)) {
-            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-                PackageManager.PERMISSION_GRANTED
-            ) {
-                voiceSession.connect(conversationID = pendingServerSwitch.conversationID)
-            } else {
-                serverVoiceSwitch.cancel()
-                scope.launch { snackbarHostState.showSnackbar("Microphone permission is required to reconnect voice") }
-            }
-        } else if (settings.activeServiceId == pendingServerSwitch.target.id &&
-            (
-                bootstrapState is ServiceBootstrapState.Error ||
-                    (bootstrapState as? ServiceBootstrapState.Unvalidated)?.reason != null ||
-                    (bootstrapState is ServiceBootstrapState.Ready && !configuredVoiceAvailable)
-            )
-        ) {
-            serverVoiceSwitch.cancel()
-            scope.launch { snackbarHostState.showSnackbar("Voice is unavailable on the selected server") }
-        }
-    }
+    val voiceAvailable =
+        (sharedConversation && voiceSessionActive) ||
+            (localSelection != null && localModelState == LocalModelState.Ready) ||
+            (authReady && (voiceSessionActive || (configuredVoiceAvailable && shellRecovery == null)))
     val density = LocalDensity.current
     val keyboardOpen = WindowInsets.ime.getBottom(density) > 0
 
-    LaunchedEffect(
-        settings.activeServiceId,
-        activeURL,
-        bootstrapState,
-        bearerToken,
-        authEpoch,
-        authReady,
-        serviceMonitor,
-    ) {
-        val ready = bootstrapState as? ServiceBootstrapState.Ready
-        if (activeURL.isBlank() || ready == null || !authReady) {
-            serviceMonitor.stop()
-            return@LaunchedEffect
-        }
-        serviceMonitor.start(activeURL, ready.settings)
-    }
-
-    LaunchedEffect(serviceMonitorState.notifications) {
-        val notifications = serviceMonitorState.notifications
-        // Voice mode already announced these events; do not post duplicate native alerts.
-        if (notifications.isEmpty() || voiceSessionActive) return@LaunchedEffect
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            notifications.forEach(notificationPublisher::publish)
-        } else {
-            pendingNotifications = notifications
-            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    LaunchedEffect(serviceCatalog) {
+        serviceCatalog.notifications.collect { notification ->
+            // A shared conversation receives updates from every participant.
+            val selectedNotificationsSuppressed =
+                currentVoiceActive &&
+                    (currentSharedConversation || notification.source == currentServiceKey)
+            if (!selectedNotificationsSuppressed && serviceCatalog.canDeliver(notification)) {
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    notificationPublisher.publish(notification.notification)
+                } else {
+                    pendingNotifications = (pendingNotifications + notification).takeLast(64)
+                    if (!notificationPermissionPending) {
+                        notificationPermissionPending = true
+                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
+            }
         }
     }
 
@@ -465,24 +438,28 @@ internal fun GoModeApp(
                     settingsRepository = settingsRepository,
                     haloController = haloController,
                     activeURL = activeURL,
-                    bearerStore = bearerStore,
-                    bootstrapState = bootstrapState,
+                    serviceSession = serviceSession,
                     onSetNativeScreen = { activeNativeScreen = it },
-                    onSelectService = serverVoiceSwitch::cancel,
                     activeNativeScreen = activeNativeScreen,
                     voiceConnected = voiceState.connected,
                     voiceSessionActive = voiceSessionActive,
-                    webReloadToken = webReloadToken,
-                    onWebLoadStateChanged = { webLoadState = it },
-                    onHostedPageLoaded = {
-                        if (bootstrapState is ServiceBootstrapState.Unvalidated) {
-                            reloadToken += 1
+                    serviceSessions = serviceSessions.values.toList(),
+                    prepareAllPages = prepareAllPages,
+                    catalogState = catalogState,
+                    onRetryService = serviceCatalog::retry,
+                    onEntryAuthInvalidated = shellRegistry::invalidateSharedOrigin,
+                    onAuthInvalidated = { entry ->
+                        if (sharedConversation) {
+                            if (!voiceConversation.isCurrent()) {
+                                voiceSession.disconnect()
+                                if (localSelection != null) localModelOwner.restartConversation()
+                            }
+                        } else if (entry === serviceSession ||
+                            isTrustedPermissionOrigin(entry.key.url.toUri(), serviceSession.key.url)
+                        ) {
+                            localModelOwner.clearSelection(localSelection)
+                            voiceSession.disconnect()
                         }
-                    },
-                    onAuthInvalidated = {
-                        localModelOwner.clearSelection(localSelection)
-                        voiceSession.disconnect()
-                        serviceMonitor.stop()
                     },
                 )
             }
@@ -493,8 +470,8 @@ internal fun GoModeApp(
                     voiceSessionActive = voiceSessionActive,
                     onRetry = {
                         when (recovery.retryTarget) {
-                            ShellRecoveryRetryTarget.BOOTSTRAP -> reloadToken += 1
-                            ShellRecoveryRetryTarget.WEB -> webReloadToken += 1
+                            ShellRecoveryRetryTarget.BOOTSTRAP -> serviceSession.reloadBootstrap()
+                            ShellRecoveryRetryTarget.WEB -> serviceSession.reloadWeb()
                             null -> Unit
                         }
                     },
@@ -509,28 +486,15 @@ internal fun GoModeApp(
                 }
             }
             // Keep failures visible even when the keyboard or shell recovery hides idle controls.
-            if (pendingServerSwitch != null || voiceState.error != null ||
+            if (voiceState.error != null ||
                 (!keyboardOpen && (shellRecovery == null || voiceSessionActive))
             ) {
                 VoicePanel(
-                    voiceState =
-                        if (pendingServerSwitch != null) {
-                            voiceState.copy(
-                                error = null,
-                                connectStatus =
-                                    if (authReady) {
-                                        "Reconnecting voice to ${pendingServerSwitch.target.label}…"
-                                    } else {
-                                        "Waiting for ${pendingServerSwitch.target.label} sign-in to reconnect voice…"
-                                    },
-                            )
-                        } else {
-                            voiceState
-                        },
-                    voiceEnabled = pendingServerSwitch != null || voiceAvailable,
+                    voiceState = voiceState,
+                    voiceEnabled = voiceAvailable,
                     onConnect = {
-                        serverVoiceSwitch.cancel()
-                        if (bearerStore.authReady.value) {
+                        prepareAllPages = true
+                        if (localSelection != null || bearerStore.authReady.value) {
                             if (ContextCompat.checkSelfPermission(
                                     context,
                                     Manifest.permission.RECORD_AUDIO,
@@ -539,14 +503,13 @@ internal fun GoModeApp(
                                 voiceSession.connect()
                             } else {
                                 onMicGranted = {
-                                    if (bearerStore.authReady.value) voiceSession.connect()
+                                    if (localSelection != null || bearerStore.authReady.value) voiceSession.connect()
                                 }
                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
                         }
                     },
                     onDisconnect = {
-                        serverVoiceSwitch.cancel()
                         voiceSession.disconnect()
                     },
                     onToggleMute = { voiceSession.toggleMute() },
@@ -565,6 +528,17 @@ internal fun GoModeApp(
                     },
                     onClearTranscript = { voiceSession.clearTranscript() },
                     onOpenSettings = { activeNativeScreen = NativeScreen.Settings },
+                    onCycleApp = {
+                        activeNativeScreen = null
+                        scope.launch {
+                            try {
+                                settingsRepository.cycleService()
+                            } catch (e: IOException) {
+                                snackbarHostState.showSnackbar("Unable to switch apps: ${e.message}")
+                            }
+                        }
+                    },
+                    canCycleApps = settings.services.size > 1,
                     serviceStatusText = serviceMonitorState.error?.let { "Service updates are reconnecting." },
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -604,13 +578,6 @@ private fun AudioDevice.isBluetooth(): Boolean =
     type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
         type == AudioDeviceInfo.TYPE_BLE_HEADSET || type == AudioDeviceInfo.TYPE_BLE_SPEAKER
 
-internal fun shouldPrepareLocalModel(
-    settings: SettingsState,
-    authReady: Boolean,
-): Boolean =
-    authReady && settings.activeServiceURL.isNotBlank() &&
-        settings.voiceMode == VoiceMode.DEVICE && settings.onDeviceEngine == OnDeviceEngine.LOCAL_LLM
-
 internal suspend fun fetchBootstrapState(
     activeURL: String,
     settingsClient: ServiceSettingsClient,
@@ -641,18 +608,45 @@ private fun GoModeContent(
     settingsRepository: SettingsRepository,
     haloController: HaloController,
     activeURL: String,
-    bearerStore: ServiceBearerStore,
-    bootstrapState: ServiceBootstrapState,
+    serviceSession: ServiceShellSession,
     activeNativeScreen: NativeScreen?,
     onSetNativeScreen: (NativeScreen?) -> Unit,
-    onSelectService: () -> Unit,
     voiceConnected: Boolean,
     voiceSessionActive: Boolean,
-    webReloadToken: Int,
-    onWebLoadStateChanged: (WebShellLoadState) -> Unit,
-    onHostedPageLoaded: () -> Unit,
-    onAuthInvalidated: () -> Unit,
+    serviceSessions: List<ServiceShellSession>,
+    prepareAllPages: Boolean,
+    catalogState: Map<ServiceShellKey, CatalogService>,
+    onRetryService: (ServiceShellKey) -> Unit,
+    onEntryAuthInvalidated: (ServiceShellSession) -> Unit,
+    onAuthInvalidated: (ServiceShellSession) -> Unit,
 ) {
+    val entryStates =
+        serviceSessions.associateWith { entry ->
+            key(entry) { entry.state.collectAsStateWithLifecycle().value }
+        }
+    val authReadiness =
+        serviceSessions.associateWith { entry ->
+            key(entry.bearerStore) {
+                entry.bearerStore.authReady
+                    .collectAsStateWithLifecycle()
+                    .value
+            }
+        }
+    val retryTargets =
+        serviceSessions.associateWith { entry ->
+            serviceRetryTarget(
+                entryStates.getValue(entry),
+                authReadiness.getValue(entry),
+                catalogState[entry.key]?.readiness,
+            )
+        }
+    val servicesNeedingAttention =
+        entryStates
+            .filterValues { it.attentionRequired }
+            .keys
+            .map { it.key.serviceID }
+            .toSet()
+    val bearerStore = serviceSession.bearerStore
     when {
         activeNativeScreen == NativeScreen.Halo -> {
             HaloScreen(
@@ -666,41 +660,98 @@ private fun GoModeContent(
                 settings = settings,
                 settingsRepository = settingsRepository,
                 voiceSessionActive = voiceSessionActive,
+                servicesNeedingAttention = servicesNeedingAttention,
+                serviceReadiness = catalogState.values.associate { it.key.serviceID to it.readiness.text },
+                serviceErrors =
+                    entryStates
+                        .mapNotNull { (entry, state) ->
+                            ((state.load as? WebShellLoadState.Failed)?.message ?: catalogState[entry.key]?.error)
+                                ?.let { entry.key.serviceID to it }
+                        }.toMap(),
+                serviceRetryLabels =
+                    retryTargets
+                        .mapNotNull { (entry, target) ->
+                            target?.let { entry.key.serviceID to it.label }
+                        }.toMap(),
+                onRetryService = { id ->
+                    serviceSessions.firstOrNull { it.key.serviceID == id }?.let { entry ->
+                        when (retryTargets[entry]) {
+                            ServiceRetryTarget.BOOTSTRAP -> entry.reloadBootstrap()
+                            ServiceRetryTarget.CATALOG -> onRetryService(entry.key)
+                            ServiceRetryTarget.PAGE -> entry.reloadWeb()
+                            null -> Unit
+                        }
+                    }
+                },
                 onDone = { onSetNativeScreen(null) },
                 onOpenHalo = { onSetNativeScreen(NativeScreen.Halo) },
-                onSelectService = onSelectService,
                 bearerTokenFor = bearerStore::tokenFor,
-                bearerToken = bearerStore.token.collectAsStateWithLifecycle().value,
-                authEpoch = bearerStore.authEpoch.collectAsStateWithLifecycle().value,
+                bearerToken = key(bearerStore) { bearerStore.token.collectAsStateWithLifecycle().value },
+                authEpoch = key(bearerStore) { bearerStore.authEpoch.collectAsStateWithLifecycle().value },
             )
         }
 
         else -> {
-            when (val state = bootstrapState) {
-                is ServiceBootstrapState.Error -> {
-                    Box(Modifier.fillMaxSize().testTag("gomode-service-bootstrap"))
-                }
-
-                is ServiceBootstrapState.Unvalidated,
-                is ServiceBootstrapState.Ready,
-                -> {
-                    // Keep non-error states in one Compose branch. Otherwise the WebView is disposed
-                    // when bootstrap validation completes, which can strand in-flight JavaScript callbacks.
+            Unit
+        }
+    }
+    serviceSessions.forEach { entry ->
+        key(entry) {
+            val entryState by entry.state.collectAsStateWithLifecycle()
+            val selected = entry === serviceSession && activeNativeScreen == null && activeURL.isNotBlank()
+            LaunchedEffect(entry, selected, prepareAllPages) {
+                if (selected || prepareAllPages) entry.requestPage()
+            }
+            if ((entryState.pageRequested || selected || prepareAllPages) &&
+                entry.key.url.isNotBlank() && entryState.bootstrap !is ServiceBootstrapState.Error
+            ) {
+                key(entryState.webViewGeneration) {
                     WebShellScreen(
-                        serviceID = settings.activeServiceId,
-                        initialURL = activeURL,
+                        serviceID = entry.key.serviceID,
+                        initialURL = entry.key.url,
                         voiceConnected = voiceConnected,
-                        reloadToken = webReloadToken,
-                        bearerStore = bearerStore,
-                        onLoadStateChanged = onWebLoadStateChanged,
-                        onHostedPageLoaded = onHostedPageLoaded,
-                        onAuthInvalidated = onAuthInvalidated,
+                        visible = selected,
+                        reloadToken = entryState.webReloadToken,
+                        serviceSession = entry,
+                        onLoadStateChanged = entry::updateLoad,
+                        onHostedPageLoaded = {
+                            if (entry.state.value.bootstrap is ServiceBootstrapState.Unvalidated) {
+                                entry
+                                    .reloadBootstrap()
+                            }
+                        },
+                        onSharedAuthInvalidated = {
+                            onEntryAuthInvalidated(entry)
+                            onAuthInvalidated(entry)
+                        },
+                        onAuthInvalidated = { onAuthInvalidated(entry) },
                     )
                 }
             }
         }
     }
 }
+
+internal enum class ServiceRetryTarget(
+    val label: String,
+) {
+    BOOTSTRAP("Retry settings"),
+    CATALOG("Retry connection"),
+    PAGE("Reload page"),
+}
+
+internal fun serviceRetryTarget(
+    state: ServiceShellState,
+    authReady: Boolean,
+    readiness: ServiceReadiness?,
+): ServiceRetryTarget? =
+    when {
+        (state.load as? WebShellLoadState.Failed)?.canRetry == false -> null
+        state.bootstrap !is ServiceBootstrapState.Ready -> ServiceRetryTarget.BOOTSTRAP
+        state.load != WebShellLoadState.Ready || !authReady -> ServiceRetryTarget.PAGE
+        readiness != null && readiness != ServiceReadiness.READY -> ServiceRetryTarget.CATALOG
+        else -> null
+    }
 
 // Tracks the identity used by a voice session so account changes invalidate that session.
 internal class VoiceAuthIdentity {
@@ -765,7 +816,7 @@ internal fun shellRecoveryState(
             ShellRecoveryState(
                 title = "Could not load service",
                 message = webLoadState.message,
-                retryTarget = ShellRecoveryRetryTarget.WEB,
+                retryTarget = ShellRecoveryRetryTarget.WEB.takeIf { webLoadState.canRetry },
             )
         }
 

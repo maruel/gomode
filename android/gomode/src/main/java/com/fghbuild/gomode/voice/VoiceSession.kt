@@ -37,9 +37,7 @@ import com.caic.voicegateway.sdk.v1.VoiceRTCICEGatheringState
 import com.caic.voicegateway.sdk.v1.VoiceRTCOfferReq
 import com.caic.voicegateway.sdk.v1.VoiceRTCSignalingState
 import com.fghbuild.gomode.data.SettingsRepository
-import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.service.VoiceTokenClient
-import com.fghbuild.gomode.ui.web.FrontendVoiceTools
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -88,9 +86,11 @@ internal const val MAX_RECOVERY_CONTEXT_CHARS = 8_000
 private val sdpWhitespaceRegex = Regex("\\s+")
 
 /** Combines prepared service/native tools with the current hosted frontend declarations. */
-internal fun voiceToolDeclarations(tools: List<ToolDescriptor>): List<ToolDeclaration> =
+internal fun voiceToolDeclarations(
+    tools: List<ToolDescriptor>,
+    frontendTools: List<ToolDeclaration> = emptyList(),
+): List<ToolDeclaration> =
     buildList {
-        val frontendTools = FrontendVoiceTools.declarations
         require(tools.none { tool -> frontendTools.any { it.name == tool.name } }) {
             "Voice tool conflicts with a frontend voice tool."
         }
@@ -158,12 +158,11 @@ internal class VoiceRecoveryPolicy(
 internal class VoiceSession(
     private val appContext: Context,
     private val settingsRepository: SettingsRepository,
-    private val settingsClient: ServiceSettingsClient = ServiceSettingsClient(),
-    private val bearerTokenFor: (String) -> String? = { null },
+    private val voiceConversation: VoiceConversation,
     private val languageTag: String,
     voiceChimePlayer: VoiceChimePlayer = AndroidVoiceChime(),
     private val callController: VoiceCallController = NoopVoiceCallController(),
-    private val switchServer: suspend (String, String) -> Unit = { id, _ -> settingsRepository.switchService(id) },
+    private val switchServer: suspend (String) -> Unit = { id -> settingsRepository.switchService(id) },
 ) : VoiceSessionController {
     private val audioManager = appContext.getSystemService(AudioManager::class.java)
     private val json =
@@ -189,6 +188,8 @@ internal class VoiceSession(
     private var connectJob: Job? = null
     private var signalingJob: Job? = null
     private val attemptGeneration = AtomicLong()
+    private val pendingGatewayTools = mutableMapOf<Long, Int>()
+    private var awaitingGatewayTurn = false
     private val recoveryPolicy = VoiceRecoveryPolicy(MAX_RECONNECT_ATTEMPTS)
     private val voiceModeChime = VoiceModeChime(voiceChimePlayer)
     private var disconnectAudioAttempt: Long? = null
@@ -200,9 +201,7 @@ internal class VoiceSession(
 
     @Volatile
     private var usableICECandidateWaiter: CompletableDeferred<Unit>? = null
-    private var mcpClient: McpClient? = null
     private var conversationID = UUID.randomUUID().toString()
-    private var frontendToolNames: Set<String> = emptySet()
     private var sessionTools: List<ToolDescriptor> = emptyList()
     private var deviceCallback: AudioDeviceCallback? = null
     private var scoReceiver: BroadcastReceiver? = null
@@ -246,7 +245,9 @@ internal class VoiceSession(
         }
 
     override fun setError(message: String) {
+        voiceConversation.finish()
         val attempt = invalidateAttempt()
+        awaitingGatewayTurn = false
         val deferAudioRelease = deferDisconnectAudio(attempt)
         reconnectJob?.cancel()
         reconnectJob = null
@@ -259,7 +260,6 @@ internal class VoiceSession(
         closePeerConnection()
         rtcSessionID = null
         voiceTokenEndpointURL = null
-        mcpClient = null
         sessionTools = emptyList()
         if (!deferAudioRelease) finishDisconnectAudio(attempt)
         callController.endLocal()
@@ -298,6 +298,7 @@ internal class VoiceSession(
     @Suppress("TooGenericExceptionCaught") // Error boundary: surface all failures to UI.
     override fun connect(preserveTranscript: Boolean, conversationID: String?) {
         val attempt = invalidateAttempt()
+        awaitingGatewayTurn = false
         reconnectJob?.cancel()
         reconnectJob = null
         usableICECandidateWaiter?.cancel()
@@ -309,7 +310,6 @@ internal class VoiceSession(
         closePeerConnection()
         rtcSessionID = null
         voiceTokenEndpointURL = null
-        mcpClient = null
         sessionTools = emptyList()
         lastIceConnectionState = "new"
         lastIceGatheringState = "new"
@@ -319,9 +319,16 @@ internal class VoiceSession(
         if (!preserveTranscript) {
             this.conversationID = conversationID ?: UUID.randomUUID().toString()
             pinnedVoice = null
+            pendingNotifications.clear()
             recoveryPolicy.reset()
             recoveryContext = ""
             clearTranscript()
+        }
+        try {
+            voiceConversation.begin(preserveTranscript)
+        } catch (e: VoiceSetupException) {
+            setError(e.message ?: "Gateway conversation is unavailable")
+            return
         }
         // A recovery connect keeps the self-managed call, and Telecom owns call
         // audio focus for it. Holding our own request would turn Telecom's
@@ -340,12 +347,7 @@ internal class VoiceSession(
                 try {
                     val setup =
                         try {
-                            prepareVoiceSetup(
-                                settingsRepository,
-                                settingsClient,
-                                bearerTokenFor,
-                                pinnedVoice = pinnedVoice,
-                            )
+                            voiceConversation.prepare(pinnedVoice)
                         } catch (e: VoiceSetupException) {
                             if (ownsAttempt(attempt)) setError(e.message ?: "Voice setup failed")
                             return@launch
@@ -357,7 +359,6 @@ internal class VoiceSession(
                             requireNotNull(setup.choiceID),
                             setup.voiceName,
                         )
-                    mcpClient = setup.mcpClient
                     sessionTools = setup.tools
                     voiceTokenEndpointURL = setup.tokenEndpointURL
                     val systemInstruction = setup.systemInstruction
@@ -786,7 +787,12 @@ internal class VoiceSession(
         return try {
             val authHeaders =
                 voiceTokenEndpointURL?.let { endpoint ->
-                    val service = voiceTokenClient.fetch(endpoint, cookieFor(endpoint), bearerTokenFor(endpoint))
+                    val service =
+                        voiceTokenClient.fetch(
+                            endpoint,
+                            cookieFor(endpoint),
+                            voiceConversation.tokenFor(endpoint),
+                        )
                     headers + ("Authorization" to "Bearer ${service.token}")
                 } ?: headers
             val diagnostics =
@@ -928,8 +934,10 @@ internal class VoiceSession(
     }
 
     override fun disconnect() {
+        voiceConversation.finish()
         pinnedVoice = null
         val attempt = invalidateAttempt()
+        awaitingGatewayTurn = false
         val deferAudioRelease = deferDisconnectAudio(attempt)
         reconnectJob?.cancel()
         reconnectJob = null
@@ -948,7 +956,6 @@ internal class VoiceSession(
         closePeerConnection()
         rtcSessionID = null
         voiceTokenEndpointURL = null
-        mcpClient = null
         sessionTools = emptyList()
         // Preserve transcript so the user can review it after disconnecting.
         _state.value = VoiceState(transcript = _state.value.transcript.map { it.copy(final = true) })
@@ -978,7 +985,14 @@ internal class VoiceSession(
     }
 
     override fun injectText(text: String) {
-        if (speakerActive) {
+        if (!voiceConversation.isCurrent()) {
+            disconnect()
+            return
+        }
+        if (speakerActive || awaitingGatewayTurn || !_state.value.connected ||
+            pendingGatewayTools.containsKey(attemptGeneration.get())
+        ) {
+            pendingNotifications.clear()
             pendingNotifications.add(text)
             return
         }
@@ -1014,6 +1028,15 @@ internal class VoiceSession(
     }
 
     private fun flushPendingNotifications() {
+        if (!voiceConversation.isCurrent()) {
+            disconnect()
+            return
+        }
+        if (speakerActive || awaitingGatewayTurn || !_state.value.connected ||
+            pendingGatewayTools.containsKey(attemptGeneration.get())
+        ) {
+            return
+        }
         if (pendingNotifications.isEmpty()) return
         val text = pendingNotifications.joinToString("\n")
         pendingNotifications.clear()
@@ -1025,7 +1048,6 @@ internal class VoiceSession(
         serviceContextText: String,
         voiceName: String,
     ) {
-        frontendToolNames = FrontendVoiceTools.declarations.map { it.name }.toSet()
         val setup =
             gatewaySessionSetup(
                 voiceToolDeclarations(sessionTools),
@@ -1080,6 +1102,7 @@ internal class VoiceSession(
                 }
 
                 MessageKind.SpeechEnded -> {
+                    if (!pendingGatewayTools.containsKey(attempt)) awaitingGatewayTurn = false
                     speakerActive = false
                     flushPendingNotifications()
                     _state.update {
@@ -1091,6 +1114,7 @@ internal class VoiceSession(
                 }
 
                 MessageKind.Interrupted -> {
+                    if (!pendingGatewayTools.containsKey(attempt)) awaitingGatewayTurn = false
                     speakerActive = false
                     flushPendingNotifications()
                     _state.update { it.copy(speaking = false, activeTool = null) }
@@ -1099,6 +1123,10 @@ internal class VoiceSession(
                 MessageKind.TurnStatus -> {
                     val msg = json.decodeFromString(TurnStatus.serializer(), text)
                     _state.update { it.copy(turnState = msg.state) }
+                    if (msg.state == TurnState.Idle && !pendingGatewayTools.containsKey(attempt)) {
+                        awaitingGatewayTurn = false
+                        flushPendingNotifications()
+                    }
                 }
 
                 MessageKind.ToolCall -> {
@@ -1139,10 +1167,29 @@ internal class VoiceSession(
         attempt: Long,
         originChannel: DataChannel,
     ) {
+        awaitingGatewayTurn = true
+        pendingGatewayTools[attempt] = (pendingGatewayTools[attempt] ?: 0) + 1
+        try {
+            dispatchToolCall(msg, attempt, originChannel)
+        } finally {
+            val pending = (pendingGatewayTools[attempt] ?: 1) - 1
+            if (pending == 0) pendingGatewayTools.remove(attempt) else pendingGatewayTools[attempt] = pending
+            if (ownsAttempt(attempt)) flushPendingNotifications()
+        }
+    }
+
+    private suspend fun dispatchToolCall(
+        msg: ToolCall,
+        attempt: Long,
+        originChannel: DataChannel,
+    ) {
         if (!ownsAttempt(attempt) || dataChannel !== originChannel) return
+        if (!voiceConversation.isCurrent()) {
+            disconnect()
+            return
+        }
         val id = msg.id
         val name = msg.name
-        // Pin this call to its conversation before native/frontend dispatch can suspend.
         val sessionID = conversationID
         try {
             _state.update { it.copy(activeTool = name) }
@@ -1151,7 +1198,7 @@ internal class VoiceSession(
                     name,
                     msg.args,
                     settingsRepository,
-                    switchServer = { id -> switchServer(id, sessionID) },
+                    switchServer = switchServer,
                     onDisconnect = ::disconnect,
                 )
             if (serverResult != null) {
@@ -1160,46 +1207,27 @@ internal class VoiceSession(
                 sendToolResult(id, name, serverResult, attempt, originChannel)
                 return
             }
-            val frontendResult =
-                FrontendVoiceTools.execute(name, msg.args as? JsonObject ?: JsonObject(emptyMap())) {
+            val result =
+                voiceConversation.execute(
+                    name,
+                    msg.args as? JsonObject ?: JsonObject(emptyMap()),
+                    sessionID,
+                    languageTag,
+                ) {
                     ownsAttempt(attempt) && dataChannel === originChannel
                 }
-            if (frontendResult != null) {
-                if (!ownsAttempt(attempt) || dataChannel !== originChannel) return
-                _state.update { it.copy(activeTool = null) }
-                sendToolResult(id, name, frontendResult, attempt, originChannel)
-                return
-            }
-            val args = msg.args as? JsonObject ?: JsonObject(emptyMap())
-            val client =
-                mcpClient ?: run {
-                    _state.update { it.copy(activeTool = null) }
-                    sendToolResult(id, name, errorJson("No MCP client"), attempt, originChannel)
-                    return
-                }
-            require(name !in frontendToolNames) { "Frontend voice tool is unavailable: $name" }
-            val result = client.callTool(name, args, sessionID, locale = languageTag)
             if (!ownsAttempt(attempt) || dataChannel !== originChannel) return
             _state.update { it.copy(activeTool = null) }
-            if (result.isError) {
-                val errMsg = result.structuredContent["error"]?.jsonPrimitive?.content ?: "Tool error"
-                Log.e(TAG, "Tool $name failed: $errMsg")
-                _state.update {
-                    it.copy(
-                        transcript =
-                            it.transcript +
-                                TranscriptEntry(
-                                    TranscriptSpeaker.ASSISTANT,
-                                    "[$name] $errMsg",
-                                    final = true,
-                                ),
-                    )
-                }
-            }
-            sendToolResult(id, name, result.structuredContent, attempt, originChannel)
-        } catch (e: VoiceMcpAuthChangedException) {
+            sendToolResult(
+                id,
+                name,
+                result?.structuredContent ?: errorJson("Unknown catalog tool"),
+                attempt,
+                originChannel,
+            )
+        } catch (e: VoiceSetupException) {
             if (ownsAttempt(attempt) && dataChannel === originChannel) {
-                Log.i(TAG, "Service authentication changed before MCP tool call", e)
+                Log.i(TAG, "Conversation identity changed before catalog tool call", e)
                 disconnect()
             }
         } catch (e: CancellationException) {
@@ -1565,8 +1593,10 @@ internal class VoiceMcpCredentials(
     private val currentCookie: () -> String?,
     private val currentBearer: () -> String?,
 ) {
+    fun isCurrent(): Boolean = currentCookie() == cookie && currentBearer() == bearer
+
     fun cookieForRequest(): String? {
-        if (currentCookie() != cookie || currentBearer() != bearer) throw VoiceMcpAuthChangedException()
+        if (!isCurrent()) throw VoiceMcpAuthChangedException()
         return cookie
     }
 

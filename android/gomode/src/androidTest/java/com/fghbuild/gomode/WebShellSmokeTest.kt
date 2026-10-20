@@ -5,6 +5,9 @@ import android.app.Instrumentation.ActivityResult
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Rect
+import android.webkit.RenderProcessGoneDetail
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
@@ -15,11 +18,14 @@ import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(AndroidJUnit4::class)
 class WebShellSmokeTest : GoModeE2eTestBase() {
@@ -103,6 +109,69 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         composeRule.onNodeWithText("First renamed").assertExists()
         composeRule.onNodeWithText("Second").assertExists()
         composeRule.onNodeWithText("Active").assertExists()
+    }
+
+    @StandaloneHostedFixture
+    @Test
+    fun switchingServersRetainsEachWebViewAndItsSpaState() {
+        openWebShell()
+        waitForHostedFrontend()
+        val first = waitForWebView()
+        executeDom("set first page state") { "(window.retainedMarker = 'first', true)" }
+        composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
+        composeRule.onAllNodesWithText("Edit").onFirst().performClick()
+        composeRule.onNodeWithTag("gomode-service-label").performTextReplacement("First retained")
+        composeRule.onNodeWithTag("gomode-save-service").performClick()
+        composeRule.onNodeWithTag("gomode-add-service").performClick()
+        composeRule.onNodeWithTag("gomode-service-label").performTextReplacement("Second retained")
+        composeRule.onNodeWithTag("gomode-service-url").performTextReplacement(baseUrl)
+        composeRule.onNodeWithTag("gomode-save-service").performClick()
+        waitForHostedFrontend()
+        val second = waitForWebView()
+        assertNotSame(first, second)
+        executeDom("set second page state") { "(window.retainedMarker = 'second', true)" }
+        waitForSettingsButton()
+        composeRule.onNodeWithTag("gomode-next-app").performClick()
+        waitForHostedFrontend()
+        assertSame(first, waitForWebView())
+        waitForDom("first SPA state survives server switches") { "window.retainedMarker === 'first'" }
+        waitForSettingsButton()
+        composeRule.onNodeWithTag("gomode-next-app").performClick()
+        waitForHostedFrontend()
+        assertSame(second, waitForWebView())
+        waitForDom("second SPA state survives server switches") { "window.retainedMarker === 'second'" }
+        val staleRendererCallbacks = AtomicInteger()
+        val renderer =
+            composeRule.runOnUiThread {
+                listOf(first, second).forEach { view ->
+                    val client = view.webViewClient
+                    view.webViewClient =
+                        object : WebViewClient() {
+                            override fun onRenderProcessGone(
+                                view: WebView,
+                                detail: RenderProcessGoneDetail,
+                            ): Boolean {
+                                staleRendererCallbacks.incrementAndGet()
+                                return client.onRenderProcessGone(view, detail)
+                            }
+                        }
+                }
+                requireNotNull(second.webViewRenderProcess)
+            }
+        composeRule.activityRule.scenario.recreate()
+        waitForHostedFrontend()
+        val rebuilt = waitForWebView()
+        assertNotSame(second, rebuilt)
+        waitForDom("Activity recreation rebuilds page state") { "typeof window.retainedMarker === 'undefined'" }
+        composeRule.runOnUiThread {
+            assertTrue(!first.isAttachedToWindow && !second.isAttachedToWindow)
+            renderer.terminate()
+        }
+        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+            composeRule.runOnUiThread { !renderer.terminate() }
+        }
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+        assertEquals("Disposed Activity retained live renderer callbacks", 0, staleRendererCallbacks.get())
     }
 
     @StandaloneHostedFixture

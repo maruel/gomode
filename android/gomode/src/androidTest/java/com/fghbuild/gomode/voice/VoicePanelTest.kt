@@ -52,6 +52,8 @@ class VoicePanelTest {
                     {},
                     {},
                     null,
+                    onCycleApp = {},
+                    canCycleApps = false,
                 )
             }
         }
@@ -85,6 +87,8 @@ class VoicePanelTest {
                             {},
                             {},
                             null,
+                            onCycleApp = {},
+                            canCycleApps = false,
                         )
                     }
                 }
@@ -100,11 +104,57 @@ class VoicePanelTest {
     }
 
     @Test
+    fun nextAppStaysBesideSettingsRegardlessOfVoiceState() {
+        val state = mutableStateOf(VoiceState())
+        val canCycle = mutableStateOf(true)
+        val voiceEnabled = mutableStateOf(false)
+        var cycles = 0
+        composeRule.setContent {
+            MaterialTheme {
+                VoicePanel(
+                    voiceState = state.value,
+                    voiceEnabled = voiceEnabled.value,
+                    onConnect = {},
+                    onDisconnect = {},
+                    onToggleMute = {},
+                    onSelectDevice = {},
+                    onClearTranscript = {},
+                    onOpenSettings = {},
+                    serviceStatusText = null,
+                    onCycleApp = { cycles++ },
+                    canCycleApps = canCycle.value,
+                )
+            }
+        }
+        for ((voiceState, enabled) in listOf(
+            VoiceState() to false,
+            VoiceState() to true,
+            VoiceState(connectStatus = "Connecting…") to true,
+            VoiceState(connected = true) to true,
+            VoiceState(error = "Voice unavailable") to false,
+        )) {
+            composeRule.runOnIdle {
+                state.value = voiceState
+                voiceEnabled.value = enabled
+            }
+            val next = composeRule.onNodeWithTag("gomode-next-app").assertIsDisplayed()
+            val settingsBounds = composeRule.onNodeWithTag("gomode-web-open-settings").fetchSemanticsNode().boundsInRoot
+            val nextBounds = next.fetchSemanticsNode().boundsInRoot
+            assertTrue(nextBounds.left >= settingsBounds.right)
+            assertEquals(settingsBounds.center.y, nextBounds.center.y, 0.5f)
+            next.performClick()
+        }
+        assertEquals(5, cycles)
+        composeRule.runOnIdle { canCycle.value = false }
+        composeRule.onNodeWithTag("gomode-next-app").assertIsNotEnabled()
+    }
+
+    @Test
     fun statusShowsToolExecutionThenReturnsToThinking() {
         val state = mutableStateOf(VoiceState(connected = true, turnState = TurnState.Thinking))
         composeRule.setContent {
             MaterialTheme {
-                VoicePanel(state.value, true, {}, {}, {}, {}, {}, {}, null)
+                VoicePanel(state.value, true, {}, {}, {}, {}, {}, {}, null, {}, false)
             }
         }
         composeRule.onNodeWithText("Thinking…").assertIsDisplayed()
@@ -140,6 +190,8 @@ class VoicePanelTest {
                     onClearTranscript = {},
                     onOpenSettings = {},
                     serviceStatusText = null,
+                    onCycleApp = {},
+                    canCycleApps = false,
                 )
             }
         }
@@ -171,6 +223,8 @@ class VoicePanelTest {
                     onClearTranscript = {},
                     onOpenSettings = {},
                     serviceStatusText = null,
+                    onCycleApp = {},
+                    canCycleApps = false,
                 )
             }
         }
@@ -187,7 +241,7 @@ class VoicePanelTest {
         val state = mutableStateOf(VoiceState(connected = true, listening = true))
         composeRule.setContent {
             MaterialTheme {
-                VoicePanel(state.value, true, {}, {}, {}, {}, {}, {}, null)
+                VoicePanel(state.value, true, {}, {}, {}, {}, {}, {}, null, {}, false)
             }
         }
         composeRule.runOnIdle {
@@ -241,7 +295,7 @@ class VoicePanelTest {
             )
         composeRule.setContent {
             MaterialTheme {
-                VoicePanel(state.value, true, {}, {}, {}, {}, {}, {}, null)
+                VoicePanel(state.value, true, {}, {}, {}, {}, {}, {}, null, {}, false)
             }
         }
         composeRule.onNodeWithTag("gomode-voice-transcript-end").assertIsDisplayed()
@@ -294,6 +348,8 @@ class VoicePanelTest {
                     onClearTranscript = {},
                     onOpenSettings = {},
                     serviceStatusText = null,
+                    onCycleApp = {},
+                    canCycleApps = false,
                 )
             }
         }

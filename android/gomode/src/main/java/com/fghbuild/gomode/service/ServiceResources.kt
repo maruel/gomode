@@ -164,21 +164,6 @@ fun serviceMonitoringSnapshot(
     )
 }
 
-// Local prefill/acquisition must not turn a failed authoritative read into fabricated absence.
-internal suspend fun readAuthoritativeServiceContext(client: ServiceResourceClient): String {
-    val resource =
-        client.listResources().firstOrNull { it.uri == GOMODE_ITEMS_RESOURCE_URI }
-            ?: return "No visible service items."
-    require(isJSONResource(resource)) {
-        "resource ${resource.uri} must advertise application/json, got ${resource.mimeType}. " +
-            "Update the service resource metadata before using local voice."
-    }
-    // Notification compatibility controls monitoring, not authoritative item facts for local prefill.
-    val plan = ServiceMonitoringPlan(itemsResourceURI = resource.uri)
-    val items = client.readResource(resource.uri)
-    return serviceMonitoringSnapshot(mapOf(resource.uri to items), plan).voiceContext
-}
-
 suspend fun readInitialServiceContext(client: ServiceResourceClient): String =
     try {
         val plan = serviceMonitoringPlan(client.listResources())

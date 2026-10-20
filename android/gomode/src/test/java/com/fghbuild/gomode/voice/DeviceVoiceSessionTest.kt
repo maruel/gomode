@@ -1,12 +1,18 @@
 // Unit tests for the on-device text voice session state machine and helpers.
 package com.fghbuild.gomode.voice
 
+import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.service.ServiceCatalog
+import com.fghbuild.gomode.service.ServiceSettingsClient
+import com.fghbuild.gomode.ui.web.ServiceShellKey
+import com.fghbuild.gomode.ui.web.ServiceShellSession
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Message
 import kotlinx.coroutines.CompletableDeferred
@@ -57,6 +63,111 @@ class DeviceVoiceSessionTest {
     fun tearDown() {
         Dispatchers.resetMain()
     }
+
+    @Test
+    fun `shared gateway keeps one call and orders switch results before focus context`() =
+        runTest {
+            MockWebServer().use { server ->
+                server.dispatcher =
+                    object : okhttp3.mockwebserver.Dispatcher() {
+                        override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse =
+                            MockResponse().setBody(
+                                if (request.path == "/.well-known/gomode.json") {
+                                    """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":1,"toolGroups":[],
+                        "voiceGateway":{"url":"/","required":false,"authRequired":false}}}"""
+                                } else {
+                                    """{"choices":[{"id":"text","label":"Text","transports":["text"]}],"defaultChoiceID":"text"}"""
+                                },
+                            )
+                    }
+                server.start()
+                val repository = SettingsRepository(InMemoryPreferencesDataStore())
+                val second = repository.addService("Tools only", "https://second.invalid")
+                val first = repository.addService("Sponsor", server.url("/").toString())
+                repository.updateVoiceMode(VoiceMode.DEVICE)
+                repository.settings.first { it.activeServiceId == first && it.voiceMode == VoiceMode.DEVICE }
+                val entries =
+                    repository.settings.value.services.associate { service ->
+                        val key = ServiceShellKey(service.id, service.url)
+                        key to
+                            ServiceShellSession(key).also { entry ->
+                                entry.bearerStore.onNavigation(key.url)
+                                check(
+                                    entry.bearerStore.receive(
+                                        Uri.parse(key.url),
+                                        true,
+                                        key.url,
+                                        """{"authChanged":true,"nativeAccess":true}""",
+                                    ),
+                                )
+                            }
+                    }
+                val catalog = ServiceCatalog(backgroundScope)
+                val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { entries }
+                val call = FakeVoiceCallController()
+                val socket = FakeWebSocket()
+                val listener = CompletableDeferred<WebSocketListener>()
+                var transports = 0
+                lateinit var session: DeviceVoiceSession
+                session =
+                    DeviceVoiceSession(
+                        RuntimeEnvironment.getApplication(),
+                        repository,
+                        languageTag = "en-US",
+                        speech = FakeSpeech(),
+                        callController = call,
+                        voiceConversation = owner,
+                        switchServer = { id ->
+                            repository.switchService(id)
+                            repository.settings.first { it.activeServiceId == id }
+                            session.injectText(owner.contextText())
+                        },
+                        webSocketFactory = { _, captured ->
+                            transports++
+                            listener.complete(captured)
+                            socket
+                        },
+                    )
+                try {
+                    session.connect()
+                    val backend = listener.await()
+                    backend.onOpen(socket, upgradeResponse())
+                    backend.onMessage(socket, """{"kind":"session.ready"}""")
+                    backend.onMessage(socket, """{"kind":"assistant.text.delta","text":"Remember cedar."}""")
+                    backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+                    for (target in listOf(second, first)) {
+                        backend.onMessage(
+                            socket,
+                            """{"kind":"tool.call","id":"$target","name":"switch_server","args":{"server_id":"$target"}}""",
+                        )
+                        repository.settings.first { it.activeServiceId == target }
+                        assertTrue(socket.sent.last().contains("tool.result"))
+                        val toolResultIndex = socket.sent.lastIndex
+                        backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+                        assertTrue(socket.sent.last().contains("context.update"))
+                        assertTrue(socket.sent.last().contains(target))
+                        assertTrue(socket.sent.lastIndex > toolResultIndex)
+                        assertEquals(
+                            "Remember cedar.",
+                            session.state.value.transcript
+                                .single()
+                                .text,
+                        )
+                    }
+                    assertEquals(1, transports)
+                    assertEquals(1, call.started)
+                    assertEquals(1, call.activated)
+                    assertEquals(0, call.endedLocal)
+                    assertTrue(session.state.value.connected)
+                    session.disconnect()
+                    assertEquals(1, call.endedLocal)
+                } finally {
+                    session.close()
+                    entries.values.forEach { it.close() }
+                    catalog.close()
+                }
+            }
+        }
 
     @Test
     fun `listens only after the assistant turn and speech finish`() {
@@ -849,14 +960,16 @@ class DeviceVoiceSessionTest {
             repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
             selectEngine(repo, OnDeviceEngine.LOCAL_LLM)
 
-            val owner = LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher, readServiceContext = { "" })
-            owner.select(LocalModelSelection("en-US", { testSetup() }, { true }))
+            val conversation = localConversation(repo)
+            val owner = LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher)
+            owner.select(LocalModelSelection("en-US", { localSetup(conversation) }, { true }))
             val session =
                 createSession(
                     speech = speech,
                     settingsRepo = repo,
                     ioDispatcher = dispatcher,
                     localModelOwner = owner,
+                    voiceConversation = conversation,
                 )
             session.connect()
             testScheduler.runCurrent()
@@ -888,8 +1001,9 @@ class DeviceVoiceSessionTest {
             var allocations = 0
             var discoveries = 0
             val calls = FakeVoiceCallController()
+            val conversation = localConversation(repo)
             val owner =
-                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher, readServiceContext = { "" }) {
+                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
                         allocations++
                         object : EdgeLlmRunner {
@@ -908,7 +1022,7 @@ class DeviceVoiceSessionTest {
             owner.select(
                 LocalModelSelection("en-US", {
                     discoveries++
-                    testSetup()
+                    localSetup(conversation)
                 }, { true }),
             )
 
@@ -919,6 +1033,7 @@ class DeviceVoiceSessionTest {
                     ioDispatcher = dispatcher,
                     calls = calls,
                     localModelOwner = owner,
+                    voiceConversation = conversation,
                     setupProvider = { error("Connect must reuse startup discovery") },
                     engineFactory = { error("Connect must reuse startup allocation") },
                 )
@@ -956,8 +1071,9 @@ class DeviceVoiceSessionTest {
             val calls = FakeVoiceCallController()
             val application = RuntimeEnvironment.getApplication()
             var allocations = 0
+            val conversation = localConversation(repo)
             val owner =
-                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher, readServiceContext = { "" }) {
+                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
                         allocations++
                         object : EdgeLlmRunner {
@@ -976,7 +1092,7 @@ class DeviceVoiceSessionTest {
             owner.select(
                 LocalModelSelection("en-US", {
                     finishSetup.await()
-                    testSetup()
+                    localSetup(conversation)
                 }, { true }),
             )
             val session =
@@ -986,6 +1102,7 @@ class DeviceVoiceSessionTest {
                     settingsRepo = repo,
                     ioDispatcher = dispatcher,
                     localModelOwner = owner,
+                    voiceConversation = conversation,
                 )
             session.connect()
             testScheduler.runCurrent()
@@ -1027,8 +1144,9 @@ class DeviceVoiceSessionTest {
             val finishTurn = CompletableDeferred<Unit>()
             var allocations = 0
             val events = mutableListOf<String>()
+            val conversation = localConversation(repo)
             val owner =
-                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher, readServiceContext = { "" }) {
+                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
                         val id = ++allocations
                         events.add("allocate $id")
@@ -1062,13 +1180,14 @@ class DeviceVoiceSessionTest {
                         }
                     }, dispatcher)
                 }
-            owner.select(LocalModelSelection("en-US", { testSetup() }, { true }))
+            owner.select(LocalModelSelection("en-US", { localSetup(conversation) }, { true }))
             val session =
                 createSession(
                     speech = speech,
                     settingsRepo = repo,
                     ioDispatcher = dispatcher,
                     localModelOwner = owner,
+                    voiceConversation = conversation,
                 )
             session.connect()
             testScheduler.runCurrent()
@@ -1102,8 +1221,9 @@ class DeviceVoiceSessionTest {
             val finishTurn = CompletableDeferred<Unit>()
             var generations = 0
             var closes = 0
+            val conversation = localConversation(repo)
             val owner =
-                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher, readServiceContext = { "" }) {
+                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
                         object : EdgeLlmRunner {
                             override val isModelLoaded = true
@@ -1134,18 +1254,19 @@ class DeviceVoiceSessionTest {
                 }
             owner.select(
                 LocalModelSelection("en-US", {
-                    testSetup().copy(
-                        tools =
-                            listOf(
-                                com.fghbuild.mcp.sdk.v1
-                                    .ToolDescriptor(
-                                        name = "stale",
-                                        inputSchema =
-                                            kotlinx.serialization.json.Json
-                                                .parseToJsonElement("{}"),
-                                    ),
-                            ),
-                    )
+                    testSetup()
+                        .copy(
+                            tools =
+                                listOf(
+                                    com.fghbuild.mcp.sdk.v1
+                                        .ToolDescriptor(
+                                            name = "stale",
+                                            inputSchema =
+                                                kotlinx.serialization.json.Json
+                                                    .parseToJsonElement("{}"),
+                                        ),
+                                ),
+                        ).let { localSetup(conversation, it) }
                 }, { true }),
             )
             val session =
@@ -1154,6 +1275,7 @@ class DeviceVoiceSessionTest {
                     settingsRepo = repo,
                     ioDispatcher = dispatcher,
                     localModelOwner = owner,
+                    voiceConversation = conversation,
                 )
             session.connect()
             testScheduler.runCurrent()
@@ -1183,8 +1305,9 @@ class DeviceVoiceSessionTest {
             selectEngine(repo, OnDeviceEngine.LOCAL_LLM)
             var generations = 0
             var resets = 0
+            val conversation = localConversation(repo)
             val owner =
-                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher, readServiceContext = { "" }) {
+                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
                         object : EdgeLlmRunner {
                             override val isModelLoaded = true
@@ -1216,18 +1339,19 @@ class DeviceVoiceSessionTest {
                 }
             owner.select(
                 LocalModelSelection("en-US", {
-                    testSetup().copy(
-                        tools =
-                            listOf(
-                                com.fghbuild.mcp.sdk.v1
-                                    .ToolDescriptor(
-                                        name = HANG_UP_TOOL_NAME,
-                                        inputSchema =
-                                            kotlinx.serialization.json.Json
-                                                .parseToJsonElement("{}"),
-                                    ),
-                            ),
-                    )
+                    testSetup()
+                        .copy(
+                            tools =
+                                listOf(
+                                    com.fghbuild.mcp.sdk.v1
+                                        .ToolDescriptor(
+                                            name = HANG_UP_TOOL_NAME,
+                                            inputSchema =
+                                                kotlinx.serialization.json.Json
+                                                    .parseToJsonElement("{}"),
+                                        ),
+                                ),
+                        ).let { localSetup(conversation, it) }
                 }, { true }),
             )
             val session =
@@ -1236,6 +1360,7 @@ class DeviceVoiceSessionTest {
                     settingsRepo = repo,
                     ioDispatcher = dispatcher,
                     localModelOwner = owner,
+                    voiceConversation = conversation,
                 )
             session.connect()
             testScheduler.runCurrent()
@@ -1349,6 +1474,20 @@ class DeviceVoiceSessionTest {
         repository.settings.first { it.onDeviceEngine == engine }
     }
 
+    private fun localSetup(
+        conversation: VoiceConversation,
+        setup: VoiceSetup = testSetup(),
+    ) = conversation.prepareLocal().copy(setup = setup)
+
+    private fun localConversation(settingsRepo: SettingsRepository) =
+        VoiceConversation(
+            settingsRepo,
+            com.fghbuild.gomode.service
+                .ServiceSettingsClient(),
+            com.fghbuild.gomode.service
+                .ServiceCatalog(kotlinx.coroutines.CoroutineScope(Dispatchers.Main)),
+        ) { emptyMap() }
+
     private fun createSession(
         speech: DeviceSpeech,
         calls: VoiceCallController = NoopVoiceCallController(),
@@ -1360,11 +1499,27 @@ class DeviceVoiceSessionTest {
         },
         setupProvider: suspend () -> VoiceSetup = { testSetup() },
         localModelOwner: LocalModelOwner = (RuntimeEnvironment.getApplication() as GoModeApplication).localModelOwner,
+        voiceConversation: VoiceConversation? = null,
         factory: (Request, WebSocketListener) -> WebSocket = { _, _ -> FakeWebSocket() },
-    ): DeviceVoiceSession =
-        DeviceVoiceSession(
+    ): DeviceVoiceSession {
+        val localConversation =
+            voiceConversation ?: if (settingsRepo.settings.value.onDeviceEngine == OnDeviceEngine.LOCAL_LLM) {
+                VoiceConversation(
+                    settingsRepo,
+                    com.fghbuild.gomode.service
+                        .ServiceSettingsClient(),
+                    com.fghbuild.gomode.service
+                        .ServiceCatalog(kotlinx.coroutines.CoroutineScope(Dispatchers.Main)),
+                ) {
+                    emptyMap()
+                }.also { it.begin(false) }
+            } else {
+                null
+            }
+        return DeviceVoiceSession(
             appContext = RuntimeEnvironment.getApplication(),
             settingsRepository = settingsRepo,
+            voiceConversation = localConversation,
             speech = speech,
             languageTag = languageTag,
             localModelOwner = localModelOwner,
@@ -1375,6 +1530,7 @@ class DeviceVoiceSessionTest {
             ioDispatcher = ioDispatcher,
             engineFactory = engineFactory,
         )
+    }
 
     @Test
     fun `native tools reject non-object arguments over the device transport`() =
@@ -1404,7 +1560,7 @@ class DeviceVoiceSessionTest {
         }
 
     @Test
-    fun `server switch persists selection and ends the device voice transport`() =
+    fun `server switch persists focus while the device voice transport continues`() =
         runTest {
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
             val first = repo.addService("First", "https://first.example")
@@ -1427,13 +1583,14 @@ class DeviceVoiceSessionTest {
                     """{"kind":"tool.call","id":"switch","name":"switch_server","args":{"server_id":"$first"}}""",
                 )
                 repo.settings.first { it.activeServiceId == first }
-                assertTrue(socket.closed)
-                assertFalse(session.state.value.connected)
+                assertFalse(socket.closed)
+                assertTrue(session.state.value.connected)
                 connected.onMessage(
                     socket,
                     """{"kind":"tool.call","id":"stale","name":"switch_server","args":{"server_id":"$second"}}""",
                 )
-                assertEquals(first, repo.settings.value.activeServiceId)
+                repo.settings.first { it.activeServiceId == second }
+                assertEquals(second, repo.settings.value.activeServiceId)
             } finally {
                 session.close()
             }
