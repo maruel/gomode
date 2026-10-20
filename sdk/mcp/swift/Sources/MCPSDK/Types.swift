@@ -331,6 +331,47 @@ public struct ClientCapabilities: Codable {
     public let extensions: [String: JSONValue]?
 }
 
+/// OpenAIUserLocation contains optional client location hints. Only the device's
+/// IANA timezone is used; these untrusted hints must not influence authorization.
+public struct OpenAIUserLocation: Codable {
+    /// Timezone is the caller device's IANA timezone, such as America/Toronto.
+    public let timezone: String?
+}
+
+/// OpenAIRequestMeta contains OpenAI-specific client metadata extensions.
+/// Embedding it in RequestMeta keeps its namespaced fields flat on the wire.
+/// These optional, self-reported values do not establish authenticated identity.
+///
+/// Reference: https://developers.openai.com/plugins/reference#_meta-fields-the-client-provides
+public struct OpenAIRequestMeta: Codable {
+    /// Locale requests a language and regional convention using a BCP 47 tag,
+    /// such as en-CA or fr-CA.
+    public let locale: String?
+    /// Organization carries an anonymized identifier for the caller's ChatGPT
+    /// organization, when the client provides one.
+    public let organization: String?
+    /// Session groups tool calls from the same ChatGPT conversation using an
+    /// anonymized conversation identifier.
+    public let session: String?
+    /// Subject carries an anonymized user identifier for call correlation or
+    /// rate-limit accounting; it is not an authentication credential.
+    public let subject: String?
+    /// UserAgent is a best-effort client hint for analytics or presentation;
+    /// it is not a reliable indication of client capabilities.
+    public let userAgent: String?
+    /// UserLocation is an optional formatting hint supplied by the client.
+    public let userLocation: OpenAIUserLocation?
+
+    private enum CodingKeys: String, CodingKey {
+        case locale = "openai/locale"
+        case organization = "openai/organization"
+        case session = "openai/session"
+        case subject = "openai/subject"
+        case userAgent = "openai/userAgent"
+        case userLocation = "openai/userLocation"
+    }
+}
+
 /// RequestMeta is the metadata object required in MCP request params.
 public struct RequestMeta: Codable {
     /// ProtocolVersion is the MCP protocol version used for this request.
@@ -349,6 +390,23 @@ public struct RequestMeta: Codable {
     /// schema. This is native 2026-07-28 compatibility, not released-version
     /// compat.go support; remove it only after the upstream 2026+ schema drops it.
     public let deprecatedLogLevel: String?
+    /// Locale requests a language and regional convention using a BCP 47 tag,
+    /// such as en-CA or fr-CA.
+    public let locale: String?
+    /// Organization carries an anonymized identifier for the caller's ChatGPT
+    /// organization, when the client provides one.
+    public let organization: String?
+    /// Session groups tool calls from the same ChatGPT conversation using an
+    /// anonymized conversation identifier.
+    public let session: String?
+    /// Subject carries an anonymized user identifier for call correlation or
+    /// rate-limit accounting; it is not an authentication credential.
+    public let subject: String?
+    /// UserAgent is a best-effort client hint for analytics or presentation;
+    /// it is not a reliable indication of client capabilities.
+    public let userAgent: String?
+    /// UserLocation is an optional formatting hint supplied by the client.
+    public let userLocation: OpenAIUserLocation?
 
     private enum CodingKeys: String, CodingKey {
         case protocolVersion = "io.modelcontextprotocol/protocolVersion"
@@ -356,6 +414,12 @@ public struct RequestMeta: Codable {
         case clientCapabilities = "io.modelcontextprotocol/clientCapabilities"
         case progressToken
         case deprecatedLogLevel = "io.modelcontextprotocol/logLevel"
+        case locale = "openai/locale"
+        case organization = "openai/organization"
+        case session = "openai/session"
+        case subject = "openai/subject"
+        case userAgent = "openai/userAgent"
+        case userLocation = "openai/userLocation"
     }
 }
 

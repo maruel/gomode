@@ -1,4 +1,4 @@
-// Owns a voice-requested server switch until the destination can start a fresh voice session.
+// Owns a voice-requested server handoff and conversation identity until the destination is ready.
 package com.fghbuild.gomode.voice
 
 import com.fghbuild.gomode.data.ServiceInstance
@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 internal data class ServerVoiceSwitchRequest(
     val source: SettingsState,
     val target: ServiceInstance,
+    val conversationID: String,
 )
 
 internal class ServerVoiceSwitch(
@@ -21,11 +22,14 @@ internal class ServerVoiceSwitch(
     private val mutablePending = MutableStateFlow<ServerVoiceSwitchRequest?>(null)
     val pending = mutablePending.asStateFlow()
 
-    suspend fun switchServer(id: String) {
+    suspend fun switchServer(
+        id: String,
+        conversationID: String,
+    ) {
         val source = settingsRepository.settings.value
         val target = source.services.firstOrNull { it.id == id } ?: error("Unknown service ID: $id")
         if (source.activeServiceId == id) return
-        val request = ServerVoiceSwitchRequest(source, target)
+        val request = ServerVoiceSwitchRequest(source, target, conversationID)
         mutablePending.value = request
         // The old voice session can be disposed as soon as DataStore publishes the new service.
         // The shell owns the write so disposing that session cannot cancel a committed handoff.

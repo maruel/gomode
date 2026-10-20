@@ -240,6 +240,37 @@ compat.go support; remove it only after the upstream 2026+ schema drops it. |  |
 | `elicitation` | `ElicitationCapability` | Elicitation is present if the client supports server-initiated user elicitation. |  |
 | `extensions` | `Record<string, JSONValue>` | Extensions contains optional MCP extensions supported by the client. |  |
 
+### OpenAIUserLocation
+
+OpenAIUserLocation contains optional client location hints. Only the device's
+IANA timezone is used; these untrusted hints must not influence authorization.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `timezone` | `string` | Timezone is the caller device's IANA timezone, such as America/Toronto. |  |
+
+### OpenAIRequestMeta
+
+OpenAIRequestMeta contains OpenAI-specific client metadata extensions.
+Embedding it in RequestMeta keeps its namespaced fields flat on the wire.
+These optional, self-reported values do not establish authenticated identity.
+
+Reference: https://developers.openai.com/plugins/reference#_meta-fields-the-client-provides
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `openai/locale` | `string` | Locale requests a language and regional convention using a BCP 47 tag,
+such as en-CA or fr-CA. |  |
+| `openai/organization` | `string` | Organization carries an anonymized identifier for the caller's ChatGPT
+organization, when the client provides one. |  |
+| `openai/session` | `string` | Session groups tool calls from the same ChatGPT conversation using an
+anonymized conversation identifier. |  |
+| `openai/subject` | `string` | Subject carries an anonymized user identifier for call correlation or
+rate-limit accounting; it is not an authentication credential. |  |
+| `openai/userAgent` | `string` | UserAgent is a best-effort client hint for analytics or presentation;
+it is not a reliable indication of client capabilities. |  |
+| `openai/userLocation` | `OpenAIUserLocation` | UserLocation is an optional formatting hint supplied by the client. |  |
+
 ### RequestMeta
 
 RequestMeta is the metadata object required in MCP request params.
@@ -257,6 +288,17 @@ For HTTP, it must match the MCP-Protocol-Version header. | yes |
 Deprecated as of protocol version 2026-07-28, but still present in that
 schema. This is native 2026-07-28 compatibility, not released-version
 compat.go support; remove it only after the upstream 2026+ schema drops it. |  |
+| `openai/locale` | `string` | Locale requests a language and regional convention using a BCP 47 tag,
+such as en-CA or fr-CA. |  |
+| `openai/organization` | `string` | Organization carries an anonymized identifier for the caller's ChatGPT
+organization, when the client provides one. |  |
+| `openai/session` | `string` | Session groups tool calls from the same ChatGPT conversation using an
+anonymized conversation identifier. |  |
+| `openai/subject` | `string` | Subject carries an anonymized user identifier for call correlation or
+rate-limit accounting; it is not an authentication credential. |  |
+| `openai/userAgent` | `string` | UserAgent is a best-effort client hint for analytics or presentation;
+it is not a reliable indication of client capabilities. |  |
+| `openai/userLocation` | `OpenAIUserLocation` | UserLocation is an optional formatting hint supplied by the client. |  |
 
 ### PaginatedRequestParams
 

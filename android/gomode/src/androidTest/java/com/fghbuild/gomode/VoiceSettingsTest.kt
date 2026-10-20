@@ -52,7 +52,7 @@ class VoiceSettingsTest {
                     val target = repository.addService("Destination", "http://127.0.0.1:2")
                     val source = repository.addService("Source", "http://127.0.0.1:1")
                     withTimeout(10_000) { repository.settings.first { it.activeServiceId == source } }
-                    handoff.switchServer(target)
+                    handoff.switchServer(target, "conversation-one")
                     withTimeout(10_000) { repository.settings.first { it.activeServiceId == target } }
                     source to target
                 }

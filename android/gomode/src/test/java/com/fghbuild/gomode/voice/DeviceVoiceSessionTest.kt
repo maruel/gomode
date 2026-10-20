@@ -20,6 +20,8 @@ import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Protocol
@@ -41,6 +43,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
+import java.util.concurrent.TimeUnit
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -219,6 +222,7 @@ class DeviceVoiceSessionTest {
                         speech = speech,
                         settingsRepo = repo,
                         setupProvider = { toolSetup(server) },
+                        languageTag = "fr-CA",
                         engineFactory = { engineType ->
                             object : OnDeviceVoiceEngine {
                                 override val engineType = engineType
@@ -274,6 +278,16 @@ class DeviceVoiceSessionTest {
                     ),
                     finished.transcript,
                 )
+                val request = requireNotNull(server.takeRequest(5, TimeUnit.SECONDS))
+                val meta =
+                    Json
+                        .parseToJsonElement(request.body.readUtf8())
+                        .jsonObject
+                        .getValue("params")
+                        .jsonObject
+                        .getValue("_meta")
+                        .jsonObject
+                assertEquals("fr-CA", meta.getValue("openai/locale").jsonPrimitive.content)
                 session.close()
             }
         }
@@ -313,6 +327,65 @@ class DeviceVoiceSessionTest {
                     session.state.value.transcript,
                 )
                 session.close()
+            }
+        }
+
+    @Test
+    fun `tool calls retain conversation identity on recovery and renew it for new conversations`() =
+        runTest {
+            MockWebServer().use { server ->
+                server.start()
+                val socket = FakeWebSocket()
+                var listener: WebSocketListener? = null
+                val session =
+                    createSession(
+                        speech = FakeSpeech(),
+                        languageTag = "fr-CA",
+                        setupProvider = { toolSetup(server) },
+                        factory = { _, captured ->
+                            listener = captured
+                            socket
+                        },
+                    )
+                try {
+                    val ids = mutableListOf<String>()
+                    for ((preserve, inheritedID) in listOf(
+                        false to null,
+                        true to null,
+                        false to "handoff-id",
+                        false to null,
+                    )) {
+                        server.enqueue(toolFailureResponse())
+                        session.connect(preserveTranscript = preserve, conversationID = inheritedID)
+                        val connected = requireNotNull(listener)
+                        connected.onOpen(socket, upgradeResponse())
+                        connected.onMessage(socket, """{"kind":"session.ready"}""")
+                        connected.onMessage(
+                            socket,
+                            """{"kind":"tool.call","id":"call","name":"example_tool","args":{}}""",
+                        )
+                        val request =
+                            withContext(Dispatchers.IO) {
+                                requireNotNull(server.takeRequest(5, TimeUnit.SECONDS))
+                            }
+                        val meta =
+                            Json
+                                .parseToJsonElement(request.body.readUtf8())
+                                .jsonObject
+                                .getValue("params")
+                                .jsonObject
+                                .getValue("_meta")
+                                .jsonObject
+                        ids += meta.getValue("openai/session").jsonPrimitive.content
+                        assertEquals("fr-CA", meta.getValue("openai/locale").jsonPrimitive.content)
+                    }
+                    assertTrue(listOf(ids[0], ids[1], ids[3]).all { it.matches(Regex("[0-9a-f-]{36}")) })
+                    assertEquals(ids[0], ids[1])
+                    assertEquals("handoff-id", ids[2])
+                    assertFalse(ids[0] == ids[3])
+                } finally {
+                    session.close()
+                }
             }
         }
 

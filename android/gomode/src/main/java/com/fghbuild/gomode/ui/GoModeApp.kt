@@ -151,15 +151,15 @@ internal fun GoModeApp(
     val scope = rememberCoroutineScope()
     val serverVoiceSwitch = remember(settingsRepository, scope) { ServerVoiceSwitch(settingsRepository, scope) }
     val pendingServerSwitch = serverVoiceSwitch.pending.collectAsStateWithLifecycle().value
-    val switchVoiceServer: suspend (String) -> Unit =
+    val switchVoiceServer: suspend (String, String) -> Unit =
         remember(serverVoiceSwitch, settings.activeServiceId, activeURL) {
-            { id ->
+            { id, conversationID ->
                 val current = settingsRepository.settings.value
                 check(current.activeServiceId == settings.activeServiceId && current.activeServiceURL == activeURL) {
                     "Active server changed before the voice command could switch servers"
                 }
                 activeNativeScreen = null
-                serverVoiceSwitch.switchServer(id)
+                serverVoiceSwitch.switchServer(id, conversationID)
             }
         }
     val voiceMode = settings.voiceMode
@@ -386,7 +386,7 @@ internal fun GoModeApp(
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
                 PackageManager.PERMISSION_GRANTED
             ) {
-                voiceSession.connect()
+                voiceSession.connect(conversationID = pendingServerSwitch.conversationID)
             } else {
                 serverVoiceSwitch.cancel()
                 scope.launch { snackbarHostState.showSnackbar("Microphone permission is required to reconnect voice") }

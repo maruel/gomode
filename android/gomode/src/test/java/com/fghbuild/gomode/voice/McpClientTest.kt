@@ -18,6 +18,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
 class McpClientTest {
@@ -25,6 +27,10 @@ class McpClientTest {
     fun `tool arguments pass unchanged and HTTP success does not hide invalid params`() =
         runTest {
             val server = MockWebServer()
+            val originalTimezone = TimeZone.getDefault()
+            val originalLocale = Locale.getDefault()
+            Locale.setDefault(Locale.CANADA_FRENCH)
+            TimeZone.setDefault(TimeZone.getTimeZone("America/Toronto"))
             server.start()
             try {
                 server.enqueue(
@@ -49,24 +55,43 @@ class McpClientTest {
                 assertEquals(
                     "waiting",
                     client
-                        .callTool("item_detail", validArgs)
+                        .callTool("item_detail", validArgs, "conversation-one", locale = "en-GB")
                         .structuredContent["state"]
                         ?.jsonPrimitive
                         ?.content,
                 )
+                TimeZone.setDefault(TimeZone.getTimeZone("Asia/Kolkata"))
                 val generatedArgs = Json.parseToJsonElement("""{"query":"item 6"}""").jsonObject
-                val failure = runCatching { client.callTool("item_detail", generatedArgs) }.exceptionOrNull()
+                val failure =
+                    runCatching {
+                        client.callTool(
+                            "item_detail",
+                            generatedArgs,
+                            "conversation-one",
+                            locale = "en-GB",
+                        )
+                    }.exceptionOrNull()
                 assertTrue(failure is IllegalStateException)
                 assertEquals(errorMessage, failure?.message)
-                for (args in listOf(validArgs, generatedArgs)) {
+                for ((args, timezone) in listOf(validArgs to "America/Toronto", generatedArgs to "Asia/Kolkata")) {
                     val request = requireNotNull(server.takeRequest(5, TimeUnit.SECONDS))
                     val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
                     assertEquals("tools/call", body["method"]?.jsonPrimitive?.content)
                     val params = requireNotNull(body["params"]).jsonObject
                     assertEquals("item_detail", params["name"]?.jsonPrimitive?.content)
                     assertEquals(args, params["arguments"])
+                    val meta = requireNotNull(params["_meta"]).jsonObject
+                    assertEquals("en-GB", meta["openai/locale"]?.jsonPrimitive?.content)
+                    assertEquals("conversation-one", meta["openai/session"]?.jsonPrimitive?.content)
+                    assertEquals("gomode-android/1.0.0", meta["openai/userAgent"]?.jsonPrimitive?.content)
+                    assertEquals(
+                        Json.parseToJsonElement("""{"timezone":"$timezone"}"""),
+                        params["_meta"]?.jsonObject?.get("openai/userLocation"),
+                    )
                 }
             } finally {
+                Locale.setDefault(originalLocale)
+                TimeZone.setDefault(originalTimezone)
                 server.shutdown()
             }
         }
@@ -136,6 +161,14 @@ class McpClientTest {
                 assertEquals("2.0", body["jsonrpc"]?.jsonPrimitive?.content)
                 assertNotNull(body["id"])
                 assertEquals("server/discover", body["method"]?.jsonPrimitive?.content)
+                assertEquals(
+                    null,
+                    body["params"]
+                        ?.jsonObject
+                        ?.get("_meta")
+                        ?.jsonObject
+                        ?.get("openai/locale"),
+                )
             } finally {
                 server.shutdown()
             }

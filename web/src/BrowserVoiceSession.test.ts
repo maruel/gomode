@@ -234,8 +234,11 @@ describe("browser voice sessions", () => {
           finish = resolve;
         }),
     );
+    session.selectLanguage("fr-CA");
     const socket = await readySocket();
     socket.message({ kind: "tool.call", id: "pending", name: "items_list", args: {} });
+    expect(callTool.mock.calls[0]?.[2]?.sessionID).toMatch(/^[0-9a-f]{32}$/);
+    expect(callTool.mock.calls[0]?.[2]?.locale).toBe("fr-CA");
     socket.message({ kind: "error", message: "OutOfOrder support is unavailable", recoverable: true });
     expect(session.state.connected).toBe(true);
     expect(session.state.activeTool).toBe("items_list");

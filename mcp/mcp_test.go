@@ -23,6 +23,85 @@ import (
 
 type noSubscriptionRegistry struct{ Registry }
 
+type metadataRegistry struct {
+	Registry
+	params ToolsCallParams
+}
+
+func (r *metadataRegistry) CallTool(_ context.Context, params *ToolsCallParams) (RawToolResult, error) {
+	r.params = *params
+	return RawToolResult{Structured: TextOutput{Result: "ok"}}, nil
+}
+
+func TestHandlerToolMetadata(t *testing.T) {
+	t.Parallel()
+	for _, version := range []string{ProtocolVersion, "2025-06-18", "2025-11-25"} {
+		t.Run(version, func(t *testing.T) {
+			t.Parallel()
+			r := &metadataRegistry{Registry: &subscriptionTestRegistry{}}
+			h := &Handler{Registry: r}
+			for _, extra := range []string{`,"openai/userLocation":{"timezone":"America/Toronto"},"openai/locale":"fr-CA","openai/organization":"org-1","openai/session":"conversation-1","openai/subject":"user-1","openai/userAgent":"client/1","example/hint":42`, ""} {
+				body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"message":"hello"},"requestState":"resume","inputResponses":{"answer":"yes"},"_meta":{"progressToken":"progress"` + extra + `}}}`
+				if version == ProtocolVersion {
+					body = strings.Replace(body, `"progressToken":`, `"io.modelcontextprotocol/protocolVersion":"`+ProtocolVersion+`","io.modelcontextprotocol/clientInfo":{"name":"test","version":"1"},"io.modelcontextprotocol/clientCapabilities":{},"progressToken":`, 1)
+				}
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", strings.NewReader(body))
+				req.Header.Set("Mcp-Protocol-Version", version)
+				if version == ProtocolVersion {
+					req.Header.Set("Mcp-Method", "tools/call")
+					req.Header.Set("Mcp-Name", "echo")
+				}
+				w := httptest.NewRecorder()
+				h.HandleMCP(w, req)
+				if w.Code != http.StatusOK || strings.Contains(w.Body.String(), `"error"`) {
+					t.Fatalf("response: %d %s", w.Code, w.Body.String())
+				}
+				if r.params.Meta.ProgressToken != "progress" {
+					t.Fatalf("metadata = %#v", r.params.Meta)
+				}
+				if r.params.Name != "echo" || string(r.params.Arguments) != `{"message":"hello"}` || r.params.RequestState != "resume" || string(r.params.InputResponses) != `{"answer":"yes"}` {
+					t.Fatalf("tool parameters = %#v", r.params)
+				}
+				if extra != "" {
+					if r.params.Meta.Locale != "fr-CA" || r.params.Meta.Organization != "org-1" || r.params.Meta.Session != "conversation-1" || r.params.Meta.Subject != "user-1" || r.params.Meta.UserAgent != "client/1" {
+						t.Fatalf("OpenAI metadata = %#v", r.params.Meta.OpenAIRequestMeta)
+					}
+					if r.params.Meta.UserLocation.Timezone != "America/Toronto" || r.params.Meta.Extra["example/hint"] != float64(42) {
+						t.Fatalf("extra metadata = %#v", r.params.Meta.Extra)
+					}
+				} else if len(r.params.Meta.Extra) != 0 || r.params.Meta.OpenAIRequestMeta != (OpenAIRequestMeta{}) {
+					t.Fatalf("metadata leaked between calls: %#v", r.params.Meta.Extra)
+				}
+			}
+			t.Run("error", func(t *testing.T) {
+				for _, hint := range []string{`"openai/locale":42`, `"openai/userLocation":[]`, `"openai/userLocation":{"timezone":42}`} {
+					r.params = ToolsCallParams{}
+					body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{},"_meta":{` + hint + `}}}`
+					if version == ProtocolVersion {
+						body = nativeMCPRequestJSON("tools/call", `"name":"echo","arguments":{}`)
+						body = strings.Replace(body, `"_meta":{`, `"_meta":{`+hint+`,`, 1)
+					}
+					req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", strings.NewReader(body))
+					req.Header.Set("Mcp-Protocol-Version", version)
+					if version == ProtocolVersion {
+						req.Header.Set("Mcp-Method", "tools/call")
+						req.Header.Set("Mcp-Name", "echo")
+					}
+					w := httptest.NewRecorder()
+					h.HandleMCP(w, req)
+					var response JSONRPCResponse
+					if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+						t.Fatal(err)
+					}
+					if response.Error == nil || response.Error.Code != InvalidParamsCode || r.params.Name != "" {
+						t.Fatalf("invalid hint %s: response=%s, dispatched=%#v", hint, w.Body.String(), r.params)
+					}
+				}
+			})
+		})
+	}
+}
+
 type templatedRegistry struct{ Registry }
 
 func (templatedRegistry) ResourceTemplates(context.Context) ([]ResourceTemplateDescriptor, error) {
@@ -354,7 +433,7 @@ func (r *subscriptionTestRegistry) Tools(context.Context) ([]ToolDescriptor, err
 	return nil, nil
 }
 
-func (r *subscriptionTestRegistry) CallTool(context.Context, string, json.RawMessage) (RawToolResult, error) {
+func (r *subscriptionTestRegistry) CallTool(context.Context, *ToolsCallParams) (RawToolResult, error) {
 	return r.callResult, nil
 }
 
@@ -619,6 +698,41 @@ func TestResourceContentValidate(t *testing.T) {
 	}
 }
 
+func TestRequestMeta(t *testing.T) {
+	t.Parallel()
+	t.Run("MarshalJSON", func(t *testing.T) {
+		t.Parallel()
+		for _, extra := range []MetaObject{nil, {
+			"example/trace":       "keep",
+			"openai/locale":       "wrong",
+			"openai/userLocation": OpenAIUserLocation{Timezone: "UTC"},
+		}} {
+			meta := RequestMeta{
+				OpenAIRequestMeta: OpenAIRequestMeta{Locale: "fr-CA"},
+				ProgressToken:     uint64(9007199254740993),
+				Extra:             extra,
+			}
+			data, err := json.Marshal(meta)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(data, &fields); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := fields["openai/userLocation"]; ok {
+				t.Fatalf("zero location encoded: %s", data)
+			}
+			if string(fields["openai/locale"]) != `"fr-CA"` || string(fields["progressToken"]) != "9007199254740993" {
+				t.Fatalf("typed metadata changed: %s", data)
+			}
+			if extra != nil && (string(fields["example/trace"]) != `"keep"` || extra["openai/locale"] != "wrong") {
+				t.Fatalf("extension metadata changed: %s, extra=%#v", data, extra)
+			}
+		}
+	})
+}
+
 func TestRequestMetaPreservesExtraFields(t *testing.T) {
 	t.Parallel()
 
@@ -655,6 +769,161 @@ func TestRequestMetaPreservesExtraFields(t *testing.T) {
 	}
 	if _, ok := metaFields["example.com/nested"].(map[string]any); !ok {
 		t.Fatalf("encoded nested = %#v, want object", metaFields["example.com/nested"])
+	}
+}
+
+func TestRequestMetaUserLocation(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, location, want string
+	}{
+		{"valid", `{"timezone":"America/Toronto"}`, "America/Toronto"},
+		{"unknown location fields", `{"timezone":"Asia/Kolkata","futureField":true}`, "Asia/Kolkata"},
+		{"null", `null`, ""},
+		{"empty", `{}`, ""},
+		{"empty timezone", `{"timezone":""}`, ""},
+		{"null timezone", `{"timezone":null}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := `{"progressToken":"keep","example/trace":"trace","openai/userLocation":` + tc.location + `}`
+			var meta RequestMeta
+			if err := json.Unmarshal([]byte(body), &meta); err != nil {
+				t.Fatal(err)
+			}
+			if tc.want != "" && meta.UserLocation.Timezone != tc.want {
+				t.Fatalf("location = %#v", meta.UserLocation)
+			}
+			if tc.want == "" && meta.UserLocation != (OpenAIUserLocation{}) {
+				t.Fatalf("zero hint changed: %#v", meta.UserLocation)
+			}
+			if meta.ProgressToken != "keep" || meta.Extra["example/trace"] != "trace" || len(meta.Extra) != 1 {
+				t.Fatalf("metadata = %#v", meta)
+			}
+			data, err := json.Marshal(meta)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var roundTrip RequestMeta
+			if err := json.Unmarshal(data, &roundTrip); err != nil {
+				t.Fatal(err)
+			}
+			if tc.want != "" && roundTrip.UserLocation.Timezone != tc.want {
+				t.Fatalf("encoded hint = %s", data)
+			}
+			if tc.want == "" && strings.Contains(string(data), "openai/userLocation") {
+				t.Fatalf("zero hint encoded: %s", data)
+			}
+		})
+	}
+	t.Run("error", func(t *testing.T) {
+		t.Parallel()
+		for _, location := range []string{`"America/Toronto"`, `[]`, `42`, `true`, `{"timezone":42}`, `{"timezone":{}}`} {
+			var meta RequestMeta
+			if err := json.Unmarshal([]byte(`{"openai/userLocation":`+location+`}`), &meta); err == nil {
+				t.Fatalf("invalid location type accepted: %s", location)
+			}
+		}
+	})
+	t.Run("required metadata stays strict", func(t *testing.T) {
+		t.Parallel()
+		var meta RequestMeta
+		if err := json.Unmarshal([]byte(`{"io.modelcontextprotocol/protocolVersion":42,"openai/userLocation":{"timezone":"UTC"}}`), &meta); err == nil {
+			t.Fatal("invalid protocol version accepted")
+		}
+	})
+}
+
+func TestRequestMetaOpenAIFields(t *testing.T) {
+	t.Parallel()
+	t.Run("valid", func(t *testing.T) {
+		t.Parallel()
+		const body = `{"openai/locale":"fr-CA","openai/organization":"org-1","openai/session":"conversation-1","openai/subject":"user-1","openai/userAgent":"client/1","openai/userLocation":{"timezone":"America/Toronto"},"openai/future":"preserve","progressToken":"keep"}`
+		var meta RequestMeta
+		if err := json.Unmarshal([]byte(body), &meta); err != nil {
+			t.Fatal(err)
+		}
+		if meta.Locale != "fr-CA" || meta.Organization != "org-1" || meta.Session != "conversation-1" || meta.Subject != "user-1" || meta.UserAgent != "client/1" || meta.UserLocation.Timezone != "America/Toronto" {
+			t.Fatalf("OpenAI metadata = %#v", meta.OpenAIRequestMeta)
+		}
+		if len(meta.Extra) != 1 || meta.Extra["openai/future"] != "preserve" || meta.ProgressToken != "keep" {
+			t.Fatalf("remaining metadata = %#v", meta)
+		}
+		data, err := json.Marshal(meta)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want, got map[string]any
+		if err := json.Unmarshal([]byte(body), &want); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatal(err)
+		}
+		for key, value := range want {
+			if key == "openai/userLocation" {
+				continue
+			}
+			if got[key] != value {
+				t.Fatalf("encoded %s = %#v, want %#v", key, got[key], value)
+			}
+		}
+		if _, ok := got["OpenAIRequestMeta"]; ok {
+			t.Fatalf("nested metadata: %s", data)
+		}
+	})
+	t.Run("error", func(t *testing.T) {
+		t.Parallel()
+		for _, value := range []string{`42`, `true`, `[]`, `{}`} {
+			for _, key := range []string{"openai/locale", "openai/organization", "openai/session", "openai/subject", "openai/userAgent"} {
+				meta := RequestMeta{ProgressToken: "unchanged"}
+				if err := json.Unmarshal([]byte(`{"`+key+`":`+value+`}`), &meta); err == nil {
+					t.Fatalf("invalid field type accepted: %s=%s", key, value)
+				}
+				if meta.ProgressToken != "unchanged" {
+					t.Fatalf("failed decode changed metadata: %#v", meta)
+				}
+			}
+		}
+	})
+}
+
+func TestNewToolSpec(t *testing.T) {
+	t.Parallel()
+	type arguments struct {
+		Message string `json:"message"`
+	}
+	called := false
+	spec := NewToolSpec("echo", "Echo", "Echo in the caller's timezone", func(ctx context.Context, req ToolRequest[arguments]) ToolResult[TextOutput] {
+		called = true
+		if ctx != t.Context() || req.Params.Meta.Extra["example/trace"] != "trace" {
+			t.Fatal("request context or metadata lost")
+		}
+		return TypedToolResult(TextOutput{Result: req.Arguments.Message + " " + req.Params.Meta.UserLocation.Timezone})
+	})
+	for _, field := range []string{"_meta", "arguments", "params"} {
+		if _, ok := spec.InputSchema.Properties.Get(field); ok {
+			t.Fatalf("request envelope leaked into tool schema: %s", field)
+		}
+	}
+	params := ToolsCallParams{
+		Name: "echo", Arguments: json.RawMessage(`{"message":"hello"}`),
+		Meta: RequestMeta{
+			OpenAIRequestMeta: OpenAIRequestMeta{UserLocation: OpenAIUserLocation{Timezone: "America/Toronto"}},
+			Extra:             MetaObject{"example/trace": "trace"},
+		},
+	}
+	result, err := spec.Handler(t.Context(), &params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := result.Structured.(TextOutput); !ok || got.Result != "hello America/Toronto" || !called {
+		t.Fatalf("tool result = %#v", result)
+	}
+	called = false
+	params.Arguments = json.RawMessage(`{"message":"hello","_meta":{}}`)
+	if _, err := spec.Handler(t.Context(), &params); err == nil || called {
+		t.Fatal("invalid tool arguments reached handler")
 	}
 }
 

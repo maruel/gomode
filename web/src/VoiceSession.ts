@@ -440,6 +440,11 @@ function rememberAudioDevice(kind: AudioDevicePreference, deviceId: string): voi
 
 // VoiceSession
 
+function newConversationID(): string {
+  // getRandomValues also works in HTTP-hosted native shells.
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export class VoiceSession {
   readonly state: VoiceState;
   /** Public store updater (also the seam tests use to arrange session state). */
@@ -451,6 +456,7 @@ export class VoiceSession {
   private _sessionGateway: GatewaySnapshot | null = null;
   private _sessionChoiceID: string | null = null;
   private _sessionVoiceName: string | null = null;
+  private _conversationID = newConversationID();
   private _frontendToolNames = new Set<string>();
   private _pc: RTCPeerConnection | null = null;
   private _dc: RTCDataChannel | null = null;
@@ -996,6 +1002,7 @@ export class VoiceSession {
 
   /** Start a new voice session via WebRTC data channel through the host backend. */
   async connect(): Promise<void> {
+    this._conversationID = newConversationID();
     this.prepareAudio();
     this._sessionGateway = gatewaySnapshot();
     this._sessionVoiceName = null;
@@ -1725,7 +1732,10 @@ export class VoiceSession {
       });
       const result = this._frontendToolNames.has(msg.name)
         ? { structuredContent: executeFrontendVoiceTool(msg.name, msg.args ?? {}), isError: false }
-        : await mcpClient.callTool(msg.name, msg.args ?? {});
+        : await mcpClient.callTool(msg.name, msg.args ?? {}, {
+            locale: this.state.languageTag,
+            sessionID: this._conversationID,
+          });
       if (!this._ownsChannel(attempt, channel)) return;
       this._update((s) => {
         s.activeTool = null;

@@ -10,6 +10,7 @@ import com.fghbuild.mcp.sdk.v1.Implementation
 import com.fghbuild.mcp.sdk.v1.JSONRPCNotification
 import com.fghbuild.mcp.sdk.v1.JSONRPCRequest
 import com.fghbuild.mcp.sdk.v1.Method
+import com.fghbuild.mcp.sdk.v1.OpenAIUserLocation
 import com.fghbuild.mcp.sdk.v1.PaginatedRequestParams
 import com.fghbuild.mcp.sdk.v1.RequestMeta
 import com.fghbuild.mcp.sdk.v1.ResourceDescriptor
@@ -38,6 +39,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import okhttp3.OkHttpClient
+import java.time.ZoneId
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -61,14 +63,22 @@ class McpClient(
     private val subscriptionAPI = ApiClient(this.endpointURL, httpClient = newSubscriptionHTTPClient())
     private val json = Json { ignoreUnknownKeys = true }
     private var toolsByName: Map<String, ToolDescriptor> = emptyMap()
+    private val clientInfo = Implementation(name = "gomode-android", version = "1.0.0")
 
-    private val requestMeta: RequestMeta
-        get() =
-            RequestMeta(
-                protocolVersion = protocolVersion,
-                clientInfo = Implementation(name = "gomode-android", version = "1.0.0"),
-                clientCapabilities = ClientCapabilities(),
-            )
+    private fun requestMeta(
+        toolCall: Boolean = false,
+        sessionID: String? = null,
+        locale: String? = null,
+    ): RequestMeta =
+        RequestMeta(
+            protocolVersion = protocolVersion,
+            clientInfo = clientInfo,
+            clientCapabilities = ClientCapabilities(),
+            locale = locale,
+            session = sessionID,
+            userAgent = if (toolCall) "${clientInfo.name}/${clientInfo.version}" else null,
+            userLocation = if (toolCall) OpenAIUserLocation(timezone = ZoneId.systemDefault().id) else null,
+        )
 
     private fun cookieHeaders(): Map<String, String> =
         cookieProvider()?.takeIf { it.isNotBlank() }?.let { mapOf("Cookie" to it) } ?: emptyMap()
@@ -100,7 +110,7 @@ class McpClient(
     override suspend fun serverDiscover(): ServerDiscoverResult =
         request(
             method = Method.ServerDiscover,
-            params = buildJsonObject { put("_meta", json.encodeToJsonElement(requestMeta)) },
+            params = buildJsonObject { put("_meta", json.encodeToJsonElement(requestMeta())) },
         )
 
     suspend fun serverInstructions(): String = serverDiscover().instructions.orEmpty()
@@ -115,7 +125,7 @@ class McpClient(
                     params =
                         json.encodeToJsonElement(
                             PaginatedRequestParams(
-                                _meta = requestMeta,
+                                _meta = requestMeta(),
                                 cursor = cursor,
                             ),
                         ),
@@ -130,6 +140,8 @@ class McpClient(
     suspend fun callTool(
         name: String,
         args: JsonObject,
+        sessionID: String? = null,
+        locale: String? = null,
     ): McpToolResult {
         val result =
             request<ToolCallResult>(
@@ -137,7 +149,12 @@ class McpClient(
                 params =
                     json.encodeToJsonElement(
                         ToolsCallParams(
-                            _meta = requestMeta,
+                            _meta =
+                                requestMeta(
+                                    toolCall = true,
+                                    sessionID = sessionID,
+                                    locale = locale,
+                                ),
                             name = name,
                             arguments = args,
                         ),
@@ -162,7 +179,7 @@ class McpClient(
                     params =
                         json.encodeToJsonElement(
                             PaginatedRequestParams(
-                                _meta = requestMeta,
+                                _meta = requestMeta(),
                                 cursor = cursor,
                             ),
                         ),
@@ -183,7 +200,7 @@ class McpClient(
                     params =
                         json.encodeToJsonElement(
                             PaginatedRequestParams(
-                                _meta = requestMeta,
+                                _meta = requestMeta(),
                                 cursor = cursor,
                             ),
                         ),
@@ -200,7 +217,7 @@ class McpClient(
             params =
                 json.encodeToJsonElement(
                     ResourcesReadParams(
-                        _meta = requestMeta,
+                        _meta = requestMeta(),
                         uri = uri,
                     ),
                 ),
@@ -216,7 +233,7 @@ class McpClient(
                 params =
                     json.encodeToJsonElement(
                         SubscriptionsListenParams(
-                            _meta = requestMeta,
+                            _meta = requestMeta(),
                             notifications = notifications,
                         ),
                     ),

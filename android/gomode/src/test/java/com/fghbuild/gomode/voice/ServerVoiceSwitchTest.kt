@@ -37,7 +37,8 @@ class ServerVoiceSwitchTest {
             val source = repository.addService("Work", "https://work.example")
             val before = repository.awaitService(source)
             val handoff = ServerVoiceSwitch(repository, backgroundScope)
-            handoff.switchServer(target)
+            handoff.switchServer(target, "conversation-one")
+            assertEquals("conversation-one", handoff.pending.value?.conversationID)
             assertEquals(
                 target,
                 handoff.pending.value
@@ -63,7 +64,7 @@ class ServerVoiceSwitchTest {
             assertFalse(handoff.shouldConnect(after, true, VoiceState(connected = true)))
             assertNull(handoff.pending.value)
             assertFalse(handoff.shouldConnect(after, true, VoiceState()))
-            handoff.switchServer(target)
+            handoff.switchServer(target, "conversation-one")
             assertNull("selecting the active server does not restart voice", handoff.pending.value)
         }
 
@@ -75,7 +76,7 @@ class ServerVoiceSwitchTest {
             val source = repository.addService("Work", "https://work.example")
             repository.awaitService(source)
             val handoff = ServerVoiceSwitch(repository, backgroundScope)
-            handoff.switchServer(target)
+            handoff.switchServer(target, "conversation-one")
             val after = repository.awaitService(target)
             assertFalse(handoff.shouldConnect(after, true, VoiceState(error = "Gateway unavailable")))
             assertNull(handoff.pending.value)
@@ -93,7 +94,7 @@ class ServerVoiceSwitchTest {
             val handoff = ServerVoiceSwitch(repository, backgroundScope)
             val gate = CompletableDeferred<Unit>()
             store.nextWriteGate = gate
-            val oldSession = async { handoff.switchServer(target) }
+            val oldSession = async { handoff.switchServer(target, "conversation-one") }
             runCurrent()
             assertEquals(
                 target,
@@ -118,7 +119,7 @@ class ServerVoiceSwitchTest {
             val handoff = ServerVoiceSwitch(repository, backgroundScope)
             val gate = CompletableDeferred<Unit>()
             store.nextWriteGate = gate
-            val switching = async { handoff.switchServer(target) }
+            val switching = async { handoff.switchServer(target, "conversation-one") }
             runCurrent()
             handoff.cancel()
             gate.complete(Unit)
@@ -142,7 +143,7 @@ class ServerVoiceSwitchTest {
                     { it.copy(voiceLanguageTag = "fr-CA") },
                 )
             for (edit in edits) {
-                handoff.switchServer(target)
+                handoff.switchServer(target, "conversation-one")
                 assertFalse(handoff.shouldConnect(edit(repository.awaitService(target)), true, VoiceState()))
                 assertNull(handoff.pending.value)
                 repository.switchService(source)
@@ -160,10 +161,12 @@ class ServerVoiceSwitchTest {
             repository.awaitService(source)
             val handoff = ServerVoiceSwitch(repository, backgroundScope)
             store.failNextWrite = true
-            assertTrue(runCatching { handoff.switchServer(target) }.exceptionOrNull() is IOException)
+            assertTrue(
+                runCatching { handoff.switchServer(target, "conversation-one") }.exceptionOrNull() is IOException,
+            )
             assertNull(handoff.pending.value)
             assertEquals(source, repository.settings.value.activeServiceId)
-            handoff.switchServer(target)
+            handoff.switchServer(target, "conversation-one")
             assertTrue(handoff.shouldConnect(repository.awaitService(target), true, VoiceState()))
         }
 

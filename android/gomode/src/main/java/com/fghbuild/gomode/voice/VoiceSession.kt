@@ -73,6 +73,7 @@ import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.sqrt
 
@@ -163,7 +164,7 @@ internal class VoiceSession(
     private val languageTag: String,
     voiceChimePlayer: VoiceChimePlayer = AndroidVoiceChime(),
     private val callController: VoiceCallController = NoopVoiceCallController(),
-    private val switchServer: suspend (String) -> Unit = { id -> settingsRepository.switchService(id) },
+    private val switchServer: suspend (String, String) -> Unit = { id, _ -> settingsRepository.switchService(id) },
 ) : VoiceSessionController {
     private val audioManager = appContext.getSystemService(AudioManager::class.java)
     private val json =
@@ -201,6 +202,7 @@ internal class VoiceSession(
     @Volatile
     private var usableICECandidateWaiter: CompletableDeferred<Unit>? = null
     private var mcpClient: McpClient? = null
+    private var conversationID = UUID.randomUUID().toString()
     private var frontendToolNames: Set<String> = emptySet()
     private var sessionTools: List<ToolDescriptor> = emptyList()
     private var deviceCallback: AudioDeviceCallback? = null
@@ -295,7 +297,7 @@ internal class VoiceSession(
 
     /** Connect via WebRTC data channel through the configured service voice gateway. */
     @Suppress("TooGenericExceptionCaught") // Error boundary: surface all failures to UI.
-    override fun connect(preserveTranscript: Boolean) {
+    override fun connect(preserveTranscript: Boolean, conversationID: String?) {
         val attempt = invalidateAttempt()
         reconnectJob?.cancel()
         reconnectJob = null
@@ -316,6 +318,7 @@ internal class VoiceSession(
         lastOfferSDP = ""
         lastAnswerSDP = ""
         if (!preserveTranscript) {
+            this.conversationID = conversationID ?: UUID.randomUUID().toString()
             pinnedVoice = null
             recoveryPolicy.reset()
             recoveryContext = ""
@@ -1138,6 +1141,8 @@ internal class VoiceSession(
         if (!ownsAttempt(attempt) || dataChannel !== originChannel) return
         val id = msg.id
         val name = msg.name
+        // Pin this call to its conversation before native/frontend dispatch can suspend.
+        val sessionID = conversationID
         try {
             _state.update { it.copy(activeTool = name) }
             val serverResult =
@@ -1145,7 +1150,7 @@ internal class VoiceSession(
                     name,
                     msg.args,
                     settingsRepository,
-                    switchServer = switchServer,
+                    switchServer = { id -> switchServer(id, sessionID) },
                     onDisconnect = ::disconnect,
                 )
             if (serverResult != null) {
@@ -1172,7 +1177,7 @@ internal class VoiceSession(
                     return
                 }
             require(name !in frontendToolNames) { "Frontend voice tool is unavailable: $name" }
-            val result = client.callTool(name, args)
+            val result = client.callTool(name, args, sessionID, locale = languageTag)
             if (!ownsAttempt(attempt) || dataChannel !== originChannel) return
             _state.update { it.copy(activeTool = null) }
             if (result.isError) {

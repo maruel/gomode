@@ -12,7 +12,6 @@ import (
 	"io"
 	"iter"
 	"log/slog"
-	"maps"
 	"net/http"
 	"reflect"
 	"slices"
@@ -290,7 +289,7 @@ func (h *Handler) dispatch(ctx context.Context, method Method, params json.RawMe
 		if err := h.validateToolParamHeaders(ctx, header, p.Name, p.Arguments); err != nil {
 			return nil, rpcError(InvalidRequestCode, err.Error())
 		}
-		res, err := h.Registry.CallTool(ctx, p.Name, p.Arguments)
+		res, err := h.Registry.CallTool(ctx, &p)
 		if err != nil {
 			return nil, registryError(err)
 		}
@@ -783,7 +782,7 @@ func (h *Handler) dispatchCompat(ctx context.Context, method Method, params json
 		if err := decodeCompatParams(params, &p); err != nil || p.Name == "" {
 			return nil, rpcError(InvalidParamsCode, "Invalid params")
 		}
-		res, err := h.Registry.CallTool(ctx, p.Name, p.Arguments)
+		res, err := h.Registry.CallTool(ctx, &p)
 		if err != nil {
 			return nil, registryError(err)
 		}
@@ -849,7 +848,9 @@ func (h *Handler) dispatchCompat(ctx context.Context, method Method, params json
 type Registry interface {
 	Instructions(ctx context.Context) (string, error)
 	Tools(ctx context.Context) ([]ToolDescriptor, error)
-	CallTool(ctx context.Context, name string, args json.RawMessage) (RawToolResult, error)
+	// CallTool executes the decoded request. Params must be non-nil and must
+	// not be modified during the call.
+	CallTool(ctx context.Context, params *ToolsCallParams) (RawToolResult, error)
 	ListResources(ctx context.Context, cursor string) (ResourcesListResult, error)
 	Resources(ctx context.Context) iter.Seq2[ResourceDescriptor, error]
 	ReadResource(ctx context.Context, uri string) (ResourcesReadResult, error)
@@ -932,6 +933,38 @@ type MetaObject map[string]any
 // structuredContent envelopes.
 const ToolErrorCodeMetaKey = "xyz.caic/errorCode"
 
+// OpenAIUserLocation contains optional client location hints. Only the device's
+// IANA timezone is used; these untrusted hints must not influence authorization.
+type OpenAIUserLocation struct {
+	// Timezone is the caller device's IANA timezone, such as America/Toronto.
+	Timezone string `json:"timezone,omitempty"`
+}
+
+// OpenAIRequestMeta contains OpenAI-specific client metadata extensions.
+// Embedding it in RequestMeta keeps its namespaced fields flat on the wire.
+// These optional, self-reported values do not establish authenticated identity.
+//
+// Reference: https://developers.openai.com/plugins/reference#_meta-fields-the-client-provides
+type OpenAIRequestMeta struct {
+	// Locale requests a language and regional convention using a BCP 47 tag,
+	// such as en-CA or fr-CA.
+	Locale string `json:"openai/locale,omitempty"`
+	// Organization carries an anonymized identifier for the caller's ChatGPT
+	// organization, when the client provides one.
+	Organization string `json:"openai/organization,omitempty"`
+	// Session groups tool calls from the same ChatGPT conversation using an
+	// anonymized conversation identifier.
+	Session string `json:"openai/session,omitempty"`
+	// Subject carries an anonymized user identifier for call correlation or
+	// rate-limit accounting; it is not an authentication credential.
+	Subject string `json:"openai/subject,omitempty"`
+	// UserAgent is a best-effort client hint for analytics or presentation;
+	// it is not a reliable indication of client capabilities.
+	UserAgent string `json:"openai/userAgent,omitempty"`
+	// UserLocation is an optional formatting hint supplied by the client.
+	UserLocation OpenAIUserLocation `json:"openai/userLocation,omitzero"`
+}
+
 // RequestMeta is the metadata object required in MCP request params.
 type RequestMeta struct {
 	// ProtocolVersion is the MCP protocol version used for this request.
@@ -950,33 +983,39 @@ type RequestMeta struct {
 	// schema. This is native 2026-07-28 compatibility, not released-version
 	// compat.go support; remove it only after the upstream 2026+ schema drops it.
 	DeprecatedLogLevel string `json:"io.modelcontextprotocol/logLevel,omitempty"`
+	OpenAIRequestMeta
 	// Extra preserves forward-compatible metadata fields.
 	Extra MetaObject `json:"-"`
 }
 
+// JSON tags, including promoted OpenAI fields, define the reserved metadata keys.
+var requestMetaJSONKeys = func() []string {
+	var keys []string
+	for _, field := range reflect.VisibleFields(reflect.TypeFor[RequestMeta]()) {
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name != "" && name != "-" {
+			keys = append(keys, name)
+		}
+	}
+	return keys
+}()
+
 // UnmarshalJSON decodes RequestMeta while preserving forward-compatible _meta fields.
 func (m *RequestMeta) UnmarshalJSON(data []byte) error {
+	// A distinct type avoids recursively invoking this method.
 	type requestMeta RequestMeta
 	var meta requestMeta
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return err
 	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
+	if err := json.Unmarshal(data, &meta.Extra); err != nil {
 		return err
 	}
-	for _, key := range requestMetaKnownKeys() {
-		delete(raw, key)
+	for _, key := range requestMetaJSONKeys {
+		delete(meta.Extra, key)
 	}
-	if len(raw) > 0 {
-		meta.Extra = make(MetaObject, len(raw))
-		for key, value := range raw {
-			var decoded any
-			if err := json.Unmarshal(value, &decoded); err != nil {
-				return err
-			}
-			meta.Extra[key] = decoded
-		}
+	if len(meta.Extra) == 0 {
+		meta.Extra = nil
 	}
 	*m = RequestMeta(meta)
 	return nil
@@ -986,28 +1025,26 @@ func (m *RequestMeta) UnmarshalJSON(data []byte) error {
 //
 //nolint:gocritic // Value receiver ensures json.Marshaler runs for RequestMeta value fields.
 func (m RequestMeta) MarshalJSON() ([]byte, error) {
-	fields := make(MetaObject, len(m.Extra)+5)
-	maps.Copy(fields, m.Extra)
-	fields["io.modelcontextprotocol/protocolVersion"] = m.ProtocolVersion
-	fields["io.modelcontextprotocol/clientInfo"] = m.ClientInfo
-	fields["io.modelcontextprotocol/clientCapabilities"] = m.ClientCapabilities
-	if m.ProgressToken != nil {
-		fields["progressToken"] = m.ProgressToken
+	type requestMeta RequestMeta
+	data, err := json.Marshal(requestMeta(m))
+	if err != nil || len(m.Extra) == 0 {
+		return data, err
 	}
-	if m.DeprecatedLogLevel != "" {
-		fields["io.modelcontextprotocol/logLevel"] = m.DeprecatedLogLevel
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	for key, value := range m.Extra {
+		if slices.Contains(requestMetaJSONKeys, key) {
+			continue
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return nil, err
+		}
+		fields[key] = encoded
 	}
 	return json.Marshal(fields)
-}
-
-func requestMetaKnownKeys() []string {
-	return []string{
-		"io.modelcontextprotocol/clientCapabilities",
-		"io.modelcontextprotocol/clientInfo",
-		"io.modelcontextprotocol/logLevel",
-		"io.modelcontextprotocol/protocolVersion",
-		"progressToken",
-	}
 }
 
 // ClientCapabilities describes capabilities the client supports for a request.
@@ -1966,8 +2003,16 @@ func jsonStringField(fields map[string]json.RawMessage, key string) (string, boo
 	return value, true
 }
 
-// ToolHandler executes a tool with raw JSON arguments.
-type ToolHandler func(context.Context, json.RawMessage) (RawToolResult, error)
+// ToolHandler executes a tool with its complete decoded request parameters.
+// Parameters must be non-nil and must not be modified during the call.
+type ToolHandler func(context.Context, *ToolsCallParams) (RawToolResult, error)
+
+// ToolRequest pairs common request metadata with decoded tool arguments.
+// Only T contributes to the model-visible input schema.
+type ToolRequest[T any] struct {
+	Params    RequestParams
+	Arguments T
+}
 
 // ToolSpec describes a server-side tool implementation.
 type ToolSpec struct {
@@ -2042,7 +2087,7 @@ func toolResultText(v any) string {
 }
 
 // NewToolSpec builds a ToolSpec with reflected input and output schemas.
-func NewToolSpec[In, Out any](name, title, description string, handler func(context.Context, In) ToolResult[Out]) ToolSpec {
+func NewToolSpec[In, Out any](name, title, description string, handler func(context.Context, ToolRequest[In]) ToolResult[Out]) ToolSpec {
 	inputSchema := SchemaFor[In]()
 	AddHeaderToProperty(inputSchema, "task_number", "Task-Number")
 	return ToolSpec{
@@ -2051,12 +2096,12 @@ func NewToolSpec[In, Out any](name, title, description string, handler func(cont
 		Description:  description,
 		InputSchema:  inputSchema,
 		OutputSchema: SchemaFor[Out](),
-		Handler: func(ctx context.Context, argsJSON json.RawMessage) (RawToolResult, error) {
-			args, err := DecodeToolArgument[In](argsJSON)
+		Handler: func(ctx context.Context, params *ToolsCallParams) (RawToolResult, error) {
+			args, err := DecodeToolArgument[In](params.Arguments)
 			if err != nil {
 				return RawToolResult{}, ErrInvalidParams("invalid arguments: %w", err)
 			}
-			return handler(ctx, args).toRawToolResult(), nil
+			return handler(ctx, ToolRequest[In]{Params: RequestParams{Meta: params.Meta}, Arguments: args}).toRawToolResult(), nil
 		},
 	}
 }

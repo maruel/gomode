@@ -21,6 +21,7 @@ import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -316,7 +317,7 @@ class VoiceSessionLifecycleTest {
                 server.start()
                 try {
                     val settings = SettingsRepository(InMemoryPreferencesDataStore())
-                    val session = VoiceSession(RuntimeEnvironment.getApplication(), settings, languageTag = "en-US")
+                    val session = VoiceSession(RuntimeEnvironment.getApplication(), settings, languageTag = "fr-CA")
                     val oldChannel = RecordingDataChannel()
                     val newChannel = RecordingDataChannel()
                     val client = McpClient(server.url("/mcp").toString(), "2026-07-28", { null })
@@ -337,6 +338,16 @@ class VoiceSessionLifecycleTest {
                             )
                         }
                     assertEquals(true, toolStarted.await(5, TimeUnit.SECONDS))
+                    val request = requireNotNull(server.takeRequest(5, TimeUnit.SECONDS))
+                    val meta =
+                        Json
+                            .parseToJsonElement(request.body.readUtf8())
+                            .jsonObject
+                            .getValue("params")
+                            .jsonObject
+                            .getValue("_meta")
+                            .jsonObject
+                    assertEquals("fr-CA", meta.getValue("openai/locale").jsonPrimitive.content)
                     session.disconnect()
                     VoiceSession::class.java.getDeclaredField("dataChannel").apply {
                         isAccessible = true

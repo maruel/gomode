@@ -42,6 +42,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
@@ -92,7 +93,7 @@ internal class DeviceVoiceSession(
     private val speech: DeviceSpeech = AndroidDeviceSpeech(appContext, languageTag),
     voiceChimePlayer: VoiceChimePlayer = AndroidVoiceChime(),
     private val callController: VoiceCallController = NoopVoiceCallController(),
-    private val switchServer: suspend (String) -> Unit = { id -> settingsRepository.switchService(id) },
+    private val switchServer: suspend (String, String) -> Unit = { id, _ -> settingsRepository.switchService(id) },
     private val setupProvider: suspend () -> VoiceSetup = {
         prepareVoiceSetup(settingsRepository, settingsClient, bearerTokenFor)
     },
@@ -131,6 +132,7 @@ internal class DeviceVoiceSession(
     private val sessionTools: List<ToolDescriptor>
         get() = setup?.tools.orEmpty()
     private var frontendToolNames: Set<String> = emptySet()
+    private var conversationID = UUID.randomUUID().toString()
 
     private var muted = false
     private var speakerActive = false
@@ -153,7 +155,10 @@ internal class DeviceVoiceSession(
             }
         }
 
-    override fun connect(preserveTranscript: Boolean) {
+    override fun connect(
+        preserveTranscript: Boolean,
+        conversationID: String?,
+    ) {
         val attempt = invalidateAttempt()
         connectJob?.cancel()
         connectJob = null
@@ -168,7 +173,10 @@ internal class DeviceVoiceSession(
         muted = false
         segmenter.clear()
         otherSetup = null
-        if (!preserveTranscript) clearTranscript()
+        if (!preserveTranscript) {
+            this.conversationID = conversationID ?: UUID.randomUUID().toString()
+            clearTranscript()
+        }
         if (!speech.isAvailable()) {
             setError("On-device speech recognition is not available")
             return
@@ -597,6 +605,8 @@ internal class DeviceVoiceSession(
     ): JsonElement? {
         if (!ownsAttempt(attempt)) return null
         val name = msg.name
+        // Pin this call to its conversation before native/frontend dispatch can suspend.
+        val sessionID = conversationID
         try {
             _state.update { it.copy(activeTool = name) }
             val serverResult =
@@ -604,7 +614,7 @@ internal class DeviceVoiceSession(
                     name,
                     msg.args,
                     settingsRepository,
-                    switchServer = switchServer,
+                    switchServer = { id -> switchServer(id, sessionID) },
                     onDisconnect = ::disconnect,
                 )
             if (serverResult != null) {
@@ -628,7 +638,7 @@ internal class DeviceVoiceSession(
                 return errorJson("No MCP client")
             }
             require(name !in frontendToolNames) { "Frontend voice tool is unavailable: $name" }
-            val result = client.callTool(name, args)
+            val result = client.callTool(name, args, sessionID, locale = languageTag)
             if (!ownsAttempt(attempt)) return null
             _state.update { it.copy(activeTool = null) }
             if (result.isError) {
@@ -658,6 +668,8 @@ internal class DeviceVoiceSession(
         if (!ownsAttempt(attempt) || webSocket !== origin) return
         val id = msg.id
         val name = msg.name
+        // Pin this call to its conversation before native/frontend dispatch can suspend.
+        val sessionID = conversationID
         try {
             _state.update { it.copy(activeTool = name) }
             val serverResult =
@@ -665,7 +677,7 @@ internal class DeviceVoiceSession(
                     name,
                     msg.args,
                     settingsRepository,
-                    switchServer = switchServer,
+                    switchServer = { id -> switchServer(id, sessionID) },
                     onDisconnect = ::disconnect,
                 )
             if (serverResult != null) {
@@ -692,7 +704,7 @@ internal class DeviceVoiceSession(
             }
             val args = msg.args as? JsonObject ?: JsonObject(emptyMap())
             require(name !in frontendToolNames) { "Frontend voice tool is unavailable: $name" }
-            val result = client.callTool(name, args)
+            val result = client.callTool(name, args, sessionID, locale = languageTag)
             if (!ownsAttempt(attempt) || webSocket !== origin) return
             _state.update { it.copy(activeTool = null) }
             if (result.isError) {

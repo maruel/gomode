@@ -422,6 +422,54 @@ data class ClientCapabilities(
     val extensions: Map<String, JsonElement>? = null,
 )
 
+/**
+ * OpenAIUserLocation contains optional client location hints. Only the device's
+ * IANA timezone is used; these untrusted hints must not influence authorization.
+ */
+@Serializable
+data class OpenAIUserLocation(
+    /** Timezone is the caller device's IANA timezone, such as America/Toronto. */
+    val timezone: String? = null,
+)
+
+/**
+ * OpenAIRequestMeta contains OpenAI-specific client metadata extensions.
+ * Embedding it in RequestMeta keeps its namespaced fields flat on the wire.
+ * These optional, self-reported values do not establish authenticated identity.
+ *
+ * Reference: https://developers.openai.com/plugins/reference#_meta-fields-the-client-provides
+ */
+@Serializable
+data class OpenAIRequestMeta(
+    /**
+     * Locale requests a language and regional convention using a BCP 47 tag,
+     * such as en-CA or fr-CA.
+     */
+    @SerialName("openai/locale") val locale: String? = null,
+    /**
+     * Organization carries an anonymized identifier for the caller's ChatGPT
+     * organization, when the client provides one.
+     */
+    @SerialName("openai/organization") val organization: String? = null,
+    /**
+     * Session groups tool calls from the same ChatGPT conversation using an
+     * anonymized conversation identifier.
+     */
+    @SerialName("openai/session") val session: String? = null,
+    /**
+     * Subject carries an anonymized user identifier for call correlation or
+     * rate-limit accounting; it is not an authentication credential.
+     */
+    @SerialName("openai/subject") val subject: String? = null,
+    /**
+     * UserAgent is a best-effort client hint for analytics or presentation;
+     * it is not a reliable indication of client capabilities.
+     */
+    @SerialName("openai/userAgent") val userAgent: String? = null,
+    /** UserLocation is an optional formatting hint supplied by the client. */
+    @SerialName("openai/userLocation") val userLocation: OpenAIUserLocation? = null,
+)
+
 /** RequestMeta is the metadata object required in MCP request params. */
 @Serializable
 data class RequestMeta(
@@ -445,6 +493,33 @@ data class RequestMeta(
      * compat.go support; remove it only after the upstream 2026+ schema drops it.
      */
     @SerialName("io.modelcontextprotocol/logLevel") val deprecatedLogLevel: String? = null,
+    /**
+     * Locale requests a language and regional convention using a BCP 47 tag,
+     * such as en-CA or fr-CA.
+     */
+    @SerialName("openai/locale") val locale: String? = null,
+    /**
+     * Organization carries an anonymized identifier for the caller's ChatGPT
+     * organization, when the client provides one.
+     */
+    @SerialName("openai/organization") val organization: String? = null,
+    /**
+     * Session groups tool calls from the same ChatGPT conversation using an
+     * anonymized conversation identifier.
+     */
+    @SerialName("openai/session") val session: String? = null,
+    /**
+     * Subject carries an anonymized user identifier for call correlation or
+     * rate-limit accounting; it is not an authentication credential.
+     */
+    @SerialName("openai/subject") val subject: String? = null,
+    /**
+     * UserAgent is a best-effort client hint for analytics or presentation;
+     * it is not a reliable indication of client capabilities.
+     */
+    @SerialName("openai/userAgent") val userAgent: String? = null,
+    /** UserLocation is an optional formatting hint supplied by the client. */
+    @SerialName("openai/userLocation") val userLocation: OpenAIUserLocation? = null,
 )
 
 /** PaginatedRequestParams contains common request metadata and an optional cursor. */

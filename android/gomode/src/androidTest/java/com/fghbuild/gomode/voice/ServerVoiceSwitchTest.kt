@@ -28,6 +28,8 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import org.json.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import java.util.concurrent.CopyOnWriteArrayList
@@ -56,7 +58,11 @@ class ServerVoiceSwitchTest {
                     val bearerID = repository.addService("Bearer service", bearerServer.url("/").toString())
                     val cookieID = repository.addService("Cookie service", cookieServer.url("/").toString())
                     repository.updateVoiceMode(VoiceMode.DEVICE)
-                    repository.settings.first { it.activeServiceId == cookieID && it.voiceMode == VoiceMode.DEVICE }
+                    repository.updateVoiceLanguageTag("fr-CA")
+                    repository.settings.first {
+                        it.activeServiceId == cookieID && it.voiceMode == VoiceMode.DEVICE &&
+                            it.voiceLanguageTag == "fr-CA"
+                    }
                     val context = InstrumentationRegistry.getInstrumentation().targetContext
                     val owner = LocalModelOwner(context)
                     val mounted = mutableStateOf(true)
@@ -70,12 +76,30 @@ class ServerVoiceSwitchTest {
                         composeRule.onNodeWithTag("gomode-voice-connect").performClick()
                         composeRule.waitUntil(30_000) { cookie.sessions.size == 1 }
                         waitForConnected()
+                        cookie.sessions.last().send(probeCommand())
+                        composeRule.waitUntil(10_000) { cookie.callMetadata.size == 1 }
                         cookie.sessions.last().send(switchCommand(bearerID))
                         composeRule.waitUntil(30_000) { bearer.sessions.size == 1 }
                         waitForConnected()
+                        bearer.sessions.last().send(probeCommand())
+                        composeRule.waitUntil(10_000) { bearer.callMetadata.size == 1 }
                         bearer.sessions.last().send(switchCommand(cookieID))
                         composeRule.waitUntil(30_000) { cookie.sessions.size == 2 }
                         waitForConnected()
+                        cookie.sessions.last().send(probeCommand())
+                        composeRule.waitUntil(10_000) { cookie.callMetadata.size == 2 }
+                        val conversationID = cookie.callMetadata.first().getString("openai/session")
+                        assertTrue(conversationID.matches(Regex("[0-9a-f-]{36}")))
+                        assertEquals(listOf(conversationID), bearer.callMetadata.map { it.getString("openai/session") })
+                        assertEquals(
+                            listOf(conversationID, conversationID),
+                            cookie.callMetadata.map { it.getString("openai/session") },
+                        )
+                        assertEquals(listOf("fr-CA"), bearer.callMetadata.map { it.getString("openai/locale") })
+                        assertEquals(
+                            listOf("fr-CA", "fr-CA"),
+                            cookie.callMetadata.map { it.getString("openai/locale") },
+                        )
                     } finally {
                         composeRule.runOnIdle { mounted.value = false }
                         composeRule.waitForIdle()
@@ -88,6 +112,8 @@ class ServerVoiceSwitchTest {
     private fun switchCommand(id: String): String =
         """{"kind":"tool.call","id":"switch","name":"switch_server","args":{"server_id":"$id"}}"""
 
+    private fun probeCommand(): String = """{"kind":"tool.call","id":"probe","name":"probe","args":{}}"""
+
     private fun waitForConnected() {
         composeRule.waitUntil(30_000) {
             composeRule.onAllNodesWithContentDescription("End voice").fetchSemanticsNodes().isNotEmpty()
@@ -98,6 +124,7 @@ class ServerVoiceSwitchTest {
         private val bearer: Boolean,
     ) : Dispatcher() {
         val sessions = CopyOnWriteArrayList<WebSocket>()
+        val callMetadata = CopyOnWriteArrayList<JSONObject>()
 
         override fun dispatch(request: RecordedRequest): MockResponse =
             when (request.requestUrl?.encodedPath) {
@@ -122,12 +149,19 @@ class ServerVoiceSwitchTest {
                     val rpc = JSONObject(request.body.readUtf8())
                     val result =
                         when (rpc.getString("method")) {
+                            "tools/call" -> {
+                                callMetadata.add(
+                                    rpc.getJSONObject("params").getJSONObject("_meta"),
+                                )
+                                """{"resultType":"complete","content":[],"structuredContent":{}}"""
+                            }
+
                             "server/discover" -> {
                                 """{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"},"instructions":"Be brief.","ttlMs":60000,"cacheScope":"private"}"""
                             }
 
                             "tools/list" -> {
-                                """{"resultType":"complete","tools":[],"ttlMs":60000,"cacheScope":"private"}"""
+                                """{"resultType":"complete","tools":[{"name":"probe","inputSchema":{"type":"object"}}],"ttlMs":60000,"cacheScope":"private"}"""
                             }
 
                             else -> {

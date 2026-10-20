@@ -3,7 +3,6 @@ package mcptest
 
 import (
 	"context"
-	"encoding/json"
 	"iter"
 
 	"github.com/invopop/jsonschema"
@@ -34,12 +33,12 @@ func (FakeRegistry) Tools(context.Context) ([]mcp.ToolDescriptor, error) {
 }
 
 // CallTool implements mcp.Registry.
-func (f FakeRegistry) CallTool(_ context.Context, name string, _ json.RawMessage) (mcp.RawToolResult, error) {
+func (f FakeRegistry) CallTool(_ context.Context, params *mcp.ToolsCallParams) (mcp.RawToolResult, error) {
 	if f.CallErr != nil {
 		return mcp.RawToolResult{}, f.CallErr
 	}
-	if name != "echo" {
-		return mcp.RawToolResult{}, mcp.ErrInvalidParams("unknown tool: %s", name)
+	if params.Name != "echo" {
+		return mcp.RawToolResult{}, mcp.ErrInvalidParams("unknown tool: %s", params.Name)
 	}
 	if f.CallResult != nil {
 		return *f.CallResult, nil

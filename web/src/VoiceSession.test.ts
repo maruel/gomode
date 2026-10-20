@@ -1029,6 +1029,38 @@ describe("VoiceSession", () => {
     session.disconnect();
   });
 
+  it("keeps conversation IDs across reconnects and renews them without requiring a secure-context UUID API", async (t) => {
+    t.mock.method(crypto, "randomUUID", () => {
+      throw new Error("randomUUID is unavailable on HTTP origins");
+    });
+    mcpMocks.mcpCallTool.mockResolvedValue({ structuredContent: {} });
+    const session = new VoiceSession();
+    session.selectLanguage("fr-CA");
+    await session.connect();
+    dispatchToolCall(FakePeerConnection.dataChannels[0], "first", "lookup");
+    const firstID = mcpMocks.mcpCallTool.mock.calls[0]?.[2]?.sessionID;
+    expect(firstID).toMatch(/^[0-9a-f]{32}$/);
+    expect(mcpMocks.mcpCallTool.mock.calls[0]?.[2]?.locale).toBe("fr-CA");
+    vi.useFakeTimers();
+    try {
+      triggerIceState("failed");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(() => expect(offerRequests).toHaveLength(2));
+      dispatchToolCall(FakePeerConnection.dataChannels[1], "reconnected", "lookup");
+      expect(mcpMocks.mcpCallTool.mock.calls[1]?.[2]).toEqual({ locale: "fr-CA", sessionID: firstID });
+      session.disconnect();
+      session.selectLanguage("de-DE");
+      await session.connect();
+      dispatchToolCall(FakePeerConnection.dataChannels[2], "new", "lookup");
+      expect(mcpMocks.mcpCallTool.mock.calls[2]?.[2]?.sessionID).toMatch(/^[0-9a-f]{32}$/);
+      expect(mcpMocks.mcpCallTool.mock.calls[2]?.[2]?.sessionID).not.toBe(firstID);
+      expect(mcpMocks.mcpCallTool.mock.calls[2]?.[2]?.locale).toBe("de-DE");
+    } finally {
+      session.disconnect();
+      vi.useRealTimers();
+    }
+  });
+
   it("preserves outstanding tools and transport after a recoverable gateway error", async () => {
     const tool = deferred<Awaited<ReturnType<typeof mcpClient.callTool>>>();
     mcpMocks.mcpCallTool.mockReturnValue(tool.promise);

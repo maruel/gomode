@@ -1,9 +1,11 @@
 // MCP JSON-RPC client for server guidance, tools, and resources used by browser Go Mode.
 
 import { createApiClient as createMcpApiClient } from "../../sdk/mcp/ts/v1/api.gen";
+import type { RequestMeta } from "../../sdk/mcp/ts/v1/types.gen";
 import { readMcpNotificationStream } from "./McpEvents";
 
 const MCP_PROTOCOL_VERSION = "2026-07-28";
+const CLIENT_VERSION = "1.0.0";
 let mcpEndpoint: string | null = null;
 let clientName = "gomode-web";
 let bearerTokenProvider: (() => string | null | Promise<string | null>) | null = null;
@@ -48,14 +50,15 @@ function configuredEndpoint(): string {
 
 type JsonObject = Record<string, unknown>;
 
-function mcpMeta() {
+function mcpMeta(locale?: string): RequestMeta {
   return {
     "io.modelcontextprotocol/protocolVersion": MCP_PROTOCOL_VERSION,
     "io.modelcontextprotocol/clientInfo": {
       name: clientName,
-      version: "1.0.0",
+      version: CLIENT_VERSION,
     },
     "io.modelcontextprotocol/clientCapabilities": {},
+    "openai/locale": locale,
   };
 }
 
@@ -66,7 +69,7 @@ const _subscriptions = new Set<McpResourceSubscription>();
 async function mcpRequest(
   method: string,
   params: JsonObject,
-  opts: { name?: string; paramHeaders?: Record<string, string> },
+  opts: McpToolCallOptions & { name?: string; paramHeaders?: Record<string, string> },
 ): Promise<unknown> {
   const id = ++_idCounter;
   const headers: Record<string, string> = {
@@ -78,6 +81,13 @@ async function mcpRequest(
   };
   if (opts.name !== undefined) headers["Mcp-Name"] = opts.name;
 
+  const meta = mcpMeta(opts.locale);
+  if (method === "tools/call") {
+    meta["openai/session"] = opts.sessionID;
+    meta["openai/userAgent"] = `gomode-web/${CLIENT_VERSION}`;
+    meta["openai/userLocation"] = { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+  }
+
   const resp = await authenticatedFetch(configuredEndpoint(), {
     method: "POST",
     headers,
@@ -85,7 +95,7 @@ async function mcpRequest(
       jsonrpc: "2.0",
       id,
       method,
-      params: { ...params, _meta: mcpMeta() },
+      params: { ...params, _meta: meta },
     }),
   });
   if (!resp.ok) throw new Error(`MCP ${method} returned HTTP ${resp.status}`);
@@ -160,11 +170,18 @@ export interface McpToolResult {
   isError?: boolean;
 }
 
-async function mcpCallTool(name: string, args: JsonObject): Promise<McpToolResult> {
+export interface McpToolCallOptions {
+  /** BCP 47 locale for this call, supplied by the voice conversation. */
+  locale?: string;
+  /** Device-owned identifier shared by calls in the same conversation. */
+  sessionID?: string;
+}
+
+async function mcpCallTool(name: string, args: JsonObject, opts?: McpToolCallOptions): Promise<McpToolResult> {
   const result = (await mcpRequest(
     "tools/call",
     { name, arguments: args },
-    { name, paramHeaders: mcpParamHeaders(_toolCache.get(name), args) },
+    { ...opts, name, paramHeaders: mcpParamHeaders(_toolCache.get(name), args) },
   )) as {
     structuredContent?: JsonObject;
     content?: Array<{ type?: string; text?: string }>;

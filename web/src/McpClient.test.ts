@@ -10,6 +10,40 @@ afterEach(() => {
 });
 
 describe("configureMcpClient", () => {
+  it("sends device hints and caller-owned conversation IDs without changing arguments", async (t) => {
+    configureMcpClient("/mcp", "host");
+    let timezone = "America/Toronto";
+    const original = Intl.DateTimeFormat.prototype.resolvedOptions;
+    t.mock.method(Intl.DateTimeFormat.prototype, "resolvedOptions", function (this: Intl.DateTimeFormat) {
+      return { ...original.call(this), timeZone: timezone };
+    });
+    t.mock.getter(navigator, "language", () => "fr-CA");
+    const params: Array<Record<string, unknown>> = [];
+    globalThis.fetch = async (_input, init) => {
+      params.push(JSON.parse(String(init?.body)).params);
+      return new Response(JSON.stringify({ result: { structuredContent: { result: "ok" } } }));
+    };
+    await mcpClient.callTool("get_usage", {}, { locale: "en-GB", sessionID: "conversation-one" });
+    timezone = "Asia/Kolkata";
+    await mcpClient.callTool("get_usage", {}, { locale: "fr-CA", sessionID: "conversation-two" });
+    expect(params.map((p) => (p._meta as Record<string, unknown>)["openai/userLocation"])).toEqual([
+      { timezone: "America/Toronto" },
+      { timezone: "Asia/Kolkata" },
+    ]);
+    expect(params[0].arguments).toEqual({});
+    expect(params.map((p) => (p._meta as Record<string, unknown>)["openai/session"])).toEqual([
+      "conversation-one",
+      "conversation-two",
+    ]);
+    expect(params[0]._meta).toMatchObject({
+      "openai/locale": "en-GB",
+      "openai/userAgent": "gomode-web/1.0.0",
+    });
+    await mcpClient.callTool("get_usage", {});
+    expect(params[2]._meta).not.toHaveProperty("openai/session");
+    expect(params[2]._meta).not.toHaveProperty("openai/locale");
+  });
+
   it("routes tool requests to the selected same-origin host endpoint", async () => {
     configureMcpClient("/api/v1/gomode/mcp", "mddb-frontend");
     let url = "";

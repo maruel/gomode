@@ -12,7 +12,12 @@ import kotlinx.coroutines.flow.StateFlow
 internal interface VoiceSessionController {
     val state: StateFlow<VoiceState>
 
-    fun connect(preserveTranscript: Boolean = false)
+    // Recovery preserves transcript and conversation identity. A server handoff
+    // supplies the existing ID to its new controller; an ordinary start makes one.
+    fun connect(
+        preserveTranscript: Boolean = false,
+        conversationID: String? = null,
+    )
 
     fun disconnect()
 

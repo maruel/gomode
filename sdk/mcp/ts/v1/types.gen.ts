@@ -244,6 +244,52 @@ export interface ClientCapabilities {
   extensions?: { [key: string]: unknown /* json.RawMessage */};
 }
 
+/**
+ * OpenAIUserLocation contains optional client location hints. Only the device's
+ * IANA timezone is used; these untrusted hints must not influence authorization.
+ */
+export interface OpenAIUserLocation {
+  /** Timezone is the caller device's IANA timezone, such as America/Toronto. */
+  timezone?: string;
+}
+
+/**
+ * OpenAIRequestMeta contains OpenAI-specific client metadata extensions.
+ * Embedding it in RequestMeta keeps its namespaced fields flat on the wire.
+ * These optional, self-reported values do not establish authenticated identity.
+ *
+ * Reference: https://developers.openai.com/plugins/reference#_meta-fields-the-client-provides
+ */
+export interface OpenAIRequestMeta {
+  /**
+   * Locale requests a language and regional convention using a BCP 47 tag,
+   * such as en-CA or fr-CA.
+   */
+  "openai/locale"?: string;
+  /**
+   * Organization carries an anonymized identifier for the caller's ChatGPT
+   * organization, when the client provides one.
+   */
+  "openai/organization"?: string;
+  /**
+   * Session groups tool calls from the same ChatGPT conversation using an
+   * anonymized conversation identifier.
+   */
+  "openai/session"?: string;
+  /**
+   * Subject carries an anonymized user identifier for call correlation or
+   * rate-limit accounting; it is not an authentication credential.
+   */
+  "openai/subject"?: string;
+  /**
+   * UserAgent is a best-effort client hint for analytics or presentation;
+   * it is not a reliable indication of client capabilities.
+   */
+  "openai/userAgent"?: string;
+  /** UserLocation is an optional formatting hint supplied by the client. */
+  "openai/userLocation"?: OpenAIUserLocation;
+}
+
 /** RequestMeta is the metadata object required in MCP request params. */
 export interface RequestMeta {
   /**
@@ -266,6 +312,33 @@ export interface RequestMeta {
    * compat.go support; remove it only after the upstream 2026+ schema drops it.
    */
   "io.modelcontextprotocol/logLevel"?: string;
+  /**
+   * Locale requests a language and regional convention using a BCP 47 tag,
+   * such as en-CA or fr-CA.
+   */
+  "openai/locale"?: string;
+  /**
+   * Organization carries an anonymized identifier for the caller's ChatGPT
+   * organization, when the client provides one.
+   */
+  "openai/organization"?: string;
+  /**
+   * Session groups tool calls from the same ChatGPT conversation using an
+   * anonymized conversation identifier.
+   */
+  "openai/session"?: string;
+  /**
+   * Subject carries an anonymized user identifier for call correlation or
+   * rate-limit accounting; it is not an authentication credential.
+   */
+  "openai/subject"?: string;
+  /**
+   * UserAgent is a best-effort client hint for analytics or presentation;
+   * it is not a reliable indication of client capabilities.
+   */
+  "openai/userAgent"?: string;
+  /** UserLocation is an optional formatting hint supplied by the client. */
+  "openai/userLocation"?: OpenAIUserLocation;
 }
 
 /** PaginatedRequestParams contains common request metadata and an optional cursor. */
