@@ -365,7 +365,7 @@ func (h *Handler) dispatch(ctx context.Context, method Method, params json.RawMe
 		if err := decodeParams(params, &p); err != nil || p.URI == "" {
 			return nil, rpcError(InvalidParamsCode, "Invalid params")
 		}
-		res, err := h.Registry.ReadResource(ctx, p.URI)
+		res, err := h.Registry.ReadResource(ctx, &p)
 		if err != nil {
 			return nil, registryError(err)
 		}
@@ -449,7 +449,7 @@ func (h *Handler) handleSubscription(ctx context.Context, w http.ResponseWriter,
 	// establishes a happens-before edge so a mutation that lands as soon as the
 	// client sees the ack is still detected as a change instead of being
 	// deduplicated against a post-mutation snapshot.
-	initialReads := h.readInitialSubscriptionState(ctx, p.Notifications)
+	initialReads := h.readInitialSubscriptionState(ctx, &p)
 	lastResources := ""
 	if p.Notifications.ResourcesListChanged {
 		lastResources = h.subscriptionResourcesHash(ctx)
@@ -464,7 +464,7 @@ func (h *Handler) handleSubscription(ctx context.Context, w http.ResponseWriter,
 	if !ok {
 		return nil
 	}
-	h.streamSubscriptionNotifications(ctx, out, subID, p.Notifications, changes, lastResources, lastResourceContents)
+	h.streamSubscriptionNotifications(ctx, out, subID, &p, changes, lastResources, lastResourceContents)
 	return nil
 }
 
@@ -481,10 +481,10 @@ type subscriptionInitialRead struct {
 // registered resources/read path before the acknowledgment is written, so
 // the delivered initial state and the dedup baseline for the change loop come
 // from the same authorized read.
-func (h *Handler) readInitialSubscriptionState(ctx context.Context, filter SubscriptionFilter) map[string]subscriptionInitialRead {
-	reads := make(map[string]subscriptionInitialRead, len(filter.ResourceSubscriptions))
-	for _, uri := range filter.ResourceSubscriptions {
-		res, err := h.Registry.ReadResource(ctx, uri)
+func (h *Handler) readInitialSubscriptionState(ctx context.Context, params *SubscriptionsListenParams) map[string]subscriptionInitialRead {
+	reads := make(map[string]subscriptionInitialRead, len(params.Notifications.ResourceSubscriptions))
+	for _, uri := range params.Notifications.ResourceSubscriptions {
+		res, err := h.Registry.ReadResource(ctx, &ResourcesReadParams{Meta: params.Meta, URI: uri})
 		if err != nil {
 			reads[uri] = subscriptionInitialRead{baseline: err.Error(), readErr: err}
 			continue
@@ -537,7 +537,8 @@ type subscriptionStreamWriter interface {
 	http.Flusher
 }
 
-func (h *Handler) streamSubscriptionNotifications(ctx context.Context, stream *sse.Stream, subID string, filter SubscriptionFilter, changes iter.Seq2[ResourceUpdate, error], lastResources string, lastResourceContents map[string]string) {
+func (h *Handler) streamSubscriptionNotifications(ctx context.Context, stream *sse.Stream, subID string, params *SubscriptionsListenParams, changes iter.Seq2[ResourceUpdate, error], lastResources string, lastResourceContents map[string]string) {
+	filter := params.Notifications
 	for update, err := range changes {
 		if err != nil {
 			slog.WarnContext(ctx, "mcp resource update stream stopped", "err", err)
@@ -564,7 +565,7 @@ func (h *Handler) streamSubscriptionNotifications(ctx context.Context, stream *s
 			if !slices.Contains(filter.ResourceSubscriptions, uri) {
 				continue
 			}
-			content := h.subscriptionResourceContentHash(ctx, uri)
+			content := h.subscriptionResourceContentHash(ctx, &ResourcesReadParams{Meta: params.Meta, URI: uri})
 			if content == lastResourceContents[uri] {
 				continue
 			}
@@ -599,8 +600,8 @@ func (h *Handler) subscriptionResourcesHash(ctx context.Context) string {
 	return base64.RawURLEncoding.EncodeToString(hash.Sum(nil))
 }
 
-func (h *Handler) subscriptionResourceContentHash(ctx context.Context, uri string) string {
-	res, err := h.Registry.ReadResource(ctx, uri)
+func (h *Handler) subscriptionResourceContentHash(ctx context.Context, params *ResourcesReadParams) string {
+	res, err := h.Registry.ReadResource(ctx, params)
 	if err != nil {
 		return err.Error()
 	}
@@ -829,7 +830,7 @@ func (h *Handler) dispatchCompat(ctx context.Context, method Method, params json
 		if err := decodeCompatParams(params, &p); err != nil || p.URI == "" {
 			return nil, rpcError(InvalidParamsCode, "Invalid params")
 		}
-		res, err := h.Registry.ReadResource(ctx, p.URI)
+		res, err := h.Registry.ReadResource(ctx, &p)
 		if err != nil {
 			return nil, registryError(err)
 		}
@@ -853,7 +854,9 @@ type Registry interface {
 	CallTool(ctx context.Context, params *ToolsCallParams) (RawToolResult, error)
 	ListResources(ctx context.Context, cursor string) (ResourcesListResult, error)
 	Resources(ctx context.Context) iter.Seq2[ResourceDescriptor, error]
-	ReadResource(ctx context.Context, uri string) (ResourcesReadResult, error)
+	// ReadResource reads the decoded request, including caller metadata. Params
+	// must be non-nil and must not be modified during the call.
+	ReadResource(ctx context.Context, params *ResourcesReadParams) (ResourcesReadResult, error)
 }
 
 // SubscriptionRegistry supplies optional resource change streams.
@@ -2008,6 +2011,7 @@ func jsonStringField(fields map[string]json.RawMessage, key string) (string, boo
 type ToolHandler func(context.Context, *ToolsCallParams) (RawToolResult, error)
 
 // ToolRequest pairs common request metadata with decoded tool arguments.
+// Handlers receive a non-nil pointer and must not modify the request during the call.
 // Only T contributes to the model-visible input schema.
 type ToolRequest[T any] struct {
 	Params    RequestParams
@@ -2087,7 +2091,7 @@ func toolResultText(v any) string {
 }
 
 // NewToolSpec builds a ToolSpec with reflected input and output schemas.
-func NewToolSpec[In, Out any](name, title, description string, handler func(context.Context, ToolRequest[In]) ToolResult[Out]) ToolSpec {
+func NewToolSpec[In, Out any](name, title, description string, handler func(context.Context, *ToolRequest[In]) ToolResult[Out]) ToolSpec {
 	inputSchema := SchemaFor[In]()
 	AddHeaderToProperty(inputSchema, "task_number", "Task-Number")
 	return ToolSpec{
@@ -2101,7 +2105,7 @@ func NewToolSpec[In, Out any](name, title, description string, handler func(cont
 			if err != nil {
 				return RawToolResult{}, ErrInvalidParams("invalid arguments: %w", err)
 			}
-			return handler(ctx, ToolRequest[In]{Params: RequestParams{Meta: params.Meta}, Arguments: args}).toRawToolResult(), nil
+			return handler(ctx, &ToolRequest[In]{Params: RequestParams{Meta: params.Meta}, Arguments: args}).toRawToolResult(), nil
 		},
 	}
 }

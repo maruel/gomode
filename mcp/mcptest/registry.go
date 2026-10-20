@@ -65,11 +65,11 @@ func (FakeRegistry) Resources(context.Context) iter.Seq2[mcp.ResourceDescriptor,
 }
 
 // ReadResource implements mcp.Registry.
-func (f FakeRegistry) ReadResource(_ context.Context, uri string) (mcp.ResourcesReadResult, error) {
+func (f FakeRegistry) ReadResource(_ context.Context, params *mcp.ResourcesReadParams) (mcp.ResourcesReadResult, error) {
 	if f.ReadErr != nil {
 		return mcp.ResourcesReadResult{}, f.ReadErr
 	}
-	return mcp.ResourceJSON(uri, map[string]any{"ok": true})
+	return mcp.ResourceJSON(params.URI, map[string]any{"ok": true})
 }
 
 // SubscribeResourceUpdates implements mcp.SubscriptionRegistry.

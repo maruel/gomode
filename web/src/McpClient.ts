@@ -59,6 +59,8 @@ function mcpMeta(locale?: string): RequestMeta {
     },
     "io.modelcontextprotocol/clientCapabilities": {},
     "openai/locale": locale,
+    "openai/userAgent": `gomode-web/${CLIENT_VERSION}`,
+    "openai/userLocation": { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone },
   };
 }
 
@@ -84,8 +86,6 @@ async function mcpRequest(
   const meta = mcpMeta(opts.locale);
   if (method === "tools/call") {
     meta["openai/session"] = opts.sessionID;
-    meta["openai/userAgent"] = `gomode-web/${CLIENT_VERSION}`;
-    meta["openai/userLocation"] = { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone };
   }
 
   const resp = await authenticatedFetch(configuredEndpoint(), {

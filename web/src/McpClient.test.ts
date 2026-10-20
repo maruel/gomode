@@ -2,6 +2,8 @@
 import { afterEach, describe, it } from "node:test";
 import { expect } from "../tests/expect";
 
+import type { ResourcesReadParams, SubscriptionsListenParams } from "../../sdk/mcp/ts/v1/types.gen";
+
 import { configureMcpClient, mcpClient } from "./McpClient";
 
 const originalFetch = globalThis.fetch;
@@ -42,6 +44,25 @@ describe("configureMcpClient", () => {
     await mcpClient.callTool("get_usage", {});
     expect(params[2]._meta).not.toHaveProperty("openai/session");
     expect(params[2]._meta).not.toHaveProperty("openai/locale");
+  });
+
+  it("sends device timezone when reading an advertised resource", async () => {
+    configureMcpClient("/mcp", "host");
+    let params: ResourcesReadParams | undefined;
+    globalThis.fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { method: string; params: ResourcesReadParams };
+      if (body.method === "resources/read") params = body.params;
+      const result =
+        body.method === "resources/list"
+          ? { resources: [{ uri: "host://usage" }] }
+          : { contents: [{ uri: "host://usage", text: "usage" }] };
+      return new Response(JSON.stringify({ result }));
+    };
+    expect(await mcpClient.readAdvertisedTextResource("host://usage")).toBe("usage");
+    expect(params?._meta["openai/userLocation"]).toEqual({
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    });
+    expect(params?._meta).not.toHaveProperty("openai/locale");
   });
 
   it("routes tool requests to the selected same-origin host endpoint", async () => {
@@ -163,7 +184,10 @@ describe("subscribeResources", () => {
     const headers = new Headers(init?.headers);
     expect(headers.get("Mcp-Method")).toBe("subscriptions/listen");
     expect(headers.get("Accept")).toBe("text/event-stream");
-    const body = JSON.parse(String(init?.body));
+    const body = JSON.parse(String(init?.body)) as { params: SubscriptionsListenParams };
+    expect(body.params._meta["openai/userLocation"]).toEqual({
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    });
     expect(body.params.notifications).toEqual({
       resourceSubscriptions: ["mddb://node/1"],
       resourcesListChanged: true,

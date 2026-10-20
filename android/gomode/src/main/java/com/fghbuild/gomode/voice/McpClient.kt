@@ -66,7 +66,6 @@ class McpClient(
     private val clientInfo = Implementation(name = "gomode-android", version = "1.0.0")
 
     private fun requestMeta(
-        toolCall: Boolean = false,
         sessionID: String? = null,
         locale: String? = null,
     ): RequestMeta =
@@ -76,8 +75,8 @@ class McpClient(
             clientCapabilities = ClientCapabilities(),
             locale = locale,
             session = sessionID,
-            userAgent = if (toolCall) "${clientInfo.name}/${clientInfo.version}" else null,
-            userLocation = if (toolCall) OpenAIUserLocation(timezone = ZoneId.systemDefault().id) else null,
+            userAgent = "${clientInfo.name}/${clientInfo.version}",
+            userLocation = OpenAIUserLocation(timezone = ZoneId.systemDefault().id),
         )
 
     private fun cookieHeaders(): Map<String, String> =
@@ -151,7 +150,6 @@ class McpClient(
                         ToolsCallParams(
                             _meta =
                                 requestMeta(
-                                    toolCall = true,
                                     sessionID = sessionID,
                                     locale = locale,
                                 ),

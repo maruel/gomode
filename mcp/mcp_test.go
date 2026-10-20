@@ -26,6 +26,63 @@ type noSubscriptionRegistry struct{ Registry }
 type metadataRegistry struct {
 	Registry
 	params ToolsCallParams
+	reads  []ResourcesReadParams
+}
+
+func (r *metadataRegistry) ReadResource(_ context.Context, params *ResourcesReadParams) (ResourcesReadResult, error) {
+	r.reads = append(r.reads, *params)
+	return ResourceJSON(params.URI, map[string]string{"timezone": params.Meta.UserLocation.Timezone})
+}
+
+func (*metadataRegistry) SubscribeResourceUpdates(context.Context, SubscriptionFilter) (iter.Seq2[ResourceUpdate, error], error) {
+	return func(yield func(ResourceUpdate, error) bool) {
+		yield(ResourceUpdate{ResourceURIs: []string{"test://resource"}}, nil)
+	}, nil
+}
+
+func TestHandlerResourceMetadata(t *testing.T) {
+	t.Parallel()
+	for _, version := range []string{ProtocolVersion, "2025-06-18", "2025-11-25"} {
+		t.Run(version, func(t *testing.T) {
+			t.Parallel()
+			r := &metadataRegistry{Registry: &subscriptionTestRegistry{}}
+			h := &Handler{Registry: r}
+			body := `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"test://resource","_meta":{"openai/userLocation":{"timezone":"America/Toronto"},"example/hint":42}}}`
+			if version == ProtocolVersion {
+				body = strings.Replace(body, `"_meta":{`, `"_meta":{"io.modelcontextprotocol/protocolVersion":"`+ProtocolVersion+`","io.modelcontextprotocol/clientInfo":{"name":"test","version":"1"},"io.modelcontextprotocol/clientCapabilities":{},`, 1)
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", strings.NewReader(body))
+			req.Header.Set("Mcp-Protocol-Version", version)
+			if version == ProtocolVersion {
+				req.Header.Set("Mcp-Method", "resources/read")
+				req.Header.Set("Mcp-Name", "test://resource")
+			}
+			w := httptest.NewRecorder()
+			h.HandleMCP(w, req)
+			if len(r.reads) != 1 || r.reads[0].Meta.UserLocation.Timezone != "America/Toronto" || r.reads[0].Meta.Extra["example/hint"] != float64(42) {
+				t.Fatalf("resource metadata lost: reads=%+v, response=%s", r.reads, w.Body)
+			}
+		})
+	}
+	t.Run("subscription snapshots and dedup reads", func(t *testing.T) {
+		t.Parallel()
+		r := &metadataRegistry{Registry: &subscriptionTestRegistry{}}
+		h := &Handler{Registry: r}
+		body := `{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen","params":{"notifications":{"resourceSubscriptions":["test://resource"]},"_meta":{"io.modelcontextprotocol/protocolVersion":"` + ProtocolVersion + `","io.modelcontextprotocol/clientInfo":{"name":"test","version":"1"},"io.modelcontextprotocol/clientCapabilities":{},"openai/userLocation":{"timezone":"Asia/Kolkata"}}}}`
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", strings.NewReader(body))
+		req.Header.Set("Mcp-Protocol-Version", ProtocolVersion)
+		req.Header.Set("Mcp-Method", "subscriptions/listen")
+		w := httptest.NewRecorder()
+		h.HandleMCP(w, req)
+		if len(r.reads) != 2 || !strings.Contains(w.Body.String(), "Asia/Kolkata") {
+			t.Fatalf("missing subscription reads or initial state: reads=%+v response=%s", r.reads, w.Body)
+		}
+		for _, p := range r.reads {
+			if p.Meta.UserLocation.Timezone != "Asia/Kolkata" {
+				t.Fatalf("subscription read lost metadata: %+v", p)
+			}
+		}
+	})
 }
 
 func (r *metadataRegistry) CallTool(_ context.Context, params *ToolsCallParams) (RawToolResult, error) {
@@ -471,7 +528,7 @@ func TestSubscriptionResourcesHash(t *testing.T) {
 	}
 }
 
-func (r *subscriptionTestRegistry) ReadResource(context.Context, string) (ResourcesReadResult, error) {
+func (r *subscriptionTestRegistry) ReadResource(context.Context, *ResourcesReadParams) (ResourcesReadResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.readErr != nil {
@@ -894,7 +951,7 @@ func TestNewToolSpec(t *testing.T) {
 		Message string `json:"message"`
 	}
 	called := false
-	spec := NewToolSpec("echo", "Echo", "Echo in the caller's timezone", func(ctx context.Context, req ToolRequest[arguments]) ToolResult[TextOutput] {
+	spec := NewToolSpec("echo", "Echo", "Echo in the caller's timezone", func(ctx context.Context, req *ToolRequest[arguments]) ToolResult[TextOutput] {
 		called = true
 		if ctx != t.Context() || req.Params.Meta.Extra["example/trace"] != "trace" {
 			t.Fatal("request context or metadata lost")
