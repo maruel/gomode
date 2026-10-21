@@ -1,6 +1,8 @@
-// Emulator coverage for simultaneous authenticated MCP streams and explicit retained-page tool routing.
+// Emulator coverage for concurrent service streams, native alerts, and retained-page tool routing.
 package com.fghbuild.gomode
 
+import android.Manifest
+import android.app.NotificationManager
 import android.net.Uri
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
@@ -13,7 +15,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.lifecycle.Lifecycle
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.rule.GrantPermissionRule
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import com.fghbuild.gomode.sdk.v1.Settings
@@ -24,6 +28,7 @@ import com.fghbuild.gomode.service.CatalogNotification
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceReadiness
 import com.fghbuild.gomode.ui.ServiceBootstrapState
+import com.fghbuild.gomode.ui.ServiceNotifications
 import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellSession
 import com.fghbuild.gomode.ui.web.WebShellLoadState
@@ -57,6 +62,86 @@ import java.util.concurrent.atomic.AtomicInteger
 class ConcurrentServiceCatalogTest {
     @get:Rule
     val composeRule = createAndroidComposeRule<ComponentActivity>()
+
+    @get:Rule
+    val notificationPermissionRule: GrantPermissionRule =
+        GrantPermissionRule.grant(Manifest.permission.POST_NOTIFICATIONS)
+
+    @Test
+    fun visibleServiceAlertsAreSuppressedButOtherServicesAndBackgroundAlertsAreDelivered() {
+        ParticipantFixture("A", liveNotifications = true).use { first ->
+            ParticipantFixture("B", liveNotifications = true).use { second ->
+                val entries = listOf(first.entry("a"), second.entry("b"))
+                val manager = composeRule.activity.getSystemService(NotificationManager::class.java)
+                manager.cancelAll()
+                lateinit var catalog: ServiceCatalog
+                val observed = CopyOnWriteArrayList<CatalogNotification>()
+                var serviceVisible by mutableStateOf(true)
+                composeRule.setContent {
+                    val scope = rememberCoroutineScope()
+                    catalog = remember { ServiceCatalog(scope) }
+                    catalog.reconcile(entries.associateBy { it.key }, mapOf("a" to " Alpha ", "b" to " Beta "))
+                    ServiceNotifications(catalog, entries.first().key, serviceVisible, false, false)
+                    DisposableEffect(catalog) {
+                        val job = scope.launch { catalog.notifications.collect { observed += it } }
+                        onDispose {
+                            job.cancel()
+                            catalog.close()
+                            entries.forEach { it.close() }
+                            manager.cancelAll()
+                        }
+                    }
+                    entries.forEach { entry ->
+                        WebShellScreen(
+                            serviceID = entry.key.serviceID,
+                            initialURL = entry.key.url,
+                            voiceConnected = false,
+                            visible = entry === entries.first(),
+                            reloadToken = 0,
+                            serviceSession = entry,
+                            onLoadStateChanged = entry::updateLoad,
+                            onAuthInvalidated = {},
+                        )
+                    }
+                }
+                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+                    catalog.state.value.values
+                        .count { it.readiness == ServiceReadiness.READY } == 2 &&
+                        first.streams.get() >= 1 && second.streams.get() >= 1
+                }
+                first.notificationVersion.set(1)
+                second.notificationVersion.set(1)
+                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+                    observed.map { it.source }.toSet() == entries.map { it.key }.toSet() &&
+                        manager.activeNotifications.size == 1
+                }
+                composeRule.runOnIdle {
+                    assertEquals(
+                        "Beta: Ready",
+                        manager.activeNotifications
+                            .single()
+                            .notification.extras
+                            .getString("android.title"),
+                    )
+                    serviceVisible = false // Native settings hides the selected service.
+                }
+                first.notificationVersion.set(2)
+                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { manager.activeNotifications.size == 2 }
+                composeRule.runOnIdle { serviceVisible = true }
+                composeRule.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+                first.notificationVersion.set(3)
+                // Compose's idling API waits for a resumed Activity; poll the platform while stopped.
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+                while (manager.activeNotifications.size != 3 && System.nanoTime() < deadline) {
+                    Thread.sleep(50)
+                }
+                assertEquals(3, manager.activeNotifications.size)
+                composeRule.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+                composeRule.waitForIdle()
+                assertEquals(3, manager.activeNotifications.size) // Suppressed alerts are never replayed.
+            }
+        }
+    }
 
     @Test
     fun twoRetainedPagesKeepIndependentStreamsSchemasAndFrontendOwners() {
@@ -339,11 +424,13 @@ class ConcurrentServiceCatalogTest {
     private class ParticipantFixture(
         val source: String,
         private val supportsResources: Boolean = true,
+        private val liveNotifications: Boolean = false,
     ) : AutoCloseable {
         private val server = MockWebServer()
         val streams = AtomicInteger()
         val resourceRequests = AtomicInteger()
         private val notificationReads = AtomicInteger()
+        val notificationVersion = AtomicInteger()
 
         init {
             server.dispatcher =
@@ -374,14 +461,22 @@ class ConcurrentServiceCatalogTest {
                         if (method == "subscriptions/listen") {
                             streams.incrementAndGet()
                             val events =
-                                listOf("gomode://items", "gomode://notifications").joinToString("") { uri ->
-                                    "data: " +
-                                        buildJsonObject {
-                                            put("jsonrpc", "2.0")
-                                            put("method", "notifications/resources/updated")
-                                            put("params", buildJsonObject { put("uri", uri) })
-                                        } + "\n\n"
-                                } + ": ping\n\n".repeat(10_000)
+                                listOf("gomode://items", "gomode://notifications")
+                                    .joinToString("") { uri ->
+                                        "data: " +
+                                            buildJsonObject {
+                                                put("jsonrpc", "2.0")
+                                                put("method", "notifications/resources/updated")
+                                                put("params", buildJsonObject { put("uri", uri) })
+                                            } + "\n\n"
+                                    }.let {
+                                        if (liveNotifications) {
+                                            it.repeat(10_000)
+                                        } else {
+                                            it +
+                                                ": ping\n\n".repeat(10_000)
+                                        }
+                                    }
                             return MockResponse()
                                 .setHeader("Content-Type", "text/event-stream")
                                 .setChunkedBody(events, 512)
@@ -466,6 +561,13 @@ class ConcurrentServiceCatalogTest {
                                     val text =
                                         if (uri == "gomode://items") {
                                             """{"items":[{"id":"same","title":"Same item","state":"$source"}]}"""
+                                        } else if (liveNotifications) {
+                                            val version = notificationVersion.get()
+                                            if (version == 0) {
+                                                "[]"
+                                            } else {
+                                                """[{"id":"event-$version","title":"Ready","body":"$source updated"}]"""
+                                            }
                                         } else if (notificationReads.incrementAndGet() == 1) {
                                             "[]"
                                         } else {

@@ -48,6 +48,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
@@ -349,7 +351,6 @@ internal fun GoModeApp(
     val voiceSessionActive =
         voiceState.connected || voiceState.connectStatus != null ||
             voiceState.listening || voiceState.speaking
-    val notificationPublisher = remember(context) { ServiceNotificationPublisher(context.applicationContext) }
     LaunchedEffect(sharedConversation, voiceConversation, gatewayState, catalogState, activeKey, voiceState.connected) {
         if (sharedConversation && gatewayState != null) {
             if (!voiceConversation.isCurrent()) {
@@ -360,25 +361,13 @@ internal fun GoModeApp(
             }
         }
     }
-    val currentSharedConversation by rememberUpdatedState(sharedConversation)
-    val currentVoiceActive by rememberUpdatedState(voiceSessionActive)
-    val currentServiceKey by rememberUpdatedState(activeKey)
-    var notificationPermissionPending by remember { mutableStateOf(false) }
-    var pendingNotifications by remember { mutableStateOf(emptyList<CatalogNotification>()) }
-    val notificationPermissionLauncher =
-        rememberLauncherForActivityResult(
-            ActivityResultContracts.RequestPermission(),
-        ) { granted ->
-            // Voice mode already announced these events; do not post duplicate native alerts.
-            if (granted) {
-                pendingNotifications
-                    .filter(serviceCatalog::canDeliver)
-                    .filter { !currentVoiceActive || (!currentSharedConversation && it.source != currentServiceKey) }
-                    .forEach { notificationPublisher.publish(it.notification) }
-            }
-            pendingNotifications = emptyList()
-            notificationPermissionPending = false
-        }
+    ServiceNotifications(
+        serviceCatalog = serviceCatalog,
+        activeKey = activeKey,
+        serviceVisible = activeNativeScreen == null && activeURL.isNotBlank() && shellRecovery == null,
+        voiceSessionActive = voiceSessionActive,
+        sharedConversation = sharedConversation,
+    )
     val configuredVoiceAvailable =
         (bootstrapState as? ServiceBootstrapState.Ready)
             ?.settings
@@ -392,28 +381,6 @@ internal fun GoModeApp(
             (authReady && (voiceSessionActive || (configuredVoiceAvailable && shellRecovery == null)))
     val density = LocalDensity.current
     val keyboardOpen = WindowInsets.ime.getBottom(density) > 0
-
-    LaunchedEffect(serviceCatalog) {
-        serviceCatalog.notifications.collect { notification ->
-            // A shared conversation receives updates from every participant.
-            val selectedNotificationsSuppressed =
-                currentVoiceActive &&
-                    (currentSharedConversation || notification.source == currentServiceKey)
-            if (!selectedNotificationsSuppressed && serviceCatalog.canDeliver(notification)) {
-                if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
-                    PackageManager.PERMISSION_GRANTED
-                ) {
-                    notificationPublisher.publish(notification.notification)
-                } else {
-                    pendingNotifications = (pendingNotifications + notification).takeLast(64)
-                    if (!notificationPermissionPending) {
-                        notificationPermissionPending = true
-                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    }
-                }
-            }
-        }
-    }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -870,6 +837,59 @@ private fun ShellRecoveryStrip(
                 }
                 Button(onClick = onOpenSettings, modifier = Modifier.testTag("gomode-shell-open-settings")) {
                     Text("Settings")
+                }
+            }
+        }
+    }
+}
+
+// One delivery gate also covers alerts queued while Android requests permission.
+@Composable
+internal fun ServiceNotifications(
+    serviceCatalog: ServiceCatalog,
+    activeKey: ServiceShellKey,
+    serviceVisible: Boolean,
+    voiceSessionActive: Boolean,
+    sharedConversation: Boolean,
+) {
+    val context = LocalContext.current
+    val notificationPublisher = remember(context) { ServiceNotificationPublisher(context.applicationContext) }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val suppressNotification by rememberUpdatedState<(CatalogNotification) -> Boolean> { notification ->
+        val selectedService = notification.source == activeKey
+        // Read lifecycle at delivery time, including after the permission dialog closes.
+        (serviceVisible && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) && selectedService) ||
+            (voiceSessionActive && (sharedConversation || selectedService))
+    }
+    var notificationPermissionPending by remember { mutableStateOf(false) }
+    var pendingNotifications by remember { mutableStateOf(emptyList<CatalogNotification>()) }
+    val notificationPermissionLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission(),
+        ) { granted ->
+            // Recheck visibility and voice state for alerts queued before the permission prompt.
+            if (granted) {
+                pendingNotifications
+                    .filter(serviceCatalog::canDeliver)
+                    .filterNot(suppressNotification)
+                    .forEach { notificationPublisher.publish(it.notification) }
+            }
+            pendingNotifications = emptyList()
+            notificationPermissionPending = false
+        }
+    LaunchedEffect(serviceCatalog) {
+        serviceCatalog.notifications.collect { notification ->
+            if (!suppressNotification(notification) && serviceCatalog.canDeliver(notification)) {
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    notificationPublisher.publish(notification.notification)
+                } else {
+                    pendingNotifications = (pendingNotifications + notification).takeLast(64)
+                    if (!notificationPermissionPending) {
+                        notificationPermissionPending = true
+                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
                 }
             }
         }

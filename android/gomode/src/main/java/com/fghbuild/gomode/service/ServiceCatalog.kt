@@ -374,7 +374,9 @@ internal class ServiceCatalog(
                                                     Json.encodeToString(
                                                         listOf(entry.key.serviceID, entry.key.url, notification.id),
                                                     ),
-                                                title = "${label.ifBlank { entry.key.url }}: ${notification.title}",
+                                                title = "${label.trim().ifBlank {
+                                                    entry.key.url
+                                                }}: ${notification.title}",
                                             ),
                                             identityGeneration,
                                         ),
