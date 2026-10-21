@@ -39,7 +39,6 @@ import com.caic.voicegateway.sdk.v1.VoiceRTCSignalingState
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.service.VoiceTokenClient
-import com.fghbuild.gomode.service.credentialedHTTPClient
 import com.fghbuild.gomode.ui.web.FrontendVoiceTools
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import kotlinx.coroutines.CancellationException
@@ -365,7 +364,7 @@ internal class VoiceSession(
                     val serviceContextText = setup.serviceContextText
                     val voiceGatewayEndpointURL = setup.gatewayEndpointURL
                     val serviceAuth = setup.service
-                    val voiceGatewayClient = ApiClient(voiceGatewayEndpointURL, httpClient = credentialedHTTPClient)
+                    val voiceGatewayClient = ApiClient(voiceGatewayEndpointURL, httpClient = voiceGatewayHTTPClient)
                     val voiceGatewayHeaders = setup.gatewayHeaders
                     // Recovery keeps the Telecom call; only a fresh connect starts one.
                     if (!telecomCallActive && callController.isSupported() && !callController.start { disconnect() }) {
@@ -532,6 +531,8 @@ internal class VoiceSession(
                                             Log.i(TAG, "WebRTC signaling complete, session=${resp.sessionID}")
                                         } catch (e: CancellationException) {
                                             throw e
+                                        } catch (e: GatewayConnectionException) {
+                                            if (ownsAttempt(attempt)) setError(requireNotNull(e.message))
                                         } catch (e: Exception) {
                                             if (ownsAttempt(attempt)) setError("SDP exchange failed: ${e.message}")
                                         }

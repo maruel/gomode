@@ -36,8 +36,8 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -45,7 +45,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -372,38 +371,31 @@ private fun ErrorPanel(
     onDismiss: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
-    Row(
+    Column(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, top = 0.dp, end = 16.dp, bottom = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        SettingsButton(onOpenSettings)
-        Icon(
-            Icons.Default.Mic,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.error,
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.fillMaxWidth().testTag("gomode-voice-error-message"),
         )
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "Voice connection unavailable",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error,
-            )
-            Text(
-                text = message,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Column {
-            Button(onClick = onReconnect, enabled = voiceEnabled) {
-                Text("Reconnect")
+        Row(
+            modifier = Modifier.fillMaxWidth().testTag("gomode-voice-error-actions"),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            SettingsButton(onOpenSettings)
+            Spacer(modifier = Modifier.weight(1f))
+            IconButton(onClick = onReconnect, enabled = voiceEnabled) {
+                Icon(Icons.Default.Refresh, contentDescription = "Reconnect")
             }
-            TextButton(onClick = onDismiss) {
-                Text("Dismiss")
+            IconButton(onClick = onDismiss) {
+                Icon(Icons.Default.Close, contentDescription = "Dismiss")
             }
         }
     }

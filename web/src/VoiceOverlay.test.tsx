@@ -63,6 +63,19 @@ afterEach(() => {
 });
 
 describe("VoiceOverlay status", () => {
+  it("offers named icon actions and restores focus after dismissing an error", async () => {
+    voiceSession.setState((s) => ({ ...s, error: "Voice gateway unavailable (HTTP 502)." }));
+    render(() => <VoiceOverlay />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Voice gateway unavailable (HTTP 502).");
+    expect(screen.getByRole("button", { name: "Retry" }).textContent).toBe("");
+    expect(screen.getByRole("button", { name: "Dismiss" }).textContent).toBe("");
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+    expect(connectMock).toHaveBeenCalledOnce();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Connect voice assistant" })).toHaveFocus();
+  });
+
   it("shows a shared connection and settings error once, including when settings are open", async () => {
     const error = "The selected voice choice is unavailable";
     voiceSession.setState((s) => ({ ...s, error, choicesError: error }));
@@ -367,7 +380,7 @@ describe("VoiceOverlay connection", () => {
     expect(screen.getByRole("button", { name: "Connecter la voix" })).toBeInTheDocument();
   });
 
-  it("uses localized generic text for dynamic errors and reconnect statuses", () => {
+  it("localizes reconnect status while keeping the actionable error visible and redacted", () => {
     const messages: VoiceOverlayMessages = {
       ...defaultVoiceOverlayMessages,
       connectionFailed: "Connexion vocale échouée",
@@ -389,15 +402,19 @@ describe("VoiceOverlay connection", () => {
       connectPhase: null,
       error: "HTTP 401 Bearer secret-token",
     }));
-    expect(screen.getByText("Connexion vocale échouée")).toBeInTheDocument();
+    expect(screen.queryByText("Connexion vocale échouée")).toBeNull();
     expect(screen.getByText("HTTP 401 Bearer [redacted]")).toBeInTheDocument();
     expect(screen.queryByText(/secret-token/)).toBeNull();
   });
 
   it("keeps detailed transport errors for the default English overlay", () => {
-    voiceSession.setState((s) => ({ ...s, connectStatus: null, error: "Backend-specific failure" }));
+    voiceSession.setState((s) => ({
+      ...s,
+      connectStatus: null,
+      error: "Backend-specific failure Bearer secret-token",
+    }));
     render(() => <VoiceOverlay />);
-    expect(screen.getByText("Backend-specific failure")).toBeInTheDocument();
+    expect(screen.getByText("Backend-specific failure Bearer [redacted]")).toBeInTheDocument();
   });
 
   it("updates a plain reactive messages prop when the host language changes", () => {

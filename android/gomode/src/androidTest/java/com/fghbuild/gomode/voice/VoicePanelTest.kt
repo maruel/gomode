@@ -1,8 +1,13 @@
 // Compose UI tests for the compact and expandable Go Mode voice panel transcript.
 package com.fghbuild.gomode.voice
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotDisplayed
@@ -11,12 +16,15 @@ import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import com.caic.voicegateway.sdk.v1.TurnState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -26,6 +34,70 @@ import org.junit.Test
 class VoicePanelTest {
     @get:Rule
     val composeRule = createComposeRule()
+
+    @Test
+    fun gatewayFailureShowsTheCauseAndCanBeRetried() {
+        var retries = 0
+        composeRule.setContent {
+            MaterialTheme {
+                VoicePanel(
+                    VoiceState(
+                        error = "Voice gateway unavailable (HTTP 502).",
+                    ),
+                    true,
+                    { retries++ },
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    null,
+                )
+            }
+        }
+        composeRule
+            .onNodeWithText(
+                "Voice gateway unavailable (HTTP 502).",
+            ).assertIsDisplayed()
+        composeRule.onNodeWithText("Voice connection unavailable").assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("Reconnect").performClick()
+        composeRule.runOnIdle { assertEquals(1, retries) }
+    }
+
+    @Test
+    fun longErrorUsesThePanelWidthAboveItsIconActions() {
+        composeRule.setContent {
+            val density = LocalDensity.current.density
+            CompositionLocalProvider(LocalDensity provides Density(density, 2f)) {
+                MaterialTheme {
+                    Box(Modifier.width(320.dp)) {
+                        VoicePanel(
+                            VoiceState(
+                                error =
+                                    "Voice gateway unavailable (HTTP 502). " +
+                                        "The server couldn't reach the voice gateway.",
+                            ),
+                            true,
+                            {},
+                            {},
+                            {},
+                            {},
+                            {},
+                            {},
+                            null,
+                        )
+                    }
+                }
+            }
+        }
+        val message = composeRule.onNodeWithTag("gomode-voice-error-message").fetchSemanticsNode().boundsInRoot
+        val actions = composeRule.onNodeWithTag("gomode-voice-error-actions").fetchSemanticsNode().boundsInRoot
+        assertEquals(actions.left, message.left, 1f)
+        assertEquals(actions.right, message.right, 1f)
+        assertTrue(message.bottom <= actions.top)
+        composeRule.onNodeWithContentDescription("Reconnect").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Dismiss").assertIsDisplayed()
+    }
 
     @Test
     fun statusShowsToolExecutionThenReturnsToThinking() {
@@ -227,8 +299,8 @@ class VoicePanelTest {
         }
 
         composeRule.onNodeWithText("Voice turn failed (llm)").assertIsDisplayed()
-        composeRule.onNodeWithText("Reconnect").assertIsNotEnabled()
-        composeRule.onNodeWithText("Dismiss").assertIsDisplayed().performClick()
+        composeRule.onNodeWithContentDescription("Reconnect").assertIsNotEnabled()
+        composeRule.onNodeWithContentDescription("Dismiss").assertIsDisplayed().performClick()
         assertTrue(dismissed)
     }
 }

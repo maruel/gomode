@@ -114,18 +114,30 @@
 }
 
 .statusError {
-  flex: 1;
   color: var(--color-danger);
-}
-
-.errorDetail {
-  display: block;
-  font-size: 0.8em;
   overflow-wrap: anywhere;
 }
 
-.micIconError {
-  color: var(--color-danger);
+.errorPanel {
+  display: grid;
+  gap: 0.25rem;
+  padding-top: 0.5rem;
+}
+
+.errorActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.errorActions > :first-child {
+  margin-inline-end: auto;
+}
+
+.errorActions button {
+  min-width: 44px;
+  min-height: 44px;
 }
 
 @keyframes pulse {
@@ -146,6 +158,49 @@
 }
 
 /* ---- Panel icon buttons ---- */
+
+.materialIcon {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 1.25em;
+  height: 1.25em;
+  background-color: currentColor;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+}
+
+@media (forced-colors: active) {
+  .materialIcon {
+    /* Mask backgrounds must retain the user's system icon color. */
+    background-color: ButtonText;
+    forced-color-adjust: none;
+  }
+}
+
+.callEnd {
+  mask-image: url("@material-symbols/svg-400/outlined/call_end.svg");
+}
+
+.close {
+  mask-image: url("@material-symbols/svg-400/outlined/close.svg");
+}
+
+.mic {
+  mask-image: url("@material-symbols/svg-400/outlined/mic.svg");
+}
+
+.micOff {
+  mask-image: url("@material-symbols/svg-400/outlined/mic_off.svg");
+}
+
+.refresh {
+  mask-image: url("@material-symbols/svg-400/outlined/refresh.svg");
+}
+
+.settings {
+  mask-image: url("@material-symbols/svg-400/outlined/settings.svg");
+}
 
 .iconButton {
   display: inline-flex;
@@ -200,17 +255,6 @@
 
 .actionButton:hover {
   background: var(--color-bg-hover);
-}
-
-.actionButtonPrimary {
-  color: var(--color-on-primary);
-  background: var(--color-primary);
-  border-color: var(--color-primary);
-}
-
-.actionButtonPrimary:hover {
-  background: var(--color-primary-hover);
-  border-color: var(--color-primary-hover);
 }
 
 /* ---- Audio device picker ---- */

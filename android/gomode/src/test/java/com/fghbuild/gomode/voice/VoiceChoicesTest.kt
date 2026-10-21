@@ -2,8 +2,10 @@
 package com.fghbuild.gomode.voice
 
 import android.webkit.CookieManager
+import com.caic.voicegateway.sdk.v1.ApiClient
 import com.caic.voicegateway.sdk.v1.VoiceChoice
 import com.caic.voicegateway.sdk.v1.VoiceChoicesResp
+import com.caic.voicegateway.sdk.v1.VoiceRTCDiagnosticsReq
 import com.caic.voicegateway.sdk.v1.VoiceTransport
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsLoadState
@@ -26,6 +28,64 @@ import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 class VoiceChoicesTest {
+    @Test
+    fun `empty proxy responses explain gateway availability and preserve HTTP status`() =
+        runTest {
+            val server = MockWebServer()
+            server.start()
+            try {
+                val serviceURL = server.url("/").toString()
+                val serviceSettings =
+                    Settings(
+                        "fixture",
+                        apiVersion = 1,
+                        webShell = WebShellSettings(1, emptyList(), VoiceGatewaySettings(false, serviceURL)),
+                    )
+                for ((status, message) in listOf(
+                    502 to
+                        "Voice gateway unavailable (HTTP 502).",
+                    403 to "Voice access denied (HTTP 403).",
+                )) {
+                    server.enqueue(MockResponse().setResponseCode(status))
+                    val error =
+                        try {
+                            discoverVoiceChoices(serviceURL, serviceSettings) { null }
+                            throw AssertionError("Expected gateway failure")
+                        } catch (error: java.io.IOException) {
+                            error
+                        }
+                    assertEquals(message, error.message)
+                }
+            } finally {
+                server.shutdown()
+            }
+        }
+
+    @Test
+    fun `missing diagnostics session is distinct from a missing gateway`() =
+        runTest {
+            MockWebServer().use { server ->
+                server.start()
+                server.enqueue(
+                    MockResponse().setResponseCode(404).setBody(
+                        """{"error":{"code":"NOT_FOUND","message":"voice session not found"}}""",
+                    ),
+                )
+                val client = ApiClient(server.url("/").toString().trimEnd('/'), httpClient = voiceGatewayHTTPClient)
+                val error =
+                    try {
+                        client.diagnoseVoiceRTC("expired", VoiceRTCDiagnosticsReq())
+                        throw AssertionError("Expected expired session")
+                    } catch (error: java.io.IOException) {
+                        error
+                    }
+                assertEquals(
+                    "Voice session not found (HTTP 404).",
+                    error.message,
+                )
+            }
+        }
+
     private val gateway = "https://gateway.example"
     private val choices =
         GatewayVoiceChoices(

@@ -19,39 +19,9 @@ import { notifications } from "./notifications";
 import VoiceSettings, { defaultVoiceSettingsMessages, type VoiceSettingsMessages } from "./VoiceSettings";
 import styles from "./VoiceOverlay.module.css";
 
-type IconProps = JSX.SvgSVGAttributes<SVGSVGElement>;
-
-// Material Symbols path data, Google LLC, Apache License 2.0; see NOTICE.
-function MicIcon(props: IconProps) {
-  return (
-    <svg {...props} viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true">
-      <path d="M408-453.92q-29-30.91-29-75.08v-251q0-41.67 29.44-70.83Q437.88-880 479.94-880t71.56 29.17Q581-821.67 581-780v251q0 44.17-29 75.08Q523-423 480-423t-72-30.92ZM480-651Zm-30 531v-136q-106-11-178-89t-72-184h60q0 91 64.29 153t155.5 62q91.21 0 155.71-62Q700-438 700-529h60q0 106-72 184t-178 89v136h-60Zm59.5-376.5Q521-510 521-529v-251q0-17-11.79-28.5T480-820q-17.42 0-29.21 11.5T439-780v251q0 19 11.5 32.5T480-483q18 0 29.5-13.5Z" />
-    </svg>
-  );
-}
-
-function MicOffIcon(props: IconProps) {
-  return (
-    <svg {...props} viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true">
-      <path d="m686-361-43-43q21-26 31-58.5t10-66.5h60q0 46-15 89t-43 79ZM461-586Zm97 97-53-52v-238q0-17-12-29t-29-12q-17 0-29 12t-12 29v155l-60-60v-95q0-42 29.5-71.5T464-880q42 0 71.5 29.5T565-779v250q0 8-1.5 20t-5.5 20ZM434-120v-136q-106-11-178-89t-72-184h60q0 91 64.5 153T464-314q38 0 73-12.5t64-34.5l43 43q-31 26-69 41.5T494-256v136h-60Zm397 65L36-850l38-38L869-93l-38 38Z" />
-    </svg>
-  );
-}
-
-function CallEndIcon(props: IconProps) {
-  return (
-    <svg {...props} viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true">
-      <path d="m136-306-94-94q-9-9-8.5-21t8.5-22q82-96 197-146.5T480-640q126 0 241 50.5T918-443q8 10 8.5 22t-8.5 21l-94 94q-8 8-23 9t-24-6l-114-85q-6-4.5-9-10.5t-3-13.5v-139q-42-16-85.5-22.5T480-580q-42 0-85.5 6.5T309-551v139q0 7.5-3 13.5t-9 10.5l-114.19 85.28q-11.81 8.72-24.5 7.8-12.68-.93-22.31-11.08Zm108-220q-38 19-73 45.5T104-424l57 59 83-61v-100Zm467-4v98l87 66 58-58q-32-33-68.5-58.5T711-530Zm-467 4Zm467-4Z" />
-    </svg>
-  );
-}
-
-function CloseIcon(props: IconProps) {
-  return (
-    <svg {...props} viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true">
-      <path d="m249-207-42-42 231-231-231-231 42-42 231 231 231-231 42 42-231 231 231 231-42 42-231-231-231 231Z" />
-    </svg>
-  );
+// Official Material Symbols assets are loaded by the component stylesheet.
+function MaterialIcon(props: { name: "callEnd" | "close" | "mic" | "micOff" | "refresh" | "settings" }) {
+  return <span class={`${styles.materialIcon} ${styles[props.name]}`} aria-hidden="true" />;
 }
 
 /** Bar transition durations (ms): center reacts fastest, outer bars lag. */
@@ -70,6 +40,7 @@ export interface VoiceOverlayMessages extends Partial<VoiceSettingsMessages> {
   clearTranscript: string;
   connect: string;
   connectionFailed: string;
+  dismiss?: string;
   endSession: string;
   listening: string;
   microphone: string;
@@ -106,6 +77,7 @@ export const defaultVoiceOverlayMessages: VoiceOverlayMessages = {
   clearTranscript: "Clear transcript",
   connect: "Connect voice assistant",
   connectionFailed: "Voice connection failed",
+  dismiss: "Dismiss",
   endSession: "End voice session",
   listening: "Listening…",
   microphone: "Microphone",
@@ -171,6 +143,7 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
   };
 
   let panelRef: HTMLDivElement | undefined;
+  let connectButton: HTMLButtonElement | undefined;
   let settingsTrigger: HTMLButtonElement | null = null;
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   const [settingsError, setSettingsError] = createSignal<string | null>(null);
@@ -193,18 +166,7 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
         setSettingsOpen(!settingsOpen());
       }}
     >
-      <svg
-        viewBox="0 0 24 24"
-        width="1.1em"
-        height="1.1em"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.8"
-        aria-hidden="true"
-      >
-        <path d="m9 3-.5 2-2 1-2-.5-2 3 1.5 1.5v3L2.5 15l2 3 2-.5 2 1 .5 2h4l.5-2 2-1 2 .5 2-3-1.5-1.5v-3L20.5 9l-2-3-2 .5-2-1-.5-2Z" />
-        <circle cx="11" cy="12" r="3" />
-      </svg>
+      <MaterialIcon name="settings" />
     </button>
   );
   const [spacerHeight, setSpacerHeight] = createSignal(0);
@@ -321,13 +283,14 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
             <div class={styles.rowEnd}>
               <SettingsButton />
               <button
+                ref={connectButton}
                 type="button"
                 class={styles.micButton}
                 onClick={() => handleMicClick()}
                 title={messages().connect}
                 aria-label={messages().connect}
               >
-                <MicIcon width="1.1em" height="1.1em" />
+                <MaterialIcon name="mic" />
               </button>
             </div>
           </Show>
@@ -344,9 +307,12 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
               <ErrorPanel
                 error={err}
                 messages={messages}
-                hasCustomMessages={props.messages !== undefined}
                 settingsButton={SettingsButton}
                 onRetry={() => handleMicClick()}
+                onDismiss={() => {
+                  session.dismissError();
+                  queueMicrotask(() => connectButton?.focus());
+                }}
               />
             )}
           </Show>
@@ -405,7 +371,7 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
                 aria-label={messages().closeVoiceSettings ?? "Close voice settings"}
                 onClick={closeSettings}
               >
-                <CloseIcon width="1.1em" height="1.1em" />
+                <MaterialIcon name="close" />
               </button>
             </div>
             <VoiceSettings messages={messages} onError={setSettingsError} onLanguageError={setLanguageError} />
@@ -442,7 +408,7 @@ function ConnectingPanel(props: {
   return (
     <div class={`${styles.row} ${styles.statusConnecting}`}>
       {props.settingsButton()}
-      <MicIcon width="1.1em" height="1.1em" />
+      <MaterialIcon name="mic" />
       <span class={styles.statusText}>
         {props.phase === "setup" && voiceSession.state.mode === "browser"
           ? (props.messages().settingUpBrowserSpeech ?? props.status)
@@ -455,7 +421,7 @@ function ConnectingPanel(props: {
         title={props.messages().cancel}
         aria-label={props.messages().cancelConnection}
       >
-        <CloseIcon width="1.1em" height="1.1em" />
+        <MaterialIcon name="close" />
       </button>
     </div>
   );
@@ -464,25 +430,36 @@ function ConnectingPanel(props: {
 function ErrorPanel(props: {
   error: string;
   messages: Accessor<VoiceOverlayMessages>;
-  hasCustomMessages: boolean;
   onRetry: () => void;
+  onDismiss: () => void;
   settingsButton: () => JSX.Element;
 }) {
   return (
-    <div class={styles.row}>
-      {props.settingsButton()}
-      <MicIcon width="1.1em" height="1.1em" class={styles.micIconError} />
-      <span class={styles.statusError}>
-        {props.hasCustomMessages ? props.messages().connectionFailed : props.error}
-        {props.hasCustomMessages && <small class={styles.errorDetail}>{safeErrorDetail(props.error)}</small>}
-      </span>
-      <button
-        type="button"
-        class={`${styles.actionButton} ${styles.actionButtonPrimary}`}
-        onClick={() => props.onRetry()}
-      >
-        {props.messages().retry}
-      </button>
+    <div class={styles.errorPanel}>
+      <div role="alert" class={styles.statusError}>
+        {safeErrorDetail(props.error) || props.messages().connectionFailed}
+      </div>
+      <div class={styles.errorActions}>
+        {props.settingsButton()}
+        <button
+          type="button"
+          class={styles.iconButton}
+          onClick={() => props.onRetry()}
+          title={props.messages().retry}
+          aria-label={props.messages().retry}
+        >
+          <MaterialIcon name="refresh" />
+        </button>
+        <button
+          type="button"
+          class={styles.iconButton}
+          onClick={() => props.onDismiss()}
+          title={props.messages().dismiss ?? "Dismiss"}
+          aria-label={props.messages().dismiss ?? "Dismiss"}
+        >
+          <MaterialIcon name="close" />
+        </button>
+      </div>
     </div>
   );
 }
@@ -532,8 +509,8 @@ function ActivePanel(props: {
           title={props.state.muted ? props.messages().unmute : props.messages().mute}
           aria-label={props.state.muted ? props.messages().unmute : props.messages().mute}
         >
-          <Show when={props.state.muted} fallback={<MicIcon width="1.1em" height="1.1em" />}>
-            <MicOffIcon width="1.1em" height="1.1em" />
+          <Show when={props.state.muted} fallback={<MaterialIcon name="mic" />}>
+            <MaterialIcon name="micOff" />
           </Show>
         </button>
         <button
@@ -543,7 +520,7 @@ function ActivePanel(props: {
           title={props.messages().endSession}
           aria-label={props.messages().endSession}
         >
-          <CallEndIcon width="1.1em" height="1.1em" />
+          <MaterialIcon name="callEnd" />
         </button>
       </div>
       {props.state.mode === "cloud" && (

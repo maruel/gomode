@@ -74,5 +74,8 @@
       "version": "26.9.0",
       "onFail": "download"
     }
+  },
+  "dependencies": {
+    "@material-symbols/svg-400": "0.47.4"
   }
 }

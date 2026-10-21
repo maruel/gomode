@@ -1,4 +1,4 @@
-// Discovers gateway voice choices and resolves an explicitly pinned, transport-compatible selection.
+// Discovers gateway voice choices, explains gateway HTTP failures, and resolves pinned transport-compatible selections.
 package com.fghbuild.gomode.voice
 
 import com.caic.voicegateway.sdk.v1.ApiClient
@@ -13,6 +13,82 @@ import com.fghbuild.gomode.sdk.v1.Settings
 import com.fghbuild.gomode.service.credentialedHTTPClient
 import com.fghbuild.gomode.service.resolveServiceURL
 import com.fghbuild.gomode.service.serviceOrigin
+import java.io.IOException
+import java.net.SocketTimeoutException
+
+// Keep these messages aligned with gatewayHTTPError in web/src/VoiceSession.ts.
+internal fun gatewayHTTPError(
+    status: Int,
+    path: String,
+): String? =
+    when (status) {
+        401 -> {
+            "Voice authorization failed (HTTP 401)."
+        }
+
+        403 -> {
+            "Voice access denied (HTTP 403)."
+        }
+
+        404 -> {
+            if (path.startsWith("/api/voicegateway/v1/voice/rtc/") && !path.endsWith("/rtc/offer")) {
+                "Voice session not found (HTTP 404)."
+            } else {
+                "Voice gateway not found (HTTP 404)."
+            }
+        }
+
+        408, 504 -> {
+            "Voice connection timed out (HTTP $status)."
+        }
+
+        429 -> {
+            "Voice gateway busy (HTTP 429)."
+        }
+
+        in 500..599 -> {
+            "Voice gateway unavailable (HTTP $status)."
+        }
+
+        else -> {
+            null
+        }
+    }
+
+internal class GatewayConnectionException(
+    message: String,
+    cause: Throwable? = null,
+) : IOException(message, cause)
+
+internal fun gatewayNetworkError(error: IOException): GatewayConnectionException =
+    GatewayConnectionException(
+        if (error is SocketTimeoutException) {
+            "Voice connection timed out."
+        } else {
+            "Voice gateway unreachable."
+        },
+        error,
+    )
+
+// Apply only to gateway requests; service discovery and token failures retain
+// their own context. Classify status before the generated SDK decodes the body.
+internal val voiceGatewayHTTPClient =
+    credentialedHTTPClient
+        .newBuilder()
+        .addInterceptor { chain ->
+            val response =
+                try {
+                    chain.proceed(chain.request())
+                } catch (error: IOException) {
+                    throw gatewayNetworkError(error)
+                }
+            val message = gatewayHTTPError(response.code, response.request.url.encodedPath)
+            if (message != null) {
+                response.close()
+                throw GatewayConnectionException(message)
+            }
+            response
+        }.build()
 
 internal data class GatewayVoiceChoices(
     val gatewayURL: String,
@@ -102,7 +178,7 @@ internal suspend fun discoverVoiceChoices(
         } else {
             emptyMap()
         }
-    val catalog = ApiClient(gatewayURL, httpClient = credentialedHTTPClient).voiceChoices(headers)
+    val catalog = ApiClient(gatewayURL, httpClient = voiceGatewayHTTPClient).voiceChoices(headers)
     if (catalog.choices.any { it.id.isBlank() || it.label.isBlank() } ||
         catalog.choices
             .map { it.id }

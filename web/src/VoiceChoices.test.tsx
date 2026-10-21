@@ -242,7 +242,7 @@ describe("voice choices", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Loading voice choices");
     expect(screen.getByRole("combobox", { name: "Voice choice" })).toBeDisabled();
     rejectRequest(new Error("Gateway offline"));
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Gateway offline"));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Voice gateway unreachable."));
     globalThis.fetch = async () => new Response(JSON.stringify(metadata));
     await userEvent.setup().click(screen.getByRole("button", { name: "Retry loading voice choices" }));
     expect(await readySelect()).toHaveValue("gemini");

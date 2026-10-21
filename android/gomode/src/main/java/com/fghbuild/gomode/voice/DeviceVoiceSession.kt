@@ -322,7 +322,10 @@ internal class DeviceVoiceSession(
                         // so accept any socket while this attempt owns none.
                         val current = this@DeviceVoiceSession.webSocket
                         if (ownsAttempt(attempt) && (current == null || current === webSocket)) {
-                            setError("Voice connection failed: ${t.message}")
+                            val message =
+                                response?.let { gatewayHTTPError(it.code, it.request.url.encodedPath) }
+                                    ?: if (t is java.io.IOException) gatewayNetworkError(t).message else t.message
+                            setError(message ?: "Voice connection failed. Retry to reconnect.")
                         }
                     }
                 }

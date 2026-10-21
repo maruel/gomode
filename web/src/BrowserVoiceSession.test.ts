@@ -78,6 +78,14 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+it("explains a text gateway connection failure and releases the session", async () => {
+  await session.connect();
+  FakeWebSocket.instances[0].onerror?.();
+  expect(session.state.error).toBe("Voice gateway unreachable.");
+  expect(session.state.connected).toBe(false);
+  expect(FakeWebSocket.instances[0].readyState).toBe(3);
+});
+
 async function readySocket(): Promise<FakeWebSocket> {
   await session.connect();
   const socket = FakeWebSocket.instances[0];

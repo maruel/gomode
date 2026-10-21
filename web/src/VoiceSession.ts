@@ -105,7 +105,45 @@ async function gatewayFetch(
     const token = await bearerProvider?.();
     if (token) headers.set("Authorization", `Bearer ${token}`);
   }
-  return fetch(new URL(path, origin).toString(), { ...init, headers });
+  let response: Response;
+  try {
+    response = await fetch(new URL(path, origin).toString(), { ...init, headers });
+  } catch (error: unknown) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    const message =
+      error instanceof DOMException && error.name === "TimeoutError"
+        ? "Voice connection timed out."
+        : "Voice gateway unreachable.";
+    throw new globalThis.Error(message, { cause: error });
+  }
+  const message = gatewayHTTPError(response.status, path);
+  if (message !== null) {
+    await response.body?.cancel();
+    throw new globalThis.Error(message);
+  }
+  return response;
+}
+
+// Classify gateway HTTP failures before the SDK tries to decode a proxy's empty
+// or HTML response as JSON. Keep application validation errors with the SDK.
+function gatewayHTTPError(status: number, path: string): string | null {
+  switch (status) {
+    case 401:
+      return `Voice authorization failed (HTTP ${status}).`;
+    case 403:
+      return "Voice access denied (HTTP 403).";
+    case 404:
+      return path.startsWith("/api/voicegateway/v1/voice/rtc/") && !path.endsWith("/rtc/offer")
+        ? "Voice session not found (HTTP 404)."
+        : "Voice gateway not found (HTTP 404).";
+    case 408:
+    case 504:
+      return `Voice connection timed out (HTTP ${status}).`;
+    case 429:
+      return "Voice gateway busy (HTTP 429).";
+    default:
+      return status >= 500 ? `Voice gateway unavailable (HTTP ${status}).` : null;
+  }
 }
 
 // Late-bound API for callers outside VoiceSession; session operations use a pinned client.
@@ -1278,7 +1316,7 @@ export class VoiceSession {
         });
       };
       socket.onerror = () => {
-        if (this._ownsChannel(attempt, socket)) this._setError("Could not connect to the text voice gateway");
+        if (this._ownsChannel(attempt, socket)) this._setError("Voice gateway unreachable.");
       };
       socket.onclose = (event) => {
         if (!this._ownsChannel(attempt, socket)) return;
@@ -1286,8 +1324,7 @@ export class VoiceSession {
         else this._setError(`Text voice connection closed (${event.code})`);
       };
       this._setupTimer = setTimeout(() => {
-        if (this._ownsChannel(attempt, socket) && !this.state.connected)
-          this._setError("Text voice connection timed out");
+        if (this._ownsChannel(attempt, socket) && !this.state.connected) this._setError("Voice connection timed out.");
       }, SETUP_TIMEOUT_MS);
     } catch (error) {
       if (attempt === this._connectionAttempt)
@@ -1368,6 +1405,12 @@ export class VoiceSession {
       s.audioInputError = null;
       s.audioOutputError = null;
       s.transcript = s.transcript.map((e) => ({ ...e, final: true }));
+    });
+  }
+
+  dismissError(): void {
+    this._update((s) => {
+      s.error = null;
     });
   }
 
