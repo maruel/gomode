@@ -630,8 +630,9 @@ function AudioDevicePicker(props: {
       </div>
       <div class={styles.deviceField}>
         <span
-          class={styles.deviceControl}
-          classList={{ [controls.control]: canSelectOutput, [controls.outlined]: canSelectOutput }}
+          class={
+            canSelectOutput ? `${styles.deviceControl} ${controls.control} ${controls.outlined}` : styles.deviceControl
+          }
         >
           <VoiceIcon
             name={

@@ -48,13 +48,18 @@ class ThinkingPad {
     warmth.connect(output);
     this.modulate(warmth.frequency, 0.019, 150, at);
 
-    const frequencies = [138.59, 207.65, 277.18, 311.13, 349.23];
-    const levels = [0.021, 0.016, 0.009, 0.006, 0.004];
-    for (const [i, frequency] of frequencies.entries()) {
+    const voices = [
+      { frequency: 138.59, gain: 0.021 },
+      { frequency: 207.65, gain: 0.016 },
+      { frequency: 277.18, gain: 0.009 },
+      { frequency: 311.13, gain: 0.006 },
+      { frequency: 349.23, gain: 0.004 },
+    ];
+    for (const [i, { frequency, gain }] of voices.entries()) {
       const level = this.own(context.createGain());
-      level.gain.value = levels[i];
+      level.gain.value = gain;
       level.connect(warmth);
-      this.modulate(level.gain, 0.031 + i * 0.0073, levels[i] * 0.1, at);
+      this.modulate(level.gain, 0.031 + i * 0.0073, gain * 0.1, at);
       const core = this.oscillator("triangle", frequency, at);
       this.modulate(core.detune, 0.023 + i * 0.0047, 1.5, at);
       core.connect(level);
