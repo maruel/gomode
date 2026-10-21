@@ -1,6 +1,7 @@
 // Tests live thinking-pad scheduling, bounded modulation, teardown, and restart.
 
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { ok } from "node:assert/strict";
 import { expect, vi } from "../tests/expect";
 import { WebAudioThinkingEarcon } from "./ThinkingEarcon";
 
@@ -79,14 +80,17 @@ describe("WebAudioThinkingEarcon", () => {
     expect(FakeAudioContext.instances).toHaveLength(0);
     earcon.prepare();
     const context = FakeAudioContext.instances[0];
+    ok(context);
     expect(context.resume).toHaveBeenCalledOnce();
     expect(context.nodes).toHaveLength(0);
     earcon.setThinking(true);
     const count = context.nodes.length;
     const output = context.nodes[0] as FakeGain;
     expect(output.gain.setValueAtTime).toHaveBeenCalledWith(0, 2.2);
-    expect(output.gain.linearRampToValueAtTime.mock.calls[0][0]).toBe(1);
-    expect(output.gain.linearRampToValueAtTime.mock.calls[0][1]).toBeCloseTo(3.4);
+    const ramp = output.gain.linearRampToValueAtTime.mock.calls[0];
+    ok(ramp);
+    expect(ramp[0]).toBe(1);
+    expect(ramp[1]).toBeCloseTo(3.4);
     for (const source of context.sources) expect(source.start).toHaveBeenCalledExactlyOnceWith(2.2);
     context.currentTime = 1000;
     earcon.setThinking(true);
@@ -101,6 +105,7 @@ describe("WebAudioThinkingEarcon", () => {
     const earcon = new WebAudioThinkingEarcon();
     earcon.prepare();
     const context = FakeAudioContext.instances[0];
+    ok(context);
     earcon.setThinking(true);
     const firstNodes = [...context.nodes];
     const firstSources = [...context.sources];
@@ -137,6 +142,7 @@ describe("WebAudioThinkingEarcon", () => {
       vi.stubGlobal("AudioContext", FakeAudioContext);
       earcon.prepare();
       const context = FakeAudioContext.instances[0];
+      ok(context);
       context.resume.mockRejectedValueOnce(new Error("Activation required"));
       earcon.prepare();
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -153,6 +159,7 @@ describe("WebAudioThinkingEarcon", () => {
     const earcon = new WebAudioThinkingEarcon();
     earcon.prepare();
     const context = FakeAudioContext.instances[0];
+    ok(context);
     const create = context.createOscillator.bind(context);
     let calls = 0;
     const fail = vi.spyOn(context, "createOscillator").mockImplementation(() => {

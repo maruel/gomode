@@ -76,8 +76,11 @@ for (const timer of [
   if (globalTarget[timer] !== undefined) {
     Object.defineProperty(dom.window, timer, {
       configurable: true,
-      value: (...args: unknown[]) =>
-        (globalThis as unknown as Record<string, (...args: unknown[]) => unknown>)[timer](...args),
+      value: (...args: unknown[]) => {
+        const run = (globalThis as unknown as Record<string, (...args: unknown[]) => unknown>)[timer];
+        if (!run) throw new Error(`Global timer ${timer} is unavailable`);
+        return run(...args);
+      },
     });
   }
 }

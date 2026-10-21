@@ -1,6 +1,7 @@
 // Tests browser-speech voice sessions over the authenticated text gateway transport.
 
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { ok } from "node:assert/strict";
 import { expect, vi } from "../tests/expect";
 import { FakeRecognition, fakeSynthesis, installBrowserSpeech } from "../tests/browser-speech";
 import { configureVoiceGateway, VoiceSession } from "./VoiceSession";
@@ -81,10 +82,12 @@ afterEach(() => {
 
 it("explains a text gateway connection failure and releases the session", async () => {
   await session.connect();
-  FakeWebSocket.instances[0].onerror?.();
+  const socket = FakeWebSocket.instances[0];
+  ok(socket);
+  socket.onerror?.();
   expect(session.state.error).toBe("Voice gateway unreachable.");
   expect(session.state.connected).toBe(false);
-  expect(FakeWebSocket.instances[0].readyState).toBe(3);
+  expect(socket.readyState).toBe(3);
 });
 
 async function readySocket(): Promise<FakeWebSocket> {
@@ -153,6 +156,7 @@ describe("browser voice sessions", () => {
     expect(earcon.setThinking).toHaveBeenLastCalledWith(false);
     await session.connect();
     const replacement = FakeWebSocket.instances[1];
+    ok(replacement);
     replacement.open();
     replacement.message({ kind: "session.ready" });
     replacement.message({ kind: "turn.status", state: "thinking" });
@@ -361,10 +365,10 @@ describe("browser voice sessions", () => {
   it("suppresses chimes on iOS and bounds text setup time", async () => {
     vi.useFakeTimers();
     Object.defineProperty(navigator, "userAgent", { configurable: true, value: "iPhone Safari" });
-    await readySocket();
+    const socket = await readySocket();
     expect(chime.prepare).not.toHaveBeenCalled();
     expect(earcon.prepare).not.toHaveBeenCalled();
-    FakeWebSocket.instances[0].message({ kind: "turn.status", state: "thinking" });
+    socket.message({ kind: "turn.status", state: "thinking" });
     expect(earcon.setThinking).toHaveBeenLastCalledWith(false);
     expect(chime.playConnected).not.toHaveBeenCalled();
     session.disconnect();

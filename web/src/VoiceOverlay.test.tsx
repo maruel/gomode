@@ -95,7 +95,7 @@ describe("VoiceOverlay status", () => {
         ["usb", "USB audio", "usb"],
         ["phone", "Handset", "phoneInTalk"],
         ["unknown", "BTS Studio 3000", "volumeUp"],
-      ]) {
+      ] as const) {
         await user.selectOptions(output, id);
         expect(output).toHaveValue(id);
         expect(screen.getByRole("option", { name })).toBeInTheDocument();

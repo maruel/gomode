@@ -1,5 +1,6 @@
 // Tests host-configured MCP routing and identity in the reusable browser client.
 import { afterEach, describe, it } from "node:test";
+import { ok } from "node:assert/strict";
 import { expect } from "../tests/expect";
 
 import type { ResourcesReadParams, SubscriptionsListenParams } from "../../sdk/mcp/ts/v1/types.gen";
@@ -32,18 +33,22 @@ describe("configureMcpClient", () => {
       { timezone: "America/Toronto" },
       { timezone: "Asia/Kolkata" },
     ]);
-    expect(params[0].arguments).toEqual({});
+    const first = params[0];
+    ok(first);
+    expect(first.arguments).toEqual({});
     expect(params.map((p) => (p._meta as Record<string, unknown>)["openai/session"])).toEqual([
       "conversation-one",
       "conversation-two",
     ]);
-    expect(params[0]._meta).toMatchObject({
+    expect(first._meta).toMatchObject({
       "openai/locale": "en-GB",
       "openai/userAgent": "gomode-web/1.0.0",
     });
     await mcpClient.callTool("get_usage", {});
-    expect(params[2]._meta).not.toHaveProperty("openai/session");
-    expect(params[2]._meta).not.toHaveProperty("openai/locale");
+    const third = params[2];
+    ok(third);
+    expect(third._meta).not.toHaveProperty("openai/session");
+    expect(third._meta).not.toHaveProperty("openai/locale");
   });
 
   it("sends device timezone when reading an advertised resource", async () => {
