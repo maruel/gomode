@@ -232,7 +232,11 @@ class SettingsRepositoryTest {
             val second = repo.addService("Second", "https://second.example")
             val third = repo.addService("Third", "https://third.example")
             repo.cycleService()
-            val wrapped = repo.awaitSettings("last service wraps to first") { it.activeServiceId == first }
+            // The earlier single-service state also selects first, so wait for the full catalog.
+            val wrapped =
+                repo.awaitSettings("last service wraps to first with all three services") {
+                    it.activeServiceId == first && it.services.size == 3
+                }
             assertEquals(listOf(first, second, third), wrapped.services.map { it.id })
             repo.cycleService()
             repo.cycleService()
