@@ -49,7 +49,7 @@ class GoModeDocumentationScreenshotsTest : GoModeE2eTestBase() {
         waitForSettingsButton()
         capture(device, directory, "service-editor")
 
-        composeRule.onNodeWithTag("gomode-save-service").performScrollTo().performClick()
+        composeRule.onNodeWithTag("gomode-create-service").performScrollTo().performClick()
         try {
             waitForHostedFrontend()
         } catch (error: IllegalStateException) {
@@ -65,7 +65,7 @@ class GoModeDocumentationScreenshotsTest : GoModeE2eTestBase() {
         composeRule.onNodeWithTag("gomode-add-service").performClick()
         composeRule.onNodeWithTag("gomode-service-label").performTextReplacement("Staging")
         composeRule.onNodeWithTag("gomode-service-url").performTextReplacement(baseUrl)
-        composeRule.onNodeWithTag("gomode-save-service").performScrollTo().performClick()
+        composeRule.onNodeWithTag("gomode-create-service").performScrollTo().performClick()
         waitForHostedFrontend()
         waitForSettingsButton()
         composeRule.onNodeWithTag("gomode-web-open-settings").performClick()

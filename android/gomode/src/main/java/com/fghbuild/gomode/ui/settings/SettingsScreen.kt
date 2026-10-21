@@ -1,4 +1,4 @@
-// Native settings screen for adding, selecting, and editing Go Mode services.
+// Autosaved native service and voice settings with explicit service creation and system Back navigation.
 package com.fghbuild.gomode.ui.settings
 
 import androidx.activity.compose.BackHandler
@@ -14,12 +14,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -28,13 +33,15 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.fghbuild.gomode.data.LocalLlmModel
@@ -44,16 +51,19 @@ import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.voice.usesGatewayVoice
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
 @Composable
-fun SettingsScreen(
+internal fun SettingsScreen(
     settings: SettingsState,
     settingsRepository: SettingsRepository,
     voiceSessionActive: Boolean,
     onDone: () -> Unit,
     onOpenHalo: () -> Unit,
+    edits: SettingsEdits,
     bearerTokenFor: (String) -> String? = { null },
     bearerToken: String? = null,
     authEpoch: Long = 0,
@@ -64,25 +74,25 @@ fun SettingsScreen(
     onRetryService: (String) -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
-    var editingServiceId by remember { mutableStateOf<String?>(null) }
-    var showEditor by remember { mutableStateOf(settings.services.isEmpty()) }
-    var label by remember { mutableStateOf("") }
-    var url by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    BackHandler(enabled = settings.activeServiceURL.isNotBlank(), onBack = onDone)
+    val active by rememberUpdatedState(voiceSessionActive)
+    val currentSettings by rememberUpdatedState(settings)
+    val finish: (suspend () -> Unit) -> Unit = { action ->
+        edits.finish(!active, action)
+    }
+    DisposableEffect(edits) {
+        onDispose { edits.discardDrafts() }
+    }
+    LaunchedEffect(edits) {
+        snapshotFlow { listOf(edits.service, edits.language, active, currentSettings.loadState) }
+            .debounce(1000)
+            .collect { edits.save(!active, commitURL = false) }
+    }
+    BackHandler(enabled = settings.activeServiceURL.isNotBlank()) { finish { onDone() } }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Go Mode") },
-                actions = {
-                    if (settings.activeServiceURL.isNotBlank()) {
-                        TextButton(onClick = onDone, modifier = Modifier.testTag("gomode-done-settings")) {
-                            Text("Done")
-                        }
-                    }
-                },
             )
         },
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -100,17 +110,13 @@ fun SettingsScreen(
             if (settings.services.isNotEmpty()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Services", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                    Button(
+                    IconButton(
                         onClick = {
-                            editingServiceId = null
-                            label = ""
-                            url = ""
-                            error = null
-                            showEditor = true
+                            finish { edits.editService(null) }
                         },
                         modifier = Modifier.testTag("gomode-add-service"),
                     ) {
-                        Text("Add new service")
+                        Icon(Icons.Default.Add, contentDescription = "Add new service")
                     }
                 }
                 settings.services.forEach { service ->
@@ -137,91 +143,88 @@ fun SettingsScreen(
                                 if (service.id == settings.activeServiceId) {
                                     Text("Active", style = MaterialTheme.typography.labelMedium)
                                 } else {
-                                    TextButton(
+                                    IconButton(
                                         onClick = {
-                                            scope.launch {
+                                            finish {
                                                 settingsRepository.switchService(service.id)
                                                 onDone()
                                             }
                                         },
                                         modifier = Modifier.testTag("gomode-service-${service.id}"),
                                     ) {
-                                        Text("Use")
+                                        Icon(Icons.Default.SwapHoriz, contentDescription = "Use service")
                                     }
                                 }
-                                TextButton(
+                                IconButton(
                                     onClick = {
-                                        editingServiceId = service.id
-                                        label = service.label
-                                        url = service.url
-                                        error = null
-                                        showEditor = true
+                                        finish { edits.editService(service) }
                                     },
                                     modifier = Modifier.testTag("gomode-edit-service-${service.id}"),
                                 ) {
-                                    Text("Edit")
+                                    Icon(Icons.Default.Edit, contentDescription = "Edit service")
                                 }
                             }
                         },
                     )
                 }
             }
-            if (showEditor) {
+            edits.service?.let { draft ->
                 Text(
-                    if (editingServiceId == null) "Add new service" else "Edit service",
+                    if (draft.id == null) "Add new service" else "Edit service",
                     style = MaterialTheme.typography.titleMedium,
                 )
                 OutlinedTextField(
-                    value = label,
-                    onValueChange = { label = it },
+                    value = draft.label,
+                    onValueChange = { edits.service = edits.service?.copy(label = it) },
                     modifier = Modifier.fillMaxWidth().testTag("gomode-service-label"),
                     singleLine = true,
                     label = { Text("Alias") },
                 )
                 OutlinedTextField(
-                    value = url,
-                    onValueChange = {
-                        url = it
-                        error = null
-                    },
-                    modifier = Modifier.fillMaxWidth().testTag("gomode-service-url"),
+                    value = draft.url,
+                    onValueChange = { edits.service = edits.service?.copy(url = it) },
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged {
+                                if (!it.isFocused) scope.launch { edits.save(!active, commitURL = true) }
+                            }.testTag("gomode-service-url"),
                     singleLine = true,
                     label = { Text("Server URL") },
-                    supportingText = error?.let { { Text(it) } },
-                    isError = error != null,
+                    supportingText =
+                        if (draft.url.isNotBlank() && draft.normalizedURL == null) {
+                            { Text("Use an http:// or https:// URL.") }
+                        } else {
+                            null
+                        },
+                    isError = draft.url.isNotBlank() && draft.normalizedURL == null,
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Button(
-                        onClick = {
-                            val normalized = SettingsRepository.normalizeURL(url)
-                            if (!hasSupportedScheme(normalized)) {
-                                error = "Use an http:// or https:// URL."
-                                return@Button
-                            }
-                            scope.launch {
-                                val id = editingServiceId
-                                if (id == null) {
-                                    settingsRepository.addService(label = label, url = normalized)
-                                    onDone()
-                                } else {
-                                    settingsRepository.updateService(id = id, label = label, url = normalized)
-                                    showEditor = false
-                                }
-                            }
-                        },
-                        modifier = Modifier.testTag("gomode-save-service"),
-                    ) {
-                        Text(if (editingServiceId == null) "Add service" else "Save changes")
+                    if (draft.id == null) {
+                        IconButton(
+                            onClick = { finish { if (edits.addService()) onDone() } },
+                            enabled = draft.normalizedURL != null && settings.loadState == SettingsLoadState.Ready,
+                            modifier = Modifier.testTag("gomode-create-service"),
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = "Add service")
+                        }
                     }
                     if (settings.services.isNotEmpty()) {
-                        TextButton(
-                            onClick = { showEditor = false },
-                            modifier = Modifier.testTag("gomode-cancel-edit"),
+                        IconButton(
+                            onClick = { finish { edits.service = null } },
+                            modifier = Modifier.testTag("gomode-close-editor"),
                         ) {
-                            Text("Cancel")
+                            Icon(Icons.Default.Close, contentDescription = "Close editor")
                         }
                     }
                 }
+            }
+            edits.error?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.testTag("gomode-settings-save-error"),
+                )
             }
             HorizontalDivider()
             (settings.loadState as? SettingsLoadState.Failed)?.message?.let {
@@ -245,7 +248,7 @@ fun SettingsScreen(
                     authEpoch,
                 )
             }
-            VoiceLanguageSetting(settings, settingsRepository, enabled = !voiceSessionActive)
+            VoiceLanguageSetting(edits, enabled = !voiceSessionActive && settings.loadState == SettingsLoadState.Ready)
             HorizontalDivider()
             Text("Halo", style = MaterialTheme.typography.titleMedium)
             ListItem(
@@ -253,11 +256,11 @@ fun SettingsScreen(
                 supportingContent = { Text(settings.haloAddress ?: "No device selected") },
                 leadingContent = { Icon(Icons.Filled.Bluetooth, contentDescription = null) },
                 trailingContent = {
-                    Button(
-                        onClick = onOpenHalo,
+                    IconButton(
+                        onClick = { finish { onOpenHalo() } },
                         modifier = Modifier.testTag("gomode-manage-halo"),
                     ) {
-                        Text("Manage")
+                        Icon(Icons.Default.Settings, contentDescription = "Manage Halo")
                     }
                 },
             )
@@ -363,31 +366,18 @@ private fun OnDeviceEngineSetting(
 
 @Composable
 private fun VoiceLanguageSetting(
-    settings: SettingsState,
-    repository: SettingsRepository,
+    edits: SettingsEdits,
     enabled: Boolean,
 ) {
-    val scope = rememberCoroutineScope()
-    var tag by remember(settings.voiceLanguageTag) { mutableStateOf(settings.voiceLanguageTag) }
-    val normalized = runCatching { SettingsRepository.normalizeVoiceLanguageTag(tag) }.getOrNull()
     Text("Voice language", style = MaterialTheme.typography.titleMedium)
     OutlinedTextField(
-        value = tag,
-        onValueChange = { tag = it },
+        value = edits.language,
+        onValueChange = { edits.language = it },
         modifier = Modifier.fillMaxWidth().testTag("gomode-voice-language"),
         singleLine = true,
         label = { Text("Language tag") },
         supportingText = { Text("English (US): en-US. Sets device speech and assistant reply language.") },
-        isError = normalized == null,
+        isError = edits.normalizedLanguage == null,
         enabled = enabled,
     )
-    Button(
-        onClick = { scope.launch { repository.updateVoiceLanguageTag(tag) } },
-        enabled = enabled && normalized != null && normalized != settings.voiceLanguageTag,
-        modifier = Modifier.testTag("gomode-save-voice-language"),
-    ) {
-        Text("Save language")
-    }
 }
-
-private fun hasSupportedScheme(url: String): Boolean = url.startsWith("http://") || url.startsWith("https://")

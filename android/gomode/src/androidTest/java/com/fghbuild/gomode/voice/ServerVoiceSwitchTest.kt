@@ -288,7 +288,9 @@ class ServerVoiceSwitchTest {
                                         }
                                 }
                             }
-                            composeRule.onNodeWithTag("gomode-done-settings").performClick()
+                            composeRule.runOnIdle {
+                                composeRule.activity.onBackPressedDispatcher.onBackPressed()
+                            }
                             val restoredSponsor = visiblePage(cookieServer.url("/").toString())
                             assertNotSame(sponsorView, restoredSponsor)
                             repository.switchService(bearerID)
@@ -398,7 +400,9 @@ class ServerVoiceSwitchTest {
                                     .fetchSemanticsNodes()
                                     .isNotEmpty(),
                             )
-                            composeRule.onNodeWithTag("gomode-done-settings").performClick()
+                            composeRule.runOnIdle {
+                                composeRule.activity.onBackPressedDispatcher.onBackPressed()
+                            }
                             repository.switchService(cookieID)
                         }
                         conversation.send(catalogCommand("participant-logout", bearerID, "frontend", "revoke"))

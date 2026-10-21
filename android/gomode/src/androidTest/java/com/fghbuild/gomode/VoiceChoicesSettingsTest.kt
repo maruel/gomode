@@ -19,6 +19,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.ui.settings.SettingsScreen
+import com.fghbuild.gomode.ui.settings.rememberSettingsEdits
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -61,7 +62,14 @@ class VoiceChoicesSettingsTest {
                 composeRule.setContent {
                     val settings by repository.settings.collectAsState()
                     MaterialTheme {
-                        SettingsScreen(settings, repository, active.value, {}, {})
+                        SettingsScreen(
+                            settings,
+                            repository,
+                            active.value,
+                            {},
+                            {},
+                            edits = rememberSettingsEdits(repository, settings),
+                        )
                     }
                 }
                 composeRule.waitUntil(10_000) {

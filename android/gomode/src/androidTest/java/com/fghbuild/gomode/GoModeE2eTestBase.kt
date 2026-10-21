@@ -59,7 +59,7 @@ abstract class GoModeE2eTestBase {
         }
         if (hasNodeWithTag("gomode-service-url")) {
             composeRule.onNodeWithTag("gomode-service-url").performTextReplacement(baseUrl)
-            composeRule.onNodeWithTag("gomode-save-service").performClick()
+            composeRule.onNodeWithTag("gomode-create-service").performClick()
         }
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
             hasNodeWithTag("gomode-web-shell")

@@ -1,6 +1,7 @@
 // Compose tests for saved voice mode, language, and the active-session settings guard.
 package com.fghbuild.gomode
 
+import androidx.activity.ComponentActivity
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -8,7 +9,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -18,18 +19,19 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
-import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.ui.settings.SettingsScreen
+import com.fghbuild.gomode.ui.settings.rememberSettingsEdits
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import org.junit.Rule
 import org.junit.Test
 
 class VoiceSettingsTest {
     @get:Rule
-    val composeRule = createComposeRule()
+    val composeRule = createAndroidComposeRule<ComponentActivity>()
 
     @Test
     fun voiceModeChipsSaveSelectionAndDisableDuringAnActiveSession() {
@@ -42,6 +44,7 @@ class VoiceSettingsTest {
                 SettingsScreen(
                     settings = settings,
                     settingsRepository = repository,
+                    edits = rememberSettingsEdits(repository, settings),
                     voiceSessionActive = active.value,
                     onDone = {},
                     onOpenHalo = {},
@@ -69,10 +72,12 @@ class VoiceSettingsTest {
         val active = mutableStateOf(true)
         val repository = SettingsRepository(MemoryPreferences())
         composeRule.setContent {
+            val settings by repository.settings.collectAsState()
             MaterialTheme {
                 SettingsScreen(
-                    settings = SettingsState(),
+                    settings = settings,
                     settingsRepository = repository,
+                    edits = rememberSettingsEdits(repository, settings),
                     voiceSessionActive = active.value,
                     onDone = {},
                     onOpenHalo = {},
@@ -80,16 +85,44 @@ class VoiceSettingsTest {
             }
         }
         composeRule.onNodeWithTag("gomode-voice-language").performScrollTo().assertIsNotEnabled()
-        composeRule.onNodeWithTag("gomode-save-voice-language").performScrollTo().assertIsNotEnabled()
         composeRule.runOnIdle { active.value = false }
         composeRule
             .onNodeWithTag("gomode-voice-language")
             .performScrollTo()
             .assertIsEnabled()
             .performTextReplacement("fr-CA")
-        composeRule.onNodeWithTag("gomode-save-voice-language").performScrollTo().assertIsEnabled()
+        composeRule.waitUntil(5000) { repository.settings.value.voiceLanguageTag == "fr-CA" }
         composeRule.runOnIdle { active.value = true }
-        composeRule.onNodeWithTag("gomode-save-voice-language").assertIsNotEnabled()
+        composeRule.onNodeWithTag("gomode-voice-language").assertIsNotEnabled()
+    }
+
+    @Test
+    fun backFlushesLanguageWithoutWaitingForAutosave() {
+        val store = MemoryPreferences()
+        val repository = SettingsRepository(store)
+        runBlocking {
+            val id = repository.addService("Service", "https://example.test")
+            repository.settings.first { it.activeServiceId == id }
+        }
+        var closed = false
+        composeRule.setContent {
+            val settings by repository.settings.collectAsState()
+            MaterialTheme {
+                SettingsScreen(
+                    settings,
+                    repository,
+                    false,
+                    { closed = true },
+                    {},
+                    edits = rememberSettingsEdits(repository, settings),
+                )
+            }
+        }
+        composeRule.onNodeWithTag("gomode-voice-language").performScrollTo().performTextReplacement("fr-CA")
+        composeRule.runOnIdle { composeRule.activity.onBackPressedDispatcher.onBackPressed() }
+        composeRule.waitUntil { closed }
+        val reopened = SettingsRepository(store)
+        composeRule.waitUntil { reopened.settings.value.voiceLanguageTag == "fr-CA" }
     }
 
     @Test
@@ -103,6 +136,7 @@ class VoiceSettingsTest {
                 SettingsScreen(
                     settings = settings,
                     settingsRepository = repository,
+                    edits = rememberSettingsEdits(repository, settings),
                     voiceSessionActive = active.value,
                     onDone = {},
                     onOpenHalo = {},

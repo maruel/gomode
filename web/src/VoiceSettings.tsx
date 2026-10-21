@@ -223,12 +223,15 @@ export default function VoiceSettings(props: {
       <Show when={voiceSession.state.choicesStatus === "error" || voiceSession.state.voiceStatus === "error"}>
         <button
           type="button"
+          class={styles.retry}
+          aria-label={messages().choicesRetry}
+          title={messages().choicesRetry}
           disabled={active()}
           onClick={() => {
             void voiceSession.loadVoiceChoices();
           }}
         >
-          {messages().choicesRetry}
+          <span class={styles.retryIcon} aria-hidden="true" />
         </button>
       </Show>
       <label>

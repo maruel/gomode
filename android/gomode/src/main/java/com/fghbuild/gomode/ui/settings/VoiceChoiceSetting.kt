@@ -4,10 +4,13 @@ package com.fghbuild.gomode.ui.settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -86,12 +89,12 @@ internal fun VoiceChoiceSetting(
 
         is ChoiceDiscovery.Failed -> {
             Text(state.message, modifier = Modifier.testTag("gomode-voice-choice-error"))
-            TextButton(
+            IconButton(
                 onClick = { retry += 1 },
                 enabled = enabled,
                 modifier = Modifier.testTag("gomode-voice-choices-retry"),
             ) {
-                Text("Retry")
+                Icon(Icons.Default.Refresh, contentDescription = "Retry")
             }
         }
 

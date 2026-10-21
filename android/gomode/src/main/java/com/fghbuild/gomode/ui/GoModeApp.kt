@@ -1,4 +1,4 @@
-// Root Compose surface that bootstraps service settings and coordinates shell recovery with voice controls.
+// Root Compose surface coordinating autosaved settings, service shells, recovery, and voice controls.
 package com.fghbuild.gomode.ui
 
 import android.Manifest
@@ -66,7 +66,9 @@ import com.fghbuild.gomode.service.ServiceSettingsException
 import com.fghbuild.gomode.service.compatibilityError
 import com.fghbuild.gomode.service.serviceItemVoiceChanges
 import com.fghbuild.gomode.ui.halo.HaloScreen
+import com.fghbuild.gomode.ui.settings.SettingsEdits
 import com.fghbuild.gomode.ui.settings.SettingsScreen
+import com.fghbuild.gomode.ui.settings.rememberSettingsEdits
 import com.fghbuild.gomode.ui.web.FrontendVoiceTools
 import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellRegistry
@@ -133,6 +135,7 @@ internal fun GoModeApp(
     }
 
     val settings by key(settingsRepository) { settingsRepository.settings.collectAsStateWithLifecycle() }
+    val settingsEdits = rememberSettingsEdits(settingsRepository, settings)
     val settingsClient = remember { ServiceSettingsClient() }
     var activeNativeScreen by remember { mutableStateOf<NativeScreen?>(null) }
     val activeURL = settings.activeServiceURL
@@ -184,6 +187,9 @@ internal fun GoModeApp(
     val switchVoiceServer: suspend (String) -> Unit =
         remember(settingsRepository) {
             { id ->
+                if (!settingsEdits.save(voiceEnabled = false, commitURL = true)) {
+                    throw IOException(settingsEdits.error ?: "Unable to save settings")
+                }
                 activeNativeScreen = null
                 settingsRepository.switchService(id)
             }
@@ -436,6 +442,7 @@ internal fun GoModeApp(
                 GoModeContent(
                     settings = settings,
                     settingsRepository = settingsRepository,
+                    settingsEdits = settingsEdits,
                     haloController = haloController,
                     activeURL = activeURL,
                     serviceSession = serviceSession,
@@ -529,9 +536,13 @@ internal fun GoModeApp(
                     onClearTranscript = { voiceSession.clearTranscript() },
                     onOpenSettings = { activeNativeScreen = NativeScreen.Settings },
                     onCycleApp = {
-                        activeNativeScreen = null
                         scope.launch {
                             try {
+                                if (!settingsEdits.save(!voiceSessionActive, commitURL = true)) {
+                                    snackbarHostState.showSnackbar(settingsEdits.error ?: "Unable to save settings")
+                                    return@launch
+                                }
+                                activeNativeScreen = null
                                 settingsRepository.cycleService()
                             } catch (e: IOException) {
                                 snackbarHostState.showSnackbar("Unable to switch apps: ${e.message}")
@@ -606,6 +617,7 @@ internal suspend fun fetchBootstrapState(
 private fun GoModeContent(
     settings: SettingsState,
     settingsRepository: SettingsRepository,
+    settingsEdits: SettingsEdits,
     haloController: HaloController,
     activeURL: String,
     serviceSession: ServiceShellSession,
@@ -659,6 +671,7 @@ private fun GoModeContent(
             SettingsScreen(
                 settings = settings,
                 settingsRepository = settingsRepository,
+                edits = settingsEdits,
                 voiceSessionActive = voiceSessionActive,
                 servicesNeedingAttention = servicesNeedingAttention,
                 serviceReadiness = catalogState.values.associate { it.key.serviceID to it.readiness.text },
