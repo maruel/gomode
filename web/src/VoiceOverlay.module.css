@@ -89,15 +89,18 @@
   margin-top: 0.4rem;
 }
 
-/* ---- Inline mic button (idle) ---- */
+/* ---- Circular mic and device controls ---- */
 
-.micButton {
+.micButton,
+.deviceControl:has(select) {
+  box-sizing: border-box;
   display: inline-flex;
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  width: 2.25rem;
-  height: 2.25rem;
+  width: 44px;
+  height: 44px;
+  font: inherit;
   padding: 0;
   color: var(--color-text-muted);
   cursor: pointer;
@@ -110,7 +113,8 @@
     border-color 0.15s;
 }
 
-.micButton:hover {
+.micButton:hover,
+.deviceControl:has(select:enabled):hover {
   color: var(--color-text-secondary);
   background: var(--color-bg-hover);
   border-color: var(--color-text-muted);
@@ -343,11 +347,11 @@
   gap: 0.25rem;
   min-width: 0;
   max-width: 26rem;
-  font-size: 0.8rem;
   color: var(--color-text-secondary);
 }
 
 .deviceHint {
+  font-size: 0.8rem;
   min-width: 0;
   color: var(--color-text-muted);
   overflow-wrap: anywhere;
@@ -358,15 +362,6 @@
   display: flex;
   gap: 0.5rem;
   align-items: center;
-}
-
-.deviceControl:has(select) {
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
 }
 
 .deviceControl:has(select:disabled) {
@@ -388,6 +383,7 @@
   opacity: 0;
 }
 
+.micButton:focus-visible,
 .deviceControl:has(select:focus-visible) {
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;
