@@ -9,8 +9,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
@@ -148,7 +150,12 @@ class VoiceSettingsTest {
         composeRule.waitUntil { repository.settings.value.voiceMode == VoiceMode.DEVICE }
 
         // Initial default engine is remote gateway.
-        composeRule.onNodeWithTag("gomode-engine-remote-gateway").performScrollTo().assertIsSelected()
+        composeRule.onNodeWithText("Model").assertExists()
+        composeRule
+            .onNodeWithTag("gomode-engine-remote-gateway")
+            .performScrollTo()
+            .assertIsSelected()
+            .assertTextContains("Remote LLM")
 
         // Select NeuDecide.
         composeRule.onNodeWithTag("gomode-engine-neudecide").performScrollTo().performClick()

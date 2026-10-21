@@ -11,6 +11,7 @@ import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.datastore.core.DataStore
@@ -92,6 +93,7 @@ class VoiceChoicesSettingsTest {
                         .isNotEmpty()
                 }
                 composeRule.onNodeWithTag("gomode-voice-choice-live").performScrollTo().assertIsSelected()
+                composeRule.onNodeWithText("LLM").assertExists()
                 composeRule.onNodeWithTag("gomode-voice-choice-local").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-speaking-voice").performScrollTo().assertTextContains("Orus")
                 composeRule.runOnIdle { store.failWrites = true }
@@ -133,6 +135,80 @@ class VoiceChoicesSettingsTest {
                 composeRule.onNodeWithTag("gomode-voice-choice-local").assertIsSelected().assertIsNotEnabled()
                 composeRule.onNodeWithTag("gomode-voice-choice-remote").assertIsNotEnabled()
                 assertEquals(4, server.requestCount)
+            }
+        }
+
+    @Test
+    fun singleCompatibleModelIsHiddenButSpeakingVoiceAndStaleSelectionRecoveryRemainAvailable() =
+        runTest {
+            MockWebServer().use { server ->
+                server.start()
+                val base = server.url("/").toString().trimEnd('/')
+                val repository = SettingsRepository(MemoryPreferences())
+                repository.addService("Single model fixture", base)
+                repository.settings.first { it.activeServiceURL == base }
+                server.enqueue(
+                    MockResponse().setBody(
+                        """
+                        {"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":1,
+                        "toolGroups":[],"voiceGateway":{"required":false,"url":"/"}}}
+                        """.trimIndent(),
+                    ),
+                )
+                server.enqueue(
+                    MockResponse().setBody(
+                        """
+                        {"choices":[{"id":"live","label":"Gemini Live","transports":["webrtc"],
+                        "voices":["Kore","Orus"],"defaultVoice":"Orus"},
+                        {"id":"local","label":"Local LLM","transports":["text"]}],"defaultChoiceID":"live"}
+                        """.trimIndent(),
+                    ),
+                )
+                composeRule.setContent {
+                    val settings by repository.settings.collectAsState()
+                    MaterialTheme {
+                        SettingsScreen(
+                            settings,
+                            repository,
+                            false,
+                            {},
+                            {},
+                            edits = rememberSettingsEdits(repository, settings),
+                        )
+                    }
+                }
+                composeRule.waitUntil(10_000) {
+                    composeRule.onAllNodes(hasTestTag("gomode-speaking-voice")).fetchSemanticsNodes().isNotEmpty()
+                }
+                composeRule.onNodeWithText("LLM").assertDoesNotExist()
+                composeRule.onNodeWithTag("gomode-voice-choice-live").assertDoesNotExist()
+                composeRule.onNodeWithTag("gomode-voice-choice-local").assertDoesNotExist()
+                composeRule.onNodeWithTag("gomode-speaking-voice").performScrollTo().assertTextContains("Orus")
+                composeRule.onNodeWithTag("gomode-speaking-voice").performClick()
+                composeRule.onNodeWithTag("gomode-speaking-voice-Kore").performClick()
+                composeRule.waitUntil {
+                    repository.settings.value.speakingVoices[base]
+                        ?.get("live") == "Kore"
+                }
+
+                composeRule.onNodeWithTag("gomode-voice-mode-device").performScrollTo().performClick()
+                composeRule.waitUntil { repository.settings.value.voiceMode == VoiceMode.DEVICE }
+                composeRule.onNodeWithText("Model").assertExists()
+                composeRule.onNodeWithTag("gomode-engine-remote-gateway").assertTextContains("Remote LLM")
+                composeRule.onNodeWithText("LLM").assertDoesNotExist()
+                composeRule.onNodeWithTag("gomode-voice-choice-local").assertDoesNotExist()
+                composeRule.onNodeWithTag("gomode-speaking-voice").assertDoesNotExist()
+
+                repository.updateVoiceChoice(base, "missing")
+                composeRule.waitUntil {
+                    composeRule.onAllNodes(hasTestTag("gomode-voice-choice-error")).fetchSemanticsNodes().isNotEmpty()
+                }
+                composeRule.onNodeWithTag("gomode-voice-choice-local").performScrollTo().performClick()
+                composeRule.waitUntil { repository.settings.value.voiceChoices[base] == "local" }
+                composeRule.onNodeWithText("LLM").assertDoesNotExist()
+                composeRule.onNodeWithTag("gomode-voice-choice-error").assertDoesNotExist()
+                composeRule.onNodeWithTag("gomode-voice-choice-local").assertDoesNotExist()
+                assertEquals(2, server.requestCount)
             }
         }
 

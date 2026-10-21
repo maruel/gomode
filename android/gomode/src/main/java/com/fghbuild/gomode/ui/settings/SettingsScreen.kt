@@ -306,7 +306,7 @@ private fun LocalLlmModelSetting(
     enabled: Boolean,
 ) {
     val scope = rememberCoroutineScope()
-    Text("Model", style = MaterialTheme.typography.titleMedium)
+    Text("Local model", style = MaterialTheme.typography.titleMedium)
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
         LocalLlmModel.entries.forEach { choice ->
             FilterChip(
@@ -328,7 +328,7 @@ private fun OnDeviceEngineSetting(
     enabled: Boolean,
 ) {
     val scope = rememberCoroutineScope()
-    Text("On-device engine", style = MaterialTheme.typography.titleMedium)
+    Text("Model", style = MaterialTheme.typography.titleMedium)
     FlowRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.fillMaxWidth(),
@@ -337,7 +337,7 @@ private fun OnDeviceEngineSetting(
             selected = engine == OnDeviceEngine.REMOTE_GATEWAY,
             onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.REMOTE_GATEWAY) } },
             enabled = enabled,
-            label = { Text("Remote gateway") },
+            label = { Text("Remote LLM") },
             modifier = Modifier.testTag("gomode-engine-remote-gateway"),
         )
         FilterChip(

@@ -56,7 +56,7 @@ fun OnDeviceEngine.descriptor(): EngineDescriptor =
         OnDeviceEngine.REMOTE_GATEWAY -> {
             EngineDescriptor(
                 engine = this,
-                name = "Remote gateway",
+                name = "Remote LLM",
                 description = "Offloads text turns and tool selection to the voice gateway over WebSocket",
                 latencyBudgetMs = 800,
                 modelSizeMb = 0,

@@ -75,16 +75,15 @@ internal fun VoiceChoiceSetting(
             @Suppress("TooGenericExceptionCaught") e: Exception,
         ) {
             // User-visible discovery boundary.
-            discovery = ChoiceDiscovery.Failed(e.message ?: "Unable to load gateway voice choices")
+            discovery = ChoiceDiscovery.Failed(e.message ?: "Unable to load LLMs")
         }
     }
-    Text("Gateway voice", style = MaterialTheme.typography.titleMedium)
     (settings.loadState as? SettingsLoadState.Failed)?.message?.let {
         Text(it, modifier = Modifier.testTag("gomode-voice-choice-error"))
     }
     when (val state = discovery) {
         ChoiceDiscovery.Loading -> {
-            Text("Loading voice choices…", modifier = Modifier.testTag("gomode-voice-choices-loading"))
+            Text("Loading LLMs…", modifier = Modifier.testTag("gomode-voice-choices-loading"))
         }
 
         is ChoiceDiscovery.Failed -> {
@@ -103,21 +102,26 @@ internal fun VoiceChoiceSetting(
             selection.exceptionOrNull()?.message?.let {
                 Text(it, modifier = Modifier.testTag("gomode-voice-choice-error"))
             }
-            ChoiceChips(state.choices, settings, selection.getOrNull()?.id, enabled && !saving) { choiceID ->
-                scope.launch {
-                    saving = true
-                    saveError = null
-                    try {
-                        repository.updateVoiceChoice(state.choices.gatewayURL, choiceID)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (
-                        @Suppress("TooGenericExceptionCaught") e: Exception,
-                    ) {
-                        // Display failed persistence.
-                        saveError = "Unable to save voice choice: ${e.message}"
-                    } finally {
-                        saving = false
+            val compatible = state.choices.compatible(settings)
+            // A missing saved model still needs an explicit replacement, even with only one candidate.
+            if (compatible.size > 1 || (compatible.isNotEmpty() && selection.isFailure)) {
+                Text("LLM", style = MaterialTheme.typography.titleMedium)
+                ChoiceChips(state.choices, settings, selection.getOrNull()?.id, enabled && !saving) { choiceID ->
+                    scope.launch {
+                        saving = true
+                        saveError = null
+                        try {
+                            repository.updateVoiceChoice(state.choices.gatewayURL, choiceID)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (
+                            @Suppress("TooGenericExceptionCaught") e: Exception,
+                        ) {
+                            // Display failed persistence.
+                            saveError = "Unable to save LLM: ${e.message}"
+                        } finally {
+                            saving = false
+                        }
                     }
                 }
             }
