@@ -167,12 +167,13 @@ private fun AppControls(
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         SettingsButton(onOpenSettings)
-        IconButton(
-            onClick = onCycleApp,
-            enabled = canCycleApps,
-            modifier = Modifier.testTag("gomode-next-app"),
-        ) {
-            Icon(Icons.Default.SwapHoriz, contentDescription = "Next app")
+        if (canCycleApps) {
+            IconButton(
+                onClick = onCycleApp,
+                modifier = Modifier.testTag("gomode-next-app"),
+            ) {
+                Icon(Icons.Default.SwapHoriz, contentDescription = "Next app")
+            }
         }
     }
 }

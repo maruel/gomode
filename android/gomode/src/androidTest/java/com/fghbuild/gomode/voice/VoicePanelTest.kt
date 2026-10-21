@@ -146,7 +146,7 @@ class VoicePanelTest {
         }
         assertEquals(5, cycles)
         composeRule.runOnIdle { canCycle.value = false }
-        composeRule.onNodeWithTag("gomode-next-app").assertIsNotEnabled()
+        composeRule.onNodeWithTag("gomode-next-app").assertDoesNotExist()
     }
 
     @Test
