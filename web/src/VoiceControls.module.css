@@ -1,0 +1,130 @@
+/* Shared voice control geometry, interaction states, and official Material Symbols. */
+
+.control {
+  box-sizing: border-box;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  font: inherit;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  transition:
+    color 0.15s,
+    background 0.15s,
+    border-color 0.15s;
+}
+
+.control:hover:not(:disabled):not(:has(select:disabled)) {
+  color: var(--voice-control-hover-color, var(--color-text-secondary));
+  background: var(--voice-control-hover-background, var(--color-bg-hover));
+  border-color: var(--voice-control-hover-border, transparent);
+}
+
+.outlined {
+  --voice-control-hover-border: var(--color-border-medium);
+
+  color: var(--color-text-muted);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+}
+
+.muted {
+  color: var(--color-text-muted);
+}
+
+.danger {
+  --voice-control-hover-color: var(--color-danger);
+  --voice-control-hover-background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+
+  color: var(--color-danger);
+}
+
+.control:focus-visible,
+.control:has(select:focus-visible) {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.control:disabled,
+.control:has(select:disabled) {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.control select:disabled {
+  cursor: default;
+}
+
+.icon {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 1.25em;
+  height: 1.25em;
+  background-color: currentColor;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+}
+
+@media (forced-colors: active) {
+  .icon {
+    /* Mask backgrounds must retain the user's system icon color. */
+    background-color: ButtonText;
+    forced-color-adjust: none;
+  }
+}
+
+.callEnd {
+  mask-image: url("@material-symbols/svg-400/outlined/call_end.svg");
+}
+
+.bluetooth {
+  mask-image: url("@material-symbols/svg-400/outlined/bluetooth.svg");
+}
+
+.headphones {
+  mask-image: url("@material-symbols/svg-400/outlined/headphones.svg");
+}
+
+.phoneInTalk {
+  mask-image: url("@material-symbols/svg-400/outlined/phone_in_talk.svg");
+}
+
+.speaker {
+  mask-image: url("@material-symbols/svg-400/outlined/speaker.svg");
+}
+
+.usb {
+  mask-image: url("@material-symbols/svg-400/outlined/usb.svg");
+}
+
+.volumeUp {
+  mask-image: url("@material-symbols/svg-400/outlined/volume_up.svg");
+}
+
+.close {
+  mask-image: url("@material-symbols/svg-400/outlined/close.svg");
+}
+
+.mic {
+  mask-image: url("@material-symbols/svg-400/outlined/mic.svg");
+}
+
+.micOff {
+  mask-image: url("@material-symbols/svg-400/outlined/mic_off.svg");
+}
+
+.refresh {
+  mask-image: url("@material-symbols/svg-400/outlined/refresh.svg");
+}
+
+.settings {
+  mask-image: url("@material-symbols/svg-400/outlined/settings.svg");
+}

@@ -3,6 +3,8 @@
 import { createEffect, createSignal, createUniqueId, onCleanup, Show, For, on, type Accessor } from "solid-js";
 import { browserSpeechAvailable } from "./BrowserSpeech";
 import { voiceSession, type VoiceMode } from "./VoiceSession";
+import VoiceIcon from "./VoiceIcon";
+import controls from "./VoiceControls.module.css";
 import styles from "./VoiceSettings.module.css";
 
 export interface VoiceSettingsMessages {
@@ -223,7 +225,7 @@ export default function VoiceSettings(props: {
       <Show when={voiceSession.state.choicesStatus === "error" || voiceSession.state.voiceStatus === "error"}>
         <button
           type="button"
-          class={styles.retry}
+          class={`${controls.control} ${styles.retry}`}
           aria-label={messages().choicesRetry}
           title={messages().choicesRetry}
           disabled={active()}
@@ -231,7 +233,7 @@ export default function VoiceSettings(props: {
             void voiceSession.loadVoiceChoices();
           }}
         >
-          <span class={styles.retryIcon} aria-hidden="true" />
+          <VoiceIcon name="refresh" />
         </button>
       </Show>
       <label>

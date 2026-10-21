@@ -1,4 +1,4 @@
-/* Styles for the VoiceOverlay component: full-width bottom panel with mic button and voice controls. */
+/* Voice overlay layout, status feedback, transcript, and device-menu positioning. */
 
 /* ---- Full-width bottom panel ---- */
 
@@ -77,47 +77,11 @@
   margin-inline-start: auto;
 }
 
-.callActions button {
-  min-width: 44px;
-  min-height: 44px;
-}
-
 .rowLabel {
   display: flex;
   gap: 0.5rem;
   align-items: center;
   margin-top: 0.4rem;
-}
-
-/* ---- Circular mic and device controls ---- */
-
-.micButton,
-.deviceControl:has(select) {
-  box-sizing: border-box;
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  font: inherit;
-  padding: 0;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 50%;
-  transition:
-    color 0.15s,
-    background 0.15s,
-    border-color 0.15s;
-}
-
-.micButton:hover,
-.deviceControl:has(select:enabled):hover {
-  color: var(--color-text-secondary);
-  background: var(--color-bg-hover);
-  border-color: var(--color-text-muted);
 }
 
 /* ---- Status text ---- */
@@ -164,11 +128,6 @@
   margin-inline-end: auto;
 }
 
-.errorActions button {
-  min-width: 44px;
-  min-height: 44px;
-}
-
 @keyframes pulse {
   from {
     opacity: 0.5;
@@ -184,130 +143,6 @@
   .statusBusy {
     animation: none;
   }
-}
-
-/* ---- Panel icon buttons ---- */
-
-.materialIcon {
-  display: inline-block;
-  flex-shrink: 0;
-  width: 1.25em;
-  height: 1.25em;
-  background-color: currentColor;
-  mask-repeat: no-repeat;
-  mask-position: center;
-  mask-size: contain;
-}
-
-@media (forced-colors: active) {
-  .materialIcon {
-    /* Mask backgrounds must retain the user's system icon color. */
-    background-color: ButtonText;
-    forced-color-adjust: none;
-  }
-}
-
-.callEnd {
-  mask-image: url("@material-symbols/svg-400/outlined/call_end.svg");
-}
-
-.bluetooth {
-  mask-image: url("@material-symbols/svg-400/outlined/bluetooth.svg");
-}
-
-.headphones {
-  mask-image: url("@material-symbols/svg-400/outlined/headphones.svg");
-}
-
-.phoneInTalk {
-  mask-image: url("@material-symbols/svg-400/outlined/phone_in_talk.svg");
-}
-
-.speaker {
-  mask-image: url("@material-symbols/svg-400/outlined/speaker.svg");
-}
-
-.usb {
-  mask-image: url("@material-symbols/svg-400/outlined/usb.svg");
-}
-
-.volumeUp {
-  mask-image: url("@material-symbols/svg-400/outlined/volume_up.svg");
-}
-
-.close {
-  mask-image: url("@material-symbols/svg-400/outlined/close.svg");
-}
-
-.mic {
-  mask-image: url("@material-symbols/svg-400/outlined/mic.svg");
-}
-
-.micOff {
-  mask-image: url("@material-symbols/svg-400/outlined/mic_off.svg");
-}
-
-.refresh {
-  mask-image: url("@material-symbols/svg-400/outlined/refresh.svg");
-}
-
-.settings {
-  mask-image: url("@material-symbols/svg-400/outlined/settings.svg");
-}
-
-.iconButton {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  width: 2rem;
-  height: 2rem;
-  padding: 0;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  background: none;
-  border: none;
-  border-radius: var(--radius-md);
-  transition:
-    background 0.15s,
-    color 0.15s;
-}
-
-.iconButton:hover {
-  color: var(--color-text-secondary);
-  background: var(--color-bg-hover);
-}
-
-.iconButtonMuted {
-  color: var(--color-text-muted);
-}
-
-.iconButtonEnd {
-  color: var(--color-danger);
-}
-
-.iconButtonEnd:hover {
-  color: var(--color-danger);
-  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
-}
-
-/* ---- Panel action buttons ---- */
-
-.actionButton {
-  flex-shrink: 0;
-  padding: 0.3rem 0.75rem;
-  font: inherit;
-  font-size: 0.85rem;
-  color: inherit;
-  cursor: pointer;
-  background: none;
-  border: 1px solid var(--color-border-medium);
-  border-radius: var(--radius-md);
-  transition: background 0.15s;
-}
-
-.actionButton:hover {
-  background: var(--color-bg-hover);
 }
 
 /* ---- Audio device picker ---- */
@@ -364,10 +199,6 @@
   align-items: center;
 }
 
-.deviceControl:has(select:disabled) {
-  opacity: 0.5;
-}
-
 .audioError {
   color: var(--color-danger);
 }
@@ -381,12 +212,6 @@
   font: inherit;
   cursor: pointer;
   opacity: 0;
-}
-
-.micButton:focus-visible,
-.deviceControl:has(select:focus-visible) {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
 }
 
 /* ---- Mic level bars ---- */

@@ -17,14 +17,11 @@ import { bluetoothAudioDeviceLabel, voiceSession } from "./VoiceSession";
 import type { VoiceState, TranscriptEntry } from "./VoiceSession";
 import { notifications } from "./notifications";
 import VoiceSettings, { defaultVoiceSettingsMessages, type VoiceSettingsMessages } from "./VoiceSettings";
+import VoiceIcon from "./VoiceIcon";
+import controls from "./VoiceControls.module.css";
 import styles from "./VoiceOverlay.module.css";
 
-// Official Material Symbols assets are loaded by the component stylesheet.
 type AudioDeviceIcon = "bluetooth" | "headphones" | "mic" | "phoneInTalk" | "speaker" | "usb" | "volumeUp";
-
-function MaterialIcon(props: { name: AudioDeviceIcon | "callEnd" | "close" | "micOff" | "refresh" | "settings" }) {
-  return <span class={`${styles.materialIcon} ${styles[props.name]}`} data-icon={props.name} aria-hidden="true" />;
-}
 
 // Device labels are hints; unknown devices retain a generic input/output icon.
 function audioDeviceIcon(label: string, direction: "input" | "output"): AudioDeviceIcon {
@@ -169,7 +166,7 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
   const SettingsButton = () => (
     <button
       type="button"
-      class={styles.iconButton}
+      class={controls.control}
       aria-label={messages().voiceSettings ?? "Voice settings"}
       aria-expanded={settingsOpen()}
       aria-controls={settingsId}
@@ -178,7 +175,7 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
         setSettingsOpen(!settingsOpen());
       }}
     >
-      <MaterialIcon name="settings" />
+      <VoiceIcon name="settings" />
     </button>
   );
   const [spacerHeight, setSpacerHeight] = createSignal(0);
@@ -297,12 +294,12 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
               <button
                 ref={connectButton}
                 type="button"
-                class={styles.micButton}
+                class={`${controls.control} ${controls.outlined}`}
                 onClick={() => handleMicClick()}
                 title={messages().connect}
                 aria-label={messages().connect}
               >
-                <MaterialIcon name="mic" />
+                <VoiceIcon name="mic" />
               </button>
             </div>
           </Show>
@@ -379,11 +376,11 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
               <h2>{messages().voiceSettings ?? "Voice settings"}</h2>
               <button
                 type="button"
-                class={styles.iconButton}
+                class={controls.control}
                 aria-label={messages().closeVoiceSettings ?? "Close voice settings"}
                 onClick={closeSettings}
               >
-                <MaterialIcon name="close" />
+                <VoiceIcon name="close" />
               </button>
             </div>
             <VoiceSettings messages={messages} onError={setSettingsError} onLanguageError={setLanguageError} />
@@ -420,7 +417,7 @@ function ConnectingPanel(props: {
   return (
     <div class={`${styles.row} ${styles.statusConnecting}`}>
       {props.settingsButton()}
-      <MaterialIcon name="mic" />
+      <VoiceIcon name="mic" />
       <span class={styles.statusText}>
         {props.phase === "setup" && voiceSession.state.mode === "browser"
           ? (props.messages().settingUpBrowserSpeech ?? props.status)
@@ -428,12 +425,12 @@ function ConnectingPanel(props: {
       </span>
       <button
         type="button"
-        class={styles.iconButton}
+        class={controls.control}
         onClick={() => props.onDisconnect()}
         title={props.messages().cancel}
         aria-label={props.messages().cancelConnection}
       >
-        <MaterialIcon name="close" />
+        <VoiceIcon name="close" />
       </button>
     </div>
   );
@@ -455,21 +452,21 @@ function ErrorPanel(props: {
         {props.settingsButton()}
         <button
           type="button"
-          class={styles.iconButton}
+          class={controls.control}
           onClick={() => props.onRetry()}
           title={props.messages().retry}
           aria-label={props.messages().retry}
         >
-          <MaterialIcon name="refresh" />
+          <VoiceIcon name="refresh" />
         </button>
         <button
           type="button"
-          class={styles.iconButton}
+          class={controls.control}
           onClick={() => props.onDismiss()}
           title={props.messages().dismiss ?? "Dismiss"}
           aria-label={props.messages().dismiss ?? "Dismiss"}
         >
-          <MaterialIcon name="close" />
+          <VoiceIcon name="close" />
         </button>
       </div>
     </div>
@@ -519,23 +516,23 @@ function ActivePanel(props: {
           {props.settingsButton()}
           <button
             type="button"
-            class={`${styles.iconButton}${props.state.muted ? " " + styles.iconButtonMuted : ""}`}
+            class={`${controls.control}${props.state.muted ? " " + controls.muted : ""}`}
             onClick={() => props.onToggleMute()}
             title={props.state.muted ? props.messages().unmute : props.messages().mute}
             aria-label={props.state.muted ? props.messages().unmute : props.messages().mute}
           >
-            <Show when={props.state.muted} fallback={<MaterialIcon name="mic" />}>
-              <MaterialIcon name="micOff" />
+            <Show when={props.state.muted} fallback={<VoiceIcon name="mic" />}>
+              <VoiceIcon name="micOff" />
             </Show>
           </button>
           <button
             type="button"
-            class={`${styles.iconButton} ${styles.iconButtonEnd}`}
+            class={`${controls.control} ${controls.danger}`}
             onClick={() => props.onDisconnect()}
             title={props.messages().endSession}
             aria-label={props.messages().endSession}
           >
-            <MaterialIcon name="callEnd" />
+            <VoiceIcon name="callEnd" />
           </button>
         </div>
       </div>
@@ -591,11 +588,12 @@ function AudioDevicePicker(props: {
   onSelectOutput: (id: string) => Promise<void>;
   switching: boolean;
 }) {
+  const canSelectOutput = "setSinkId" in HTMLMediaElement.prototype;
   return (
     <div class={styles.deviceRow}>
       <div class={styles.deviceField}>
-        <span class={styles.deviceControl}>
-          <MaterialIcon
+        <span class={`${styles.deviceControl} ${controls.control} ${controls.outlined}`}>
+          <VoiceIcon
             name={audioDeviceIcon(
               props.inputs.find((d) => d.deviceId === (props.selectedInputId || "default"))?.label ?? "",
               "input",
@@ -631,10 +629,13 @@ function AudioDevicePicker(props: {
         </span>
       </div>
       <div class={styles.deviceField}>
-        <span class={styles.deviceControl}>
-          <MaterialIcon
+        <span
+          class={styles.deviceControl}
+          classList={{ [controls.control]: canSelectOutput, [controls.outlined]: canSelectOutput }}
+        >
+          <VoiceIcon
             name={
-              "setSinkId" in HTMLMediaElement.prototype
+              canSelectOutput
                 ? audioDeviceIcon(
                     props.outputs.find((d) => d.deviceId === (props.selectedOutputId || "default"))?.label ?? "",
                     "output",
@@ -643,7 +644,7 @@ function AudioDevicePicker(props: {
             }
           />
           <Show
-            when={"setSinkId" in HTMLMediaElement.prototype}
+            when={canSelectOutput}
             fallback={
               <span class={styles.deviceHint}>
                 {props.messages().systemAudioSettings ?? defaultVoiceOverlayMessages.systemAudioSettings}
