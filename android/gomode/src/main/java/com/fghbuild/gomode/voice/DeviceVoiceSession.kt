@@ -23,12 +23,17 @@ import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -48,6 +53,9 @@ import java.util.concurrent.atomic.AtomicLong
 
 private const val TAG = "GoModeDeviceVoice"
 private const val TEXT_SESSION_PATH = "/api/voicegateway/v1/voice/text"
+
+private val VoiceState.needsThinkingAudio: Boolean
+    get() = connected && turnState == TurnState.Thinking && !listening && !speaking && !muted
 
 private val deviceWebSocketClient: OkHttpClient by lazy {
     OkHttpClient
@@ -94,6 +102,7 @@ internal class DeviceVoiceSession(
     private val localModelOwner: LocalModelOwner = (appContext.applicationContext as GoModeApplication).localModelOwner,
     private val speech: DeviceSpeech = AndroidDeviceSpeech(appContext, languageTag),
     voiceChimePlayer: VoiceChimePlayer = AndroidVoiceChime(),
+    private val thinkingEarcon: ThinkingEarcon = AndroidThinkingEarcon(),
     private val callController: VoiceCallController = NoopVoiceCallController(),
     private val switchServer: suspend (String) -> Unit = { id -> settingsRepository.switchService(id) },
     private val setupProvider: suspend () -> VoiceSetup = {
@@ -121,6 +130,22 @@ internal class DeviceVoiceSession(
 
     private val _state = MutableStateFlow(VoiceState())
     override val state: StateFlow<VoiceState> = _state.asStateFlow()
+
+    private val thinkingAudioJob =
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            state
+                .map {
+                    it.needsThinkingAudio
+                }.distinctUntilChanged()
+                .collectLatest { thinking ->
+                    thinkingEarcon.setThinking(false)
+                    if (thinking) {
+                        // Keep quick turns and short pauses between speech fragments silent.
+                        delay(200)
+                        thinkingEarcon.setThinking(state.value.needsThinkingAudio)
+                    }
+                }
+        }
 
     private var connectJob: Job? = null
     private var webSocket: WebSocket? = null
@@ -163,6 +188,8 @@ internal class DeviceVoiceSession(
         preserveTranscript: Boolean,
         conversationID: String?,
     ) {
+        thinkingEarcon.setThinking(false)
+        _state.update { it.copy(turnState = TurnState.Idle) }
         val attempt = invalidateAttempt()
         awaitingModelTurn = false
         connectJob?.cancel()
@@ -400,6 +427,7 @@ internal class DeviceVoiceSession(
 
                 MessageKind.TurnStatus -> {
                     val msg = json.decodeFromString(TurnStatus.serializer(), text)
+                    if (msg.state != TurnState.Thinking) thinkingEarcon.setThinking(false)
                     _state.update { it.copy(turnState = msg.state) }
                     if (msg.state == TurnState.Idle) {
                         if (!pendingGatewayTools.containsKey(attempt)) awaitingModelTurn = false
@@ -423,7 +451,7 @@ internal class DeviceVoiceSession(
                     speech.stopSpeaking()
                     pendingSpeech = 0
                     turnIdle = true
-                    _state.update { it.copy(speaking = false, activeTool = null) }
+                    _state.update { it.copy(speaking = false, activeTool = null, turnState = TurnState.Idle) }
                     maybeStartListening()
                 }
 
@@ -460,6 +488,7 @@ internal class DeviceVoiceSession(
 
     private fun speak(fragment: String) {
         if (fragment.isBlank() || muted) return
+        thinkingEarcon.setThinking(false)
         val attempt = attemptGeneration.get()
         pendingSpeech++
         speakerActive = true
@@ -530,6 +559,7 @@ internal class DeviceVoiceSession(
         if (!turnIdle) return
         if (pendingSpeech > 0 || speakerActive) return
         if (_state.value.listening) return
+        thinkingEarcon.setThinking(false)
         val attempt = attemptGeneration.get()
         val recognition = ++listeningGeneration
 
@@ -606,6 +636,7 @@ internal class DeviceVoiceSession(
                 )
                 if (ownsAttempt(attempt)) {
                     awaitingModelTurn = false
+                    thinkingEarcon.setThinking(false)
                     finalizeAssistantReply()
                     speak(segmenter.flush())
                     turnIdle = true
@@ -808,6 +839,7 @@ internal class DeviceVoiceSession(
 
     override fun disconnect() {
         voiceConversation?.finish()
+        thinkingEarcon.setThinking(false)
         invalidateAttempt()
         connectJob?.cancel()
         connectJob = null
@@ -837,6 +869,7 @@ internal class DeviceVoiceSession(
 
     override fun setError(message: String) {
         voiceConversation?.finish()
+        thinkingEarcon.setThinking(false)
         invalidateAttempt()
         connectJob?.cancel()
         connectJob = null
@@ -914,6 +947,7 @@ internal class DeviceVoiceSession(
     }
 
     override fun close() {
+        thinkingAudioJob.cancel()
         audioStateJob.cancel()
         disconnect()
         speech.close()

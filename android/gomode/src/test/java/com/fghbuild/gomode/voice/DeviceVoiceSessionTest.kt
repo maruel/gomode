@@ -23,7 +23,10 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withContext
@@ -1500,6 +1503,7 @@ class DeviceVoiceSessionTest {
         setupProvider: suspend () -> VoiceSetup = { testSetup() },
         localModelOwner: LocalModelOwner = (RuntimeEnvironment.getApplication() as GoModeApplication).localModelOwner,
         voiceConversation: VoiceConversation? = null,
+        thinkingEarcon: ThinkingEarcon = RecordingThinkingEarcon(),
         factory: (Request, WebSocketListener) -> WebSocket = { _, _ -> FakeWebSocket() },
     ): DeviceVoiceSession {
         val localConversation =
@@ -1524,6 +1528,7 @@ class DeviceVoiceSessionTest {
             languageTag = languageTag,
             localModelOwner = localModelOwner,
             voiceChimePlayer = NoopChime(),
+            thinkingEarcon = thinkingEarcon,
             callController = calls,
             setupProvider = setupProvider,
             webSocketFactory = factory,
@@ -1531,6 +1536,144 @@ class DeviceVoiceSessionTest {
             engineFactory = engineFactory,
         )
     }
+
+    private class RecordingThinkingEarcon : ThinkingEarcon {
+        var playing = false
+
+        override fun setThinking(active: Boolean) {
+            playing = active
+        }
+    }
+
+    @Test
+    fun `slow local turns keep thinking audio until completion and disconnect cancels it`() =
+        runTest {
+            Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
+            val speech = FakeSpeech()
+            val earcon = RecordingThinkingEarcon()
+            var finish = CompletableDeferred<Unit>()
+            val repo = SettingsRepository(InMemoryPreferencesDataStore())
+            selectEngine(repo, OnDeviceEngine.NEUDECIDE)
+            val session =
+                createSession(
+                    speech,
+                    settingsRepo = repo,
+                    thinkingEarcon = earcon,
+                    engineFactory = { type ->
+                        object : OnDeviceVoiceEngine {
+                            override val engineType = type
+
+                            override suspend fun initialize(context: EngineSessionContext) = Unit
+
+                            override suspend fun injectContext(text: String) = Unit
+
+                            override fun close() = Unit
+
+                            override suspend fun processTurn(
+                                input: UserTurnInput,
+                                onDelta: (String) -> Unit,
+                                onToolCall: suspend (com.caic.voicegateway.sdk.v1.ToolCall) ->
+                                kotlinx.serialization.json.JsonElement?,
+                            ): EngineTurnResult {
+                                finish.await()
+                                return EngineTurnResult()
+                            }
+                        }
+                    },
+                )
+            session.connect()
+            requireNotNull(speech.resultCallback)("Take your time")
+            assertFalse("quick turns should stay silent", earcon.playing)
+            advanceTimeBy(199)
+            runCurrent()
+            assertFalse("thinking audio waits for the grace period", earcon.playing)
+            advanceTimeBy(1)
+            runCurrent()
+            assertTrue(earcon.playing)
+            assertFalse(speech.listening)
+            finish.complete(Unit)
+            assertFalse(earcon.playing)
+            assertTrue(speech.listening)
+            finish = CompletableDeferred()
+            requireNotNull(speech.resultCallback)("Another slow turn")
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertTrue(earcon.playing)
+            session.connect()
+            assertFalse("reconnecting ends the old thinking cue", earcon.playing)
+            finish.complete(Unit)
+            finish = CompletableDeferred()
+            requireNotNull(speech.resultCallback)("One last turn")
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertTrue(earcon.playing)
+            session.close()
+            assertFalse(earcon.playing)
+            finish.complete(Unit)
+            assertFalse("late completion must not restart audio", earcon.playing)
+        }
+
+    @Test
+    fun `thinking audio stops for speech idle interruption mute error and disconnect`() =
+        runTest {
+            Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
+            val speech = FakeSpeech(completeSpeechImmediately = false)
+            val earcon = RecordingThinkingEarcon()
+            val socket = FakeWebSocket()
+            var listener: WebSocketListener? = null
+            val session =
+                createSession(speech, thinkingEarcon = earcon) { _, captured ->
+                    listener = captured
+                    socket
+                }
+            session.connect()
+            val connected = requireNotNull(listener)
+            connected.onOpen(socket, upgradeResponse())
+            connected.onMessage(socket, """{"kind":"session.ready"}""")
+
+            fun thinking() {
+                connected.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
+                advanceTimeBy(1_000)
+                runCurrent()
+                assertTrue(earcon.playing)
+                assertFalse(speech.listening)
+            }
+            connected.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
+            advanceTimeBy(199)
+            runCurrent()
+            assertFalse(earcon.playing)
+            connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertFalse("ending a quick turn cancels the pending earcon", earcon.playing)
+            requireNotNull(speech.resultCallback)("Start")
+            thinking()
+            connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Hello."}""")
+            assertFalse(earcon.playing)
+            speech.speechCompletions.removeAt(0).invoke()
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertTrue(earcon.playing)
+            connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+            assertFalse(earcon.playing)
+            assertTrue(speech.listening)
+            requireNotNull(speech.resultCallback)("Next")
+            thinking()
+            session.toggleMute()
+            assertFalse(earcon.playing)
+            session.toggleMute()
+            advanceTimeBy(1_000)
+            runCurrent()
+            assertTrue(earcon.playing)
+            connected.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
+            assertFalse(earcon.playing)
+            requireNotNull(speech.resultCallback)("Again")
+            thinking()
+            session.setError("Failed")
+            assertFalse(earcon.playing)
+            session.close()
+            assertFalse(earcon.playing)
+        }
 
     @Test
     fun `native tools reject non-object arguments over the device transport`() =

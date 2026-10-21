@@ -978,7 +978,8 @@ describe("VoiceSession", () => {
   });
 
   it("tracks gateway turn status until disconnect", async () => {
-    const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
+    const earcon = { prepare: vi.fn(), setThinking: vi.fn() };
+    const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() }, earcon);
     await session.connect();
     const channel = FakePeerConnection.dataChannels[0];
     channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindSessionReady }) }));
@@ -986,6 +987,8 @@ describe("VoiceSession", () => {
       new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindTurnStatus, state: TurnStateThinking }) }),
     );
     await vi.waitFor(() => expect(session.state.turnState).toBe(TurnStateThinking));
+    expect(earcon.prepare).not.toHaveBeenCalled();
+    expect(earcon.setThinking).not.toHaveBeenCalledWith(true);
 
     session.disconnect();
     expect(session.state.turnState).toBe(TurnStateIdle);

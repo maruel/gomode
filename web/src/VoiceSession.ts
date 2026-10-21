@@ -33,6 +33,7 @@ import {
   MessageKindTranscriptDelta,
   MessageKindTurnStatus,
   TurnStateIdle,
+  TurnStateThinking,
   type ServiceAuthorization,
   type VoiceChoice,
   type VoiceChoicesResp,
@@ -42,6 +43,7 @@ import { mcpClient, type McpToolDescriptor } from "./McpClient";
 import { executeFrontendVoiceTool, frontendVoiceToolDeclarations } from "./FrontendVoiceTools";
 import { GO_MODE_ITEMS_RESOURCE_URI, initialServiceContext } from "./ServiceItems";
 import { WebAudioVoiceChime, type VoiceChimePlayer } from "./VoiceChime";
+import { WebAudioThinkingEarcon, type ThinkingEarcon } from "./ThinkingEarcon";
 import { BrowserSpeech, browserSpeechAvailable, browserSpeechAvoidsChimes } from "./BrowserSpeech";
 
 // Constants
@@ -538,8 +540,9 @@ export class VoiceSession {
   private _outputPreferenceProvisional = false;
   private _voiceModeActive = false;
   private readonly _chime: VoiceChimePlayer;
+  private readonly _thinkingEarcon: ThinkingEarcon;
 
-  constructor(chime?: VoiceChimePlayer) {
+  constructor(chime?: VoiceChimePlayer, thinkingEarcon?: ThinkingEarcon) {
     const [state, setState] = createStore<VoiceState>({
       mode: savedVoiceMode(),
       choices: [],
@@ -573,6 +576,7 @@ export class VoiceSession {
     this.state = state;
     this.setState = setState as (fn: (s: VoiceState) => VoiceState) => void;
     this._chime = chime ?? new WebAudioVoiceChime();
+    this._thinkingEarcon = thinkingEarcon ?? new WebAudioThinkingEarcon();
   }
 
   // -----------------------------------------------------------------------
@@ -1044,6 +1048,7 @@ export class VoiceSession {
       return;
     }
     this._chime.prepare();
+    if (this.state.mode === "browser") this._thinkingEarcon.prepare();
   }
 
   /** Start a new voice session via WebRTC data channel through the host backend. */
@@ -1349,8 +1354,10 @@ export class VoiceSession {
   }
 
   private _startBrowserListening(): void {
-    if (this.state.connected && !this.state.muted && !this.state.speaking && this._browserTurnIdle)
+    if (this.state.connected && !this.state.muted && !this.state.speaking && this._browserTurnIdle) {
+      this._thinkingEarcon.setThinking(false);
       this._browserSpeech?.listen();
+    }
   }
 
   private _finishBrowserTurn(attempt: number, channel: VoiceChannel): void {
@@ -1469,6 +1476,7 @@ export class VoiceSession {
 
   /** Release WebRTC transport and audio resources. */
   private _releaseAll(): void {
+    this._thinkingEarcon.setThinking(false);
     if (this._micMonitorFrame !== null) cancelAnimationFrame(this._micMonitorFrame);
     this._micMonitorFrame = null;
     const socket = this._textSocket;
@@ -1620,6 +1628,19 @@ export class VoiceSession {
 
   private _update(fn: (s: VoiceState) => void): void {
     this.setState(produce(fn));
+    untrack(() => {
+      const state = this.state;
+      this._thinkingEarcon.setThinking(
+        state.mode === "browser" &&
+          !browserSpeechAvoidsChimes() &&
+          this._browserSpeech !== null &&
+          state.connected &&
+          state.turnState === TurnStateThinking &&
+          !state.listening &&
+          !state.speaking &&
+          !state.muted,
+      );
+    });
   }
 
   // -----------------------------------------------------------------------
@@ -1723,6 +1744,7 @@ export class VoiceSession {
       this._update((s) => {
         s.speaking = false;
         s.activeTool = null;
+        s.turnState = TurnStateIdle;
       });
       return;
     }

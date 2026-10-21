@@ -37,6 +37,7 @@ class FakeWebSocket {
 
 const originalFetch = globalThis.fetch;
 const chime = { prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() };
+const earcon = { prepare: vi.fn(), setThinking: vi.fn() };
 const callTool = vi.spyOn(mcpClient, "callTool");
 let restore: () => void;
 let session: VoiceSession;
@@ -68,7 +69,7 @@ beforeEach(() => {
   vi.spyOn(mcpClient, "listTools").mockResolvedValue([]);
   vi.spyOn(mcpClient, "readAdvertisedTextResource").mockResolvedValue(null);
   configureVoiceGateway("https://gateway.example", null);
-  session = new VoiceSession(chime);
+  session = new VoiceSession(chime, earcon);
   session.selectMode("browser");
 });
 afterEach(() => {
@@ -101,6 +102,64 @@ function finishTurn(socket: FakeWebSocket, text: string): void {
 }
 
 describe("browser voice sessions", () => {
+  it("plays thinking feedback through tool waits and stops for turn end, mute, interruption and teardown", async () => {
+    const socket = await readySocket();
+    expect(earcon.prepare).toHaveBeenCalledOnce();
+    socket.message({ kind: "turn.status", state: "thinking" });
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(true);
+    // Streaming text is buffered until idle; a long generation still needs feedback.
+    socket.message({ kind: "assistant.text.delta", text: "Working on it." });
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(true);
+    let completeTool: (value: Awaited<ReturnType<typeof mcpClient.callTool>>) => void = () => {
+      throw new Error("tool not started");
+    };
+    callTool.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          completeTool = resolve;
+        }),
+    );
+    socket.message({ kind: "tool.call", id: "slow", name: "example", args: {} });
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(true);
+    session.toggleMute();
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(false);
+    session.toggleMute();
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(true);
+    completeTool({ structuredContent: {}, isError: false });
+    await Promise.resolve();
+    socket.message({ kind: "turn.status", state: "idle" });
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(false);
+    expect(session.state.speaking).toBe(true);
+    fakeSynthesis.complete();
+    expect(session.state.listening).toBe(true);
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(false);
+    socket.message({ kind: "turn.status", state: "thinking" });
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(true);
+    socket.message({ kind: "interrupted", source: "user" });
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(false);
+    socket.message({ kind: "turn.status", state: "thinking" });
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(true);
+    session.disconnect();
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(false);
+    socket.message({ kind: "turn.status", state: "thinking" });
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(false);
+  });
+
+  it("stops thinking feedback on connection errors and reconnects", async () => {
+    const socket = await readySocket();
+    socket.message({ kind: "turn.status", state: "thinking" });
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(true);
+    socket.onerror?.();
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(false);
+    await session.connect();
+    const replacement = FakeWebSocket.instances[1];
+    replacement.open();
+    replacement.message({ kind: "session.ready" });
+    replacement.message({ kind: "turn.status", state: "thinking" });
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(true);
+    await session.connect();
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(false);
+  });
   it("uses a text choice and one-shot Android recognition when an audio-only choice was saved", async () => {
     Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Chrome Android" });
     localStorage.setItem("gomode.voiceChoice.https://gateway.example", "gemini");
@@ -304,6 +363,9 @@ describe("browser voice sessions", () => {
     Object.defineProperty(navigator, "userAgent", { configurable: true, value: "iPhone Safari" });
     await readySocket();
     expect(chime.prepare).not.toHaveBeenCalled();
+    expect(earcon.prepare).not.toHaveBeenCalled();
+    FakeWebSocket.instances[0].message({ kind: "turn.status", state: "thinking" });
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(false);
     expect(chime.playConnected).not.toHaveBeenCalled();
     session.disconnect();
     expect(chime.playDisconnected).not.toHaveBeenCalled();
