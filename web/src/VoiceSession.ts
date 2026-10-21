@@ -446,13 +446,18 @@ function resolveVoiceChoice(metadata: VoiceChoicesResp, mode: VoiceMode, selecte
   return choice.id;
 }
 
-// Browsers expose no transport type. Match explicit Bluetooth labels and common
-// AirPods labels; opaque device names are restored by their saved device ID.
+// bluetoothAudioDeviceLabel recognizes explicit Bluetooth and common AirPods labels.
+// Browsers do not expose audio transport types.
+export function bluetoothAudioDeviceLabel(label: string): boolean {
+  return /\b(bluetooth|airpods|bt)\b/i.test(label);
+}
+
+// Opaque Bluetooth device names are restored by their saved device ID.
 function bluetoothAudioDevice(device: AudioDevice, rememberedId: string | null): boolean {
   return (
     device.deviceId !== "default" &&
     device.deviceId !== "communications" &&
-    (device.deviceId === rememberedId || /\b(bluetooth|airpods|bt)\b/i.test(device.label))
+    (device.deviceId === rememberedId || bluetoothAudioDeviceLabel(device.label))
   );
 }
 

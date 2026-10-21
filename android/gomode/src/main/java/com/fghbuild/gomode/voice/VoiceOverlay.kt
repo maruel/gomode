@@ -1,12 +1,14 @@
 // Full-width bottom shell panel composable: settings, voice controls, status, and transcript display.
 package com.fghbuild.gomode.voice
 
+import android.media.AudioDeviceInfo
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -30,20 +32,27 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.PhoneInTalk
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.SwapHoriz
-import androidx.compose.material3.FilterChip
+import androidx.compose.material.icons.filled.Usb
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedIconToggleButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -59,6 +68,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -434,21 +445,67 @@ private fun AudioDevicePicker(
     switching: Boolean,
     onSelect: (Int) -> Unit,
 ) {
-    Column {
-        Text("Audio output", style = MaterialTheme.typography.labelSmall)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            devices.forEach { device ->
-                FilterChip(
-                    modifier = Modifier.testTag("gomode-voice-audio-${device.id}"),
-                    selected = device.id == selectedDeviceId,
-                    enabled = !switching,
-                    onClick = { onSelect(device.id) },
-                    label = { Text(device.name) },
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        devices.forEach { device ->
+            val selected = device.id == selectedDeviceId
+            OutlinedIconToggleButton(
+                modifier = Modifier.testTag("gomode-voice-audio-${device.id}"),
+                checked = selected,
+                enabled = !switching,
+                onCheckedChange = { onSelect(device.id) },
+                border =
+                    if (selected) {
+                        BorderStroke(
+                            1.dp,
+                            if (switching) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.primary,
+                        )
+                    } else {
+                        null
+                    },
+                colors =
+                    IconButtonDefaults.outlinedIconToggleButtonColors(
+                        checkedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        checkedContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        disabledContainerColor =
+                            if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                    ),
+            ) {
+                Icon(
+                    audioDeviceIcon(device.type),
+                    contentDescription = device.name,
+                    modifier = Modifier.size(24.dp).testTag("gomode-voice-audio-icon-${device.id}"),
                 )
             }
         }
     }
 }
+
+internal fun audioDeviceIcon(type: Int): ImageVector =
+    when (type) {
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+        AudioDeviceInfo.TYPE_BLE_BROADCAST,
+        AudioDeviceInfo.TYPE_BLE_HEADSET,
+        AudioDeviceInfo.TYPE_BLE_SPEAKER,
+        -> Icons.Default.Bluetooth
+
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+        AudioDeviceInfo.TYPE_WIRED_HEADSET,
+        AudioDeviceInfo.TYPE_USB_HEADSET,
+        -> Icons.Default.Headphones
+
+        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> Icons.Default.PhoneInTalk
+
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER_SAFE,
+        -> Icons.Default.Speaker
+
+        AudioDeviceInfo.TYPE_USB_ACCESSORY,
+        AudioDeviceInfo.TYPE_USB_DEVICE,
+        -> Icons.Default.Usb
+
+        else -> Icons.Default.VolumeUp
+    }
 
 @Composable
 private fun TranscriptLog(

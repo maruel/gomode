@@ -1,6 +1,7 @@
 // Compose UI tests for the compact and expandable Go Mode voice panel transcript.
 package com.fghbuild.gomode.voice
 
+import android.media.AudioDeviceInfo
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
@@ -12,7 +13,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
-import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -179,7 +180,14 @@ class VoicePanelTest {
                     voiceState =
                         VoiceState(
                             connected = true,
-                            availableDevices = listOf(AudioDevice(1, 1, "Earpiece"), AudioDevice(2, 2, "Headphones")),
+                            availableDevices =
+                                listOf(
+                                    AudioDevice(1, AudioDeviceInfo.TYPE_BUILTIN_EARPIECE, "Earpiece"),
+                                    AudioDevice(2, AudioDeviceInfo.TYPE_WIRED_HEADPHONES, "Headphones"),
+                                    AudioDevice(3, AudioDeviceInfo.TYPE_BLE_HEADSET, "Bluetooth headset"),
+                                    AudioDevice(4, AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, "Speaker"),
+                                    AudioDevice(5, AudioDeviceInfo.TYPE_USB_DEVICE, "USB audio"),
+                                ),
                             selectedDeviceId = 1,
                         ),
                     voiceEnabled = true,
@@ -195,8 +203,10 @@ class VoicePanelTest {
                 )
             }
         }
-        composeRule.onNodeWithText("Audio output").assertIsDisplayed()
-        composeRule.onNodeWithTag("gomode-voice-audio-1").assertIsSelected()
+        composeRule.onNodeWithTag("gomode-voice-audio-1").assertIsOn()
+        for (id in 1..5) {
+            composeRule.onNodeWithTag("gomode-voice-audio-icon-$id", useUnmergedTree = true).assertIsDisplayed()
+        }
         composeRule.onNodeWithTag("gomode-voice-audio-2").assertIsDisplayed().performClick()
         assertEquals(2, selected)
     }

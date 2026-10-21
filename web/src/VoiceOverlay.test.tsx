@@ -63,6 +63,59 @@ afterEach(() => {
 });
 
 describe("VoiceOverlay status", () => {
+  it("shows label-based device icons while preserving native selectors and names", async () => {
+    Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true, value: vi.fn() });
+    const select = vi.spyOn(voiceSession, "selectOutputDevice").mockImplementation(async (id) => {
+      voiceSession.setState((s) => ({ ...s, selectedOutputId: id }));
+    });
+    try {
+      voiceSession.setState((s) => ({
+        ...s,
+        connected: true,
+        audioInputs: [{ deviceId: "usb-mic", kind: "audioinput", label: "USB headset microphone" }],
+        selectedInputId: "usb-mic",
+        audioOutputs: [
+          { deviceId: "bt", kind: "audiooutput", label: "AirPods Pro" },
+          { deviceId: "speakers", kind: "audiooutput", label: "Built-in speakers" },
+          { deviceId: "headset", kind: "audiooutput", label: "Wired headphones" },
+          { deviceId: "usb", kind: "audiooutput", label: "USB audio" },
+          { deviceId: "phone", kind: "audiooutput", label: "Handset" },
+          { deviceId: "unknown", kind: "audiooutput", label: "BTS Studio 3000" },
+        ],
+      }));
+      render(() => <VoiceOverlay />);
+      const input = screen.getByRole("combobox", { name: "Microphone" });
+      expect(input.parentElement?.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe("headphones");
+      const output = screen.getByRole("combobox", { name: "Speaker" });
+      const user = userEvent.setup();
+      for (const [id, name, icon] of [
+        ["bt", "AirPods Pro", "bluetooth"],
+        ["speakers", "Built-in speakers", "speaker"],
+        ["headset", "Wired headphones", "headphones"],
+        ["usb", "USB audio", "usb"],
+        ["phone", "Handset", "phoneInTalk"],
+        ["unknown", "BTS Studio 3000", "volumeUp"],
+      ]) {
+        await user.selectOptions(output, id);
+        expect(output).toHaveValue(id);
+        expect(screen.getByRole("option", { name })).toBeInTheDocument();
+        expect(output.parentElement?.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe(icon);
+      }
+      voiceSession.setState((s) => ({ ...s, audioOutputs: [], selectedInputId: "missing" }));
+      expect(output.parentElement?.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe("volumeUp");
+      expect(input.parentElement?.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe("mic");
+      voiceSession.setState((s) => ({
+        ...s,
+        audioOutputs: [{ deviceId: "default", kind: "audiooutput", label: "Default - Bluetooth headset" }],
+        selectedOutputId: "",
+      }));
+      expect(output.parentElement?.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe("bluetooth");
+    } finally {
+      select.mockRestore();
+      Reflect.deleteProperty(HTMLMediaElement.prototype, "setSinkId");
+    }
+  });
+
   it("offers named icon actions and restores focus after dismissing an error", async () => {
     voiceSession.setState((s) => ({ ...s, error: "Voice gateway unavailable (HTTP 502)." }));
     render(() => <VoiceOverlay />);
@@ -137,6 +190,12 @@ describe("VoiceOverlay status", () => {
     render(() => <VoiceOverlay />);
     expect(screen.getByRole("combobox", { name: "Microphone" })).toHaveValue("usb");
     expect(screen.getByText("Use your device’s sound settings to change the speaker.")).toBeInTheDocument();
+    expect(
+      screen
+        .getByText("Use your device’s sound settings to change the speaker.")
+        .parentElement?.querySelector("[data-icon]")
+        ?.getAttribute("data-icon"),
+    ).toBe("volumeUp");
     voiceSession.setState((s) => ({ ...s, audioSwitching: "input", audioInputError: "Microphone permission denied" }));
     expect(screen.getByRole("combobox", { name: "Microphone" })).toBeDisabled();
     expect(screen.getByRole("alert")).toHaveTextContent("Microphone permission denied");

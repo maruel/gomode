@@ -13,15 +13,27 @@ import {
 } from "solid-js";
 
 import { TurnStateThinking, TurnStateTranscribing } from "../../sdk/voicegateway/ts/v1/types.gen";
-import { voiceSession } from "./VoiceSession";
+import { bluetoothAudioDeviceLabel, voiceSession } from "./VoiceSession";
 import type { VoiceState, TranscriptEntry } from "./VoiceSession";
 import { notifications } from "./notifications";
 import VoiceSettings, { defaultVoiceSettingsMessages, type VoiceSettingsMessages } from "./VoiceSettings";
 import styles from "./VoiceOverlay.module.css";
 
 // Official Material Symbols assets are loaded by the component stylesheet.
-function MaterialIcon(props: { name: "callEnd" | "close" | "mic" | "micOff" | "refresh" | "settings" }) {
-  return <span class={`${styles.materialIcon} ${styles[props.name]}`} aria-hidden="true" />;
+type AudioDeviceIcon = "bluetooth" | "headphones" | "mic" | "phoneInTalk" | "speaker" | "usb" | "volumeUp";
+
+function MaterialIcon(props: { name: AudioDeviceIcon | "callEnd" | "close" | "micOff" | "refresh" | "settings" }) {
+  return <span class={`${styles.materialIcon} ${styles[props.name]}`} data-icon={props.name} aria-hidden="true" />;
+}
+
+// Device labels are hints; unknown devices retain a generic input/output icon.
+function audioDeviceIcon(label: string, direction: "input" | "output"): AudioDeviceIcon {
+  if (bluetoothAudioDeviceLabel(label)) return "bluetooth";
+  if (/\b(headsets?|headphones?|earbuds?)\b/i.test(label)) return "headphones";
+  if (/\b(earpiece|handset)\b/i.test(label)) return "phoneInTalk";
+  if (/\busb\b/i.test(label)) return "usb";
+  if (/\bspeakers?\b/i.test(label)) return "speaker";
+  return direction === "input" ? "mic" : "volumeUp";
 }
 
 /** Bar transition durations (ms): center reacts fastest, outer bars lag. */
@@ -498,30 +510,34 @@ function ActivePanel(props: {
 
   return (
     <>
-      <div class={styles.rowSpaced}>
-        {props.settingsButton()}
-        <MicLevelBars micLevel={props.state.micLevel} />
-        <span class={statusClass()}>{statusText()}</span>
-        <button
-          type="button"
-          class={`${styles.iconButton}${props.state.muted ? " " + styles.iconButtonMuted : ""}`}
-          onClick={() => props.onToggleMute()}
-          title={props.state.muted ? props.messages().unmute : props.messages().mute}
-          aria-label={props.state.muted ? props.messages().unmute : props.messages().mute}
-        >
-          <Show when={props.state.muted} fallback={<MaterialIcon name="mic" />}>
-            <MaterialIcon name="micOff" />
-          </Show>
-        </button>
-        <button
-          type="button"
-          class={`${styles.iconButton} ${styles.iconButtonEnd}`}
-          onClick={() => props.onDisconnect()}
-          title={props.messages().endSession}
-          aria-label={props.messages().endSession}
-        >
-          <MaterialIcon name="callEnd" />
-        </button>
+      <div class={styles.callToolbar}>
+        <div class={styles.callStatus}>
+          <MicLevelBars micLevel={props.state.micLevel} />
+          <span class={statusClass()}>{statusText()}</span>
+        </div>
+        <div class={styles.callActions}>
+          {props.settingsButton()}
+          <button
+            type="button"
+            class={`${styles.iconButton}${props.state.muted ? " " + styles.iconButtonMuted : ""}`}
+            onClick={() => props.onToggleMute()}
+            title={props.state.muted ? props.messages().unmute : props.messages().mute}
+            aria-label={props.state.muted ? props.messages().unmute : props.messages().mute}
+          >
+            <Show when={props.state.muted} fallback={<MaterialIcon name="mic" />}>
+              <MaterialIcon name="micOff" />
+            </Show>
+          </button>
+          <button
+            type="button"
+            class={`${styles.iconButton} ${styles.iconButtonEnd}`}
+            onClick={() => props.onDisconnect()}
+            title={props.messages().endSession}
+            aria-label={props.messages().endSession}
+          >
+            <MaterialIcon name="callEnd" />
+          </button>
+        </div>
       </div>
       {props.state.mode === "cloud" && (
         <AudioDevicePicker
@@ -577,63 +593,93 @@ function AudioDevicePicker(props: {
 }) {
   return (
     <div class={styles.deviceRow}>
-      <label class={styles.deviceField}>
-        <span>{props.messages().microphone}</span>
-        <select
-          class={styles.deviceSelect}
-          value={props.selectedInputId}
-          onChange={async (e) => {
-            const select = e.currentTarget;
-            await props.onSelectInput(select.value);
-            select.value = props.selectedInputId;
-          }}
-          aria-label={props.messages().microphone}
-          disabled={props.switching}
-        >
-          <option value="">{props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault}</option>
-          <Show when={props.selectedInputId && !props.inputs.some((d) => d.deviceId === props.selectedInputId)}>
-            <option value={props.selectedInputId}>
-              {props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice}
-            </option>
-          </Show>
-          <For each={props.inputs.filter((d) => d.deviceId !== "" && d.deviceId !== "default")}>
-            {(d) => <option value={d.deviceId}>{d.label}</option>}
-          </For>
-        </select>
-      </label>
-      <label class={styles.deviceField}>
-        <span>{props.messages().speaker}</span>
-        <Show
-          when={"setSinkId" in HTMLMediaElement.prototype}
-          fallback={
-            <span class={styles.deviceHint}>
-              {props.messages().systemAudioSettings ?? defaultVoiceOverlayMessages.systemAudioSettings}
-            </span>
-          }
-        >
+      <div class={styles.deviceField}>
+        <span class={styles.deviceControl}>
+          <MaterialIcon
+            name={audioDeviceIcon(
+              props.inputs.find((d) => d.deviceId === (props.selectedInputId || "default"))?.label ?? "",
+              "input",
+            )}
+          />
           <select
             class={styles.deviceSelect}
-            value={props.selectedOutputId}
+            value={props.selectedInputId}
             onChange={async (e) => {
               const select = e.currentTarget;
-              await props.onSelectOutput(select.value);
-              select.value = props.selectedOutputId;
+              await props.onSelectInput(select.value);
+              select.value = props.selectedInputId;
             }}
-            aria-label={props.messages().speaker}
+            title={`${props.messages().microphone}: ${
+              props.inputs.find((d) => d.deviceId === (props.selectedInputId || "default"))?.label ??
+              (props.selectedInputId
+                ? (props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice)
+                : (props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault))
+            }`}
+            aria-label={props.messages().microphone}
             disabled={props.switching}
           >
             <option value="">{props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault}</option>
-            <Show when={props.selectedOutputId && !props.outputs.some((d) => d.deviceId === props.selectedOutputId)}>
-              <option value={props.selectedOutputId}>
+            <Show when={props.selectedInputId && !props.inputs.some((d) => d.deviceId === props.selectedInputId)}>
+              <option value={props.selectedInputId}>
                 {props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice}
               </option>
             </Show>
-            <For each={props.outputs.filter((d) => d.deviceId !== "" && d.deviceId !== "default")}>
+            <For each={props.inputs.filter((d) => d.deviceId !== "" && d.deviceId !== "default")}>
               {(d) => <option value={d.deviceId}>{d.label}</option>}
             </For>
           </select>
-        </Show>
-      </label>
+        </span>
+      </div>
+      <div class={styles.deviceField}>
+        <span class={styles.deviceControl}>
+          <MaterialIcon
+            name={
+              "setSinkId" in HTMLMediaElement.prototype
+                ? audioDeviceIcon(
+                    props.outputs.find((d) => d.deviceId === (props.selectedOutputId || "default"))?.label ?? "",
+                    "output",
+                  )
+                : "volumeUp"
+            }
+          />
+          <Show
+            when={"setSinkId" in HTMLMediaElement.prototype}
+            fallback={
+              <span class={styles.deviceHint}>
+                {props.messages().systemAudioSettings ?? defaultVoiceOverlayMessages.systemAudioSettings}
+              </span>
+            }
+          >
+            <select
+              class={styles.deviceSelect}
+              value={props.selectedOutputId}
+              onChange={async (e) => {
+                const select = e.currentTarget;
+                await props.onSelectOutput(select.value);
+                select.value = props.selectedOutputId;
+              }}
+              title={`${props.messages().speaker}: ${
+                props.outputs.find((d) => d.deviceId === (props.selectedOutputId || "default"))?.label ??
+                (props.selectedOutputId
+                  ? (props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice)
+                  : (props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault))
+              }`}
+              aria-label={props.messages().speaker}
+              disabled={props.switching}
+            >
+              <option value="">{props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault}</option>
+              <Show when={props.selectedOutputId && !props.outputs.some((d) => d.deviceId === props.selectedOutputId)}>
+                <option value={props.selectedOutputId}>
+                  {props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice}
+                </option>
+              </Show>
+              <For each={props.outputs.filter((d) => d.deviceId !== "" && d.deviceId !== "default")}>
+                {(d) => <option value={d.deviceId}>{d.label}</option>}
+              </For>
+            </select>
+          </Show>
+        </span>
+      </div>
     </div>
   );
 }

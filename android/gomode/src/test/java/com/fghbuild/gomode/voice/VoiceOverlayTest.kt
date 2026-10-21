@@ -1,11 +1,25 @@
-// Unit tests for the Go Mode voice overlay status line.
+// Unit tests for the Go Mode voice overlay status line and audio device icons.
 package com.fghbuild.gomode.voice
 
+import android.media.AudioDeviceInfo
 import com.caic.voicegateway.sdk.v1.TurnState
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class VoiceOverlayTest {
+    @Test
+    fun audioDeviceIconsUsePlatformTypesAndHandleUnknownRoutes() {
+        assertEquals("Filled.Bluetooth", audioDeviceIcon(AudioDeviceInfo.TYPE_BLUETOOTH_SCO).name)
+        assertEquals("Filled.Bluetooth", audioDeviceIcon(AudioDeviceInfo.TYPE_BLE_HEADSET).name)
+        assertEquals("Filled.Bluetooth", audioDeviceIcon(AudioDeviceInfo.TYPE_BLE_SPEAKER).name)
+        assertEquals("Filled.Headphones", audioDeviceIcon(AudioDeviceInfo.TYPE_WIRED_HEADSET).name)
+        assertEquals("Filled.Headphones", audioDeviceIcon(AudioDeviceInfo.TYPE_USB_HEADSET).name)
+        assertEquals("Filled.PhoneInTalk", audioDeviceIcon(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE).name)
+        assertEquals("Filled.Speaker", audioDeviceIcon(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER).name)
+        assertEquals("Filled.Usb", audioDeviceIcon(AudioDeviceInfo.TYPE_USB_DEVICE).name)
+        assertEquals("Filled.VolumeUp", audioDeviceIcon(AudioDeviceInfo.TYPE_UNKNOWN).name)
+    }
+
     @Test
     fun voiceStatusTextDistinguishesToolExecutionFromThinking() {
         val thinking = VoiceState(connected = true, turnState = TurnState.Thinking)
