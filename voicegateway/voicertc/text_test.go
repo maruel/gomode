@@ -59,6 +59,10 @@ func TestServeTextSessionCloseLogging(t *testing.T) { //nolint:paralleltest // T
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = conn.CloseNow() })
+			// Wait until the server owns the socket: an immediate disconnect
+			// can cancel the HTTP request context before Hijack completes.
+			writeMessage(t, ctx, conn, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})
+			expectKind(t, ctx, conn, voicev1.MessageKindSessionReady)
 			if tc.abrupt {
 				err = conn.CloseNow()
 			} else {
