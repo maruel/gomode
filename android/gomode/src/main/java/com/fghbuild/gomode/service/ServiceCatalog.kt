@@ -121,10 +121,16 @@ internal class ServiceCatalog(
         return authorization.isCurrent() && (settings == null || endpoint == authorization.endpointURL)
     }
 
-    fun canDeliver(notification: CatalogNotification): Boolean {
-        val member = members[notification.source] ?: return false
-        val prepared = member.prepared ?: return false
-        return member.identityGeneration == notification.identityGeneration && member.current(prepared)
+    fun notificationForDelivery(notification: CatalogNotification): CatalogNotification? {
+        val member = members[notification.source] ?: return null
+        val prepared = member.prepared ?: return null
+        if (member.identityGeneration != notification.identityGeneration || !member.current(prepared)) return null
+        val current =
+            state.value[notification.source]
+                ?.monitoring
+                ?.activeNotifications
+                ?.firstOrNull { it.id == notification.notification.id } ?: return null
+        return notification.copy(notification = current)
     }
 
     fun close() {
@@ -259,7 +265,15 @@ internal class ServiceCatalog(
     private fun publish() {
         mutableState.value =
             members.mapValues { (_, p) ->
-                CatalogService(p.entry.key, p.label, p.status, p.error, p.monitoring)
+                CatalogService(
+                    p.entry.key,
+                    p.label,
+                    p.status,
+                    p.error,
+                    p.monitoring.copy(
+                        activeNotifications = p.monitoring.activeNotifications?.map(p::sourceNotification),
+                    ),
+                )
             }
     }
 
@@ -274,6 +288,16 @@ internal class ServiceCatalog(
         var prepared: PreparedService? = null
         val retry = MutableStateFlow(0)
         private var job: Job? = null
+        private var alertIdentityEpoch = entry.bearerStore.identityEpoch.value
+        private var alertsRevoked = false
+
+        fun sourceNotification(notification: ServiceNotification): ServiceNotification {
+            val serviceLabel = label.trim().ifBlank { entry.key.url }
+            return notification.copy(
+                id = Json.encodeToString(listOf(entry.key.serviceID, entry.key.url, notification.id)),
+                title = "$serviceLabel: ${notification.title}",
+            )
+        }
 
         fun start() {
             job =
@@ -296,7 +320,13 @@ internal class ServiceCatalog(
                     }.collectLatest { identity ->
                         identityGeneration = ++nextIdentityGeneration
                         prepared = null
-                        monitoring = ServiceMonitorState()
+                        val epoch = entry.bearerStore.identityEpoch.value
+                        alertsRevoked = alertsRevoked || epoch != alertIdentityEpoch
+                        alertIdentityEpoch = epoch
+                        monitoring =
+                            ServiceMonitorState(
+                                activeNotifications = emptyList<ServiceNotification>().takeIf { alertsRevoked },
+                            )
                         error = null
                         val ready = identity.bootstrap as? ServiceBootstrapState.Ready
                         when {
@@ -354,13 +384,19 @@ internal class ServiceCatalog(
                     error = null
                     status = ServiceReadiness.READY
                     publish()
-                    if (mcp.capabilities.resources == null) awaitCancellation()
+                    if (mcp.capabilities.resources == null) {
+                        alertsRevoked = false
+                        monitoring = ServiceMonitorState(activeNotifications = emptyList())
+                        publish()
+                        awaitCancellation()
+                    }
                     coroutineScope {
                         val monitor = ServiceMonitor(this) { _, _ -> mcp.client }
                         try {
                             monitor.start(entry.key.url, ready.settings)
                             monitor.state.collect { value ->
-                                monitoring = value
+                                if (value.activeNotifications != null) alertsRevoked = false
+                                monitoring = if (alertsRevoked) value.copy(activeNotifications = emptyList()) else value
                                 error = value.error
                                 status =
                                     if (value.error == null) ServiceReadiness.READY else ServiceReadiness.RECONNECTING
@@ -369,15 +405,7 @@ internal class ServiceCatalog(
                                     mutableNotifications.emit(
                                         CatalogNotification(
                                             entry.key,
-                                            notification.copy(
-                                                id =
-                                                    Json.encodeToString(
-                                                        listOf(entry.key.serviceID, entry.key.url, notification.id),
-                                                    ),
-                                                title = "${label.trim().ifBlank {
-                                                    entry.key.url
-                                                }}: ${notification.title}",
-                                            ),
+                                            sourceNotification(notification),
                                             identityGeneration,
                                         ),
                                     )

@@ -79,7 +79,7 @@ internal fun WebShellScreen(
     var loadFailed by remember(hostURL) { mutableStateOf(false) }
     var automaticRetryState by remember(hostURL) { mutableStateOf(AutomaticTimeoutRetryState()) }
     var recoveryLoadInProgress by remember(hostURL) { mutableStateOf(false) }
-    var appliedReloadToken by remember(hostURL) { mutableStateOf(reloadToken) }
+    var appliedReloadToken by remember(hostURL) { mutableStateOf<Int?>(null) }
     var fileChooserCallback by remember(hostURL) { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
     val currentHostURL by rememberUpdatedState(hostURL)
     val currentServiceID by rememberUpdatedState(serviceID)
@@ -391,16 +391,28 @@ internal fun WebShellScreen(
         }
     }
 
-    LaunchedEffect(hostURL, reloadToken) {
+    LaunchedEffect(webView, reloadToken) {
         if (rendererLost) return@LaunchedEffect
-        if (reloadToken == appliedReloadToken) return@LaunchedEffect
-        appliedReloadToken = reloadToken
-        automaticRetryState = AutomaticTimeoutRetryState()
-        recoveryLoadInProgress = true
-        loadFailed = false
-        loading = true
-        currentOnLoadStateChanged(WebShellLoadState.Reconnecting)
-        serviceSession.reloadPage(webView::reload)
+        val state = serviceSession.state.value
+        // The initial load may see a navigation queued before its caller recomposes.
+        // Apply that command's token once, together with its destination.
+        val token = if (state.navigationURL != null) state.webReloadToken else reloadToken
+        if (token == appliedReloadToken) return@LaunchedEffect
+        val initialLoad = appliedReloadToken == null
+        appliedReloadToken = token
+        val destination = serviceSession.consumeNavigationURL()?.let(::goModeHostURL)
+        if (initialLoad) {
+            webView.loadUrl(destination ?: hostURL)
+        } else {
+            automaticRetryState = AutomaticTimeoutRetryState()
+            recoveryLoadInProgress = true
+            loadFailed = false
+            loading = true
+            currentOnLoadStateChanged(WebShellLoadState.Reconnecting)
+            serviceSession.reloadPage {
+                if (destination == null) webView.reload() else webView.loadUrl(destination)
+            }
+        }
     }
 
     LaunchedEffect(voiceConnected, webView) {
@@ -472,10 +484,6 @@ internal fun WebShellScreen(
             }
             release()
         }
-    }
-
-    LaunchedEffect(webView) {
-        if (!rendererLost) webView.loadUrl(hostURL)
     }
 
     if (!visible || rendererLost) return

@@ -1,7 +1,8 @@
-// Owns one saved service's in-memory authentication, page generation, bootstrap, load, and frontend tools.
+// Owns saved-service authentication, navigation, page generations, bootstrap, load, and frontend tools.
 package com.fghbuild.gomode.ui.web
 
 import androidx.core.net.toUri
+import com.fghbuild.gomode.service.resolveNotificationURL
 import com.fghbuild.gomode.ui.ServiceBootstrapState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,6 +20,7 @@ internal data class ServiceShellState(
     val webReloadToken: Int = 0,
     val webViewGeneration: Long = 0,
     val pageRequested: Boolean = false,
+    val navigationURL: String? = null,
     val attentionRequired: Boolean = false,
 )
 
@@ -86,6 +88,21 @@ internal class ServiceShellSession(
 
     fun requestPage() {
         if (active) mutableState.update { it.copy(pageRequested = true) }
+    }
+
+    fun navigate(url: String) {
+        if (!active) return
+        val target = requireNotNull(resolveNotificationURL(key.url, url)) { "Destination is outside this service" }
+        invalidatePageAuthentication()
+        mutableState.update {
+            it.copy(navigationURL = target, webReloadToken = it.webReloadToken + 1, pageRequested = true)
+        }
+    }
+
+    fun consumeNavigationURL(): String? {
+        val url = mutableState.value.navigationURL
+        mutableState.update { it.copy(navigationURL = null) }
+        return url
     }
 
     fun reloadWeb() {

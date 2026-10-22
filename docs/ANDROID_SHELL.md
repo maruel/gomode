@@ -201,12 +201,27 @@ task updates outside Go Mode. Both buffer updates while the model speaks.
 
 ## Service Notifications
 
-A host may expose `gomode://notifications`: a JSON array of events with `id`,
-`title`, `body`, `occurredAt`, and `expiresAt`. The shell treats the fields as
-untrusted, deduplicates by `id`, and posts them on its alert channel. It infers
-no product condition from other resources. The host owns generation,
-retention, and expiry and signals changes with
-`notifications/resources/updated`. The shell owns permission and delivery.
+A host may expose `gomode://notifications`: an authoritative JSON array of
+currently actionable alerts with `id`, `title`, `body`, `occurredAt`, and
+`expiresAt`. Optional `itemId` identifies the underlying work independently of
+the alert occurrence. Optional `url` is a host-owned destination resolved against
+the saved service URL; Android only opens HTTP(S) destinations on that same
+origin. Display numbers belong in the title; destinations must use stable IDs.
+
+The shell validates the entire snapshot before deduplicating by `id`. Opening
+snapshots establish a quiet baseline. Until saved-service membership and alert
+snapshots are known, startup preparation preserves posted alerts. Saved-source
+deletion and explicit account revocation withdraw their alerts independently of
+network availability. Later snapshots deliver newly observed
+alerts, update already-posted alert text without another sound, and dismiss
+alerts removed by the host. A failed read supplies no authoritative snapshot and
+does not withdraw existing alerts. Expiry also bounds native notification lifetime.
+The host owns actionable state, retention, and expiry and signals changes with
+`notifications/resources/updated`. The shell owns permission, delivery, and
+source-specific notification intents. It suppresses and dismisses alerts for a
+service while that service is visible in the foreground, preserving voice-mode
+suppression. Tapping an alert selects its saved service and opens the opaque
+host destination for both a new and an existing Activity.
 
 ## Voice Modes
 

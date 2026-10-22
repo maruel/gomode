@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
+import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -49,9 +50,11 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fghbuild.gomode.data.OnDeviceEngine
+import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.VoiceMode
@@ -61,6 +64,7 @@ import com.fghbuild.gomode.service.CatalogService
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceMonitorState
 import com.fghbuild.gomode.service.ServiceMonitoringSnapshot
+import com.fghbuild.gomode.service.ServiceNotificationDestination
 import com.fghbuild.gomode.service.ServiceNotificationPublisher
 import com.fghbuild.gomode.service.ServiceReadiness
 import com.fghbuild.gomode.service.ServiceSettingsClient
@@ -126,6 +130,8 @@ internal sealed interface ServiceBootstrapState {
 internal fun GoModeApp(
     settingsRepository: SettingsRepository,
     localModelOwner: LocalModelOwner,
+    notificationDestination: ServiceNotificationDestination? = null,
+    onNotificationHandled: (ServiceNotificationDestination) -> Unit = {},
 ) {
     val context = LocalContext.current
     val haloController =
@@ -146,6 +152,21 @@ internal fun GoModeApp(
     val activeKey = ServiceShellKey(settings.activeServiceId, activeURL)
     val serviceSessions = shellRegistry.reconcile((serviceKeys + activeKey).toSet())
     val serviceSession = serviceSessions.getValue(activeKey)
+    LaunchedEffect(notificationDestination, settings.loadState, activeKey) {
+        val destination = notificationDestination ?: return@LaunchedEffect
+        if (settings.loadState != SettingsLoadState.Ready) return@LaunchedEffect
+        val entry = serviceSessions[destination.source]
+        if (entry != null) {
+            activeNativeScreen = null
+            if (activeKey != destination.source) {
+                settingsRepository.switchService(entry.key.serviceID)
+                return@LaunchedEffect
+            }
+            entry.navigate(destination.url)
+        }
+        onNotificationHandled(destination)
+    }
+
     var prepareAllPages by remember { mutableStateOf(false) }
     DisposableEffect(shellRegistry) {
         onDispose { shellRegistry.close() }
@@ -364,7 +385,10 @@ internal fun GoModeApp(
     ServiceNotifications(
         serviceCatalog = serviceCatalog,
         activeKey = activeKey,
-        serviceVisible = activeNativeScreen == null && activeURL.isNotBlank() && shellRecovery == null,
+        serviceVisible =
+            activeNativeScreen == null && activeURL.isNotBlank() && shellRecovery == null &&
+                (notificationDestination == null || notificationDestination.source == activeKey),
+        configuredServices = serviceKeys.toSet().takeIf { settings.loadState == SettingsLoadState.Ready },
         voiceSessionActive = voiceSessionActive,
         sharedConversation = sharedConversation,
     )
@@ -851,10 +875,31 @@ internal fun ServiceNotifications(
     serviceVisible: Boolean,
     voiceSessionActive: Boolean,
     sharedConversation: Boolean,
+    configuredServices: Set<ServiceShellKey>?,
 ) {
     val context = LocalContext.current
+    val activity = LocalActivity.current
     val notificationPublisher = remember(context) { ServiceNotificationPublisher(context.applicationContext) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        // New intents arrive before resume, even when Compose still shows the prior service.
+        val pendingSource = activity?.intent?.let(ServiceNotificationPublisher::destination)?.source
+        if (serviceVisible && (pendingSource == null || pendingSource == activeKey)) {
+            notificationPublisher.dismissService(activeKey)
+        }
+    }
+    LaunchedEffect(activeKey, serviceVisible) {
+        if (serviceVisible && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            notificationPublisher.dismissService(activeKey)
+        }
+    }
+    LaunchedEffect(serviceCatalog, configuredServices) {
+        val configured = configuredServices ?: return@LaunchedEffect
+        serviceCatalog.state.collect { services ->
+            notificationPublisher.reconcile(configured.associateWith { services[it]?.monitoring?.activeNotifications })
+        }
+    }
+
     val suppressNotification by rememberUpdatedState<(CatalogNotification) -> Boolean> { notification ->
         val selectedService = notification.source == activeKey
         // Read lifecycle at delivery time, including after the permission dialog closes.
@@ -870,20 +915,21 @@ internal fun ServiceNotifications(
             // Recheck visibility and voice state for alerts queued before the permission prompt.
             if (granted) {
                 pendingNotifications
-                    .filter(serviceCatalog::canDeliver)
+                    .mapNotNull(serviceCatalog::notificationForDelivery)
                     .filterNot(suppressNotification)
-                    .forEach { notificationPublisher.publish(it.notification) }
+                    .forEach { notificationPublisher.publish(it.source, it.notification) }
             }
             pendingNotifications = emptyList()
             notificationPermissionPending = false
         }
     LaunchedEffect(serviceCatalog) {
-        serviceCatalog.notifications.collect { notification ->
-            if (!suppressNotification(notification) && serviceCatalog.canDeliver(notification)) {
+        serviceCatalog.notifications.collect { event ->
+            val notification = serviceCatalog.notificationForDelivery(event) ?: return@collect
+            if (!suppressNotification(notification)) {
                 if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
                     PackageManager.PERMISSION_GRANTED
                 ) {
-                    notificationPublisher.publish(notification.notification)
+                    notificationPublisher.publish(notification.source, notification.notification)
                 } else {
                     pendingNotifications = (pendingNotifications + notification).takeLast(64)
                     if (!notificationPermissionPending) {

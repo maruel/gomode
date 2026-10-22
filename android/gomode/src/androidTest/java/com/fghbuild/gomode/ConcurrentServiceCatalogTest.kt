@@ -52,12 +52,15 @@ import okhttp3.mockwebserver.RecordedRequest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 class ConcurrentServiceCatalogTest {
     @get:Rule
@@ -81,7 +84,14 @@ class ConcurrentServiceCatalogTest {
                     val scope = rememberCoroutineScope()
                     catalog = remember { ServiceCatalog(scope) }
                     catalog.reconcile(entries.associateBy { it.key }, mapOf("a" to " Alpha ", "b" to " Beta "))
-                    ServiceNotifications(catalog, entries.first().key, serviceVisible, false, false)
+                    ServiceNotifications(
+                        catalog,
+                        entries.first().key,
+                        serviceVisible,
+                        false,
+                        false,
+                        entries.map { it.key }.toSet(),
+                    )
                     DisposableEffect(catalog) {
                         val job = scope.launch { catalog.notifications.collect { observed += it } }
                         onDispose {
@@ -113,12 +123,12 @@ class ConcurrentServiceCatalogTest {
                 second.notificationVersion.set(1)
                 composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
                     observed.map { it.source }.toSet() == entries.map { it.key }.toSet() &&
-                        manager.activeNotifications.size == 1
+                        manager.serviceAlerts.size == 1
                 }
                 composeRule.runOnIdle {
                     assertEquals(
                         "Beta: Ready",
-                        manager.activeNotifications
+                        manager.serviceAlerts
                             .single()
                             .notification.extras
                             .getString("android.title"),
@@ -126,19 +136,58 @@ class ConcurrentServiceCatalogTest {
                     serviceVisible = false // Native settings hides the selected service.
                 }
                 first.notificationVersion.set(2)
-                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { manager.activeNotifications.size == 2 }
+                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { manager.serviceAlerts.size == 2 }
                 composeRule.runOnIdle { serviceVisible = true }
+                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { manager.serviceAlerts.size == 1 }
                 composeRule.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
                 first.notificationVersion.set(3)
                 // Compose's idling API waits for a resumed Activity; poll the platform while stopped.
                 val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
-                while (manager.activeNotifications.size != 3 && System.nanoTime() < deadline) {
+                while (manager.serviceAlerts.size != 2 && System.nanoTime() < deadline) {
                     Thread.sleep(50)
                 }
-                assertEquals(3, manager.activeNotifications.size)
+                assertEquals(2, manager.serviceAlerts.size)
                 composeRule.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
-                composeRule.waitForIdle()
-                assertEquals(3, manager.activeNotifications.size) // Suppressed alerts are never replayed.
+                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { manager.serviceAlerts.size == 1 }
+                second.notificationTitle.set("Task #2 has a question")
+                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+                    catalog.state.value[entries[1].key]
+                        ?.monitoring
+                        ?.activeNotifications
+                        ?.singleOrNull()
+                        ?.title ==
+                        "Beta: Task #2 has a question"
+                }
+                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+                    manager.serviceAlerts
+                        .singleOrNull()
+                        ?.notification
+                        ?.extras
+                        ?.getString("android.title") ==
+                        "Beta: Task #2 has a question"
+                }
+                assertTrue(
+                    manager.serviceAlerts
+                        .single()
+                        .notification.flags and
+                        android.app.Notification.FLAG_ONLY_ALERT_ONCE != 0,
+                )
+                // Resolved work on the other service also retracts its already-posted alert.
+                second.notificationVersion.set(0)
+                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { manager.serviceAlerts.isEmpty() }
+                second.notificationVersion.set(2)
+                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { manager.serviceAlerts.size == 1 }
+                composeRule.runOnIdle {
+                    assertTrue(
+                        entries[1].bearerStore.receive(
+                            Uri.parse(entries[1].key.url),
+                            true,
+                            entries[1].key.url,
+                            """{"bearerToken":null}""",
+                        ),
+                    )
+                }
+                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { manager.serviceAlerts.isEmpty() }
             }
         }
     }
@@ -239,7 +288,7 @@ class ConcurrentServiceCatalogTest {
                     }
                     composeRule.runOnIdle {
                         assertFalse(destroyed.isAttachedToWindow)
-                        oldNotifications.forEach { assertFalse(catalog.canDeliver(it)) }
+                        oldNotifications.forEach { assertNull(catalog.notificationForDelivery(it)) }
                         entries.forEach { it.reloadWeb() }
                     }
                     composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
@@ -269,7 +318,7 @@ class ConcurrentServiceCatalogTest {
                 assertEquals(ServiceReadiness.READY, catalog.state.value[entries[0].key]?.readiness)
                 val oldEvent = notifications.first { it.source == entries[1].key }
                 composeRule.runOnIdle {
-                    assertFalse(catalog.canDeliver(oldEvent))
+                    assertNull(catalog.notificationForDelivery(oldEvent))
                     composeRule.activity.findViewById<WebView>(R.id.web_shell).evaluateJavascript(
                         "gomodeAuth.postMessage(JSON.stringify({bearerToken:'B-token'}))",
                         null,
@@ -280,10 +329,10 @@ class ConcurrentServiceCatalogTest {
                         second.streams.get() >= 2
                 }
                 composeRule.runOnIdle {
-                    assertFalse(catalog.canDeliver(oldEvent))
+                    assertNull(catalog.notificationForDelivery(oldEvent))
                     val originalEvent = notifications.first { it.source == entries[0].key }
                     // This event predates the renderer recovery and must stay revoked.
-                    assertFalse(catalog.canDeliver(originalEvent))
+                    assertNull(catalog.notificationForDelivery(originalEvent))
                     val replacement = first.entry("a")
                     replacement.bearerStore.onNavigation(replacement.key.url)
                     replacement.bearerStore.receive(
@@ -294,17 +343,17 @@ class ConcurrentServiceCatalogTest {
                     )
                     replacement.updateLoad(WebShellLoadState.Ready)
                     catalog.reconcile(mapOf(replacement.key to replacement, entries[1].key to entries[1]), emptyMap())
-                    assertFalse(catalog.canDeliver(originalEvent))
+                    assertNull(catalog.notificationForDelivery(originalEvent))
                 }
                 composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
                     first.streams.get() >= 2 && catalog.state.value[entries[0].key]?.readiness == ServiceReadiness.READY
                 }
                 composeRule.runOnIdle {
                     val originalEvent = notifications.first { it.source == entries[0].key }
-                    assertFalse(catalog.canDeliver(originalEvent))
+                    assertNull(catalog.notificationForDelivery(originalEvent))
                     val replacedURL = ServiceShellSession(ServiceShellKey("a", entries[0].key.url + "replacement"))
                     catalog.reconcile(mapOf(replacedURL.key to replacedURL, entries[1].key to entries[1]), emptyMap())
-                    assertFalse(catalog.canDeliver(originalEvent))
+                    assertNull(catalog.notificationForDelivery(originalEvent))
                     catalog.close()
                 }
             }
@@ -342,18 +391,18 @@ class ConcurrentServiceCatalogTest {
             composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { notifications.isNotEmpty() }
             val queued = notifications.first()
             composeRule.runOnIdle {
-                assertTrue(catalog.canDeliver(queued))
+                assertNotNull(catalog.notificationForDelivery(queued))
                 val origin = Uri.parse(entry.key.url)
                 assertTrue(entry.bearerStore.receive(origin, true, entry.key.url, "{\"bearerToken\":null}"))
                 assertTrue(entry.bearerStore.receive(origin, true, entry.key.url, "{\"bearerToken\":\"A-token\"}"))
                 // This is the permission-approval gate before the catalog collector has a chance to observe logout.
-                assertFalse(catalog.canDeliver(queued))
+                assertNull(catalog.notificationForDelivery(queued))
             }
             composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
                 fixture.streams.get() >= 2 && catalog.state.value[entry.key]?.readiness == ServiceReadiness.READY
             }
             composeRule.runOnIdle {
-                assertFalse(catalog.canDeliver(queued))
+                assertNull(catalog.notificationForDelivery(queued))
                 catalog.close()
             }
         }
@@ -421,6 +470,12 @@ class ConcurrentServiceCatalogTest {
         }
     }
 
+    private val android.app.NotificationManager.serviceAlerts
+        get() =
+            activeNotifications.filter {
+                it.notification.flags and android.app.Notification.FLAG_GROUP_SUMMARY == 0
+            }
+
     private class ParticipantFixture(
         val source: String,
         private val supportsResources: Boolean = true,
@@ -431,6 +486,7 @@ class ConcurrentServiceCatalogTest {
         val resourceRequests = AtomicInteger()
         private val notificationReads = AtomicInteger()
         val notificationVersion = AtomicInteger()
+        val notificationTitle = AtomicReference("Ready")
 
         init {
             server.dispatcher =
@@ -566,7 +622,7 @@ class ConcurrentServiceCatalogTest {
                                             if (version == 0) {
                                                 "[]"
                                             } else {
-                                                """[{"id":"event-$version","title":"Ready","body":"$source updated"}]"""
+                                                """[{"id":"event-$version","title":"${notificationTitle.get()}","body":"$source updated"}]"""
                                             }
                                         } else if (notificationReads.incrementAndGet() == 1) {
                                             "[]"

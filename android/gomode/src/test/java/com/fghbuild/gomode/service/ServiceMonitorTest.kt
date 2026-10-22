@@ -178,6 +178,42 @@ class ServiceMonitorTest {
         }
 
     @Test
+    fun `invalid snapshots do not partially mark alerts observed`() =
+        runTest {
+            val client =
+                FakeServiceResourceClient().apply {
+                    resources =
+                        listOf(
+                            ResourceDescriptor(
+                                uri = GOMODE_ITEMS_RESOURCE_URI,
+                                name = "items",
+                                mimeType = "application/json",
+                            ),
+                            ResourceDescriptor(
+                                uri = GOMODE_NOTIFICATIONS_RESOURCE_URI,
+                                name = "alerts",
+                                mimeType = "application/json",
+                            ),
+                        )
+                    enqueueReadResult("""{"items":[]}""")
+                    enqueueNotificationReadResult("[]")
+                    enqueueReadResult("""{"items":[]}""")
+                    enqueueNotificationReadResult(
+                        """[{"id":"valid","title":"Ready","body":"Work"},{"id":"invalid","title":"Broken"}]""",
+                    )
+                }
+            val monitor = ServiceMonitor(this) { _, _ -> client }
+            monitor.start("https://service.test", serviceSettings())
+            advanceUntilIdle()
+            client.emit(resourceUpdated(GOMODE_NOTIFICATIONS_RESOURCE_URI))
+            runCurrent()
+            assertTrue(monitor.observedNotificationIDs.isEmpty())
+            assertNotNull(monitor.state.value.error)
+            assertNull(monitor.state.value.activeNotifications)
+            monitor.stop()
+        }
+
+    @Test
     fun `generic service notifications are delivered once`() =
         runTest {
             val client =
@@ -206,16 +242,22 @@ class ServiceMonitorTest {
                     )
                     enqueueNotificationReadResult(
                         """[{"id":"event-0","title":"Older item","body":"Already present."},""" +
-                            """{"id":"event-1","title":"Item ready","body":"Build feature needs your input."}]""",
+                            """{"id":"event-1","title":"Item ready","body":"Build feature needs your input.",""" +
+                            """"url":"/work/stable","itemId":"stable"}]""",
                     )
                     enqueueReadResult(
                         """{"items":[{"id":"i1","title":"Build feature","state":"awaiting input","needsAttention":true}]}""",
                     )
                     enqueueNotificationReadResult(
                         """[{"id":"event-0","title":"Older item","body":"Already present."},""" +
-                            """{"id":"event-1","title":"Item ready","body":"Build feature needs your input."}]""",
+                            """{"id":"event-1","title":"Item ready","body":"Build feature needs your input.",""" +
+                            """"url":"/work/stable","itemId":"stable"}]""",
                     )
                 }
+            client.enqueueReadResult("""{"items":[]}""")
+            client.enqueueNotificationReadResult(
+                """[{"id":"expired","title":"Expired","body":"Old","expiresAt":"2000-01-01T00:00:00Z"}]""",
+            )
             val monitor = ServiceMonitor(this) { _, _ -> client }
 
             monitor.start("https://service.test", serviceSettings())
@@ -238,6 +280,15 @@ class ServiceMonitorTest {
                 monitor.state.value.notifications
                     .isEmpty(),
             )
+            assertEquals(
+                "/work/stable",
+                monitor.state.value.activeNotifications
+                    ?.last()
+                    ?.url,
+            )
+            client.emit(resourceUpdated(GOMODE_NOTIFICATIONS_RESOURCE_URI))
+            advanceUntilIdle()
+            assertTrue(requireNotNull(monitor.state.value.activeNotifications).isEmpty())
             monitor.stop()
         }
 

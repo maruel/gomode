@@ -29,6 +29,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonPrimitive
+import java.time.Instant
 
 interface ServiceResourceClient {
     suspend fun serverDiscover(): ServerDiscoverResult
@@ -44,11 +45,15 @@ data class ServiceNotification(
     val id: String,
     val title: String,
     val text: String,
+    val itemId: String? = null,
+    val url: String? = null,
+    val expiresAt: Instant? = null,
 )
 
 data class ServiceMonitorState(
     val snapshot: ServiceMonitoringSnapshot? = null,
     val notifications: List<ServiceNotification> = emptyList(),
+    val activeNotifications: List<ServiceNotification>? = null,
     val error: String? = null,
 )
 
@@ -155,7 +160,7 @@ class ServiceMonitor(
     ): ServiceMonitoringPlan? {
         val plan = serviceMonitoringPlan(client.listResources())
         if (plan == null) {
-            _state.value = ServiceMonitorState()
+            _state.value = ServiceMonitorState(activeNotifications = emptyList())
             return null
         }
         refreshSnapshot(client, plan, publishEvents)
@@ -172,7 +177,7 @@ class ServiceMonitor(
     ): ServiceMonitoringPlan? {
         val newPlan = serviceMonitoringPlan(client.listResources())
         if (newPlan == null) {
-            _state.value = ServiceMonitorState()
+            _state.value = ServiceMonitorState(activeNotifications = emptyList())
             return null
         }
         if (newPlan != plan) {
@@ -187,11 +192,23 @@ class ServiceMonitor(
         publishEvents: Boolean = true,
     ) {
         val readResults = plan.resourceURIs.associateWith { uri -> client.readResource(uri) }
+        applySnapshot(readResults, plan, publishEvents)
+    }
+
+    private fun applySnapshot(
+        readResults: Map<String, ResourcesReadResult>,
+        plan: ServiceMonitoringPlan,
+        publishEvents: Boolean,
+    ) {
         val snapshot = serviceMonitoringSnapshot(readResults, plan)
+        val active = readServiceNotifications(readResults, plan)
+        val unseen = active.filter { it.id !in observedNotificationIDs }
+        observedNotificationIDs.addAll(active.map { it.id })
         _state.value =
             ServiceMonitorState(
                 snapshot = snapshot,
-                notifications = serviceNotifications(readResults, plan).takeIf { publishEvents }.orEmpty(),
+                notifications = unseen.takeIf { publishEvents }.orEmpty(),
+                activeNotifications = active,
             )
     }
 
@@ -210,16 +227,11 @@ class ServiceMonitor(
                     cacheScope = CacheScope.Private,
                 )
             }
-        val snapshot = serviceMonitoringSnapshot(readResults, plan)
-        serviceNotifications(readResults, plan)
-        _state.value =
-            ServiceMonitorState(
-                snapshot = snapshot,
-            )
+        applySnapshot(readResults, plan, publishEvents = false)
     }
 }
 
-private fun ServiceMonitor.serviceNotifications(
+private fun readServiceNotifications(
     readResults: Map<String, ResourcesReadResult>,
     plan: ServiceMonitoringPlan,
 ): List<ServiceNotification> {
@@ -232,18 +244,38 @@ private fun ServiceMonitor.serviceNotifications(
     val events =
         Json.parseToJsonElement(text) as? JsonArray
             ?: throw IllegalArgumentException("resource $uri must be a JSON array")
-    return events.mapIndexedNotNull { index, element ->
-        val event =
-            element as? JsonObject
-                ?: throw IllegalArgumentException("resource $uri item $index must be an object")
-        val id = event.requiredNotificationString("id", uri, index)
-        if (!observedNotificationIDs.add(id)) return@mapIndexedNotNull null
-        ServiceNotification(
-            id = id,
-            title = event.requiredNotificationString("title", uri, index),
-            text = event.requiredNotificationString("body", uri, index),
-        )
-    }
+    val parsed =
+        events.mapIndexed { index, element ->
+            val event =
+                element as? JsonObject
+                    ?: throw IllegalArgumentException("resource $uri item $index must be an object")
+            val id = event.requiredNotificationString("id", uri, index)
+            ServiceNotification(
+                id = id,
+                title = event.requiredNotificationString("title", uri, index),
+                text = event.requiredNotificationString("body", uri, index),
+                itemId = event.optionalNotificationString("itemId", uri, index),
+                url = event.optionalNotificationString("url", uri, index),
+                expiresAt =
+                    event.optionalNotificationString("expiresAt", uri, index)?.let {
+                        Instant.parse(it).also { timestamp ->
+                            timestamp.toEpochMilli()
+                        }
+                    },
+            )
+        }
+    require(parsed.map { it.id }.distinct().size == parsed.size) { "resource $uri has duplicate notification IDs" }
+    val now = Instant.now()
+    return parsed.filter { it.expiresAt?.isAfter(now) != false }
+}
+
+private fun JsonObject.optionalNotificationString(
+    field: String,
+    uri: String,
+    index: Int,
+): String? {
+    if (field !in this) return null
+    return requiredNotificationString(field, uri, index)
 }
 
 private fun JsonObject.requiredNotificationString(
@@ -251,7 +283,11 @@ private fun JsonObject.requiredNotificationString(
     uri: String,
     index: Int,
 ): String =
-    this[field]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+    (this[field] as? kotlinx.serialization.json.JsonPrimitive)
+        ?.takeIf {
+            it.isString
+        }?.contentOrNull
+        ?.takeIf { it.isNotBlank() }
         ?: throw IllegalArgumentException("resource $uri item $index is missing $field")
 
 private fun nextRetryDelay(delayMs: Long): Long = (delayMs * 2).coerceAtMost(MAX_RETRY_DELAY_MS)
