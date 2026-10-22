@@ -29,9 +29,6 @@
     "./sdk/gomode/*": "./sdk/gomode/ts/v1/*",
     "./sdk/voicegateway/*": "./sdk/voicegateway/ts/v1/*"
   },
-  "scripts": {
-    "test": "node --test scripts/css_module_types.test.mjs && NODE_OPTIONS=--no-experimental-webstorage tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts 'web/src/**/*.test.ts' 'web/src/**/*.test.tsx'"
-  },
   "peerDependencies": {
     "@solidjs/router": "^1.0.0",
     "solid-js": "^1.9.0"

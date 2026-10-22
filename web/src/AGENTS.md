@@ -7,7 +7,7 @@ belong to the host application; call `configureMcpClient` at host startup.
 
 CSS Module declarations (`*.module.css.d.ts`) ship with the source package.
 `make fix` regenerates them; `make verify` and build check freshness. Run
-`node scripts/css_module_types.mjs --source-path web/src --watch` from the
+`pnpm exec node scripts/css_module_types.mjs --source-path web/src --watch` from the
 repository root while editing CSS for a linked host.
 Do not edit generated declarations by hand.
 

@@ -14,6 +14,9 @@ node_modules/.modules.yaml: package.json pnpm-lock.yaml
 	@pnpm install --frozen-lockfile --silent
 	@touch $@
 
+FRONTEND_TEST = pnpm exec node --test scripts/css_module_types.test.mjs && NODE_OPTIONS=--no-experimental-webstorage pnpm exec tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts
+FRONTEND_TEST_FILES = "web/src/**/*.test.ts" "web/src/**/*.test.tsx"
+
 help:
 	@echo 'Go Mode - standalone contracts and shell'
 	@echo ''
@@ -44,7 +47,7 @@ help:
 	@printf '  %-27s - %s\n' 'make upgrade' 'Upgrade Go and pnpm dependencies'
 
 fix: android-sdk node_modules/.modules.yaml
-	@node scripts/css_module_types.mjs --source-path web/src --write
+	@pnpm exec node scripts/css_module_types.mjs --source-path web/src --write
 	@go tool golangci-lint fmt
 	@go tool golangci-lint run --show-stats=false --fix ./...
 	@pnpm exec eslint web/src web/tests scripts/*.mjs --fix
@@ -57,13 +60,13 @@ fix: android-sdk node_modules/.modules.yaml
 
 verify: android-sdk node_modules/.modules.yaml
 	@go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-	@./scripts/run-concurrently.sh go,format,lint,ts,python,shell,misc,android '$(VERIFY_GO)' 'pnpm exec prettier --check --log-level warn web/src web/tests scripts/*.mjs eslint.config.js package.json .github/workflows' 'pnpm exec eslint --max-warnings 0 web/src web/tests scripts/*.mjs' 'node scripts/css_module_types.mjs --source-path web/src && pnpm exec tsc --noEmit -p web/tsconfig.json' '$(VERIFY_PY)' '$(VERIFY_SH)' '$(VERIFY_MISC)' '$(VERIFY_ANDROID)'
+	@./scripts/run-concurrently.sh go,format,lint,ts,python,shell,misc,android '$(VERIFY_GO)' 'pnpm exec prettier --check --log-level warn web/src web/tests scripts/*.mjs eslint.config.js package.json .github/workflows' 'pnpm exec eslint --max-warnings 0 web/src web/tests scripts/*.mjs' 'pnpm exec node scripts/css_module_types.mjs --source-path web/src && pnpm exec tsc --noEmit -p web/tsconfig.json' '$(VERIFY_PY)' '$(VERIFY_SH)' '$(VERIFY_MISC)' '$(VERIFY_ANDROID)'
 
 git-hooks:
 	@./scripts/install-git-hooks.sh
 
 test: android-sdk node_modules/.modules.yaml
-	@./scripts/run-concurrently.sh go,browser,python,android 'go test ./...' 'pnpm --silent test' 'uv run --locked python -m unittest discover -s scripts -p "test_*.py"' 'cd ./android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet'
+	@./scripts/run-concurrently.sh go,browser,python,android 'go test ./...' '$(FRONTEND_TEST) $(FRONTEND_TEST_FILES)' 'uv run --locked python -m unittest discover -s scripts -p "test_*.py"' 'cd ./android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet'
 
 # The Opus codec is deliberately disabled in race builds, so skip the two
 # tests that require it while running the rest of the voice gateway suite.
@@ -71,7 +74,7 @@ test-race:
 	@go test -race -skip 'TestVoiceRTCLocalStackPlaceholders|TestEncodeDecodeRoundtrip' ./voicegateway/voicertc
 
 build: android-sdk node_modules/.modules.yaml
-	@node scripts/css_module_types.mjs --source-path web/src
+	@pnpm exec node scripts/css_module_types.mjs --source-path web/src
 	@go build ./...
 	@cd ./android && ./gradlew :gomode:assembleDebug :halo-sdk:assembleDebug :gomode-sdk:assemble :mcp-sdk:assemble :oauth-sdk:assemble :voicegateway-sdk:assemble --quiet
 
