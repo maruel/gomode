@@ -47,6 +47,11 @@
   document.getElementById("save-note").addEventListener("click", () => {
     document.getElementById("note-status").textContent = "Saved to your field notes.";
   });
+  // This demonstration host has no authentication, so it settles a cookie-backed
+  // identity once loaded. Native connections then report the service as ready.
+  window.addEventListener("load", () => {
+    window.gomodeAuth?.postMessage('{"authChanged":true,"nativeAccess":true}');
+  });
 </script>
 </body>
 </html>

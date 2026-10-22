@@ -12,8 +12,8 @@ on:
       - sdk/**
       - scripts/android*
       - scripts/test_android*
-      - scripts/screenshot_catalog.py
-      - scripts/test_screenshot_catalog.py
+      - scripts/screenshot_publish.py
+      - scripts/test_screenshot_publish.py
       - e2e/**
   pull_request:
     paths:
@@ -25,8 +25,8 @@ on:
       - sdk/**
       - scripts/android*
       - scripts/test_android*
-      - scripts/screenshot_catalog.py
-      - scripts/test_screenshot_catalog.py
+      - scripts/screenshot_publish.py
+      - scripts/test_screenshot_publish.py
       - e2e/**
   workflow_dispatch:
 permissions:

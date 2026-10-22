@@ -2,13 +2,12 @@
 """Capture and validate native Android documentation scenes on a running emulator.
 
 The runner renders the real Go Mode app twice against a host-neutral demo,
-compares decoded pixels, then publishes lossless WebP images and a catalog.
-Website imports consume this catalog without starting Gradle or an emulator.
+compares decoded pixels, then publishes lossless WebP images.
+Website imports consume these images without starting Gradle or an emulator.
 """
 
 import argparse
 import concurrent.futures
-import hashlib
 import http.server
 import json
 import pathlib
@@ -19,33 +18,28 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import asdict, dataclass
 
 from android_devices import adb_path, selected_device_serial
 from android_e2e import FixtureHandler, run_instrumented_tests
-from screenshot_catalog import CatalogSpec, catalog_lock, publish_catalog, recover_catalog, validate_catalog
+from screenshot_publish import publication_lock, publish_images, recover_images, validate_images
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINES = ROOT / "e2e" / "screenshots" / "android"
 FAILURES = ROOT / "android-screenshots-failures"
 DEVICE_DIRECTORY = "/sdcard/Pictures/gomode-screenshots"
-SCENARIOS = {
-    "connections": "Two configured hosted services with the active service identified.",
-    "halo": "Native Halo device management before a Bluetooth device is paired.",
-    "hosted-service": "Real Android WebView hosting the labeled Field Notes demonstration service.",
-    "service-editor": "Native service editor with a development service ready to connect.",
-    "voice-settings": "Native on-device speech mode and language settings.",
-}
-
-
-@dataclass(frozen=True)
-class Scenario:
-    name: str
-    file: str
-    width: int
-    height: int
-    sha256: str
-    description: str
+SCENARIOS = (
+    "connections",
+    "halo",
+    "hosted-service",
+    "service-editor",
+    "voice-settings",
+)
+EXPECTED_FILES = frozenset(f"{name}.webp" for name in SCENARIOS)
+# The owned API35 stock emulator insets the SystemUI status bar by 63px.
+STATUS_BAR_HEIGHT_PX = 63
+# SystemUI antialiasing can vary by a couple of RGB levels inside that inset.
+STATUS_BAR_MAXIMUM_CHANNEL_DELTA = 2
+STATUS_BAR_MAXIMUM_CHANGED_PIXEL_FRACTION = 0.01
 
 
 def adb_command(adb: str, serial: str, *arguments: str) -> str:
@@ -113,7 +107,7 @@ def render(directory: pathlib.Path, serial: str, adb: str, hidden_icons: str) ->
     directory.mkdir(parents=True)
     adb_command(adb, serial, "pull", DEVICE_DIRECTORY + "/.", str(directory))
     actual = {path.stem for path in directory.glob("*.png")}
-    if actual != SCENARIOS.keys():
+    if actual != set(SCENARIOS):
         raise RuntimeError(f"Incomplete Android capture: expected {sorted(SCENARIOS)}, received {sorted(actual)}")
     print(f"Android capture pass: {time.monotonic() - started:.2f}s", flush=True)
 
@@ -194,13 +188,16 @@ def compare(first: pathlib.Path, second: pathlib.Path, status_height: int, exten
             first_pixel, second_pixel = actual[index : index + 3], expected[index : index + 3]
             if first_pixel != second_pixel:
                 changed += 1
-                if max(abs(a - b) for a, b in zip(first_pixel, second_pixel, strict=True)) > 2:
+                if (
+                    max(abs(a - b) for a, b in zip(first_pixel, second_pixel, strict=True))
+                    > STATUS_BAR_MAXIMUM_CHANNEL_DELTA
+                ):
                     raise RuntimeError(f"Android scene {name} SystemUI changed meaningfully")
-        if changed > width * status_height // 100:
+        if changed > width * status_height * STATUS_BAR_MAXIMUM_CHANGED_PIXEL_FRACTION:
             raise RuntimeError(f"Android scene {name} SystemUI changed across {changed} pixels")
 
 
-def encode(source: pathlib.Path, output: pathlib.Path, name: str) -> Scenario:
+def encode(source: pathlib.Path, output: pathlib.Path, name: str) -> None:
     destination = output / f"{name}.webp"
     subprocess.run(
         [
@@ -220,68 +217,17 @@ def encode(source: pathlib.Path, output: pathlib.Path, name: str) -> Scenario:
         ],
         check=True,
     )
-    width, height = dimensions(destination)
-    return Scenario(
-        name, destination.name, width, height, hashlib.sha256(destination.read_bytes()).hexdigest(), SCENARIOS[name]
-    )
+    dimensions(destination)
 
 
-def provenance() -> dict[str, str]:
-    revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
-    ).stdout.strip()
-    files = subprocess.run(
-        [
-            "git",
-            "ls-files",
-            "-co",
-            "--exclude-standard",
-            "--",
-            "android",
-            "sdk",
-            "e2e/hosted.html",
-            "scripts/android*.py",
-            "scripts/screenshot_catalog.py",
-        ],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.splitlines()
-    digest = hashlib.sha256()
-    for name in sorted(set(files)):
-        path = ROOT / name
-        if path.is_file():
-            digest.update(name.encode() + b"\0" + path.read_bytes() + b"\0")
-    return {"revision": revision, "inputsSha256": digest.hexdigest()}
+def validate_android_images(directory: pathlib.Path, expected_files: frozenset[str] | None) -> None:
+    """Verify the native scene inventory and decoded image dimensions."""
+    validate_images(directory, expected_files, frozenset({".webp"}), dimensions)
 
 
-def validate_android_catalog(directory: pathlib.Path) -> dict:
-    """Verify the committed native scene inventory, hashes, and image dimensions."""
-    spec = CatalogSpec("gomode", "android", frozenset({".webp"}), frozenset(f"{name}.webp" for name in SCENARIOS))
-    catalog = validate_catalog(directory, spec, dimensions)
-    if {scene["name"] for scene in catalog["scenarios"]} != SCENARIOS.keys():
-        raise RuntimeError("Native screenshot catalog scene names disagree with the capture scenarios")
-    for scene in catalog["scenarios"]:
-        if scene["file"] != f"{scene['name']}.webp":
-            raise RuntimeError("Native screenshot scene name disagrees with its file")
-    policy = catalog.get("comparison")
-    if (
-        not isinstance(policy, dict)
-        or policy.get("product") != "exact RGB"
-        or policy.get("statusBarMaximumChannelDelta") != 2
-        or policy.get("statusBarMaximumChangedPixelFraction") != 0.01
-        or type(policy.get("statusBarHeightPx")) is not int
-        or not 0 < policy["statusBarHeightPx"] < min(scene["height"] for scene in catalog["scenarios"]) // 4
-    ):
-        raise RuntimeError("Native screenshot comparison policy is invalid")
-    return catalog
-
-
-def validate_previous_android_catalog(directory: pathlib.Path) -> dict:
-    """Retain intact historical catalogs even when the capture inventory changes."""
-    spec = CatalogSpec("gomode", "android", frozenset({".webp"}), None)
-    return validate_catalog(directory, spec, dimensions)
+def validate_previous_android_images(directory: pathlib.Path) -> None:
+    """Retain intact historical captures even when the scene inventory changes."""
+    validate_android_images(directory, None)
 
 
 def main() -> int:
@@ -291,7 +237,7 @@ def main() -> int:
     for executable in ("ffmpeg", "ffprobe"):
         if shutil.which(executable) is None:
             raise RuntimeError(f"{executable} is required for Android screenshots")
-    with catalog_lock(ROOT, BASELINES, "capture"):
+    with publication_lock(ROOT, BASELINES, "capture"):
         return _capture(args.mode)
 
 
@@ -301,11 +247,10 @@ def _capture(mode: str) -> int:
     serial = selected_device_serial(adb)
     if not serial.startswith("emulator-"):
         raise RuntimeError("Documentation captures require an emulator; physical-device settings are not changed")
-    committed = None
     if mode == "check":
-        committed = validate_android_catalog(BASELINES)
+        validate_android_images(BASELINES, EXPECTED_FILES)
     elif mode == "update":
-        recover_catalog(ROOT, BASELINES, validate_previous_android_catalog)
+        recover_images(ROOT, BASELINES, validate_previous_android_images)
     demo_state, overlay_list = wait_for_capture_services(adb, serial)
     incompatible_overlays = {
         "[x] com.android.internal.emulation.pixel_6",
@@ -350,6 +295,10 @@ def _capture(mode: str) -> int:
             first, second = work / "first", work / "second"
             render(first, serial, adb, hidden_icons)
             status_height = status_bar_height(adb, serial)
+            if status_height != STATUS_BAR_HEIGHT_PX:
+                raise RuntimeError(
+                    f"Measured SystemUI inset {status_height}px disagrees with the {STATUS_BAR_HEIGHT_PX}px profile"
+                )
             if mode != "generate":
                 render(second, serial, adb, hidden_icons)
                 try:
@@ -364,32 +313,9 @@ def _capture(mode: str) -> int:
             output = work / "published"
             output.mkdir()
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                scenarios = list(executor.map(lambda name: encode(first, output, name), sorted(SCENARIOS)))
-            manifest = {
-                "schemaVersion": 1,
-                "producer": "gomode",
-                "platform": "android",
-                "source": provenance(),
-                "comparison": {
-                    "product": "exact RGB",
-                    "statusBarHeightPx": status_height,
-                    "statusBarMaximumChannelDelta": 2,
-                    "statusBarMaximumChangedPixelFraction": 0.01,
-                },
-                "device": {
-                    "avd": adb_command(adb, serial, "emu", "avd", "name").splitlines()[0],
-                    "locale": "en-US",
-                    "apiLevel": adb_command(adb, serial, "shell", "getprop", "ro.build.version.sdk"),
-                    "model": adb_command(adb, serial, "shell", "getprop", "ro.product.model"),
-                    "density": adb_command(adb, serial, "shell", "wm", "density"),
-                },
-                "scenarios": [asdict(scene) for scene in scenarios],
-            }
-            (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+                list(executor.map(lambda name: encode(first, output, name), SCENARIOS))
             if mode == "check":
                 try:
-                    if committed is None or committed["comparison"]["statusBarHeightPx"] != status_height:
-                        raise RuntimeError("Measured SystemUI inset disagrees with the committed capture profile")
                     compare(output, BASELINES, status_height, "webp")
                 except RuntimeError:
                     if FAILURES.exists():
@@ -398,10 +324,14 @@ def _capture(mode: str) -> int:
                     shutil.copytree(BASELINES, FAILURES / "baseline")
                     print(f"Failed baseline captures preserved at {FAILURES}", file=sys.stderr)
                     raise
-                if committed is None or committed["source"]["inputsSha256"] != manifest["source"]["inputsSha256"]:
-                    raise RuntimeError("Android capture inputs changed; run make screenshots-update")
             elif mode == "update":
-                publish_catalog(output, ROOT, BASELINES, validate_android_catalog, validate_previous_android_catalog)
+                publish_images(
+                    output,
+                    ROOT,
+                    BASELINES,
+                    lambda staged: validate_android_images(staged, EXPECTED_FILES),
+                    validate_previous_android_images,
+                )
     finally:
         broadcast_demo(adb, serial, "exit")
         for key, value in original_secure.items():

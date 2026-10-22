@@ -183,7 +183,7 @@ class CaptureEnvironmentTest(unittest.TestCase):
             calls.append(arguments)
             if arguments == ("shell", "settings", "delete", "global", "sysui_tuner_demo_on"):
                 with self.assertRaisesRegex(RuntimeError, "Another screenshot capture is active"):
-                    with android_screenshots.catalog_lock(
+                    with android_screenshots.publication_lock(
                         android_screenshots.ROOT, android_screenshots.BASELINES, "capture"
                     ):
                         self.fail("Run lock was released before final settings restoration")
@@ -218,7 +218,7 @@ class CaptureEnvironmentTest(unittest.TestCase):
                 android_screenshots.main()
         self.assertEqual(render.call_args.args[-1], "alarm_clock,mobile,satellite,wifi")
         self.assertEqual(restored_under_lock, [True])
-        with android_screenshots.catalog_lock(android_screenshots.ROOT, android_screenshots.BASELINES, "capture"):
+        with android_screenshots.publication_lock(android_screenshots.ROOT, android_screenshots.BASELINES, "capture"):
             pass
         self.assertIn(("shell", "settings", "delete", "secure", "show_ime_with_hard_keyboard"), calls)
         self.assertIn(("shell", "settings", "put", "secure", "icon_blacklist", "alarm_clock"), calls)
@@ -229,44 +229,13 @@ class CaptureEnvironmentTest(unittest.TestCase):
             self.assertIn(("shell", "settings", "put", "global", key, "1.0"), calls)
 
 
-class ProvenanceTest(unittest.TestCase):
-    def test_generated_sdk_edits_invalidate_capture_inputs_without_a_commit(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            sdk = root / "sdk/gomode/kotlin/src/main/kotlin/Types.kt"
-            sdk.parent.mkdir(parents=True)
-            sdk.write_text("data class Manifest(val version: Int)\n")
-            subprocess.run(["git", "init", "-q", str(root)], check=True)
-            subprocess.run(["git", "add", "."], cwd=root, check=True)
-            subprocess.run(
-                [
-                    "git",
-                    "-c",
-                    "user.name=Capture test",
-                    "-c",
-                    "user.email=capture@example.invalid",
-                    "commit",
-                    "-qm",
-                    "fixture",
-                ],
-                cwd=root,
-                check=True,
-            )
-            with mock.patch.object(android_screenshots, "ROOT", root):
-                before = android_screenshots.provenance()
-                sdk.write_text("data class Manifest(val revision: Int)\n")
-                after = android_screenshots.provenance()
-            self.assertEqual(before["revision"], after["revision"])
-            self.assertNotEqual(before["inputsSha256"], after["inputsSha256"])
-
-
 class PixelComparisonTest(unittest.TestCase):
     def test_only_bounded_status_bar_antialiasing_is_accepted(self):
         original = bytes(30000)
         changed = bytearray(original)
         changed[0] = 2
         with (
-            mock.patch.object(android_screenshots, "SCENARIOS", {"scene": "demo"}),
+            mock.patch.object(android_screenshots, "SCENARIOS", ("scene",)),
             mock.patch.object(android_screenshots, "dimensions", return_value=(100, 100)),
             mock.patch.object(android_screenshots, "pixels", side_effect=[bytes(changed), original]),
         ):
@@ -279,7 +248,7 @@ class PixelComparisonTest(unittest.TestCase):
                 changed = bytearray(original)
                 changed[channel] = value
                 with (
-                    mock.patch.object(android_screenshots, "SCENARIOS", {"scene": "demo"}),
+                    mock.patch.object(android_screenshots, "SCENARIOS", ("scene",)),
                     mock.patch.object(android_screenshots, "dimensions", return_value=(100, 100)),
                     mock.patch.object(android_screenshots, "pixels", side_effect=[bytes(changed), original]),
                 ):
@@ -291,7 +260,7 @@ class PixelComparisonTest(unittest.TestCase):
         changed = bytearray(original)
         changed[:33] = bytes([1] * 33)
         with (
-            mock.patch.object(android_screenshots, "SCENARIOS", {"scene": "demo"}),
+            mock.patch.object(android_screenshots, "SCENARIOS", ("scene",)),
             mock.patch.object(android_screenshots, "dimensions", return_value=(100, 100)),
             mock.patch.object(android_screenshots, "pixels", side_effect=[bytes(changed), original]),
         ):

@@ -318,10 +318,9 @@ Car call control: [HFP_CALL_CONTROL.md](HFP_CALL_CONTROL.md).
 Run `make screenshots-update` on the owned emulator to capture native service,
 settings, voice, and Halo screens plus a labeled host-neutral demonstration
 frontend. The runner renders twice, restores emulator settings, and publishes
-lossless WebP images with dimensions, hashes, source-input provenance, and the
-comparison contract in `e2e/screenshots/android/manifest.json`.
-The fingerprint includes the Android sources, compiled generated SDKs, hosted
-fixture, and capture tooling, including edits that have not been committed.
+lossless WebP images. Every capture validates the exact image inventory and
+decoded dimensions, and compares the two rendered passes down to exact product
+pixels outside the measured status-bar inset.
 Captures require the actual display locale to be en-US and refuse other locales
 before changing settings. The stock image already uses en-US; the launcher
 avoids the redundant locale change that otherwise restarts the framework after

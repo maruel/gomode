@@ -24,9 +24,32 @@ SETTINGS = {
     "apiVersion": 1,
     "webShell": {
         "bridgeVersion": 1,
-        "toolGroups": [],
-        "voiceGateway": {"required": False, "authRequired": False},
+        "toolGroups": [
+            {
+                "name": "demo",
+                "endpoint": "/api/mcp",
+                "protocolVersion": "2026-07-28",
+                "authRequired": False,
+            }
+        ],
+        "voiceGateway": {"url": "/voice", "required": False, "authRequired": False},
     },
+}
+
+# Public gateway choices served by the fixture so documentation captures show the
+# voice settings a real host would expose.
+VOICE_CHOICES = {
+    "choices": [
+        {
+            "id": "gemini",
+            "label": "Gemini Live",
+            "transports": ["webrtc", "text"],
+            "voices": ["Orus", "Puck"],
+            "defaultVoice": "Orus",
+        },
+        {"id": "remote", "label": "Remote LLM", "transports": ["text"]},
+    ],
+    "defaultChoiceID": "gemini",
 }
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -38,9 +61,41 @@ VOICE_FIXTURE_PACKAGE = "./internal/cmd/android-voice-fixture"
 
 
 class FixtureHandler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            request = json.loads(self.rfile.read(length))
+        except json.JSONDecodeError:
+            self.send_error(400, "Invalid JSON")
+            return
+        method = request.get("method")
+        if method == "server/discover":
+            result = {
+                "resultType": "complete",
+                "supportedVersions": ["2026-07-28"],
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "android-demo", "version": "1"},
+                "instructions": "Demonstration host for Go Mode documentation captures.",
+                "ttlMs": 60000,
+                "cacheScope": "private",
+            }
+        elif method == "tools/list":
+            result = {"resultType": "complete", "tools": [], "ttlMs": 60000, "cacheScope": "private"}
+        else:
+            result = {"resultType": "complete", "resources": [], "ttlMs": 60000, "cacheScope": "private"}
+        body = json.dumps({"jsonrpc": "2.0", "id": request.get("id"), "result": result}).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self) -> None:
         if self.path == "/.well-known/gomode.json":
             body = json.dumps(SETTINGS).encode("utf-8")
+            content_type = "application/json"
+        elif self.path == "/voice/api/voicegateway/v1/voice/choices":
+            body = json.dumps(VOICE_CHOICES).encode("utf-8")
             content_type = "application/json"
         else:
             body = PAGE

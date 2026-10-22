@@ -3,6 +3,7 @@ package com.fghbuild.gomode
 
 import android.os.Environment
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
@@ -16,6 +17,8 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+
+private const val SETTLE_CHECK_INTERVAL_MS = 100L
 
 @RunWith(AndroidJUnit4::class)
 class GoModeDocumentationScreenshotsTest : GoModeE2eTestBase() {
@@ -57,7 +60,7 @@ class GoModeDocumentationScreenshotsTest : GoModeE2eTestBase() {
             throw IllegalStateException(composeRule.onRoot().printToString(), error)
         }
         waitForDom("demonstration service loaded") { "isVisible('#demo-service')" }
-        waitForDom("demonstration service fonts") { "document.fonts.status === 'loaded'" }
+        waitForSettledHostedPage()
         capture(device, directory, "hosted-service")
 
         waitForSettingsButton()
@@ -67,9 +70,14 @@ class GoModeDocumentationScreenshotsTest : GoModeE2eTestBase() {
         composeRule.onNodeWithTag("gomode-service-url").performTextReplacement(baseUrl)
         composeRule.onNodeWithTag("gomode-create-service").performScrollTo().performClick()
         waitForHostedFrontend()
+        waitForSettledHostedPage()
         waitForSettingsButton()
         composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
         waitForTag("gomode-settings")
+        // Capture the settled service list, not a transient reconnect state.
+        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+            composeRule.onAllNodesWithText("Ready").fetchSemanticsNodes().size >= 2
+        }
         capture(device, directory, "connections")
 
         composeRule.onNodeWithTag("gomode-voice-mode-device").performScrollTo().performClick()
@@ -80,6 +88,40 @@ class GoModeDocumentationScreenshotsTest : GoModeE2eTestBase() {
         waitForTag("gomode-halo-screen")
         capture(device, directory, "halo")
     }
+
+    private fun waitForSettledHostedPage() {
+        // The demo host settles a cookie-backed identity after load. Captures wait for
+        // painted assets and a stable service rectangle so frames never show loading UI.
+        waitForDom("hosted page assets settled") {
+            """
+            document.readyState === 'complete' &&
+              document.fonts.status === 'loaded' &&
+              Array.from(document.images).every((image) => image.complete && image.naturalWidth > 0) &&
+              (() => {
+                const rect = document.getElementById('demo-service')?.getBoundingClientRect();
+                return !!rect && rect.width > 0 && rect.height > 0;
+              })()
+            """
+        }
+        repeat(300) {
+            val bounds = demoServiceBounds()
+            Thread.sleep(SETTLE_CHECK_INTERVAL_MS)
+            if (bounds.isNotEmpty() && demoServiceBounds() == bounds) return
+        }
+        error("Timed out waiting for a stable demonstration-service rectangle")
+    }
+
+    private fun demoServiceBounds(): String =
+        js(
+            """
+            (() => {
+              const rect = document.getElementById('demo-service')?.getBoundingClientRect();
+              return rect && rect.width > 0 && rect.height > 0
+                ? [rect.x, rect.y, rect.width, rect.height].join(',')
+                : '';
+            })()
+            """.trimIndent(),
+        )
 
     private fun waitForTag(tag: String) {
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
