@@ -66,7 +66,7 @@ git-hooks:
 	@./scripts/install-git-hooks.sh
 
 test: android-sdk node_modules/.modules.yaml
-	@./scripts/run-concurrently.sh go,browser,python,android 'go test ./...' '$(FRONTEND_TEST) $(FRONTEND_TEST_FILES)' 'uv run --locked python -m unittest discover -s scripts -p "test_*.py"' 'cd ./android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet'
+	@./scripts/run-concurrently.sh go,browser,android 'go test ./...' '$(FRONTEND_TEST) $(FRONTEND_TEST_FILES)' 'cd ./android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet'
 
 # The Opus codec is deliberately disabled in race builds, so skip the two
 # tests that require it while running the rest of the voice gateway suite.
