@@ -5,6 +5,7 @@ import android.Manifest
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
@@ -97,7 +98,36 @@ class ServerVoiceSwitchTest {
                         waitForConnected()
                         val conversation = cookie.sessions.single()
                         // This controlled-backend test supplies model events, not microphone input.
-                        if (mode == VoiceMode.DEVICE) composeRule.onNodeWithContentDescription("Mute").performClick()
+                        if (mode == VoiceMode.DEVICE) {
+                            composeRule.onNodeWithTag("gomode-microphone-mode").performClick()
+                            composeRule.onNodeWithTag("gomode-microphone-mode").performClick()
+                            waitForMicrophoneMuted()
+                        } else {
+                            composeRule.onNodeWithTag("gomode-microphone-mode").performClick()
+                            conversation.send("""{"kind":"speech.started"}""")
+                            composeRule.waitUntil(10_000) {
+                                val microphone =
+                                    composeRule
+                                        .onAllNodesWithTag(
+                                            "gomode-microphone-mode",
+                                        ).fetchSemanticsNodes()
+                                        .singleOrNull()
+                                microphone != null &&
+                                    microphone.config[SemanticsProperties.StateDescription] ==
+                                    "Mute once. Muted until this reply ends."
+                            }
+                            conversation.send("""{"kind":"speech.ended"}""")
+                            composeRule.waitUntil(10_000) {
+                                val microphone =
+                                    composeRule
+                                        .onAllNodesWithTag(
+                                            "gomode-microphone-mode",
+                                        ).fetchSemanticsNodes()
+                                        .singleOrNull()
+                                microphone != null &&
+                                    microphone.config[SemanticsProperties.StateDescription] == "Listening"
+                            }
+                        }
                         conversation.send(
                             if (mode == VoiceMode.CLOUD) {
                                 """{"kind":"transcript.delta","speaker":"assistant","text":"The code word is cedar."}"""
@@ -433,7 +463,9 @@ class ServerVoiceSwitchTest {
                                 composeRule.onNodeWithTag("gomode-voice-connect").performClick()
                                 composeRule.waitUntil(30_000) { cookie.sessions.size == cycle + 2 }
                                 waitForConnected()
-                                composeRule.onNodeWithContentDescription("Mute").performClick()
+                                composeRule.onNodeWithTag("gomode-microphone-mode").performClick()
+                                composeRule.onNodeWithTag("gomode-microphone-mode").performClick()
+                                waitForMicrophoneMuted()
                                 cookie.sessions.last().send(
                                     """{"kind":"tool.call","id":"cycle-$cycle","name":"list_servers","args":{}}""",
                                 )
@@ -595,6 +627,18 @@ class ServerVoiceSwitchTest {
             matches
         }
         return result
+    }
+
+    private fun waitForMicrophoneMuted() {
+        composeRule.waitUntil(10_000) {
+            val microphone =
+                composeRule
+                    .onAllNodesWithTag(
+                        "gomode-microphone-mode",
+                    ).fetchSemanticsNodes()
+                    .singleOrNull()
+            microphone != null && microphone.config[SemanticsProperties.StateDescription].startsWith("Muted.")
+        }
     }
 
     private fun waitForConnected() {

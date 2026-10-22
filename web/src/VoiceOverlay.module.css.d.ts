@@ -8,12 +8,16 @@ declare const classes: {
   readonly "deviceControl": string;
   readonly "deviceField": string;
   readonly "deviceHint": string;
+  readonly "deviceLabel": string;
   readonly "deviceRow": string;
   readonly "deviceSelect": string;
   readonly "errorActions": string;
   readonly "errorPanel": string;
   readonly "micBar": string;
   readonly "micBars": string;
+  readonly "microphoneClock": string;
+  readonly "microphoneControl": string;
+  readonly "microphoneHelp": string;
   readonly "panel": string;
   readonly "panelInner": string;
   readonly "pulse": string;

@@ -34,6 +34,7 @@ import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -426,6 +427,56 @@ class VoiceSessionLifecycleTest {
                 session.close()
             }
         }
+
+    @Test
+    fun microphoneModesGateTheRtpTrackAcrossRepliesAndInterruption() =
+        runBlocking {
+            val settings = SettingsRepository(InMemoryPreferencesDataStore())
+            val id = settings.addService("Home", "https://home.example")
+            settings.settings.first { it.activeServiceId == id }
+            val session = createCloudSession(settings)
+            val channel = RecordingDataChannel()
+            val track = RecordingAudioTrack()
+            attachAuthorizedChannel(session, channel)
+            val trackField = VoiceSession::class.java.getDeclaredField("localAudioTrack").apply { isAccessible = true }
+            trackField.set(session, track)
+            try {
+                invokeHandleServerMessage(session, """{"kind":"speech.started"}""", channel)
+                assertTrue(track.microphoneEnabled)
+                session.setMicrophoneMode(MicrophoneMode.MUTE_ONCE)
+                assertFalse(track.microphoneEnabled)
+                invokeHandleServerMessage(session, """{"kind":"speech.ended"}""", channel)
+                assertTrue(track.microphoneEnabled)
+                assertEquals(MicrophoneMode.LISTENING, session.state.value.microphoneMode)
+                invokeHandleServerMessage(session, """{"kind":"speech.started"}""", channel)
+                assertTrue(track.microphoneEnabled)
+                session.setMicrophoneMode(MicrophoneMode.MUTE_ONCE)
+                assertFalse(track.microphoneEnabled)
+                invokeHandleServerMessage(session, """{"kind":"interrupted","source":"user"}""", channel)
+                assertTrue(track.microphoneEnabled)
+                assertEquals(MicrophoneMode.LISTENING, session.state.value.microphoneMode)
+                session.setMicrophoneMode(MicrophoneMode.MUTED)
+                assertFalse(track.microphoneEnabled)
+                invokeHandleServerMessage(session, """{"kind":"speech.started"}""", channel)
+                invokeHandleServerMessage(session, """{"kind":"speech.ended"}""", channel)
+                invokeHandleServerMessage(session, """{"kind":"interrupted","source":"user"}""", channel)
+                assertFalse(track.microphoneEnabled)
+                session.setMicrophoneMode(MicrophoneMode.LISTENING)
+                assertTrue(track.microphoneEnabled)
+            } finally {
+                trackField.set(session, null)
+                session.close()
+            }
+        }
+
+    private class RecordingAudioTrack : org.webrtc.AudioTrack(1L) {
+        var microphoneEnabled = true
+
+        override fun setEnabled(enable: Boolean): Boolean {
+            microphoneEnabled = enable
+            return true
+        }
+    }
 
     private fun attachAuthorizedChannel(
         session: VoiceSession,

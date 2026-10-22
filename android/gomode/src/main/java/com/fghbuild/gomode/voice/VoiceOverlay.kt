@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.PhoneInTalk
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -74,6 +75,9 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -97,7 +101,7 @@ fun VoicePanel(
     voiceEnabled: Boolean,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
-    onToggleMute: () -> Unit,
+    onSelectMicrophoneMode: (MicrophoneMode) -> Unit,
     onSelectDevice: (Int) -> Unit,
     onClearTranscript: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -136,7 +140,7 @@ fun VoicePanel(
                     ActivePanel(
                         voiceState = voiceState,
                         onDisconnect = onDisconnect,
-                        onToggleMute = onToggleMute,
+                        onSelectMicrophoneMode = onSelectMicrophoneMode,
                         onSelectDevice = onSelectDevice,
                         onClearTranscript = onClearTranscript,
                         appControls = appControls,
@@ -281,11 +285,80 @@ private fun ConnectingPanel(
     }
 }
 
+private fun nextMicrophoneMode(mode: MicrophoneMode): MicrophoneMode =
+    when (mode) {
+        MicrophoneMode.LISTENING -> MicrophoneMode.MUTE_ONCE
+        MicrophoneMode.MUTE_ONCE -> MicrophoneMode.MUTED
+        MicrophoneMode.MUTED -> MicrophoneMode.LISTENING
+    }
+
+private fun microphoneModeLabel(mode: MicrophoneMode): String =
+    when (mode) {
+        MicrophoneMode.LISTENING -> "Listening"
+        MicrophoneMode.MUTE_ONCE -> "Mute once"
+        MicrophoneMode.MUTED -> "Muted"
+    }
+
+private fun microphoneModeHelp(
+    mode: MicrophoneMode,
+    speaking: Boolean,
+): String? =
+    when (mode) {
+        MicrophoneMode.LISTENING -> {
+            null
+        }
+
+        MicrophoneMode.MUTE_ONCE -> {
+            if (speaking) "Muted until this reply ends." else "Mutes during the next reply, then returns to Listening."
+        }
+
+        MicrophoneMode.MUTED -> {
+            "Stays muted until you unmute."
+        }
+    }
+
+@Composable
+private fun MicrophoneModeButton(
+    mode: MicrophoneMode,
+    speaking: Boolean,
+    onSelect: (MicrophoneMode) -> Unit,
+) {
+    IconButton(
+        onClick = { onSelect(nextMicrophoneMode(mode)) },
+        modifier =
+            Modifier.testTag("gomode-microphone-mode").semantics {
+                contentDescription = "Microphone mode. Next: ${microphoneModeLabel(nextMicrophoneMode(mode))}"
+                stateDescription =
+                    listOfNotNull(microphoneModeLabel(mode), microphoneModeHelp(mode, speaking)).joinToString(". ")
+            },
+    ) {
+        Box(Modifier.size(32.dp)) {
+            Icon(
+                if (mode == MicrophoneMode.LISTENING) Icons.Default.Mic else Icons.Default.MicOff,
+                contentDescription = null,
+                modifier = Modifier.align(Alignment.Center),
+            )
+            if (mode == MicrophoneMode.MUTE_ONCE) {
+                Icon(
+                    Icons.Default.Schedule,
+                    contentDescription = null,
+                    modifier =
+                        Modifier
+                            .align(Alignment.BottomEnd)
+                            .size(14.dp)
+                            .background(MaterialTheme.colorScheme.surface, CircleShape)
+                            .testTag("gomode-microphone-clock"),
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun ActivePanel(
     voiceState: VoiceState,
     onDisconnect: () -> Unit,
-    onToggleMute: () -> Unit,
+    onSelectMicrophoneMode: (MicrophoneMode) -> Unit,
     onSelectDevice: (Int) -> Unit,
     onClearTranscript: () -> Unit,
     appControls: @Composable () -> Unit,
@@ -300,6 +373,7 @@ private fun ActivePanel(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            MicrophoneModeButton(voiceState.microphoneMode, voiceState.speaking, onSelectMicrophoneMode)
             appControls()
             MicLevelIndicator(micLevel = voiceState.micLevel)
 
@@ -315,13 +389,6 @@ private fun ActivePanel(
                     },
                 modifier = Modifier.weight(1f),
             )
-
-            IconButton(onClick = onToggleMute) {
-                Icon(
-                    imageVector = if (voiceState.muted) Icons.Default.MicOff else Icons.Default.Mic,
-                    contentDescription = if (voiceState.muted) "Unmute" else "Mute",
-                )
-            }
 
             IconButton(onClick = onDisconnect) {
                 Icon(

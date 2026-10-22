@@ -212,10 +212,6 @@ internal class VoiceSession(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-    /** Hot-path mute flag — avoids StateFlow read on every audio chunk. */
-    @Volatile
-    private var muted = false
-
     /** True while the model is speaking — injected text is queued and sent after the turn ends. */
     private var speakerActive = false
 
@@ -432,7 +428,7 @@ internal class VoiceSession(
                     val audioSrc = factory.createAudioSource(audioConstraints)
                     rtcAudioSource = audioSrc
                     val micTrack = factory.createAudioTrack("mic-audio", audioSrc)
-                    micTrack.setEnabled(!muted)
+                    micTrack.setEnabled(!_state.value.muted)
                     localAudioTrack = micTrack
                     pc.addTrack(micTrack)
                     startMicLevelMonitoring(attempt)
@@ -656,11 +652,11 @@ internal class VoiceSession(
             scope.launch {
                 while (true) {
                     val pc = peerConnection ?: break
-                    if (muted) {
+                    if (_state.value.muted) {
                         _state.update { it.copy(micLevel = 0f) }
                     } else {
                         pc.getStats { report ->
-                            if (!ownsAttempt(attempt)) return@getStats
+                            if (!ownsAttempt(attempt) || _state.value.muted) return@getStats
                             val level = micLevelFromStats(report) ?: return@getStats
                             _state.update { it.copy(micLevel = level) }
                         }
@@ -898,11 +894,15 @@ internal class VoiceSession(
             }
         }
 
-    /** Toggle microphone mute via the RTP audio track. */
-    override fun toggleMute() {
-        muted = !muted
-        _state.update { it.copy(muted = muted, micLevel = if (muted) 0f else it.micLevel) }
+    override fun setMicrophoneMode(mode: MicrophoneMode) {
+        _state.update { it.copy(microphoneMode = mode) }
+        applyMicrophoneMode()
+    }
+
+    private fun applyMicrophoneMode() {
+        val muted = _state.value.muted
         localAudioTrack?.setEnabled(!muted)
+        if (muted) _state.update { it.copy(micLevel = 0f) }
     }
 
     override fun selectAudioDevice(deviceId: Int) {
@@ -945,7 +945,6 @@ internal class VoiceSession(
         recoveryContext = ""
         usableICECandidateWaiter?.cancel()
         usableICECandidateWaiter = null
-        muted = false
         setupTimeoutJob?.cancel()
         setupTimeoutJob = null
         releaseTransport()
@@ -1099,6 +1098,7 @@ internal class VoiceSession(
                 MessageKind.SpeechStarted -> {
                     speakerActive = true
                     _state.update { it.copy(speaking = true) }
+                    applyMicrophoneMode()
                 }
 
                 MessageKind.SpeechEnded -> {
@@ -1108,16 +1108,21 @@ internal class VoiceSession(
                     _state.update {
                         it.copy(
                             speaking = false,
+                            microphoneMode = it.microphoneMode.afterReply(),
                             transcript = it.transcript.map { e -> e.copy(final = true) },
                         )
                     }
+                    applyMicrophoneMode()
                 }
 
                 MessageKind.Interrupted -> {
                     if (!pendingGatewayTools.containsKey(attempt)) awaitingGatewayTurn = false
                     speakerActive = false
                     flushPendingNotifications()
-                    _state.update { it.copy(speaking = false, activeTool = null) }
+                    _state.update {
+                        it.copy(speaking = false, microphoneMode = it.microphoneMode.afterReply(), activeTool = null)
+                    }
+                    applyMicrophoneMode()
                 }
 
                 MessageKind.TurnStatus -> {
@@ -1455,12 +1460,21 @@ private data class MicEnergySample(
     val duration: Double,
 )
 
+enum class MicrophoneMode {
+    LISTENING,
+    MUTE_ONCE,
+    MUTED,
+    ;
+
+    fun afterReply(): MicrophoneMode = if (this == MUTE_ONCE) LISTENING else this
+}
+
 data class VoiceState(
     val connectStatus: String? = null,
     val connected: Boolean = false,
     val listening: Boolean = false,
     val speaking: Boolean = false,
-    val muted: Boolean = false,
+    val microphoneMode: MicrophoneMode = MicrophoneMode.LISTENING,
     val activeTool: String? = null,
     /** Gateway work before assistant output; idle when the gateway does not report any. */
     val turnState: TurnState = TurnState.Idle,
@@ -1476,7 +1490,12 @@ data class VoiceState(
     val selectedDeviceId: Int? = null,
     val audioError: String? = null,
     val audioSwitching: Boolean = false,
-)
+) {
+    val muted: Boolean
+        get() =
+            microphoneMode == MicrophoneMode.MUTED ||
+                (microphoneMode == MicrophoneMode.MUTE_ONCE && speaking)
+}
 
 /** Build a bounded recovery-only context without replaying unfinished transcript deltas. */
 internal fun buildNetworkRecoveryContext(transcript: List<TranscriptEntry>): String {

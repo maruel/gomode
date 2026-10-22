@@ -9,11 +9,11 @@ declare const classes: {
   readonly "icon": string;
   readonly "mic": string;
   readonly "micOff": string;
-  readonly "muted": string;
   readonly "outlined": string;
   readonly "phoneInTalk": string;
   readonly "playArrow": string;
   readonly "refresh": string;
+  readonly "schedule": string;
   readonly "settings": string;
   readonly "speaker": string;
   readonly "stop": string;

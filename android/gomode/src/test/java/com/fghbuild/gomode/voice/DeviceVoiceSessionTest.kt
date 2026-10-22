@@ -242,7 +242,7 @@ class DeviceVoiceSessionTest {
                 .single()
                 .final,
         )
-        session.toggleMute()
+        session.setMicrophoneMode(MicrophoneMode.MUTED)
         connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Muted reply."}""")
         assertFalse(
             session.state.value.transcript
@@ -621,7 +621,7 @@ class DeviceVoiceSessionTest {
         beforeMutePartial("Another draft")
         val draft = session.state.value.transcript
         val sentBeforeMute = socket.sent.size
-        session.toggleMute()
+        session.setMicrophoneMode(MicrophoneMode.MUTED)
         assertEquals(draft, session.state.value.transcript)
         assertFalse(session.state.value.listening)
         assertTrue(session.state.value.muted)
@@ -629,7 +629,7 @@ class DeviceVoiceSessionTest {
         beforeMuteResult("Late muted result")
         assertEquals(draft, session.state.value.transcript)
         assertEquals(sentBeforeMute, socket.sent.size)
-        session.toggleMute()
+        session.setMicrophoneMode(MicrophoneMode.LISTENING)
         assertEquals(draft, session.state.value.transcript)
         assertTrue(session.state.value.listening)
         beforeMutePartial("Late previous hypothesis")
@@ -732,13 +732,63 @@ class DeviceVoiceSessionTest {
         connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
         assertTrue(speech.listening)
 
-        session.toggleMute()
+        session.setMicrophoneMode(MicrophoneMode.MUTED)
         assertTrue(session.state.value.muted)
         assertFalse(speech.listening)
 
-        session.toggleMute()
+        session.setMicrophoneMode(MicrophoneMode.LISTENING)
         assertFalse(session.state.value.muted)
         assertTrue(speech.listening)
+    }
+
+    @Test
+    fun `mute once returns to listening after the whole reply and full mute preserves speaker output`() {
+        val speech = FakeSpeech(completeSpeechImmediately = false)
+        val socket = FakeWebSocket()
+        var listener: WebSocketListener? = null
+        val session =
+            createSession(speech) { _, captured ->
+                listener = captured
+                socket
+            }
+        try {
+            session.connect()
+            val connected = requireNotNull(listener)
+            connected.onOpen(socket, upgradeResponse())
+            connected.onMessage(socket, """{"kind":"session.ready"}""")
+            connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+            session.setMicrophoneMode(MicrophoneMode.MUTE_ONCE)
+            assertTrue(speech.listening)
+            connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"First fragment."}""")
+            assertFalse(speech.listening)
+            assertTrue(session.state.value.muted)
+            speech.speechCompletions.removeAt(0).invoke()
+            assertFalse(speech.listening)
+            assertEquals(MicrophoneMode.MUTE_ONCE, session.state.value.microphoneMode)
+            connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Final fragment."}""")
+            connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+            assertEquals(MicrophoneMode.MUTE_ONCE, session.state.value.microphoneMode)
+            speech.speechCompletions.removeAt(0).invoke()
+            assertTrue(speech.listening)
+            assertEquals(MicrophoneMode.LISTENING, session.state.value.microphoneMode)
+            session.setMicrophoneMode(MicrophoneMode.MUTE_ONCE)
+            connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Interrupted."}""")
+            connected.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
+            assertTrue(speech.listening)
+            assertEquals(MicrophoneMode.LISTENING, session.state.value.microphoneMode)
+            session.setMicrophoneMode(MicrophoneMode.MUTED)
+            assertFalse(speech.listening)
+            connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Still audible."}""")
+            connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+            assertTrue(speech.spoken.contains("Still audible."))
+            speech.speechCompletions.last().invoke()
+            assertFalse(speech.listening)
+            assertEquals(MicrophoneMode.MUTED, session.state.value.microphoneMode)
+            session.setMicrophoneMode(MicrophoneMode.LISTENING)
+            assertTrue(speech.listening)
+        } finally {
+            session.close()
+        }
     }
 
     @Test
@@ -1659,9 +1709,9 @@ class DeviceVoiceSessionTest {
             assertTrue(speech.listening)
             requireNotNull(speech.resultCallback)("Next")
             thinking()
-            session.toggleMute()
+            session.setMicrophoneMode(MicrophoneMode.MUTED)
             assertFalse(earcon.playing)
-            session.toggleMute()
+            session.setMicrophoneMode(MicrophoneMode.LISTENING)
             advanceTimeBy(1_000)
             runCurrent()
             assertTrue(earcon.playing)

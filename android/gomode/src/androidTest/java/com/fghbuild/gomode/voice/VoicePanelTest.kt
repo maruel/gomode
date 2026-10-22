@@ -3,17 +3,22 @@ package com.fghbuild.gomode.voice
 
 import android.media.AudioDeviceInfo
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -26,6 +31,8 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.UiDevice
 import com.caic.voicegateway.sdk.v1.TurnState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -35,6 +42,78 @@ import org.junit.Test
 class VoicePanelTest {
     @get:Rule
     val composeRule = createComposeRule()
+
+    @Test
+    fun microphoneControlUsesAClockBadgeWithoutToolbarLabels() {
+        val state = mutableStateOf(VoiceState(connected = true, listening = true))
+        composeRule.setContent {
+            MaterialTheme {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                    VoicePanel(
+                        state.value,
+                        true,
+                        {},
+                        {},
+                        { state.value = state.value.copy(microphoneMode = it) },
+                        {},
+                        {},
+                        {},
+                        null,
+                        onCycleApp = {},
+                        canCycleApps = false,
+                    )
+                }
+            }
+        }
+
+        fun capture(name: String) {
+            if (InstrumentationRegistry.getArguments().getString("captureMicrophoneControls") != "true") return
+            composeRule.waitForIdle()
+            val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+            composeRule.onNodeWithTag("gomode-microphone-mode").captureToImage()
+            device.waitForIdle()
+            val path = "/data/local/tmp/gomode-microphone-$name.png"
+            device.executeShellCommand("screencap -p $path")
+            assertTrue(device.executeShellCommand("stat -c %s $path").trim().toLong() > 0)
+        }
+        val microphone = composeRule.onNodeWithTag("gomode-microphone-mode")
+
+        fun assertState(expected: String) {
+            microphone.assert(
+                androidx.compose.ui.test.SemanticsMatcher
+                    .expectValue(SemanticsProperties.StateDescription, expected),
+            )
+        }
+        assertState("Listening")
+        microphone.assertContentDescriptionEquals("Microphone mode. Next: Mute once")
+        composeRule.onNodeWithTag("gomode-microphone-clock", useUnmergedTree = true).assertDoesNotExist()
+        capture("listening")
+        microphone.performClick()
+        assertState("Mute once. Mutes during the next reply, then returns to Listening.")
+        microphone.assertContentDescriptionEquals("Microphone mode. Next: Muted")
+        composeRule.onNodeWithTag("gomode-microphone-clock", useUnmergedTree = true).assertIsDisplayed()
+        composeRule.onNodeWithText("Mute once").assertDoesNotExist()
+        capture("armed")
+        microphone.performClick()
+        assertState("Muted. Stays muted until you unmute.")
+        microphone.assertContentDescriptionEquals("Microphone mode. Next: Listening")
+        composeRule.onNodeWithTag("gomode-microphone-clock", useUnmergedTree = true).assertDoesNotExist()
+        capture("muted")
+        microphone.performClick()
+        assertState("Listening")
+        microphone.performClick()
+        composeRule.runOnIdle { state.value = state.value.copy(speaking = true, listening = false) }
+        assertState("Mute once. Muted until this reply ends.")
+        capture("mute-once")
+        composeRule.runOnIdle {
+            state.value =
+                state.value.copy(microphoneMode = MicrophoneMode.LISTENING, speaking = false, listening = true)
+        }
+        assertState("Listening")
+        composeRule.onNodeWithTag("gomode-microphone-clock", useUnmergedTree = true).assertDoesNotExist()
+        microphone.performClick()
+        assertState("Mute once. Mutes during the next reply, then returns to Listening.")
+    }
 
     @Test
     fun gatewayFailureShowsTheCauseAndCanBeRetried() {
@@ -117,7 +196,7 @@ class VoicePanelTest {
                     voiceEnabled = voiceEnabled.value,
                     onConnect = {},
                     onDisconnect = {},
-                    onToggleMute = {},
+                    onSelectMicrophoneMode = {},
                     onSelectDevice = {},
                     onClearTranscript = {},
                     onOpenSettings = {},
@@ -193,7 +272,7 @@ class VoicePanelTest {
                     voiceEnabled = true,
                     onConnect = {},
                     onDisconnect = {},
-                    onToggleMute = {},
+                    onSelectMicrophoneMode = {},
                     onSelectDevice = { selected = it },
                     onClearTranscript = {},
                     onOpenSettings = {},
@@ -228,7 +307,7 @@ class VoicePanelTest {
                     voiceEnabled = true,
                     onConnect = {},
                     onDisconnect = {},
-                    onToggleMute = {},
+                    onSelectMicrophoneMode = {},
                     onSelectDevice = {},
                     onClearTranscript = {},
                     onOpenSettings = {},
@@ -267,14 +346,14 @@ class VoicePanelTest {
         composeRule.onNodeWithText("You: Send a").assertDoesNotExist()
         composeRule.onNodeWithText("You: Send the message").assertIsDisplayed()
         composeRule.runOnIdle {
-            state.value = state.value.copy(muted = true, listening = false)
+            state.value = state.value.copy(microphoneMode = MicrophoneMode.MUTED, listening = false)
         }
         composeRule.onNodeWithTag("gomode-voice-recognition-draft").assertIsDisplayed()
         composeRule.onNodeWithText("You: Send the message").assertIsDisplayed()
         composeRule.onNodeWithTag("gomode-voice-transcript-toggle").performClick()
         composeRule.onNodeWithTag("gomode-voice-transcript").assertIsDisplayed()
         composeRule.runOnIdle {
-            state.value = state.value.copy(muted = false, listening = true)
+            state.value = state.value.copy(microphoneMode = MicrophoneMode.LISTENING, listening = true)
         }
         composeRule.onNodeWithTag("gomode-voice-transcript").assertIsDisplayed()
         composeRule.onNodeWithTag("gomode-voice-transcript-toggle").performClick()
@@ -353,7 +432,7 @@ class VoicePanelTest {
                     voiceEnabled = false,
                     onConnect = {},
                     onDisconnect = { dismissed = true },
-                    onToggleMute = {},
+                    onSelectMicrophoneMode = {},
                     onSelectDevice = {},
                     onClearTranscript = {},
                     onOpenSettings = {},

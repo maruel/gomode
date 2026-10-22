@@ -12,6 +12,7 @@ type VoiceIconName =
   | "phoneInTalk"
   | "playArrow"
   | "refresh"
+  | "schedule"
   | "settings"
   | "speaker"
   | "stop"

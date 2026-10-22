@@ -21,7 +21,7 @@ internal interface VoiceSessionController {
 
     fun disconnect()
 
-    fun toggleMute()
+    fun setMicrophoneMode(mode: MicrophoneMode)
 
     fun selectAudioDevice(deviceId: Int)
 

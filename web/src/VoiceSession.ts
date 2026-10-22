@@ -311,6 +311,12 @@ function voiceChannelOpen(channel: VoiceChannel): boolean {
   return channel.readyState === "open" || channel.readyState === 1; // WebSocket.OPEN
 }
 
+export type MicrophoneMode = "listening" | "muteOnce" | "muted";
+
+export function microphoneMuted(state: Pick<VoiceState, "microphoneMode" | "speaking">): boolean {
+  return state.microphoneMode === "muted" || (state.microphoneMode === "muteOnce" && state.speaking);
+}
+
 export interface VoiceState {
   mode: VoiceMode;
   choices: VoiceChoice[];
@@ -325,7 +331,7 @@ export interface VoiceState {
   connected: boolean;
   listening: boolean;
   speaking: boolean;
-  muted: boolean;
+  microphoneMode: MicrophoneMode;
   activeTool: string | null;
   /** Gateway work before assistant output; idle when the gateway does not report any. */
   turnState: TurnState;
@@ -557,7 +563,7 @@ export class VoiceSession {
       connected: false,
       listening: false,
       speaking: false,
-      muted: false,
+      microphoneMode: "listening",
       activeTool: null,
       turnState: TurnStateIdle,
       transcript: [],
@@ -924,7 +930,8 @@ export class VoiceSession {
         // Replace tracks on the PeerConnection.
         const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
         for (const t of newStream.getAudioTracks()) {
-          t.enabled = !this.state.muted;
+          // Keep the pending sender silent until installation can apply the current mode.
+          t.enabled = false;
           if (sender) {
             await sender.replaceTrack(t);
             if (this._pc !== pc) {
@@ -935,6 +942,9 @@ export class VoiceSession {
             pc.addTrack(t, newStream);
           }
         }
+        newStream.getAudioTracks().forEach((track) => {
+          track.enabled = !microphoneMuted(this.state);
+        });
         this._micStream = newStream;
         oldStream.getTracks().forEach((track) => track.stop());
         this._update((s) => {
@@ -985,7 +995,7 @@ export class VoiceSession {
         sumSq += v * v;
       }
       const rms = Math.sqrt(sumSq / buf.length);
-      if (!this.state.muted && !this._speakerActive) {
+      if (!microphoneMuted(this.state) && !this._speakerActive) {
         this._update((s) => {
           s.micLevel = Math.min(1, Math.sqrt(rms));
         });
@@ -1146,7 +1156,7 @@ export class VoiceSession {
         this._inputPreferenceProvisional = false;
       }
       for (const t of micStream.getAudioTracks()) {
-        t.enabled = !this.state.muted;
+        t.enabled = !microphoneMuted(this.state);
         pc.addTrack(t, micStream);
       }
       this._update((s) => {
@@ -1267,7 +1277,6 @@ export class VoiceSession {
     if (!preserveTranscript) this._clearTranscript();
     this._update((s) => {
       s.connected = false;
-      s.muted = false;
       s.speaking = false;
       s.activeTool = null;
       s.turnState = TurnStateIdle;
@@ -1353,8 +1362,9 @@ export class VoiceSession {
     });
   }
 
+  // Normal mode adds no user mute; browser speech still owns its half-duplex capture lifecycle.
   private _startBrowserListening(): void {
-    if (this.state.connected && !this.state.muted && !this.state.speaking && this._browserTurnIdle) {
+    if (this.state.connected && !microphoneMuted(this.state) && !this.state.speaking && this._browserTurnIdle) {
       this._thinkingEarcon.setThinking(false);
       this._browserSpeech?.listen();
     }
@@ -1381,6 +1391,9 @@ export class VoiceSession {
       });
     } else {
       this._speakerActive = false;
+      this._update((s) => {
+        if (s.microphoneMode === "muteOnce") s.microphoneMode = "listening";
+      });
       this._flushPendingNotifications();
       this._startBrowserListening();
     }
@@ -1409,7 +1422,7 @@ export class VoiceSession {
       s.connected = false;
       s.listening = false;
       s.speaking = false;
-      s.muted = false;
+      s.microphoneMode = "listening";
       s.connectStatus = null;
       s.connectPhase = null;
       s.activeTool = null;
@@ -1429,19 +1442,13 @@ export class VoiceSession {
     });
   }
 
-  toggleMute(): void {
+  setMicrophoneMode(mode: MicrophoneMode): void {
     this._update((s) => {
-      s.muted = !s.muted;
+      s.microphoneMode = mode;
     });
     if (this._browserSpeech !== null) {
-      if (this.state.muted) this._browserSpeech.stopListening();
+      if (microphoneMuted(this.state)) this._browserSpeech.stopListening();
       else this._startBrowserListening();
-    }
-    if (this._micStream) {
-      const enabled = !this.state.muted;
-      this._micStream.getAudioTracks().forEach((t) => {
-        t.enabled = enabled;
-      });
     }
   }
 
@@ -1627,8 +1634,21 @@ export class VoiceSession {
   }
 
   private _update(fn: (s: VoiceState) => void): void {
+    const wasMuted = untrack(() => microphoneMuted(this.state));
     this.setState(produce(fn));
     untrack(() => {
+      const muted = microphoneMuted(this.state);
+      if (muted !== wasMuted) {
+        this._micStream?.getAudioTracks().forEach((track) => {
+          track.enabled = !muted;
+        });
+      }
+      if (muted && this.state.micLevel !== 0)
+        this.setState(
+          produce((s) => {
+            s.micLevel = 0;
+          }),
+        );
       const state = this.state;
       this._thinkingEarcon.setThinking(
         state.mode === "browser" &&
@@ -1638,7 +1658,7 @@ export class VoiceSession {
           state.turnState === TurnStateThinking &&
           !state.listening &&
           !state.speaking &&
-          !state.muted,
+          !microphoneMuted(state),
       );
     });
   }
@@ -1733,16 +1753,29 @@ export class VoiceSession {
       this._flushPendingNotifications();
       this._update((s) => {
         s.speaking = false;
+        if (s.microphoneMode === "muteOnce") s.microphoneMode = "listening";
         s.transcript = s.transcript.map((e) => ({ ...e, final: true }));
       });
       return;
     }
 
     if (env.kind === MessageKindInterrupted) {
+      if (this.state.mode === "browser") {
+        this._browserTurnIdle = true;
+        this._browserReply = "";
+        this._update((s) => {
+          s.activeTool = null;
+          s.turnState = TurnStateIdle;
+        });
+        // Local synthesis owns speech completion; keep capture gated until it finishes.
+        if (!this.state.speaking) this._finishBrowserTurn(attempt, channel);
+        return;
+      }
       this._speakerActive = false;
       this._flushPendingNotifications();
       this._update((s) => {
         s.speaking = false;
+        if (s.microphoneMode === "muteOnce") s.microphoneMode = "listening";
         s.activeTool = null;
         s.turnState = TurnStateIdle;
       });

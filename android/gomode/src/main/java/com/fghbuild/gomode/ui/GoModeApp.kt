@@ -511,7 +511,7 @@ internal fun GoModeApp(
                     onDisconnect = {
                         voiceSession.disconnect()
                     },
-                    onToggleMute = { voiceSession.toggleMute() },
+                    onSelectMicrophoneMode = { voiceSession.setMicrophoneMode(it) },
                     onSelectDevice = { id ->
                         val device = voiceState.availableDevices.firstOrNull { it.id == id }
                         if (device != null) {

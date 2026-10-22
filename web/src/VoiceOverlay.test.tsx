@@ -33,7 +33,7 @@ beforeEach(() => {
     error: null,
     listening: false,
     speaking: false,
-    muted: false,
+    microphoneMode: "listening",
     activeTool: null,
     turnState: TurnStateIdle,
     transcript: [],
@@ -219,8 +219,45 @@ describe("VoiceOverlay status", () => {
     }
   });
 
+  it("cycles the microphone directly with pointer and keyboard and resets its clock", async () => {
+    voiceSession.setState((s) => ({ ...s, connected: true }));
+    render(() => <VoiceOverlay />);
+    const user = userEvent.setup();
+    const microphone = screen.getByRole("button", { name: "Microphone mode: Listening. Next: Mute once" });
+    expect(microphone.querySelector('[data-icon="mic"]')).not.toBeNull();
+    expect(microphone.querySelector('[data-icon="schedule"]')).toBeNull();
+    await user.click(microphone);
+    expect(voiceSession.state.microphoneMode).toBe("muteOnce");
+    expect(microphone).toHaveAccessibleName("Microphone mode: Mute once. Next: Muted");
+    expect(microphone.querySelector('[data-icon="micOff"]')).not.toBeNull();
+    expect(microphone.querySelector('[data-icon="schedule"]')).not.toBeNull();
+    expect(microphone).toHaveAccessibleDescription("Mutes during the next reply, then returns to Listening.");
+    voiceSession.setState((s) => ({ ...s, speaking: true }));
+    expect(microphone).toHaveAccessibleDescription("Muted until this reply ends.");
+    await user.click(microphone);
+    expect(voiceSession.state.microphoneMode).toBe("muted");
+    expect(microphone).toHaveAccessibleName("Microphone mode: Muted. Next: Listening");
+    expect(microphone.querySelector('[data-icon="schedule"]')).toBeNull();
+    expect(microphone).toHaveAccessibleDescription("Stays muted until you unmute.");
+    await user.keyboard("{Enter}");
+    expect(voiceSession.state.microphoneMode).toBe("listening");
+    expect(microphone.querySelector('[data-icon="mic"]')).not.toBeNull();
+    await user.keyboard(" ");
+    expect(voiceSession.state.microphoneMode).toBe("muteOnce");
+    voiceSession.setState((s) => ({ ...s, microphoneMode: "listening", speaking: false }));
+    expect(microphone).toHaveAccessibleName("Microphone mode: Listening. Next: Mute once");
+    expect(microphone.querySelector('[data-icon="schedule"]')).toBeNull();
+    expect(microphone).toHaveFocus();
+    expect(voiceSession.state.selectedOutputId).toBe("");
+  });
+
   it("shows gateway work behind speech and ahead of muting", () => {
-    voiceSession.setState((s) => ({ ...s, connected: true, muted: true, turnState: TurnStateTranscribing }));
+    voiceSession.setState((s) => ({
+      ...s,
+      connected: true,
+      microphoneMode: "muted",
+      turnState: TurnStateTranscribing,
+    }));
     render(() => <VoiceOverlay />);
     expect(screen.getByText("Transcribing…")).toBeInTheDocument();
 
@@ -231,7 +268,7 @@ describe("VoiceOverlay status", () => {
     expect(screen.getByText("Speaking…")).toBeInTheDocument();
 
     voiceSession.setState((s) => ({ ...s, speaking: false, turnState: TurnStateIdle }));
-    expect(screen.getByText("Muted")).toBeInTheDocument();
+    expect(screen.getByText("Muted", { selector: "span" })).toBeInTheDocument();
   });
 });
 

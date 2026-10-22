@@ -124,9 +124,9 @@ describe("browser voice sessions", () => {
     );
     socket.message({ kind: "tool.call", id: "slow", name: "example", args: {} });
     expect(earcon.setThinking).toHaveBeenLastCalledWith(true);
-    session.toggleMute();
+    session.setMicrophoneMode("muted");
     expect(earcon.setThinking).toHaveBeenLastCalledWith(false);
-    session.toggleMute();
+    session.setMicrophoneMode("listening");
     expect(earcon.setThinking).toHaveBeenLastCalledWith(true);
     completeTool({ structuredContent: {}, isError: false });
     await Promise.resolve();
@@ -146,6 +146,25 @@ describe("browser voice sessions", () => {
     expect(earcon.setThinking).toHaveBeenLastCalledWith(false);
     socket.message({ kind: "turn.status", state: "thinking" });
     expect(earcon.setThinking).toHaveBeenLastCalledWith(false);
+  });
+
+  it("retains full microphone mute when retrying after a gateway error", async () => {
+    const socket = await readySocket();
+    session.setMicrophoneMode("muted");
+    socket.onerror?.();
+    expect(session.state.microphoneMode).toBe("muted");
+    await session.connect();
+    const replacement = FakeWebSocket.instances.at(-1);
+    ok(replacement);
+    replacement.open();
+    replacement.message({ kind: "session.ready" });
+    finishTurn(replacement, "Still audible after retry");
+    expect(session.state.speaking).toBe(true);
+    fakeSynthesis.complete();
+    expect(session.state.listening).toBe(false);
+    expect(session.state.microphoneMode).toBe("muted");
+    session.setMicrophoneMode("listening");
+    expect(session.state.listening).toBe(true);
   });
 
   it("stops thinking feedback on connection errors and reconnects", async () => {
@@ -272,13 +291,43 @@ describe("browser voice sessions", () => {
     expect(FakeRecognition.instances).toHaveLength(2);
   });
 
+  it("returns mute once to listening after playback and speaks even while fully muted", async () => {
+    const socket = await readySocket();
+    session.setMicrophoneMode("muteOnce");
+    finishTurn(socket, "First reply");
+    expect(session.state.listening).toBe(false);
+    expect(session.state.speaking).toBe(true);
+    fakeSynthesis.complete();
+    expect(session.state.listening).toBe(true);
+    expect(session.state.microphoneMode).toBe("listening");
+    session.setMicrophoneMode("muteOnce");
+    finishTurn(socket, "Second reply");
+    FakeRecognition.instances.at(-1)?.end();
+    expect(session.state.listening).toBe(false);
+    socket.message({ kind: "interrupted", source: "user" });
+    expect(session.state.listening).toBe(false);
+    expect(session.state.microphoneMode).toBe("muteOnce");
+    fakeSynthesis.complete();
+    expect(session.state.listening).toBe(true);
+    expect(session.state.microphoneMode).toBe("listening");
+    session.setMicrophoneMode("muted");
+    FakeRecognition.instances.at(-1)?.end();
+    finishTurn(socket, "Still audible");
+    expect(session.state.speaking).toBe(true);
+    fakeSynthesis.complete();
+    expect(session.state.listening).toBe(false);
+    expect(session.state.microphoneMode).toBe("muted");
+    session.setMicrophoneMode("listening");
+    expect(session.state.listening).toBe(true);
+  });
+
   it("mutes recognition and unmuting resumes only while the assistant is idle", async () => {
     const socket = await readySocket();
     finishTurn(socket, "Ready");
-    session.toggleMute();
+    session.setMicrophoneMode("muted");
     fakeSynthesis.complete();
     expect(FakeRecognition.instances).toHaveLength(0);
-    session.toggleMute();
+    session.setMicrophoneMode("listening");
     expect(session.state.listening).toBe(true);
     expect(FakeRecognition.instances).toHaveLength(1);
   });

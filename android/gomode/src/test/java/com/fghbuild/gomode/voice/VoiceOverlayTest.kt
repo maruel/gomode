@@ -26,17 +26,25 @@ class VoiceOverlayTest {
         assertEquals("Thinking…", voiceStatusText(thinking))
         val calling = thinking.copy(activeTool = "example_tool")
         assertEquals("Calling tool: example_tool…", voiceStatusText(calling))
-        assertEquals("Calling tool: example_tool…", voiceStatusText(calling.copy(muted = true, speaking = true)))
+        assertEquals(
+            "Calling tool: example_tool…",
+            voiceStatusText(calling.copy(microphoneMode = MicrophoneMode.MUTED, speaking = true)),
+        )
         assertEquals("Thinking…", voiceStatusText(calling.copy(activeTool = null)))
     }
 
     @Test
     fun voiceStatusTextShowsGatewayWorkBehindSpeechAndAheadOfMuting() {
-        val muted = VoiceState(connected = true, muted = true)
+        val muted = VoiceState(connected = true, microphoneMode = MicrophoneMode.MUTED)
         assertEquals("Transcribing…", voiceStatusText(muted.copy(turnState = TurnState.Transcribing)))
         assertEquals("Thinking…", voiceStatusText(muted.copy(turnState = TurnState.Thinking)))
         assertEquals("Speaking…", voiceStatusText(muted.copy(turnState = TurnState.Thinking, speaking = true)))
         assertEquals("Muted", voiceStatusText(muted))
-        assertEquals("Listening…", voiceStatusText(muted.copy(muted = false, turnState = TurnState.Other("future"))))
+        assertEquals(
+            "Listening…",
+            voiceStatusText(
+                muted.copy(microphoneMode = MicrophoneMode.LISTENING, turnState = TurnState.Other("future")),
+            ),
+        )
     }
 }

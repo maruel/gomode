@@ -60,7 +60,7 @@
 
 .callStatus {
   display: flex;
-  flex: 1 1 8rem;
+  flex: 1 1 6rem;
   gap: 0.5rem;
   align-items: center;
   min-width: 0;
@@ -75,6 +75,37 @@
   justify-content: flex-end;
   max-width: 100%;
   margin-inline-start: auto;
+}
+
+.microphoneControl {
+  position: relative;
+}
+
+.microphoneClock {
+  position: absolute;
+  right: 2px;
+  bottom: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  font-size: 0.7rem;
+  background: var(--color-bg-surface);
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--color-bg-surface);
+}
+
+.microphoneHelp {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  white-space: nowrap;
+  clip-path: inset(50%);
+  border: 0;
 }
 
 .rowLabel {
@@ -166,6 +197,12 @@
 .settingsHeader h2 {
   margin: 0;
   font-size: 1rem;
+  color: var(--color-text-secondary);
+}
+
+.deviceLabel {
+  margin: 0.5rem 0 0.25rem;
+  font-size: 0.8rem;
   color: var(--color-text-secondary);
 }
 

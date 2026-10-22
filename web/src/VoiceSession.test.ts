@@ -529,7 +529,7 @@ describe("VoiceSession", () => {
     const session = new VoiceSession();
     try {
       await session.connect();
-      session.toggleMute();
+      session.setMicrophoneMode("muted");
       vi.mocked(navigator.mediaDevices.getUserMedia).mockResolvedValue({
         getTracks: () => [newTrack],
         getAudioTracks: () => [newTrack],
@@ -753,6 +753,85 @@ describe("VoiceSession", () => {
     session.disconnect();
   });
 
+  it("returns mute once to listening after a reply or interruption and retains full mute", async () => {
+    const track = { stop: vi.fn(), enabled: true };
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockResolvedValue({
+      getTracks: () => [track],
+      getAudioTracks: () => [track],
+    } as unknown as MediaStream);
+    const session = new VoiceSession();
+    try {
+      await session.connect();
+      const channel = FakePeerConnection.dataChannels.at(-1);
+      const event = (kind: string) =>
+        channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind }) }));
+      event("speech.started");
+      expect(track.enabled).toBe(true);
+      session.setMicrophoneMode("muteOnce");
+      expect(track.enabled).toBe(false);
+      event("speech.ended");
+      expect(track.enabled).toBe(true);
+      expect(session.state.microphoneMode).toBe("listening");
+      event("speech.started");
+      expect(track.enabled).toBe(true);
+      session.setMicrophoneMode("muteOnce");
+      expect(track.enabled).toBe(false);
+      event("interrupted");
+      expect(track.enabled).toBe(true);
+      expect(session.state.microphoneMode).toBe("listening");
+      session.setMicrophoneMode("muted");
+      expect(track.enabled).toBe(false);
+      event("speech.started");
+      event("speech.ended");
+      event("interrupted");
+      expect(track.enabled).toBe(false);
+      session.setMicrophoneMode("listening");
+      expect(track.enabled).toBe(true);
+      expect(session.state.microphoneMode).toBe("listening");
+    } finally {
+      session.disconnect();
+    }
+  });
+
+  it("keeps an in-flight microphone replacement gated when agent speech starts", async () => {
+    const oldTrack = { stop: vi.fn(), enabled: true };
+    const newTrack = { stop: vi.fn(), enabled: true };
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockResolvedValue({
+      getTracks: () => [oldTrack],
+      getAudioTracks: () => [oldTrack],
+    } as unknown as MediaStream);
+    const session = new VoiceSession();
+    try {
+      await session.connect();
+      session.setMicrophoneMode("muteOnce");
+      const replacement = deferred<void>();
+      FakePeerConnection.last?.sender.replaceTrack.mockImplementation(() => replacement.promise);
+      vi.mocked(navigator.mediaDevices.getUserMedia).mockResolvedValue({
+        getTracks: () => [newTrack],
+        getAudioTracks: () => [newTrack],
+      } as unknown as MediaStream);
+      const switching = session.selectInputDevice("headset");
+      await vi.waitFor(() => expect(FakePeerConnection.last?.sender.replaceTrack).toHaveBeenCalled());
+      FakePeerConnection.dataChannels.at(-1)?.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({ kind: "speech.started" }),
+        }),
+      );
+      expect(newTrack.enabled).toBe(false);
+      replacement.resolve();
+      await switching;
+      expect(newTrack.enabled).toBe(false);
+      FakePeerConnection.dataChannels.at(-1)?.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({ kind: "speech.ended" }),
+        }),
+      );
+      expect(newTrack.enabled).toBe(true);
+    } finally {
+      session.disconnect();
+    }
+  });
+
   it("replaces a muted microphone before stopping the old stream", async () => {
     const stop = vi.fn();
     const oldTrack = { stop, enabled: true };
@@ -763,7 +842,7 @@ describe("VoiceSession", () => {
     } as unknown as MediaStream);
     const session = new VoiceSession();
     await session.connect();
-    session.toggleMute();
+    session.setMicrophoneMode("muted");
     const pc = FakePeerConnection.last;
     pc?.sender.replaceTrack.mockImplementation(async () => {
       expect(stop).not.toHaveBeenCalled();

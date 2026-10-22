@@ -163,7 +163,6 @@ internal class DeviceVoiceSession(
     private var frontendToolNames: Set<String> = emptySet()
     private var conversationID = UUID.randomUUID().toString()
 
-    private var muted = false
     private var speakerActive = false
     private var turnIdle = false
     private var pendingSpeech = 0
@@ -202,7 +201,6 @@ internal class DeviceVoiceSession(
         speakerActive = false
         turnIdle = false
         pendingSpeech = 0
-        muted = false
         segmenter.clear()
         otherSetup = null
         if (!preserveTranscript) {
@@ -435,7 +433,7 @@ internal class DeviceVoiceSession(
                         finalizeAssistantReply()
                         speak(segmenter.flush())
                         turnIdle = true
-                        maybeStartListening()
+                        finishReply()
                     }
                 }
 
@@ -452,7 +450,7 @@ internal class DeviceVoiceSession(
                     pendingSpeech = 0
                     turnIdle = true
                     _state.update { it.copy(speaking = false, activeTool = null, turnState = TurnState.Idle) }
-                    maybeStartListening()
+                    finishReply()
                 }
 
                 MessageKind.Error -> {
@@ -487,7 +485,7 @@ internal class DeviceVoiceSession(
     }
 
     private fun speak(fragment: String) {
-        if (fragment.isBlank() || muted) return
+        if (fragment.isBlank()) return
         thinkingEarcon.setThinking(false)
         val attempt = attemptGeneration.get()
         pendingSpeech++
@@ -543,6 +541,13 @@ internal class DeviceVoiceSession(
         speakerActive = false
         _state.update { it.copy(speaking = false) }
         flushPendingNotifications()
+        finishReply()
+    }
+
+    // A playback gap between streamed fragments does not finish the reply.
+    private fun finishReply() {
+        if (!turnIdle || pendingSpeech > 0 || speakerActive) return
+        _state.update { it.copy(microphoneMode = it.microphoneMode.afterReply()) }
         maybeStartListening()
     }
 
@@ -554,8 +559,9 @@ internal class DeviceVoiceSession(
         setError(message)
     }
 
+    // Normal mode adds no user mute; device speech remains half-duplex in every microphone mode.
     private fun maybeStartListening() {
-        if (!_state.value.connected || muted) return
+        if (!_state.value.connected || _state.value.muted) return
         if (!turnIdle) return
         if (pendingSpeech > 0 || speakerActive) return
         if (_state.value.listening) return
@@ -642,7 +648,7 @@ internal class DeviceVoiceSession(
                     turnIdle = true
                     _state.update { it.copy(turnState = TurnState.Idle) }
                     flushPendingNotifications()
-                    maybeStartListening()
+                    finishReply()
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -851,7 +857,6 @@ internal class DeviceVoiceSession(
         speakerActive = false
         turnIdle = false
         pendingSpeech = 0
-        muted = false
         segmenter.clear()
         voiceModeChime.disconnected { }
         callController.endLocal()
@@ -897,17 +902,14 @@ internal class DeviceVoiceSession(
         }
     }
 
-    override fun toggleMute() {
-        muted = !muted
-        if (muted) {
+    override fun setMicrophoneMode(mode: MicrophoneMode) {
+        _state.update { it.copy(microphoneMode = mode) }
+        if (_state.value.muted) {
             speech.stopListening()
-            _state.update {
-                it.copy(muted = true, listening = false, micLevel = 0f)
-            }
-            return
+            _state.update { it.copy(listening = false, micLevel = 0f) }
+        } else {
+            maybeStartListening()
         }
-        _state.update { it.copy(muted = false) }
-        maybeStartListening()
     }
 
     override fun selectAudioDevice(deviceId: Int) {
