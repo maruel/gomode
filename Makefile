@@ -44,10 +44,11 @@ help:
 	@printf '  %-27s - %s\n' 'make upgrade' 'Upgrade Go and pnpm dependencies'
 
 fix: android-sdk node_modules/.modules.yaml
+	@node scripts/css_module_types.mjs --source-path web/src --write
 	@go tool golangci-lint fmt
 	@go tool golangci-lint run --show-stats=false --fix ./...
-	@pnpm exec eslint web/src web/tests scripts/quiet-test-reporter.mjs --fix
-	@pnpm exec prettier --write --log-level warn web/src web/tests scripts/quiet-test-reporter.mjs eslint.config.js package.json .github/workflows
+	@pnpm exec eslint web/src web/tests scripts/*.mjs --fix
+	@pnpm exec prettier --write --log-level warn web/src web/tests scripts/*.mjs eslint.config.js package.json .github/workflows
 	@uv run --locked ruff check --quiet --fix scripts
 	@uv run --locked ruff format scripts >/dev/null
 	@files=$$(git ls-files '*.sh' 'scripts/hooks/*'); [ -z "$$files" ] || go tool shfmt -w $$files
@@ -56,7 +57,7 @@ fix: android-sdk node_modules/.modules.yaml
 
 verify: android-sdk node_modules/.modules.yaml
 	@go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-	@./scripts/run-concurrently.sh go,format,lint,ts,python,shell,misc,android '$(VERIFY_GO)' 'pnpm exec prettier --check --log-level warn web/src web/tests scripts/quiet-test-reporter.mjs eslint.config.js package.json .github/workflows' 'pnpm exec eslint --max-warnings 0 web/src web/tests scripts/quiet-test-reporter.mjs' 'pnpm typecheck' '$(VERIFY_PY)' '$(VERIFY_SH)' '$(VERIFY_MISC)' '$(VERIFY_ANDROID)'
+	@./scripts/run-concurrently.sh go,format,lint,ts,python,shell,misc,android '$(VERIFY_GO)' 'pnpm exec prettier --check --log-level warn web/src web/tests scripts/*.mjs eslint.config.js package.json .github/workflows' 'pnpm exec eslint --max-warnings 0 web/src web/tests scripts/*.mjs' 'node scripts/css_module_types.mjs --source-path web/src && pnpm exec tsc --noEmit -p web/tsconfig.json' '$(VERIFY_PY)' '$(VERIFY_SH)' '$(VERIFY_MISC)' '$(VERIFY_ANDROID)'
 
 git-hooks:
 	@./scripts/install-git-hooks.sh
@@ -69,7 +70,8 @@ test: android-sdk node_modules/.modules.yaml
 test-race:
 	@go test -race -skip 'TestVoiceRTCLocalStackPlaceholders|TestEncodeDecodeRoundtrip' ./voicegateway/voicertc
 
-build: android-sdk
+build: android-sdk node_modules/.modules.yaml
+	@node scripts/css_module_types.mjs --source-path web/src
 	@go build ./...
 	@cd ./android && ./gradlew :gomode:assembleDebug :halo-sdk:assembleDebug :gomode-sdk:assemble :mcp-sdk:assemble :oauth-sdk:assemble :voicegateway-sdk:assemble --quiet
 

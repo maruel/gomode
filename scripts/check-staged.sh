@@ -24,6 +24,7 @@ format_files=()
 eslint_files=()
 python_files=()
 while IFS= read -r -d '' file; do
+  case "$file" in *.module.css.d.ts) continue ;; esac
   case "$file" in
   *.go) go_files+=("$file") ;;
   *.sh | scripts/hooks/*) shell_files+=("$file") ;;
@@ -34,7 +35,7 @@ while IFS= read -r -d '' file; do
   eslint.config.js | package.json | .github/workflows/*.yml)
     format_files+=("$file")
     ;;
-  scripts/quiet-test-reporter.mjs)
+  scripts/*.mjs)
     format_files+=("$file")
     eslint_files+=("$file")
     ;;

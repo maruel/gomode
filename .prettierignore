@@ -7,3 +7,6 @@ AGENTS.md
 CLAUDE.md
 # uv-managed Python development environment.
 /.venv/
+
+# CSS export declarations belong to the generator.
+**/*.module.css.d.ts

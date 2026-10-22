@@ -39,7 +39,7 @@ export default tseslint.config(
     },
   },
   { files: ["web/tests/**/*.{ts,tsx}"], languageOptions: { globals: { ...globals.node } } },
-  { files: ["scripts/quiet-test-reporter.mjs"], languageOptions: { globals: { ...globals.node } } },
-  { ignores: ["sdk/**", "android/**", "node_modules/**"] },
+  { files: ["scripts/*.mjs"], languageOptions: { globals: { ...globals.node } } },
+  { ignores: ["**/*.module.css.d.ts", "sdk/**", "android/**", "node_modules/**"] },
   prettier,
 );
