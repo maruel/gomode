@@ -7,6 +7,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
 import androidx.datastore.preferences.core.edit
 import androidx.test.platform.app.InstrumentationRegistry
@@ -58,8 +59,14 @@ abstract class GoModeE2eTestBase {
             hasNodeWithTag("gomode-service-url") || hasNodeWithTag("gomode-web-shell")
         }
         if (hasNodeWithTag("gomode-service-url")) {
+            composeRule.onNodeWithTag("gomode-service-url").performClick()
+            // Let the input connection and IME settle before replacing text or navigating.
+            composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { isImeVisible() }
             composeRule.onNodeWithTag("gomode-service-url").performTextReplacement(baseUrl)
-            composeRule.onNodeWithTag("gomode-create-service").performClick()
+            UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressBack()
+            composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { !isImeVisible() }
+            waitForSettingsButton()
+            composeRule.onNodeWithTag("gomode-create-service").performScrollTo().performClick()
         }
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
             hasNodeWithTag("gomode-web-shell")
