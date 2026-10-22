@@ -15,6 +15,7 @@ import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -95,10 +96,7 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
     fun settingsCanAddAndEditServicesWithoutSwitchingTheActiveService() {
         openWebShell()
         composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
-        composeRule.onNodeWithTag("gomode-add-service").performClick()
-        composeRule.onNodeWithTag("gomode-service-label").performTextReplacement("Second")
-        composeRule.onNodeWithTag("gomode-service-url").performTextReplacement(baseUrl)
-        composeRule.onNodeWithTag("gomode-create-service").performClick()
+        addService("Second")
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
             composeRule.onAllNodesWithTag("gomode-web-shell").fetchSemanticsNodes().isNotEmpty()
         }
@@ -106,8 +104,9 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
 
         composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
         composeRule.onAllNodesWithContentDescription("Edit service").onFirst().performClick()
-        composeRule.onNodeWithTag("gomode-service-label").performTextReplacement("First renamed")
-        composeRule.onNodeWithTag("gomode-close-editor").performClick()
+        waitForServiceEditor()
+        fillServiceField("gomode-service-label", "First renamed")
+        closeServiceEditor()
 
         composeRule.onNodeWithText("First renamed").assertExists()
         composeRule.onNodeWithText("Second").assertExists()
@@ -119,10 +118,7 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
     fun nextAppFlushesAPendingServiceEditBeforeClosingSettings() {
         openWebShell()
         composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
-        composeRule.onNodeWithTag("gomode-add-service").performClick()
-        composeRule.onNodeWithTag("gomode-service-label").performTextReplacement("Second")
-        composeRule.onNodeWithTag("gomode-service-url").performTextReplacement(baseUrl)
-        composeRule.onNodeWithTag("gomode-create-service").performClick()
+        addService("Second")
         waitForSettingsButton()
         val observer = SettingsRepository(composeRule.activity.goModeSettingsDataStore)
         composeRule.waitUntil { observer.settings.value.services.size == 2 }
@@ -190,12 +186,10 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         executeDom("set first page state") { "(window.retainedMarker = 'first', true)" }
         composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
         composeRule.onAllNodesWithContentDescription("Edit service").onFirst().performClick()
-        composeRule.onNodeWithTag("gomode-service-label").performTextReplacement("First retained")
-        composeRule.onNodeWithTag("gomode-close-editor").performClick()
-        composeRule.onNodeWithTag("gomode-add-service").performClick()
-        composeRule.onNodeWithTag("gomode-service-label").performTextReplacement("Second retained")
-        composeRule.onNodeWithTag("gomode-service-url").performTextReplacement(baseUrl)
-        composeRule.onNodeWithTag("gomode-create-service").performClick()
+        waitForServiceEditor()
+        fillServiceField("gomode-service-label", "First retained")
+        closeServiceEditor()
+        addService("Second retained")
         waitForHostedFrontend()
         val second = waitForWebView()
         assertNotSame(first, second)
@@ -272,6 +266,29 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
     fun gomodePackageNameIsAppSpecific() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         assertEquals("com.fghbuild.gomode", context.packageName)
+    }
+
+    private fun addService(label: String) {
+        composeRule.onNodeWithTag("gomode-add-service").performScrollTo().performClick()
+        waitForServiceEditor()
+        fillServiceField("gomode-service-label", label)
+        fillServiceField("gomode-service-url", baseUrl)
+        dismissServiceKeyboard()
+        composeRule.onNodeWithTag("gomode-create-service").performScrollTo().performClick()
+    }
+
+    private fun waitForServiceEditor() {
+        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+            composeRule.onAllNodesWithTag("gomode-service-label").fetchSemanticsNodes().isNotEmpty()
+        }
+    }
+
+    private fun closeServiceEditor() {
+        dismissServiceKeyboard()
+        composeRule.onNodeWithTag("gomode-close-editor").performScrollTo().performClick()
+        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+            composeRule.onAllNodesWithTag("gomode-service-label").fetchSemanticsNodes().isEmpty()
+        }
     }
 
     private fun loadHostedExternalLinkTestPage() {

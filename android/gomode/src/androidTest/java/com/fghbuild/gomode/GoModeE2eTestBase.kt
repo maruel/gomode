@@ -59,18 +59,29 @@ abstract class GoModeE2eTestBase {
             hasNodeWithTag("gomode-service-url") || hasNodeWithTag("gomode-web-shell")
         }
         if (hasNodeWithTag("gomode-service-url")) {
-            composeRule.onNodeWithTag("gomode-service-url").performClick()
-            // Let the input connection and IME settle before replacing text or navigating.
-            composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { isImeVisible() }
-            composeRule.onNodeWithTag("gomode-service-url").performTextReplacement(baseUrl)
-            UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressBack()
-            composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { !isImeVisible() }
-            waitForSettingsButton()
+            fillServiceField("gomode-service-url", baseUrl)
+            dismissServiceKeyboard()
             composeRule.onNodeWithTag("gomode-create-service").performScrollTo().performClick()
         }
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
             hasNodeWithTag("gomode-web-shell")
         }
+        waitForSettingsButton()
+    }
+
+    protected fun fillServiceField(
+        tag: String,
+        text: String,
+    ) {
+        composeRule.onNodeWithTag(tag).performScrollTo().performClick()
+        // Let the input connection and IME settle before replacing text or navigating.
+        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { isImeVisible() }
+        composeRule.onNodeWithTag(tag).performTextReplacement(text)
+    }
+
+    protected fun dismissServiceKeyboard() {
+        UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressBack()
+        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { !isImeVisible() }
         waitForSettingsButton()
     }
 
