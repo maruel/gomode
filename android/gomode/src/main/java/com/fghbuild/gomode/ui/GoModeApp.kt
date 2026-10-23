@@ -491,6 +491,7 @@ internal fun GoModeApp(
                     voiceState = voiceState,
                     voiceEnabled = voiceAvailable,
                     onConnect = {
+                        activeNativeScreen = null
                         prepareAllPages = true
                         if (localSelection != null || bearerStore.authReady.value) {
                             if (ContextCompat.checkSelfPermission(

@@ -87,7 +87,12 @@ class ServerVoiceSwitchTest {
                         composeRule.waitUntil(30_000) {
                             composeRule.onAllNodesWithTag("gomode-voice-connect").fetchSemanticsNodes().isNotEmpty()
                         }
+                        val currentPage = visiblePage(cookieServer.url("/").toString())
+                        composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
+                        composeRule.onNodeWithTag("gomode-settings").assertExists()
                         composeRule.onNodeWithTag("gomode-voice-connect").performClick()
+                        composeRule.onNodeWithTag("gomode-settings").assertDoesNotExist()
+                        assertSame(currentPage, visiblePage(cookieServer.url("/").toString()))
                         composeRule.waitUntil(30_000) { cookie.sessions.size == 1 }
                         waitForConnected()
                         val conversation = cookie.sessions.single()
