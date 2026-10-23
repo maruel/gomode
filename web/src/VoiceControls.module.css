@@ -128,3 +128,11 @@
 .settings {
   mask-image: url("@material-symbols/svg-400/outlined/settings.svg");
 }
+
+.playArrow {
+  mask-image: url("@material-symbols/svg-400/outlined/play_arrow.svg");
+}
+
+.stop {
+  mask-image: url("@material-symbols/svg-400/outlined/stop.svg");
+}

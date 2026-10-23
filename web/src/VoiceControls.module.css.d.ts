@@ -12,9 +12,11 @@ declare const classes: {
   readonly "muted": string;
   readonly "outlined": string;
   readonly "phoneInTalk": string;
+  readonly "playArrow": string;
   readonly "refresh": string;
   readonly "settings": string;
   readonly "speaker": string;
+  readonly "stop": string;
   readonly "usb": string;
   readonly "volumeUp": string;
 };

@@ -7,10 +7,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -18,7 +20,11 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -27,6 +33,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -36,20 +43,31 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.voice.AndroidThinkingEarcon
 import com.fghbuild.gomode.voice.usesGatewayVoice
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
@@ -264,8 +282,71 @@ internal fun SettingsScreen(
                     }
                 },
             )
+            HorizontalDivider()
+            CreditsSetting(voiceSessionActive)
         }
     }
+}
+
+@Composable
+private fun CreditsSetting(voiceSessionActive: Boolean) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        TextButton(
+            onClick = { expanded = !expanded },
+            modifier =
+                Modifier.fillMaxWidth().testTag("gomode-credits").semantics {
+                    stateDescription = if (expanded) "Expanded" else "Collapsed"
+                },
+        ) {
+            Text(
+                "Credits",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Start,
+            )
+            Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = null)
+        }
+        if (expanded) {
+            ThinkingMusicPreview(enabled = !voiceSessionActive)
+            Text("Composed by Hans Zimmer.", style = MaterialTheme.typography.bodySmall)
+            Text("Arranged for Solo-Piano by Philipp A. G. Grzywaczyk.", style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun ThinkingMusicPreview(enabled: Boolean) {
+    val context = LocalContext.current.applicationContext
+    var playing by remember { mutableStateOf(false) }
+    var failed by remember { mutableStateOf(false) }
+    val player =
+        remember(context) {
+            AndroidThinkingEarcon(context, preview = true) { active, error ->
+                playing = active
+                failed = error != null
+            }
+        }
+    DisposableEffect(player) {
+        onDispose { player.setThinking(false) }
+    }
+    LaunchedEffect(enabled) {
+        if (!enabled) player.setThinking(false)
+    }
+    LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { player.setThinking(false) }
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Text("Thinking music", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        OutlinedButton(
+            onClick = { player.setThinking(!playing) },
+            enabled = enabled,
+            modifier = Modifier.testTag("gomode-thinking-music-preview"),
+        ) {
+            Icon(if (playing) Icons.Default.Stop else Icons.Default.PlayArrow, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text(if (playing) "Stop" else "Play")
+        }
+    }
+    if (failed) Text("Could not play thinking music.", color = MaterialTheme.colorScheme.error)
 }
 
 @OptIn(ExperimentalLayoutApi::class)

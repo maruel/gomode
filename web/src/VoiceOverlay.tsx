@@ -383,7 +383,12 @@ export default function VoiceOverlay(props: { messages?: VoiceOverlayMessages | 
                 <VoiceIcon name="close" />
               </button>
             </div>
-            <VoiceSettings messages={messages} onError={setSettingsError} onLanguageError={setLanguageError} />
+            <VoiceSettings
+              messages={messages}
+              onError={setSettingsError}
+              onLanguageError={setLanguageError}
+              visible={settingsOpen()}
+            />
             <Show when={session.state.mode === "cloud" && !session.state.connected}>
               <AudioDevicePicker
                 inputs={session.state.audioInputs}

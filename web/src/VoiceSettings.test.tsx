@@ -1,7 +1,9 @@
 // Tests saved browser voice preferences and platform availability in shared settings.
 
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
+import { FakeAudioContext } from "../tests/thinking-audio";
 import userEvent from "@testing-library/user-event";
 import { expect, vi } from "../tests/expect";
 import { installBrowserSpeech } from "../tests/browser-speech";
@@ -32,9 +34,60 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   restore();
+  vi.unstubAllGlobals();
 });
 
 describe("VoiceSettings", () => {
+  it("stops the music preview when credits collapse, settings hide, or a voice session starts", async () => {
+    FakeAudioContext.instances = [];
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    const user = userEvent.setup();
+    const [visible, setVisible] = createSignal(true);
+    const view = render(() => <VoiceSettings visible={visible()} />);
+    await user.click(screen.getByText("Credits", { exact: true }));
+    await user.click(await screen.findByRole("button", { name: "Play thinking music" }));
+    expect(screen.getByRole("button", { name: "Stop thinking music" })).toBeEnabled();
+    const first = FakeAudioContext.instances[0];
+    if (!first) throw new Error("Preview did not create an audio context");
+    await user.click(screen.getByText("Credits", { exact: true }));
+    await waitFor(() => expect(first.close).toHaveBeenCalledOnce());
+    await user.click(screen.getByText("Credits", { exact: true }));
+    await user.click(await screen.findByRole("button", { name: "Play thinking music" }));
+    setVisible(false);
+    expect(screen.getByRole("button", { name: "Play thinking music" })).toBeDisabled();
+    setVisible(true);
+    await user.click(screen.getByRole("button", { name: "Play thinking music" }));
+    voiceSession.setState((s) => ({ ...s, connectStatus: "Connecting…" }));
+    expect(screen.getByRole("button", { name: "Play thinking music" })).toBeDisabled();
+    voiceSession.setState((s) => ({ ...s, connectStatus: null }));
+    expect(screen.getByRole("button", { name: "Play thinking music" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Play thinking music" }));
+    const last = FakeAudioContext.instances.at(-1);
+    view.unmount();
+    expect(last?.close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps Play available after a playback failure", async () => {
+    vi.stubGlobal(
+      "AudioContext",
+      class {
+        constructor() {
+          throw new Error("Unavailable");
+        }
+      },
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const user = userEvent.setup();
+      render(() => <VoiceSettings />);
+      await user.click(screen.getByText("Credits", { exact: true }));
+      await user.click(await screen.findByRole("button", { name: "Play thinking music" }));
+      expect(screen.getByText("Could not play thinking music.")).toBeVisible();
+      expect(screen.getByRole("button", { name: "Play thinking music" })).toBeEnabled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
   it("saves browser speech and explains that it is not necessarily offline", async () => {
     const user = userEvent.setup();
     render(() => <VoiceSettings />);

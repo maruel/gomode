@@ -1,4 +1,4 @@
-// Exercises indefinite native pad playback, pending-start cancellation, worker drainage, and rapid replacement.
+// Exercises live piano performance, pending-start cancellation, worker drainage, and rapid replacement.
 package com.fghbuild.gomode.voice
 
 import android.media.AudioAttributes
@@ -16,20 +16,22 @@ import org.junit.runner.RunWith
 class ThinkingEarconTest {
     @Test
     fun synthesisLeavesAmpleRealtimeHeadroom() {
-        val pad = ThinkingPad()
+        val score = ThinkingScore.load(InstrumentationRegistry.getInstrumentation().targetContext)
+        val piano = ThinkingPiano(score)
         val samples = ShortArray(480)
         val started = SystemClock.elapsedRealtime()
-        repeat(500) { pad.render(samples) }
+        val chunks = (score.duration * 50).toInt()
+        repeat(chunks) { piano.render(samples) }
         val elapsed = SystemClock.elapsedRealtime() - started
-        Log.i("GoModeThinkingPadTest", "Generated 10 seconds of pad in ${elapsed}ms")
-        assertTrue("ten seconds of audio must render in under half its playback time", elapsed < 5_000)
+        Log.i("GoModeThinkingPianoTest", "Generated ${score.duration} seconds of piano in ${elapsed}ms")
+        assertTrue("the full score must render in under half its playback time", elapsed < score.duration * 500)
     }
 
     @Test
-    fun livePadSurvivesLongWaitAndRapidStopRestart() {
+    fun livePianoSurvivesLongWaitAndRapidStopRestart() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val audio = instrumentation.targetContext.getSystemService(AudioManager::class.java)
-        val earcon = AndroidThinkingEarcon()
+        val earcon = AndroidThinkingEarcon(instrumentation.targetContext)
 
         fun playing() =
             audio.activePlaybackConfigurations.any {
@@ -43,7 +45,7 @@ class ThinkingEarconTest {
         }
 
         fun awaitWorkersStopped() {
-            fun workers() = Thread.getAllStackTraces().keys.count { it.name == "GoModeThinkingPad" && it.isAlive }
+            fun workers() = Thread.getAllStackTraces().keys.count { it.name == "GoModeThinkingPiano" && it.isAlive }
             val deadline = SystemClock.elapsedRealtime() + 3_000
             while (workers() != 0 && SystemClock.elapsedRealtime() < deadline) SystemClock.sleep(10)
             assertEquals("cancelled producers release their tracks and terminate", 0, workers())

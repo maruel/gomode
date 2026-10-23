@@ -74,3 +74,65 @@
 .retry {
   align-self: start;
 }
+
+.credits {
+  border-top: 1px solid var(--color-border-medium);
+}
+
+.credits summary {
+  padding: 0.75rem 0;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.credits summary:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.credits[open] summary {
+  margin-bottom: 0.5rem;
+}
+
+.credits p + p {
+  margin-top: 0.5rem;
+}
+
+.preview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.preview button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 44px;
+  padding: 0.4rem 0.75rem;
+  font: inherit;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-medium);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.preview button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.preview button:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.credits .previewError {
+  margin-bottom: 0.5rem;
+  color: var(--color-danger);
+}

@@ -50,6 +50,10 @@ android {
         compose = true
     }
 
+    // Share the note score without bundling web source.
+    sourceSets.getByName("main").assets.srcDir(rootProject.file("../assets"))
+    sourceSets.getByName("test").resources.srcDir(rootProject.file("../assets"))
+
     testOptions {
         unitTests.isIncludeAndroidResources = true
     }

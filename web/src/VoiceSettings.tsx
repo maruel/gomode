@@ -3,6 +3,7 @@
 import { createEffect, createSignal, createUniqueId, onCleanup, Show, For, on, type Accessor } from "solid-js";
 import { browserSpeechAvailable } from "./BrowserSpeech";
 import { voiceSession, type VoiceMode } from "./VoiceSession";
+import { WebAudioThinkingEarcon } from "./ThinkingEarcon";
 import VoiceIcon from "./VoiceIcon";
 import controls from "./VoiceControls.module.css";
 import styles from "./VoiceSettings.module.css";
@@ -20,6 +21,15 @@ export interface VoiceSettingsMessages {
   choicesLoading: string;
   choicesRetry: string;
   choiceUnavailable: string;
+  credits: string;
+  musicComposer: string;
+  musicArranger: string;
+  thinkingMusic: string;
+  playMusic: string;
+  stopMusic: string;
+  playMusicLabel: string;
+  stopMusicLabel: string;
+  musicPlaybackError: string;
   voiceLanguage: string;
   voiceMode: string;
 }
@@ -38,6 +48,15 @@ export const defaultVoiceSettingsMessages: VoiceSettingsMessages = {
   choicesLoading: "Loading voice choices…",
   choicesRetry: "Retry loading voice choices",
   choiceUnavailable: "Choose an available voice choice",
+  credits: "Credits",
+  musicComposer: "Composed by Hans Zimmer.",
+  musicArranger: "Arranged for Solo-Piano by Philipp A. G. Grzywaczyk.",
+  thinkingMusic: "Thinking music",
+  playMusic: "Play",
+  stopMusic: "Stop",
+  playMusicLabel: "Play thinking music",
+  stopMusicLabel: "Stop thinking music",
+  musicPlaybackError: "Could not play thinking music.",
   voiceLanguage: "Voice language (e.g. en-US)",
   voiceMode: "Voice mode",
 };
@@ -46,7 +65,9 @@ export default function VoiceSettings(props: {
   messages?: Partial<VoiceSettingsMessages> | Accessor<Partial<VoiceSettingsMessages>>;
   onError?: (error: string | null) => void;
   onLanguageError?: (error: string | null) => void;
+  visible?: boolean;
 }) {
+  const [creditsOpen, setCreditsOpen] = createSignal(false);
   createEffect(
     on(voiceSession.gatewayIdentity, () => {
       void voiceSession.loadVoiceChoices();
@@ -257,6 +278,56 @@ export default function VoiceSettings(props: {
       <p id={errorId} role="alert" class={styles.error}>
         {error()}
       </p>
+      <details class={styles.credits} onToggle={(event) => setCreditsOpen(event.currentTarget.open)}>
+        <summary>{messages().credits}</summary>
+        <Show when={creditsOpen()}>
+          <ThinkingMusicPreview active={active()} visible={props.visible !== false} messages={messages} />
+        </Show>
+        <p>{messages().musicComposer}</p>
+        <p>{messages().musicArranger}</p>
+      </details>
     </div>
+  );
+}
+
+function ThinkingMusicPreview(props: { active: boolean; visible: boolean; messages: Accessor<VoiceSettingsMessages> }) {
+  const [playing, setPlaying] = createSignal(false);
+  const [error, setError] = createSignal(false);
+  const preview = new WebAudioThinkingEarcon({
+    onPlaybackChange: (playing, error) => {
+      setPlaying(playing);
+      setError(error !== null);
+    },
+  });
+  createEffect(() => {
+    if (props.active || !props.visible) preview.setThinking(false);
+  });
+  onCleanup(() => preview.dispose());
+  return (
+    <>
+      <div class={styles.preview}>
+        <span>{props.messages().thinkingMusic}</span>
+        <button
+          type="button"
+          disabled={props.active || !props.visible}
+          aria-label={playing() ? props.messages().stopMusicLabel : props.messages().playMusicLabel}
+          onClick={() => {
+            if (playing()) preview.setThinking(false);
+            else {
+              preview.prepare();
+              preview.setThinking(true);
+            }
+          }}
+        >
+          <VoiceIcon name={playing() ? "stop" : "playArrow"} />
+          {playing() ? props.messages().stopMusic : props.messages().playMusic}
+        </button>
+      </div>
+      <Show when={error()}>
+        <p class={styles.previewError} role="alert">
+          {props.messages().musicPlaybackError}
+        </p>
+      </Show>
+    </>
   );
 }

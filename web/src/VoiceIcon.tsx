@@ -10,9 +10,11 @@ type VoiceIconName =
   | "mic"
   | "micOff"
   | "phoneInTalk"
+  | "playArrow"
   | "refresh"
   | "settings"
   | "speaker"
+  | "stop"
   | "usb"
   | "volumeUp";
 

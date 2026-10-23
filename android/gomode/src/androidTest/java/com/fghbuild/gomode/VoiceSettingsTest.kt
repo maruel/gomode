@@ -1,6 +1,9 @@
 // Compose tests for saved voice mode, language, and the active-session settings guard.
 package com.fghbuild.gomode
 
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.collectAsState
@@ -19,6 +22,8 @@ import androidx.compose.ui.test.performTextReplacement
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.lifecycle.Lifecycle
+import androidx.test.platform.app.InstrumentationRegistry
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
@@ -34,6 +39,81 @@ import org.junit.Test
 class VoiceSettingsTest {
     @get:Rule
     val composeRule = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun thinkingMusicPreviewStopsForCollapseFocusLossVoiceAndSettingsExit() {
+        val active = mutableStateOf(false)
+        val visible = mutableStateOf(true)
+        val repository = SettingsRepository(MemoryPreferences())
+        val audio =
+            InstrumentationRegistry.getInstrumentation().targetContext.getSystemService(
+                AudioManager::class.java,
+            )
+        composeRule.setContent {
+            val settings by repository.settings.collectAsState()
+            MaterialTheme {
+                if (visible.value) {
+                    SettingsScreen(
+                        settings,
+                        repository,
+                        active.value,
+                        {},
+                        {},
+                        edits = rememberSettingsEdits(repository, settings),
+                    )
+                }
+            }
+        }
+
+        fun awaitMusic(playing: Boolean) {
+            composeRule.waitUntil(5_000) {
+                audio.activePlaybackConfigurations.any { it.audioAttributes.usage == AudioAttributes.USAGE_MEDIA } ==
+                    playing
+            }
+        }
+
+        fun play() {
+            composeRule
+                .onNodeWithTag("gomode-thinking-music-preview")
+                .performScrollTo()
+                .assertIsEnabled()
+                .assertTextContains("Play")
+                .performClick()
+            awaitMusic(true)
+            composeRule.onNodeWithTag("gomode-thinking-music-preview").assertTextContains("Stop")
+        }
+        composeRule.onNodeWithTag("gomode-credits").performScrollTo().performClick()
+        play()
+        composeRule.onNodeWithTag("gomode-credits").performScrollTo().performClick()
+        awaitMusic(false)
+        composeRule.onNodeWithTag("gomode-credits").performScrollTo().performClick()
+        play()
+        val otherFocus =
+            AudioFocusRequest
+                .Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).build())
+                .setOnAudioFocusChangeListener {}
+                .build()
+        try {
+            composeRule.runOnIdle { audio.requestAudioFocus(otherFocus) }
+            awaitMusic(false)
+            composeRule.onNodeWithTag("gomode-thinking-music-preview").assertTextContains("Play")
+        } finally {
+            audio.abandonAudioFocusRequest(otherFocus)
+        }
+        play()
+        composeRule.runOnIdle { active.value = true }
+        awaitMusic(false)
+        composeRule.onNodeWithTag("gomode-thinking-music-preview").assertIsNotEnabled().assertTextContains("Play")
+        composeRule.runOnIdle { active.value = false }
+        play()
+        composeRule.activityRule.scenario.moveToState(Lifecycle.State.STARTED)
+        awaitMusic(false)
+        composeRule.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        play()
+        composeRule.runOnIdle { visible.value = false }
+        awaitMusic(false)
+    }
 
     @Test
     fun voiceModeChipsSaveSelectionAndDisableDuringAnActiveSession() {

@@ -102,7 +102,7 @@ internal class DeviceVoiceSession(
     private val localModelOwner: LocalModelOwner = (appContext.applicationContext as GoModeApplication).localModelOwner,
     private val speech: DeviceSpeech = AndroidDeviceSpeech(appContext, languageTag),
     voiceChimePlayer: VoiceChimePlayer = AndroidVoiceChime(),
-    private val thinkingEarcon: ThinkingEarcon = AndroidThinkingEarcon(),
+    private val thinkingEarcon: ThinkingEarcon = AndroidThinkingEarcon(appContext),
     private val callController: VoiceCallController = NoopVoiceCallController(),
     private val switchServer: suspend (String) -> Unit = { id -> settingsRepository.switchService(id) },
     private val setupProvider: suspend () -> VoiceSetup = {
