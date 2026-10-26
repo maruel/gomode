@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
+internal enum class ServiceCallStage { PAGE, SIGN_IN, TOOLS }
+
 internal data class ServiceShellSnapshot(
     val settings: SettingsState,
     val entries: Map<ServiceShellKey, ServiceShellSession> = emptyMap(),
@@ -86,7 +88,11 @@ internal class ServiceShellOwner(
                 }
         }
 
-    suspend fun prepareCall(settings: SettingsState): ServiceShellSession {
+    suspend fun prepareCall(
+        settings: SettingsState,
+        onStage: (ServiceCallStage) -> Unit,
+    ): ServiceShellSession {
+        onStage(ServiceCallStage.PAGE)
         start()
         val key = ServiceShellKey(settings.activeServiceId, settings.activeServiceURL)
         val current = state.first { key in it.entries }.entries
@@ -100,7 +106,9 @@ internal class ServiceShellOwner(
         check(
             ready.load == WebShellLoadState.Ready && ready.bootstrap !is ServiceBootstrapState.Error,
         ) { "Service page is unavailable" }
+        onStage(ServiceCallStage.SIGN_IN)
         target.bearerStore.authReady.first { it }
+        onStage(ServiceCallStage.TOOLS)
         catalog.state.first { it[target.key]?.readiness == ServiceReadiness.READY }
         return target
     }

@@ -342,7 +342,9 @@ class CarDialInterceptionTest {
         shell("pm grant $APP ${Manifest.permission.RECORD_AUDIO}")
         withSecureKeyguard {
             dial(NUMBER)
-            assertTrue(device.wait(Until.hasObject(By.textContains("Could not start voice")), 15_000))
+            assertTrue(
+                device.wait(Until.hasObject(By.text("Service page unavailable.")), 15_000),
+            )
             assertLockedNativeSurface()
             assertTrue(device.takeScreenshot(File(context.getExternalFilesDir(null), "locked-call-failed.png")))
             awaitVoiceClosed()
@@ -795,7 +797,7 @@ class CarDialInterceptionTest {
         dial(NUMBER)
         assertTrue(
             "Native failure was not displayed",
-            device.wait(Until.hasObject(By.textContains("Could not start voice")), 15_000),
+            device.wait(Until.hasObject(By.text("Service page unavailable.")), 15_000),
         )
         awaitVoiceClosed()
         assertTrue(FixtureConnectionService.connections.isEmpty())

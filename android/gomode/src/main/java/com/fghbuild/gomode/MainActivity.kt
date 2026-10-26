@@ -256,7 +256,7 @@ internal fun LockedCarCall(
                         stringResource(
                             when (state.status) {
                                 CarDialStatus.CONNECTED -> R.string.car_dial_connected
-                                CarDialStatus.FAILED -> R.string.car_dial_failed
+                                CarDialStatus.FAILED -> state.failure.message
                                 else -> R.string.car_dial_connecting
                             },
                         ),

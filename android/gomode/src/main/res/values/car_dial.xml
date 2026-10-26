@@ -4,5 +4,12 @@
     <string name="car_dial_dismiss">Dismiss</string>
     <string name="car_dial_connecting">Connecting voice…</string>
     <string name="car_dial_connected">Voice connected</string>
-    <string name="car_dial_failed">Could not start voice. Unlock Go Mode to check sign-in and voice settings.</string>
+    <string name="car_dial_failed_call">Could not start the call.</string>
+    <string name="car_dial_failed_microphone">Microphone unavailable.</string>
+    <string name="car_dial_failed_service">Service page unavailable.</string>
+    <string name="car_dial_failed_settings">Could not load settings.</string>
+    <string name="car_dial_failed_sign_in">Sign-in not ready.</string>
+    <string name="car_dial_failed_speech_language">Speech language unavailable.</string>
+    <string name="car_dial_failed_tools">Service tools unavailable.</string>
+    <string name="car_dial_failed_voice">Voice connection failed.</string>
 </resources>

@@ -351,7 +351,7 @@ internal fun GoModeApp(
             }
 
             carVoiceState.status == CarDialStatus.FAILED -> {
-                controllerState.copy(error = stringResource(com.fghbuild.gomode.R.string.car_dial_failed))
+                controllerState.copy(error = stringResource(carVoiceState.failure.message))
             }
 
             else -> {

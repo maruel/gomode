@@ -12,8 +12,10 @@ import android.content.pm.PackageManager
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import androidx.annotation.StringRes
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
+import com.fghbuild.gomode.R
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.ServiceInstance
 import com.fghbuild.gomode.data.SettingsRepository
@@ -21,6 +23,7 @@ import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceSettingsClient
+import com.fghbuild.gomode.ui.web.ServiceCallStage
 import com.fghbuild.gomode.ui.web.ServiceShellOwner
 import com.fghbuild.gomode.ui.web.isTrustedPermissionOrigin
 import kotlinx.coroutines.CancellationException
@@ -42,10 +45,25 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 internal enum class CarDialStatus { IDLE, WAITING, CONNECTING, PREPARING, CONNECTED, FAILED }
 
+// Fixed messages are safe above keyguard; provider errors stay in diagnostic logs.
+internal enum class CarDialFailure(
+    @get:StringRes val message: Int,
+) {
+    CALL(R.string.car_dial_failed_call),
+    MICROPHONE(R.string.car_dial_failed_microphone),
+    SERVICE(R.string.car_dial_failed_service),
+    SETTINGS(R.string.car_dial_failed_settings),
+    SIGN_IN(R.string.car_dial_failed_sign_in),
+    SPEECH_LANGUAGE(R.string.car_dial_failed_speech_language),
+    TOOLS(R.string.car_dial_failed_tools),
+    VOICE(R.string.car_dial_failed_voice),
+}
+
 internal data class CarDialVoiceState(
     val identity: String? = null,
     val serverName: String = "",
     val status: CarDialStatus = CarDialStatus.IDLE,
+    val failure: CarDialFailure = CarDialFailure.VOICE,
 )
 
 private class CarDialRequest(
@@ -60,6 +78,7 @@ private class CarDialRequest(
 private class CarDialAttempt(
     val server: ServiceInstance,
 ) {
+    var failure = CarDialFailure.CALL
     val authority = AtomicBoolean(true)
     var selection: SettingsState? = null
     var page: com.fghbuild.gomode.ui.web.ServiceShellSession? = null
@@ -220,7 +239,8 @@ internal class CarDialVoiceOwner(
             foreground.start(next.server.label)
         } catch (error: SecurityException) {
             Log.w("GoModeCarDial", "Microphone foreground ownership unavailable", error)
-            fail(current)
+            next.failure = CarDialFailure.MICROPHONE
+            fail(current, next)
             return
         }
         // The session takes over this foreground lease once its transport is ready.
@@ -263,6 +283,7 @@ internal class CarDialVoiceOwner(
             "Could not establish replacement call"
         }
         // The replacement call now owns hang-up before storage, auth, networking or model work.
+        next.failure = CarDialFailure.SETTINGS
         withTimeout(1_000) {
             settingsRepository.switchService(next.server.id)
             settingsRepository.settings.first { it.activeServiceId == next.server.id }
@@ -271,7 +292,15 @@ internal class CarDialVoiceOwner(
         next.selection = settings
         checkCurrent(current, next)
         mutableState.value = mutableState.value.copy(status = CarDialStatus.PREPARING)
-        val page = pages.prepareCall(settings)
+        val page =
+            pages.prepareCall(settings) { stage ->
+                next.failure =
+                    when (stage) {
+                        ServiceCallStage.PAGE -> CarDialFailure.SERVICE
+                        ServiceCallStage.SIGN_IN -> CarDialFailure.SIGN_IN
+                        ServiceCallStage.TOOLS -> CarDialFailure.TOOLS
+                    }
+            }
         checkCurrent(current, next)
         next.page = page
         val authorityEpoch = page.bearerStore.identityEpoch.value
@@ -287,6 +316,7 @@ internal class CarDialVoiceOwner(
                 // lifetime watcher's cached decision without Binder work on every token.
                 (!Looper.getMainLooper().isCurrentThread || eligible())
         }
+        next.failure = CarDialFailure.VOICE
         val settingsClient = ServiceSettingsClient()
         val voiceConversation =
             if (allowsFocusChanges(settings)) {
@@ -342,6 +372,13 @@ internal class CarDialVoiceOwner(
         voice.connect()
         val connected = voice.state.first { it.connected || it.error != null || it.connectStatus == null }
         if (!connected.connected) {
+            Log.w("GoModeCarDial", "Voice session did not connect: ${connected.error}")
+            val language = (voice as? DeviceVoiceSession)?.speechLanguageState?.value
+            if (language == SpeechLanguageState.Missing || language == SpeechLanguageState.Pending ||
+                language == SpeechLanguageState.Unsupported || language is SpeechLanguageState.Failed
+            ) {
+                next.failure = CarDialFailure.SPEECH_LANGUAGE
+            }
             fail(current, next)
             return
         }
@@ -397,11 +434,13 @@ internal class CarDialVoiceOwner(
 
     private fun fail(
         current: CarDialRequest,
-        expected: CarDialAttempt? = attempt,
+        expected: CarDialAttempt,
     ) {
         if (request !== current || attempt !== expected) return
-        val server = expected?.server ?: current.server
-        finish(CarDialVoiceState(current.identity, server.label, CarDialStatus.FAILED))
+        val server = expected.server
+        val failure = expected.failure
+        Log.w("GoModeCarDial", "Car call startup failed: $failure")
+        finish(CarDialVoiceState(current.identity, server.label, CarDialStatus.FAILED, failure))
     }
 
     fun cancel(identity: String? = mutableState.value.identity) {
@@ -433,7 +472,7 @@ internal class CarDialVoiceOwner(
         foreground.stop()
         pages.setVoiceConnected(false)
         // IDLE finishes the native Activity immediately. A failed startup must
-        // publish FAILED directly so its recovery instructions remain visible.
+        // publish FAILED directly so its failure cause remains visible.
         mutableState.value = finalState
     }
 

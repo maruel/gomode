@@ -13,8 +13,10 @@ import com.fghbuild.gomode.data.ServiceInstance
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceSettingsClient
+import com.fghbuild.gomode.ui.web.ServiceCallStage
 import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellOwner
+import com.fghbuild.gomode.ui.web.WebShellLoadState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -148,9 +150,27 @@ class CarDialVoiceOwnerTest {
             owner.start(identity, activity)
             runCurrent()
             assertEquals(CarDialStatus.FAILED, owner.state.value.status)
+            assertEquals(CarDialFailure.CALL, owner.state.value.failure)
             assertFalse("Idle would finish the native failure surface: $statuses", CarDialStatus.IDLE in statuses)
             assertFalse(owner.isBusy)
             assertNull(owner.session.value)
+        }
+
+    @Test
+    fun pagePreparationDistinguishesLoadingFromWaitingForSignIn() =
+        runTest {
+            val id = repository.addService("Saved server", "")
+            val selected = repository.settings.first { it.activeServiceId == id }
+            val stages = mutableListOf<ServiceCallStage>()
+            backgroundScope.launch { pages.prepareCall(selected) { stages += it } }
+            runCurrent()
+            assertEquals(listOf(ServiceCallStage.PAGE), stages)
+            val page = pages.entries.getValue(ServiceShellKey(id, ""))
+            page.updateLoad(WebShellLoadState.Ready)
+            runCurrent()
+            // A loaded page without a settled identity must report sign-in, not a page failure.
+            assertFalse(page.bearerStore.authReady.value)
+            assertEquals(listOf(ServiceCallStage.PAGE, ServiceCallStage.SIGN_IN), stages)
         }
 
     @Test
