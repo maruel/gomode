@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { ok } from "node:assert/strict";
 import { expect, vi } from "../tests/expect";
+import { FakeMicrophoneContext, microphoneFrames } from "../tests/microphone-audio";
 import { FakeRecognition, fakeSynthesis, installBrowserSpeech } from "../tests/browser-speech";
 import { configureVoiceGateway, VoiceSession } from "./VoiceSession";
 import { mcpClient } from "./McpClient";
@@ -50,6 +51,18 @@ beforeEach(() => {
   restore = installBrowserSpeech("Chrome desktop");
   vi.stubGlobal("WebSocket", FakeWebSocket);
   FakeWebSocket.instances = [];
+  FakeMicrophoneContext.instances = [];
+  vi.stubGlobal("AudioContext", FakeMicrophoneContext);
+  microphoneFrames();
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: {
+      getUserMedia: vi.fn(async () => {
+        const track = { enabled: true, stop: vi.fn() };
+        return { getTracks: () => [track], getAudioTracks: () => [track] };
+      }),
+    },
+  });
   requests = [];
   globalThis.fetch = async (input, init) => {
     if (String(input).endsWith("/voice/choices"))
@@ -105,6 +118,68 @@ function finishTurn(socket: FakeWebSocket, text: string): void {
 }
 
 describe("browser voice sessions", () => {
+  it("meters quiet speech and silence, resets for mute and replies, and releases capture", async () => {
+    const poll = microphoneFrames();
+    const socket = await readySocket();
+    socket.message({ kind: "turn.status", state: "idle" });
+    const context = FakeMicrophoneContext.instances[0];
+    ok(context);
+    const stream = await vi.mocked(navigator.mediaDevices.getUserMedia).mock.results[0]!.value;
+    ok(stream);
+    poll();
+    expect(session.state.micLevel).toBeGreaterThan(0.3);
+    context.sample = 0;
+    poll();
+    expect(session.state.micLevel).toBe(0);
+    context.sample = 0.01;
+    session.setMicrophoneMode("muted");
+    poll();
+    expect(session.state.micLevel).toBe(0);
+    expect(stream.getAudioTracks()[0]!.enabled).toBe(false);
+    FakeRecognition.instances.at(-1)?.end();
+    session.setMicrophoneMode("listening");
+    poll();
+    expect(session.state.micLevel).toBeGreaterThan(0.3);
+    FakeRecognition.instances.at(-1)?.result([["Hello", true]]);
+    FakeRecognition.instances.at(-1)?.end();
+    expect(session.state.micLevel).toBe(0);
+    finishTurn(socket, "Hello back");
+    poll();
+    expect(session.state.micLevel).toBe(0);
+    fakeSynthesis.complete();
+    poll();
+    expect(session.state.micLevel).toBeGreaterThan(0.3);
+    session.disconnect();
+    poll();
+    expect(session.state.micLevel).toBe(0);
+    expect(stream.getTracks()[0]!.stop).toHaveBeenCalledOnce();
+    expect(context.close).toHaveBeenCalledOnce();
+  });
+
+  it("reports denied meter capture through microphone permission recovery", async () => {
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValueOnce(new DOMException("Denied", "NotAllowedError"));
+    await session.connect();
+    expect(session.state.microphoneAccess).toBe("denied");
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it("releases a microphone acquired after cancellation", async () => {
+    let finish!: (stream: MediaStream) => void;
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const connecting = session.connect();
+    await vi.waitFor(() => expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledOnce());
+    session.disconnect();
+    const stop = vi.fn();
+    finish({ getTracks: () => [{ stop }] } as unknown as MediaStream);
+    await connecting;
+    expect(stop).toHaveBeenCalledOnce();
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
   it("plays thinking feedback through tool waits and stops for turn end, mute, interruption and teardown", async () => {
     const socket = await readySocket();
     expect(earcon.prepare).toHaveBeenCalledOnce();

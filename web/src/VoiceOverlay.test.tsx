@@ -34,6 +34,7 @@ beforeEach(() => {
     microphoneAccess: null,
     microphoneAccessPending: false,
     audioPlaybackError: null,
+    micLevelError: null,
     listening: false,
     speaking: false,
     microphoneMode: "listening",
@@ -66,6 +67,23 @@ afterEach(() => {
 });
 
 describe("VoiceOverlay status", () => {
+  it("offers a gesture retry for a paused level meter while keeping voice connected", async () => {
+    const enable = vi.spyOn(voiceSession, "enableMicrophoneMeter").mockImplementation(async () => {
+      voiceSession.setState((s) => ({ ...s, micLevelError: null }));
+    });
+    try {
+      voiceSession.setState((s) => ({ ...s, connected: true, micLevelError: "Microphone level meter is paused." }));
+      render(() => <VoiceOverlay />);
+      await userEvent.setup().click(screen.getByRole("button", { name: "Enable level meter" }));
+      expect(enable).toHaveBeenCalledOnce();
+      expect(screen.queryByText("Microphone level meter is paused.")).toBeNull();
+      expect(screen.getByRole("button", { name: "End voice session" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "End voice session" })).toHaveFocus();
+    } finally {
+      enable.mockRestore();
+    }
+  });
+
   it("retains keyboard focus after an access request is denied and prevents duplicate requests", async () => {
     let finish = () => {};
     const request = vi.spyOn(voiceSession, "requestMicrophoneAccess").mockImplementation(() => {

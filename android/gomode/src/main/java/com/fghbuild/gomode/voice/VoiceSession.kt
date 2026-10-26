@@ -72,7 +72,6 @@ import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
-import kotlin.math.sqrt
 
 private const val TAG = "GoModeVoiceSession"
 private const val MIC_LEVEL_POLL_MS = 100L
@@ -197,7 +196,7 @@ internal class VoiceSession(
 
     /** True while Telecom owns the call; SCO teardown is then not a hang-up. */
     private var telecomCallActive = false
-    private val micEnergySamples = mutableMapOf<String, MicEnergySample>()
+    private val microphoneMeter = RtcMicrophoneLevel()
 
     @Volatile
     private var usableICECandidateWaiter: CompletableDeferred<Unit>? = null
@@ -642,18 +641,20 @@ internal class VoiceSession(
 
     private fun startMicLevelMonitoring(attempt: Long) {
         micLevelJob?.cancel()
-        micEnergySamples.clear()
+        microphoneMeter.clear()
         micLevelJob =
             scope.launch {
                 while (true) {
                     val pc = peerConnection ?: break
                     if (_state.value.muted) {
+                        microphoneMeter.clear()
                         _state.update { it.copy(micLevel = 0f) }
                     } else {
-                        pc.getStats { report ->
-                            if (!ownsAttempt(attempt) || _state.value.muted) return@getStats
-                            val level = micLevelFromStats(report) ?: return@getStats
-                            _state.update { it.copy(micLevel = level) }
+                        val result = CompletableDeferred<org.webrtc.RTCStatsReport>()
+                        pc.getStats { report -> result.complete(report) }
+                        val report = result.await()
+                        if (ownsAttempt(attempt) && peerConnection === pc && !_state.value.muted) {
+                            _state.update { it.copy(micLevel = microphoneMeter.read(report)) }
                         }
                     }
                     delay(MIC_LEVEL_POLL_MS)
@@ -664,35 +665,8 @@ internal class VoiceSession(
     private fun stopMicLevelMonitoring() {
         micLevelJob?.cancel()
         micLevelJob = null
-        micEnergySamples.clear()
-    }
-
-    private fun micLevelFromStats(report: org.webrtc.RTCStatsReport): Float? {
-        var maxLevel: Float? = null
-        report.statsMap.forEach { (id, stat) ->
-            if (!isLocalAudioStat(stat)) return@forEach
-            val directLevel = (stat.members["audioLevel"] as? Number)?.toFloat()
-            if (directLevel != null) {
-                maxLevel = maxOf(maxLevel ?: 0f, directLevel.coerceIn(0f, 1f))
-                return@forEach
-            }
-            val energy = (stat.members["totalAudioEnergy"] as? Number)?.toDouble() ?: return@forEach
-            val duration = (stat.members["totalSamplesDuration"] as? Number)?.toDouble() ?: return@forEach
-            val previous = micEnergySamples.put(id, MicEnergySample(energy, duration)) ?: return@forEach
-            val energyDelta = energy - previous.energy
-            val durationDelta = duration - previous.duration
-            if (energyDelta <= 0.0 || durationDelta <= 0.0) return@forEach
-            val rms = sqrt(energyDelta / durationDelta).toFloat().coerceIn(0f, 1f)
-            maxLevel = maxOf(maxLevel ?: 0f, rms)
-        }
-        return maxLevel
-    }
-
-    private fun isLocalAudioStat(stat: org.webrtc.RTCStats): Boolean {
-        val type = stat.type.lowercase()
-        if ("inbound" in type || type.startsWith("remote-")) return false
-        val kind = stat.members["kind"] as? String ?: stat.members["mediaType"] as? String
-        return kind == null || kind == "audio"
+        microphoneMeter.clear()
+        _state.update { it.copy(micLevel = 0f) }
     }
 
     private fun scheduleReconnect(
@@ -1450,11 +1424,6 @@ data class AudioDevice(
     val id: Int,
     val type: Int,
     val name: String,
-)
-
-private data class MicEnergySample(
-    val energy: Double,
-    val duration: Double,
 )
 
 enum class MicrophoneMode {

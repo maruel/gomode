@@ -1,5 +1,6 @@
 // Browser voice sessions via WebRTC and speech, dispatching MCP and frontend tools.
 
+import { MicrophoneLevel } from "./MicrophoneLevel";
 import { createSignal, untrack } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 
@@ -337,6 +338,7 @@ export interface VoiceState {
   turnState: TurnState;
   transcript: TranscriptEntry[];
   micLevel: number;
+  micLevelError: string | null;
   error: string | null;
   /** Browser permission, null when the browser cannot report it yet. */
   microphoneAccess: PermissionState | null;
@@ -527,9 +529,17 @@ export class VoiceSession {
   private _rtcOfferService: ServiceAuthorization | null = null;
   private _lastOfferSDP = "";
   private _lastAnswerSDP = "";
-  private _audioContext: AudioContext | null = null;
+  private readonly _microphoneMeter = new MicrophoneLevel(
+    (level) =>
+      this._update((s) => {
+        s.micLevel = level;
+      }),
+    (error) =>
+      this._update((s) => {
+        s.micLevelError = error;
+      }),
+  );
   private _micStream: MediaStream | null = null;
-  private _micMonitorFrame: number | null = null;
   /** The <audio> element playing remote RTP audio, stored so we can call setSinkId(). */
   private _speakerAudio: HTMLAudioElement | null = null;
   /** True while the model is speaking — injected text is buffered and flushed after the turn ends. */
@@ -572,6 +582,7 @@ export class VoiceSession {
       turnState: TurnStateIdle,
       transcript: [],
       micLevel: 0,
+      micLevelError: null,
       error: null,
       audioInputs: [],
       audioDevicesError: null,
@@ -960,7 +971,7 @@ export class VoiceSession {
         });
         if (remember) rememberAudioDevice("Input", deviceId);
         this._inputPreferenceProvisional = false;
-        this._monitorMicrophone(pc, newStream);
+        this._monitorMicrophone(newStream);
       } catch (error) {
         if (this._micStream !== newStream) newStream?.getTracks().forEach((track) => track.stop());
         if (this._pc === pc && error instanceof DOMException && error.name === "NotAllowedError") {
@@ -988,32 +999,19 @@ export class VoiceSession {
     }
   }
 
-  private _monitorMicrophone(pc: RTCPeerConnection, stream: MediaStream): void {
-    if (this._micMonitorFrame !== null) cancelAnimationFrame(this._micMonitorFrame);
-    this._micMonitorFrame = null;
-    const context = this._audioContext;
-    if (context === null) return;
-    const analyser = context.createAnalyser();
-    analyser.fftSize = 256;
-    context.createMediaStreamSource(stream).connect(analyser);
-    const buf = new Uint8Array(analyser.frequencyBinCount);
-    const pollMicLevel = () => {
-      if (this._pc !== pc || this._micStream !== stream) return;
-      analyser.getByteTimeDomainData(buf);
-      let sumSq = 0;
-      for (const sample of buf) {
-        const v = (sample - 128) / 128;
-        sumSq += v * v;
-      }
-      const rms = Math.sqrt(sumSq / buf.length);
-      if (!microphoneMuted(this.state) && !this._speakerActive) {
-        this._update((s) => {
-          s.micLevel = Math.min(1, Math.sqrt(rms));
-        });
-      }
-      this._micMonitorFrame = requestAnimationFrame(pollMicLevel);
-    };
-    this._micMonitorFrame = requestAnimationFrame(pollMicLevel);
+  private _microphoneActive(): boolean {
+    return !microphoneMuted(this.state) && (this.state.mode === "cloud" || this.state.listening);
+  }
+
+  private _monitorMicrophone(stream: MediaStream): void {
+    this._microphoneMeter.start(stream, () => this._micStream === stream && this._microphoneActive());
+  }
+
+  /** Resume analysis from a user activation if browser audio policy paused it. */
+  enableMicrophoneMeter(): Promise<void> {
+    const activation = this._microphoneMeter.prepare();
+    if (this._micStream !== null) this._monitorMicrophone(this._micStream);
+    return activation;
   }
 
   /** Select an audio output device. Applies immediately if connected. */
@@ -1064,6 +1062,7 @@ export class VoiceSession {
   /** Unlock chime playback while a browser user-activation event is still active. */
   prepareAudio(): void {
     if (this.state.mode === "browser" && !browserSpeechAvailable()) return;
+    void this.enableMicrophoneMeter();
     if (this.state.mode === "browser" && browserSpeechAvoidsChimes()) {
       window.speechSynthesis.resume();
       return;
@@ -1210,10 +1209,9 @@ export class VoiceSession {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
     }
-    this._releaseAll();
+    this._releaseAll(true);
     this._lastOfferSDP = "";
     this._lastAnswerSDP = "";
-    this._audioContext = new AudioContext({ sampleRate: 16000 });
     if (!preserveTranscript) {
       this._reconnectAttempts = 0;
       this._recoveryContext = "";
@@ -1281,7 +1279,7 @@ export class VoiceSession {
       const activeMicStream = this._micStream;
       if (activeMicStream === null) return;
 
-      this._monitorMicrophone(pc, activeMicStream);
+      this._monitorMicrophone(activeMicStream);
 
       // Speaker audio from remote RTP track.
       pc.ontrack = (evt) => {
@@ -1384,7 +1382,7 @@ export class VoiceSession {
     if (this._setupTimer !== null) clearTimeout(this._setupTimer);
     this._reconnectTimer = null;
     this._setupTimer = null;
-    this._releaseAll();
+    this._releaseAll(true);
     this._speakerActive = false;
     this._pendingNotifications = [];
     if (!preserveTranscript) this._clearTranscript();
@@ -1410,6 +1408,19 @@ export class VoiceSession {
         snapshot.serviceProvider?.() ?? Promise.resolve(null),
       ]);
       if (attempt !== this._connectionAttempt) return;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (attempt !== this._connectionAttempt) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      this._micStream = stream;
+      stream.getAudioTracks().forEach((track) => {
+        track.enabled = this._microphoneActive();
+      });
+      this._update((s) => {
+        s.microphoneAccess = "granted";
+      });
+      this._monitorMicrophone(stream);
       const response = await snapshot.api.voiceTextTicket(service === null ? { choiceID } : { choiceID, service });
       if (attempt !== this._connectionAttempt) return;
       const url = new URL("/api/voicegateway/v1/voice/text/browser", snapshot.origin);
@@ -1464,8 +1475,10 @@ export class VoiceSession {
         if (this._ownsChannel(attempt, socket) && !this.state.connected) this._setError("Voice connection timed out.");
       }, SETUP_TIMEOUT_MS);
     } catch (error) {
-      if (attempt === this._connectionAttempt)
-        this._setError(error instanceof Error ? error.message : "Text voice connection failed");
+      if (attempt === this._connectionAttempt) {
+        if (error instanceof DOMException && error.name === "NotAllowedError") this._microphoneDenied();
+        else this._setError(error instanceof Error ? error.message : "Text voice connection failed");
+      }
     }
   }
 
@@ -1530,7 +1543,7 @@ export class VoiceSession {
       clearTimeout(this._setupTimer);
       this._setupTimer = null;
     }
-    this._releaseAll();
+    this._releaseAll(false);
     // Preserve transcript for review; mark all entries final.
     this._update((s) => {
       s.connected = false;
@@ -1590,7 +1603,7 @@ export class VoiceSession {
   }
 
   /** Release WebRTC transport and audio resources. */
-  private _releaseAll(): void {
+  private _releaseAll(keepMeterContext: boolean): void {
     if (this._speakerAudio !== null) {
       this._speakerAudio.pause();
       this._speakerAudio.srcObject = null;
@@ -1600,8 +1613,6 @@ export class VoiceSession {
       s.audioPlaybackError = null;
     });
     this._thinkingEarcon.setThinking(false);
-    if (this._micMonitorFrame !== null) cancelAnimationFrame(this._micMonitorFrame);
-    this._micMonitorFrame = null;
     const socket = this._textSocket;
     const speech = this._browserSpeech;
     this._textSocket = null;
@@ -1620,7 +1631,7 @@ export class VoiceSession {
     this._dc = null;
     this._pc?.close();
     this._pc = null;
-    this._releaseAudio();
+    this._releaseAudio(keepMeterContext);
     if (sessionID !== null && snapshot !== null) {
       void closeVoiceGatewaySession(snapshot, sessionID, service).catch((error: unknown) => {
         console.warn("Could not close voice gateway session", error);
@@ -1723,7 +1734,7 @@ export class VoiceSession {
     this._deviceEnumerationAttempt++;
     this._pendingAudioInput = null;
     this._pendingAudioOutput = null;
-    this._releaseAll();
+    this._releaseAll(false);
     if (this._setupTimer !== null) clearTimeout(this._setupTimer);
     this._setupTimer = null;
     this._update((s) => {
@@ -1750,16 +1761,16 @@ export class VoiceSession {
   }
 
   private _update(fn: (s: VoiceState) => void): void {
-    const wasMuted = untrack(() => microphoneMuted(this.state));
+    const wasActive = untrack(() => this._microphoneActive());
     this.setState(produce(fn));
     untrack(() => {
-      const muted = microphoneMuted(this.state);
-      if (muted !== wasMuted) {
+      const active = this._microphoneActive();
+      if (active !== wasActive) {
         this._micStream?.getAudioTracks().forEach((track) => {
-          track.enabled = !muted;
+          track.enabled = active;
         });
       }
-      if (muted && this.state.micLevel !== 0)
+      if (!active && this.state.micLevel !== 0)
         this.setState(
           produce((s) => {
             s.micLevel = 0;
@@ -2008,19 +2019,14 @@ export class VoiceSession {
   // Audio cleanup
   // -----------------------------------------------------------------------
 
-  private _releaseAudio(): void {
+  private _releaseAudio(keepMeterContext: boolean): void {
     try {
       this._micStream?.getTracks().forEach((t) => t.stop());
       this._micStream = null;
     } catch {
       // ignore
     }
-    try {
-      void this._audioContext?.close();
-      this._audioContext = null;
-    } catch {
-      // ignore
-    }
+    this._microphoneMeter.stop(keepMeterContext);
     this._speakerActive = false;
     this._pendingNotifications = [];
   }

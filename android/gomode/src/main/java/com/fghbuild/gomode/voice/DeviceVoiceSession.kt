@@ -203,13 +203,24 @@ internal class DeviceVoiceSession(
             }
         }
 
+    private val microphoneLevelJob =
+        scope.launch {
+            speech.microphoneRms.collect { rms ->
+                _state.update {
+                    val level =
+                        if (it.connected && !it.muted && !muteOnceActive) microphoneLevelFromRms(rms) else 0f
+                    it.copy(micLevel = level)
+                }
+            }
+        }
+
     override fun connect(
         preserveTranscript: Boolean,
         conversationID: String?,
     ) {
         thinkingEarcon.setThinking(false)
         _state.update {
-            it.copy(turnState = TurnState.Idle, connected = false, listening = false, speaking = false)
+            it.copy(turnState = TurnState.Idle, connected = false, listening = false, speaking = false, micLevel = 0f)
         }
         val attempt = invalidateAttempt()
         awaitingModelTurn = false
@@ -1035,6 +1046,7 @@ internal class DeviceVoiceSession(
                 speaking = false,
                 turnState = TurnState.Idle,
                 error = message,
+                micLevel = 0f,
                 errorId = it.errorId + 1,
                 transcript = it.transcript.withoutUserDraft(),
             )
@@ -1094,6 +1106,7 @@ internal class DeviceVoiceSession(
     }
 
     override fun close() {
+        microphoneLevelJob.cancel()
         thinkingAudioJob.cancel()
         audioStateJob.cancel()
         disconnect()

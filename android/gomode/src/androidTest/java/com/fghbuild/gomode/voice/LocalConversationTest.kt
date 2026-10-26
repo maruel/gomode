@@ -452,6 +452,7 @@ class LocalConversationTest {
     }
 
     private class ControlledSpeech : DeviceSpeech {
+        override val microphoneRms = kotlinx.coroutines.flow.MutableStateFlow(0f)
         override val languageState =
             kotlinx.coroutines.flow.MutableStateFlow<SpeechLanguageState>(
                 SpeechLanguageState.Ready,

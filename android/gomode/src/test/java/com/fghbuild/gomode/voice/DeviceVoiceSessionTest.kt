@@ -73,6 +73,42 @@ class DeviceVoiceSessionTest {
     }
 
     @Test
+    fun `device microphone levels follow live input and reset on mute error and disconnect`() {
+        val speech = FakeSpeech()
+        val socket = FakeWebSocket()
+        var listener: WebSocketListener? = null
+        val session =
+            createSession(speech) { _, captured ->
+                listener = captured
+                socket
+            }
+        try {
+            session.connect()
+            val backend = requireNotNull(listener)
+            backend.onOpen(socket, upgradeResponse())
+            backend.onMessage(socket, """{"kind":"session.ready"}""")
+            backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+            speech.microphoneRms.value = 0.01f
+            assertTrue("Ordinary speech must visibly move the meter", session.state.value.micLevel > 0.3f)
+            session.setMicrophoneMode(MicrophoneMode.MUTED)
+            assertEquals(0f, session.state.value.micLevel)
+            speech.microphoneRms.value = 0.1f
+            assertEquals(0f, session.state.value.micLevel)
+            session.setMicrophoneMode(MicrophoneMode.LISTENING)
+            speech.microphoneRms.value = 0.02f
+            assertTrue(session.state.value.micLevel > 0.3f)
+            session.setError("Connection lost")
+            assertEquals(0f, session.state.value.micLevel)
+            speech.microphoneRms.value = 0.03f
+            assertEquals(0f, session.state.value.micLevel)
+            session.disconnect()
+            assertEquals(0f, session.state.value.micLevel)
+        } finally {
+            session.close()
+        }
+    }
+
+    @Test
     fun `runtime language recovery removes the fault and preserves unrelated errors`() {
         val speech = FakeSpeech()
         val socket = FakeWebSocket()
@@ -1065,10 +1101,14 @@ class DeviceVoiceSessionTest {
             connected.onOpen(socket, upgradeResponse())
             connected.onMessage(socket, """{"kind":"session.ready"}""")
             connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+            speech.microphoneRms.value = 0.01f
+            assertTrue(session.state.value.micLevel > 0.3f)
             session.setMicrophoneMode(MicrophoneMode.MUTE_ONCE)
             assertTrue(speech.listening)
             connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"First fragment."}""")
             assertFalse(speech.listening)
+            speech.microphoneRms.value = 0.02f
+            assertEquals(0f, session.state.value.micLevel)
             assertTrue(session.state.value.muted)
             speech.speechCompletions.removeAt(0).invoke()
             assertFalse(speech.listening)
@@ -1079,6 +1119,8 @@ class DeviceVoiceSessionTest {
             speech.speechCompletions.removeAt(0).invoke()
             assertTrue(speech.listening)
             assertEquals(MicrophoneMode.LISTENING, session.state.value.microphoneMode)
+            speech.microphoneRms.value = 0.03f
+            assertTrue(session.state.value.micLevel > 0.3f)
             session.setMicrophoneMode(MicrophoneMode.MUTE_ONCE)
             connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Interrupted."}""")
             connected.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
@@ -2129,6 +2171,7 @@ class DeviceVoiceSessionTest {
     private class FakeSpeech(
         private val completeSpeechImmediately: Boolean = true,
     ) : DeviceSpeech {
+        override val microphoneRms = kotlinx.coroutines.flow.MutableStateFlow(0f)
         override val languageState =
             kotlinx.coroutines.flow.MutableStateFlow<SpeechLanguageState>(
                 SpeechLanguageState.Ready,

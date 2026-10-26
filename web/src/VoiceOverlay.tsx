@@ -50,6 +50,7 @@ export interface VoiceOverlayMessages extends Partial<VoiceSettingsMessages> {
   enableMicrophone?: string;
   requestingMicrophone?: string;
   enableSound?: string;
+  enableMicrophoneMeter?: string;
   microphoneMode?: string;
   microphoneNextState?: string;
   microphoneListening?: string;
@@ -102,6 +103,7 @@ export const defaultVoiceOverlayMessages: VoiceOverlayMessages = {
   enableMicrophone: "Enable microphone",
   requestingMicrophone: "Requesting access…",
   enableSound: "Enable sound",
+  enableMicrophoneMeter: "Enable level meter",
   microphoneMode: "Microphone mode",
   microphoneNextState: "Next",
   microphoneListening: "Listening",
@@ -401,6 +403,23 @@ export default function VoiceOverlay(props: {
                   : (messages().enableMicrophone ?? defaultVoiceOverlayMessages.enableMicrophone)}
               </button>
             </div>
+          </Show>
+          <Show when={session.state.micLevelError}>
+            {(error) => (
+              <div role="status" class={styles.accessNotice}>
+                <span>{error()}</span>
+                <button
+                  type="button"
+                  class={styles.accessAction}
+                  onClick={async () => {
+                    await session.enableMicrophoneMeter();
+                    if (session.state.micLevelError === null) connectButtonRef?.focus();
+                  }}
+                >
+                  {messages().enableMicrophoneMeter ?? defaultVoiceOverlayMessages.enableMicrophoneMeter}
+                </button>
+              </div>
+            )}
           </Show>
           <Show when={session.state.audioPlaybackError}>
             {(error) => (

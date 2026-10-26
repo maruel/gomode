@@ -14,6 +14,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -30,6 +32,8 @@ private const val RETAINED_AUDIO_BYTES = 16_000
 internal class MicrophoneAudioSource(
     private val scope: CoroutineScope,
 ) {
+    private val mutableRms = MutableStateFlow(0f)
+    val rms = mutableRms.asStateFlow()
     private val captureLock = Mutex()
     private val deliveryLock = Any()
     private val delivery = RecognitionAudioBuffer()
@@ -52,6 +56,7 @@ internal class MicrophoneAudioSource(
                         } catch (e: kotlinx.coroutines.CancellationException) {
                             throw e
                         } catch (e: Exception) {
+                            synchronized(deliveryLock) { mutableRms.value = 0f }
                             withContext(Dispatchers.Main) {
                                 val message = "Microphone capture failed: ${e.message}"
                                 // A terminal recognizer callback may already have retired its
@@ -78,7 +83,10 @@ internal class MicrophoneAudioSource(
         capture?.cancel()
         capture = null
         failure = null
-        synchronized(deliveryLock) { delivery.close() }
+        synchronized(deliveryLock) {
+            delivery.close()
+            mutableRms.value = 0f
+        }
     }
 
     @SuppressLint("MissingPermission") // The voice-session owner obtains RECORD_AUDIO before starting.
@@ -111,6 +119,7 @@ internal class MicrophoneAudioSource(
             recorder.startRecording()
             check(recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) { "Microphone did not start" }
             val frame = ByteArray(640)
+            val meter = MicrophoneRmsWindow()
             val captureContext = kotlin.coroutines.coroutineContext
             while (captureContext.isActive) {
                 val count = recorder.read(frame, 0, frame.size, AudioRecord.READ_NON_BLOCKING)
@@ -118,6 +127,7 @@ internal class MicrophoneAudioSource(
                 synchronized(deliveryLock) {
                     if (captureContext.isActive) {
                         delivery.append(frame, count)
+                        meter.append(frame, count)?.let { mutableRms.value = it }
                     }
                 }
                 delay(10)

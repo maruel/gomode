@@ -31,6 +31,7 @@ private const val RECOGNITION_RECOVERY_DELAY_MS = 250L
 
 /** DeviceSpeech runs speech recognition and synthesis on the device. */
 internal interface DeviceSpeech {
+    val microphoneRms: StateFlow<Float>
     val languageState: StateFlow<SpeechLanguageState>
 
     suspend fun checkLanguage(): SpeechLanguageState
@@ -82,6 +83,7 @@ internal class AndroidDeviceSpeech(
 
     private val captureScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val microphone = MicrophoneAudioSource(captureScope)
+    override val microphoneRms = microphone.rms
     private val main = Handler(Looper.getMainLooper())
     private var recognizer: SpeechRecognizer? = null
     private var listening = false
@@ -186,6 +188,7 @@ internal class AndroidDeviceSpeech(
 
                 override fun onBeginningOfSpeech() = Unit
 
+                // Supplied PCM owns metering, including gaps and recognizer restarts.
                 override fun onRmsChanged(rmsdB: Float) = Unit
 
                 override fun onBufferReceived(buffer: ByteArray?) = Unit

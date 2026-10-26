@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect, vi } from "../tests/expect";
+import { FakeMicrophoneContext, microphoneFrames } from "../tests/microphone-audio";
 
 import {
   buildRecoveryContext,
@@ -231,7 +232,7 @@ beforeEach(() => {
   mcpMocks.mcpServerInstructions.mockReset();
   mcpMocks.mcpServerInstructions.mockResolvedValue("instructions");
   vi.stubGlobal("RTCPeerConnection", FakePeerConnection as unknown as typeof RTCPeerConnection);
-  vi.stubGlobal("AudioContext", FakeAudioContext as unknown as typeof AudioContext);
+  vi.stubGlobal("AudioContext", FakeMicrophoneContext as unknown as typeof AudioContext);
   vi.stubGlobal(
     "requestAnimationFrame",
     vi.fn(() => 1),
@@ -248,25 +249,41 @@ beforeEach(() => {
   });
 });
 
-class FakeAudioContext {
-  createAnalyser(): AnalyserNode {
-    return {
-      fftSize: 0,
-      frequencyBinCount: 1,
-      getByteTimeDomainData: () => {},
-    } as unknown as AnalyserNode;
-  }
-
-  createMediaStreamSource(): MediaStreamAudioSourceNode {
-    return { connect: () => {} } as unknown as MediaStreamAudioSourceNode;
-  }
-
-  close(): Promise<void> {
-    return Promise.resolve();
-  }
-}
-
 describe("VoiceSession", () => {
+  it("keeps the gesture-unlocked meter and meters during cloud playback without freezing on mute or silence", async () => {
+    FakeMicrophoneContext.instances = [];
+    const poll = microphoneFrames();
+    const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
+    session.prepareAudio();
+    const context = FakeMicrophoneContext.instances[0];
+    expect(context).toBeDefined();
+    await session.connect();
+    expect(FakeMicrophoneContext.instances).toHaveLength(1);
+    poll();
+    expect(session.state.micLevel).toBeGreaterThan(0.3);
+    session.setState((s) => ({ ...s, speaking: true }));
+    poll();
+    expect(session.state.micLevel).toBeGreaterThan(0.3);
+    session.setMicrophoneMode("muteOnce");
+    poll();
+    expect(session.state.micLevel).toBe(0);
+    session.setMicrophoneMode("listening");
+    context!.sample = 0;
+    poll();
+    expect(session.state.micLevel).toBe(0);
+    context!.sample = 0.01;
+    session.setMicrophoneMode("muted");
+    poll();
+    expect(session.state.micLevel).toBe(0);
+    session.setMicrophoneMode("listening");
+    poll();
+    expect(session.state.micLevel).toBeGreaterThan(0.3);
+    session.disconnect();
+    poll();
+    expect(session.state.micLevel).toBe(0);
+    expect(context!.source.disconnect).toHaveBeenCalledOnce();
+  });
+
   it("coalesces access requests and releases a late stream without clearing a newer failure", async () => {
     const media = deferred<MediaStream>();
     const getMedia = vi.mocked(navigator.mediaDevices.getUserMedia).mockReturnValue(media.promise);
