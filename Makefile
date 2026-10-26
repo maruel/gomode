@@ -2,6 +2,10 @@
 .DEFAULT_GOAL := help
 .PHONY: help build fix verify test test-race android-check android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-push android-e2e screenshots-check screenshots-generate screenshots-update generate-sdks refresh-generated benchmark coverage test-smoke upgrade git-hooks export-lfm-litert
 
+# Keep Java processes scoped to each build, including Gradle launched by Python helpers.
+# Compile Kotlin inside Gradle's single-use JVM so it cannot leave a compiler daemon.
+export GRADLE_OPTS := $(GRADLE_OPTS) -Dorg.gradle.daemon=false -Dorg.gradle.project.kotlin.compiler.execution.strategy=in-process
+
 # Read-only verification lanes. Each command is passed through two shells, so
 # keep single quotes out of these values.
 VERIFY_GO = go test -run=^$$ ./... && go test -race -run=^$$ ./voicegateway/voicertc && go tool golangci-lint run ./... && go mod tidy -diff && go build ./...
