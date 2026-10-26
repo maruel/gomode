@@ -42,6 +42,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTouchInput
@@ -50,7 +51,6 @@ import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
@@ -291,10 +291,21 @@ class VoicePanelTest {
         composeRule.onNodeWithContentDescription("Hide transcript").performClick()
         composeRule.onNodeWithTag("gomode-voice-transcript").assertDoesNotExist()
         val restore = composeRule.onNodeWithContentDescription("Show transcript").assertIsDisplayed()
+        val microphone = composeRule.onNodeWithTag("gomode-microphone-mode").fetchSemanticsNode().boundsInRoot
         val routeBounds = speaker.fetchSemanticsNode().boundsInRoot
+        val level = composeRule.onNodeWithTag("gomode-voice-level").fetchSemanticsNode().boundsInRoot
+        assertEquals(microphone.center.y, routeBounds.center.y, 1f)
+        assertEquals(microphone.center.y, level.center.y, 1f)
+        assertTrue(level.right <= microphone.left)
+        val activity =
+            composeRule
+                .onNodeWithText(
+                    "Calling tool: ${scene.getString("tool")}…",
+                ).fetchSemanticsNode()
+                .boundsInRoot
         val restoreBounds = restore.fetchSemanticsNode().boundsInRoot
-        assertEquals(routeBounds.center.y, restoreBounds.center.y, 1f)
-        assertTrue(restoreBounds.left > earpiece.fetchSemanticsNode().boundsInRoot.right)
+        assertTrue(restoreBounds.left >= activity.right)
+        assertEquals(activity.center.y, restoreBounds.center.y, 1f)
         capture("documentation-hidden")
         composeRule.onNodeWithContentDescription("Show transcript").performClick()
         composeRule.onNodeWithTag("gomode-voice-transcript").assertIsDisplayed()
@@ -465,69 +476,15 @@ class VoicePanelTest {
         }
         composeRule.onNodeWithTag("gomode-voice-audio-1").assertIsOn()
         for (id in 1..5) {
+            composeRule.onNodeWithTag("gomode-voice-audio-$id").performScrollTo().assertIsDisplayed()
             composeRule.onNodeWithTag("gomode-voice-audio-icon-$id", useUnmergedTree = true).assertIsDisplayed()
         }
-        composeRule.onNodeWithTag("gomode-voice-audio-2").assertIsDisplayed().performClick()
+        composeRule
+            .onNodeWithTag("gomode-voice-audio-2")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .performClick()
         assertEquals(2, selected)
-    }
-
-    @Test
-    fun transcriptCloseIconTracksLabelTypographyAndFontScale() {
-        val fontSize = mutableStateOf(12.sp)
-        val fontScale = mutableStateOf(1f)
-        composeRule.setContent {
-            val density = LocalDensity.current.density
-            val typography = MaterialTheme.typography
-            CompositionLocalProvider(LocalDensity provides Density(density, fontScale.value)) {
-                MaterialTheme(
-                    typography = typography.copy(labelSmall = typography.labelSmall.copy(fontSize = fontSize.value)),
-                ) {
-                    VoicePanel(
-                        VoiceState(
-                            connected = true,
-                            transcript = listOf(TranscriptEntry(TranscriptSpeaker.ASSISTANT, "Ready.")),
-                        ),
-                        true,
-                        {},
-                        {},
-                        {},
-                        {},
-                        {},
-                        null,
-                        {},
-                        false,
-                    )
-                }
-            }
-        }
-
-        fun iconHeight() =
-            composeRule
-                .onNodeWithContentDescription("Hide transcript", useUnmergedTree = true)
-                .fetchSemanticsNode()
-                .boundsInRoot.height
-        val target = composeRule.onNodeWithTag("gomode-voice-transcript-toggle")
-        val targetHeight = target.fetchSemanticsNode().boundsInRoot.height
-        val small = iconHeight()
-        composeRule.runOnIdle { fontSize.value = 16.sp }
-        val large = iconHeight()
-        assertEquals(small * 16f / 12f, large, 1f)
-        val labelHeight =
-            composeRule
-                .onNodeWithText("Transcript")
-                .fetchSemanticsNode()
-                .boundsInRoot.height
-        composeRule.runOnIdle { fontScale.value = 2f }
-        val scaledLabelHeight =
-            composeRule
-                .onNodeWithText("Transcript")
-                .fetchSemanticsNode()
-                .boundsInRoot.height
-        // Android applies nonlinear font scaling. Compare rendered proportions, not the scale factor.
-        assertEquals(large / labelHeight, iconHeight() / scaledLabelHeight, 0.03f)
-        assertEquals(targetHeight, target.fetchSemanticsNode().boundsInRoot.height, 1f)
-        target.performClick()
-        composeRule.onNodeWithContentDescription("Show transcript").assertIsDisplayed()
     }
 
     @OptIn(ExperimentalTestApi::class)
@@ -564,13 +521,18 @@ class VoicePanelTest {
         val toggle = composeRule.onNodeWithTag("gomode-voice-transcript-toggle")
         toggle.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
         toggle.assertIsFocused()
-        composeRule.onNodeWithTag("gomode-voice-transcript").assertIsDisplayed()
+        val content = composeRule.onNodeWithTag("gomode-voice-transcript-content").fetchSemanticsNode().boundsInRoot
+        val close = toggle.fetchSemanticsNode().boundsInRoot
+        assertEquals(content.top, close.top, 1f)
+        assertEquals(content.right, close.right, 1f)
+        val transcript = composeRule.onNodeWithTag("gomode-voice-transcript").assertIsDisplayed()
+        assertTrue(transcript.fetchSemanticsNode().boundsInRoot.right <= close.left)
         toggle.performKeyInput { pressKey(Key.Enter) }
         composeRule.onNodeWithTag("gomode-voice-transcript").assertDoesNotExist()
         composeRule.onNodeWithContentDescription("Show transcript").assertIsDisplayed()
-        val microphone = composeRule.onNodeWithTag("gomode-microphone-mode").fetchSemanticsNode().boundsInRoot
+        val activity = composeRule.onNodeWithText("Listening…").fetchSemanticsNode().boundsInRoot
         assertEquals(
-            microphone.center.y,
+            activity.center.y,
             toggle
                 .fetchSemanticsNode()
                 .boundsInRoot.center.y,
@@ -688,6 +650,11 @@ class VoicePanelTest {
         if (InstrumentationRegistry.getArguments().getString("captureVoicePanel") != "true") return
         composeRule.waitForIdle()
         val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+        if (name.startsWith("documentation")) {
+            // Touch the inert hosted page so captures show the panel without control focus.
+            device.click(device.displayWidth / 2, device.displayHeight / 4)
+            composeRule.waitForIdle()
+        }
         composeRule.onNodeWithTag("gomode-microphone-mode").captureToImage()
         device.waitForIdle()
         val path = "/data/local/tmp/gomode-voice-panel-$name.png"

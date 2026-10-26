@@ -5,11 +5,10 @@ declare const classes: {
   readonly "callActions": string;
   readonly "callStatus": string;
   readonly "callToolbar": string;
-  readonly "deviceActions": string;
   readonly "deviceControl": string;
   readonly "deviceField": string;
+  readonly "deviceGroup": string;
   readonly "deviceHint": string;
-  readonly "deviceLabel": string;
   readonly "deviceRow": string;
   readonly "deviceSelect": string;
   readonly "errorActions": string;
@@ -24,7 +23,6 @@ declare const classes: {
   readonly "pulse": string;
   readonly "row": string;
   readonly "rowEnd": string;
-  readonly "rowLabel": string;
   readonly "settingsHeader": string;
   readonly "settingsSection": string;
   readonly "spacer": string;
@@ -33,8 +31,9 @@ declare const classes: {
   readonly "statusError": string;
   readonly "statusText": string;
   readonly "statusTool": string;
+  readonly "transcriptBody": string;
+  readonly "transcriptContent": string;
   readonly "transcriptEntry": string;
-  readonly "transcriptLabel": string;
   readonly "transcriptLabelAssistant": string;
   readonly "transcriptLabelUser": string;
   readonly "transcriptList": string;

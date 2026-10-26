@@ -72,10 +72,12 @@ describe("VoiceOverlay status", () => {
     render(() => <VoiceOverlay />);
     const user = userEvent.setup();
     const hide = screen.getByRole("button", { name: "Hide transcript" });
+    expect(screen.getByRole("status", { name: "Voice activity" })).not.toContainElement(hide);
+    expect(hide.parentElement).toContainElement(screen.getByText("Review the launch brief."));
     expect(hide.querySelector('[data-icon="close"]')).not.toBeNull();
     await user.click(hide);
     expect(screen.queryByText("Review the launch brief.")).toBeNull();
-    const show = within(screen.getByRole("group", { name: "Audio devices" })).getByRole("button", {
+    const show = within(screen.getByRole("status", { name: "Voice activity" })).getByRole("button", {
       name: "Show transcript",
     });
     expect(show).toHaveFocus();
@@ -92,7 +94,7 @@ describe("VoiceOverlay status", () => {
     expect(screen.getByRole("button", { name: "Hide transcript" })).toHaveFocus();
   });
 
-  it("restores the transcript from the main controls when no audio picker is available", async () => {
+  it("restores the transcript from the activity row when no audio picker is available", async () => {
     voiceSession.setState((state) => ({
       ...state,
       connected: true,
@@ -102,7 +104,7 @@ describe("VoiceOverlay status", () => {
     render(() => <VoiceOverlay />);
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Hide transcript" }));
-    const show = within(screen.getByRole("group", { name: "Voice controls" })).getByRole("button", {
+    const show = within(screen.getByRole("status", { name: "Voice activity" })).getByRole("button", {
       name: "Show transcript",
     });
     expect(show).toHaveFocus();
@@ -143,11 +145,17 @@ describe("VoiceOverlay status", () => {
       scrollWidth: { value: 196 },
     });
     const end = within(controls).getByRole("button", { name: "End voice session" });
+    const input = within(controls).getByRole("combobox", { name: "Microphone" });
     const scroll = vi.spyOn(end, "scrollIntoView");
+    const inputScroll = vi.spyOn(input, "scrollIntoView");
     const user = userEvent.setup();
     for (let index = 0; index < 4; index++) await user.tab();
+    expect(input).toHaveFocus();
+    expect(inputScroll).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
+    await user.tab();
     expect(end).toHaveFocus();
     expect(scroll).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
+    inputScroll.mockRestore();
     scroll.mockRestore();
   });
 

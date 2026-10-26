@@ -1,19 +1,18 @@
 # Voice controls share two rows across Android and web
 
-Primary controls occupy the first row. Activity occupies the second row and
-wraps long tool identifiers without truncation. Microphone, settings, and next
-server stay on the left. Hang-up stays on the right. Next server uses the same
-swap icon on Android and web. Audio routes and transcript actions stay with
-their sections.
+Primary controls occupy the first row: audio level, microphone, settings, next
+server, a rounded background grouping the audio selectors, and hang-up. Activity
+occupies the second row and wraps long tool identifiers without truncation. The transcript
+reopen button stays at the right of the activity row when hidden. The X sits at
+the top right of the expanded transcript content.
 
 X hides the transcript without clearing it. A Material subtitles icon shows it
-again. Hidden transcripts keep receiving text but show no drafts. The restore
-icon shares the audio-device row instead of reserving a footer row. Without an
-audio selector, it joins the main controls. Keyboard focus follows the action
-between rows. Accessible names are “Hide transcript” and “Show transcript”.
-There is no separate collapse chevron. The X glyph is 1.25
-times the Transcript label font size and follows text scaling. Its touch target
-stays 48 dp on Android and 44 CSS px on web.
+again. Hidden transcripts keep receiving text but show no drafts. Keyboard focus
+follows the toggle between these locations. Accessible names are “Hide transcript”
+and “Show transcript”.
+There is no separate transcript header or collapse chevron. The X glyph follows
+the platform's small label typography. Its touch target stays 48 dp on Android
+and 44 CSS px on web.
 
 The transcript fits short conversations and scrolls for long ones. Android caps
 it at 220 dp. Web caps it at the smaller of 14 rem and 28% of viewport height.
@@ -115,7 +114,8 @@ adb pull /data/local/tmp/gomode-voice-panel-documentation-hidden.png /tmp/gomode
 ```
 
 The test waits for the hosted page and asserts that activity and transcript are
-visible. `VoicePanelTest` also covers the control row at 320 dp with 200% text.
+visible. Before each documentation capture, it taps the inert hosted page to
+move focus off the voice controls. `VoicePanelTest` also covers the control row at 320 dp with 200% text.
 System time and system icons can vary. The separate managed native documentation
 catalog in `../screenshots/android` has stricter pixel-repeatability rules.
 

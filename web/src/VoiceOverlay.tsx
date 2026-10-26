@@ -534,7 +534,6 @@ function ActivePanel(props: {
 }) {
   const [transcriptExpanded, setTranscriptExpanded] = createSignal(true);
   const transcriptId = createUniqueId();
-  const hiddenTranscript = () => props.state.transcript.length > 0 && !transcriptExpanded();
   let transcriptToggleRef: HTMLButtonElement | undefined;
   const TranscriptToggle = () => {
     const label = () =>
@@ -609,11 +608,12 @@ function ActivePanel(props: {
         aria-label={props.messages().voiceControls ?? defaultVoiceOverlayMessages.voiceControls}
         onFocusIn={(event) => {
           if (event.currentTarget.scrollWidth > event.currentTarget.clientWidth) {
-            event.target.closest("button")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+            event.target.closest("button, select")?.scrollIntoView({ block: "nearest", inline: "nearest" });
           }
         }}
       >
         <div class={styles.callActions}>
+          <MicLevelBars micLevel={props.state.micLevel} />
           <button
             type="button"
             class={`${controls.control} ${styles.microphoneControl}`}
@@ -630,8 +630,17 @@ function ActivePanel(props: {
             </Show>
           </button>
           {props.appControls()}
-          <Show when={props.state.mode !== "cloud" && hiddenTranscript()}>
-            <TranscriptToggle />
+          <Show when={props.state.mode === "cloud"}>
+            <AudioDevicePicker
+              inputs={props.state.audioInputs}
+              outputs={props.state.audioOutputs}
+              selectedInputId={props.state.selectedInputId}
+              selectedOutputId={props.state.selectedOutputId}
+              messages={props.messages}
+              onSelectInput={props.onSelectInput}
+              onSelectOutput={props.onSelectOutput}
+              switching={props.state.audioSwitching !== null}
+            />
           </Show>
         </div>
         <button
@@ -649,8 +658,10 @@ function ActivePanel(props: {
         role="status"
         aria-label={props.messages().voiceActivity ?? defaultVoiceOverlayMessages.voiceActivity}
       >
-        <MicLevelBars micLevel={props.state.micLevel} />
         <span class={statusClass()}>{statusText()}</span>
+        <Show when={props.state.transcript.length > 0 && !transcriptExpanded()}>
+          <TranscriptToggle />
+        </Show>
       </div>
       <Show when={props.state.microphoneMode !== "listening"}>
         <span id={microphoneHelpId} class={styles.microphoneHelp}>
@@ -662,37 +673,22 @@ function ActivePanel(props: {
                 defaultVoiceOverlayMessages.microphoneMuteNextReplyHelp)}
         </span>
       </Show>
-      {props.state.mode === "cloud" && (
-        <AudioDevicePicker
-          inputs={props.state.audioInputs}
-          outputs={props.state.audioOutputs}
-          selectedInputId={props.state.selectedInputId}
-          selectedOutputId={props.state.selectedOutputId}
-          messages={props.messages}
-          onSelectInput={props.onSelectInput}
-          onSelectOutput={props.onSelectOutput}
-          switching={props.state.audioSwitching !== null}
-        >
-          <Show when={hiddenTranscript()}>
-            <TranscriptToggle />
-          </Show>
-        </AudioDevicePicker>
-      )}
       <Show when={props.state.mode === "cloud"}>
         <AudioErrors state={props.state} />
       </Show>
-      <Show when={props.state.transcript.length > 0 && transcriptExpanded()}>
-        <div class={styles.rowLabel}>
-          <span class={styles.transcriptLabel}>{props.messages().transcript}</span>
-          <TranscriptToggle />
+      <div class={styles.transcriptContent}>
+        <div class={styles.transcriptBody}>
+          <TranscriptLog
+            id={transcriptId}
+            expanded={transcriptExpanded()}
+            transcript={props.state.transcript}
+            messages={props.messages}
+          />
         </div>
-      </Show>
-      <TranscriptLog
-        id={transcriptId}
-        expanded={transcriptExpanded()}
-        transcript={props.state.transcript}
-        messages={props.messages}
-      />
+        <Show when={props.state.transcript.length > 0 && transcriptExpanded()}>
+          <TranscriptToggle />
+        </Show>
+      </div>
     </>
   );
 }
@@ -724,113 +720,104 @@ function AudioDevicePicker(props: {
   onSelectInput: (id: string) => Promise<void>;
   onSelectOutput: (id: string) => Promise<void>;
   switching: boolean;
-  children?: JSX.Element;
 }) {
   const canSelectOutput = "setSinkId" in HTMLMediaElement.prototype;
   return (
-    <div role="group" aria-label={props.messages().audioDevices ?? defaultVoiceOverlayMessages.audioDevices}>
-      <p class={styles.deviceLabel}>{props.messages().audioDevices ?? defaultVoiceOverlayMessages.audioDevices}</p>
-      <div class={styles.deviceActions}>
-        <div class={styles.deviceRow}>
-          <div class={styles.deviceField}>
-            <span class={`${styles.deviceControl} ${controls.control} ${controls.outlined}`}>
-              <VoiceIcon
-                name={audioDeviceIcon(
-                  props.inputs.find((d) => d.deviceId === (props.selectedInputId || "default"))?.label ?? "",
-                  "input",
-                )}
-              />
+    <div
+      class={styles.deviceGroup}
+      role="group"
+      aria-label={props.messages().audioDevices ?? defaultVoiceOverlayMessages.audioDevices}
+    >
+      <div class={styles.deviceRow}>
+        <div class={styles.deviceField}>
+          <span class={`${styles.deviceControl} ${controls.control}`}>
+            <VoiceIcon
+              name={audioDeviceIcon(
+                props.inputs.find((d) => d.deviceId === (props.selectedInputId || "default"))?.label ?? "",
+                "input",
+              )}
+            />
+            <select
+              class={styles.deviceSelect}
+              value={props.selectedInputId}
+              onChange={async (e) => {
+                const select = e.currentTarget;
+                await props.onSelectInput(select.value);
+                select.value = props.selectedInputId;
+              }}
+              title={`${props.messages().microphone}: ${
+                props.inputs.find((d) => d.deviceId === (props.selectedInputId || "default"))?.label ??
+                (props.selectedInputId
+                  ? (props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice)
+                  : (props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault))
+              }`}
+              aria-label={props.messages().microphone}
+              disabled={props.switching}
+            >
+              <option value="">{props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault}</option>
+              <Show when={props.selectedInputId && !props.inputs.some((d) => d.deviceId === props.selectedInputId)}>
+                <option value={props.selectedInputId}>
+                  {props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice}
+                </option>
+              </Show>
+              <For each={props.inputs.filter((d) => d.deviceId !== "" && d.deviceId !== "default")}>
+                {(d) => <option value={d.deviceId}>{d.label}</option>}
+              </For>
+            </select>
+          </span>
+        </div>
+        <div class={styles.deviceField}>
+          <span class={canSelectOutput ? `${styles.deviceControl} ${controls.control}` : styles.deviceControl}>
+            <VoiceIcon
+              name={
+                canSelectOutput
+                  ? audioDeviceIcon(
+                      props.outputs.find((d) => d.deviceId === (props.selectedOutputId || "default"))?.label ?? "",
+                      "output",
+                    )
+                  : "volumeUp"
+              }
+            />
+            <Show
+              when={canSelectOutput}
+              fallback={
+                <span class={styles.deviceHint}>
+                  {props.messages().systemAudioSettings ?? defaultVoiceOverlayMessages.systemAudioSettings}
+                </span>
+              }
+            >
               <select
                 class={styles.deviceSelect}
-                value={props.selectedInputId}
+                value={props.selectedOutputId}
                 onChange={async (e) => {
                   const select = e.currentTarget;
-                  await props.onSelectInput(select.value);
-                  select.value = props.selectedInputId;
+                  await props.onSelectOutput(select.value);
+                  select.value = props.selectedOutputId;
                 }}
-                title={`${props.messages().microphone}: ${
-                  props.inputs.find((d) => d.deviceId === (props.selectedInputId || "default"))?.label ??
-                  (props.selectedInputId
+                title={`${props.messages().speaker}: ${
+                  props.outputs.find((d) => d.deviceId === (props.selectedOutputId || "default"))?.label ??
+                  (props.selectedOutputId
                     ? (props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice)
                     : (props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault))
                 }`}
-                aria-label={props.messages().microphone}
+                aria-label={props.messages().speaker}
                 disabled={props.switching}
               >
                 <option value="">{props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault}</option>
-                <Show when={props.selectedInputId && !props.inputs.some((d) => d.deviceId === props.selectedInputId)}>
-                  <option value={props.selectedInputId}>
+                <Show
+                  when={props.selectedOutputId && !props.outputs.some((d) => d.deviceId === props.selectedOutputId)}
+                >
+                  <option value={props.selectedOutputId}>
                     {props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice}
                   </option>
                 </Show>
-                <For each={props.inputs.filter((d) => d.deviceId !== "" && d.deviceId !== "default")}>
+                <For each={props.outputs.filter((d) => d.deviceId !== "" && d.deviceId !== "default")}>
                   {(d) => <option value={d.deviceId}>{d.label}</option>}
                 </For>
               </select>
-            </span>
-          </div>
-          <div class={styles.deviceField}>
-            <span
-              class={
-                canSelectOutput
-                  ? `${styles.deviceControl} ${controls.control} ${controls.outlined}`
-                  : styles.deviceControl
-              }
-            >
-              <VoiceIcon
-                name={
-                  canSelectOutput
-                    ? audioDeviceIcon(
-                        props.outputs.find((d) => d.deviceId === (props.selectedOutputId || "default"))?.label ?? "",
-                        "output",
-                      )
-                    : "volumeUp"
-                }
-              />
-              <Show
-                when={canSelectOutput}
-                fallback={
-                  <span class={styles.deviceHint}>
-                    {props.messages().systemAudioSettings ?? defaultVoiceOverlayMessages.systemAudioSettings}
-                  </span>
-                }
-              >
-                <select
-                  class={styles.deviceSelect}
-                  value={props.selectedOutputId}
-                  onChange={async (e) => {
-                    const select = e.currentTarget;
-                    await props.onSelectOutput(select.value);
-                    select.value = props.selectedOutputId;
-                  }}
-                  title={`${props.messages().speaker}: ${
-                    props.outputs.find((d) => d.deviceId === (props.selectedOutputId || "default"))?.label ??
-                    (props.selectedOutputId
-                      ? (props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice)
-                      : (props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault))
-                  }`}
-                  aria-label={props.messages().speaker}
-                  disabled={props.switching}
-                >
-                  <option value="">
-                    {props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault}
-                  </option>
-                  <Show
-                    when={props.selectedOutputId && !props.outputs.some((d) => d.deviceId === props.selectedOutputId)}
-                  >
-                    <option value={props.selectedOutputId}>
-                      {props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice}
-                    </option>
-                  </Show>
-                  <For each={props.outputs.filter((d) => d.deviceId !== "" && d.deviceId !== "default")}>
-                    {(d) => <option value={d.deviceId}>{d.label}</option>}
-                  </For>
-                </select>
-              </Show>
-            </span>
-          </div>
+            </Show>
+          </span>
         </div>
-        {props.children}
       </div>
     </div>
   );

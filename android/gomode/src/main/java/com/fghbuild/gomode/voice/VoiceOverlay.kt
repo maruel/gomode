@@ -11,14 +11,15 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -26,10 +27,12 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -68,9 +71,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
@@ -369,13 +375,22 @@ private fun TranscriptToggle(
         }
     IconButton(
         onClick = onToggle,
-        modifier = Modifier.focusRequester(focusRequester).testTag("gomode-voice-transcript-toggle"),
+        modifier = Modifier.size(48.dp).focusRequester(focusRequester).testTag("gomode-voice-transcript-toggle"),
     ) {
-        Icon(
-            imageVector = if (expanded) Icons.Default.Close else Icons.Default.Subtitles,
-            contentDescription = if (expanded) "Hide transcript" else "Show transcript",
-            modifier = Modifier.size(if (expanded) closeIconSize else 24.dp),
-        )
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = if (expanded) Alignment.TopCenter else Alignment.Center,
+        ) {
+            Icon(
+                imageVector = if (expanded) Icons.Default.Close else Icons.Default.Subtitles,
+                contentDescription = if (expanded) "Hide transcript" else "Show transcript",
+                modifier =
+                    Modifier
+                        .padding(
+                            top = if (expanded) 2.dp else 0.dp,
+                        ).size(if (expanded) closeIconSize else 24.dp),
+            )
+        }
     }
 }
 
@@ -388,7 +403,6 @@ private fun ActivePanel(
     appControls: @Composable () -> Unit,
 ) {
     var transcriptExpanded by rememberSaveable { mutableStateOf(true) }
-    val transcriptLabelStyle = MaterialTheme.typography.labelSmall
     val transcriptFocus = remember { FocusRequester() }
     var focusAfterToggle by remember { mutableStateOf(false) }
     val transcriptToggle: @Composable () -> Unit = {
@@ -403,36 +417,49 @@ private fun ActivePanel(
             focusAfterToggle = false
         }
     }
-    val hiddenTranscript = voiceState.transcript.isNotEmpty() && !transcriptExpanded
 
     Column(
         modifier = Modifier.padding(start = 16.dp, top = 0.dp, end = 16.dp, bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().testTag("gomode-voice-actions"),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            MicrophoneModeButton(voiceState.microphoneMode, voiceState.speaking, onSelectMicrophoneMode)
-            appControls()
-            if (hiddenTranscript && voiceState.availableDevices.isEmpty()) transcriptToggle()
-            Spacer(Modifier.weight(1f))
-            IconButton(onClick = onDisconnect) {
-                Icon(
-                    Icons.Default.CallEnd,
-                    contentDescription = "End voice",
-                    tint = MaterialTheme.colorScheme.error,
-                )
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            Row(
+                modifier =
+                    Modifier
+                        .horizontalScroll(
+                            rememberScrollState(),
+                        ).widthIn(min = maxWidth)
+                        .testTag("gomode-voice-actions"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                MicLevelIndicator(micLevel = voiceState.micLevel)
+                MicrophoneModeButton(voiceState.microphoneMode, voiceState.speaking, onSelectMicrophoneMode)
+                appControls()
+                if (voiceState.availableDevices.isNotEmpty()) {
+                    AudioDevicePicker(
+                        devices = voiceState.availableDevices,
+                        selectedDeviceId = voiceState.selectedDeviceId,
+                        switching = voiceState.audioSwitching,
+                        onSelect = onSelectDevice,
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = onDisconnect) {
+                    Icon(
+                        Icons.Default.CallEnd,
+                        contentDescription = "End voice",
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
         }
 
         Row(
             modifier = Modifier.fillMaxWidth().testTag("gomode-voice-activity"),
-            verticalAlignment = Alignment.Top,
+            verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            MicLevelIndicator(micLevel = voiceState.micLevel)
             Text(
                 text = voiceStatusText(voiceState),
                 style = MaterialTheme.typography.bodyMedium,
@@ -444,51 +471,24 @@ private fun ActivePanel(
                     },
                 modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite },
             )
-        }
-
-        if (voiceState.availableDevices.isNotEmpty()) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Box(Modifier.weight(1f)) {
-                    AudioDevicePicker(
-                        devices = voiceState.availableDevices,
-                        selectedDeviceId = voiceState.selectedDeviceId,
-                        switching = voiceState.audioSwitching,
-                        onSelect = onSelectDevice,
-                    )
-                }
-                if (hiddenTranscript) transcriptToggle()
-            }
+            if (voiceState.transcript.isNotEmpty() && !transcriptExpanded) transcriptToggle()
         }
         voiceState.audioError?.let { message ->
             Text(text = message, color = MaterialTheme.colorScheme.error)
         }
 
-        if (voiceState.transcript.isNotEmpty() && transcriptExpanded) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "Transcript",
-                    style = transcriptLabelStyle,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.weight(1f))
-                transcriptToggle()
-            }
-        }
         if (transcriptExpanded) {
-            TranscriptLog(
-                entries = voiceState.transcript,
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .testTag("gomode-voice-transcript"),
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth().testTag("gomode-voice-transcript-content"),
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                TranscriptLog(
+                    entries = voiceState.transcript,
+                    modifier = Modifier.weight(1f).testTag("gomode-voice-transcript"),
+                )
+                if (voiceState.transcript.isNotEmpty()) transcriptToggle()
+            }
         }
     }
 }
@@ -531,7 +531,6 @@ private fun ErrorPanel(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AudioDevicePicker(
     devices: List<AudioDevice>,
@@ -539,7 +538,21 @@ private fun AudioDevicePicker(
     switching: Boolean,
     onSelect: (Int) -> Unit,
 ) {
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    val groupColor = MaterialTheme.colorScheme.surfaceContainerHighest
+    Row(
+        modifier =
+            Modifier.drawBehind {
+                val inset = 4.dp.toPx()
+                val height = size.height - inset * 2
+                drawRoundRect(
+                    color = groupColor,
+                    topLeft = Offset(0f, inset),
+                    size = Size(size.width, height),
+                    cornerRadius = CornerRadius(height / 2),
+                )
+            },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         devices.forEach { device ->
             val selected = device.id == selectedDeviceId
             OutlinedIconToggleButton(
@@ -673,7 +686,7 @@ private fun TranscriptLog(
 private fun MicLevelIndicator(micLevel: Float = 0f) {
     val durations = intArrayOf(80, 40, 120)
     Box(
-        modifier = Modifier.size(BAR_CONTAINER_SIZE.dp),
+        modifier = Modifier.size(BAR_CONTAINER_SIZE.dp).testTag("gomode-voice-level"),
         contentAlignment = Alignment.Center,
     ) {
         Row(
