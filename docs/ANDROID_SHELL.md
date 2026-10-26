@@ -341,7 +341,7 @@ The native fixture waits for the actual SystemUI clock/battery command receivers
 after visible shell readiness, then enters and applies the complete demo profile
 for every scene. It also waits for the settings footer after keyboard dismissal.
 Tests and captures share the owned `gomode_test_stock` AVD, using the Generic
-Medium Phone profile at 1080×2400 and 420dpi. The legacy Pixel6 AVD is preserved;
+Medium Phone profile rendered at 720×1600 and 280dpi. The legacy Pixel6 AVD is preserved;
 stop it before starting the stock emulator. API35's Pixel6 profile has clipped
 status icons and cached insets that change when overlays are toggled. Captures
 refuse that incompatible profile before mutations and never toggle overlays.

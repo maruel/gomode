@@ -35,8 +35,8 @@ SCENARIOS = (
     "voice-settings",
 )
 EXPECTED_FILES = frozenset(f"{name}.webp" for name in SCENARIOS)
-# The owned API35 stock emulator insets the SystemUI status bar by 63px.
-STATUS_BAR_HEIGHT_PX = 63
+# The owned API35 stock emulator at 280dpi insets the SystemUI status bar by 42px.
+STATUS_BAR_HEIGHT_PX = 42
 # SystemUI antialiasing can vary by a couple of RGB levels inside that inset.
 STATUS_BAR_MAXIMUM_CHANNEL_DELTA = 2
 STATUS_BAR_MAXIMUM_CHANGED_PIXEL_FRACTION = 0.01

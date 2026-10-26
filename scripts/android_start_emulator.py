@@ -23,10 +23,13 @@ EMULATOR_ARGS = [
     "-no-audio",
     "-gpu",
     "swiftshader_indirect",
+    # Preserve phone-sized layout space while reducing WebView render memory.
+    "-prop",
+    "qemu.sf.lcd_density=280",
+    "-skin",
+    "720x1600",
     # The stock image already defaults to en-US. -change-locale schedules a
     # second framework boot after sys.boot_completed and races APK installs.
-    "-dpi-device",
-    "420",
     "-no-boot-anim",
     "-no-snapstorage",
     # The test shell has no telephony flows. Emulator 37's internal modem can
