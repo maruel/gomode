@@ -196,11 +196,18 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         executeDom("set second page state") { "(window.retainedMarker = 'second', true)" }
         waitForSettingsButton()
         composeRule.onNodeWithTag("gomode-next-app").performClick()
+        // Selection is persisted asynchronously; the outgoing page also satisfies frontend readiness.
+        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+            composeRule.runOnUiThread { first.isAttachedToWindow }
+        }
         waitForHostedFrontend()
         assertSame(first, waitForWebView())
         waitForDom("first SPA state survives server switches") { "window.retainedMarker === 'first'" }
         waitForSettingsButton()
         composeRule.onNodeWithTag("gomode-next-app").performClick()
+        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+            composeRule.runOnUiThread { second.isAttachedToWindow }
+        }
         waitForHostedFrontend()
         assertSame(second, waitForWebView())
         waitForDom("second SPA state survives server switches") { "window.retainedMarker === 'second'" }
