@@ -42,6 +42,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.webrtc.DataChannel
 import java.lang.reflect.InvocationTargetException
 import java.util.concurrent.CountDownLatch
@@ -206,6 +207,7 @@ class VoiceSessionLifecycleTest {
                     repository.updateOnDeviceEngine(engine)
                     repository.settings.first { it.voiceMode == VoiceMode.DEVICE && it.onDeviceEngine == engine }
                     val setup = prepareVoiceSetup(repository, ServiceSettingsClient(), { null })
+                    assertEquals(repository.settings.value.activeServiceId, setup.serverID)
                     val names = setup.tools.map { it.name }
                     assertTrue("host tools remain available", "host_tool" in names)
                     assertEquals(engine == OnDeviceEngine.LOCAL_LLM, "list_servers" in names)
@@ -255,6 +257,12 @@ class VoiceSessionLifecycleTest {
 
                 session.connect()
                 assertEquals(true, discoveryStarted.await(5, TimeUnit.SECONDS))
+                assertEquals(
+                    VoiceService::class.java.name,
+                    shadowOf(RuntimeEnvironment.getApplication())
+                        .nextStartedService.component
+                        ?.className,
+                )
                 session.disconnect()
                 releaseDiscovery.countDown()
 
@@ -262,6 +270,37 @@ class VoiceSessionLifecycleTest {
                 assertNull(server.takeRequest(500, TimeUnit.MILLISECONDS))
                 assertNull(session.state.value.error)
             } finally {
+                releaseDiscovery.countDown()
+                server.shutdown()
+            }
+        }
+
+    @Test
+    fun recoveryKeepsAdvertisedCallerNameDuringDiscovery() =
+        runBlocking {
+            val server = MockWebServer()
+            val discoveryStarted = CountDownLatch(1)
+            val releaseDiscovery = CountDownLatch(1)
+            server.dispatcher = delayedSettings(discoveryStarted, releaseDiscovery)
+            server.start()
+            val application = RuntimeEnvironment.getApplication()
+            val settings = SettingsRepository(InMemoryPreferencesDataStore())
+            settings.addService(label = "Work", url = server.url("/").toString())
+            settings.settings.first { it.activeServiceURL.isNotBlank() }
+            val session = createCloudSession(settings, beginConversation = true)
+            try {
+                // The connected call has already published the discovered name.
+                VoiceForegroundLease(application).start("Example Server")
+                assertEquals("Example Server", shadowOf(application).nextStartedService.getStringExtra("server_name"))
+
+                session.connect(preserveTranscript = true)
+                assertTrue(discoveryStarted.await(5, TimeUnit.SECONDS))
+                assertNull(
+                    "Recovery must not replace caller metadata with Work",
+                    shadowOf(application).nextStartedService,
+                )
+            } finally {
+                session.close()
                 releaseDiscovery.countDown()
                 server.shutdown()
             }
@@ -515,7 +554,10 @@ class VoiceSessionLifecycleTest {
             }
         }
 
-    private fun createCloudSession(settings: SettingsRepository): VoiceSession {
+    private fun createCloudSession(
+        settings: SettingsRepository,
+        beginConversation: Boolean = false,
+    ): VoiceSession {
         val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
         val registry = ServiceShellRegistry()
         val catalog = ServiceCatalog(scope)
@@ -543,6 +585,7 @@ class VoiceSessionLifecycleTest {
                         }
                     }
             }
+        if (beginConversation) owner.begin(recovery = false)
         return VoiceSession(
             RuntimeEnvironment.getApplication(),
             settings,

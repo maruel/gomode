@@ -16,6 +16,136 @@ automotive, audio-route, and call-concurrency integration.
 `MediaSession` and SCO broadcasts are not the hang-up mechanism. They report
 media buttons and audio routing, not HFP call control.
 
+## Car Caller ID
+
+Android's outgoing HFP call list sends a sanitized number without the Telecom
+display name. Saved servers therefore use a stable numeric caller identifier.
+In native settings, **Create contacts** opens Android's import flow for the
+**Go Mode** shortcut and every saved server with an assigned number. Enable
+contact sharing for the car in Bluetooth settings after importing.
+
+The stable **Go Mode** shortcut is `+1-867-555-0100`. At dialing time it resolves the
+persisted active saved server, independently of background page loading. It does
+not change the server-specific number shown during the resulting voice call.
+If no unique active saved server or local settings are available, its dial is
+canceled without placing a cellular call.
+
+Server contacts use `+1-867-555-0101` through `+1-867-555-0199`, within
+[NANPA's fictitious, non-working range](https://nanpa.com/numbering/555-line-numbers).
+Assignments are persisted before the app loads saved services, and survive
+renaming, URL changes, reordering, and app restarts. Retired assignments are not
+recycled: a saved contact must never silently start another server. If all 99
+server slots are allocated, additional servers use the generic caller identity
+and can still be started through the Go Mode shortcut. Assignments are local to
+the app's saved settings; recreate contacts after clearing app data or setting
+up another phone.
+
+The server-specific contact name comes from the saved server label. Edit that
+contact if you rename the server. Its identifier stays the same when its label or URL changes;
+deleting and re-adding the server creates a new identity. The identifier cannot
+receive ordinary phone calls. With dial-to-start enabled, dialing it locally
+starts the saved server's Go Mode voice session.
+
+[CarCallerID.kt](../android/gomode/src/main/java/com/fghbuild/gomode/voice/CarCallerID.kt)
+owns the contact and call-address mapping. Android's Contacts app owns the
+import operation; Go Mode does not read contacts or track whether a contact was
+saved. Standalone voice without a saved server has no contact mapping.
+
+## Dial-to-Start Contract
+
+In native settings, save a server, sign in, and test its voice configuration.
+Under **Dial from your car**, allow microphone access, choose **Enable
+dial-to-start**, then select Go Mode in Android's call-redirection chooser.
+The setting reports Android's current role ownership; declining the chooser
+leaves dial-to-start off. **Disable dial-to-start** disables the redirection
+component and cancels pending Go Mode launches. Losing the Android role or
+microphone permission also cancels pending startup. Normal in-app voice does
+not require call redirection. The setting does not verify host sign-in or
+availability; test the saved voice mode before leaving the phone locked.
+
+After this one-time setup, dialing a saved server's identifier starts that server;
+dialing the Go Mode identifier starts the last selected saved server. Both start
+a native voice session without touching the phone, including after normal app
+process death with the phone locked. The phone must have been unlocked once after boot, and
+microphone permission and host sign-in must already be available. Keypad dialing
+needs no contact; a named shortcut needs a saved contact shared with the car.
+
+The entry point is Android's user-selected
+[call-redirection role](https://developer.android.com/reference/android/app/role/RoleManager#ROLE_CALL_REDIRECTION).
+For an exact server or Go Mode identifier match, launch the ordinary Go Mode Activity
+while Telecom's binding permits a background Activity, cancel the cellular attempt, and register
+a fresh Go Mode self-managed call before network or model setup. This is a local
+launch trigger. The
+[redirection API](https://developer.android.com/reference/android/telecom/CallRedirectionService)
+limits `redirectCall()` targets to SIM accounts; it does not directly transfer
+the cellular call into the existing Core-Telecom session. Its callback requires
+a response within five seconds, so host discovery, authentication, model loading,
+and network requests cannot delay that response.
+
+Ordinary and unrecognized numbers retain their original number and phone
+account. Emergency routing stays with Android. Unavailable local settings must
+not hold up ordinary dialing. Never intercept an entire number prefix. Preserve
+the existing identifier mapping and resolve it to one current saved server.
+Exact matching applies to the network number Android supplies to the service;
+Telecom removes post-dial digits before invoking it, so the original keypad
+string is unavailable. Go Mode removes only presentation separators from that
+network number and does not match extra digits or extensions it receives.
+Recognized requests that fail later stay canceled and cannot fall back to a
+cellular attempt. Go Mode's own calls must not launch another session.
+
+Launch requests need bounded lifetimes and a single lifecycle owner, so duplicate
+delivery, teardown, role loss, and process replacement cannot start stale voice.
+Missing prerequisites require explicit recovery after unlocking rather than a
+delayed automatic microphone start. Arbitrary external Activity intents must not
+gain the authority to start microphone capture or select a server.
+
+Android's [background microphone restrictions](https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start)
+require eligible foreground ownership. MainActivity launched while
+Telecom's redirection binding is active can show native call controls over secure keyguard
+and start a microphone foreground service. Emulator coverage exercises text voice
+and real cloud Opus/RTCP media on this entry path. Hosted content stays behind keyguard by default.
+When unlocked, car-initiated calls show the ordinary Go Mode shell during setup, with its voice
+panel controlling the existing call. Unlocking during a call reveals that same
+shell in MainActivity without reconnecting voice; relocking protects hosted content again.
+The **Show service on lock screen** setting opts into the ordinary, interactive service UI
+above keyguard during car calls. It is off by default. Anyone can view and use services
+without unlocking while it is enabled and a car call is active. Ending the call removes
+that window grant. Native permissions, media capture, file pickers, and external sign-in
+still require unlocking.
+
+Immediate handover accepts an early-hangup race. `CallRedirectionService` provides neither
+an original-call identifier nor a user-disconnect callback. Android can destroy
+the managed call while redirection is pending, then allow the service's later
+Activity launch to start a microphone foreground service. `isInManagedCall()`
+cannot safely authorize the launch: it requires `READ_PHONE_STATE` and reports
+any managed call, including an unrelated concurrent or replacement call.
+
+The disabled debug-only
+[launch probe](../android/gomode/src/debug/java/com/fghbuild/gomode/voice/CarDialLaunchProbeService.kt)
+and independent [system tests](../android/car-dial-fixture/src/androidTest/java/com/fghbuild/gomode/cardialfixture/CarDialInterceptionTest.kt)
+preserve both locked-screen eligibility and the pending-hangup reproduction. The
+probe deliberately pauses local processing within the redirection deadline to
+make the race reproducible; it does not record audio or run a voice session.
+The production launch path minimizes this window, documents the race beside
+the launch code, and registers the replacement Go Mode call before network or
+model setup. Hanging up the original pending dial may still be followed by Go
+Mode startup; this behavior is accepted. Once the replacement call exists, its
+Telecom disconnect ends startup and prevents stale microphone/session work.
+Faster local processing reduces the window but cannot eliminate it.
+
+The application retains one authenticated WebView per saved service. Car calls
+load their resolved service after replacement Telecom and microphone ownership
+are established, including while locked. Unless lock-screen service access is enabled, hosted pixels remain behind keyguard;
+the native call surface shows call status, the live transcript, audio routes, and hang-up. Unlock attaches the
+same page to the ordinary shell, preserving browser tool mutations and the call.
+
+Car and manual conversations use the same service catalog for MCP and registered
+browser tools. Initial page authentication and backend access validation precede
+voice setup. Account changes revoke the conversation; document replacement
+invalidates old frontend dispatch/results until the page registers again. Hidden
+pages cannot launch native permission prompts, file pickers, dialogs, external
+windows or WebAuthn, and their media remains muted.
+
 ## Status
 
 `TelecomCallController` implements this design. It registers the app during
@@ -34,7 +164,7 @@ sequenceDiagram
     participant T as Telecom adapter
     participant V as VoiceSession
     U->>T: start voice
-    T->>T: add outgoing audio call "Go Mode Voice"
+    T->>T: add outgoing audio call with server name
     T->>V: start WebRTC session
     V-->>T: voice ready
     T->>T: set call active

@@ -163,6 +163,7 @@ internal class VoiceSession(
     private val callController: VoiceCallController = NoopVoiceCallController(),
     private val switchServer: suspend (String) -> Unit = { id -> settingsRepository.switchService(id) },
 ) : VoiceSessionController {
+    private val foreground = VoiceForegroundLease(appContext)
     private val audioManager = appContext.getSystemService(AudioManager::class.java)
     private val json =
         Json {
@@ -254,7 +255,7 @@ internal class VoiceSession(
         if (!deferAudioRelease) finishDisconnectAudio(attempt)
         callController.endLocal()
         telecomCallActive = false
-        VoiceService.stop(appContext)
+        foreground.stop()
         _state.update {
             it.copy(
                 connectStatus = null,
@@ -323,10 +324,10 @@ internal class VoiceSession(
         // A recovery connect keeps the self-managed call, and Telecom owns call
         // audio focus for it. Holding our own request would turn Telecom's
         // transient gain into a focus loss that tears the session down.
-        if (!telecomCallActive) {
+        if (!telecomCallActive && !callController.isStarted) {
             requestAudioFocus()
         }
-        VoiceService.start(appContext)
+        if (!preserveTranscript) foreground.start(initialVoiceCallerName(settingsRepository.settings.value))
         refreshAvailableDevices()
         registerDeviceCallback()
         registerScoReceiver()
@@ -343,6 +344,7 @@ internal class VoiceSession(
                             return@launch
                         }
                     if (!ownsAttempt(attempt)) return@launch
+                    foreground.start(setup.serverName)
                     pinnedVoice =
                         GatewayVoiceSelection(
                             setup.gatewayEndpointURL,
@@ -358,7 +360,9 @@ internal class VoiceSession(
                     val voiceGatewayClient = ApiClient(voiceGatewayEndpointURL, httpClient = voiceGatewayHTTPClient)
                     val voiceGatewayHeaders = setup.gatewayHeaders
                     // Recovery keeps the Telecom call; only a fresh connect starts one.
-                    if (!telecomCallActive && callController.isSupported() && !callController.start { disconnect() }) {
+                    if (!telecomCallActive && callController.isSupported() &&
+                        !callController.start(setup.serverName, setup.serverID) { disconnect() }
+                    ) {
                         setError("Could not start the voice call")
                         return@launch
                     }
@@ -920,7 +924,7 @@ internal class VoiceSession(
         if (!deferAudioRelease) finishDisconnectAudio(attempt)
         callController.endLocal()
         telecomCallActive = false
-        VoiceService.stop(appContext)
+        foreground.stop()
         closePeerConnection()
         rtcSessionID = null
         voiceTokenEndpointURL = null
@@ -1363,7 +1367,7 @@ internal class VoiceSession(
     }
 
     private fun clearCommunicationDevice() {
-        audioManager.clearCommunicationDevice()
+        if (audioFocusRequest != null || telecomCallActive) audioManager.clearCommunicationDevice()
     }
 
     /** Request exclusive audio focus so music/podcasts pause while the voice session is active. */

@@ -100,7 +100,8 @@ internal class DeviceVoiceSession(
     private val settingsClient: ServiceSettingsClient = ServiceSettingsClient(),
     private val bearerTokenFor: (String) -> String? = { null },
     private val frontendTools: FrontendVoiceTools = FrontendVoiceTools(),
-    private val voiceConversation: VoiceConversation? = null,
+    private val isAuthorityCurrent: () -> Boolean = { true },
+    voiceConversation: VoiceConversation? = null,
     private val languageTag: String,
     private val localModelOwner: LocalModelOwner = (appContext.applicationContext as GoModeApplication).localModelOwner,
     private val speech: DeviceSpeech = AndroidDeviceSpeech(appContext, languageTag),
@@ -119,6 +120,9 @@ internal class DeviceVoiceSession(
         createOnDeviceEngine(appContext, engineType, ioDispatcher)
     },
 ) : VoiceSessionController {
+    private val sharedConversation = voiceConversation
+    private var voiceConversation: VoiceConversation? = null
+    private val foreground = VoiceForegroundLease(appContext)
     private val json =
         Json {
             encodeDefaults = true
@@ -252,6 +256,10 @@ internal class DeviceVoiceSession(
             return
         }
         val engineType = settingsRepository.settings.value.onDeviceEngine
+        voiceConversation =
+            sharedConversation.takeIf {
+                engineType == OnDeviceEngine.REMOTE_GATEWAY || engineType == OnDeviceEngine.LOCAL_LLM
+            }
         try {
             if (engineType == OnDeviceEngine.REMOTE_GATEWAY) voiceConversation?.begin(preserveTranscript)
         } catch (e: VoiceSetupException) {
@@ -269,7 +277,9 @@ internal class DeviceVoiceSession(
                         return@launch
                     }
                     setStatus("Connecting…")
-                    if (engineType != OnDeviceEngine.LOCAL_LLM) VoiceService.start(appContext)
+                    if (engineType != OnDeviceEngine.LOCAL_LLM) {
+                        foreground.start(initialVoiceCallerName(settingsRepository.settings.value))
+                    }
                     if (engineType == OnDeviceEngine.LOCAL_LLM) {
                         checkNotNull(voiceConversation) { "Local conversation owner is unavailable" }
                         setStatus("Preparing local model…")
@@ -283,13 +293,19 @@ internal class DeviceVoiceSession(
                                 if (ownsAttempt(attempt)) setError(e.message ?: "Voice setup failed")
                                 return@launch
                             } else {
-                                standaloneVoiceSetup()
+                                val selected = settingsRepository.settings.value
+                                standaloneVoiceSetup().copy(
+                                    serverName = initialVoiceCallerName(selected),
+                                    serverID = selected.activeServiceId.takeIf { it.isNotEmpty() },
+                                )
                             }
                         }
                     if (!ownsAttempt(attempt)) return@launch
-                    if (engineType == OnDeviceEngine.LOCAL_LLM) VoiceService.start(appContext)
+                    foreground.start(setup.serverName)
                     if (preparedLocalModel == null) otherSetup = setup
-                    if (callController.isSupported() && !callController.start { disconnect() }) {
+                    if (callController.isSupported() &&
+                        !callController.start(setup.serverName, setup.serverID) { disconnect() }
+                    ) {
                         setError("Could not start the voice call")
                         return@launch
                     }
@@ -833,8 +849,9 @@ internal class DeviceVoiceSession(
                 return serverResult
             }
             val args = msg.args as? JsonObject ?: JsonObject(emptyMap())
-            if (voiceConversation != null) {
-                val result = voiceConversation.execute(name, args, sessionID, languageTag) { currentTurn() }
+            val conversation = voiceConversation
+            if (conversation != null) {
+                val result = conversation.execute(name, args, sessionID, languageTag) { currentTurn() }
                 if (!currentTurn()) return errorJson("Turn was interrupted")
                 _state.update { it.copy(activeTool = null) }
                 return result?.structuredContent ?: errorJson("Unknown catalog tool")
@@ -926,9 +943,10 @@ internal class DeviceVoiceSession(
                 sendToolResult(id, name, serverResult)
                 return
             }
-            if (voiceConversation != null) {
+            val conversation = voiceConversation
+            if (conversation != null) {
                 val result =
-                    voiceConversation.execute(
+                    conversation.execute(
                         name,
                         msg.args as? JsonObject ?: JsonObject(emptyMap()),
                         sessionID,
@@ -1010,7 +1028,7 @@ internal class DeviceVoiceSession(
         segmenter.clear()
         voiceModeChime.disconnected { }
         callController.endLocal()
-        VoiceService.stop(appContext)
+        foreground.stop()
         otherSetup = null
         // Preserve transcript so the user can review it after disconnecting.
         _state.value =
@@ -1035,7 +1053,7 @@ internal class DeviceVoiceSession(
         pendingSpeech = 0
         speakerActive = false
         callController.endLocal()
-        VoiceService.stop(appContext)
+        foreground.stop()
         otherSetup = null
         Log.e(TAG, "setError: $message")
         _state.update {
@@ -1219,7 +1237,7 @@ internal class DeviceVoiceSession(
         return attempt
     }
 
-    private fun ownsAttempt(attempt: Long): Boolean = attemptGeneration.get() == attempt
+    private fun ownsAttempt(attempt: Long): Boolean = attemptGeneration.get() == attempt && isAuthorityCurrent()
 }
 
 /** SentenceSegmenter splits streamed assistant text into sentence-sized speech fragments. */

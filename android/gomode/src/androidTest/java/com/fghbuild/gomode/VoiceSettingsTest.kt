@@ -5,12 +5,15 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -24,17 +27,23 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.lifecycle.Lifecycle
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.UiDevice
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.ui.settings.SettingsScreen
 import com.fghbuild.gomode.ui.settings.rememberSettingsEdits
+import com.fghbuild.gomode.ui.theme.GoModeTheme
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import java.io.File
 
 class VoiceSettingsTest {
     @get:Rule
@@ -113,6 +122,52 @@ class VoiceSettingsTest {
         play()
         composeRule.runOnIdle { visible.value = false }
         awaitMusic(false)
+    }
+
+    @Test
+    fun lockScreenServiceTogglePersistsAndCannotChangeDuringCalls() {
+        val active = mutableStateOf(false)
+        val store = MemoryPreferences()
+        val repository = SettingsRepository(store)
+        composeRule.runOnUiThread { composeRule.activity.enableEdgeToEdge() }
+        composeRule.setContent {
+            val settings by repository.settings.collectAsState()
+            GoModeTheme {
+                SettingsScreen(
+                    settings = settings,
+                    settingsRepository = repository,
+                    edits = rememberSettingsEdits(repository, settings),
+                    voiceSessionActive = active.value,
+                    onDone = {},
+                    onOpenHalo = {},
+                )
+            }
+        }
+        val toggle = composeRule.onNodeWithTag("gomode-show-service-on-lock-screen")
+        toggle.performScrollTo().assertIsOff()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val device = UiDevice.getInstance(instrumentation)
+        val directory = instrumentation.targetContext.getExternalFilesDir(null)
+        composeRule.waitForIdle()
+        device.waitForIdle()
+        assertTrue(device.takeScreenshot(File(directory, "lock-screen-setting-off.png")))
+        toggle.performClick()
+        composeRule.waitUntil { repository.settings.value.showServiceOnLockScreen }
+        toggle.performScrollTo().assertIsOn()
+        composeRule.waitForIdle()
+        device.waitForIdle()
+        assertTrue(device.takeScreenshot(File(directory, "lock-screen-setting-on.png")))
+        val reopened = SettingsRepository(store)
+        composeRule.waitUntil { reopened.settings.value.showServiceOnLockScreen }
+        composeRule.runOnIdle { active.value = true }
+        toggle.performScrollTo().assertIsNotEnabled()
+        composeRule.waitForIdle()
+        device.waitForIdle()
+        assertTrue(device.takeScreenshot(File(directory, "lock-screen-setting-disabled.png")))
+        composeRule.runOnIdle { active.value = false }
+        toggle.performClick()
+        composeRule.waitUntil { !repository.settings.value.showServiceOnLockScreen }
+        toggle.assertIsOff()
     }
 
     @Test
@@ -276,13 +331,11 @@ class VoiceSettingsTest {
     }
 
     private class MemoryPreferences : DataStore<Preferences> {
+        private val writeMutex = Mutex()
         private val state = MutableStateFlow(emptyPreferences())
         override val data: Flow<Preferences> = state
 
-        override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences {
-            val updated = transform(state.value)
-            state.value = updated
-            return updated
-        }
+        override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences =
+            writeMutex.withLock { transform(state.value).also { state.value = it } }
     }
 }

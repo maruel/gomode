@@ -492,7 +492,7 @@ private fun ActivePanel(voiceState: VoiceState) {
 }
 
 @Composable
-private fun AudioDevicePicker(
+internal fun AudioDevicePicker(
     devices: List<AudioDevice>,
     selectedDeviceId: Int?,
     switching: Boolean,
@@ -575,7 +575,7 @@ internal fun audioDeviceIcon(type: Int): ImageVector =
     }
 
 @Composable
-private fun TranscriptLog(
+internal fun TranscriptLog(
     entries: List<TranscriptEntry>,
     modifier: Modifier = Modifier,
 ) {

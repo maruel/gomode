@@ -19,6 +19,8 @@ import com.fghbuild.gomode.ui.web.WebShellLoadState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -108,7 +110,7 @@ class GatewayAuthorizationTest {
             val entries =
                 repository.settings.value.services.associate { service ->
                     val key = ServiceShellKey(service.id, service.url)
-                    key to ServiceShellSession(key)
+                    key to ServiceShellSession(key) {}
                 }
             val sponsor = entries.values.single { it.key.serviceID == sponsorID }
             val participant = entries.values.single { it.key.serviceID == participantID }
@@ -215,10 +217,11 @@ class GatewayAuthorizationTest {
     }
 
     private class MemoryPreferences : DataStore<Preferences> {
+        private val writeMutex = Mutex()
         private val state = MutableStateFlow(emptyPreferences())
         override val data: Flow<Preferences> = state
 
         override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences =
-            transform(state.value).also { state.value = it }
+            writeMutex.withLock { transform(state.value).also { state.value = it } }
     }
 }

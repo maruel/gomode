@@ -130,6 +130,12 @@ internal class SettingsEdits(
             }
         }
 
+    suspend fun setShowServiceOnLockScreen(enabled: Boolean): Boolean =
+        persist {
+            repository.updateShowServiceOnLockScreen(enabled)
+            true
+        }
+
     private suspend fun persist(block: suspend () -> Boolean): Boolean =
         mutex.withLock {
             if (repository.settings.value.loadState != SettingsLoadState.Ready) return@withLock false

@@ -6,6 +6,7 @@ import { createStore, produce } from "solid-js/store";
 
 // TODO: Cleanup imports.
 import * as voicegatewaySDK from "../../sdk/voicegateway/ts/v1/api.gen";
+import { createApiClient as createGoModeClient } from "../../sdk/gomode/ts/v1/api.gen";
 import {
   type Error,
   type ContextUpdate,
@@ -559,6 +560,7 @@ export class VoiceSession {
   private _inputPreferenceProvisional = false;
   private _outputPreferenceProvisional = false;
   private _voiceModeActive = false;
+  private _callMetadata: MediaMetadata | null = null;
   private readonly _chime: VoiceChimePlayer;
   private readonly _thinkingEarcon: ThinkingEarcon;
 
@@ -1749,9 +1751,33 @@ export class VoiceSession {
   }
 
   private _leaveVoiceMode(): void {
+    if (this._callMetadata !== null) {
+      if (navigator.mediaSession.metadata === this._callMetadata) {
+        navigator.mediaSession.metadata = null;
+        navigator.mediaSession.playbackState = "none";
+      }
+      this._callMetadata = null;
+    }
     if (!this._voiceModeActive) return;
     this._voiceModeActive = false;
     if (this.state.mode !== "browser" || !browserSpeechAvoidsChimes()) this._chime.playDisconnected();
+  }
+
+  private async _publishCallMetadata(attempt: number): Promise<void> {
+    if (!("mediaSession" in navigator) || typeof MediaMetadata === "undefined") return;
+    try {
+      // The caller is the host service, even when it uses an external voice gateway.
+      const settings = await createGoModeClient().getSettings();
+      if (attempt !== this._connectionAttempt || !this._voiceModeActive) return;
+      if (typeof settings.service !== "string" || settings.service.trim() === "") {
+        throw new Error("Go Mode service name is missing");
+      }
+      this._callMetadata = new MediaMetadata({ title: settings.service });
+      navigator.mediaSession.metadata = this._callMetadata;
+      navigator.mediaSession.playbackState = "playing";
+    } catch (error) {
+      console.warn("Could not publish voice caller name", error);
+    }
   }
 
   private _clearTranscript(): void {
@@ -1838,6 +1864,7 @@ export class VoiceSession {
         this._voiceModeActive = true;
         if (this.state.mode !== "browser" || !browserSpeechAvoidsChimes()) this._chime.playConnected();
       }
+      if (this._callMetadata === null) void this._publishCallMetadata(this._connectionAttempt);
       if (this._recoveryContext !== "") {
         this._send(JSON.stringify(gatewayContextUpdate(this._recoveryContext)));
         this._recoveryContext = "";

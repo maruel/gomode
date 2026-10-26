@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -36,6 +37,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -51,12 +53,15 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -73,7 +78,7 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class, FlowPreview::class)
 @Composable
 internal fun SettingsScreen(
     settings: SettingsState,
@@ -122,6 +127,7 @@ internal fun SettingsScreen(
                     .padding(padding)
                     .verticalScroll(rememberScrollState())
                     .padding(20.dp)
+                    .semantics { testTagsAsResourceId = true }
                     .testTag("gomode-settings"),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
@@ -267,6 +273,28 @@ internal fun SettingsScreen(
                 )
             }
             VoiceLanguageSetting(edits, enabled = !voiceSessionActive && settings.loadState == SettingsLoadState.Ready)
+            CarDialSetting(settings, enabled = !voiceSessionActive)
+            ListItem(
+                modifier =
+                    Modifier.testTag("gomode-show-service-on-lock-screen").toggleable(
+                        value = settings.showServiceOnLockScreen,
+                        enabled = !voiceSessionActive && settings.loadState == SettingsLoadState.Ready,
+                        role = Role.Switch,
+                        onValueChange = { value -> scope.launch { edits.setShowServiceOnLockScreen(value) } },
+                    ),
+                headlineContent = { Text("Show service on lock screen") },
+                supportingContent = {
+                    Text("During car calls. Anyone can view and use your services without unlocking.")
+                },
+                trailingContent = {
+                    Switch(
+                        checked = settings.showServiceOnLockScreen,
+                        onCheckedChange = null,
+                        enabled = !voiceSessionActive && settings.loadState == SettingsLoadState.Ready,
+                    )
+                },
+            )
+            CarCallerIDSetting(settings, enabled = !voiceSessionActive)
             HorizontalDivider()
             Text("Halo", style = MaterialTheme.typography.titleMedium)
             ListItem(

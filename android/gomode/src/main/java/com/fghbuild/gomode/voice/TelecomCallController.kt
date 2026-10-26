@@ -7,12 +7,12 @@ import android.media.AudioDeviceInfo
 import android.os.ParcelUuid
 import android.telecom.DisconnectCause
 import android.util.Log
-import androidx.core.net.toUri
 import androidx.core.telecom.CallAttributesCompat
 import androidx.core.telecom.CallControlResult
 import androidx.core.telecom.CallControlScope
 import androidx.core.telecom.CallEndpointCompat
 import androidx.core.telecom.CallsManager
+import com.fghbuild.gomode.GoModeApplication
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -30,8 +30,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 private const val TAG = "GoModeTelecom"
-private const val CALL_DISPLAY_NAME = "Go Mode Voice"
-private val callAddress = "gomode://voice".toUri()
 
 /**
  * TelecomCallController registers Go Mode voice sessions with Android Telecom
@@ -60,6 +58,9 @@ internal class TelecomCallController(
     // Identifies the live call so callbacks from a released call are ignored.
     private var callGeneration = 0L
     private var activeCall = 0L
+    private var activeServerID: String? = null
+    private var disconnectCallback: (() -> Unit)? = null
+    override val isStarted: Boolean get() = activeCall != 0L
 
     init {
         // Registration belongs to app setup, before any call exists.
@@ -82,12 +83,25 @@ internal class TelecomCallController(
 
     override fun isSupported(): Boolean = context.packageManager.hasSystemFeature(PackageManager.FEATURE_TELECOM)
 
-    override suspend fun start(onTelecomDisconnect: () -> Unit): Boolean {
+    override suspend fun start(
+        serverName: String,
+        serverID: String?,
+        onTelecomDisconnect: () -> Unit,
+    ): Boolean {
         if (!isSupported()) return false
+        if (activeCall != 0L) {
+            // Dial startup establishes Telecom before discovery or model preparation.
+            // Its voice controller adopts that same call, rather than making a second one.
+            if (activeServerID != serverID || controlScope == null) return false
+            disconnectCallback = onTelecomDisconnect
+            return true
+        }
         val startingEndpoint = startingEndpoints.firstOrNull { endpointId(it) == _audioState.value.selectedDeviceId }
         release()
         val generation = ++callGeneration
         activeCall = generation
+        activeServerID = serverID
+        disconnectCallback = onTelecomDisconnect
         val ready = CompletableDeferred<Boolean>()
         addCallJob =
             scope.launch {
@@ -95,8 +109,13 @@ internal class TelecomCallController(
                     callsManager.addCall(
                         callAttributes =
                             CallAttributesCompat(
-                                displayName = CALL_DISPLAY_NAME,
-                                address = callAddress,
+                                displayName = serverName,
+                                address =
+                                    voiceCallAddress(
+                                        serverID,
+                                        (context.applicationContext as GoModeApplication)
+                                            .settingsRepository.settings.value.carCallerSlots,
+                                    ),
                                 direction = CallAttributesCompat.DIRECTION_OUTGOING,
                                 callType = CallAttributesCompat.CALL_TYPE_AUDIO_CALL,
                                 // Voice disconnects when Telecom yields; it never holds.
@@ -107,16 +126,18 @@ internal class TelecomCallController(
                         onDisconnect = {
                             if (activeCall == generation) {
                                 endedByTelecom = true
+                                val callback = disconnectCallback
                                 onTelecomEnded()
-                                onTelecomDisconnect()
+                                callback?.invoke()
                             }
                         },
                         onSetActive = {},
                         onSetInactive = {
                             // Telecom yields to a cellular or VoIP call; voice disconnects.
                             if (activeCall == generation) {
+                                val callback = disconnectCallback
                                 onTelecomEnded()
-                                onTelecomDisconnect()
+                                callback?.invoke()
                             }
                         },
                         block = {
@@ -231,6 +252,8 @@ internal class TelecomCallController(
         activeCall = 0L
         endpointUpdatesJob?.cancel()
         endpointUpdatesJob = null
+        activeServerID = null
+        disconnectCallback = null
         addCallJob?.cancel()
         addCallJob = null
         controlScope = null

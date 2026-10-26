@@ -34,19 +34,20 @@ Login never depends on MCP discovery.
 
 Each saved service has a shell entry keyed by service identity and URL. The entry
 owns in-memory authentication, bootstrap and load state, reload counters, and its
-frontend tool registration. Entries live within the Activity, and visited services
-retain their WebViews when selection changes or native settings opens. Preparing
-voice initializes the remaining saved pages. Only the selected page attaches to
+frontend tool registration. Entries and their actual WebViews live in the
+application. Visited services retain their pages across selection changes,
+native settings, and Activity replacement. Preparing voice initializes the
+remaining saved pages. Only the selected page attaches to
 the screen. Cloud voice, device speech with a remote gateway, and the local
 conversational LLM keep one conversation across selection changes.
-Deleting a service, replacing its URL, or destroying the Activity releases its
-view, credentials, and pending frontend calls. Page generations
+Deleting a service or replacing its URL releases its view, credentials, and
+pending frontend calls. Activity replacement reattaches the same page. Page generations
 reject callbacks from replaced or disposed WebViews.
 
 Hidden pages stay authenticated and can publish frontend declarations. Native
 permission requests, file pickers, JavaScript dialogs, external windows, and
-cross-origin navigation require selection and otherwise mark the entry as needing
-attention. Hidden pages are paused individually, cannot take focus, mute audio,
+cross-origin navigation require a selected page in a resumed, unlocked shell;
+otherwise they mark the entry as needing attention. Hidden pages are paused individually, cannot take focus, mute audio,
 and stop hosted camera/microphone captures, including cloned and removed tracks. Retention requires WebView audio
 muting and document-start capture-guard support; unsupported versions fail closed with an update message. Renderer
 loss invalidates dispatch and releases every affected view. Native settings shows
@@ -85,7 +86,9 @@ before logout. The shell stores no token on disk.
 
 Frontend tools dispatch only through their owning entry while native access is
 ready. Identity changes synchronously reject pending frontend results; page
-replacement removes declarations. Entries share Android WebView cookies, so
+replacement removes declarations. A host without MCP groups can still provide
+browser tools after its page confirms native access; no MCP endpoint is invented.
+Entries share Android WebView cookies, so
 services sharing an origin share the cookie identity.
 
 Account generations are distinct from page availability. Navigation or renderer

@@ -48,7 +48,7 @@ class FrontendVoiceToolsTest {
     @Test
     fun ownedReloadRevokesPageAccessAndSettlesPendingCallsBeforeReloading() =
         runTest {
-            val entry = ServiceShellSession(ServiceShellKey("source", "https://service.test"))
+            val entry = ServiceShellSession(ServiceShellKey("source", "https://service.test")) {}
             entry.bearerStore.onNavigation(entry.key.url)
             entry.bearerStore.receive(Uri.parse(entry.key.url), true, entry.key.url, """{"bearerToken":"account"}""")
             val identity = entry.bearerStore.identityEpoch.value

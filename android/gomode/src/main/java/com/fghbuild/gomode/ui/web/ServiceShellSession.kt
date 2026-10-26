@@ -1,6 +1,7 @@
 // Owns saved-service authentication, navigation, page generations, bootstrap, load, and frontend tools.
 package com.fghbuild.gomode.ui.web
 
+import android.content.Context
 import androidx.core.net.toUri
 import com.fghbuild.gomode.service.resolveNotificationURL
 import com.fghbuild.gomode.ui.ServiceBootstrapState
@@ -28,6 +29,7 @@ internal data class ServiceShellState(
 // services on the same origin share WebView cookies.
 internal class ServiceShellSession(
     val key: ServiceShellKey,
+    val onSharedIdentityChanged: () -> Unit,
 ) {
     val bearerStore = ServiceBearerStore(key.url)
     val frontendTools = FrontendVoiceTools { active && bearerStore.authReady.value }
@@ -36,6 +38,22 @@ internal class ServiceShellSession(
     private var active = true
     private var pageGeneration = 0L
     private var releasePage: (() -> Unit)? = null
+    private var webPage: ServiceWebPage? = null
+    private var webPageGeneration = -1L
+
+    fun page(context: Context): ServiceWebPage {
+        val generation = state.value.webViewGeneration
+        if (webPageGeneration != generation) {
+            releasePage?.invoke()
+            webPage = ServiceWebPage(context, this)
+            webPageGeneration = generation
+        }
+        return checkNotNull(webPage)
+    }
+
+    fun setVoiceConnected(connected: Boolean) {
+        webPage?.setVoiceConnected(connected)
+    }
 
     fun ownPage(release: () -> Unit) {
         releasePage = release
@@ -172,13 +190,19 @@ internal class ServiceShellSession(
     }
 }
 
-// Activity-owned entries share cookies by origin, but never native authorization or page ownership.
+// Application-owned entries share cookies by origin, but never native authorization or page ownership.
 internal class ServiceShellRegistry {
     private val entries = linkedMapOf<ServiceShellKey, ServiceShellSession>()
 
     fun reconcile(keys: Set<ServiceShellKey>): Map<ServiceShellKey, ServiceShellSession> {
         entries.keys.filter { it !in keys }.forEach { entries.remove(it)?.close() }
-        keys.forEach { entries.getOrPut(it) { ServiceShellSession(it) } }
+        keys.forEach { key ->
+            entries.getOrPut(key) {
+                ServiceShellSession(key) {
+                    entries[key]?.let(::invalidateSharedOrigin)
+                }
+            }
+        }
         return entries.toMap()
     }
 

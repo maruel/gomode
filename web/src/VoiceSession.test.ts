@@ -395,6 +395,47 @@ describe("VoiceSession", () => {
     session.disconnect();
   });
 
+  for (const late of [false, true]) {
+    it(`publishes the host caller name and clears it on hang-up (late discovery: ${late})`, async () => {
+      const mediaSession = { metadata: null as MediaMetadata | null, playbackState: "none" };
+      Object.defineProperty(navigator, "mediaSession", { configurable: true, value: mediaSession });
+      vi.stubGlobal(
+        "MediaMetadata",
+        class {
+          readonly title: string;
+          constructor(init: MediaMetadataInit) {
+            this.title = init.title ?? "";
+          }
+        },
+      );
+      const discovery = deferred<Response>();
+      const gatewayFetch = globalThis.fetch;
+      globalThis.fetch = (input, init) =>
+        String(input) === "/.well-known/gomode.json" ? discovery.promise : gatewayFetch(input, init);
+      const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
+      try {
+        await session.connect();
+        FakePeerConnection.dataChannels[0]?.onmessage?.(
+          new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindSessionReady }) }),
+        );
+        if (late) session.disconnect();
+        discovery.resolve(new Response(JSON.stringify({ service: "My Server" })));
+        if (!late) {
+          await vi.waitFor(() => expect(mediaSession.metadata?.title).toBe("My Server"));
+          expect(mediaSession.playbackState).toBe("playing");
+          session.disconnect();
+        } else {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(mediaSession.metadata).toBeNull();
+        expect(mediaSession.playbackState).toBe("none");
+      } finally {
+        session.disconnect();
+        Reflect.deleteProperty(navigator, "mediaSession");
+        vi.unstubAllGlobals();
+      }
+    });
+  }
   it("prefers newly connected Bluetooth and remembers its routes across sessions", async () => {
     const sink = vi.fn(async (_id: string) => {});
     Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true, value: sink });

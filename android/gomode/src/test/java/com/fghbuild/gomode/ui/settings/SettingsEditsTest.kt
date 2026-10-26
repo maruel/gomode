@@ -9,6 +9,8 @@ import com.fghbuild.gomode.data.SettingsRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -117,16 +119,16 @@ class SettingsEditsTest {
         }
 
     private class MemoryPreferences : DataStore<Preferences> {
+        private val writeMutex = Mutex()
         private val current = MutableStateFlow(emptyPreferences())
         var failWrites = false
 
         override val data: Flow<Preferences> = current
 
-        override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences {
-            if (failWrites) throw IOException("Disk full")
-            val updated = transform(current.value)
-            current.value = updated
-            return updated
-        }
+        override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences =
+            writeMutex.withLock {
+                if (failWrites) throw IOException("Disk full")
+                transform(current.value).also { current.value = it }
+            }
     }
 }

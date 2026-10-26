@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Internal platform gate only. Production never launches voice from redirection. -->
+        <service
+            android:name=".voice.CarDialLaunchProbeService"
+            android:enabled="false"
+            android:exported="true"
+            android:permission="android.permission.BIND_CALL_REDIRECTION_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.CallRedirectionService" />
+            </intent-filter>
+        </service>
+        <activity
+            android:name=".voice.CarDialLaunchProbeActivity"
+            android:exported="false"
+            android:excludeFromRecents="true" />
+    </application>
+</manifest>

@@ -445,6 +445,8 @@ class LocalModelOwnerTest {
     private fun setup(systemInstruction: String = "Use the selected service") =
         LocalConversationPreparation(
             VoiceSetup(
+                serverName = "Fixture",
+                serverID = null,
                 gatewayEndpointURL = "https://service.example",
                 service = null,
                 tokenEndpointURL = null,

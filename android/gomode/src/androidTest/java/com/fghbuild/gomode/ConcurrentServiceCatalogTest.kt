@@ -103,13 +103,10 @@ class ConcurrentServiceCatalogTest {
                     }
                     entries.forEach { entry ->
                         WebShellScreen(
-                            serviceID = entry.key.serviceID,
-                            initialURL = entry.key.url,
                             voiceConnected = false,
                             visible = entry === entries.first(),
                             reloadToken = 0,
                             serviceSession = entry,
-                            onLoadStateChanged = entry::updateLoad,
                             onAuthInvalidated = {},
                         )
                     }
@@ -220,13 +217,10 @@ class ConcurrentServiceCatalogTest {
                                 .value.webViewGeneration,
                         ) {
                             WebShellScreen(
-                                serviceID = entry.key.serviceID,
-                                initialURL = entry.key.url,
                                 voiceConnected = false,
                                 visible = entry === selected,
                                 reloadToken = 0,
                                 serviceSession = entry,
-                                onLoadStateChanged = entry::updateLoad,
                                 onAuthInvalidated = {},
                             )
                         }
@@ -351,7 +345,7 @@ class ConcurrentServiceCatalogTest {
                 composeRule.runOnIdle {
                     val originalEvent = notifications.first { it.source == entries[0].key }
                     assertNull(catalog.notificationForDelivery(originalEvent))
-                    val replacedURL = ServiceShellSession(ServiceShellKey("a", entries[0].key.url + "replacement"))
+                    val replacedURL = ServiceShellSession(ServiceShellKey("a", entries[0].key.url + "replacement")) {}
                     catalog.reconcile(mapOf(replacedURL.key to replacedURL, entries[1].key to entries[1]), emptyMap())
                     assertNull(catalog.notificationForDelivery(originalEvent))
                     catalog.close()
@@ -379,12 +373,9 @@ class ConcurrentServiceCatalogTest {
                     }
                 }
                 WebShellScreen(
-                    serviceID = entry.key.serviceID,
-                    initialURL = entry.key.url,
                     voiceConnected = false,
                     reloadToken = 0,
                     serviceSession = entry,
-                    onLoadStateChanged = entry::updateLoad,
                     onAuthInvalidated = {},
                 )
             }
@@ -424,12 +415,9 @@ class ConcurrentServiceCatalogTest {
                     }
                 }
                 WebShellScreen(
-                    serviceID = entry.key.serviceID,
-                    initialURL = entry.key.url,
                     voiceConnected = false,
                     reloadToken = 0,
                     serviceSession = entry,
-                    onLoadStateChanged = entry::updateLoad,
                     onAuthInvalidated = {},
                 )
             }
@@ -675,7 +663,7 @@ class ConcurrentServiceCatalogTest {
         }
 
         fun entry(id: String): ServiceShellSession =
-            ServiceShellSession(ServiceShellKey(id, server.url("/").toString())).apply {
+            ServiceShellSession(ServiceShellKey(id, server.url("/").toString())) {}.apply {
                 updateBootstrap(
                     ServiceBootstrapState.Ready(
                         Settings(

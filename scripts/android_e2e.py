@@ -10,6 +10,7 @@ import http.server
 import json
 import os
 import pathlib
+import re
 import socket
 import subprocess
 import sys
@@ -118,9 +119,20 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
-def run_instrumented_tests(port: int, selection: list[str], serial: str) -> int:
+def run_instrumented_tests(port: int, selection: list[str], serial: str, *, car_dial: bool = False) -> int:
     """Run selected Android tests with a hosted fixture and clean up adb forwarding."""
     adb = adb_path()
+    if car_dial:
+        # Refuse physical and unknown devices before forwarding, APK installation, or
+        # instrumentation. JUnit additionally refuses existing secure credentials.
+        emulator = subprocess.run(
+            [adb, "-s", serial, "shell", "getprop", "ro.kernel.qemu"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        if emulator.stdout.strip() != "1":
+            raise RuntimeError("Car-dial tests require an emulator; device settings and APKs were not changed")
     sdk_script = pathlib.Path(__file__).with_name("android_sdk.py")
     subprocess.run([sys.executable, str(sdk_script), "check"], check=True)
     sdk = find_sdkmanager()
@@ -134,10 +146,11 @@ def run_instrumented_tests(port: int, selection: list[str], serial: str) -> int:
             f"Testing Go Mode shell on {serial} with the fixture at localhost:{port}",
             flush=True,
         )
+        if car_dial:
+            return run_car_dial_tests(adb, serial, port, selection, gradle_env)
         return subprocess.run(
             [
                 "./gradlew",
-                "--max-workers=2",
                 ":gomode:connectedDebugAndroidTest",
                 f"-Pandroid.testInstrumentationRunnerArguments.baseUrl=http://localhost:{port}",
                 *selection,
@@ -150,15 +163,76 @@ def run_instrumented_tests(port: int, selection: list[str], serial: str) -> int:
         subprocess.run([adb, "-s", serial, "reverse", "--remove", reverse], check=False)
 
 
+def run_car_dial_tests(adb: str, serial: str, port: int, selection: list[str], gradle_env: dict[str, str]) -> int:
+    """Release Gradle's heap before running the independent fixture on the emulator."""
+    command = [adb, "-s", serial, "shell", "am", "instrument", "-w", "-r", "-e", "baseUrl", f"http://localhost:{port}"]
+    for option in selection:
+        prefix = "-Pandroid.testInstrumentationRunnerArguments."
+        name, separator, value = option.removeprefix(prefix).partition("=")
+        if not option.startswith(prefix) or not separator or not name:
+            raise ValueError(f"Unsupported car-dial instrumentation option: {option}")
+        command.extend(("-e", name, value))
+    command.append("com.fghbuild.gomode.cardialfixture.test/androidx.test.runner.AndroidJUnitRunner")
+    build = subprocess.run(
+        [
+            "./gradlew",
+            ":gomode:assembleDebug",
+            ":car-dial-fixture:assembleDebug",
+            ":car-dial-fixture:assembleDebugAndroidTest",
+        ],
+        cwd=ROOT / "android",
+        env=gradle_env,
+        check=False,
+    )
+    if build.returncode:
+        return build.returncode
+    # Keeping Gradle and its device-test worker alive alongside the emulator can
+    # exhaust the host's memory during repeated WebView and voice process launches.
+    subprocess.run(["./gradlew", "--stop"], cwd=ROOT / "android", env=gradle_env, check=True)
+    for apk in (
+        "gomode/build/outputs/apk/debug/gomode-debug.apk",
+        "car-dial-fixture/build/outputs/apk/debug/car-dial-fixture-debug.apk",
+        "car-dial-fixture/build/outputs/apk/androidTest/debug/car-dial-fixture-debug-androidTest.apk",
+    ):
+        subprocess.run([adb, "-s", serial, "install", "-r", "-t", str(ROOT / "android" / apk)], check=True)
+    # Remove first-install bytecode verification from Telecom's fixed five-second
+    # redirection deadline. Tests still reclaim the app before cold dialing.
+    compile_app = subprocess.run(
+        [adb, "-s", serial, "shell", "cmd", "package", "compile", "-m", "speed", "-f", "com.fghbuild.gomode"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if compile_app.stdout.strip() != "Success":
+        raise RuntimeError(f"Could not compile the car-call APK: {compile_app.stdout}{compile_app.stderr}")
+    passed = False
+    failed = False
+    completed = False
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as instrumentation:
+        assert instrumentation.stdout is not None
+        for line in instrumentation.stdout:
+            print(line, end="", flush=True)
+            passed |= re.fullmatch(r"OK \([1-9][0-9]* tests?\)", line.strip()) is not None
+            failed |= line.startswith(("FAILURES!!!", "INSTRUMENTATION_FAILED:", "INSTRUMENTATION_ABORTED:"))
+            completed |= line.strip() == "INSTRUMENTATION_CODE: -1"
+        status = instrumentation.wait()
+    # am instrument can return zero even when JUnit fails or its app crashes.
+    return 0 if status == 0 and passed and completed and not failed else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--voice", action="store_true", help="serve the voice gateway fixture")
+    parser.add_argument("--car-dial", action="store_true", help="exercise system dialing and both voice transports")
     args = parser.parse_args()
     server: http.server.ThreadingHTTPServer | None = None
     fixture: subprocess.Popen[bytes] | None = None
-    if args.voice:
+    if args.voice or args.car_dial:
         port = free_port()
-        fixture = subprocess.Popen(["go", "run", VOICE_FIXTURE_PACKAGE, "-addr", f"127.0.0.1:{port}"], cwd=ROOT)
+        command = ["go", "run", VOICE_FIXTURE_PACKAGE, "-addr", f"127.0.0.1:{port}"]
+        if args.car_dial:
+            command += ["-rtc-ip", "10.0.2.2"]
+        fixture = subprocess.Popen(command, cwd=ROOT)
         annotation = VOICE_FIXTURE_ANNOTATION
     else:
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
@@ -169,9 +243,8 @@ def main() -> int:
 
     try:
         serial = selected_device_serial(adb_path())
-        return run_instrumented_tests(
-            port, [f"-Pandroid.testInstrumentationRunnerArguments.annotation={annotation}"], serial
-        )
+        selection = [] if args.car_dial else [f"-Pandroid.testInstrumentationRunnerArguments.annotation={annotation}"]
+        return run_instrumented_tests(port, selection, serial, car_dial=args.car_dial)
     finally:
         if fixture is not None:
             fixture.terminate()

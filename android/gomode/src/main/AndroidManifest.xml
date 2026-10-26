@@ -55,6 +55,24 @@
             </intent-filter>
         </activity>
         <service
+            android:name=".voice.CarDialRedirectionService"
+            android:enabled="false"
+            android:exported="true"
+            android:permission="android.permission.BIND_CALL_REDIRECTION_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.CallRedirectionService" />
+            </intent-filter>
+        </service>
+        <provider
+            android:name=".voice.CarContactsProvider"
+            android:authorities="${applicationId}.carcontacts"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/car_contact_paths" />
+        </provider>
+        <service
             android:name=".voice.VoiceService"
             android:foregroundServiceType="microphone"
             android:exported="false" />

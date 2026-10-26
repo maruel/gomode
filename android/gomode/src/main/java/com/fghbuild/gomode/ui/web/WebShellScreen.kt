@@ -33,10 +33,12 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -50,50 +52,28 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.fghbuild.gomode.R
 import com.fghbuild.gomode.service.serviceOrigin
+import com.fghbuild.gomode.ui.ServiceBootstrapState
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
-@SuppressLint("SetJavaScriptEnabled")
 @Composable
 internal fun WebShellScreen(
-    serviceID: String,
-    initialURL: String,
     voiceConnected: Boolean,
     visible: Boolean = true,
+    showWhenLocked: Boolean = false,
     reloadToken: Int,
     serviceSession: ServiceShellSession,
-    onLoadStateChanged: (WebShellLoadState) -> Unit,
-    onHostedPageLoaded: () -> Unit = {},
     onAuthInvalidated: () -> Unit,
     onSharedAuthInvalidated: () -> Unit = {},
 ) {
     val context = LocalContext.current
-    val currentVisible by rememberUpdatedState(visible)
-    val hostBridge = remember(serviceSession) { GoModeHostBridge() }
-    hostBridge.setPageVisible(visible)
-    var rendererLost by remember(serviceSession) { mutableStateOf(false) }
-    val bearerStore = serviceSession.bearerStore
-    val frontendTools = serviceSession.frontendTools
-    val pageGeneration = remember(serviceSession) { serviceSession.openPage() }
-    val hostURL = remember(initialURL) { goModeHostURL(initialURL) }
-    var loading by remember(hostURL) { mutableStateOf(true) }
-    var loadFailed by remember(hostURL) { mutableStateOf(false) }
-    var automaticRetryState by remember(hostURL) { mutableStateOf(AutomaticTimeoutRetryState()) }
-    var recoveryLoadInProgress by remember(hostURL) { mutableStateOf(false) }
-    var appliedReloadToken by remember(hostURL) { mutableStateOf<Int?>(null) }
-    var fileChooserCallback by remember(hostURL) { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
-    val currentHostURL by rememberUpdatedState(hostURL)
-    val currentServiceID by rememberUpdatedState(serviceID)
-    val currentOnLoadStateChanged by rememberUpdatedState(onLoadStateChanged)
-    val currentOnHostedPageLoaded by rememberUpdatedState(onHostedPageLoaded)
-    val currentOnAuthInvalidated = rememberUpdatedState(onAuthInvalidated)
-    val currentOnSharedAuthInvalidated = rememberUpdatedState(onSharedAuthInvalidated)
-    val authHandler =
+    val page =
         remember(serviceSession) {
-            ServiceAuthMessageHandler(bearerStore, { currentOnSharedAuthInvalidated.value() }) {
-                serviceSession.invalidateIdentity()
-                currentOnAuthInvalidated.value()
-            }
+            serviceSession.page(context)
         }
+    val attachment = remember(page, context) { Any() }
     val mediaPermissions = remember(context) { WebMediaPermissions(context) }
     val mediaPermissionLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -102,261 +82,436 @@ internal fun WebShellScreen(
     val fileChooserLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val uris = ActivityResultContracts.GetMultipleContents().parseResult(result.resultCode, result.data)
-            fileChooserCallback?.onReceiveValue(uris.toTypedArray())
-            fileChooserCallback = null
+            page.completeFileChooser(attachment, uris.toTypedArray())
+        }
+    androidx.compose.runtime.SideEffect {
+        page.attach(
+            attachment,
+            context,
+            mediaPermissions,
+            onAuthInvalidated,
+            onSharedAuthInvalidated,
+            { mediaPermissionLauncher.launch(it) },
+            { fileChooserLauncher.launch(it) },
+        )
+    }
+    DisposableEffect(page, context) {
+        onDispose { page.detach(attachment) }
+    }
+    val visibilityScope = rememberCoroutineScope()
+    androidx.lifecycle.compose.LifecycleResumeEffect(page, visible, showWhenLocked) {
+        val visibilityJob =
+            visibilityScope.launch {
+                // Keyguard dismissal can settle after the Activity resumes.
+                while (isActive && visible) {
+                    page.setHostVisible(
+                        attachment,
+                        visible &&
+                            (
+                                showWhenLocked ||
+                                    !context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked
+                            ),
+                    )
+                    delay(250)
+                }
+            }
+        onPauseOrDispose {
+            visibilityJob.cancel()
+            page.setHostVisible(attachment, false)
+        }
+    }
+    LaunchedEffect(page, reloadToken) { page.load(reloadToken) }
+    LaunchedEffect(page, voiceConnected) { page.setVoiceConnected(voiceConnected) }
+    BackHandler(enabled = visible && !page.rendererLost) { page.goBack() }
+    if (!visible || page.rendererLost) return
+    Box(Modifier.fillMaxSize().statusBarsPadding().testTag("gomode-web-shell")) {
+        AndroidView(
+            factory = { page.webView.apply { (parent as? ViewGroup)?.removeView(this) } },
+            modifier = Modifier.fillMaxSize(),
+        )
+        if (page.loading) {
+            CircularProgressIndicator(modifier = Modifier.align(Alignment.Center).testTag("gomode-web-loading"))
+        }
+    }
+}
+
+// One actual page survives Activity replacement. Only an attached visible shell can
+// launch native prompts; background car tools use the same document without pixels.
+@SuppressLint("SetJavaScriptEnabled")
+internal class ServiceWebPage(
+    context: Context,
+    private val serviceSession: ServiceShellSession,
+) {
+    private val applicationContext = context.applicationContext
+    private val pageContext = android.content.MutableContextWrapper(applicationContext)
+    private val context: Context get() = pageContext.baseContext
+    private val scope =
+        kotlinx.coroutines.CoroutineScope(
+            kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate,
+        )
+    private val initialURL = serviceSession.key.url
+    private val hostURL = goModeHostURL(initialURL)
+    private val hostBridge = GoModeHostBridge()
+    private val bearerStore = serviceSession.bearerStore
+    private val frontendTools = serviceSession.frontendTools
+    private val pageGeneration = serviceSession.openPage()
+    private var closed = false
+    private var visibility: Boolean? = null
+    private val currentVisible get() = visibility == true
+    private val canLaunchNativeUI get() =
+        currentVisible &&
+            !context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked
+    private var nativeInteractionAllowed = false
+    var rendererLost by mutableStateOf(false)
+        private set
+    var loading by mutableStateOf(true)
+        private set
+    private var loadFailed = false
+    private var automaticRetryState = AutomaticTimeoutRetryState()
+        set(value) {
+            field = value
+            if (value.pending) scheduleRetry()
+        }
+    private var recoveryLoadInProgress = false
+    private var appliedReloadToken: Int? = null
+    var fileChooserCallback: ValueCallback<Array<Uri>>? = null
+    private var mediaPermissions = WebMediaPermissions(applicationContext)
+    private var attachment: Any? = null
+    private var onAuthInvalidated: () -> Unit = {}
+    private var onSharedAuthInvalidated: () -> Unit = {}
+    private var launchMediaPermissions: (Array<String>) -> Unit = { mediaPermissions.onNavigation() }
+    private var launchFileChooser: (
+        Intent,
+    ) -> Unit = {
+        fileChooserCallback?.onReceiveValue(emptyArray())
+        fileChooserCallback =
+            null
+    }
+    private val authHandler =
+        ServiceAuthMessageHandler(bearerStore, {
+            serviceSession.onSharedIdentityChanged()
+            onSharedAuthInvalidated()
+        }) {
+            serviceSession.invalidateIdentity()
+            onAuthInvalidated()
         }
     val webView =
-        remember(context, serviceID, hostURL) {
-            WebView(context).apply {
-                id = R.id.web_shell
-                // WebView uses native layout params for CSS viewport sizing, even inside AndroidView.
-                layoutParams =
-                    ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                    )
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
-                settings.mediaPlaybackRequiresUserGesture = true
-                settings.setSupportMultipleWindows(true)
-                enableWebAuthentication()
-                addJavascriptInterface(hostBridge, "goModeHost")
-                if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-                    WebViewCompat.addDocumentStartJavaScript(this, HIDDEN_MEDIA_GUARD, setOf(serviceOrigin(initialURL)))
-                }
-                if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
-                    WebViewCompat.addWebMessageListener(
-                        this,
-                        "gomodeVoiceTools",
-                        setOf(serviceOrigin(initialURL)),
-                    ) { view, message, sourceOrigin, isMainFrame, _ ->
-                        if (serviceSession.isCurrentPage(pageGeneration) &&
-                            acceptsFrontendVoiceTools(sourceOrigin, isMainFrame, view.url, initialURL)
-                        ) {
-                            message.data?.let { payload ->
-                                runCatching { frontendTools.register(view, payload) }
-                                    .onFailure {
-                                        frontendTools.clear(view)
-                                        Log.e(TAG, "Invalid frontend voice tools", it)
-                                    }
-                            }
-                        }
-                    }
-                    WebViewCompat.addWebMessageListener(
-                        this,
-                        "gomodeAuth",
-                        setOf(serviceOrigin(initialURL)),
-                    ) { view, message, sourceOrigin, isMainFrame, _ ->
-                        if (!serviceSession.isCurrentPage(pageGeneration)) return@addWebMessageListener
-                        message.data?.let { payload ->
-                            authHandler.receive(sourceOrigin, isMainFrame, view.url, payload)
-                        }
-                    }
-                } else {
-                    Log.w(TAG, "Installed Android WebView does not support service auth messages.")
-                }
-                webViewClient =
-                    object : WebViewClient() {
-                        override fun shouldOverrideUrlLoading(
-                            view: WebView,
-                            request: WebResourceRequest,
-                        ): Boolean {
-                            if (!serviceSession.isCurrentPage(pageGeneration)) return true
-                            if (!currentVisible && !isTrustedPermissionOrigin(request.url, initialURL)) {
-                                serviceSession.requireAttention()
-                                return true
-                            }
-                            if (request.isForMainFrame) {
-                                serviceSession.invalidatePageAuthentication()
-                                authHandler.onNavigation(request.url.toString())
-                            }
-                            view.loadUrl(request.url.toString())
-                            return true
-                        }
-
-                        override fun onRenderProcessGone(
-                            view: WebView,
-                            detail: RenderProcessGoneDetail,
-                        ): Boolean {
-                            if (!serviceSession.isCurrentPage(pageGeneration)) return true
-                            rendererLost = true
-                            serviceSession.rendererLost()
-                            currentOnAuthInvalidated.value()
-                            return true
-                        }
-
-                        override fun onPageStarted(
-                            view: WebView,
-                            url: String?,
-                            favicon: Bitmap?,
-                        ) {
-                            if (!serviceSession.isCurrentPage(pageGeneration)) return
-
-                            if (!currentVisible &&
-                                url?.let { isTrustedPermissionOrigin(it.toUri(), initialURL) } != true
-                            ) {
-                                serviceSession.requireAttention()
-                                view.stopLoading()
-                            }
-                            serviceSession.invalidatePageAuthentication()
-                            authHandler.onNavigation(url)
-                            mediaPermissions.onNavigation()
-                            frontendTools.clear(view)
-
-                            automaticRetryState = automaticTimeoutRetryStateOnPageStarted(automaticRetryState)
-                            loadFailed = false
-                            loading = true
-                            currentOnLoadStateChanged(
-                                if (recoveryLoadInProgress) {
-                                    WebShellLoadState.Reconnecting
-                                } else {
-                                    WebShellLoadState.Loading
-                                },
-                            )
-                        }
-
-                        override fun onPageFinished(
-                            view: WebView,
-                            url: String?,
-                        ) {
-                            if (!serviceSession.isCurrentPage(pageGeneration)) return
-
-                            if (!loadFailed) {
-                                automaticRetryState = automaticRetryState.copy(attempts = 0)
-                                recoveryLoadInProgress = false
-                                currentOnLoadStateChanged(WebShellLoadState.Ready)
-                            }
-                            loading = automaticRetryState.pending
-                            currentOnHostedPageLoaded()
-                        }
-
-                        override fun onReceivedError(
-                            view: WebView,
-                            request: WebResourceRequest,
-                            error: WebResourceError,
-                        ) {
-                            if (!request.isForMainFrame || !serviceSession.isCurrentPage(pageGeneration)) {
-                                return
-                            }
-
-                            loadFailed = true
-                            if (shouldAutomaticallyRetryWebLoadError(error.errorCode, automaticRetryState.attempts)) {
-                                automaticRetryState =
-                                    automaticRetryState.copy(
-                                        attempts = automaticRetryState.attempts + 1,
-                                        pending = true,
-                                    )
-                                recoveryLoadInProgress = true
-                                loading = true
-                                currentOnLoadStateChanged(WebShellLoadState.Reconnecting)
-                            } else {
-                                val message = webLoadErrorMessage(error.errorCode)
-                                recoveryLoadInProgress = false
-                                loading = false
-                                currentOnLoadStateChanged(WebShellLoadState.Failed(message))
-                            }
-                        }
-                    }
-                val hostView = this
-                webChromeClient =
-                    object : WebChromeClient() {
-                        override fun onJsAlert(
-                            view: WebView,
-                            url: String,
-                            message: String,
-                            result: JsResult,
-                        ): Boolean = rejectHiddenDialog(result)
-
-                        override fun onJsConfirm(
-                            view: WebView,
-                            url: String,
-                            message: String,
-                            result: JsResult,
-                        ): Boolean = rejectHiddenDialog(result)
-
-                        override fun onJsBeforeUnload(
-                            view: WebView,
-                            url: String,
-                            message: String,
-                            result: JsResult,
-                        ): Boolean = rejectHiddenDialog(result)
-
-                        override fun onJsPrompt(
-                            view: WebView,
-                            url: String,
-                            message: String,
-                            defaultValue: String,
-                            result: JsPromptResult,
-                        ): Boolean = rejectHiddenDialog(result)
-
-                        private fun rejectHiddenDialog(result: JsResult): Boolean {
-                            if (currentVisible) return false
-                            serviceSession.requireAttention()
-                            result.cancel()
-                            return true
-                        }
-
-                        override fun onPermissionRequest(request: PermissionRequest) {
-                            if (!currentVisible) {
-                                serviceSession.requireAttention()
-                                request.deny()
-                                return
-                            }
-                            val missing =
-                                mediaPermissions.request(request, hostURL) {
-                                    currentVisible && currentHostURL == hostURL && currentServiceID == serviceID &&
-                                        hostView.url?.toUri()?.let { isTrustedPermissionOrigin(it, hostURL) } == true
-                                }
-                            if (missing.isNotEmpty()) {
-                                mediaPermissionLauncher.launch(missing)
-                            }
-                        }
-
-                        override fun onPermissionRequestCanceled(request: PermissionRequest) {
-                            mediaPermissions.cancel(request)
-                        }
-
-                        override fun onShowFileChooser(
-                            webView: WebView,
-                            filePathCallback: ValueCallback<Array<Uri>>,
-                            fileChooserParams: FileChooserParams,
-                        ): Boolean {
-                            if (!currentVisible) {
-                                serviceSession.requireAttention()
-                                filePathCallback.onReceiveValue(emptyArray())
-                                return true
-                            }
-                            fileChooserCallback?.onReceiveValue(emptyArray())
-                            fileChooserCallback = filePathCallback
-                            fileChooserLauncher.launch(
-                                webFileChooserIntent(
-                                    fileChooserParams.acceptTypes,
-                                    fileChooserParams.mode == FileChooserParams.MODE_OPEN_MULTIPLE,
-                                ),
-                            )
-                            return true
-                        }
-
-                        override fun onCreateWindow(
-                            view: WebView,
-                            isDialog: Boolean,
-                            isUserGesture: Boolean,
-                            resultMsg: Message,
-                        ): Boolean {
-                            if (!currentVisible) {
-                                serviceSession.requireAttention()
-                                return false
-                            }
-                            return openNewWindowInExternalBrowser(view, resultMsg) { uri ->
-                                if (currentVisible) openExternalBrowser(context, uri) else false
-                            }
-                        }
-                    }
+        WebView(pageContext).apply {
+            id = R.id.web_shell
+            // WebView uses native layout params for CSS viewport sizing, even inside AndroidView.
+            layoutParams =
+                ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                )
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.mediaPlaybackRequiresUserGesture = true
+            settings.setSupportMultipleWindows(true)
+            enableWebAuthentication()
+            addJavascriptInterface(hostBridge, "goModeHost")
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                WebViewCompat.addDocumentStartJavaScript(this, HIDDEN_MEDIA_GUARD, setOf(serviceOrigin(initialURL)))
             }
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+                WebViewCompat.addWebMessageListener(
+                    this,
+                    "gomodeVoiceTools",
+                    setOf(serviceOrigin(initialURL)),
+                ) { view, message, sourceOrigin, isMainFrame, _ ->
+                    if (serviceSession.isCurrentPage(pageGeneration) &&
+                        acceptsFrontendVoiceTools(sourceOrigin, isMainFrame, view.url, initialURL)
+                    ) {
+                        message.data?.let { payload ->
+                            runCatching { frontendTools.register(view, payload) }
+                                .onFailure {
+                                    frontendTools.clear(view)
+                                    Log.e(TAG, "Invalid frontend voice tools", it)
+                                }
+                        }
+                    }
+                }
+                WebViewCompat.addWebMessageListener(
+                    this,
+                    "gomodeAuth",
+                    setOf(serviceOrigin(initialURL)),
+                ) { view, message, sourceOrigin, isMainFrame, _ ->
+                    if (!serviceSession.isCurrentPage(pageGeneration)) return@addWebMessageListener
+                    message.data?.let { payload ->
+                        authHandler.receive(sourceOrigin, isMainFrame, view.url, payload)
+                    }
+                }
+            } else {
+                Log.w(TAG, "Installed Android WebView does not support service auth messages.")
+            }
+            webViewClient =
+                object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(
+                        view: WebView,
+                        request: WebResourceRequest,
+                    ): Boolean {
+                        if (!serviceSession.isCurrentPage(pageGeneration)) return true
+                        if (!canLaunchNativeUI && !isTrustedPermissionOrigin(request.url, initialURL)) {
+                            serviceSession.requireAttention()
+                            return true
+                        }
+                        if (request.isForMainFrame) {
+                            serviceSession.invalidatePageAuthentication()
+                            authHandler.onNavigation(request.url.toString())
+                        }
+                        view.loadUrl(request.url.toString())
+                        return true
+                    }
+
+                    override fun onRenderProcessGone(
+                        view: WebView,
+                        detail: RenderProcessGoneDetail,
+                    ): Boolean {
+                        if (!serviceSession.isCurrentPage(pageGeneration)) return true
+                        rendererLost = true
+                        serviceSession.rendererLost()
+                        onAuthInvalidated()
+                        return true
+                    }
+
+                    override fun onPageStarted(
+                        view: WebView,
+                        url: String?,
+                        favicon: Bitmap?,
+                    ) {
+                        if (!serviceSession.isCurrentPage(pageGeneration)) return
+
+                        if (!canLaunchNativeUI &&
+                            url?.let { isTrustedPermissionOrigin(it.toUri(), initialURL) } != true
+                        ) {
+                            serviceSession.requireAttention()
+                            view.stopLoading()
+                        }
+                        serviceSession.invalidatePageAuthentication()
+                        authHandler.onNavigation(url)
+                        mediaPermissions.onNavigation()
+                        frontendTools.clear(view)
+
+                        automaticRetryState = automaticTimeoutRetryStateOnPageStarted(automaticRetryState)
+                        loadFailed = false
+                        loading = true
+                        serviceSession.updateLoad(
+                            if (recoveryLoadInProgress) {
+                                WebShellLoadState.Reconnecting
+                            } else {
+                                WebShellLoadState.Loading
+                            },
+                        )
+                    }
+
+                    override fun onPageFinished(
+                        view: WebView,
+                        url: String?,
+                    ) {
+                        if (!serviceSession.isCurrentPage(pageGeneration)) return
+
+                        if (!loadFailed) {
+                            automaticRetryState = automaticRetryState.copy(attempts = 0)
+                            recoveryLoadInProgress = false
+                            serviceSession.updateLoad(WebShellLoadState.Ready)
+                        }
+                        loading = automaticRetryState.pending
+                        if (serviceSession.state.value.bootstrap is ServiceBootstrapState.Unvalidated) {
+                            serviceSession.reloadBootstrap()
+                        }
+                    }
+
+                    override fun onReceivedError(
+                        view: WebView,
+                        request: WebResourceRequest,
+                        error: WebResourceError,
+                    ) {
+                        if (!request.isForMainFrame || !serviceSession.isCurrentPage(pageGeneration)) {
+                            return
+                        }
+
+                        loadFailed = true
+                        if (shouldAutomaticallyRetryWebLoadError(error.errorCode, automaticRetryState.attempts)) {
+                            automaticRetryState =
+                                automaticRetryState.copy(
+                                    attempts = automaticRetryState.attempts + 1,
+                                    pending = true,
+                                )
+                            recoveryLoadInProgress = true
+                            loading = true
+                            serviceSession.updateLoad(WebShellLoadState.Reconnecting)
+                        } else {
+                            val message = webLoadErrorMessage(error.errorCode)
+                            recoveryLoadInProgress = false
+                            loading = false
+                            serviceSession.updateLoad(WebShellLoadState.Failed(message))
+                        }
+                    }
+                }
+            val hostView = this
+            webChromeClient =
+                object : WebChromeClient() {
+                    override fun onJsAlert(
+                        view: WebView,
+                        url: String,
+                        message: String,
+                        result: JsResult,
+                    ): Boolean = rejectHiddenDialog(result)
+
+                    override fun onJsConfirm(
+                        view: WebView,
+                        url: String,
+                        message: String,
+                        result: JsResult,
+                    ): Boolean = rejectHiddenDialog(result)
+
+                    override fun onJsBeforeUnload(
+                        view: WebView,
+                        url: String,
+                        message: String,
+                        result: JsResult,
+                    ): Boolean = rejectHiddenDialog(result)
+
+                    override fun onJsPrompt(
+                        view: WebView,
+                        url: String,
+                        message: String,
+                        defaultValue: String,
+                        result: JsPromptResult,
+                    ): Boolean = rejectHiddenDialog(result)
+
+                    private fun rejectHiddenDialog(result: JsResult): Boolean {
+                        if (canLaunchNativeUI) return false
+                        serviceSession.requireAttention()
+                        result.cancel()
+                        return true
+                    }
+
+                    override fun onPermissionRequest(request: PermissionRequest) {
+                        if (!canLaunchNativeUI) {
+                            serviceSession.requireAttention()
+                            request.deny()
+                            return
+                        }
+                        val permissionOwner = attachment
+                        val missing =
+                            mediaPermissions.request(request, hostURL) {
+                                attachment === permissionOwner && canLaunchNativeUI &&
+                                    serviceSession.isCurrentPage(pageGeneration) &&
+                                    hostView.url?.toUri()?.let { isTrustedPermissionOrigin(it, hostURL) } == true
+                            }
+                        if (missing.isNotEmpty()) {
+                            launchMediaPermissions(missing)
+                        }
+                    }
+
+                    override fun onPermissionRequestCanceled(request: PermissionRequest) {
+                        mediaPermissions.cancel(request)
+                    }
+
+                    override fun onShowFileChooser(
+                        webView: WebView,
+                        filePathCallback: ValueCallback<Array<Uri>>,
+                        fileChooserParams: FileChooserParams,
+                    ): Boolean {
+                        if (!canLaunchNativeUI) {
+                            serviceSession.requireAttention()
+                            filePathCallback.onReceiveValue(emptyArray())
+                            return true
+                        }
+                        fileChooserCallback?.onReceiveValue(emptyArray())
+                        fileChooserCallback = filePathCallback
+                        launchFileChooser(
+                            webFileChooserIntent(
+                                fileChooserParams.acceptTypes,
+                                fileChooserParams.mode == FileChooserParams.MODE_OPEN_MULTIPLE,
+                            ),
+                        )
+                        return true
+                    }
+
+                    override fun onCreateWindow(
+                        view: WebView,
+                        isDialog: Boolean,
+                        isUserGesture: Boolean,
+                        resultMsg: Message,
+                    ): Boolean {
+                        if (!canLaunchNativeUI) {
+                            serviceSession.requireAttention()
+                            return false
+                        }
+                        return openNewWindowInExternalBrowser(view, resultMsg) { uri ->
+                            if (canLaunchNativeUI) openExternalBrowser(context, uri) else false
+                        }
+                    }
+                }
         }
 
-    LaunchedEffect(visible, webView) {
-        if (rendererLost) return@LaunchedEffect
+    init {
+        serviceSession.ownPage(::close)
+        setVisible(false)
+    }
+
+    fun attach(
+        owner: Any,
+        context: Context,
+        hostMediaPermissions: WebMediaPermissions,
+        authInvalidated: () -> Unit,
+        sharedAuthInvalidated: () -> Unit,
+        mediaLauncher: (Array<String>) -> Unit,
+        fileLauncher: (Intent) -> Unit,
+    ) {
+        if (attachment !== owner) setVisible(false)
+        if (mediaPermissions !== hostMediaPermissions) mediaPermissions.onNavigation()
+        attachment = owner
+        mediaPermissions = hostMediaPermissions
+        pageContext.baseContext = context
+        onAuthInvalidated = authInvalidated
+        onSharedAuthInvalidated = sharedAuthInvalidated
+        launchMediaPermissions = mediaLauncher
+        launchFileChooser = fileLauncher
+    }
+
+    fun detach(expectedOwner: Any) {
+        if (attachment !== expectedOwner) return
+        setVisible(false)
+        (webView.parent as? ViewGroup)?.removeView(webView)
+        pageContext.baseContext = applicationContext
+        attachment = null
+        mediaPermissions = WebMediaPermissions(applicationContext)
+        onAuthInvalidated = {}
+        onSharedAuthInvalidated = {}
+        launchMediaPermissions = { mediaPermissions.onNavigation() }
+        launchFileChooser = {
+            fileChooserCallback?.onReceiveValue(emptyArray())
+            fileChooserCallback = null
+        }
+    }
+
+    fun completeFileChooser(
+        owner: Any,
+        uris: Array<Uri>,
+    ) {
+        if (attachment !== owner) return
+        fileChooserCallback?.onReceiveValue(if (canLaunchNativeUI) uris else emptyArray())
+        fileChooserCallback = null
+    }
+
+    fun setHostVisible(
+        owner: Any,
+        visible: Boolean,
+    ) {
+        if (attachment === owner) setVisible(visible)
+    }
+
+    private fun setVisible(visible: Boolean) {
+        val nativeAllowed =
+            visible && !context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked
+        if (closed || rendererLost || (visibility == visible && nativeInteractionAllowed == nativeAllowed)) return
+        visibility = visible
+        nativeInteractionAllowed = nativeAllowed
+        hostBridge.setPageVisible(visible)
+        hostBridge.setMediaAllowed(nativeAllowed)
         webView.isFocusable = visible
         webView.isFocusableInTouchMode = visible
         if (WebViewFeature.isFeatureSupported(WebViewFeature.MUTE_AUDIO) &&
@@ -366,12 +521,12 @@ internal fun WebShellScreen(
         } else if (!visible) {
             rendererLost = true
             serviceSession.pageUnavailable("This WebView cannot isolate hidden servers. Update Android System WebView.")
-            return@LaunchedEffect
+            return
         }
         if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_AUTHENTICATION)) {
             WebSettingsCompat.setWebAuthenticationSupport(
                 webView.settings,
-                if (visible) {
+                if (nativeAllowed) {
                     WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_APP
                 } else {
                     WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_NONE
@@ -379,25 +534,27 @@ internal fun WebShellScreen(
             )
         }
         webView.evaluateJavascript("window.dispatchEvent(new Event('gomodevisibilitychange'))", null)
+        if (!nativeAllowed) {
+            mediaPermissions.onNavigation()
+            fileChooserCallback?.onReceiveValue(emptyArray())
+            fileChooserCallback = null
+        }
         if (visible) {
             serviceSession.acknowledgeAttention()
             webView.onResume()
         } else {
-            mediaPermissions.onNavigation()
-            fileChooserCallback?.onReceiveValue(emptyArray())
-            fileChooserCallback = null
             webView.clearFocus()
             webView.onPause()
         }
     }
 
-    LaunchedEffect(webView, reloadToken) {
-        if (rendererLost) return@LaunchedEffect
+    fun load(reloadToken: Int) {
+        if (closed || rendererLost) return
         val state = serviceSession.state.value
         // The initial load may see a navigation queued before its caller recomposes.
         // Apply that command's token once, together with its destination.
         val token = if (state.navigationURL != null) state.webReloadToken else reloadToken
-        if (token == appliedReloadToken) return@LaunchedEffect
+        if (token == appliedReloadToken) return
         val initialLoad = appliedReloadToken == null
         appliedReloadToken = token
         val destination = serviceSession.consumeNavigationURL()?.let(::goModeHostURL)
@@ -408,34 +565,31 @@ internal fun WebShellScreen(
             recoveryLoadInProgress = true
             loadFailed = false
             loading = true
-            currentOnLoadStateChanged(WebShellLoadState.Reconnecting)
+            serviceSession.updateLoad(WebShellLoadState.Reconnecting)
             serviceSession.reloadPage {
                 if (destination == null) webView.reload() else webView.loadUrl(destination)
             }
         }
     }
 
-    LaunchedEffect(voiceConnected, webView) {
-        if (rendererLost) return@LaunchedEffect
-        GoModeHostBridge.setVoiceConnected(voiceConnected)
-        webView.evaluateJavascript(
-            "window.dispatchEvent(new CustomEvent('gomodevoicechange'))",
-            null,
-        )
+    fun setVoiceConnected(connected: Boolean) {
+        if (closed || rendererLost) return
+        GoModeHostBridge.setVoiceConnected(connected)
+        webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('gomodevoicechange'))", null)
     }
 
-    LaunchedEffect(hostURL, automaticRetryState.pending) {
-        if (rendererLost || !automaticRetryState.pending) return@LaunchedEffect
-        delay(AUTOMATIC_TIMEOUT_RETRY_DELAY_MILLIS)
-        if (automaticRetryState.pending) {
-            automaticRetryState = automaticRetryState.copy(pending = false, inProgress = true)
-            serviceSession.reloadPage(webView::reload)
+    private fun scheduleRetry() {
+        scope.launch {
+            if (rendererLost || !automaticRetryState.pending) return@launch
+            delay(AUTOMATIC_TIMEOUT_RETRY_DELAY_MILLIS)
+            if (automaticRetryState.pending) {
+                automaticRetryState = automaticRetryState.copy(pending = false, inProgress = true)
+                serviceSession.reloadPage(webView::reload)
+            }
         }
     }
 
-    // The hosted frontend owns in-page routes, so Android Back must ask the SPA
-    // router to move before falling back to WebView's document-level history.
-    BackHandler(enabled = visible && !rendererLost) {
+    fun goBack() {
         webView.evaluateJavascript(
             """
             const before = window.location.pathname;
@@ -463,43 +617,14 @@ internal fun WebShellScreen(
         }
     }
 
-    DisposableEffect(webView) {
-        var destroyed = false
-        val release = {
-            if (!destroyed) {
-                destroyed = true
-                mediaPermissions.onNavigation()
-                fileChooserCallback?.onReceiveValue(emptyArray())
-                fileChooserCallback = null
-                (webView.parent as? ViewGroup)?.removeView(webView)
-                webView.destroy()
-            }
-        }
-        serviceSession.ownPage(release)
-        onDispose {
-            mediaPermissions.onNavigation()
-            if (serviceSession.isCurrentPage(pageGeneration)) {
-                authHandler.onNavigation(null)
-                serviceSession.closePage(pageGeneration)
-            }
-            release()
-        }
-    }
-
-    if (!visible || rendererLost) return
-
-    Box(Modifier.fillMaxSize().statusBarsPadding().testTag("gomode-web-shell")) {
-        key(serviceID, hostURL) {
-            AndroidView(
-                factory = { webView },
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
-        if (loading) {
-            CircularProgressIndicator(
-                modifier = Modifier.align(Alignment.Center).testTag("gomode-web-loading"),
-            )
-        }
+    fun close() {
+        closed = true
+        mediaPermissions.onNavigation()
+        fileChooserCallback?.onReceiveValue(emptyArray())
+        fileChooserCallback = null
+        scope.cancel()
+        (webView.parent as? ViewGroup)?.removeView(webView)
+        webView.destroy()
     }
 }
 
@@ -701,8 +826,8 @@ private fun goModeHostURL(url: String): String =
         .build()
         .toString()
 
-// Stop existing captures when a page is hidden, including requests resolving after selection changed.
-// Native permission callbacks separately reject hidden requests before any Android UI is launched.
+// Stop captures when a page is hidden or the phone locks, including requests resolving after that change.
+// Showing service content over keyguard does not authorize capture or native permission prompts.
 private val HIDDEN_MEDIA_GUARD =
     """
     (() => {
@@ -717,7 +842,7 @@ private val HIDDEN_MEDIA_GUARD =
           track[ownersKey].add(owner);
           tracks.add(track);
           track.addEventListener('ended', () => tracks.delete(track), {once:true});
-          if (!goModeHost.isPageVisible()) track.stop();
+          if (!goModeHost.isMediaAllowed()) track.stop();
         },
         release(track) { tracks.delete(track); }
       };
@@ -741,14 +866,14 @@ private val HIDDEN_MEDIA_GUARD =
       };
       const original = media.getUserMedia.bind(media);
       media.getUserMedia = async constraints => {
-        if (!goModeHost.isPageVisible()) throw new DOMException('Select this server first', 'NotAllowedError');
+        if (!goModeHost.isMediaAllowed()) throw new DOMException('Unlock and select this server to capture media', 'NotAllowedError');
         const stream = await original(constraints);
         stream.getTracks().forEach(track => owner.own(track));
-        if (!goModeHost.isPageVisible()) throw new DOMException('Server is hidden', 'NotAllowedError');
+        if (!goModeHost.isMediaAllowed()) throw new DOMException('Media capture is unavailable', 'NotAllowedError');
         return stream;
       };
       const updateVisibility = () => {
-        if (!goModeHost.isPageVisible()) {
+        if (!goModeHost.isMediaAllowed()) {
           tracks.forEach(track => track.stop());
           tracks.clear();
         }
@@ -769,6 +894,16 @@ private const val TAG = "GoModeWebShell"
 internal class GoModeHostBridge {
     @Volatile
     private var pageVisible = true
+
+    @Volatile
+    private var mediaAllowed = false
+
+    fun setMediaAllowed(allowed: Boolean) {
+        mediaAllowed = allowed
+    }
+
+    @JavascriptInterface
+    fun isMediaAllowed(): Boolean = mediaAllowed
 
     fun setPageVisible(visible: Boolean) {
         pageVisible = visible

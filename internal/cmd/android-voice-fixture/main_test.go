@@ -107,8 +107,8 @@ func TestFixtureVoiceChoices(t *testing.T) {
 	if len(catalog.Choices) != 1 || catalog.Choices[0].ID != catalog.DefaultChoiceID {
 		t.Fatalf("catalog must select its single fixture choice: %+v", catalog)
 	}
-	if got := catalog.Choices[0].Transports; len(got) != 1 || got[0] != voicev1.VoiceTransportText {
-		t.Fatalf("fixture transports = %v, want text only", got)
+	if got := catalog.Choices[0].Transports; len(got) != 2 || got[0] != voicev1.VoiceTransportText || got[1] != voicev1.VoiceTransportWebRTC {
+		t.Fatalf("fixture transports = %v, want text and WebRTC", got)
 	}
 }
 
@@ -229,7 +229,7 @@ func TestFixtureTextSession(t *testing.T) {
 	}
 }
 
-func TestFixtureRefusesOffer(t *testing.T) {
+func TestFixtureRejectsInvalidOffer(t *testing.T) {
 	t.Parallel()
 	srv := newFixture(t)
 	resp, err := httpPost(t, srv.URL+"/api/voicegateway/v1/voice/rtc/offer", "application/json", bytes.NewReader([]byte(`{"sdp":"v=0"}`)))
@@ -237,7 +237,7 @@ func TestFixtureRefusesOffer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
 	}
 }

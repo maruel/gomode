@@ -22,9 +22,13 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
@@ -250,7 +254,7 @@ class DeviceVoiceSessionTest {
                     repository.settings.value.services.associate { service ->
                         val key = ServiceShellKey(service.id, service.url)
                         key to
-                            ServiceShellSession(key).also { entry ->
+                            ServiceShellSession(key) {}.also { entry ->
                                 entry.bearerStore.onNavigation(key.url)
                                 check(
                                     entry.bearerStore.receive(
@@ -270,7 +274,7 @@ class DeviceVoiceSessionTest {
                 val listener = CompletableDeferred<WebSocketListener>()
                 var transports = 0
                 var pendingSwitch: CompletableDeferred<Unit>? = null
-                val switchBlocked = CompletableDeferred<Unit>()
+                val switchBlocked = Channel<Unit>()
                 lateinit var session: DeviceVoiceSession
                 session =
                     DeviceVoiceSession(
@@ -285,7 +289,7 @@ class DeviceVoiceSessionTest {
                             repository.settings.first { it.activeServiceId == id }
                             session.injectText(owner.contextText())
                             pendingSwitch?.let {
-                                switchBlocked.complete(Unit)
+                                switchBlocked.send(Unit)
                                 it.await()
                             }
                         },
@@ -317,11 +321,22 @@ class DeviceVoiceSessionTest {
                     backend.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
                     backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
                     for (target in listOf(second, first)) {
+                        val finishSwitch = CompletableDeferred<Unit>()
+                        pendingSwitch = finishSwitch
                         backend.onMessage(
                             socket,
                             """{"kind":"tool.call","id":"$target","name":"switch_server","args":{"server_id":"$target"}}""",
                         )
+                        switchBlocked.receive()
                         repository.settings.first { it.activeServiceId == target }
+                        // Settings publish before the tool finishes. Force that ordering
+                        // instead of treating the new selection as a result-send barrier.
+                        assertFalse(socket.sent.any { it.contains("tool.result") && it.contains(target) })
+                        finishSwitch.complete(Unit)
+                        socket.awaitSent { frames ->
+                            frames.any { it.contains("tool.result") && it.contains(target) }
+                        }
+                        pendingSwitch = null
                         assertTrue(socket.sent.last().contains("tool.result"))
                         val toolResultIndex = socket.sent.lastIndex
                         val usersBefore = socket.sent.count { it.contains("user.message") }
@@ -330,6 +345,9 @@ class DeviceVoiceSessionTest {
                         assertEquals(cancellationsBefore + 1, socket.sent.count { it.contains("turn.cancel") })
                         assertEquals(usersBefore, socket.sent.count { it.contains("user.message") })
                         backend.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
+                        socket.awaitSent { frames ->
+                            frames.drop(toolResultIndex + 1).any { it.contains("user.message") }
+                        }
                         val resumed = socket.sent.drop(toolResultIndex + 1)
                         assertTrue(resumed[resumed.lastIndex - 1].contains("context.update"))
                         assertTrue(resumed[resumed.lastIndex - 1].contains(target))
@@ -349,7 +367,7 @@ class DeviceVoiceSessionTest {
                         socket,
                         """{"kind":"tool.call","id":"delayed","name":"switch_server","args":{"server_id":"$second"}}""",
                     )
-                    switchBlocked.await()
+                    switchBlocked.receive()
                     val usersBefore = socket.sent.count { it.contains("user.message") }
                     requireNotNull(speech.resultCallback)("Continue after the switch")
                     assertEquals(com.caic.voicegateway.sdk.v1.TurnState.Thinking, session.state.value.turnState)
@@ -357,6 +375,9 @@ class DeviceVoiceSessionTest {
                     assertEquals(com.caic.voicegateway.sdk.v1.TurnState.Thinking, session.state.value.turnState)
                     assertEquals(usersBefore, socket.sent.count { it.contains("user.message") })
                     finishSwitch.complete(Unit)
+                    socket.awaitSent { frames ->
+                        frames.last().contains("user.message") && frames.last().contains("Continue after the switch")
+                    }
                     assertTrue(socket.sent[socket.sent.lastIndex - 2].contains("tool.result"))
                     assertTrue(socket.sent[socket.sent.lastIndex - 1].contains("context.update"))
                     assertTrue(socket.sent.last().contains("user.message"))
@@ -1211,6 +1232,8 @@ class DeviceVoiceSessionTest {
         requireNotNull(listener).onOpen(socket, upgradeResponse())
         requireNotNull(listener).onMessage(socket, """{"kind":"session.ready"}""")
         assertEquals(1, calls.started)
+        assertEquals("Test Server", calls.serverName)
+        assertEquals("test-server", calls.serverID)
         assertEquals(1, calls.activated)
 
         calls.audio.value =
@@ -1843,6 +1866,69 @@ class DeviceVoiceSessionTest {
         }
 
     @Test
+    fun `keyword startup adopts saved caller identity without beginning a shared conversation`() =
+        runTest {
+            for (engineType in listOf(OnDeviceEngine.NEEDLE_WHISTLE, OnDeviceEngine.NEUDECIDE)) {
+                for (offline in listOf(false, true)) {
+                    val repo = SettingsRepository(InMemoryPreferencesDataStore())
+                    repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
+                    selectEngine(repo, engineType)
+                    val savedID = repo.addService("Saved caller", "https://saved.example")
+                    repo.settings.first { it.activeServiceId == savedID }
+                    val conversation = localConversation(repo)
+                    val calls = FakeVoiceCallController()
+                    var initialized = false
+                    val session =
+                        createSession(
+                            speech = FakeSpeech(),
+                            settingsRepo = repo,
+                            calls = calls,
+                            voiceConversation = conversation,
+                            setupProvider = {
+                                if (offline) throw VoiceSetupException("Offline")
+                                testSetup().copy(serverName = "Saved caller", serverID = savedID)
+                            },
+                            engineFactory = { selected ->
+                                object : OnDeviceVoiceEngine {
+                                    override val engineType = selected
+
+                                    override suspend fun initialize(context: EngineSessionContext) {
+                                        assertEquals(engineType, selected)
+                                        assertEquals(savedID, calls.serverID)
+                                        assertEquals("Saved caller", calls.serverName)
+                                        initialized = true
+                                    }
+
+                                    override suspend fun processTurn(
+                                        input: UserTurnInput,
+                                        onDelta: (String) -> Unit,
+                                        onToolCall: suspend (
+                                            com.caic.voicegateway.sdk.v1.ToolCall,
+                                        ) -> kotlinx.serialization.json.JsonElement?,
+                                    ) = EngineTurnResult(assistantText = "")
+
+                                    override suspend fun injectContext(text: String) = Unit
+
+                                    override fun close() = Unit
+                                }
+                            },
+                        )
+                    try {
+                        session.connect()
+                        assertTrue(initialized)
+                        assertTrue(session.state.value.toString(), session.state.value.connected)
+                        assertNull(session.state.value.error)
+                        assertFalse(conversation.isCurrent())
+                        assertEquals(1, calls.activated)
+                    } finally {
+                        session.close()
+                        conversation.finish()
+                    }
+                }
+            }
+        }
+
+    @Test
     fun `offline fallback runs on-device engine when remote gateway setup fails`() =
         runTest {
             val speech = FakeSpeech()
@@ -2149,6 +2235,8 @@ class DeviceVoiceSessionTest {
 
     private fun testSetup(): VoiceSetup =
         VoiceSetup(
+            serverName = "Test Server",
+            serverID = "test-server",
             gatewayEndpointURL = "https://gateway.example.com",
             service = null,
             tokenEndpointURL = null,
@@ -2234,7 +2322,13 @@ class DeviceVoiceSessionTest {
     }
 
     private class FakeWebSocket : WebSocket {
-        val sent = mutableListOf<String>()
+        private val sentMessages = MutableStateFlow<List<String>>(emptyList())
+        val sent: List<String> get() = sentMessages.value
+
+        suspend fun awaitSent(predicate: (List<String>) -> Boolean) {
+            sentMessages.first(predicate)
+        }
+
         var closed = false
         private val request = Request.Builder().url("https://gateway.example.com").build()
 
@@ -2243,7 +2337,7 @@ class DeviceVoiceSessionTest {
         override fun queueSize(): Long = 0
 
         override fun send(text: String): Boolean {
-            sent.add(text)
+            sentMessages.update { it + text }
             return true
         }
 
@@ -2280,6 +2374,8 @@ class DeviceVoiceSessionTest {
             selectedDevice = deviceId
         }
 
+        var serverName: String? = null
+        var serverID: String? = null
         var started = 0
         var activated = 0
         var endedLocal = 0
@@ -2288,7 +2384,13 @@ class DeviceVoiceSessionTest {
 
         override fun isSupported(): Boolean = supported
 
-        override suspend fun start(onTelecomDisconnect: () -> Unit): Boolean {
+        override suspend fun start(
+            serverName: String,
+            serverID: String?,
+            onTelecomDisconnect: () -> Unit,
+        ): Boolean {
+            this.serverName = serverName
+            this.serverID = serverID
             started++
             telecomEnded = false
             disconnectHandler = {
@@ -2313,14 +2415,14 @@ class DeviceVoiceSessionTest {
     }
 
     private class InMemoryPreferencesDataStore : DataStore<Preferences> {
+        private val writeMutex = Mutex()
         private val current = MutableStateFlow(emptyPreferences())
 
         override val data: Flow<Preferences> = current
 
-        override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences {
-            val after = transform(current.value)
-            current.value = after
-            return after
-        }
+        override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences =
+            writeMutex.withLock {
+                transform(current.value).also { current.value = it }
+            }
     }
 }

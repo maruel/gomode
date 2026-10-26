@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="car_dial_end">End voice</string>
+    <string name="car_dial_dismiss">Dismiss</string>
+    <string name="car_dial_connecting">Connecting voice…</string>
+    <string name="car_dial_connected">Voice connected</string>
+    <string name="car_dial_failed">Could not start voice. Unlock Go Mode to check sign-in and voice settings.</string>
+</resources>

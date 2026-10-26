@@ -12,7 +12,7 @@ VERIFY_GO = go test -run=^$$ ./... && go test -race -run=^$$ ./voicegateway/voic
 VERIFY_PY = uv run --locked ruff check --quiet scripts && uv run --locked ruff format --check --quiet scripts && uv run --locked python scripts/generate_thinking_score.py --check
 VERIFY_SH = files=$$(git ls-files "*.sh" "scripts/hooks/*"); [ -z "$$files" ] || go tool shfmt -d $$files
 VERIFY_MISC = uv run --locked python scripts/lint_binaries.py && uv run --locked python scripts/update_agents_file_index.py --check && git diff --check
-VERIFY_ANDROID = cd ./android && ./gradlew :gomode:ktlintCheck :halo-sdk:ktlintCheck :gomode:detekt :gomode:lintDebug :oauth-sdk:assemble --quiet
+VERIFY_ANDROID = cd ./android && ./gradlew :gomode:ktlintCheck :halo-sdk:ktlintCheck :car-dial-fixture:ktlintCheck :gomode:detekt :car-dial-fixture:detekt :gomode:lintDebug :car-dial-fixture:lintDebug :oauth-sdk:assemble --quiet
 
 node_modules/.modules.yaml: package.json pnpm-lock.yaml
 	@pnpm install --frozen-lockfile --silent
@@ -36,6 +36,7 @@ help:
 	@printf '  %-27s - %s\n' 'make test-smoke' 'Run local model voice smoke tests (slow, downloads models)'
 	@printf '  %-27s - %s\n' 'make android-check' 'Run Android lint, builds, unit tests, and coverage'
 	@printf '  %-27s - %s\n' 'make android-e2e' 'Run Android instrumented tests on an emulator'
+	@printf '  %-27s - %s\n' 'make android-car-dial-e2e' 'Exercise real Telecom routing with a controlled phone account'
 	@printf '  %-27s - %s\n' 'make screenshots-update' 'Capture and publish repeatable native Android scenes'
 	@printf '  %-27s - %s\n' 'make screenshots-check' 'Compare native Android captures with committed baselines'
 	@printf '  %-27s - %s\n' 'make screenshots-generate' 'Render native captures once without baseline checks'
@@ -59,7 +60,7 @@ fix: android-sdk node_modules/.modules.yaml
 	@uv run --locked ruff check --quiet --fix scripts
 	@uv run --locked ruff format scripts >/dev/null
 	@files=$$(git ls-files '*.sh' 'scripts/hooks/*'); [ -z "$$files" ] || go tool shfmt -w $$files
-	@cd ./android && ./gradlew :gomode:ktlintFormat :halo-sdk:ktlintFormat --quiet
+	@cd ./android && ./gradlew :gomode:ktlintFormat :halo-sdk:ktlintFormat :car-dial-fixture:ktlintFormat --quiet
 	@uv run --locked python scripts/update_agents_file_index.py
 
 verify: android-sdk node_modules/.modules.yaml
@@ -104,6 +105,13 @@ upgrade:
 
 android-check: android-sdk
 	@cd ./android && ./gradlew :gomode:assembleDebug :halo-sdk:assembleDebug :gomode-sdk:assemble :mcp-sdk:assemble :oauth-sdk:assemble :voicegateway-sdk:assemble :gomode:assembleDebugAndroidTest :halo-sdk:assembleDebugAndroidTest :gomode:detekt :halo-sdk:detekt :gomode:ktlintCheck :halo-sdk:ktlintCheck :gomode:lintDebug :halo-sdk:lintDebug :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest :gomode:createDebugUnitTestCoverageReport :halo-sdk:createDebugUnitTestCoverageReport --quiet
+	@cd ./android && ./gradlew :car-dial-fixture:assembleDebug :car-dial-fixture:assembleDebugAndroidTest :car-dial-fixture:detekt :car-dial-fixture:ktlintCheck :car-dial-fixture:lintDebug --quiet
+
+# Slow: the fixture's separate instrumentation process can kill and cold-start Go Mode.
+.PHONY: android-car-dial-e2e
+android-car-dial-e2e: android-sdk
+	@uv run --locked python scripts/android_start_emulator.py --reuse-connected-device
+	@uv run --locked python scripts/android_e2e.py --car-dial
 
 generate-sdks:
 	@go run ./internal/cmd/gen-sdk

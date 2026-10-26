@@ -55,6 +55,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
 import com.caic.voicegateway.sdk.v1.TurnState
+import com.fghbuild.gomode.LockedCarCall
 import com.fghbuild.gomode.ui.theme.GoModeTheme
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -62,6 +63,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
 class VoicePanelTest {
@@ -700,6 +702,73 @@ class VoicePanelTest {
             .assertIsDisplayed()
             .performClick()
         assertEquals(2, selected)
+    }
+
+    @Test
+    fun lockedCardShowsLiveTranscriptAndConfirmedAudioRouteWhileSwitching() {
+        val state =
+            mutableStateOf(
+                VoiceState(
+                    connected = true,
+                    availableDevices =
+                        listOf(
+                            AudioDevice(1, AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, "Speaker"),
+                            AudioDevice(2, AudioDeviceInfo.TYPE_BLUETOOTH_SCO, "Tesla"),
+                        ),
+                    selectedDeviceId = 1,
+                    transcript =
+                        listOf(
+                            TranscriptEntry(TranscriptSpeaker.USER, "How is the service doing?", final = true),
+                            TranscriptEntry(TranscriptSpeaker.ASSISTANT, "Your service is ready."),
+                        ),
+                ),
+            )
+        var requested: Int? = null
+        var ended = false
+        composeRule.setContent {
+            GoModeTheme {
+                LockedCarCall(
+                    state = CarDialVoiceState("call", "Example service", CarDialStatus.CONNECTED),
+                    voiceState = state.value,
+                    onSelectDevice = { requested = it },
+                    onEnd = { ended = true },
+                )
+            }
+        }
+        composeRule.onNodeWithText("You: How is the service doing?").assertIsDisplayed()
+        composeRule.onNodeWithText("Assistant: Your service is ready.").assertIsDisplayed()
+        composeRule.onNodeWithTag("gomode-voice-audio-1").assertIsDisplayed().assertIsOn()
+        composeRule.onNodeWithTag("gomode-voice-audio-2").assertIsDisplayed().performClick()
+        assertEquals(2, requested)
+        captureLockedCard("routes")
+        composeRule.runOnIdle { state.value = state.value.copy(audioSwitching = true) }
+        composeRule.onNodeWithTag("gomode-voice-audio-1").assertIsOn().assertIsNotEnabled()
+        composeRule.onNodeWithTag("gomode-voice-audio-2").assertIsNotEnabled()
+        captureLockedCard("switching")
+        composeRule.runOnIdle {
+            state.value =
+                state.value.copy(
+                    audioSwitching = false,
+                    selectedDeviceId = 2,
+                    transcript = state.value.transcript + TranscriptEntry(TranscriptSpeaker.USER, "Switch to the car."),
+                )
+        }
+        composeRule.onNodeWithTag("gomode-voice-audio-2").assertIsOn()
+        composeRule.onNodeWithText("You: Switch to the car.").assertIsDisplayed()
+        composeRule.onNodeWithTag("car_dial_end").assertIsDisplayed().performClick()
+        assertTrue(ended)
+    }
+
+    private fun captureLockedCard(scene: String) {
+        composeRule.waitForIdle()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val device = UiDevice.getInstance(instrumentation)
+        device.waitForIdle()
+        assertTrue(
+            device.takeScreenshot(
+                File(instrumentation.targetContext.getExternalFilesDir(null), "locked-card-$scene.png"),
+            ),
+        )
     }
 
     @OptIn(ExperimentalTestApi::class)

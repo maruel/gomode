@@ -24,6 +24,7 @@ dependencyResolutionManagement {
 
 rootProject.name = "gomode"
 include(":gomode")
+include(":car-dial-fixture")
 include(":voicegateway-sdk")
 project(":voicegateway-sdk").projectDir = file("../sdk/voicegateway/kotlin")
 include(":gomode-sdk")

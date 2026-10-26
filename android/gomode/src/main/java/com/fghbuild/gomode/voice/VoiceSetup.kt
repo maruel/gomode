@@ -19,8 +19,14 @@ internal class VoiceSetupException(
     message: String,
 ) : Exception(message)
 
+// Foreground ownership starts at the user's connect action, before discovery can suspend.
+internal fun initialVoiceCallerName(settings: SettingsState): String =
+    settings.services.firstOrNull { it.id == settings.activeServiceId }?.label ?: "Go Mode"
+
 /** VoiceSetup is the resolved service, gateway, and MCP state for one voice session. */
 internal data class VoiceSetup(
+    val serverName: String,
+    val serverID: String?,
     val gatewayEndpointURL: String,
     val service: ServiceAuthorization?,
     val choiceID: String? = null,
@@ -36,6 +42,8 @@ internal data class VoiceSetup(
 /** Returns a standalone voice setup for offline or direct on-device engine execution. */
 internal fun standaloneVoiceSetup(): VoiceSetup =
     VoiceSetup(
+        serverName = "Go Mode",
+        serverID = null,
         gatewayEndpointURL = "",
         service = null,
         tokenEndpointURL = null,
@@ -151,6 +159,8 @@ internal suspend fun prepareVoiceSetup(
         throw VoiceSetupException("Service authentication changed. Try connecting again.")
     }
     return VoiceSetup(
+        serverName = serviceSettings.service,
+        serverID = settings.activeServiceId,
         gatewayEndpointURL = gatewayEndpointURL,
         choiceID = selection?.choiceID,
         voiceName = selection?.voiceName.orEmpty(),

@@ -14,6 +14,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -153,10 +155,11 @@ class NativeVoiceToolsTest {
     private fun args(payload: String): JsonObject = Json.parseToJsonElement(payload).jsonObject
 
     private class MemoryStore : DataStore<Preferences> {
+        private val writeMutex = Mutex()
         private val state = MutableStateFlow(emptyPreferences())
         override val data: Flow<Preferences> = state
 
         override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences =
-            transform(state.value).also { state.value = it }
+            writeMutex.withLock { transform(state.value).also { state.value = it } }
     }
 }

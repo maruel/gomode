@@ -25,9 +25,12 @@ import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.ui.GoModeApp
 import com.fghbuild.gomode.ui.theme.GoModeTheme
+import com.fghbuild.gomode.ui.web.ServiceShellOwner
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.runTest
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -80,10 +83,11 @@ class ServerVoiceSwitchTest {
                     repository.settings.first { it.activeServiceId == cookieID && it.voiceMode == mode }
                     val context = InstrumentationRegistry.getInstrumentation().targetContext
                     val owner = LocalModelOwner(context)
+                    val shellOwner = ServiceShellOwner(context, repository)
                     val mounted = mutableStateOf(true)
                     try {
                         composeRule.setContent {
-                            if (mounted.value) GoModeTheme { GoModeApp(repository, owner) }
+                            if (mounted.value) GoModeTheme { GoModeApp(shellOwner, owner) }
                         }
                         composeRule.waitUntil(30_000) {
                             composeRule.onAllNodesWithTag("gomode-voice-connect").fetchSemanticsNodes().isNotEmpty()
@@ -485,6 +489,7 @@ class ServerVoiceSwitchTest {
                         composeRule.runOnIdle { mounted.value = false }
                         composeRule.waitForIdle()
                         composeRule.waitUntil(30_000) { cookie.connections.isEmpty() && bearer.connections.isEmpty() }
+                        composeRule.runOnIdle { shellOwner.close() }
                         owner.close()
                         cookie.close()
                         bearer.close()
@@ -508,9 +513,10 @@ class ServerVoiceSwitchTest {
                 repository.settings.first { it.activeServiceId == sourceID && it.voiceMode == VoiceMode.CLOUD }
                 val context = InstrumentationRegistry.getInstrumentation().targetContext
                 val owner = LocalModelOwner(context)
+                val shellOwner = ServiceShellOwner(context, repository)
                 val mounted = mutableStateOf(true)
                 try {
-                    composeRule.setContent { if (mounted.value) GoModeTheme { GoModeApp(repository, owner) } }
+                    composeRule.setContent { if (mounted.value) GoModeTheme { GoModeApp(shellOwner, owner) } }
                     composeRule.waitUntil(30_000) {
                         composeRule.onAllNodesWithTag("gomode-voice-connect").fetchSemanticsNodes().isNotEmpty()
                     }
@@ -534,6 +540,7 @@ class ServerVoiceSwitchTest {
                     readiness.countDown()
                     composeRule.runOnIdle { mounted.value = false }
                     composeRule.waitForIdle()
+                    composeRule.runOnIdle { shellOwner.close() }
                     owner.close()
                     fixture.close()
                 }
@@ -564,10 +571,11 @@ class ServerVoiceSwitchTest {
                     repository.addService("First", firstServer.url("/").toString())
                     val context = InstrumentationRegistry.getInstrumentation().targetContext
                     val owner = LocalModelOwner(context)
+                    val shellOwner = ServiceShellOwner(context, repository)
                     val mounted = mutableStateOf(true)
                     try {
                         composeRule.setContent {
-                            if (mounted.value) GoModeTheme { GoModeApp(repository, owner) }
+                            if (mounted.value) GoModeTheme { GoModeApp(shellOwner, owner) }
                         }
                         composeRule.waitUntil(30_000) { first.monitoringRequests.isNotEmpty() }
                         repository.switchService(secondID)
@@ -591,6 +599,7 @@ class ServerVoiceSwitchTest {
                         authentication.countDown()
                         composeRule.runOnIdle { mounted.value = false }
                         composeRule.waitForIdle()
+                        composeRule.runOnIdle { shellOwner.close() }
                         owner.close()
                     }
                 }
@@ -647,7 +656,7 @@ class ServerVoiceSwitchTest {
         }
     }
 
-    private class HostedVoiceFixture(
+    internal class HostedVoiceFixture(
         private val bearer: Boolean,
         private val gateway: Boolean = true,
         private val reloadBearer: Boolean = true,
@@ -930,15 +939,16 @@ class ServerVoiceSwitchTest {
     }
 
     private class MemoryPreferences : DataStore<Preferences> {
+        private val writeMutex = Mutex()
         private val state = MutableStateFlow(emptyPreferences())
         override val data: Flow<Preferences> = state
 
         override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences =
-            transform(state.value).also { state.value = it }
+            writeMutex.withLock { transform(state.value).also { state.value = it } }
     }
 }
 
-private class ControlledTransport(
+internal class ControlledTransport(
     private val sendMessage: (String) -> Boolean,
 ) {
     fun send(text: String): Boolean = sendMessage(text)

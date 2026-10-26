@@ -44,6 +44,7 @@ internal class VoiceConversation(
     private val settingsRepository: SettingsRepository,
     private val settingsClient: ServiceSettingsClient,
     private val catalog: ServiceCatalog,
+    private val authorityCurrent: () -> Boolean = { true },
     private val entries: () -> Map<ServiceShellKey, ServiceShellSession>,
 ) {
     private val mutableState = MutableStateFlow<VoiceConversationState?>(null)
@@ -90,6 +91,7 @@ internal class VoiceConversation(
 
     // Page availability can revoke dispatch without changing the gateway sponsor's authenticated identity.
     fun isCurrent(): Boolean {
+        if (!authorityCurrent()) return false
         val current = conversation ?: return false
         val sponsor = current.sponsor
         if (sponsor != null && (
@@ -170,6 +172,8 @@ internal class VoiceConversation(
         val settings = current.settings
         val setup =
             standaloneVoiceSetup().copy(
+                serverName = settings.services.firstOrNull { it.id == settings.activeServiceId }?.label ?: "Go Mode",
+                serverID = settings.activeServiceId.takeIf { it.isNotEmpty() },
                 mcpClient = null,
                 tools = nativeVoiceTools(settings) + serviceCatalogTools,
                 systemInstruction =

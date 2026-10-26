@@ -2,6 +2,7 @@
 package com.fghbuild.gomode.ui
 
 import android.Manifest
+import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -47,6 +48,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
@@ -54,8 +56,10 @@ import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
@@ -80,13 +84,14 @@ import com.fghbuild.gomode.ui.settings.SettingsScreen
 import com.fghbuild.gomode.ui.settings.rememberSettingsEdits
 import com.fghbuild.gomode.ui.web.FrontendVoiceTools
 import com.fghbuild.gomode.ui.web.ServiceShellKey
-import com.fghbuild.gomode.ui.web.ServiceShellRegistry
+import com.fghbuild.gomode.ui.web.ServiceShellOwner
 import com.fghbuild.gomode.ui.web.ServiceShellSession
 import com.fghbuild.gomode.ui.web.ServiceShellState
 import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.ui.web.WebShellScreen
 import com.fghbuild.gomode.ui.web.isTrustedPermissionOrigin
 import com.fghbuild.gomode.voice.AudioDevice
+import com.fghbuild.gomode.voice.CarDialStatus
 import com.fghbuild.gomode.voice.DeviceVoiceSession
 import com.fghbuild.gomode.voice.LocalModelOwner
 import com.fghbuild.gomode.voice.LocalModelSelection
@@ -104,8 +109,10 @@ import com.fghbuild.gomode.voice.usesGatewayVoice
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
@@ -133,12 +140,22 @@ internal sealed interface ServiceBootstrapState {
 
 @Composable
 internal fun GoModeApp(
-    settingsRepository: SettingsRepository,
+    shellOwner: ServiceShellOwner,
     localModelOwner: LocalModelOwner,
     notificationDestination: ServiceNotificationDestination? = null,
     onNotificationHandled: (ServiceNotificationDestination) -> Unit = {},
+    showWhenLocked: Boolean = false,
 ) {
     val context = LocalContext.current
+    val keyguard = context.getSystemService(KeyguardManager::class.java)
+    val keyguardLocked = rememberKeyguardLocked()
+    val settingsRepository = shellOwner.settingsRepository
+    shellOwner.start()
+    val shellSnapshot by shellOwner.state.collectAsStateWithLifecycle()
+    val carVoiceOwner = (context.applicationContext as GoModeApplication).carDialVoiceOwner
+    val carVoiceState by carVoiceOwner.state.collectAsStateWithLifecycle()
+    val carVoiceSession by carVoiceOwner.session.collectAsStateWithLifecycle()
+    val carVoiceBusy = carVoiceState.status != CarDialStatus.IDLE && carVoiceState.status != CarDialStatus.FAILED
     val haloController =
         remember(settingsRepository) {
             HaloController(context.applicationContext, settingsRepository)
@@ -147,15 +164,21 @@ internal fun GoModeApp(
         onDispose { haloController.close() }
     }
 
-    val settings by key(settingsRepository) { settingsRepository.settings.collectAsStateWithLifecycle() }
+    val settings = shellSnapshot.settings
     val settingsEdits = rememberSettingsEdits(settingsRepository, settings)
     val settingsClient = remember { ServiceSettingsClient() }
     var activeNativeScreen by remember { mutableStateOf<NativeScreen?>(null) }
+    LaunchedEffect(carVoiceState.identity, carVoiceState.status) {
+        // A warm shell can still be showing Settings when the native call returns to it.
+        if (carVoiceBusy) activeNativeScreen = null
+    }
+    LaunchedEffect(keyguardLocked) {
+        if (keyguardLocked) activeNativeScreen = null
+    }
     val activeURL = settings.activeServiceURL
-    val shellRegistry = remember(settingsRepository) { ServiceShellRegistry() }
     val serviceKeys = settings.services.map { ServiceShellKey(it.id, it.url) }
     val activeKey = ServiceShellKey(settings.activeServiceId, activeURL)
-    val serviceSessions = shellRegistry.reconcile((serviceKeys + activeKey).toSet())
+    val serviceSessions = shellSnapshot.entries
     val serviceSession = serviceSessions.getValue(activeKey)
     LaunchedEffect(notificationDestination, settings.loadState, activeKey) {
         val destination = notificationDestination ?: return@LaunchedEffect
@@ -173,9 +196,6 @@ internal fun GoModeApp(
     }
 
     var prepareAllPages by remember { mutableStateOf(false) }
-    DisposableEffect(shellRegistry) {
-        onDispose { shellRegistry.close() }
-    }
     val bearerStore = serviceSession.bearerStore
     val bearerToken by key(bearerStore) { bearerStore.token.collectAsStateWithLifecycle() }
     val authEpoch by key(bearerStore) { bearerStore.authEpoch.collectAsStateWithLifecycle() }
@@ -184,24 +204,9 @@ internal fun GoModeApp(
     val bootstrapState = shellState.bootstrap
     val webLoadState = shellState.load
 
-    serviceSessions.values.forEach { entry ->
-        key(entry) {
-            val entryState by entry.state.collectAsStateWithLifecycle()
-            LaunchedEffect(entry, entryState.bootstrapReloadToken, settingsClient) {
-                if (entry.key.url.isBlank()) return@LaunchedEffect
-                entry.updateBootstrap(ServiceBootstrapState.Unvalidated())
-                entry.updateBootstrap(fetchBootstrapState(entry.key.url, settingsClient))
-            }
-        }
-    }
-
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    val serviceCatalog = remember(scope) { ServiceCatalog(scope) }
-    serviceCatalog.reconcile(serviceSessions, settings.services.associate { it.id to it.label })
-    DisposableEffect(serviceCatalog) {
-        onDispose { serviceCatalog.close() }
-    }
+    val serviceCatalog = shellOwner.catalog
     val catalogState by serviceCatalog.state.collectAsStateWithLifecycle()
     val currentEntries by rememberUpdatedState(serviceSessions)
     val voiceConversation =
@@ -247,9 +252,9 @@ internal fun GoModeApp(
                 null
             }
         }
-    DisposableEffect(localModelOwner, localSelection) {
-        localModelOwner.select(localSelection)
-        onDispose { localModelOwner.clearSelection(localSelection) }
+    DisposableEffect(localModelOwner, localSelection, carVoiceBusy) {
+        if (!carVoiceBusy) localModelOwner.select(localSelection)
+        onDispose { if (!carVoiceBusy) localModelOwner.clearSelection(localSelection) }
     }
     val localModelState by key(localModelOwner) { localModelOwner.state.collectAsStateWithLifecycle() }
     val voiceCallController =
@@ -260,7 +265,7 @@ internal fun GoModeApp(
         onDispose { voiceCallController.close() }
     }
     val voiceServiceOwner = if (sharedConversation) voiceConversation else bearerStore
-    val voiceSession: VoiceSessionController =
+    val manualVoiceSession: VoiceSessionController =
         remember(
             settingsRepository,
             voiceServiceOwner,
@@ -299,9 +304,14 @@ internal fun GoModeApp(
                 }
             }
         }
-    DisposableEffect(voiceSession) {
-        onDispose { voiceSession.close() }
+    DisposableEffect(manualVoiceSession) {
+        carVoiceOwner.registerManualSession(manualVoiceSession)
+        onDispose {
+            carVoiceOwner.unregisterManualSession(manualVoiceSession)
+            manualVoiceSession.close()
+        }
     }
+    val voiceSession = carVoiceSession ?: manualVoiceSession
     val deviceVoiceSession = voiceSession as? DeviceVoiceSession
     val speechLanguageState =
         deviceVoiceSession?.let { session ->
@@ -331,10 +341,25 @@ internal fun GoModeApp(
     val voiceAuthIdentity = remember(bearerStore) { VoiceAuthIdentity() }
     LaunchedEffect(bearerToken, authEpoch, authReady, voiceSession) {
         val changed = voiceAuthIdentity.update(bearerToken, authEpoch)
-        if (!sharedConversation && (changed || !authReady)) voiceSession.disconnect()
+        if (!sharedConversation && (changed || !authReady)) manualVoiceSession.disconnect()
     }
-    val voiceState by key(voiceSession) { voiceSession.state.collectAsStateWithLifecycle() }
-    var audioSelectionJob by remember(voiceSession) { mutableStateOf<Job?>(null) }
+    val controllerState by key(voiceSession) { voiceSession.state.collectAsStateWithLifecycle() }
+    val voiceState =
+        when {
+            carVoiceBusy && carVoiceSession == null -> {
+                controllerState.copy(connectStatus = "Connecting voice…")
+            }
+
+            carVoiceState.status == CarDialStatus.FAILED -> {
+                controllerState.copy(error = stringResource(com.fghbuild.gomode.R.string.car_dial_failed))
+            }
+
+            else -> {
+                controllerState
+            }
+        }
+    LaunchedEffect(voiceState.connected) { shellOwner.setVoiceConnected(voiceState.connected) }
+    val selectAudioDevice = rememberVoiceAudioSelection(voiceSession, settingsRepository)
     var knownAudioDevices by remember(voiceSession) { mutableStateOf(emptySet<Int>()) }
     LaunchedEffect(voiceSession, voiceState.availableDevices) {
         val previousIds = knownAudioDevices
@@ -404,8 +429,10 @@ internal fun GoModeApp(
             if (!granted && rationale) microphoneHadExplicitDenial = true
             if (granted) {
                 microphoneHadExplicitDenial = false
-                if (connectAfterMicPermission && (localSelection != null || bearerStore.authReady.value)) {
-                    voiceSession.connect()
+                if (connectAfterMicPermission && !carVoiceBusy &&
+                    (localSelection != null || bearerStore.authReady.value)
+                ) {
+                    manualVoiceSession.connect()
                 }
             }
             connectAfterMicPermission = false
@@ -420,7 +447,7 @@ internal fun GoModeApp(
         voiceState.connected || voiceState.connectStatus != null ||
             voiceState.listening || voiceState.speaking
     LaunchedEffect(sharedConversation, voiceConversation, gatewayState, catalogState, activeKey, voiceState.connected) {
-        if (sharedConversation && gatewayState != null) {
+        if (!carVoiceBusy && sharedConversation && gatewayState != null) {
             if (!voiceConversation.isCurrent()) {
                 voiceSession.disconnect()
                 if (localSelection != null) localModelOwner.restartConversation()
@@ -436,7 +463,7 @@ internal fun GoModeApp(
             activeNativeScreen == null && activeURL.isNotBlank() && shellRecovery == null &&
                 (notificationDestination == null || notificationDestination.source == activeKey),
         configuredServices = serviceKeys.toSet().takeIf { settings.loadState == SettingsLoadState.Ready },
-        voiceSessionActive = voiceSessionActive,
+        voiceSessionActive = !carVoiceBusy && voiceSessionActive,
         sharedConversation = sharedConversation,
     )
     val configuredVoiceAvailable =
@@ -447,7 +474,7 @@ internal fun GoModeApp(
             ?.url
             ?.isNotBlank() == true
     val voiceAvailable =
-        (sharedConversation && voiceSessionActive) ||
+        carVoiceBusy || (sharedConversation && voiceSessionActive) ||
             (localSelection != null && localModelState == LocalModelState.Ready) ||
             (authReady && (voiceSessionActive || (configuredVoiceAvailable && shellRecovery == null)))
     val density = LocalDensity.current
@@ -484,26 +511,28 @@ internal fun GoModeApp(
                     haloController = haloController,
                     activeURL = activeURL,
                     serviceSession = serviceSession,
-                    onSetNativeScreen = { activeNativeScreen = it },
-                    activeNativeScreen = activeNativeScreen,
+                    onSetNativeScreen = { if (!keyguard.isKeyguardLocked) activeNativeScreen = it },
+                    activeNativeScreen = activeNativeScreen.takeUnless { keyguardLocked },
                     voiceConnected = voiceState.connected,
+                    showWhenLocked = showWhenLocked,
                     voiceSessionActive = voiceSessionActive,
                     serviceSessions = serviceSessions.values.toList(),
                     prepareAllPages = prepareAllPages,
                     catalogState = catalogState,
                     onRetryService = serviceCatalog::retry,
-                    onEntryAuthInvalidated = shellRegistry::invalidateSharedOrigin,
                     onAuthInvalidated = { entry ->
-                        if (sharedConversation) {
-                            if (!voiceConversation.isCurrent()) {
-                                voiceSession.disconnect()
-                                if (localSelection != null) localModelOwner.restartConversation()
+                        if (!carVoiceBusy) {
+                            if (sharedConversation) {
+                                if (!voiceConversation.isCurrent()) {
+                                    manualVoiceSession.disconnect()
+                                    if (localSelection != null) localModelOwner.restartConversation()
+                                }
+                            } else if (entry === serviceSession ||
+                                isTrustedPermissionOrigin(entry.key.url.toUri(), serviceSession.key.url)
+                            ) {
+                                localModelOwner.clearSelection(localSelection)
+                                manualVoiceSession.disconnect()
                             }
-                        } else if (entry === serviceSession ||
-                            isTrustedPermissionOrigin(entry.key.url.toUri(), serviceSession.key.url)
-                        ) {
-                            localModelOwner.clearSelection(localSelection)
-                            voiceSession.disconnect()
                         }
                     },
                 )
@@ -519,7 +548,7 @@ internal fun GoModeApp(
                             null -> Unit
                         }
                     },
-                    onOpenSettings = { activeNativeScreen = NativeScreen.Settings },
+                    onOpenSettings = { if (!keyguard.isKeyguardLocked) activeNativeScreen = NativeScreen.Settings },
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -540,9 +569,13 @@ internal fun GoModeApp(
                                 state = speechLanguageState,
                                 languageTag = settings.voiceLanguageTag,
                                 active = voiceSessionActive,
-                                onDownload = deviceVoiceSession::downloadSpeechLanguage,
+                                onDownload = {
+                                    if (!keyguard.isKeyguardLocked) deviceVoiceSession.downloadSpeechLanguage()
+                                },
                                 onCheck = deviceVoiceSession::checkSpeechLanguage,
-                                onSettings = { activeNativeScreen = NativeScreen.Settings },
+                                onSettings = {
+                                    if (!keyguard.isKeyguardLocked) activeNativeScreen = NativeScreen.Settings
+                                },
                             )
                         }
                     },
@@ -554,17 +587,21 @@ internal fun GoModeApp(
                                         null
                                     } else {
                                         {
-                                            connectAfterMicPermission = false
-                                            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                            if (!keyguard.isKeyguardLocked) {
+                                                connectAfterMicPermission = false
+                                                micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                            }
                                         }
                                     },
                                 onOpenSettings = {
-                                    context.startActivity(
-                                        Intent(
-                                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                            "package:${context.packageName}".toUri(),
-                                        ),
-                                    )
+                                    if (!keyguard.isKeyguardLocked) {
+                                        context.startActivity(
+                                            Intent(
+                                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                                "package:${context.packageName}".toUri(),
+                                            ),
+                                        )
+                                    }
                                 },
                             )
                         } else {
@@ -574,6 +611,7 @@ internal fun GoModeApp(
                     voiceEnabled = voiceAvailable,
                     onConnect = {
                         activeNativeScreen = null
+                        carVoiceOwner.cancel()
                         prepareAllPages = true
                         if (localSelection != null || bearerStore.authReady.value) {
                             if (ContextCompat.checkSelfPermission(
@@ -581,7 +619,7 @@ internal fun GoModeApp(
                                     Manifest.permission.RECORD_AUDIO,
                                 ) == PackageManager.PERMISSION_GRANTED
                             ) {
-                                voiceSession.connect()
+                                manualVoiceSession.connect()
                             } else {
                                 connectAfterMicPermission = true
                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -589,23 +627,15 @@ internal fun GoModeApp(
                         }
                     },
                     onDisconnect = {
-                        voiceSession.disconnect()
-                    },
-                    onSelectMicrophoneMode = { voiceSession.setMicrophoneMode(it) },
-                    onSelectDevice = { id ->
-                        val device = voiceState.availableDevices.firstOrNull { it.id == id }
-                        if (device != null) {
-                            audioSelectionJob?.cancel()
-                            voiceSession.selectAudioDevice(id)
-                            audioSelectionJob =
-                                scope.launch {
-                                    if (awaitVoiceAudioSelection(voiceSession.state, id)) {
-                                        settingsRepository.updateVoiceAudioDeviceType(device.type)
-                                    }
-                                }
+                        if (carVoiceState.status != CarDialStatus.IDLE) {
+                            carVoiceOwner.cancel()
+                        } else {
+                            manualVoiceSession.disconnect()
                         }
                     },
-                    onOpenSettings = { activeNativeScreen = NativeScreen.Settings },
+                    onSelectMicrophoneMode = { voiceSession.setMicrophoneMode(it) },
+                    onSelectDevice = selectAudioDevice,
+                    onOpenSettings = { if (!keyguard.isKeyguardLocked) activeNativeScreen = NativeScreen.Settings },
                     onCycleApp = {
                         scope.launch {
                             try {
@@ -626,6 +656,33 @@ internal fun GoModeApp(
                 )
             }
         }
+    }
+}
+
+// Both native call controls and the hosted shell persist only confirmed route selections.
+@Composable
+internal fun rememberVoiceAudioSelection(
+    session: VoiceSessionController?,
+    settingsRepository: SettingsRepository,
+): (Int) -> Unit {
+    val scope = rememberCoroutineScope()
+    var selectionJob by remember(session) { mutableStateOf<Job?>(null) }
+    DisposableEffect(session) {
+        onDispose { selectionJob?.cancel() }
+    }
+    return select@{ id ->
+        val current = session ?: return@select
+        val device =
+            current.state.value.availableDevices
+                .firstOrNull { it.id == id } ?: return@select
+        selectionJob?.cancel()
+        current.selectAudioDevice(id)
+        selectionJob =
+            scope.launch {
+                if (awaitVoiceAudioSelection(current.state, id)) {
+                    settingsRepository.updateVoiceAudioDeviceType(device.type)
+                }
+            }
     }
 }
 
@@ -698,12 +755,12 @@ private fun GoModeContent(
     activeNativeScreen: NativeScreen?,
     onSetNativeScreen: (NativeScreen?) -> Unit,
     voiceConnected: Boolean,
+    showWhenLocked: Boolean,
     voiceSessionActive: Boolean,
     serviceSessions: List<ServiceShellSession>,
     prepareAllPages: Boolean,
     catalogState: Map<ServiceShellKey, CatalogService>,
     onRetryService: (ServiceShellKey) -> Unit,
-    onEntryAuthInvalidated: (ServiceShellSession) -> Unit,
     onAuthInvalidated: (ServiceShellSession) -> Unit,
 ) {
     val entryStates =
@@ -794,21 +851,12 @@ private fun GoModeContent(
             ) {
                 key(entryState.webViewGeneration) {
                     WebShellScreen(
-                        serviceID = entry.key.serviceID,
-                        initialURL = entry.key.url,
                         voiceConnected = voiceConnected,
+                        showWhenLocked = showWhenLocked,
                         visible = selected,
                         reloadToken = entryState.webReloadToken,
                         serviceSession = entry,
-                        onLoadStateChanged = entry::updateLoad,
-                        onHostedPageLoaded = {
-                            if (entry.state.value.bootstrap is ServiceBootstrapState.Unvalidated) {
-                                entry
-                                    .reloadBootstrap()
-                            }
-                        },
                         onSharedAuthInvalidated = {
-                            onEntryAuthInvalidated(entry)
                             onAuthInvalidated(entry)
                         },
                         onAuthInvalidated = { onAuthInvalidated(entry) },
@@ -1005,6 +1053,17 @@ internal fun ServiceNotifications(
             pendingNotifications = emptyList()
             notificationPermissionPending = false
         }
+    val keyguardLocked = rememberKeyguardLocked()
+    val lifecycleState by lifecycle.currentStateFlow.collectAsStateWithLifecycle()
+    LaunchedEffect(keyguardLocked, lifecycleState, pendingNotifications, notificationPermissionPending) {
+        if (!keyguardLocked && pendingNotifications.isNotEmpty() && !notificationPermissionPending &&
+            lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+            !context.getSystemService(KeyguardManager::class.java).isKeyguardLocked
+        ) {
+            notificationPermissionPending = true
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
     LaunchedEffect(serviceCatalog) {
         serviceCatalog.notifications.collect { event ->
             val notification = serviceCatalog.notificationForDelivery(event) ?: return@collect
@@ -1015,12 +1074,27 @@ internal fun ServiceNotifications(
                     notificationPublisher.publish(notification.source, notification.notification)
                 } else {
                     pendingNotifications = (pendingNotifications + notification).takeLast(64)
-                    if (!notificationPermissionPending) {
-                        notificationPermissionPending = true
-                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    }
                 }
             }
         }
     }
+}
+
+// A visible service can remain resumed over keyguard; observe unlock independently of resume events.
+@Composable
+private fun rememberKeyguardLocked(): Boolean {
+    val keyguard = LocalContext.current.getSystemService(KeyguardManager::class.java)
+    var locked by remember(keyguard) { mutableStateOf(keyguard.isKeyguardLocked) }
+    val scope = rememberCoroutineScope()
+    LifecycleResumeEffect(keyguard) {
+        val job =
+            scope.launch {
+                while (isActive) {
+                    locked = keyguard.isKeyguardLocked
+                    delay(250)
+                }
+            }
+        onPauseOrDispose { job.cancel() }
+    }
+    return locked
 }

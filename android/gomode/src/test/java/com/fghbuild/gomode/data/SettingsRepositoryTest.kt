@@ -19,6 +19,97 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SettingsRepositoryTest {
+    @Test
+    fun `lock screen service access requires a persisted opt in`() =
+        runBlocking {
+            val store = InMemoryPreferencesDataStore()
+            val repository = SettingsRepository(store)
+            assertFalse(
+                repository
+                    .awaitSettings("existing installation") {
+                        it.loadState == SettingsLoadState.Ready
+                    }.showServiceOnLockScreen,
+            )
+            repository.updateShowServiceOnLockScreen(true)
+            assertTrue(
+                SettingsRepository(store)
+                    .awaitSettings("restored opt in") {
+                        it.loadState == SettingsLoadState.Ready
+                    }.showServiceOnLockScreen,
+            )
+            repository.updateShowServiceOnLockScreen(false)
+            assertFalse(
+                SettingsRepository(store)
+                    .awaitSettings("restored opt out") {
+                        it.loadState == SettingsLoadState.Ready
+                    }.showServiceOnLockScreen,
+            )
+        }
+
+    @Test
+    fun `existing services receive persisted slots that survive reorder and rename`() =
+        runBlocking {
+            val store = InMemoryPreferencesDataStore()
+            store.edit {
+                it[stringPreferencesKey("SERVICES")] =
+                    """[{"id":"home","label":"Home","url":"https://home.example"},{"id":"work","url":"https://work.example"}]"""
+            }
+            val repository = SettingsRepository(store)
+            val initial = repository.awaitSettings("initial slot migration") { it.loadState == SettingsLoadState.Ready }
+            assertEquals(mapOf("home" to 1, "work" to 2), initial.carCallerSlots)
+            repository.updateService("home", "Renamed", "https://new.example")
+            store.edit {
+                it[stringPreferencesKey("SERVICES")] =
+                    """[{"id":"work","url":"https://work.example"},{"id":"home","label":"Renamed","url":"https://new.example"}]"""
+            }
+            val restored =
+                SettingsRepository(store).awaitSettings("restored slot migration") {
+                    it.loadState == SettingsLoadState.Ready
+                }
+            assertEquals(initial.carCallerSlots, restored.carCallerSlots)
+            assertEquals(listOf("work", "home"), restored.services.map { it.id })
+        }
+
+    @Test
+    fun `retired assignments are not recycled for a new server`() =
+        runBlocking {
+            val store = InMemoryPreferencesDataStore()
+            store.edit { it[stringPreferencesKey("CAR_CALLER_SLOTS")] = """{"removed":1}""" }
+            val repository = SettingsRepository(store)
+            val id = repository.addService("New", "https://new.example")
+            val state = repository.awaitSettings("new server allocation") { id in it.carCallerSlots }
+            assertEquals(mapOf("removed" to 1, id to 2), state.carCallerSlots)
+        }
+
+    @Test
+    fun `full registry keeps services usable without allocating or recycling a fixed number`() =
+        runBlocking {
+            val store = InMemoryPreferencesDataStore()
+            val retired = (1..99).joinToString(",", prefix = "{", postfix = "}") { "\"retired-$it\":$it" }
+            store.edit { it[stringPreferencesKey("CAR_CALLER_SLOTS")] = retired }
+            val repository = SettingsRepository(store)
+            val id = repository.addService("New", "https://new.example")
+            val state =
+                repository.awaitSettings("server with exhausted registry") {
+                    it.activeServiceId == id
+                }
+            assertEquals(99, state.carCallerSlots.size)
+            assertFalse(id in state.carCallerSlots)
+            assertEquals("https://new.example", state.activeServiceURL)
+        }
+
+    @Test
+    fun `duplicate persisted car slots fail closed`() =
+        runBlocking {
+            val store = InMemoryPreferencesDataStore()
+            store.edit { it[stringPreferencesKey("CAR_CALLER_SLOTS")] = """{"home":1,"work":1}""" }
+            val state =
+                SettingsRepository(store).awaitSettings("invalid car slots") {
+                    it.loadState is SettingsLoadState.Failed
+                }
+            assertTrue(state.loadState is SettingsLoadState.Failed)
+        }
+
     // Deadlock guard around inherently-async DataStore reads. StateFlow makes these waits
     // eventually correct, so this only fires on a real hang; keep generous headroom so a
     // cold first read on a saturated CI runner does not flake.

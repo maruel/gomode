@@ -58,6 +58,7 @@ data and authorization policy stay in the hosts.
 - Gemini `speech.ended` must follow queued RTP audio drain, not provider
   `TurnComplete`. Cover queued audio, interruption, races, and real playback
   before claiming that mute-once ends with audible playback.
+- Preserve uncommitted service URL drafts when calls or notification navigation leave Settings.
 - mddb workspace search stays in mddb's `docs/PLAN_MDDB.md`.
 - Android voice transport coverage stays in
   [PLAN_ANDROID_VOICE_FIXTURE.md](PLAN_ANDROID_VOICE_FIXTURE.md).

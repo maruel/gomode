@@ -41,7 +41,7 @@ class TelecomAudioSelectionTest {
                     assertEquals(speaker.id, controller.audioState.value.selectedDeviceId)
                     val audio = context.getSystemService(AudioManager::class.java)
                     assertEquals(AudioManager.MODE_NORMAL, audio.mode)
-                    val started = withContext(Dispatchers.Main) { controller.start {} }
+                    val started = withContext(Dispatchers.Main) { controller.start("Audio selection", null) {} }
                     assertTrue(started)
                     withContext(Dispatchers.Main) { controller.activate() }
                     withTimeout(15_000) {
@@ -73,7 +73,7 @@ class TelecomAudioSelectionTest {
                         withContext(Dispatchers.Main) { TelecomCallController(context, onTelecomEnded = {}) }
                     try {
                         withTimeout(15_000) { controller.audioState.first { it.devices.isNotEmpty() } }
-                        assertTrue(withContext(Dispatchers.Main) { controller.start {} })
+                        assertTrue(withContext(Dispatchers.Main) { controller.start("Audio selection", null) {} })
                         withContext(Dispatchers.Main) { controller.activate() }
                         withTimeout(15_000) {
                             while (audio.mode != AudioManager.MODE_IN_COMMUNICATION) delay(50)

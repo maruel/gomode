@@ -24,6 +24,8 @@ import com.fghbuild.gomode.ui.settings.rememberSettingsEdits
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -214,14 +216,14 @@ class VoiceChoicesSettingsTest {
 
     private class MemoryPreferences : DataStore<Preferences> {
         var failWrites = false
+        private val writeMutex = Mutex()
         private val current = MutableStateFlow(emptyPreferences())
         override val data: Flow<Preferences> = current
 
-        override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences {
-            if (failWrites) throw java.io.IOException("Fixture write failure")
-            val next = transform(current.value)
-            current.value = next
-            return next
-        }
+        override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences =
+            writeMutex.withLock {
+                if (failWrites) throw java.io.IOException("Fixture write failure")
+                transform(current.value).also { current.value = it }
+            }
     }
 }

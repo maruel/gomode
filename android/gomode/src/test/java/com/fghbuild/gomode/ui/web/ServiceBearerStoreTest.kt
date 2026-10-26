@@ -2,6 +2,7 @@
 package com.fghbuild.gomode.ui.web
 
 import android.net.Uri
+import androidx.core.net.toUri
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull

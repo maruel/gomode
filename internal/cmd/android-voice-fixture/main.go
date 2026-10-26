@@ -15,30 +15,58 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/maruel/gomode"
 	"github.com/maruel/gomode/mcp"
-	voiceapi "github.com/maruel/gomode/voicegateway/api"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
 // fixture serves the root settings document, a minimal MCP endpoint, and the
-// voice gateway routes the Android app calls. It answers text sessions only;
-// cloud mode needs WebRTC, which this fixture does not implement.
+// voice gateway routes the Android app calls. Its synthetic assistant supports
+// real text WebSockets and bidirectional Opus media over WebRTC.
 type fixture struct {
-	log *slog.Logger
+	log           *slog.Logger
+	rtcIP         string
+	mu            sync.Mutex
+	stats         fixtureStats
+	peers         map[string]*mediaPeer
+	settingsDelay time.Duration
+	textPeer      *websocket.Conn
 }
 
 func (f *fixture) routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<!doctype html><html lang="en"><title>Voice fixture</title>
+<h1>Voice fixture server</h1><button onclick="gomodeAuth.postMessage(JSON.stringify({authChanging:true}))">Fixture sign out</button>
+<p id="counter">Tool count: 0</p><script>
+document.body.append(document.createTextNode(location.href));
+const documentID = crypto.randomUUID(); let count = 0;
+window.executeGoModeVoiceTool = (name, args) => {
+  if (name === 'fixture_logout') gomodeAuth.postMessage(JSON.stringify({authChanging:true}));
+  if (name === 'fixture_reload') location.reload();
+  if (name !== 'fixture_state') document.getElementById('counter').textContent = 'Tool count: ' + (++count);
+  return {url:location.href, document:documentID, count, visible:goModeHost.isPageVisible(), connected:goModeHost.isVoiceConnected()};
+};
+gomodeVoiceTools.postMessage(JSON.stringify(['fixture_echo','fixture_logout','fixture_reload','fixture_state'].map(name =>
+  ({name,description:'Exercise the hosted document',parameters:{type:'object',properties:{}}}))));
+gomodeAuth.postMessage(JSON.stringify({authChanged:true,nativeAccess:true}));
+</script></html>`))
+	})
 	mux.HandleFunc("GET /.well-known/gomode.json", f.handleSettings)
 	mux.HandleFunc("POST /api/mcp", f.handleMCP)
 	mux.HandleFunc("GET /api/voicegateway/v1/voice/choices", f.handleChoices)
 	mux.HandleFunc("GET /api/voicegateway/v1/voice/health", f.handleHealth)
 	mux.HandleFunc("GET /api/voicegateway/v1/voice/text", f.handleTextSession)
 	mux.HandleFunc("POST /api/voicegateway/v1/voice/rtc/offer", f.handleOffer)
+	mux.HandleFunc("POST /api/voicegateway/v1/voice/rtc/{sessionID}", f.handleClose)
+	mux.HandleFunc("GET /fixture/stats", f.handleStats)
+	mux.HandleFunc("POST /fixture/config", f.handleConfig)
+	mux.HandleFunc("POST /fixture/tool", f.handleTool)
 	return mux
 }
 
@@ -64,6 +92,16 @@ func (f *fixture) settingsDocument() gomode.Settings {
 }
 
 func (f *fixture) handleSettings(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	delay := f.settingsDelay
+	f.mu.Unlock()
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+			return
+		}
+	}
 	f.log.InfoContext(r.Context(), "settings", "path", r.URL.Path)
 	writeJSON(w, f.settingsDocument())
 }
@@ -129,18 +167,10 @@ func (f *fixture) handleChoices(w http.ResponseWriter, _ *http.Request) {
 		Choices: []voicev1.VoiceChoice{{
 			ID:         "fixture",
 			Label:      "Fixture text",
-			Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText},
+			Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText, voicev1.VoiceTransportWebRTC},
 		}},
 		DefaultChoiceID: "fixture",
 	})
-}
-
-// handleOffer rejects cloud mode. The fixture has no WebRTC stack, so it must
-// fail loudly instead of handing back an SDP the app cannot use.
-func (f *fixture) handleOffer(w http.ResponseWriter, r *http.Request) {
-	f.log.InfoContext(r.Context(), "offer refused")
-	voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable,
-		"fixture serves text sessions only")
 }
 
 // handleTextSession answers one text session: setup, then a canned assistant
@@ -152,6 +182,18 @@ func (f *fixture) handleTextSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = conn.CloseNow() }()
+	f.mu.Lock()
+	f.stats.TextActive++
+	f.textPeer = conn
+	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		f.stats.TextActive--
+		if f.textPeer == conn {
+			f.textPeer = nil
+		}
+		f.mu.Unlock()
+	}()
 	ctx := r.Context()
 	f.log.InfoContext(ctx, "text session open")
 	for {
@@ -168,6 +210,9 @@ func (f *fixture) handleTextSession(w http.ResponseWriter, r *http.Request) {
 		f.log.InfoContext(ctx, "client message", "kind", env.Kind)
 		switch env.Kind {
 		case voicev1.MessageKindSessionSetup:
+			f.mu.Lock()
+			f.stats.TextSetups++
+			f.mu.Unlock()
 			if !writeMessage(ctx, f.log, conn, voicev1.SessionReady{Kind: voicev1.MessageKindSessionReady}) {
 				return
 			}
@@ -182,10 +227,15 @@ func (f *fixture) handleTextSession(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
+			f.mu.Lock()
+			f.stats.TextTurns++
+			f.mu.Unlock()
 		case voicev1.MessageKindSessionClose:
 			_ = conn.Close(websocket.StatusNormalClosure, "closed")
 			return
-		case voicev1.MessageKindContextUpdate, voicev1.MessageKindToolResult, voicev1.MessageKindTurnCancel:
+		case voicev1.MessageKindToolResult:
+			f.recordToolResult(data)
+		case voicev1.MessageKindContextUpdate, voicev1.MessageKindTurnCancel:
 			// Valid client messages the fixture does not act on: it never calls
 			// tools or runs a cancellable turn. The "client message" log above
 			// records each one.
@@ -216,13 +266,13 @@ func writeJSON(w http.ResponseWriter, body any) {
 	}
 }
 
-func run(ctx context.Context, log *slog.Logger, addr string) error {
+func run(ctx context.Context, log *slog.Logger, addr, rtcIP string) error {
 	var lc net.ListenConfig
 	listener, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil {
 		return err
 	}
-	f := &fixture{log: log}
+	f := &fixture{log: log, rtcIP: rtcIP}
 	srv := &http.Server{
 		Handler:           f.routes(),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -238,9 +288,10 @@ func run(ctx context.Context, log *slog.Logger, addr string) error {
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:0", "listen address")
+	rtcIP := flag.String("rtc-ip", "", "host candidate address visible from the emulator (10.0.2.2)")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	if err := run(context.Background(), log, *addr); err != nil {
+	if err := run(context.Background(), log, *addr, *rtcIP); err != nil {
 		log.Error("android-voice-fixture", "err", err)
 		os.Exit(1)
 	}

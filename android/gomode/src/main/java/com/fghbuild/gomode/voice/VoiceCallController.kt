@@ -24,6 +24,7 @@ internal data class CallAudioState(
 internal interface VoiceCallController {
     // Before a call, selection is the desired starting route; during a call it is the confirmed route.
     val audioState: StateFlow<CallAudioState>
+    val isStarted: Boolean get() = false
 
     fun selectAudioDevice(deviceId: Int)
 
@@ -35,7 +36,11 @@ internal interface VoiceCallController {
      * call ready and false when Telecom rejects it or the device lacks support.
      * onTelecomDisconnect runs on a car or headset hang-up.
      */
-    suspend fun start(onTelecomDisconnect: () -> Unit): Boolean
+    suspend fun start(
+        serverName: String,
+        serverID: String?,
+        onTelecomDisconnect: () -> Unit,
+    ): Boolean
 
     /** activate marks the call active after the voice transport is ready. */
     fun activate()
@@ -52,7 +57,11 @@ internal class NoopVoiceCallController : VoiceCallController {
 
     override fun isSupported(): Boolean = false
 
-    override suspend fun start(onTelecomDisconnect: () -> Unit): Boolean = false
+    override suspend fun start(
+        serverName: String,
+        serverID: String?,
+        onTelecomDisconnect: () -> Unit,
+    ): Boolean = false
 
     override fun activate() = Unit
 

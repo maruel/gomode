@@ -211,7 +211,7 @@ internal class ServiceCatalog(
                 ?: return catalogError("Server is unavailable. Discover servers again.")
         var prepared = participant.prepared ?: return catalogError("Server is not ready. ${participant.status.text}.")
         if (!participant.current(prepared) || !isCurrent()) return catalogError("Service authentication changed.")
-        if (name == "read_service_resource" && prepared.mcp.capabilities.resources == null) {
+        if (name == "read_service_resource" && prepared.mcp?.capabilities?.resources == null) {
             return catalogError("Resources are unavailable for this server.")
         }
         val frontend = FrontendTarget(participant.entry.frontendTools, participant.entry.frontendTools.revision)
@@ -231,7 +231,9 @@ internal class ServiceCatalog(
                                 put(
                                     "resource",
                                     Json.encodeToJsonElement(
-                                        prepared.mcp.client.readResource(args.getValue("uri").jsonPrimitive.content),
+                                        checkNotNull(
+                                            prepared.mcp,
+                                        ).client.readResource(args.getValue("uri").jsonPrimitive.content),
                                     ),
                                 )
                             },
@@ -370,7 +372,8 @@ internal class ServiceCatalog(
                 entry.state.value.load == WebShellLoadState.Ready &&
                 value.identity.bootstrap == entry.state.value.bootstrap &&
                 value.identity.epoch == entry.bearerStore.authEpoch.value &&
-                value.identity.token == entry.bearerStore.token.value && value.mcp.authorization.isCurrent()
+                value.identity.token == entry.bearerStore.token.value &&
+                (value.mcp?.authorization?.isCurrent() != false)
 
         @Suppress("TooGenericExceptionCaught") // Each service independently retries network/discovery/schema failures.
         private suspend fun connect(identity: ParticipantIdentity, ready: ServiceBootstrapState.Ready) {
@@ -379,12 +382,19 @@ internal class ServiceCatalog(
                 status = ServiceReadiness.CONNECTING
                 publish()
                 try {
-                    val mcp = prepareServiceMcp(entry.key.url, ready.settings, entry.bearerStore::tokenFor)
-                    prepared = PreparedService(identity, mcp, ToolCallValidator(mcp.tools))
+                    val mcp =
+                        if (ready.settings.webShell.toolGroups
+                                .isEmpty()
+                        ) {
+                            null
+                        } else {
+                            prepareServiceMcp(entry.key.url, ready.settings, entry.bearerStore::tokenFor)
+                        }
+                    prepared = PreparedService(identity, mcp, ToolCallValidator(mcp?.tools.orEmpty()))
                     error = null
                     status = ServiceReadiness.READY
                     publish()
-                    if (mcp.capabilities.resources == null) {
+                    if (mcp?.capabilities?.resources == null) {
                         alertsRevoked = false
                         monitoring = ServiceMonitorState(activeNotifications = emptyList())
                         publish()
@@ -433,10 +443,11 @@ internal class ServiceCatalog(
             isCurrent: () -> Boolean,
         ): PreparedService {
             check(current(value) && isCurrent()) { "Caller or service changed before tool discovery." }
-            val tools = value.mcp.client.listTools()
+            val mcp = value.mcp ?: return value
+            val tools = mcp.client.listTools()
             check(current(value) && isCurrent()) { "Caller or service changed during tool discovery." }
-            if (tools == value.mcp.tools) return value
-            val refreshed = value.copy(mcp = value.mcp.copy(tools = tools), validator = ToolCallValidator(tools))
+            if (tools == mcp.tools) return value
+            val refreshed = value.copy(mcp = mcp.copy(tools = tools), validator = ToolCallValidator(tools))
             prepared = refreshed
             return refreshed
         }
@@ -447,25 +458,25 @@ internal class ServiceCatalog(
         ): McpToolResult {
             check(current(value) && isCurrent()) { "Caller or service changed before resource discovery." }
             val resources =
-                if (value.mcp.capabilities.resources != null) {
-                    value.mcp.client.listResources()
+                if (value.mcp?.capabilities?.resources != null) {
+                    checkNotNull(value.mcp).client.listResources()
                 } else {
                     emptyList()
                 }
             check(current(value) && isCurrent()) { "Caller or service changed during resource discovery." }
             val templates =
-                if (value.mcp.capabilities.resources != null) {
-                    value.mcp.client.listResourceTemplates()
+                if (value.mcp?.capabilities?.resources != null) {
+                    checkNotNull(value.mcp).client.listResourceTemplates()
                 } else {
                     emptyList()
                 }
             check(current(value) && isCurrent()) { "Caller or service changed during resource discovery." }
             return McpToolResult(
                 buildJsonObject {
-                    put("instructions", value.mcp.instructions)
+                    put("instructions", value.mcp?.instructions.orEmpty())
                     put("instruction_scope", "Apply these instructions only when using this server.")
                     put("context", monitoring.snapshot?.voiceContext.orEmpty())
-                    put("mcp_tools", Json.encodeToJsonElement(value.mcp.tools))
+                    put("mcp_tools", Json.encodeToJsonElement(value.mcp?.tools.orEmpty()))
                     put("frontend_tools", Json.encodeToJsonElement(entry.frontendTools.declarations))
                     put("resources", Json.encodeToJsonElement(resources))
                     put("resource_templates", Json.encodeToJsonElement(templates))
@@ -491,7 +502,8 @@ internal class ServiceCatalog(
                     ) {
                         return catalogError("Caller or service changed before execution.")
                     }
-                    value.mcp.client.callTool(tool, arguments, sessionID, locale)
+                    val mcp = value.mcp ?: return catalogError("MCP tools are unavailable for this server.")
+                    mcp.client.callTool(tool, arguments, sessionID, locale)
                 }
 
                 else -> {
@@ -539,7 +551,7 @@ private data class ParticipantIdentity(
 
 private data class PreparedService(
     val identity: ParticipantIdentity,
-    val mcp: ServiceMcp,
+    val mcp: ServiceMcp?,
     val validator: ToolCallValidator,
 )
 

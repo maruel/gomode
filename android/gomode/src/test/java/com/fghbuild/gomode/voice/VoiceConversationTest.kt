@@ -18,6 +18,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -48,6 +50,34 @@ class VoiceConversationTest {
     fun tearDown() {
         Dispatchers.resetMain()
     }
+
+    @Test
+    fun revokedCallAuthorityCannotStartOrRecoverWithAReadyPage() =
+        runTest {
+            val repository = SettingsRepository(MemoryPreferences())
+            val id = repository.addService("Server", "https://example.test")
+            repository.settings.first { it.activeServiceId == id }
+            val key = ServiceShellKey(id, "https://example.test")
+            val entry = ServiceShellSession(key) {}.also { authenticate(it, "initial") }
+            val catalog = ServiceCatalog(backgroundScope)
+            var authorized = true
+            val conversation =
+                VoiceConversation(repository, ServiceSettingsClient(), catalog, { authorized }) {
+                    mapOf(key to entry)
+                }
+            try {
+                conversation.begin(false)
+                assertTrue(conversation.isCurrent())
+                authorized = false
+                assertFalse(conversation.isCurrent())
+                org.junit.Assert.assertThrows(VoiceSetupException::class.java) { conversation.begin(true) }
+                org.junit.Assert.assertThrows(VoiceSetupException::class.java) { conversation.begin(false) }
+            } finally {
+                conversation.finish()
+                entry.close()
+                catalog.close()
+            }
+        }
 
     @Test
     fun selectionDuringSetupAndRecoveryKeepsSponsorAndResolvedVoice() =
@@ -88,7 +118,7 @@ class VoiceConversationTest {
                 val entries =
                     repository.settings.value.services.associate { service ->
                         val key = ServiceShellKey(service.id, service.url)
-                        key to ServiceShellSession(key).also { authenticate(it, "initial") }
+                        key to ServiceShellSession(key) {}.also { authenticate(it, "initial") }
                     }
                 val catalog = ServiceCatalog(backgroundScope)
                 val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { entries }
@@ -131,7 +161,7 @@ class VoiceConversationTest {
             val entries =
                 repository.settings.value.services.associate { service ->
                     val key = ServiceShellKey(service.id, service.url)
-                    key to ServiceShellSession(key).also { authenticate(it, service.id) }
+                    key to ServiceShellSession(key) {}.also { authenticate(it, service.id) }
                 }
             val sponsor = entries.values.single { it.key.serviceID == sponsorID }
             val participant = entries.values.single { it !== sponsor }
@@ -179,7 +209,7 @@ class VoiceConversationTest {
             val entries =
                 repository.settings.value.services.associate { service ->
                     val key = ServiceShellKey(service.id, service.url)
-                    key to ServiceShellSession(key)
+                    key to ServiceShellSession(key) {}
                 }
             val sponsor = entries.values.single { it.key.serviceID == sponsorID }
             val participant = entries.values.single { it !== sponsor }
@@ -241,7 +271,7 @@ class VoiceConversationTest {
             val id = repository.addService("Sponsor", "https://revocation.invalid")
             repository.settings.first { it.activeServiceId == id }
             val key = ServiceShellKey(id, repository.settings.value.activeServiceURL)
-            val entry = ServiceShellSession(key)
+            val entry = ServiceShellSession(key) {}
             authenticate(entry, "original-account")
             val catalog = ServiceCatalog(backgroundScope)
             val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { mapOf(key to entry) }
@@ -272,12 +302,14 @@ class VoiceConversationTest {
             val entries =
                 repository.settings.value.services.associate { service ->
                     val key = ServiceShellKey(service.id, service.url)
-                    key to ServiceShellSession(key).also { authenticate(it, "initial") }
+                    key to ServiceShellSession(key) {}.also { authenticate(it, "initial") }
                 }
             val catalog = ServiceCatalog(backgroundScope)
             val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { entries }
             try {
                 val setup = owner.prepareLocal().setup
+                assertEquals(b, setup.serverID)
+                assertEquals("B", setup.serverName)
                 assertEquals(null, setup.mcpClient)
                 assertTrue(setup.tools.any { it.name == "dispatch_service_tool" })
                 repository.switchService(a)
@@ -340,10 +372,11 @@ class VoiceConversationTest {
     }
 
     private class MemoryPreferences : DataStore<Preferences> {
+        private val writeMutex = Mutex()
         private val state = MutableStateFlow(emptyPreferences())
         override val data: Flow<Preferences> = state
 
         override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences =
-            transform(state.value).also { state.value = it }
+            writeMutex.withLock { transform(state.value).also { state.value = it } }
     }
 }

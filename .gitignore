@@ -4,6 +4,7 @@
 /android/.gradle/
 /android/.kotlin/
 /android/build/
+/android/car-dial-fixture/build/
 /android/gomode/build/
 /android/local.properties
 /coverage.html

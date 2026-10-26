@@ -9,6 +9,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -30,6 +31,7 @@ import com.fghbuild.gomode.ui.GoModeApp
 import com.fghbuild.gomode.ui.ServiceBootstrapState
 import com.fghbuild.gomode.ui.theme.GoModeTheme
 import com.fghbuild.gomode.ui.web.ServiceShellKey
+import com.fghbuild.gomode.ui.web.ServiceShellOwner
 import com.fghbuild.gomode.ui.web.ServiceShellSession
 import com.fghbuild.gomode.ui.web.WebShellScreen
 import com.google.ai.edge.litertlm.ConversationConfig
@@ -42,6 +44,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -85,8 +89,10 @@ class LocalConversationTest {
                             ControlledRunner(configurations)
                         })
                     }
+                val shellOwner = ServiceShellOwner(context, repository)
+                val mounted = mutableStateOf(true)
                 try {
-                    composeRule.setContent { GoModeTheme { GoModeApp(repository, owner) } }
+                    composeRule.setContent { if (mounted.value) GoModeTheme { GoModeApp(shellOwner, owner) } }
                     assertTrue(started.await(30, TimeUnit.SECONDS))
                     for (id in listOf(ids.second, ids.first)) {
                         composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
@@ -99,7 +105,12 @@ class LocalConversationTest {
                     assertTrue(configurations.single().tools.isNotEmpty())
                 } finally {
                     release.countDown()
-                    composeRule.runOnIdle { owner.close() }
+                    composeRule.runOnIdle { mounted.value = false }
+                    composeRule.waitForIdle()
+                    composeRule.runOnIdle {
+                        shellOwner.close()
+                        owner.close()
+                    }
                 }
             }
         }
@@ -165,13 +176,10 @@ class LocalConversationTest {
                     entries.forEach { entry ->
                         key(entry) {
                             WebShellScreen(
-                                serviceID = entry.key.serviceID,
-                                initialURL = entry.key.url,
                                 voiceConnected = true,
                                 visible = settings.activeServiceId == entry.key.serviceID,
                                 reloadToken = 0,
                                 serviceSession = entry,
-                                onLoadStateChanged = entry::updateLoad,
                                 onAuthInvalidated = {},
                             )
                         }
@@ -586,7 +594,7 @@ class LocalConversationTest {
         }
 
         fun entry(id: String) =
-            ServiceShellSession(ServiceShellKey(id, url)).apply {
+            ServiceShellSession(ServiceShellKey(id, url)) {}.apply {
                 updateBootstrap(
                     ServiceBootstrapState.Ready(
                         kotlinx.serialization.json.Json
@@ -604,13 +612,11 @@ class LocalConversationTest {
     }
 
     private class MemoryPreferences : DataStore<Preferences> {
+        private val writeMutex = Mutex()
         private val state = MutableStateFlow(emptyPreferences())
         override val data: Flow<Preferences> = state
 
         override suspend fun updateData(transform: suspend (Preferences) -> Preferences) =
-            transform(state.value).also {
-                state.value =
-                    it
-            }
+            writeMutex.withLock { transform(state.value).also { state.value = it } }
     }
 }

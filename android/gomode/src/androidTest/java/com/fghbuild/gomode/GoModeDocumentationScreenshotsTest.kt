@@ -1,6 +1,7 @@
 // Captures real native service, voice settings, Halo, and a host-neutral demonstration frontend.
 package com.fghbuild.gomode
 
+import android.Manifest
 import android.os.Environment
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
@@ -12,8 +13,10 @@ import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.printToString
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.rule.GrantPermissionRule
 import androidx.test.uiautomator.UiDevice
 import org.junit.Assume.assumeTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -22,6 +25,11 @@ private const val SETTLE_CHECK_INTERVAL_MS = 100L
 
 @RunWith(AndroidJUnit4::class)
 class GoModeDocumentationScreenshotsTest : GoModeE2eTestBase() {
+    // Both capture passes must start with the same permission state before Activity launch.
+    @get:Rule(order = 1)
+    val microphonePermissionRule: GrantPermissionRule =
+        GrantPermissionRule.grant(Manifest.permission.RECORD_AUDIO)
+
     override fun validateDeviceBeforeSetup() {
         val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
         check(device.executeShellCommand("getprop ro.kernel.qemu").trim() == "1") {

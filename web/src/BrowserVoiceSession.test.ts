@@ -258,6 +258,37 @@ describe("browser voice sessions", () => {
     await session.connect();
     expect(earcon.setThinking).toHaveBeenLastCalledWith(false);
   });
+
+  it("publishes the host name for a browser-speech call using an external gateway", async () => {
+    const mediaSession = { metadata: null as MediaMetadata | null, playbackState: "none" };
+    Object.defineProperty(navigator, "mediaSession", { configurable: true, value: mediaSession });
+    vi.stubGlobal(
+      "MediaMetadata",
+      class {
+        readonly title: string;
+        constructor(init: MediaMetadataInit) {
+          this.title = init.title ?? "";
+        }
+      },
+    );
+    const gatewayFetch = globalThis.fetch;
+    globalThis.fetch = (input, init) =>
+      String(input) === "/.well-known/gomode.json"
+        ? Promise.resolve(new Response(JSON.stringify({ service: "Home Server" })))
+        : gatewayFetch(input, init);
+    try {
+      await readySocket();
+      await vi.waitFor(() => expect(mediaSession.metadata?.title).toBe("Home Server"));
+      expect(mediaSession.playbackState).toBe("playing");
+      session.disconnect();
+      expect(mediaSession.metadata).toBeNull();
+      expect(mediaSession.playbackState).toBe("none");
+    } finally {
+      session.disconnect();
+      Reflect.deleteProperty(navigator, "mediaSession");
+      vi.unstubAllGlobals();
+    }
+  });
   it("uses a text choice and one-shot Android recognition when an audio-only choice was saved", async () => {
     Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Chrome Android" });
     localStorage.setItem("gomode.voiceChoice.https://gateway.example", "gemini");

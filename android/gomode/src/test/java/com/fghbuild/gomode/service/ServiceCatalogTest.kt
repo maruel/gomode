@@ -359,6 +359,44 @@ class ServiceCatalogTest {
         }
 
     @Test
+    fun `frontend only host dispatches without an MCP endpoint`() =
+        runTest {
+            Fixture("Unused MCP").use { fixture ->
+                val entry = fixture.entry("a")
+                val settings = (entry.state.value.bootstrap as ServiceBootstrapState.Ready).settings
+                entry.updateBootstrap(
+                    ServiceBootstrapState.Ready(
+                        settings.copy(
+                            webShell = settings.webShell.copy(toolGroups = emptyList()),
+                        ),
+                    ),
+                )
+                val view = DeferredWebView()
+                entry.frontendTools.register(
+                    view,
+                    """[{"name":"duplicate","description":"Frontend","parameters":{"type":"object"}}]""",
+                )
+                val catalog = ServiceCatalog(backgroundScope)
+                try {
+                    catalog.reconcile(mapOf(entry.key to entry), emptyMap())
+                    catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.READY }
+                    val pending =
+                        async {
+                            catalog.execute("dispatch_service_tool", dispatchArgs("a", "frontend", "{}")) { true }
+                        }
+                    view.invoked.await()
+                    view.complete("""{"source":"browser"}""")
+                    assertEquals("browser", requireNotNull(pending.await()).resultString("source"))
+                    assertTrue(fixture.requests.isEmpty())
+                    assertTrue(dispatch(catalog, "a").isError)
+                } finally {
+                    catalog.close()
+                    view.destroy()
+                }
+            }
+        }
+
+    @Test
     fun `catalog context has one aggregate budget even with many large sources`() =
         runTest {
             val catalog = ServiceCatalog(backgroundScope)
@@ -367,7 +405,7 @@ class ServiceCatalogTest {
                     (1..30).map {
                         ServiceShellSession(
                             ServiceShellKey("id-$it", "https://service-$it.example"),
-                        )
+                        ) {}
                     }
                 catalog.reconcile(
                     entries.associateBy { it.key },
@@ -545,7 +583,7 @@ class ServiceCatalogTest {
             id: String,
             authenticated: Boolean = true,
         ): ServiceShellSession {
-            val entry = ServiceShellSession(ServiceShellKey(id, server.url("/").toString()))
+            val entry = ServiceShellSession(ServiceShellKey(id, server.url("/").toString())) {}
             entry.updateBootstrap(
                 ServiceBootstrapState.Ready(
                     Settings(

@@ -261,7 +261,7 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         waitForHostedFrontend()
         assertSame(second, waitForWebView())
         waitForDom("second SPA state survives server switches") { "window.retainedMarker === 'second'" }
-        val staleRendererCallbacks = AtomicInteger()
+        val rendererCallbacks = AtomicInteger()
         val renderer =
             composeRule.runOnUiThread {
                 listOf(first, second).forEach { view ->
@@ -272,7 +272,7 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
                                 view: WebView,
                                 detail: RenderProcessGoneDetail,
                             ): Boolean {
-                                staleRendererCallbacks.incrementAndGet()
+                                rendererCallbacks.incrementAndGet()
                                 return client.onRenderProcessGone(view, detail)
                             }
                         }
@@ -281,18 +281,20 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
             }
         composeRule.activityRule.scenario.recreate()
         waitForHostedFrontend()
-        val rebuilt = waitForWebView()
-        assertNotSame(second, rebuilt)
-        waitForDom("Activity recreation rebuilds page state") { "typeof window.retainedMarker === 'undefined'" }
+        assertSame(second, waitForWebView())
+        waitForDom("Activity recreation retains page state") { "window.retainedMarker === 'second'" }
         composeRule.runOnUiThread {
-            assertTrue(!first.isAttachedToWindow && !second.isAttachedToWindow)
+            assertTrue(!first.isAttachedToWindow && second.isAttachedToWindow)
             renderer.terminate()
         }
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
-            composeRule.runOnUiThread { !renderer.terminate() }
+            composeRule.onAllNodesWithTag("gomode-shell-retry").fetchSemanticsNodes().isNotEmpty()
         }
-        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
-        assertEquals("Disposed Activity retained live renderer callbacks", 0, staleRendererCallbacks.get())
+        assertTrue("Retained page did not report renderer loss", rendererCallbacks.get() > 0)
+        composeRule.onNodeWithTag("gomode-shell-retry").performClick()
+        waitForHostedFrontend()
+        assertNotSame(second, waitForWebView())
+        waitForDom("Renderer recovery creates a new document") { "typeof window.retainedMarker === 'undefined'" }
     }
 
     @StandaloneHostedFixture

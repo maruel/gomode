@@ -14,8 +14,8 @@ import org.robolectric.RobolectricTestRunner
 class ServiceShellSessionTest {
     @Test
     fun serviceIdentityAndURLKeepAuthAndLoadStateIndependent() {
-        val first = ServiceShellSession(ServiceShellKey("first", "https://first.test/mobile"))
-        val second = ServiceShellSession(ServiceShellKey("second", "https://second.test/mobile"))
+        val first = ServiceShellSession(ServiceShellKey("first", "https://first.test/mobile")) {}
+        val second = ServiceShellSession(ServiceShellKey("second", "https://second.test/mobile")) {}
         first.bearerStore.onNavigation(first.key.url)
         assertTrue(
             first.bearerStore.receive(
@@ -46,7 +46,7 @@ class ServiceShellSessionTest {
 
     @Test
     fun oldPageCannotAffectReplacementAndClosedEntryRejectsAllPages() {
-        val session = ServiceShellSession(ServiceShellKey("saved", "https://service.test"))
+        val session = ServiceShellSession(ServiceShellKey("saved", "https://service.test")) {}
         val old = session.openPage()
         val current = session.openPage()
         assertFalse(session.isCurrentPage(old))
@@ -110,7 +110,7 @@ class ServiceShellSessionTest {
 
     @Test
     fun rendererRetryRecreatesOnlyThePageAndPreservesItsIdentityAuthority() {
-        val session = ServiceShellSession(ServiceShellKey("a", "https://service.test"))
+        val session = ServiceShellSession(ServiceShellKey("a", "https://service.test")) {}
         session.bearerStore.onNavigation(session.key.url)
         session.bearerStore.receive(Uri.parse(session.key.url), true, session.key.url, """{"bearerToken":"account"}""")
         val identity = session.bearerStore.identityEpoch.value
@@ -140,7 +140,7 @@ class ServiceShellSessionTest {
 
     @Test
     fun ordinaryRetryRequiresFreshValidationWithoutReplacingAccountAuthority() {
-        val session = ServiceShellSession(ServiceShellKey("a", "https://service.test"))
+        val session = ServiceShellSession(ServiceShellKey("a", "https://service.test")) {}
         val origin = Uri.parse(session.key.url)
         session.bearerStore.onNavigation(session.key.url)
         session.bearerStore.receive(origin, true, session.key.url, """{"bearerToken":"account"}""")
@@ -165,7 +165,7 @@ class ServiceShellSessionTest {
 
     @Test
     fun unsupportedIsolationAndClosedEntriesCannotAllocateReplacementPages() {
-        val session = ServiceShellSession(ServiceShellKey("a", "https://service.test"))
+        val session = ServiceShellSession(ServiceShellKey("a", "https://service.test")) {}
         session.pageUnavailable("Update Android System WebView.")
         session.reloadWeb()
         assertEquals(0, session.state.value.webViewGeneration)

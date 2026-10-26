@@ -22,7 +22,7 @@ EMULATOR_ARGS = [
     "-no-window",
     "-no-audio",
     "-gpu",
-    "swiftshader_indirect",
+    "swiftshader",
     # Preserve phone-sized layout space while reducing WebView render memory.
     "-prop",
     "qemu.sf.lcd_density=280",
@@ -32,10 +32,11 @@ EMULATOR_ARGS = [
     # second framework boot after sys.boot_completed and races APK installs.
     "-no-boot-anim",
     "-no-snapstorage",
-    # The test shell has no telephony flows. Emulator 37's internal modem can
+    # Fixture calls do not use a cellular modem. Emulator 37's internal modem can
     # fail to connect to ::1 here, repeatedly ANRing com.android.phone.
+    # Headless software rendering does not need guest Vulkan.
     "-feature",
-    "-ModemSimulator",
+    "-ModemSimulator,-Vulkan",
     "-timezone",
     "Etc/UTC",
     "-wipe-data",

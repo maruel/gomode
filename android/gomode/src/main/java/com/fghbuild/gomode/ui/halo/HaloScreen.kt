@@ -149,7 +149,11 @@ fun HaloScreen(
                 scanning = state.connectionState == HaloConnectionState.Scanning,
                 hasBluetoothPermissions = hasBluetoothPermissions,
                 onScan = { haloController.startScan() },
-                onRequestPermissions = { permissionLauncher.launch(BluetoothPermissions) },
+                onRequestPermissions = {
+                    if (!context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) {
+                        permissionLauncher.launch(BluetoothPermissions)
+                    }
+                },
                 onStopScan = { haloController.stopScan() },
             )
 

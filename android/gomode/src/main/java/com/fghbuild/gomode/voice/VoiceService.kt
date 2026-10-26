@@ -13,6 +13,19 @@ import android.content.pm.ServiceInfo
 import android.os.IBinder
 import com.fghbuild.gomode.MainActivity
 import com.fghbuild.gomode.R
+import java.util.UUID
+
+// Each controller releases only its own foreground session. In particular, disposing an
+// idle shell controller cannot stop a dial-started call owned by another native surface.
+internal class VoiceForegroundLease(
+    private val context: Context,
+) {
+    private val identity = UUID.randomUUID().toString()
+
+    fun start(serverName: String) = VoiceService.start(context, serverName, identity)
+
+    fun stop() = VoiceService.stop(context, identity)
+}
 
 class VoiceService : Service() {
     override fun onStartCommand(
@@ -20,8 +33,13 @@ class VoiceService : Service() {
         flags: Int,
         startId: Int,
     ): Int {
-        refreshNotification()
-        return START_STICKY
+        if (intent?.getStringExtra(EXTRA_OWNER) != currentOwner) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        refreshNotification(requireNotNull(intent?.getStringExtra(EXTRA_SERVER_NAME)))
+        // The in-process session cannot survive a process restart.
+        return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -39,13 +57,13 @@ class VoiceService : Service() {
         nm.createNotificationChannel(channel)
     }
 
-    private fun refreshNotification() {
+    private fun refreshNotification(serverName: String) {
         ensureChannel()
-        val notification = buildNotification()
+        val notification = buildNotification(serverName)
         startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(serverName: String): Notification {
         val tapIntent =
             Intent(this, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -62,7 +80,7 @@ class VoiceService : Service() {
         val caller =
             Person
                 .Builder()
-                .setName(getString(R.string.voice_channel_name))
+                .setName(serverName)
                 .setImportant(true)
                 .build()
         val hangUpIntent =
@@ -82,17 +100,34 @@ class VoiceService : Service() {
     }
 
     companion object {
+        private const val EXTRA_OWNER = "voice_owner"
+        private var currentOwner: String? = null
+        private const val EXTRA_SERVER_NAME = "server_name"
         private const val CHANNEL_ID = "gomode_voice_session"
         private const val NOTIFICATION_ID = 21
 
         /** ACTION_HANG_UP is broadcast when the user ends the call from the call surface. */
         const val ACTION_HANG_UP = "com.fghbuild.gomode.action.VOICE_HANG_UP"
 
-        fun start(context: Context) {
-            context.startForegroundService(Intent(context, VoiceService::class.java))
+        internal fun start(
+            context: Context,
+            serverName: String,
+            owner: String,
+        ) {
+            currentOwner = owner
+            context.startForegroundService(
+                Intent(context, VoiceService::class.java)
+                    .putExtra(EXTRA_SERVER_NAME, serverName)
+                    .putExtra(EXTRA_OWNER, owner),
+            )
         }
 
-        fun stop(context: Context) {
+        internal fun stop(
+            context: Context,
+            owner: String,
+        ) {
+            if (currentOwner != owner) return
+            currentOwner = null
             context.stopService(Intent(context, VoiceService::class.java))
         }
     }

@@ -2,6 +2,8 @@
 package com.fghbuild.gomode
 
 import android.Manifest
+import android.app.KeyguardManager
+import android.net.Uri
 import android.webkit.PermissionRequest
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
@@ -92,17 +94,14 @@ class RetainedWebViewsTest {
                             )
                 }
             server.start()
-            val entry = ServiceShellSession(ServiceShellKey("draft", server.url("/").toString()))
+            val entry = ServiceShellSession(ServiceShellKey("draft", server.url("/").toString())) {}
             var visible by mutableStateOf(true)
             composeRule.setContent {
                 WebShellScreen(
-                    serviceID = entry.key.serviceID,
-                    initialURL = entry.key.url,
                     voiceConnected = false,
                     visible = visible,
                     reloadToken = 0,
                     serviceSession = entry,
-                    onLoadStateChanged = entry::updateLoad,
                     onAuthInvalidated = {},
                 )
             }
@@ -182,21 +181,95 @@ class RetainedWebViewsTest {
     }
 
     @Test
+    fun visibleLockedPageStopsCaptureAndCannotGrantMediaPermissions() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val device = UiDevice.getInstance(instrumentation)
+        val keyguard = composeRule.activity.getSystemService(KeyguardManager::class.java)
+        check(device.executeShellCommand("getprop ro.kernel.qemu").trim() == "1")
+        check(!keyguard.isDeviceSecure)
+        val disabled = device.executeShellCommand("locksettings get-disabled").trim()
+        check(disabled in listOf("true", "false"))
+        MockWebServer().use { server ->
+            server.dispatcher = lifecycleDispatcher()
+            server.start()
+            val entry = ServiceShellSession(ServiceShellKey("locked-media", server.url("/").toString())) {}
+            composeRule.setContent {
+                WebShellScreen(
+                    voiceConnected = false,
+                    showWhenLocked = true,
+                    reloadToken = 0,
+                    serviceSession = entry,
+                    onAuthInvalidated = {},
+                )
+            }
+            val view = visibleWebView()
+            waitForFixture(view)
+            evaluate(view, "navigator.mediaDevices.getUserMedia({audio:true}).then(s => window.liveStream = s); true;")
+            composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { evaluate(view, "Boolean(window.liveStream)") == "true" }
+            try {
+                composeRule.runOnUiThread { composeRule.activity.setShowWhenLocked(true) }
+                device.executeShellCommand("locksettings set-disabled false")
+                device.sleep()
+                device.wakeUp()
+                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+                    keyguard.isKeyguardLocked && evaluate(view, "goModeHost.isPageVisible()") == "true" &&
+                        evaluate(view, "goModeHost.isMediaAllowed()") == "false"
+                }
+                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+                    evaluate(view, "window.liveStream.getTracks().every(t => t.readyState === 'ended')") == "true"
+                }
+                var decision = "pending"
+                composeRule.runOnUiThread {
+                    requireNotNull(view.webChromeClient).onPermissionRequest(
+                        object : PermissionRequest() {
+                            override fun getOrigin(): Uri = Uri.parse(server.url("/").toString())
+
+                            override fun getResources(): Array<String> = arrayOf(RESOURCE_AUDIO_CAPTURE)
+
+                            override fun grant(resources: Array<String>) {
+                                decision = "granted"
+                            }
+
+                            override fun deny() {
+                                decision = "denied"
+                            }
+                        },
+                    )
+                }
+                assertEquals("denied", decision)
+                evaluate(
+                    view,
+                    "navigator.mediaDevices.getUserMedia({audio:true}).catch(e => window.lockedError = e.name); true;",
+                )
+                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+                    evaluate(view, "window.lockedError === 'NotAllowedError'") == "true"
+                }
+            } finally {
+                try {
+                    device.executeShellCommand("locksettings set-disabled $disabled")
+                    device.wakeUp()
+                    device.executeShellCommand("wm dismiss-keyguard")
+                    composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { !keyguard.isKeyguardLocked }
+                } finally {
+                    composeRule.runOnUiThread { composeRule.activity.setShowWhenLocked(false) }
+                }
+            }
+        }
+    }
+
+    @Test
     fun hidingPageStopsRemovedCaptureTracksAndBothKindsOfClone() {
         MockWebServer().use { server ->
             server.dispatcher = lifecycleDispatcher()
             server.start()
-            val entry = ServiceShellSession(ServiceShellKey("capture", server.url("/").toString()))
+            val entry = ServiceShellSession(ServiceShellKey("capture", server.url("/").toString())) {}
             var visible by mutableStateOf(true)
             composeRule.setContent {
                 WebShellScreen(
-                    serviceID = entry.key.serviceID,
-                    initialURL = entry.key.url,
                     voiceConnected = false,
                     visible = visible,
                     reloadToken = 0,
                     serviceSession = entry,
-                    onLoadStateChanged = entry::updateLoad,
                     onAuthInvalidated = {},
                 )
             }
@@ -236,17 +309,14 @@ class RetainedWebViewsTest {
         MockWebServer().use { server ->
             server.dispatcher = lifecycleDispatcher()
             server.start()
-            val entry = ServiceShellSession(ServiceShellKey("pending", server.url("/").toString()))
+            val entry = ServiceShellSession(ServiceShellKey("pending", server.url("/").toString())) {}
             var visible by mutableStateOf(true)
             composeRule.setContent {
                 WebShellScreen(
-                    serviceID = entry.key.serviceID,
-                    initialURL = entry.key.url,
                     voiceConnected = false,
                     visible = visible,
                     reloadToken = 0,
                     serviceSession = entry,
-                    onLoadStateChanged = entry::updateLoad,
                     onAuthInvalidated = {},
                 )
             }
@@ -308,13 +378,10 @@ class RetainedWebViewsTest {
                 entries.values.forEach { entry ->
                     key(entry) {
                         WebShellScreen(
-                            serviceID = entry.key.serviceID,
-                            initialURL = entry.key.url,
                             voiceConnected = false,
                             visible = selected === entry,
                             reloadToken = 0,
                             serviceSession = entry,
-                            onLoadStateChanged = entry::updateLoad,
                             onSharedAuthInvalidated = { registry.invalidateSharedOrigin(entry) },
                             onAuthInvalidated = {},
                         )
@@ -398,20 +465,17 @@ class RetainedWebViewsTest {
         firstURL: String,
         secondURL: String,
     ) {
-        val first = ServiceShellSession(ServiceShellKey("a", firstURL))
-        val second = ServiceShellSession(ServiceShellKey("b", secondURL))
+        val first = ServiceShellSession(ServiceShellKey("a", firstURL)) {}
+        val second = ServiceShellSession(ServiceShellKey("b", secondURL)) {}
         var selected by mutableStateOf(first)
         composeRule.setContent {
             listOf(first, second).forEach { entry ->
                 key(entry) {
                     WebShellScreen(
-                        serviceID = entry.key.serviceID,
-                        initialURL = entry.key.url,
                         voiceConnected = false,
                         visible = selected === entry,
                         reloadToken = 0,
                         serviceSession = entry,
-                        onLoadStateChanged = entry::updateLoad,
                         onAuthInvalidated = {},
                     )
                 }

@@ -2,6 +2,7 @@
 package com.fghbuild.gomode.data
 
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -14,6 +15,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -114,6 +116,8 @@ enum class LocalLlmModel(
 
 const val DEFAULT_VOICE_LANGUAGE_TAG = "en-US"
 
+internal const val MAX_CAR_CALLER_SLOT = 99
+
 sealed interface SettingsLoadState {
     data object Loading : SettingsLoadState
 
@@ -137,6 +141,8 @@ data class SettingsState(
     val voiceAudioDeviceType: Int? = null,
     val voiceChoices: Map<String, String> = emptyMap(),
     val speakingVoices: Map<String, Map<String, String>> = emptyMap(),
+    val carCallerSlots: Map<String, Int> = emptyMap(),
+    val showServiceOnLockScreen: Boolean = false,
     val loadState: SettingsLoadState = SettingsLoadState.Loading,
 )
 
@@ -148,6 +154,8 @@ class SettingsRepository(
 
     private object Keys {
         val SERVICES = stringPreferencesKey("SERVICES")
+        val CAR_CALLER_SLOTS = stringPreferencesKey("CAR_CALLER_SLOTS")
+        val SHOW_SERVICE_ON_LOCK_SCREEN = booleanPreferencesKey("SHOW_SERVICE_ON_LOCK_SCREEN")
         val ACTIVE_SERVICE_ID = stringPreferencesKey("ACTIVE_SERVICE_ID")
         val HALO_ADDRESS = stringPreferencesKey("HALO_ADDRESS")
         val HALO_AUTO_CONNECT = booleanPreferencesKey("HALO_AUTO_CONNECT")
@@ -162,6 +170,8 @@ class SettingsRepository(
 
     val settings: StateFlow<SettingsState> =
         dataStore.data
+            // Persist assignments before publishing Ready, including for existing installations.
+            .onStart { dataStore.edit(::assignCarCallerSlots) }
             .map { prefs ->
                 val services = decodeServices(prefs)
                 val activeId = prefs[Keys.ACTIVE_SERVICE_ID] ?: services.firstOrNull()?.id ?: ""
@@ -171,6 +181,8 @@ class SettingsRepository(
                     loadState = SettingsLoadState.Ready,
                     voiceChoices = decodeVoiceChoices(prefs),
                     speakingVoices = decodeSpeakingVoices(prefs),
+                    carCallerSlots = decodeCarCallerSlots(prefs),
+                    showServiceOnLockScreen = prefs[Keys.SHOW_SERVICE_ON_LOCK_SCREEN] ?: false,
                     haloAddress = prefs[Keys.HALO_ADDRESS],
                     haloAutoConnect = prefs[Keys.HALO_AUTO_CONNECT] ?: false,
                     services = services,
@@ -204,6 +216,7 @@ class SettingsRepository(
                     url = normalizedURL,
                 )
             prefs[Keys.SERVICES] = json.encodeToString(services + service)
+            assignCarCallerSlots(prefs)
             prefs[Keys.ACTIVE_SERVICE_ID] = id
         }
         return id
@@ -271,6 +284,10 @@ class SettingsRepository(
         }
     }
 
+    suspend fun updateShowServiceOnLockScreen(enabled: Boolean) {
+        dataStore.edit { it[Keys.SHOW_SERVICE_ON_LOCK_SCREEN] = enabled }
+    }
+
     suspend fun updateVoiceLanguageTag(tag: String) {
         val normalized = normalizeVoiceLanguageTag(tag)
         dataStore.edit { prefs -> prefs[Keys.VOICE_LANGUAGE_TAG] = normalized }
@@ -315,6 +332,30 @@ class SettingsRepository(
 
     private fun decodeSpeakingVoices(prefs: Preferences): Map<String, Map<String, String>> =
         prefs[Keys.SPEAKING_VOICES]?.let { json.decodeFromString<Map<String, Map<String, String>>>(it) } ?: emptyMap()
+
+    // This app-local registry retains removed IDs so service edits cannot retarget
+    // saved contacts. Exhaustion only disables fixed-server contacts; services and
+    // the generic Go Mode shortcut remain available.
+    private fun assignCarCallerSlots(prefs: MutablePreferences) {
+        val slots = decodeCarCallerSlots(prefs).toMutableMap()
+        val used = slots.values.toMutableSet()
+        for (server in decodeServices(prefs)) {
+            if (server.id.isBlank() || server.id in slots) continue
+            val slot = (1..MAX_CAR_CALLER_SLOT).firstOrNull { it !in used } ?: break
+            slots[server.id] = slot
+            used.add(slot)
+        }
+        prefs[Keys.CAR_CALLER_SLOTS] = json.encodeToString(slots)
+    }
+
+    private fun decodeCarCallerSlots(prefs: Preferences): Map<String, Int> {
+        val slots = prefs[Keys.CAR_CALLER_SLOTS]?.let { json.decodeFromString<Map<String, Int>>(it) } ?: emptyMap()
+        require(
+            slots.keys.none(String::isBlank) && slots.values.all { it in 1..MAX_CAR_CALLER_SLOT } &&
+                slots.values.toSet().size == slots.size,
+        ) { "Invalid saved car contact assignments" }
+        return slots
+    }
 
     private fun decodeVoiceChoices(prefs: Preferences): Map<String, String> =
         prefs[Keys.VOICE_CHOICES]?.let { json.decodeFromString<Map<String, String>>(it) } ?: emptyMap()
