@@ -69,6 +69,108 @@ class VoicePanelTest {
     val composeRule = createAndroidComposeRule<ComponentActivity>()
 
     @Test
+    fun speechLanguageDownloadHasProgressAndDoesNotStartVoice() {
+        val language = mutableStateOf<SpeechLanguageState>(SpeechLanguageState.Missing)
+        val active = mutableStateOf(false)
+        var starts = 0
+        composeRule.setContent {
+            GoModeTheme {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                    VoicePanel(
+                        voiceState = VoiceState(connected = active.value, listening = active.value),
+                        voiceEnabled = true,
+                        onConnect = { starts++ },
+                        onDisconnect = {},
+                        onSelectMicrophoneMode = {},
+                        onSelectDevice = {},
+                        onOpenSettings = {},
+                        serviceStatusText = null,
+                        onCycleApp = {},
+                        canCycleApps = false,
+                        modifier = Modifier.width(280.dp),
+                        speechRecovery = {
+                            SpeechLanguageRecovery(
+                                language.value,
+                                "fr-CA",
+                                active = active.value,
+                                onDownload = { language.value = SpeechLanguageState.Downloading(37) },
+                                onCheck = { language.value = SpeechLanguageState.Ready },
+                                onSettings = {},
+                            )
+                        },
+                    )
+                }
+            }
+        }
+        composeRule.onNodeWithText("Download language").assertIsDisplayed()
+        capture("speech-language-missing")
+        composeRule.onNodeWithText("Download language").performClick()
+        composeRule.onNodeWithText("Downloading speech language fr-CA: 37%").assertIsDisplayed()
+        composeRule.onNodeWithText("Download language").assertDoesNotExist()
+        capture("speech-language-downloading")
+        composeRule.runOnIdle { language.value = SpeechLanguageState.Pending }
+        composeRule.onNodeWithText("Check language").performClick()
+        composeRule.onNodeWithTag("gomode-speech-language-recovery").assertDoesNotExist()
+        assertEquals(0, starts)
+        composeRule.onNodeWithTag("gomode-voice-error-message").assertDoesNotExist()
+        composeRule.runOnIdle {
+            active.value = true
+            language.value = SpeechLanguageState.Unverified("The provider cannot check this language.")
+        }
+        composeRule
+            .onNodeWithText(
+                "The provider cannot check this language. Speech may still work.",
+            ).assertIsDisplayed()
+        composeRule.onNodeWithText("Download language").assertDoesNotExist()
+        composeRule.onNodeWithText("Check language").assertDoesNotExist()
+    }
+
+    @Test
+    fun settingsGlyphAlignsWithActivityAndTranscriptWhileKeepingItsTouchTarget() {
+        composeRule.setContent {
+            GoModeTheme {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                    VoicePanel(
+                        VoiceState(
+                            connected = true,
+                            listening = true,
+                            transcript =
+                                listOf(
+                                    TranscriptEntry(TranscriptSpeaker.USER, "Find the brief", final = true),
+                                ),
+                        ),
+                        true,
+                        {},
+                        {},
+                        {},
+                        {},
+                        {},
+                        null,
+                        {},
+                        false,
+                    )
+                }
+            }
+        }
+        val icon =
+            composeRule
+                .onNodeWithContentDescription("Settings", useUnmergedTree = true)
+                .fetchSemanticsNode()
+                .boundsInRoot
+        val activity = composeRule.onNodeWithTag("gomode-voice-activity").fetchSemanticsNode().boundsInRoot
+        assertEquals(activity.left, icon.left, 0.5f)
+        val transcript =
+            composeRule
+                .onNodeWithText("Find the brief", substring = true)
+                .fetchSemanticsNode()
+                .boundsInRoot
+        assertEquals(transcript.left, icon.left, 0.5f)
+        val touch = composeRule.onNodeWithTag("gomode-web-open-settings").fetchSemanticsNode().touchBoundsInRoot
+        assertTrue(touch.left >= 0)
+        assertTrue(touch.width >= icon.width * 2)
+    }
+
+    @Test
     fun deniedMicrophoneKeepsSettingsUsableAndOffersRecoveryAtNarrowWidth() {
         var requests = 0
         var settingsOpened = 0
@@ -221,7 +323,12 @@ class VoicePanelTest {
         val actions = composeRule.onNodeWithTag("gomode-voice-actions").fetchSemanticsNode().boundsInRoot
         val activity = composeRule.onNodeWithTag("gomode-voice-activity").fetchSemanticsNode().boundsInRoot
         assertTrue(actions.bottom <= activity.top)
-        assertEquals(actions.left, activity.left, 1f)
+        val settingsBounds =
+            composeRule
+                .onNodeWithContentDescription("Settings", useUnmergedTree = true)
+                .fetchSemanticsNode()
+                .boundsInRoot
+        assertEquals(settingsBounds.left, activity.left, 1f)
         assertEquals(actions.right, activity.right, 1f)
         val layouts = mutableListOf<TextLayoutResult>()
         status.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
@@ -474,7 +581,12 @@ class VoicePanelTest {
         }
         val message = composeRule.onNodeWithTag("gomode-voice-error-message").fetchSemanticsNode().boundsInRoot
         val actions = composeRule.onNodeWithTag("gomode-voice-actions").fetchSemanticsNode().boundsInRoot
-        assertEquals(actions.left, message.left, 1f)
+        val settingsBounds =
+            composeRule
+                .onNodeWithContentDescription("Settings", useUnmergedTree = true)
+                .fetchSemanticsNode()
+                .boundsInRoot
+        assertEquals(settingsBounds.left, message.left, 1f)
         assertEquals(actions.right, message.right, 1f)
         assertTrue(actions.bottom <= message.top)
         composeRule.onNodeWithContentDescription("Connect voice assistant").assertIsDisplayed()

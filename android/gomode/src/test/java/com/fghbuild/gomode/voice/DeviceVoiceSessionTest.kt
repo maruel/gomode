@@ -73,6 +73,64 @@ class DeviceVoiceSessionTest {
     }
 
     @Test
+    fun `runtime language recovery removes the fault and preserves unrelated errors`() {
+        val speech = FakeSpeech()
+        val socket = FakeWebSocket()
+        var listener: WebSocketListener? = null
+        val session =
+            createSession(speech) { _, captured ->
+                listener = captured
+                socket
+            }
+        try {
+            session.connect()
+            val backend = requireNotNull(listener)
+            backend.onOpen(socket, upgradeResponse())
+            backend.onMessage(socket, """{"kind":"session.ready"}""")
+            backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+            assertTrue(speech.listening)
+            speech.languageState.value = SpeechLanguageState.Missing
+            requireNotNull(speech.errorCallback).invoke("Speech language en-US is not installed")
+            assertFalse(session.state.value.connected)
+            assertNull(session.state.value.error)
+            session.downloadSpeechLanguage()
+            assertEquals(SpeechLanguageState.Ready, speech.languageState.value)
+            assertNull(session.state.value.error)
+            assertFalse(session.state.value.connected)
+            session.setError("Gateway unavailable")
+            session.downloadSpeechLanguage()
+            assertEquals("Gateway unavailable", session.state.value.error)
+        } finally {
+            session.close()
+        }
+    }
+
+    @Test
+    fun `missing speech language blocks transport and download does not start voice`() {
+        val speech = FakeSpeech()
+        speech.languageState.value = SpeechLanguageState.Missing
+        var opened = false
+        val session =
+            createSession(speech) { _, _ ->
+                opened = true
+                FakeWebSocket()
+            }
+        try {
+            session.connect()
+            assertFalse(opened)
+            assertFalse(session.state.value.connected)
+            assertNull(session.state.value.connectStatus)
+            session.downloadSpeechLanguage()
+            assertEquals(SpeechLanguageState.Ready, speech.languageState.value)
+            assertFalse(opened)
+            session.connect()
+            assertTrue(opened)
+        } finally {
+            session.close()
+        }
+    }
+
+    @Test
     fun `Android speech end sends recognized text to the remote LLM without a final callback`() {
         ShadowSpeechRecognizer.setIsOnDeviceRecognitionAvailable(true)
         val socket = FakeWebSocket()
@@ -85,6 +143,13 @@ class DeviceVoiceSessionTest {
             }
         try {
             session.connect()
+            shadowOf(checkNotNull(ShadowSpeechRecognizer.getLatestSpeechRecognizer())).triggerSupportResult(
+                android.speech.RecognitionSupport
+                    .Builder()
+                    .addInstalledOnDeviceLanguage("en-US")
+                    .build(),
+            )
+            shadowOf(Looper.getMainLooper()).idle()
             val backend = requireNotNull(listener)
             backend.onOpen(socket, upgradeResponse())
             backend.onMessage(socket, """{"kind":"session.ready"}""")
@@ -2064,6 +2129,17 @@ class DeviceVoiceSessionTest {
     private class FakeSpeech(
         private val completeSpeechImmediately: Boolean = true,
     ) : DeviceSpeech {
+        override val languageState =
+            kotlinx.coroutines.flow.MutableStateFlow<SpeechLanguageState>(
+                SpeechLanguageState.Ready,
+            )
+
+        override suspend fun checkLanguage() = languageState.value
+
+        override suspend fun downloadLanguage() {
+            languageState.value = SpeechLanguageState.Ready
+        }
+
         val spoken = mutableListOf<String>()
         val speechCompletions = mutableListOf<() -> Unit>()
         var listening = false
@@ -2072,6 +2148,7 @@ class DeviceVoiceSessionTest {
         var idle: (() -> Unit)? = null
         var resultCallback: ((String) -> Unit)? = null
         var partialCallback: ((String) -> Unit)? = null
+        var errorCallback: ((String) -> Unit)? = null
 
         override fun isAvailable(): Boolean = true
 
@@ -2085,6 +2162,7 @@ class DeviceVoiceSessionTest {
             listening = true
             resultCallback = onResult
             partialCallback = onPartial
+            errorCallback = onError
             idle = onIdle
         }
 
@@ -2093,6 +2171,7 @@ class DeviceVoiceSessionTest {
             idle = null
             resultCallback = null
             partialCallback = null
+            errorCallback = null
         }
 
         override fun speak(

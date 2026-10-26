@@ -92,6 +92,7 @@ import com.fghbuild.gomode.voice.LocalModelOwner
 import com.fghbuild.gomode.voice.LocalModelSelection
 import com.fghbuild.gomode.voice.LocalModelState
 import com.fghbuild.gomode.voice.MicrophonePermissionRecovery
+import com.fghbuild.gomode.voice.SpeechLanguageRecovery
 import com.fghbuild.gomode.voice.TelecomCallController
 import com.fghbuild.gomode.voice.VoiceConversation
 import com.fghbuild.gomode.voice.VoicePanel
@@ -301,6 +302,11 @@ internal fun GoModeApp(
     DisposableEffect(voiceSession) {
         onDispose { voiceSession.close() }
     }
+    val deviceVoiceSession = voiceSession as? DeviceVoiceSession
+    val speechLanguageState =
+        deviceVoiceSession?.let { session ->
+            key(session) { session.speechLanguageState.collectAsStateWithLifecycle().value }
+        }
     DisposableEffect(voiceSession) {
         val receiver =
             object : BroadcastReceiver() {
@@ -528,6 +534,18 @@ internal fun GoModeApp(
                 (!keyboardOpen && (shellRecovery == null || voiceSessionActive))
             ) {
                 VoicePanel(
+                    speechRecovery = {
+                        if (deviceVoiceSession != null && speechLanguageState != null) {
+                            SpeechLanguageRecovery(
+                                state = speechLanguageState,
+                                languageTag = settings.voiceLanguageTag,
+                                active = voiceSessionActive,
+                                onDownload = deviceVoiceSession::downloadSpeechLanguage,
+                                onCheck = deviceVoiceSession::checkSpeechLanguage,
+                                onSettings = { activeNativeScreen = NativeScreen.Settings },
+                            )
+                        }
+                    },
                     microphoneRecovery =
                         if (microphoneDenied) {
                             MicrophonePermissionRecovery(

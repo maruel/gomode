@@ -122,6 +122,7 @@ fun VoicePanel(
     canCycleApps: Boolean,
     modifier: Modifier = Modifier,
     microphoneRecovery: MicrophonePermissionRecovery? = null,
+    speechRecovery: (@Composable () -> Unit)? = null,
 ) {
     val appControls: @Composable () -> Unit = {
         AppControls(onOpenSettings, onCycleApp, canCycleApps)
@@ -160,6 +161,7 @@ fun VoicePanel(
                     }
                 }
             }
+            speechRecovery?.invoke()
             voiceState.audioError?.let { message ->
                 Text(
                     text = message,
@@ -254,7 +256,12 @@ private fun VoiceToolbar(
 ) {
     val active = voiceState.connected || voiceState.connectStatus != null
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("gomode-voice-actions"),
+        // A 24dp icon is centered in its 48dp target: put its visible left edge at 16dp.
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp)
+                .testTag("gomode-voice-actions"),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {

@@ -134,6 +134,18 @@ internal class DeviceVoiceSession(
 
     private val _state = MutableStateFlow(VoiceState())
     override val state: StateFlow<VoiceState> = _state.asStateFlow()
+    val speechLanguageState = speech.languageState
+    private var languageJob: Job? = null
+
+    fun checkSpeechLanguage() {
+        if (state.value.connected || state.value.connectStatus != null || languageJob?.isActive == true) return
+        languageJob = scope.launch { speech.checkLanguage() }
+    }
+
+    fun downloadSpeechLanguage() {
+        if (state.value.connected || state.value.connectStatus != null || languageJob?.isActive == true) return
+        languageJob = scope.launch { speech.downloadLanguage() }
+    }
 
     private val thinkingAudioJob =
         scope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -203,6 +215,8 @@ internal class DeviceVoiceSession(
         awaitingModelTurn = false
         connectJob?.cancel()
         connectJob = null
+        languageJob?.cancel()
+        languageJob = null
         closeWebSocket()
         releaseEngine()
         speech.stopListening()
@@ -233,11 +247,18 @@ internal class DeviceVoiceSession(
             setError(e.message ?: "Gateway conversation is unavailable")
             return
         }
-        if (engineType != OnDeviceEngine.LOCAL_LLM) VoiceService.start(appContext)
-        setStatus("Connecting…")
+        setStatus("Checking speech language…")
         connectJob =
             scope.launch {
                 try {
+                    val language = speech.checkLanguage()
+                    if (!ownsAttempt(attempt)) return@launch
+                    if (language != SpeechLanguageState.Ready && language !is SpeechLanguageState.Unverified) {
+                        disconnect()
+                        return@launch
+                    }
+                    setStatus("Connecting…")
+                    if (engineType != OnDeviceEngine.LOCAL_LLM) VoiceService.start(appContext)
                     if (engineType == OnDeviceEngine.LOCAL_LLM) {
                         checkNotNull(voiceConversation) { "Local conversation owner is unavailable" }
                         setStatus("Preparing local model…")
@@ -620,7 +641,14 @@ internal class DeviceVoiceSession(
                 }
             },
             onIdle = { if (currentRecognition()) handleListeningIdle(attempt) },
-            onError = { message -> if (currentRecognition()) reportAttemptError(attempt, message) },
+            onError = { message ->
+                if (currentRecognition()) {
+                    when (speech.languageState.value) {
+                        SpeechLanguageState.Missing, SpeechLanguageState.Unsupported -> disconnect()
+                        else -> reportAttemptError(attempt, message)
+                    }
+                }
+            },
         )
     }
 
@@ -948,6 +976,8 @@ internal class DeviceVoiceSession(
     }
 
     override fun disconnect() {
+        languageJob?.cancel()
+        languageJob = null
         voiceConversation?.finish()
         thinkingEarcon.setThinking(false)
         invalidateAttempt()

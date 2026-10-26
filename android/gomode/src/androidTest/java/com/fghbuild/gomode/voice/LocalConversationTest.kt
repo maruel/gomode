@@ -452,6 +452,17 @@ class LocalConversationTest {
     }
 
     private class ControlledSpeech : DeviceSpeech {
+        override val languageState =
+            kotlinx.coroutines.flow.MutableStateFlow<SpeechLanguageState>(
+                SpeechLanguageState.Ready,
+            )
+
+        override suspend fun checkLanguage() = languageState.value
+
+        override suspend fun downloadLanguage() {
+            languageState.value = SpeechLanguageState.Ready
+        }
+
         @Volatile var callback: ((String) -> Unit)? = null
 
         override fun isAvailable() = true

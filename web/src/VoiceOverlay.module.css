@@ -22,10 +22,13 @@
 }
 
 .panelInner {
+  --toolbar-icon-inset: calc((44px - 1.25em) / 2);
+
   box-sizing: border-box;
   max-width: 1200px;
   max-height: 100dvh;
-  padding: 0 1rem 0.5rem;
+  /* Keep the settings hit target and its focus outline inside the viewport. */
+  padding: 0 max(1rem, calc(var(--toolbar-icon-inset) + 4px)) 0.5rem;
   margin: 0 auto;
   overflow-y: auto;
 }
@@ -52,6 +55,8 @@
   min-width: 0;
   padding: 0.25rem;
   margin: 0 -0.25rem 0.5rem;
+  /* Align the glyph with text while preserving the centered 44px target. */
+  margin-inline-start: calc(-0.25rem - var(--toolbar-icon-inset));
 }
 
 .toolbarActions {
@@ -116,10 +121,6 @@
 }
 
 @media (width <= 360px) {
-  .panelInner {
-    padding-inline: 0.5rem;
-  }
-
   .callToolbar,
   .toolbarActions,
   .callActions {

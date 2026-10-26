@@ -23,6 +23,9 @@ Mobile uses the available width. Desktop bounds the panel content to 1200 px.
 At extreme zoom, the controls on the left scroll horizontally while start/hang-up
 stays fixed at the right. Keyboard focus scrolls each action into view and leaves
 room for its focus outline.
+The Settings icon box starts at the same inset as activity and transcript text.
+Its centered touch target extends to the left, remaining 48 dp on Android and
+44 CSS px on web. Web reserves enough inset to keep the focus outline on-screen.
 
 ## Keep these three references coherent
 
@@ -78,6 +81,23 @@ Web keeps separate microphone and speaker selectors with named options. It uses
 browser device enumeration and output selection, not Android's earpiece-routing
 API. Unsupported output selection points users to system audio settings. Do not
 add a fake earpiece choice to the browser just to match the native screenshot.
+
+## On-device speech languages
+
+Android checks the selected speech language before starting voice transport.
+Missing languages offer Download language, Check language, and Voice settings.
+Downloads leave voice off. Providers that cannot check support allow an explicit
+voice attempt with guidance; unsupported languages point to another language or
+Cloud voice. Android 13 and providers without download events show a pending
+request until the user checks again. Newer providers can report progress and
+completion. The voice fixture installs English (US) through the real provider's
+confirmation dialog on a fresh emulator, requiring network access for that pack.
+
+The [missing-language](../screenshots/voice/android-language-missing.webp) and
+[download-progress](../screenshots/voice/android-language-downloading.webp)
+references are controlled native component scenes at 280 dp width. They exercise
+wrapping and action reachability; the voice fixture separately exercises the
+real provider download and subsequent connection.
 
 ## Microphone permission recovery
 

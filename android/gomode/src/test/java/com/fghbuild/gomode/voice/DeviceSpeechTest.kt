@@ -28,6 +28,28 @@ class DeviceSpeechTest {
         }
 
     @Test
+    fun `language failures describe recovery and update language readiness`() {
+        for ((code, expected) in listOf(
+            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE to SpeechLanguageState.Missing,
+            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED to SpeechLanguageState.Unsupported,
+        )) {
+            val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "fr-CA")
+            val errors = mutableListOf<String>()
+            try {
+                speech.startListening({}, {}, {}, errors::add)
+                shadowOf(Looper.getMainLooper()).idle()
+                shadowOf(checkNotNull(ShadowSpeechRecognizer.getLatestSpeechRecognizer())).triggerOnError(code)
+                assertEquals(expected, speech.languageState.value)
+                assertTrue(errors.single().contains("fr-CA"))
+                assertTrue(errors.single().contains("Settings"))
+            } finally {
+                speech.close()
+                shadowOf(Looper.getMainLooper()).idle()
+            }
+        }
+    }
+
+    @Test
     fun `a disconnected recognition service is recreated once without ending the voice session`() {
         val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US")
         val finals = mutableListOf<String>()

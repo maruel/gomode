@@ -19,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.StateFlow
 import java.util.Locale
 
 private const val TAG = "GoModeDeviceSpeech"
@@ -30,6 +31,12 @@ private const val RECOGNITION_RECOVERY_DELAY_MS = 250L
 
 /** DeviceSpeech runs speech recognition and synthesis on the device. */
 internal interface DeviceSpeech {
+    val languageState: StateFlow<SpeechLanguageState>
+
+    suspend fun checkLanguage(): SpeechLanguageState
+
+    suspend fun downloadLanguage()
+
     /** isAvailable reports whether the device has an on-device speech recognizer. */
     fun isAvailable(): Boolean
 
@@ -66,6 +73,13 @@ internal class AndroidDeviceSpeech(
     private val context: Context,
     private val languageTag: String,
 ) : DeviceSpeech {
+    private val language = AndroidSpeechLanguage(context, languageTag)
+    override val languageState = language.state
+
+    override suspend fun checkLanguage() = language.check()
+
+    override suspend fun downloadLanguage() = language.download()
+
     private val captureScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val microphone = MicrophoneAudioSource(captureScope)
     private val main = Handler(Looper.getMainLooper())
@@ -193,6 +207,7 @@ internal class AndroidDeviceSpeech(
 
                 override fun onError(error: Int) {
                     if (generation != recognitionGeneration || !listening) return
+                    language.recognitionFailed(error)
                     finishListening()
                     if (error == SpeechRecognizer.ERROR_SERVER_DISCONNECTED) {
                         speechRecognizer.destroy()
@@ -222,7 +237,23 @@ internal class AndroidDeviceSpeech(
                         submit(lastPartial)
                         return
                     }
-                    onError("Speech recognition error $error")
+                    onError(
+                        when (error) {
+                            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> {
+                                "Speech language $languageTag is not installed. " +
+                                    "Download it or choose another voice mode in Settings."
+                            }
+
+                            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> {
+                                "Speech language $languageTag is not supported by this recognizer. " +
+                                    "Choose another language or voice mode in Settings."
+                            }
+
+                            else -> {
+                                "Speech recognition error $error"
+                            }
+                        },
+                    )
                 }
 
                 override fun onResults(results: Bundle?) {
@@ -385,6 +416,7 @@ internal class AndroidDeviceSpeech(
 
     override fun close() {
         main.post {
+            language.close()
             cancelListening()
             microphone.stop()
             captureScope.cancel()
