@@ -85,18 +85,21 @@ const [gatewayVersion, setGatewayVersion] = createSignal(0);
 type ServiceAuthorizationProvider = () => Promise<ServiceAuthorization>;
 let serviceAuthorizationProvider: ServiceAuthorizationProvider | null = null;
 let gatewayBearerTokenProvider: (() => string | null | Promise<string | null>) | null = null;
+let gatewayHeadersProvider: (() => HeadersInit) | null = null;
 
-/** Configure a gateway origin and an optional host-issued scoped-token provider. */
+/** Configure gateway authorization; host headers are captured per session and sent only to same-origin endpoints. */
 export function configureVoiceGateway(
   baseURL: string,
   provider: ServiceAuthorizationProvider | null,
   tokenProvider?: () => string | null | Promise<string | null>,
+  headersProvider?: () => HeadersInit,
 ): void {
   const u = new URL(baseURL, window.location.origin);
   if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("Voice gateway URL must use HTTP or HTTPS");
   gatewayBaseURL = u.origin;
   serviceAuthorizationProvider = provider;
   gatewayBearerTokenProvider = tokenProvider ?? null;
+  gatewayHeadersProvider = headersProvider ?? null;
   setGatewayVersion((version) => version + 1);
 }
 
@@ -105,10 +108,14 @@ type BearerTokenProvider = () => string | null | Promise<string | null>;
 async function gatewayFetch(
   origin: string,
   bearerProvider: BearerTokenProvider | null,
+  hostHeaders: HeadersInit | undefined,
   path: string,
   init?: RequestInit,
 ): Promise<Response> {
   const headers = new Headers(init?.headers);
+  if (origin === window.location.origin) {
+    new Headers(hostHeaders).forEach((value, key) => headers.set(key, value));
+  }
   if (origin === window.location.origin && !headers.has("Authorization")) {
     const token = await bearerProvider?.();
     if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -156,7 +163,13 @@ function gatewayHTTPError(status: number, path: string): string | null {
 
 // Late-bound API for callers outside VoiceSession; session operations use a pinned client.
 export const voiceGatewayApi = voicegatewaySDK.createApiClient((path, init) =>
-  gatewayFetch(gatewayBaseURL ?? window.location.origin, gatewayBearerTokenProvider, path, init),
+  gatewayFetch(
+    gatewayBaseURL ?? window.location.origin,
+    gatewayBearerTokenProvider,
+    gatewayHeadersProvider?.(),
+    path,
+    init,
+  ),
 );
 
 interface GatewaySnapshot {
@@ -171,12 +184,14 @@ function gatewaySnapshot(): GatewaySnapshot {
   const origin = gatewayBaseURL ?? window.location.origin;
   const serviceProvider = serviceAuthorizationProvider;
   const bearerProvider = gatewayBearerTokenProvider;
+  // Keep host identity fixed for this session's signaling, retries and cleanup.
+  const headers = new Headers(gatewayHeadersProvider?.());
   return {
     version: untrack(gatewayVersion),
     origin,
     serviceProvider,
     bearerProvider,
-    api: voicegatewaySDK.createApiClient((path, init) => gatewayFetch(origin, bearerProvider, path, init)),
+    api: voicegatewaySDK.createApiClient((path, init) => gatewayFetch(origin, bearerProvider, headers, path, init)),
   };
 }
 

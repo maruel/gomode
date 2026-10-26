@@ -9,6 +9,7 @@ hosted frontend, and MCP tool and resource semantics.
 
 ```text
 ./                   discovery manifest, handler, voice token, SDK spec
+devicelogin/         browser pairing with explicit approval and host sessions
 mcp/                 MCP Streamable HTTP endpoint, Skills extension, DTOs
   mcptest/           test doubles for mcp interfaces
 oauth/               OAuth 2.0 DTOs
@@ -50,6 +51,29 @@ The adapter stays thin. caic builds `gomode.Settings`, exposes the `tasks` skill
 at `/api/caic/v1/mcp`, and mounts the embedded gateway when configured. mddb
 exposes the `workspace` skill. Gateway token rules are in
 [VOICE_GATEWAY.md](VOICE_GATEWAY.md#authorization).
+
+## Device sign-in
+
+`devicelogin.New` supplies the expiring code store and start, poll, lookup, and
+explicit decision handlers. Mount every handler behind the host's normal
+network and origin protections. A concrete `devicelogin.Host` implementation supplies approver identity, current
+login eligibility, audit persistence, and creation of its normal tracked session.
+
+`CreateSession` receives the opaque approver subject bound to the decision.
+Use the host's normal session issuer: device sign-in grants the same permissions,
+lifetime, and capabilities as ordinary login. Session revocation remains owned
+by the host. `DeviceLoginApproval` shows the code and requesting browser details
+before an explicit approve or deny action. `DeviceLoginDisplay` and the headless
+`createDeviceLogin` primitive consume the host's normal login response and CSS
+tokens. See [the package contract](../devicelogin/devicelogin.go) for single-use
+completion and audit failure semantics.
+
+`devicelogin` and `oauth/oauthserver` use `internal/pairing` for device secrets,
+user-code sampling, expiry, decision reservations, and polling state. The core
+has no HTTP handlers, storage, host types, or credential issuer. Browser login
+owns its memory store, attempt budgets, approval proof, and audited session
+delivery. OAuth owns its durable transactions, client/scope binding, and token
+issuance. Each adapter retains its code format and polling enforcement.
 
 ## Discovery Manifest
 

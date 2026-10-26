@@ -1733,6 +1733,27 @@ describe("VoiceSession", () => {
     );
   });
 
+  it("retains originating host headers for signaling and cleanup after session replacement", async () => {
+    let identity = "session-A";
+    const seen: Array<{ url: string; identity: string | null }> = [];
+    const fetchGateway = globalThis.fetch;
+    globalThis.fetch = (input, init) => {
+      seen.push({ url: String(input), identity: new Headers(init?.headers).get("X-Host-Session") });
+      return fetchGateway(input, init);
+    };
+    configureVoiceGateway("/", null, undefined, () => ({ "X-Host-Session": identity }));
+    const session = new VoiceSession();
+    await session.connect();
+    identity = "session-B";
+    configureVoiceGateway("/", null, undefined, () => ({ "X-Host-Session": identity }));
+    session.disconnect();
+    await vi.waitFor(() => expect(closeRequests).toHaveLength(1));
+    expect(seen.some((request) => request.url.endsWith("/rtc/offer"))).toBe(true);
+    expect(
+      seen.filter((request) => request.url.includes("/rtc/")).every((request) => request.identity === "session-A"),
+    ).toBe(true);
+  });
+
   it("closes the gateway session and drops late tools when the voice protocol reports a fatal error", async () => {
     const tool = deferred<Awaited<ReturnType<typeof mcpClient.callTool>>>();
     mcpMocks.mcpCallTool.mockReturnValue(tool.promise);

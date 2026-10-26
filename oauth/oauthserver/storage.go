@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/maruel/gomode/internal/pairing"
 	"github.com/maruel/gomode/oauth"
 	v5 "github.com/maruel/gomode/oauth/oauthserver/data/v5"
 )
@@ -80,15 +81,11 @@ type Client struct {
 
 // DeviceCode holds an in-progress device authorization flow (RFC 8628).
 type DeviceCode struct {
-	DeviceCode  string
-	UserCode    string
 	UserCodeKey string
 	ClientID    string
 	Scope       string
-	UserID      string
-	Status      string
-	ExpiresAt   time.Time
-	IssuedAt    time.Time
+
+	flow pairing.Flow
 }
 
 // Grant describes a user authorization returned by ListUserGrants.
@@ -546,7 +543,7 @@ func (s *storeState) disk() v5.Store {
 			devices[key] = nil
 			continue
 		}
-		devices[key] = &v5.DeviceCode{UserCodeKey: d.UserCodeKey, ClientID: d.ClientID, Scope: d.Scope, UserID: d.UserID, Status: d.Status, ExpiresAt: d.ExpiresAt, IssuedAt: d.IssuedAt}
+		devices[key] = &v5.DeviceCode{UserCodeKey: d.UserCodeKey, ClientID: d.ClientID, Scope: d.Scope, UserID: d.flow.Subject, Status: string(d.flow.State), ExpiresAt: d.flow.ExpiresAt, IssuedAt: d.flow.CreatedAt}
 	}
 	return v5.Store{Version: storeVersion, Clients: clients, RefreshTokens: s.RefreshTokens, Grants: s.Grants, Codes: s.Codes, Consents: s.Consents, DeviceCodes: devices, DPoPProofs: s.DPoPProofs, DPoPNonces: s.DPoPNonces, ClientAssertionJTIs: s.ClientAssertionJTIs, AccessTokenSigningKeys: s.AccessTokenSigningKeys, CurrentSigningKID: s.CurrentSigningKID}
 }
@@ -580,7 +577,7 @@ func pruneExpiredStore(file *storeState, now time.Time) bool {
 		}
 	}
 	for code, entry := range file.DeviceCodes {
-		if entry != nil && now.After(entry.ExpiresAt) {
+		if entry != nil && entry.flow.Expired(now) {
 			delete(file.DeviceCodes, code)
 			changed = true
 		}
@@ -621,7 +618,7 @@ func loadDeviceCodes(src map[string]*v5.DeviceCode) map[string]*DeviceCode {
 			dst[key] = nil
 			continue
 		}
-		dst[key] = &DeviceCode{UserCodeKey: d.UserCodeKey, ClientID: d.ClientID, Scope: d.Scope, UserID: d.UserID, Status: d.Status, ExpiresAt: d.ExpiresAt, IssuedAt: d.IssuedAt}
+		dst[key] = &DeviceCode{UserCodeKey: d.UserCodeKey, ClientID: d.ClientID, Scope: d.Scope, flow: pairing.Flow{Subject: d.UserID, State: pairing.State(d.Status), ExpiresAt: d.ExpiresAt, CreatedAt: d.IssuedAt}}
 	}
 	return dst
 }

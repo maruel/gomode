@@ -78,15 +78,23 @@ describe("voice gateway bearer authentication", () => {
   });
 
   it("does not forward a host token to an external gateway", async () => {
-    configureVoiceGateway("https://voice.example.com", null, () => "host-token");
+    configureVoiceGateway(
+      "https://voice.example.com",
+      null,
+      () => "host-token",
+      () => ({ "X-Host-Session": "private-host-pin" }),
+    );
     let authorization: string | null = null;
+    let hostPin: string | null = null;
     globalThis.fetch = async (_input, init) => {
       authorization = new Headers(init?.headers).get("Authorization");
+      hostPin = new Headers(init?.headers).get("X-Host-Session");
       return new Response(JSON.stringify({ sessionID: "s1", sdp: "answer" }));
     };
 
     await voiceGatewayApi.voiceRTCOffer({ sdp: "offer" });
     expect(authorization).toBeNull();
+    expect(hostPin).toBeNull();
   });
 
   it("preserves a scoped session token when closing an external gateway session", async () => {

@@ -29,7 +29,8 @@
     "./sdk/mcp/*": "./sdk/mcp/ts/v1/*",
     "./sdk/oauth/*": "./sdk/oauth/ts/v1/*",
     "./sdk/gomode/*": "./sdk/gomode/ts/v1/*",
-    "./sdk/voicegateway/*": "./sdk/voicegateway/ts/v1/*"
+    "./sdk/voicegateway/*": "./sdk/voicegateway/ts/v1/*",
+    "./web/DeviceLogin": "./web/src/DeviceLogin.tsx"
   },
   "peerDependencies": {
     "@solidjs/router": "^1.0.0",

@@ -15,8 +15,9 @@ to a host through `/.well-known/gomode.json` and renders its web frontend.
 
 - Go module `github.com/maruel/gomode`: discovery manifest and voice token
   contracts.
-    - `mcp/`, `oauth/`, `sse/`: reusable HTTP protocol implementations.
-    - `voicegateway/`: standalone or embedded WebRTC voice gateway.
+  - `mcp/`, `oauth/`, `sse/`: reusable HTTP protocol implementations.
+  - `devicelogin/`: browser pairing with explicit approval and host session issuance.
+  - `voicegateway/`: standalone or embedded WebRTC voice gateway.
 - `sdk/`: generated TypeScript, Kotlin, and Swift protocol clients plus the
   Halo Android SDK.
 - `web/src/`: `@maruel/gomode` SolidJS browser integration.

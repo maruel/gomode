@@ -22,7 +22,6 @@ import (
 	"html"
 	"io"
 	"log/slog"
-	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -34,6 +33,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/maruel/gomode/internal/pairing"
 	"github.com/maruel/gomode/oauth"
 	v5 "github.com/maruel/gomode/oauth/oauthserver/data/v5"
 )
@@ -2405,25 +2405,17 @@ func (s *Server) handleOAuthDeviceAuthorization(w http.ResponseWriter, r *http.R
 		oauth.WriteError(w, http.StatusBadRequest, "invalid_scope", err.Error())
 		return
 	}
-	deviceCode, err := randomToken()
-	if err != nil {
-		slog.WarnContext(r.Context(), "generate device code", "err", err)
-		oauth.WriteError(w, http.StatusInternalServerError, "server_error", "could not generate device code")
-		return
-	}
-	userCode := generateUserCode()
+	deviceCode := pairing.Secret()
+	userCode := pairing.UserCode("ABCDEFGHJKMNPQRSTUVWXYZ23456789", 8)
 	now := time.Now()
-	expiresAt := now.Add(10 * time.Minute)
 
 	dc := &DeviceCode{
-		DeviceCode:  deviceCode,
-		UserCode:    userCode,
 		UserCodeKey: oauth.RefreshTokenKey(userCode),
 		ClientID:    clientID,
 		Scope:       scope,
-		Status:      "pending",
-		ExpiresAt:   expiresAt,
-		IssuedAt:    now,
+		// OAuth's request limiter owns cadence. Browser login additionally uses
+		// the shared flow's interval/slow_down enforcement.
+		flow: pairing.New(now, 0),
 	}
 	s.mu.Lock()
 	capacityExceeded := false
@@ -2454,7 +2446,7 @@ func (s *Server) handleOAuthDeviceAuthorization(w http.ResponseWriter, r *http.R
 		UserCode:                userCode,
 		VerificationURI:         issuer + "/oauth/device",
 		VerificationURIComplete: issuer + "/oauth/device?user_code=" + userCode,
-		ExpiresIn:               600,
+		ExpiresIn:               int64(dc.flow.ExpiresAt.Sub(dc.flow.CreatedAt) / time.Second),
 		Interval:                5,
 	}
 	writeJSONResponse(w, &resp)
@@ -2498,10 +2490,10 @@ func (s *Server) handleOAuthDeviceApprove(w http.ResponseWriter, r *http.Request
 	userCodeKey := oauth.RefreshTokenKey(userCode)
 	err := s.state.transact(func(next *storeState) bool {
 		for _, d := range next.DeviceCodes {
-			if d != nil && d.UserCodeKey == userCodeKey && d.Status == "pending" && time.Now().Before(d.ExpiresAt) {
+			now := time.Now()
+			if d != nil && d.UserCodeKey == userCodeKey && d.flow.Reserve(now) {
 				dc = d
-				d.Status = "approved"
-				d.UserID = user.ID
+				d.flow.Finish(now, user.ID, true, true)
 				return true
 			}
 		}
@@ -2540,7 +2532,8 @@ func (s *Server) handleOAuthDeviceCodeToken(w http.ResponseWriter, r *http.Reque
 		oauth.WriteError(w, http.StatusBadRequest, "invalid_grant", "invalid device_code")
 		return
 	}
-	if time.Now().After(dc.ExpiresAt) {
+	now := time.Now()
+	if dc.flow.Expired(now) {
 		err := s.state.transact(func(next *storeState) bool {
 			delete(next.DeviceCodes, codeHash)
 			return true
@@ -2572,12 +2565,12 @@ func (s *Server) handleOAuthDeviceCodeToken(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
-	switch dc.Status {
-	case "pending":
+	switch dc.flow.Poll(now) {
+	case pairing.Pending:
 		s.mu.Unlock()
 		oauth.WriteError(w, http.StatusBadRequest, "authorization_pending", "user has not yet authorized the device")
 		return
-	case "denied":
+	case pairing.Denied:
 		err := s.state.transact(func(next *storeState) bool {
 			delete(next.DeviceCodes, codeHash)
 			return true
@@ -2590,7 +2583,7 @@ func (s *Server) handleOAuthDeviceCodeToken(w http.ResponseWriter, r *http.Reque
 		}
 		oauth.WriteError(w, http.StatusBadRequest, "access_denied", "user denied the authorization request")
 		return
-	case "approved":
+	case pairing.Approved:
 		s.mu.Unlock()
 	default:
 		s.mu.Unlock()
@@ -2598,7 +2591,7 @@ func (s *Server) handleOAuthDeviceCodeToken(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	user, ok := s.findUserByID(dc.UserID)
+	user, ok := s.findUserByID(dc.flow.Subject)
 	if !ok {
 		oauth.WriteError(w, http.StatusBadRequest, "invalid_grant", "user no longer exists")
 		return
@@ -2609,12 +2602,12 @@ func (s *Server) handleOAuthDeviceCodeToken(w http.ResponseWriter, r *http.Reque
 		oauth.WriteError(w, http.StatusInternalServerError, "server_error", "could not issue token")
 		return
 	}
-	now := time.Now()
-	grant := v5.Grant{ID: grantID, UserID: dc.UserID, ClientID: dc.ClientID, Resource: s.resourceURL, Scope: dc.Scope, CreatedAt: now, ExpiresAt: now.Add(s.refreshTokenTTL)}
+	now = time.Now()
+	grant := v5.Grant{ID: grantID, UserID: dc.flow.Subject, ClientID: dc.ClientID, Resource: s.resourceURL, Scope: dc.Scope, CreatedAt: now, ExpiresAt: now.Add(s.refreshTokenTTL)}
 	refreshToken := ""
 	refreshEntry := v5.RefreshToken{}
 	if clientSupportsGrant(&client, oauth.GrantRefreshToken) {
-		refreshEntry = v5.RefreshToken{GrantID: grantID, UserID: dc.UserID, ClientID: dc.ClientID, Resource: s.resourceURL, Scope: dc.Scope, DPoPJKT: dpopJKT, ExpiresAt: grant.ExpiresAt}
+		refreshEntry = v5.RefreshToken{GrantID: grantID, UserID: dc.flow.Subject, ClientID: dc.ClientID, Resource: s.resourceURL, Scope: dc.Scope, DPoPJKT: dpopJKT, ExpiresAt: grant.ExpiresAt}
 		refreshToken, err = randomToken()
 		if err != nil {
 			slog.WarnContext(r.Context(), "generate device refresh token", "err", err)
@@ -2637,7 +2630,7 @@ func (s *Server) handleOAuthDeviceCodeToken(w http.ResponseWriter, r *http.Reque
 		if client.Provenance != ClientProvenanceMetadata {
 			currentClient, clientFound = next.Clients[dc.ClientID]
 		}
-		if !found || current == nil || current.Status != "approved" || current.UserID != dc.UserID || current.ClientID != dc.ClientID || !clientFound || !clientSupportsGrant(&currentClient, oauth.GrantDeviceCode) {
+		if !found || current == nil || current.flow.State != pairing.Approved || current.flow.Subject != dc.flow.Subject || current.ClientID != dc.ClientID || !clientFound || !clientSupportsGrant(&currentClient, oauth.GrantDeviceCode) {
 			return false
 		}
 		grant.ClientName = clientDisplayName(&currentClient)
@@ -2830,16 +2823,6 @@ type dpopBinding struct {
 	iat            int64
 	nonce          string
 	nonceExpiresAt time.Time
-}
-
-func generateUserCode() string {
-	const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-	var code [8]byte
-	for i := range code {
-		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
-		code[i] = chars[n.Int64()]
-	}
-	return string(code[:])
 }
 
 func writeUnauthorizedJSON(w http.ResponseWriter) {

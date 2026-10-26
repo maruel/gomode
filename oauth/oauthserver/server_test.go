@@ -28,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maruel/gomode/internal/pairing"
 	"github.com/maruel/gomode/oauth"
 	v5 "github.com/maruel/gomode/oauth/oauthserver/data/v5"
 )
@@ -2066,6 +2067,14 @@ func TestDeviceAuthorization(t *testing.T) {
 		if _, err := s.verifyBearer(newTestResourceRequest(t), tokenResp.AccessToken); err != nil {
 			t.Fatalf("verify access token: %v", err)
 		}
+		// Consumption must remain coupled to the durable OAuth grant.
+		req = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/oauth/token", strings.NewReader(tokenForm.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w = httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_grant") {
+			t.Fatalf("device replay status = %d: %s", w.Code, w.Body.String())
+		}
 	})
 
 	t.Run("polling authorization_pending", func(t *testing.T) {
@@ -2194,7 +2203,7 @@ func TestDeviceAuthorization(t *testing.T) {
 		s.mu.Lock()
 		codeHash := oauth.RefreshTokenKey(devResp.DeviceCode)
 		dc := s.state.DeviceCodes[codeHash]
-		dc.ExpiresAt = time.Now().Add(-time.Minute)
+		dc.flow.ExpiresAt = time.Now().Add(-time.Minute)
 		s.state.DeviceCodes[codeHash] = dc
 		s.mu.Unlock()
 
@@ -2347,7 +2356,7 @@ func TestDeviceAuthorization(t *testing.T) {
 		original.Close()
 
 		// Restart server.
-		_, h2, _ := newTestFlowServer(t, path, []oauth.User{user})
+		second, h2, _ := newTestFlowServer(t, path, []oauth.User{user})
 
 		// Poll without approving on the new server.
 		tokenForm := url.Values{
@@ -2377,10 +2386,12 @@ func TestDeviceAuthorization(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("device approval after restart status = %d, want %d: %s", w.Code, http.StatusOK, w.Body.String())
 		}
+		second.Close()
+		_, h3, _ := newTestFlowServer(t, path, []oauth.User{user})
 		req = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/oauth/token", strings.NewReader(tokenForm.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		w = httptest.NewRecorder()
-		h2.ServeHTTP(w, req)
+		h3.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("device exchange after restart status = %d, want %d: %s", w.Code, http.StatusOK, w.Body.String())
 		}
@@ -4206,7 +4217,7 @@ func TestRegistrationManagement(t *testing.T) {
 		err := s.state.transact(func(next *storeState) bool {
 			next.Codes[oauth.RefreshTokenKey("client-code")] = v5.Code{ClientID: registered.ClientID, ExpiresAt: now.Add(time.Hour)}
 			next.Consents[oauth.RefreshTokenKey("client-consent")] = v5.ConsentParams{Params: map[string]string{"client_id": registered.ClientID}, ExpiresAt: now.Add(time.Hour)}
-			next.DeviceCodes[oauth.RefreshTokenKey("client-device-code")] = &DeviceCode{ClientID: registered.ClientID, ExpiresAt: now.Add(time.Hour)}
+			next.DeviceCodes[oauth.RefreshTokenKey("client-device-code")] = &DeviceCode{ClientID: registered.ClientID, flow: pairing.New(now, 0)}
 			next.Grants["client-grant"] = v5.Grant{ID: "client-grant", ClientID: registered.ClientID, ExpiresAt: now.Add(time.Hour)}
 			next.RefreshTokens[oauth.RefreshTokenKey("client-refresh-token")] = v5.RefreshToken{GrantID: "client-grant", ClientID: registered.ClientID, ExpiresAt: now.Add(time.Hour)}
 			return true
@@ -5023,7 +5034,7 @@ func TestOAuthInputBounds(t *testing.T) {
 		registered := registerOAuthTestClient(t, handler, "Claude", []string{"https://claude.example.com/callback"})
 		now := time.Now()
 		for i := range maxPendingDeviceCodes {
-			server.state.DeviceCodes[strconv.Itoa(i)] = &DeviceCode{ClientID: registered.ClientID, Status: "pending", ExpiresAt: now.Add(time.Minute)}
+			server.state.DeviceCodes[strconv.Itoa(i)] = &DeviceCode{ClientID: registered.ClientID, flow: pairing.New(now, 0)}
 		}
 		form := url.Values{"client_id": {registered.ClientID}, "scope": {"read"}}
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/oauth/device_authorization", strings.NewReader(form.Encode()))

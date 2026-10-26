@@ -47,13 +47,11 @@ func TestStore(t *testing.T) {
 		if store.RefreshTokens["refresh-digest"].UsedAt.IsZero() || store.Grants["grant"].RevokedAt.IsZero() || len(store.DPoPProofs) != 1 || len(store.DPoPNonces) != 1 || len(store.ClientAssertionJTIs) != 1 {
 			t.Fatal("token lifecycle or replay state lost")
 		}
-		// Runtime-only metadata and raw device credentials never enter the disk contract.
+		// Runtime-only client metadata never enters the disk contract.
 		client := store.Clients["client"]
 		client.JWKS = []oauth.JWK{{Kty: "RSA"}}
 		client.JWKSURI = "https://client.example/jwks"
 		store.Clients["client"] = client
-		store.DeviceCodes["device-digest"].DeviceCode = "raw-device-secret"
-		store.DeviceCodes["device-digest"].UserCode = "RAWCODE"
 		for range 2 {
 			if err := store.Save(); err != nil {
 				t.Fatal(err)
