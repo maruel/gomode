@@ -53,6 +53,7 @@ android {
     // Share the note score without bundling web source.
     sourceSets.getByName("main").assets.srcDir(rootProject.file("../assets"))
     sourceSets.getByName("test").resources.srcDir(rootProject.file("../assets"))
+    sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("../e2e/voice-preview/scene"))
 
     testOptions {
         unitTests.isIncludeAndroidResources = true

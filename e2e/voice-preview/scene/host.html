@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Field Notes · Voice layout fixture</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --color-bg: #ffffff;
+        --color-bg-secondary: #f4f6fa;
+        --color-bg-surface: #ffffff;
+        --color-bg-hover: #e8edf5;
+        --color-text: #182132;
+        --color-text-secondary: #526176;
+        --color-text-muted: #617086;
+        --color-text-faint: #68758a;
+        --color-border: #c8d0de;
+        --color-border-medium: #9aa9bf;
+        --color-primary: #245cba;
+        --color-primary-hover: #194a9b;
+        --color-danger: #ba1a1a;
+        --color-plan: #69518b;
+        --color-success: #246847;
+        --color-warning: #785900;
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+        color: var(--color-text);
+        background: #f4f6fa;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+      }
+      main {
+        max-width: 1120px;
+        margin: auto;
+        padding: 24px;
+      }
+      header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 16px;
+      }
+      header p,
+      .eyebrow {
+        color: var(--color-text-secondary);
+        font-size: 13px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 24px;
+      }
+      h2 {
+        font-size: 20px;
+        margin: 24px 0 12px;
+      }
+      .tasks {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+      }
+      article {
+        padding: 16px;
+        background: white;
+        border: 1px solid var(--color-border);
+        border-radius: 12px;
+      }
+      article h3 {
+        font-size: 17px;
+        margin: 4px 0 8px;
+      }
+      article p {
+        margin: 0;
+        color: var(--color-text-secondary);
+      }
+      @media (width <= 600px) {
+        main {
+          padding: 16px;
+        }
+        header {
+          display: block;
+        }
+        header p {
+          margin: 4px 0 0;
+        }
+        .tasks {
+          grid-template-columns: 1fr;
+          gap: 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main aria-label="Demonstration tasks">
+      <header>
+        <h1>Field Notes</h1>
+        <p>Demonstration · No real tasks</p>
+      </header>
+      <h2>Today’s tasks</h2>
+      <div class="tasks">
+        <article>
+          <span class="eyebrow">In progress · Project Atlas</span>
+          <h3>Review the launch brief</h3>
+          <p>Check the revised accessibility notes before the team review.</p>
+        </article>
+        <article>
+          <span class="eyebrow">Next · Due today</span>
+          <h3>Send the prototype feedback</h3>
+          <p>Summarize the mobile navigation findings for Maya.</p>
+        </article>
+        <article>
+          <span class="eyebrow">Later · Research</span>
+          <h3>Compare the field reports</h3>
+          <p>Find the latest revision and collect the open questions.</p>
+        </article>
+      </div>
+    </main>
+    <!-- VOICE_PREVIEW -->
+  </body>
+</html>

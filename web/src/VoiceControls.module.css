@@ -136,3 +136,11 @@
 .stop {
   mask-image: url("@material-symbols/svg-400/outlined/stop.svg");
 }
+
+.subtitles {
+  mask-image: url("@material-symbols/svg-400/outlined/subtitles.svg");
+}
+
+.swapHoriz {
+  mask-image: url("@material-symbols/svg-400/outlined/swap_horiz.svg");
+}

@@ -1,0 +1,14 @@
+{
+  "servers": ["Field Notes", "Project Atlas"],
+  "tool": "workspace_search_project_documents_by_author_and_revision_with_extended_filters_and_full_metadata",
+  "transcript": [
+    { "speaker": "user", "text": "What should I work on next?", "final": true },
+    {
+      "speaker": "assistant",
+      "text": "Review the launch brief first. The prototype feedback is due today too.",
+      "final": true
+    },
+    { "speaker": "user", "text": "Find the latest accessibility notes for the launch brief.", "final": true },
+    { "speaker": "assistant", "text": "I’ll search the project documents and compare the revisions.", "final": true }
+  ]
+}

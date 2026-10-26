@@ -1,8 +1,8 @@
-// Tests for the generic voice overlay connection controls.
+// Tests browser voice controls, activity status, and connection recovery.
 
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect, vi } from "../tests/expect";
-import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { createSignal } from "solid-js";
 import { installBrowserSpeech } from "../tests/browser-speech";
@@ -63,6 +63,94 @@ afterEach(() => {
 });
 
 describe("VoiceOverlay status", () => {
+  it("hides the transcript without clearing it and restores new text from an icon", async () => {
+    voiceSession.setState((state) => ({
+      ...state,
+      connected: true,
+      transcript: [{ speaker: "assistant", text: "Review the launch brief.", final: true }],
+    }));
+    render(() => <VoiceOverlay />);
+    const user = userEvent.setup();
+    const hide = screen.getByRole("button", { name: "Hide transcript" });
+    expect(hide.querySelector('[data-icon="close"]')).not.toBeNull();
+    await user.click(hide);
+    expect(screen.queryByText("Review the launch brief.")).toBeNull();
+    const show = within(screen.getByRole("group", { name: "Audio devices" })).getByRole("button", {
+      name: "Show transcript",
+    });
+    expect(show).toHaveFocus();
+    expect(show.textContent).toBe("");
+    expect(show.querySelector('[data-icon="subtitles"]')).not.toBeNull();
+    voiceSession.setState((state) => ({
+      ...state,
+      transcript: [...state.transcript, { speaker: "user", text: "Find the latest revision", final: false }],
+    }));
+    expect(screen.queryByText("Find the latest revision")).toBeNull();
+    await user.click(show);
+    expect(screen.getByText("Review the launch brief.")).toBeInTheDocument();
+    expect(screen.getByText("Find the latest revision")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Hide transcript" })).toHaveFocus();
+  });
+
+  it("restores the transcript from the main controls when no audio picker is available", async () => {
+    voiceSession.setState((state) => ({
+      ...state,
+      connected: true,
+      mode: "browser",
+      transcript: [{ speaker: "assistant", text: "Ready to help.", final: true }],
+    }));
+    render(() => <VoiceOverlay />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Hide transcript" }));
+    const show = within(screen.getByRole("group", { name: "Voice controls" })).getByRole("button", {
+      name: "Show transcript",
+    });
+    expect(show).toHaveFocus();
+    await user.click(show);
+    expect(screen.getByText("Ready to help.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Hide transcript" })).toHaveFocus();
+  });
+
+  it("exposes host-owned server switching without resetting the voice conversation", async () => {
+    const [next, setNext] = createSignal("Project Atlas");
+    const [available, setAvailable] = createSignal(true);
+    const select = vi.fn(() => setNext("Field Notes"));
+    voiceSession.setState((state) => ({
+      ...state,
+      connected: true,
+      transcript: [{ speaker: "user", text: "Find the launch brief", final: true }],
+    }));
+    render(() => <VoiceOverlay nextServer={available() ? { name: next(), onSelect: select } : undefined} />);
+    const controls = screen.getByRole("group", { name: "Voice controls" });
+    const button = within(controls).getByRole("button", { name: "Next server: Project Atlas" });
+    expect(button.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe("swapHoriz");
+    await userEvent.setup().click(button);
+    expect(select).toHaveBeenCalledOnce();
+    expect(within(controls).getByRole("button", { name: "Next server: Field Notes" })).toBe(button);
+    expect(voiceSession.state.connected).toBe(true);
+    expect(screen.getByText("Find the launch brief")).toBeInTheDocument();
+    expect(disconnectMock).not.toHaveBeenCalled();
+    setAvailable(false);
+    expect(within(controls).queryByRole("button", { name: /Next server/ })).toBeNull();
+  });
+
+  it("scrolls focused controls into view when the single-row toolbar overflows", async () => {
+    voiceSession.setState((state) => ({ ...state, connected: true }));
+    render(() => <VoiceOverlay nextServer={{ name: "Project Atlas", onSelect: () => {} }} />);
+    const controls = screen.getByRole("group", { name: "Voice controls" });
+    Object.defineProperties(controls, {
+      clientWidth: { value: 152 },
+      scrollWidth: { value: 196 },
+    });
+    const end = within(controls).getByRole("button", { name: "End voice session" });
+    const scroll = vi.spyOn(end, "scrollIntoView");
+    const user = userEvent.setup();
+    for (let index = 0; index < 4; index++) await user.tab();
+    expect(end).toHaveFocus();
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
+    scroll.mockRestore();
+  });
+
   it("shows label-based device icons while preserving native selectors and names", async () => {
     Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true, value: vi.fn() });
     const select = vi.spyOn(voiceSession, "selectOutputDevice").mockImplementation(async (id) => {
@@ -249,6 +337,22 @@ describe("VoiceOverlay status", () => {
     expect(microphone.querySelector('[data-icon="schedule"]')).toBeNull();
     expect(microphone).toHaveFocus();
     expect(voiceSession.state.selectedOutputId).toBe("");
+  });
+
+  it("keeps controls separate from the complete tool activity and subsequent status", () => {
+    const tool = "workspace_search_project_documents_by_author_and_revision_with_extended_filters_and_full_metadata";
+    voiceSession.setState((s) => ({ ...s, connected: true, speaking: true, activeTool: tool }));
+    render(() => <VoiceOverlay />);
+    const controls = screen.getByRole("group", { name: "Voice controls" });
+    const activity = screen.getByRole("status", { name: "Voice activity" });
+    expect(within(controls).getByRole("button", { name: /^Microphone mode:/ })).toBeInTheDocument();
+    expect(within(controls).getByRole("button", { name: "Voice settings" })).toBeInTheDocument();
+    expect(within(controls).getByRole("button", { name: "End voice session" })).toBeInTheDocument();
+    expect(controls.contains(activity)).toBe(false);
+    expect(controls.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(activity).toHaveTextContent(`Calling tool: ${tool}…`);
+    voiceSession.setState((s) => ({ ...s, activeTool: null, speaking: false }));
+    expect(activity).toHaveTextContent("Listening…");
   });
 
   it("shows gateway work behind speech and ahead of muting", () => {

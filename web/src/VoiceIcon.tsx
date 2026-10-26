@@ -16,6 +16,8 @@ type VoiceIconName =
   | "settings"
   | "speaker"
   | "stop"
+  | "subtitles"
+  | "swapHoriz"
   | "usb"
   | "volumeUp";
 

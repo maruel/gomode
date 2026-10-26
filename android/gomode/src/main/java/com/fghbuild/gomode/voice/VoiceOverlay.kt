@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -35,8 +36,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
@@ -45,6 +44,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speaker
+import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.VolumeUp
@@ -68,20 +68,24 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.caic.voicegateway.sdk.v1.TurnState
@@ -103,7 +107,6 @@ fun VoicePanel(
     onDisconnect: () -> Unit,
     onSelectMicrophoneMode: (MicrophoneMode) -> Unit,
     onSelectDevice: (Int) -> Unit,
-    onClearTranscript: () -> Unit,
     onOpenSettings: () -> Unit,
     serviceStatusText: String?,
     onCycleApp: () -> Unit,
@@ -142,7 +145,6 @@ fun VoicePanel(
                         onDisconnect = onDisconnect,
                         onSelectMicrophoneMode = onSelectMicrophoneMode,
                         onSelectDevice = onSelectDevice,
-                        onClearTranscript = onClearTranscript,
                         appControls = appControls,
                     )
                 }
@@ -187,7 +189,7 @@ private fun AppControls(
                 onClick = onCycleApp,
                 modifier = Modifier.testTag("gomode-next-app"),
             ) {
-                Icon(Icons.Default.SwapHoriz, contentDescription = "Next app")
+                Icon(Icons.Default.SwapHoriz, contentDescription = "Next server")
             }
         }
     }
@@ -355,41 +357,67 @@ private fun MicrophoneModeButton(
 }
 
 @Composable
+private fun TranscriptToggle(
+    expanded: Boolean,
+    focusRequester: FocusRequester,
+    onToggle: () -> Unit,
+) {
+    val closeIconSize =
+        with(LocalDensity.current) {
+            MaterialTheme.typography.labelSmall.fontSize
+                .toDp() * 1.25f
+        }
+    IconButton(
+        onClick = onToggle,
+        modifier = Modifier.focusRequester(focusRequester).testTag("gomode-voice-transcript-toggle"),
+    ) {
+        Icon(
+            imageVector = if (expanded) Icons.Default.Close else Icons.Default.Subtitles,
+            contentDescription = if (expanded) "Hide transcript" else "Show transcript",
+            modifier = Modifier.size(if (expanded) closeIconSize else 24.dp),
+        )
+    }
+}
+
+@Composable
 private fun ActivePanel(
     voiceState: VoiceState,
     onDisconnect: () -> Unit,
     onSelectMicrophoneMode: (MicrophoneMode) -> Unit,
     onSelectDevice: (Int) -> Unit,
-    onClearTranscript: () -> Unit,
     appControls: @Composable () -> Unit,
 ) {
     var transcriptExpanded by rememberSaveable { mutableStateOf(true) }
+    val transcriptLabelStyle = MaterialTheme.typography.labelSmall
+    val transcriptFocus = remember { FocusRequester() }
+    var focusAfterToggle by remember { mutableStateOf(false) }
+    val transcriptToggle: @Composable () -> Unit = {
+        TranscriptToggle(transcriptExpanded, transcriptFocus) {
+            focusAfterToggle = true
+            transcriptExpanded = !transcriptExpanded
+        }
+    }
+    LaunchedEffect(transcriptExpanded) {
+        if (focusAfterToggle) {
+            if (voiceState.transcript.isNotEmpty()) transcriptFocus.requestFocus()
+            focusAfterToggle = false
+        }
+    }
+    val hiddenTranscript = voiceState.transcript.isNotEmpty() && !transcriptExpanded
 
     Column(
         modifier = Modifier.padding(start = 16.dp, top = 0.dp, end = 16.dp, bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(
+            modifier = Modifier.fillMaxWidth().testTag("gomode-voice-actions"),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             MicrophoneModeButton(voiceState.microphoneMode, voiceState.speaking, onSelectMicrophoneMode)
             appControls()
-            MicLevelIndicator(micLevel = voiceState.micLevel)
-
-            val activeTool = voiceState.activeTool
-            Text(
-                text = voiceStatusText(voiceState),
-                style = MaterialTheme.typography.bodyMedium,
-                color =
-                    if (activeTool != null) {
-                        MaterialTheme.colorScheme.tertiary
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    },
-                modifier = Modifier.weight(1f),
-            )
-
+            if (hiddenTranscript && voiceState.availableDevices.isEmpty()) transcriptToggle()
+            Spacer(Modifier.weight(1f))
             IconButton(onClick = onDisconnect) {
                 Icon(
                     Icons.Default.CallEnd,
@@ -399,60 +427,59 @@ private fun ActivePanel(
             }
         }
 
-        if (voiceState.availableDevices.isNotEmpty()) {
-            AudioDevicePicker(
-                devices = voiceState.availableDevices,
-                selectedDeviceId = voiceState.selectedDeviceId,
-                switching = voiceState.audioSwitching,
-                onSelect = onSelectDevice,
+        Row(
+            modifier = Modifier.fillMaxWidth().testTag("gomode-voice-activity"),
+            verticalAlignment = Alignment.Top,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            MicLevelIndicator(micLevel = voiceState.micLevel)
+            Text(
+                text = voiceStatusText(voiceState),
+                style = MaterialTheme.typography.bodyMedium,
+                color =
+                    if (voiceState.activeTool != null) {
+                        MaterialTheme.colorScheme.tertiary
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite },
             )
+        }
+
+        if (voiceState.availableDevices.isNotEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Box(Modifier.weight(1f)) {
+                    AudioDevicePicker(
+                        devices = voiceState.availableDevices,
+                        selectedDeviceId = voiceState.selectedDeviceId,
+                        switching = voiceState.audioSwitching,
+                        onSelect = onSelectDevice,
+                    )
+                }
+                if (hiddenTranscript) transcriptToggle()
+            }
         }
         voiceState.audioError?.let { message ->
             Text(text = message, color = MaterialTheme.colorScheme.error)
         }
 
-        if (voiceState.transcript.isNotEmpty()) {
+        if (voiceState.transcript.isNotEmpty() && transcriptExpanded) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     text = "Transcript",
-                    style = MaterialTheme.typography.labelSmall,
+                    style = transcriptLabelStyle,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
                 )
-                IconButton(onClick = onClearTranscript, modifier = Modifier.size(32.dp)) {
-                    Icon(
-                        Icons.Default.Close,
-                        contentDescription = "Clear transcript",
-                        modifier = Modifier.size(16.dp),
-                    )
-                }
-                IconButton(
-                    onClick = { transcriptExpanded = !transcriptExpanded },
-                    modifier =
-                        Modifier
-                            .size(32.dp)
-                            .testTag("gomode-voice-transcript-toggle"),
-                ) {
-                    Icon(
-                        imageVector = if (transcriptExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = if (transcriptExpanded) "Hide transcript" else "Show transcript",
-                        modifier = Modifier.size(20.dp),
-                    )
-                }
+                Spacer(Modifier.weight(1f))
+                transcriptToggle()
             }
-        }
-        val draft = voiceState.transcript.lastOrNull()?.takeIf { it.speaker == TranscriptSpeaker.USER && !it.final }
-        if (!transcriptExpanded && (voiceState.listening || voiceState.muted) && draft != null) {
-            Text(
-                text = "You: ${draft.text}",
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.fillMaxWidth().testTag("gomode-voice-recognition-draft"),
-            )
         }
         if (transcriptExpanded) {
             TranscriptLog(
@@ -610,7 +637,7 @@ private fun TranscriptLog(
     if (entries.isNotEmpty()) {
         LazyColumn(
             state = listState,
-            modifier = modifier.height(TranscriptHeight).nestedScroll(manualScroll),
+            modifier = modifier.heightIn(max = TranscriptHeight).nestedScroll(manualScroll),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             itemsIndexed(entries) { _, entry ->

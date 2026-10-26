@@ -14,8 +14,9 @@
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "allowArbitraryExtensions": true,
+    "resolveJsonModule": true,
     "types": ["node", "@testing-library/jest-dom"],
     "noEmit": true
   },
-  "include": ["src", "tests", "../sdk/mcp/ts/v1", "../sdk/oauth/ts/v1", "../sdk/voicegateway/ts/v1"]
+  "include": ["src", "tests", "../e2e/voice-preview/entry.tsx", "../sdk/mcp/ts/v1", "../sdk/oauth/ts/v1", "../sdk/voicegateway/ts/v1"]
 }

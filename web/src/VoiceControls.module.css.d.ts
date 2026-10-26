@@ -17,6 +17,8 @@ declare const classes: {
   readonly "settings": string;
   readonly "speaker": string;
   readonly "stop": string;
+  readonly "subtitles": string;
+  readonly "swapHoriz": string;
   readonly "usb": string;
   readonly "volumeUp": string;
 };

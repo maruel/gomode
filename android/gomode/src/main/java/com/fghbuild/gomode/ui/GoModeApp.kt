@@ -525,7 +525,6 @@ internal fun GoModeApp(
                                 }
                         }
                     },
-                    onClearTranscript = { voiceSession.clearTranscript() },
                     onOpenSettings = { activeNativeScreen = NativeScreen.Settings },
                     onCycleApp = {
                         scope.launch {

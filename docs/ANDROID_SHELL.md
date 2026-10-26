@@ -286,9 +286,9 @@ gateway.
 and the native picker change the visible page and conversational focus, preserving
 one transport, Telecom call, audio owner, transcript, and foreground notification.
 Every ready participant stays callable, including servers without a voice gateway.
-The Next app icon beside Settings cycles through saved servers in their saved
+The Next server icon beside Settings cycles through saved servers in their saved
 order and wraps to the first. It works with voice active, idle, or unavailable,
-and is disabled when fewer than two servers are saved.
+and is hidden when fewer than two servers are saved.
 Focus and participant context wait for pending tool results and model turn
 completion. An idle turn can complete without speech; active playback still
 blocks context delivery until speech ends.
@@ -317,6 +317,9 @@ server tools' argument schemas and do not advertise these tools.
 Car call control: [HFP_CALL_CONTROL.md](HFP_CALL_CONTROL.md).
 
 ## Documentation captures
+
+[Voice layout references](../e2e/voice-preview/README.md) show Android, mobile
+web, and desktop web with the same fake tasks and ongoing conversation.
 
 Run `make screenshots-update` on the owned emulator to capture native service,
 settings, voice, and Halo screens plus a labeled host-neutral demonstration

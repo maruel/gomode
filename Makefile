@@ -14,7 +14,7 @@ node_modules/.modules.yaml: package.json pnpm-lock.yaml
 	@pnpm install --frozen-lockfile --silent
 	@touch $@
 
-FRONTEND_TEST = pnpm exec node --test scripts/css_module_types.test.mjs && NODE_OPTIONS=--no-experimental-webstorage pnpm exec tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts
+FRONTEND_TEST = pnpm exec node --test scripts/css_module_types.test.mjs scripts/voice_preview.test.mjs && NODE_OPTIONS=--no-experimental-webstorage pnpm exec tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts
 FRONTEND_TEST_FILES = "web/src/**/*.test.ts" "web/src/**/*.test.tsx"
 
 help:
@@ -50,8 +50,8 @@ fix: android-sdk node_modules/.modules.yaml
 	@pnpm exec node scripts/css_module_types.mjs --source-path web/src --write
 	@go tool golangci-lint fmt
 	@go tool golangci-lint run --show-stats=false --fix ./...
-	@pnpm exec eslint web/src web/tests scripts/*.mjs --fix
-	@pnpm exec prettier --write --log-level warn web/src web/tests scripts/*.mjs eslint.config.js package.json .github/workflows
+	@pnpm exec eslint web/src web/tests e2e/voice-preview/*.tsx scripts/*.mjs --fix
+	@pnpm exec prettier --write --log-level warn web/src web/tests e2e/voice-preview scripts/*.mjs eslint.config.js package.json .github/workflows
 	@uv run --locked ruff check --quiet --fix scripts
 	@uv run --locked ruff format scripts >/dev/null
 	@files=$$(git ls-files '*.sh' 'scripts/hooks/*'); [ -z "$$files" ] || go tool shfmt -w $$files
@@ -60,7 +60,7 @@ fix: android-sdk node_modules/.modules.yaml
 
 verify: android-sdk node_modules/.modules.yaml
 	@go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-	@./scripts/run-concurrently.sh go,format,lint,ts,python,shell,misc,android '$(VERIFY_GO)' 'pnpm exec prettier --check --log-level warn web/src web/tests scripts/*.mjs eslint.config.js package.json .github/workflows' 'pnpm exec eslint --max-warnings 0 web/src web/tests scripts/*.mjs' 'pnpm exec node scripts/css_module_types.mjs --source-path web/src && pnpm exec tsc --noEmit -p web/tsconfig.json' '$(VERIFY_PY)' '$(VERIFY_SH)' '$(VERIFY_MISC)' '$(VERIFY_ANDROID)'
+	@./scripts/run-concurrently.sh go,format,lint,ts,python,shell,misc,android '$(VERIFY_GO)' 'pnpm exec prettier --check --log-level warn web/src web/tests e2e/voice-preview scripts/*.mjs eslint.config.js package.json .github/workflows' 'pnpm exec eslint --max-warnings 0 web/src web/tests e2e/voice-preview/*.tsx scripts/*.mjs' 'pnpm exec node scripts/css_module_types.mjs --source-path web/src && pnpm exec tsc --noEmit -p web/tsconfig.json' '$(VERIFY_PY)' '$(VERIFY_SH)' '$(VERIFY_MISC)' '$(VERIFY_ANDROID)'
 
 git-hooks:
 	@./scripts/install-git-hooks.sh
