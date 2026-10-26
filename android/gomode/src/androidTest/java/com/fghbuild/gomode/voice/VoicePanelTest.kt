@@ -220,7 +220,7 @@ class VoicePanelTest {
         val state =
             mutableStateOf(
                 VoiceState(
-                    connected = true,
+                    connected = false,
                     activeTool = scene.getString("tool"),
                     transcript = transcript,
                     availableDevices =
@@ -257,8 +257,11 @@ class VoicePanelTest {
                     VoicePanel(
                         voiceState = state.value,
                         voiceEnabled = true,
-                        onConnect = {},
-                        onDisconnect = {},
+                        onConnect = {
+                            state.value =
+                                state.value.copy(connected = true, activeTool = scene.getString("tool"))
+                        },
+                        onDisconnect = { state.value = state.value.copy(connected = false, activeTool = null) },
                         onSelectMicrophoneMode = { state.value = state.value.copy(microphoneMode = it) },
                         onSelectDevice = { state.value = state.value.copy(selectedDeviceId = it) },
                         onOpenSettings = {},
@@ -270,6 +273,9 @@ class VoicePanelTest {
             }
         }
         composeRule.waitUntil(10_000) { loaded.get() }
+        composeRule.onNodeWithContentDescription("Connect voice assistant").assertIsDisplayed()
+        capture("documentation-idle")
+        composeRule.onNodeWithContentDescription("Connect voice assistant").performClick()
         composeRule.onNodeWithText("Calling tool: ${scene.getString("tool")}…").assertIsDisplayed()
         val log =
             composeRule
@@ -296,7 +302,10 @@ class VoicePanelTest {
         val level = composeRule.onNodeWithTag("gomode-voice-level").fetchSemanticsNode().boundsInRoot
         assertEquals(microphone.center.y, routeBounds.center.y, 1f)
         assertEquals(microphone.center.y, level.center.y, 1f)
-        assertTrue(level.right <= microphone.left)
+        val hangup = composeRule.onNodeWithContentDescription("End voice").fetchSemanticsNode().boundsInRoot
+        assertTrue(microphone.right <= level.left)
+        assertTrue(level.right <= hangup.left)
+        assertEquals(hangup.center.y, level.center.y, 1f)
         val activity =
             composeRule
                 .onNodeWithText(
@@ -309,6 +318,58 @@ class VoicePanelTest {
         capture("documentation-hidden")
         composeRule.onNodeWithContentDescription("Show transcript").performClick()
         composeRule.onNodeWithTag("gomode-voice-transcript").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("End voice").performClick()
+        composeRule.onNodeWithContentDescription("Connect voice assistant").assertIsDisplayed()
+        speaker.assertIsDisplayed().assertIsOn()
+    }
+
+    @Test
+    fun audioCanBeChosenBeforeConnectingWithoutMovingPersistentControls() {
+        val state =
+            mutableStateOf(
+                VoiceState(
+                    availableDevices =
+                        listOf(
+                            AudioDevice(1, AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, "Speaker"),
+                            AudioDevice(2, AudioDeviceInfo.TYPE_BUILTIN_EARPIECE, "Earpiece"),
+                        ),
+                    selectedDeviceId = 1,
+                ),
+            )
+        composeRule.setContent {
+            MaterialTheme {
+                VoicePanel(
+                    state.value,
+                    true,
+                    {},
+                    {},
+                    {},
+                    { state.value = state.value.copy(selectedDeviceId = it) },
+                    {},
+                    null,
+                    {},
+                    true,
+                )
+            }
+        }
+        composeRule.onNodeWithTag("gomode-voice-audio-2").performClick().assertIsOn()
+        val tags = listOf("gomode-web-open-settings", "gomode-next-app", "gomode-voice-audio-1", "gomode-voice-audio-2")
+        val before = tags.associateWith { composeRule.onNodeWithTag(it).fetchSemanticsNode().boundsInRoot }
+        for (status in listOf(
+            VoiceState(connectStatus = "Connecting…"),
+            VoiceState(connected = true),
+            VoiceState(error = "Speech failed"),
+        )) {
+            composeRule.runOnIdle {
+                state.value = status.copy(availableDevices = state.value.availableDevices, selectedDeviceId = 2)
+            }
+            for (tag in tags) {
+                val bounds = composeRule.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
+                assertEquals(before.getValue(tag).left, bounds.left, 1f)
+                assertEquals(before.getValue(tag).center.y, bounds.center.y, 1f)
+            }
+        }
+        composeRule.onNodeWithContentDescription("Connect voice assistant").assertIsDisplayed()
     }
 
     @Test
@@ -337,12 +398,12 @@ class VoicePanelTest {
                 "Voice gateway unavailable (HTTP 502).",
             ).assertIsDisplayed()
         composeRule.onNodeWithText("Voice connection unavailable").assertDoesNotExist()
-        composeRule.onNodeWithContentDescription("Reconnect").performClick()
+        composeRule.onNodeWithContentDescription("Connect voice assistant").performClick()
         composeRule.runOnIdle { assertEquals(1, retries) }
     }
 
     @Test
-    fun longErrorUsesThePanelWidthAboveItsIconActions() {
+    fun longErrorUsesThePanelWidthBelowThePersistentToolbar() {
         composeRule.setContent {
             val density = LocalDensity.current.density
             CompositionLocalProvider(LocalDensity provides Density(density, 2f)) {
@@ -369,12 +430,11 @@ class VoicePanelTest {
             }
         }
         val message = composeRule.onNodeWithTag("gomode-voice-error-message").fetchSemanticsNode().boundsInRoot
-        val actions = composeRule.onNodeWithTag("gomode-voice-error-actions").fetchSemanticsNode().boundsInRoot
+        val actions = composeRule.onNodeWithTag("gomode-voice-actions").fetchSemanticsNode().boundsInRoot
         assertEquals(actions.left, message.left, 1f)
         assertEquals(actions.right, message.right, 1f)
-        assertTrue(message.bottom <= actions.top)
-        composeRule.onNodeWithContentDescription("Reconnect").assertIsDisplayed()
-        composeRule.onNodeWithContentDescription("Dismiss").assertIsDisplayed()
+        assertTrue(actions.bottom <= message.top)
+        composeRule.onNodeWithContentDescription("Connect voice assistant").assertIsDisplayed()
     }
 
     @Test
@@ -622,14 +682,13 @@ class VoicePanelTest {
 
     @Test
     fun voiceErrorRemainsVisibleWhenVoiceIsUnavailable() {
-        var dismissed = false
         composeRule.setContent {
             MaterialTheme {
                 VoicePanel(
                     voiceState = VoiceState(error = "Voice turn failed (llm)"),
                     voiceEnabled = false,
                     onConnect = {},
-                    onDisconnect = { dismissed = true },
+                    onDisconnect = {},
                     onSelectMicrophoneMode = {},
                     onSelectDevice = {},
                     onOpenSettings = {},
@@ -641,9 +700,7 @@ class VoicePanelTest {
         }
 
         composeRule.onNodeWithText("Voice turn failed (llm)").assertIsDisplayed()
-        composeRule.onNodeWithContentDescription("Reconnect").assertIsNotEnabled()
-        composeRule.onNodeWithContentDescription("Dismiss").assertIsDisplayed().performClick()
-        assertTrue(dismissed)
+        composeRule.onNodeWithContentDescription("Voice unavailable").assertIsNotEnabled()
     }
 
     private fun capture(name: String) {
@@ -655,7 +712,7 @@ class VoicePanelTest {
             device.click(device.displayWidth / 2, device.displayHeight / 4)
             composeRule.waitForIdle()
         }
-        composeRule.onNodeWithTag("gomode-microphone-mode").captureToImage()
+        composeRule.onNodeWithTag("gomode-voice-actions").captureToImage()
         device.waitForIdle()
         val path = "/data/local/tmp/gomode-voice-panel-$name.png"
         device.executeShellCommand("screencap -p $path")

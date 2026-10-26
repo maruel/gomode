@@ -1436,12 +1436,6 @@ export class VoiceSession {
     });
   }
 
-  dismissError(): void {
-    this._update((s) => {
-      s.error = null;
-    });
-  }
-
   setMicrophoneMode(mode: MicrophoneMode): void {
     this._update((s) => {
       s.microphoneMode = mode;

@@ -1,10 +1,13 @@
 # Voice controls share two rows across Android and web
 
-Primary controls occupy the first row: audio level, microphone, settings, next
-server, a rounded background grouping the audio selectors, and hang-up. Activity
-occupies the second row and wraps long tool identifiers without truncation. The transcript
-reopen button stays at the right of the activity row when hidden. The X sits at
-the top right of the expanded transcript content.
+Settings, next server, and audio selectors stay in that order on the left, before
+and during voice sessions. The start button stays at the right and becomes
+hang-up while connecting or active. During an active session, microphone mute
+stays after the audio selectors and the level meter sits immediately left of
+hang-up. Activity occupies the second row and wraps long tool identifiers without
+truncation. Connection errors keep the same toolbar and normal start action, with no separate retry or dismiss
+buttons. The transcript reopen button stays at the right of the activity row when
+hidden. The X sits at the top right of the expanded transcript content.
 
 X hides the transcript without clearing it. A Material subtitles icon shows it
 again. Hidden transcripts keep receiving text but show no drafts. Keyboard focus
@@ -17,16 +20,22 @@ and 44 CSS px on web.
 The transcript fits short conversations and scrolls for long ones. Android caps
 it at 220 dp. Web caps it at the smaller of 14 rem and 28% of viewport height.
 Mobile uses the available width. Desktop bounds the panel content to 1200 px.
-At extreme zoom, the single-row toolbar scrolls horizontally. Keyboard focus
-scrolls each action into view and leaves room for its focus outline.
+At extreme zoom, the controls on the left scroll horizontally while start/hang-up
+stays fixed at the right. Keyboard focus scrolls each action into view and leaves
+room for its focus outline.
 
 ## Keep these three references coherent
 
-| Experience  | Capture                                                                                                               | Size                             |
-| ----------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| Android     | [Native voice panel](../screenshots/voice/android.webp), [hidden](../screenshots/voice/android-hidden.webp)           | 1080 × 2400 px; stock API 35 AVD |
-| Mobile web  | [Narrow browser overlay](../screenshots/voice/web-mobile.webp), [hidden](../screenshots/voice/web-mobile-hidden.webp) | 390 × 844 CSS px; Chrome, 100%   |
-| Desktop web | [Wide browser overlay](../screenshots/voice/web-desktop.webp), [hidden](../screenshots/voice/web-desktop-hidden.webp) | 1440 × 900 CSS px; Chrome, 100%  |
+| Experience  | Capture                                                                                                               | Size                            |
+| ----------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| Android     | [Native voice panel](../screenshots/voice/android.webp), [hidden](../screenshots/voice/android-hidden.webp)           | 720 × 1600 px; stock API 35 AVD |
+| Mobile web  | [Narrow browser overlay](../screenshots/voice/web-mobile.webp), [hidden](../screenshots/voice/web-mobile-hidden.webp) | 390 × 844 CSS px; Chrome, 100%  |
+| Desktop web | [Wide browser overlay](../screenshots/voice/web-desktop.webp), [hidden](../screenshots/voice/web-desktop-hidden.webp) | 1440 × 900 CSS px; Chrome, 100% |
+
+Idle references show the same persistent controls before starting voice:
+[Android](../screenshots/voice/android-idle.webp),
+[mobile web](../screenshots/voice/web-mobile-idle.webp), and
+[desktop web](../screenshots/voice/web-desktop-idle.webp).
 
 All three use `scene/host.html` and `scene/conversation.json`: fake tasks, four
 conversation turns, and a long running tool name. These are layout references,
@@ -60,8 +69,10 @@ not implement cross-server gateway authorization.
 ## Audio routes follow platform capabilities
 
 Android shows selectable phone-speaker and earpiece routes. The selected route
-has an outline and checked semantics. Real devices show their actual available
-communication routes; the fixture seeds both routes explicitly.
+has an outline and checked semantics. Telecom exposes starting-call endpoints
+before voice starts; the selected endpoint becomes the preferred starting route.
+Real devices show their actual available communication routes; the fixture seeds
+both routes explicitly.
 
 Web keeps separate microphone and speaker selectors with named options. It uses
 browser device enumeration and output selection, not Android's earpiece-routing
@@ -85,11 +96,15 @@ agent-browser --session voice-reference reload
 agent-browser --session voice-reference screenshot /tmp/gomode-voice-mobile.png
 agent-browser --session voice-reference click '[aria-label="Hide transcript"]'
 agent-browser --session voice-reference screenshot /tmp/gomode-voice-mobile-hidden.png
+agent-browser --session voice-reference click '[aria-label="End voice session"]'
+agent-browser --session voice-reference screenshot /tmp/gomode-voice-mobile-idle.png
 agent-browser --session voice-reference set viewport 1440 900
 agent-browser --session voice-reference reload
 agent-browser --session voice-reference screenshot /tmp/gomode-voice-desktop.png
 agent-browser --session voice-reference click '[aria-label="Hide transcript"]'
 agent-browser --session voice-reference screenshot /tmp/gomode-voice-desktop-hidden.png
+agent-browser --session voice-reference click '[aria-label="End voice session"]'
+agent-browser --session voice-reference screenshot /tmp/gomode-voice-desktop-idle.png
 agent-browser --session voice-reference close
 ```
 
@@ -111,6 +126,7 @@ cd android
 cd ..
 adb pull /data/local/tmp/gomode-voice-panel-documentation.png /tmp/gomode-voice-android.png
 adb pull /data/local/tmp/gomode-voice-panel-documentation-hidden.png /tmp/gomode-voice-android-hidden.png
+adb pull /data/local/tmp/gomode-voice-panel-documentation-idle.png /tmp/gomode-voice-android-idle.png
 ```
 
 The test waits for the hosted page and asserts that activity and transcript are
@@ -128,4 +144,7 @@ ffmpeg -v error -y -i /tmp/gomode-voice-desktop.png -c:v libwebp -lossless 1 -th
 ffmpeg -v error -y -i /tmp/gomode-voice-android-hidden.png -c:v libwebp -lossless 1 -threads 1 e2e/screenshots/voice/android-hidden.webp
 ffmpeg -v error -y -i /tmp/gomode-voice-mobile-hidden.png -c:v libwebp -lossless 1 -threads 1 e2e/screenshots/voice/web-mobile-hidden.webp
 ffmpeg -v error -y -i /tmp/gomode-voice-desktop-hidden.png -c:v libwebp -lossless 1 -threads 1 e2e/screenshots/voice/web-desktop-hidden.webp
+ffmpeg -v error -y -i /tmp/gomode-voice-android-idle.png -c:v libwebp -lossless 1 -threads 1 e2e/screenshots/voice/android-idle.webp
+ffmpeg -v error -y -i /tmp/gomode-voice-mobile-idle.png -c:v libwebp -lossless 1 -threads 1 e2e/screenshots/voice/web-mobile-idle.webp
+ffmpeg -v error -y -i /tmp/gomode-voice-desktop-idle.png -c:v libwebp -lossless 1 -threads 1 e2e/screenshots/voice/web-desktop-idle.webp
 ```

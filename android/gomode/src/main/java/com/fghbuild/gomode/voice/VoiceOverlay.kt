@@ -10,11 +10,9 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -27,7 +25,6 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -43,7 +40,6 @@ import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.PhoneInTalk
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speaker
@@ -128,38 +124,42 @@ fun VoicePanel(
     ) {
         Column(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+            VoiceToolbar(
+                voiceState,
+                voiceEnabled,
+                onConnect,
+                onDisconnect,
+                onSelectMicrophoneMode,
+                onSelectDevice,
+                appControls,
+            )
+            voiceState.audioError?.let { message ->
+                Text(
+                    text = message,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
             when {
                 voiceState.error != null -> {
-                    ErrorPanel(voiceState.error, voiceEnabled, onConnect, onDisconnect, appControls)
-                }
-
-                !voiceEnabled -> {
-                    IdlePanel(
-                        onConnect = onConnect,
-                        appControls = appControls,
-                        voiceEnabled = false,
+                    Text(
+                        text = voiceState.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                                .testTag("gomode-voice-error-message"),
                     )
                 }
 
                 voiceState.connectStatus != null -> {
-                    ConnectingPanel(voiceState.connectStatus, onDisconnect, appControls)
+                    ConnectingStatus(voiceState.connectStatus)
                 }
 
                 voiceState.connected -> {
-                    ActivePanel(
-                        voiceState = voiceState,
-                        onDisconnect = onDisconnect,
-                        onSelectMicrophoneMode = onSelectMicrophoneMode,
-                        onSelectDevice = onSelectDevice,
-                        appControls = appControls,
-                    )
-                }
-
-                else -> {
-                    IdlePanel(
-                        onConnect = onConnect,
-                        appControls = appControls,
-                    )
+                    ActivePanel(voiceState)
                 }
             }
             ServiceStatusLabel(serviceStatusText)
@@ -216,50 +216,71 @@ private fun SettingsButton(onOpenSettings: () -> Unit) {
 }
 
 @Composable
-private fun IdlePanel(
+private fun VoiceToolbar(
+    voiceState: VoiceState,
+    voiceEnabled: Boolean,
     onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+    onSelectMicrophoneMode: (MicrophoneMode) -> Unit,
+    onSelectDevice: (Int) -> Unit,
     appControls: @Composable () -> Unit,
-    voiceEnabled: Boolean = true,
 ) {
+    val active = voiceState.connected || voiceState.connectStatus != null
     Row(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .padding(start = 16.dp, top = 0.dp, end = 16.dp, bottom = 8.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("gomode-voice-actions"),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        appControls()
-        val disabledAlpha = 0.38f
-        val iconAlpha = if (voiceEnabled) 1f else disabledAlpha
+        Row(
+            modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            appControls()
+            if (voiceState.availableDevices.isNotEmpty()) {
+                AudioDevicePicker(
+                    devices = voiceState.availableDevices,
+                    selectedDeviceId = voiceState.selectedDeviceId,
+                    switching = voiceState.audioSwitching || voiceState.connectStatus != null,
+                    onSelect = onSelectDevice,
+                )
+            }
+            if (voiceState.connected) {
+                MicrophoneModeButton(voiceState.microphoneMode, voiceState.speaking, onSelectMicrophoneMode)
+            }
+        }
+        if (voiceState.connected) MicLevelIndicator(micLevel = voiceState.micLevel)
         IconButton(
-            onClick = onConnect,
-            enabled = voiceEnabled,
+            onClick = if (active) onDisconnect else onConnect,
+            enabled = active || voiceEnabled,
             modifier =
-                Modifier
-                    .size(36.dp)
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outline.copy(alpha = iconAlpha),
-                        shape = CircleShape,
-                    ).testTag(if (voiceEnabled) "gomode-voice-connect" else "gomode-voice-disabled"),
+                Modifier.testTag(
+                    if (active) {
+                        "gomode-voice-disconnect"
+                    } else if (voiceEnabled) {
+                        "gomode-voice-connect"
+                    } else {
+                        "gomode-voice-disabled"
+                    },
+                ),
         ) {
             Icon(
-                Icons.Default.Mic,
-                contentDescription = if (voiceEnabled) "Connect voice assistant" else "Voice unavailable",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = iconAlpha),
-                modifier = Modifier.size(20.dp),
+                if (active) Icons.Default.CallEnd else Icons.Default.Mic,
+                contentDescription =
+                    when {
+                        voiceState.connectStatus != null -> "Cancel"
+                        voiceState.connected -> "End voice"
+                        voiceEnabled -> "Connect voice assistant"
+                        else -> "Voice unavailable"
+                    },
+                tint = if (active) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
 }
 
 @Composable
-private fun ConnectingPanel(
-    status: String,
-    onDisconnect: () -> Unit,
-    appControls: @Composable () -> Unit,
-) {
+private fun ConnectingStatus(status: String) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val alpha by infiniteTransition.animateFloat(
         initialValue = PULSE_MIN_ALPHA,
@@ -271,26 +292,11 @@ private fun ConnectingPanel(
             ),
         label = "pulseAlpha",
     )
-    Row(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .padding(start = 16.dp, top = 0.dp, end = 16.dp, bottom = 12.dp)
-                .alpha(alpha),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        appControls()
-        Icon(Icons.Default.Mic, contentDescription = null)
-        Text(
-            text = status,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.weight(1f),
-        )
-        IconButton(onClick = onDisconnect) {
-            Icon(Icons.Default.Close, contentDescription = "Cancel")
-        }
-    }
+    Text(
+        text = status,
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).alpha(alpha),
+    )
 }
 
 private fun nextMicrophoneMode(mode: MicrophoneMode): MicrophoneMode =
@@ -395,13 +401,7 @@ private fun TranscriptToggle(
 }
 
 @Composable
-private fun ActivePanel(
-    voiceState: VoiceState,
-    onDisconnect: () -> Unit,
-    onSelectMicrophoneMode: (MicrophoneMode) -> Unit,
-    onSelectDevice: (Int) -> Unit,
-    appControls: @Composable () -> Unit,
-) {
+private fun ActivePanel(voiceState: VoiceState) {
     var transcriptExpanded by rememberSaveable { mutableStateOf(true) }
     val transcriptFocus = remember { FocusRequester() }
     var focusAfterToggle by remember { mutableStateOf(false) }
@@ -422,39 +422,6 @@ private fun ActivePanel(
         modifier = Modifier.padding(start = 16.dp, top = 0.dp, end = 16.dp, bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            Row(
-                modifier =
-                    Modifier
-                        .horizontalScroll(
-                            rememberScrollState(),
-                        ).widthIn(min = maxWidth)
-                        .testTag("gomode-voice-actions"),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                MicLevelIndicator(micLevel = voiceState.micLevel)
-                MicrophoneModeButton(voiceState.microphoneMode, voiceState.speaking, onSelectMicrophoneMode)
-                appControls()
-                if (voiceState.availableDevices.isNotEmpty()) {
-                    AudioDevicePicker(
-                        devices = voiceState.availableDevices,
-                        selectedDeviceId = voiceState.selectedDeviceId,
-                        switching = voiceState.audioSwitching,
-                        onSelect = onSelectDevice,
-                    )
-                }
-                Spacer(Modifier.weight(1f))
-                IconButton(onClick = onDisconnect) {
-                    Icon(
-                        Icons.Default.CallEnd,
-                        contentDescription = "End voice",
-                        tint = MaterialTheme.colorScheme.error,
-                    )
-                }
-            }
-        }
-
         Row(
             modifier = Modifier.fillMaxWidth().testTag("gomode-voice-activity"),
             verticalAlignment = Alignment.CenterVertically,
@@ -473,9 +440,6 @@ private fun ActivePanel(
             )
             if (voiceState.transcript.isNotEmpty() && !transcriptExpanded) transcriptToggle()
         }
-        voiceState.audioError?.let { message ->
-            Text(text = message, color = MaterialTheme.colorScheme.error)
-        }
 
         if (transcriptExpanded) {
             Row(
@@ -488,44 +452,6 @@ private fun ActivePanel(
                     modifier = Modifier.weight(1f).testTag("gomode-voice-transcript"),
                 )
                 if (voiceState.transcript.isNotEmpty()) transcriptToggle()
-            }
-        }
-    }
-}
-
-@Composable
-private fun ErrorPanel(
-    message: String,
-    voiceEnabled: Boolean,
-    onReconnect: () -> Unit,
-    onDismiss: () -> Unit,
-    appControls: @Composable () -> Unit,
-) {
-    Column(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Text(
-            text = message,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.error,
-            modifier = Modifier.fillMaxWidth().testTag("gomode-voice-error-message"),
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth().testTag("gomode-voice-error-actions"),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            appControls()
-            Spacer(modifier = Modifier.weight(1f))
-            IconButton(onClick = onReconnect, enabled = voiceEnabled) {
-                Icon(Icons.Default.Refresh, contentDescription = "Reconnect")
-            }
-            IconButton(onClick = onDismiss) {
-                Icon(Icons.Default.Close, contentDescription = "Dismiss")
             }
         }
     }

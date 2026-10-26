@@ -2,6 +2,7 @@
 package com.fghbuild.gomode.ui
 
 import com.fghbuild.gomode.data.OnDeviceEngine
+import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.ui.web.WebShellLoadState
@@ -31,11 +32,11 @@ class GoModeAppTest {
                         selectedDeviceId = 1,
                     ),
                 )
-            assertEquals(2, preferredVoiceAudioDevice(states, 2, emptySet()))
-            assertEquals(2, preferredVoiceAudioDevice(states, 2, setOf(1)))
-            assertNull(preferredVoiceAudioDevice(states, 2, setOf(1, 2)))
+            assertEquals(2, preferredVoiceAudioDevice(states, audioSettings(2), emptySet()))
+            assertEquals(2, preferredVoiceAudioDevice(states, audioSettings(2), setOf(1)))
+            assertNull(preferredVoiceAudioDevice(states, audioSettings(2), setOf(1, 2)))
             states.value = states.value.copy(availableDevices = listOf(speaker, AudioDevice(3, 26, "LE headset")))
-            assertEquals(3, preferredVoiceAudioDevice(states, 2, setOf(1, 2)))
+            assertEquals(3, preferredVoiceAudioDevice(states, audioSettings(2), setOf(1, 2)))
         }
 
     @Test
@@ -49,15 +50,15 @@ class GoModeAppTest {
                         selectedDeviceId = 41,
                     ),
                 )
-            assertEquals(42, preferredVoiceAudioDevice(states, 1, emptySet()))
-            assertNull(preferredVoiceAudioDevice(states, 2, emptySet()))
-            assertNull(preferredVoiceAudioDevice(states, 7, emptySet()))
-            assertNull(preferredVoiceAudioDevice(states, null, emptySet()))
+            assertEquals(42, preferredVoiceAudioDevice(states, audioSettings(1), emptySet()))
+            assertNull(preferredVoiceAudioDevice(states, audioSettings(2), emptySet()))
+            assertNull(preferredVoiceAudioDevice(states, audioSettings(7), emptySet()))
+            assertNull(preferredVoiceAudioDevice(states, audioSettings(null), emptySet()))
             states.value = states.value.copy(connected = false)
-            assertNull(preferredVoiceAudioDevice(states, 1, emptySet()))
+            assertEquals(42, preferredVoiceAudioDevice(states, audioSettings(1), emptySet()))
             states.value =
                 states.value.copy(connected = true, availableDevices = listOf(AudioDevice(99, 1, "Earpiece")))
-            assertEquals(99, preferredVoiceAudioDevice(states, 1, emptySet()))
+            assertEquals(99, preferredVoiceAudioDevice(states, audioSettings(1), emptySet()))
         }
 
     @Test
@@ -67,7 +68,7 @@ class GoModeAppTest {
                 MutableStateFlow(
                     VoiceState(connected = true, audioSwitching = true, selectedDeviceId = 41),
                 )
-            val selection = async { preferredVoiceAudioDevice(states, 1, emptySet()) }
+            val selection = async { preferredVoiceAudioDevice(states, audioSettings(1), emptySet()) }
             yield()
             assertFalse(selection.isCompleted)
             states.value = states.value.copy(availableDevices = listOf(AudioDevice(99, 1, "Earpiece")))
@@ -95,12 +96,38 @@ class GoModeAppTest {
             assertNull(
                 preferredVoiceAudioDevice(
                     MutableStateFlow(states.value.copy(availableDevices = listOf(AudioDevice(42, 1, "Earpiece")))),
-                    1,
+                    audioSettings(1),
                     emptySet(),
                 ),
             )
-            assertFalse(awaitVoiceAudioSelection(MutableStateFlow(states.value.copy(connected = false)), 42))
+            assertTrue(awaitVoiceAudioSelection(MutableStateFlow(states.value.copy(connected = false)), 42))
         }
+
+    @Test
+    fun savedAudioPreferenceWaitsForSettingsWhenEndpointsArriveFirst() =
+        runTest {
+            val states =
+                MutableStateFlow(
+                    VoiceState(
+                        availableDevices = listOf(AudioDevice(41, 2, "Speaker"), AudioDevice(42, 1, "Earpiece")),
+                        selectedDeviceId = 41,
+                    ),
+                )
+            val settings = MutableStateFlow(SettingsState())
+            val selection = async { preferredVoiceAudioDevice(states, settings, emptySet()) }
+            yield()
+            assertFalse(selection.isCompleted)
+            settings.value = SettingsState(voiceAudioDeviceType = 1, loadState = SettingsLoadState.Ready)
+            assertEquals(42, selection.await())
+            states.value = states.value.copy(selectedDeviceId = 42)
+            settings.value = settings.value.copy(voiceAudioDeviceType = 2)
+            assertEquals(41, preferredVoiceAudioDevice(states, settings, setOf(41, 42)))
+        }
+
+    private fun audioSettings(type: Int?) =
+        MutableStateFlow(
+            SettingsState(voiceAudioDeviceType = type, loadState = SettingsLoadState.Ready),
+        )
 
     @Test
     fun accountSwitchInvalidatesVoiceIdentity() {

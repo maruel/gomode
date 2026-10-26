@@ -186,12 +186,7 @@ internal class DeviceVoiceSession(
         scope.launch {
             callController.audioState.collect { audio ->
                 _state.update {
-                    it.copy(
-                        availableDevices = audio.devices,
-                        selectedDeviceId = audio.selectedDeviceId,
-                        audioError = audio.error,
-                        audioSwitching = audio.switching,
-                    )
+                    it.withCallAudio(audio)
                 }
             }
         }
@@ -983,7 +978,7 @@ internal class DeviceVoiceSession(
                     _state.value.transcript
                         .withoutUserDraft()
                         .map { it.copy(final = true) },
-            )
+            ).withCallAudio(callController.audioState.value)
     }
 
     override fun setError(message: String) {

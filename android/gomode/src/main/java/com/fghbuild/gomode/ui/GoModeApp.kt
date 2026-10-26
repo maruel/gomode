@@ -251,6 +251,9 @@ internal fun GoModeApp(
         remember(context.applicationContext) {
             TelecomCallController(context.applicationContext, onTelecomEnded = {})
         }
+    DisposableEffect(voiceCallController) {
+        onDispose { voiceCallController.close() }
+    }
     val voiceServiceOwner = if (sharedConversation) voiceConversation else bearerStore
     val voiceSession: VoiceSessionController =
         remember(
@@ -323,10 +326,10 @@ internal fun GoModeApp(
     val voiceState by key(voiceSession) { voiceSession.state.collectAsStateWithLifecycle() }
     var audioSelectionJob by remember(voiceSession) { mutableStateOf<Job?>(null) }
     var knownAudioDevices by remember(voiceSession) { mutableStateOf(emptySet<Int>()) }
-    LaunchedEffect(voiceSession, voiceState.connected, voiceState.availableDevices) {
+    LaunchedEffect(voiceSession, voiceState.availableDevices) {
         val previousIds = knownAudioDevices
-        val id = preferredVoiceAudioDevice(voiceSession.state, settings.voiceAudioDeviceType, previousIds)
-        knownAudioDevices = if (voiceState.connected) voiceState.availableDevices.map { it.id }.toSet() else emptySet()
+        val id = preferredVoiceAudioDevice(voiceSession.state, settingsRepository.settings, previousIds)
+        knownAudioDevices = voiceState.availableDevices.map { it.id }.toSet()
         if (id != null) voiceSession.selectAudioDevice(id)
         val bluetooth =
             voiceState.availableDevices.firstOrNull {
@@ -461,8 +464,7 @@ internal fun GoModeApp(
                     },
                 )
             }
-            // Show recovery controls after the user dismisses the voice failure.
-            shellRecovery?.takeIf { voiceState.error == null }?.let { recovery ->
+            shellRecovery?.let { recovery ->
                 ShellRecoveryStrip(
                     recovery = recovery,
                     voiceSessionActive = voiceSessionActive,
@@ -556,23 +558,26 @@ internal suspend fun awaitVoiceAudioSelection(
 ): Boolean {
     val state =
         states.first {
-            !it.connected || (!it.audioSwitching && (it.selectedDeviceId == deviceId || it.audioError != null))
+            !it.audioSwitching && (
+                it.selectedDeviceId == deviceId || it.audioError != null ||
+                    it.availableDevices.none { device -> device.id == deviceId }
+            )
         }
-    return state.connected && state.selectedDeviceId == deviceId && state.audioError == null
+    return state.selectedDeviceId == deviceId && state.audioError == null
 }
 
-// Device IDs belong to a call. Restore the saved output type only when it is available.
+// Restore a saved output type against the currently available pre-call or live endpoints.
 internal suspend fun preferredVoiceAudioDevice(
     states: StateFlow<VoiceState>,
-    type: Int?,
+    settings: StateFlow<SettingsState>,
     previousIds: Set<Int>,
 ): Int? {
+    val loadedSettings = settings.first { it.loadState == SettingsLoadState.Ready }
     // A list change can arrive while Telecom rejects route requests. Wait once; do not retry routing errors.
     val state = states.first { !it.audioSwitching }
-    if (!state.connected) return null
     val preferred =
         state.availableDevices.firstOrNull { it.isBluetooth() && it.id !in previousIds }
-            ?: state.availableDevices.firstOrNull { it.type == type }
+            ?: state.availableDevices.firstOrNull { it.type == loadedSettings.voiceAudioDeviceType }
     return preferred?.id?.takeIf { it != state.selectedDeviceId }
 }
 

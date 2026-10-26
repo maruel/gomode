@@ -149,9 +149,10 @@ describe("VoiceOverlay status", () => {
     const scroll = vi.spyOn(end, "scrollIntoView");
     const inputScroll = vi.spyOn(input, "scrollIntoView");
     const user = userEvent.setup();
-    for (let index = 0; index < 4; index++) await user.tab();
+    for (let index = 0; index < 3; index++) await user.tab();
     expect(input).toHaveFocus();
     expect(inputScroll).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
+    await user.tab();
     await user.tab();
     expect(end).toHaveFocus();
     expect(scroll).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
@@ -212,17 +213,34 @@ describe("VoiceOverlay status", () => {
     }
   });
 
-  it("offers named icon actions and restores focus after dismissing an error", async () => {
+  it("keeps the normal start control available with an abnormal disconnect error", async () => {
     voiceSession.setState((s) => ({ ...s, error: "Voice gateway unavailable (HTTP 502)." }));
     render(() => <VoiceOverlay />);
     expect(screen.getByRole("alert")).toHaveTextContent("Voice gateway unavailable (HTTP 502).");
-    expect(screen.getByRole("button", { name: "Retry" }).textContent).toBe("");
-    expect(screen.getByRole("button", { name: "Dismiss" }).textContent).toBe("");
-    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Connect voice assistant" }));
     expect(connectMock).toHaveBeenCalledOnce();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Dismiss" }));
-    expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.getByRole("button", { name: "Connect voice assistant" })).toHaveFocus();
+  });
+
+  it("keeps settings and audio selectors mounted across idle, connecting, active, and failure", async () => {
+    render(() => <VoiceOverlay nextServer={{ name: "Project Atlas", onSelect: () => {} }} />);
+    const settings = screen.getByRole("button", { name: "Voice settings" });
+    const next = screen.getByRole("button", { name: "Next server: Project Atlas" });
+    const input = screen.getByRole("combobox", { name: "Microphone" });
+    const select = vi.spyOn(voiceSession, "selectInputDevice").mockResolvedValue();
+    await userEvent.setup().selectOptions(input, "");
+    expect(select).toHaveBeenCalledWith("");
+    expect(enumerateDevicesMock).toHaveBeenCalledOnce();
+    for (const state of [
+      { connectStatus: "Connecting…", connected: false, error: null },
+      { connectStatus: null, connected: true, error: null },
+      { connectStatus: null, connected: false, error: "Speech failed" },
+    ]) {
+      voiceSession.setState((s) => ({ ...s, ...state }));
+      expect(screen.getByRole("button", { name: "Voice settings" })).toBe(settings);
+      expect(screen.getByRole("button", { name: "Next server: Project Atlas" })).toBe(next);
+      expect(screen.getByRole("combobox", { name: "Microphone" })).toBe(input);
+    }
+    select.mockRestore();
   });
 
   it("shows a shared connection and settings error once, including when settings are open", async () => {
@@ -524,6 +542,7 @@ describe("VoiceOverlay connection", () => {
     let finishEnumeration: () => void = () => {
       throw new Error("Device enumeration did not start");
     };
+    enumerateDevicesMock.mockResolvedValueOnce();
     enumerateDevicesMock.mockImplementationOnce(
       () =>
         new Promise<void>((resolve) => {
@@ -536,7 +555,7 @@ describe("VoiceOverlay connection", () => {
     const click = user.click(screen.getByRole("button", { name: "Connect voice assistant" }));
     await waitFor(() => expect(prepareAudioMock).toHaveBeenCalledOnce());
 
-    expect(enumerateDevicesMock).toHaveBeenCalledOnce();
+    expect(enumerateDevicesMock).toHaveBeenCalledTimes(2);
     expect(connectMock).not.toHaveBeenCalled();
     finishEnumeration();
     await click;

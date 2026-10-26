@@ -19,10 +19,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 private const val TAG = "GoModeTelecom"
@@ -42,11 +46,16 @@ internal class TelecomCallController(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var controlScope: CallControlScope? = null
     private var addCallJob: Job? = null
+    private var startingEndpointsJob: Job? = null
+    private var disconnectJob: Job? = null
+    private var endpointUpdatesJob: Job? = null
     private var endedByTelecom = false
     private val _audioState = MutableStateFlow(CallAudioState())
     override val audioState = _audioState.asStateFlow()
     private val endpointIds = mutableMapOf<ParcelUuid, Int>()
     private var endpoints: List<CallEndpointCompat> = emptyList()
+    private var startingEndpoints: List<CallEndpointCompat> = emptyList()
+    private var preferredEndpoint: CallEndpointCompat? = null
 
     // Identifies the live call so callbacks from a released call are ignored.
     private var callGeneration = 0L
@@ -56,6 +65,18 @@ internal class TelecomCallController(
         // Registration belongs to app setup, before any call exists.
         if (isSupported()) {
             callsManager.registerAppWithTelecom(CallsManager.CAPABILITY_BASELINE)
+            startingEndpointsJob =
+                scope.launch {
+                    callsManager
+                        .getAvailableStartingCallEndpoints()
+                        .catch { error ->
+                            Log.w(TAG, "Could not list audio devices", error)
+                            _audioState.update { it.copy(error = "Could not list audio devices") }
+                        }.collect { available ->
+                            startingEndpoints = available.sortedBy(::endpointId)
+                            if (activeCall == 0L) publishIdleAudio()
+                        }
+                }
         }
     }
 
@@ -63,6 +84,7 @@ internal class TelecomCallController(
 
     override suspend fun start(onTelecomDisconnect: () -> Unit): Boolean {
         if (!isSupported()) return false
+        val startingEndpoint = startingEndpoints.firstOrNull { endpointId(it) == _audioState.value.selectedDeviceId }
         release()
         val generation = ++callGeneration
         activeCall = generation
@@ -79,6 +101,7 @@ internal class TelecomCallController(
                                 callType = CallAttributesCompat.CALL_TYPE_AUDIO_CALL,
                                 // Voice disconnects when Telecom yields; it never holds.
                                 callCapabilities = 0,
+                                preferredStartingCallEndpoint = startingEndpoint,
                             ),
                         onAnswer = {},
                         onDisconnect = {
@@ -99,25 +122,27 @@ internal class TelecomCallController(
                         block = {
                             if (activeCall == generation) {
                                 controlScope = this
-                                launch {
-                                    combine(availableEndpoints, currentCallEndpoint) { available, current ->
-                                        available to current
-                                    }.collect { (available, current) ->
-                                        if (activeCall != generation) return@collect
-                                        endpoints = available
-                                        val devices =
-                                            available.map { endpoint ->
-                                                AudioDevice(
-                                                    endpointId(endpoint),
-                                                    endpoint.audioDeviceType(),
-                                                    endpoint.name.toString(),
-                                                )
+                                endpointUpdatesJob =
+                                    launch {
+                                        combine(availableEndpoints, currentCallEndpoint) { available, current ->
+                                            available to current
+                                        }.collect { (available, current) ->
+                                            if (activeCall != generation) return@collect
+                                            endpoints = available.sortedBy(::endpointId)
+                                            preferredEndpoint = current
+                                            val devices =
+                                                endpoints.map { endpoint ->
+                                                    AudioDevice(
+                                                        endpointId(endpoint),
+                                                        endpoint.audioDeviceType(),
+                                                        endpoint.name.toString(),
+                                                    )
+                                                }
+                                            _audioState.update {
+                                                it.copy(devices = devices, selectedDeviceId = endpointId(current))
                                             }
-                                        _audioState.update {
-                                            it.copy(devices = devices, selectedDeviceId = endpointId(current))
                                         }
                                     }
-                                }
                             } else {
                                 // The session ended while the call was still being added;
                                 // end the orphaned call now that a control scope exists.
@@ -151,14 +176,19 @@ internal class TelecomCallController(
 
     override fun selectAudioDevice(deviceId: Int) {
         if (_audioState.value.switching) return
-        val control = controlScope ?: return
-        val generation = activeCall
-        if (generation == 0L) return
-        val endpoint = endpoints.firstOrNull { endpointId(it) == deviceId }
+        val available = if (activeCall == 0L) startingEndpoints else endpoints
+        val endpoint = available.firstOrNull { endpointId(it) == deviceId }
         if (endpoint == null) {
             _audioState.update { it.copy(error = "Audio device is no longer available") }
             return
         }
+        if (activeCall == 0L) {
+            preferredEndpoint = endpoint
+            publishIdleAudio()
+            return
+        }
+        val control = controlScope ?: return
+        val generation = activeCall
         _audioState.update { it.copy(error = null, switching = true) }
         scope.launch {
             val result = control.requestEndpointChange(endpoint)
@@ -174,23 +204,83 @@ internal class TelecomCallController(
     override fun endLocal() {
         // Mark the call terminal so later callbacks from it are ignored.
         val wasActive = activeCall
+        val control = controlScope
         activeCall = 0L
-        _audioState.value = CallAudioState()
+        controlScope = null
+        publishIdleAudio()
         // A Telecom-initiated hang-up already ends the call; a second disconnect fails.
-        if (endedByTelecom || wasActive == 0L) return
-        val control = controlScope ?: return
-        scope.launch { control.disconnect(DisconnectCause(DisconnectCause.LOCAL)).logFailure("disconnect") }
+        if (endedByTelecom) {
+            endpointUpdatesJob?.cancel()
+            return
+        }
+        if (wasActive == 0L) return
+        if (control == null) return
+        val updates = endpointUpdatesJob
+        disconnectJob =
+            scope.launch {
+                try {
+                    control.disconnect(DisconnectCause(DisconnectCause.LOCAL)).logFailure("disconnect")
+                } finally {
+                    // Core-Telecom 1.0.1 leaves endpoint channels open after disconnect.
+                    updates?.cancel()
+                }
+            }
     }
 
     private fun release() {
         activeCall = 0L
+        endpointUpdatesJob?.cancel()
+        endpointUpdatesJob = null
         addCallJob?.cancel()
         addCallJob = null
         controlScope = null
         endedByTelecom = false
         endpoints = emptyList()
-        endpointIds.clear()
-        _audioState.value = CallAudioState()
+        publishIdleAudio()
+    }
+
+    private fun publishIdleAudio() {
+        val selected =
+            startingEndpoints.firstOrNull { it.identifier == preferredEndpoint?.identifier }
+                ?: startingEndpoints.firstOrNull { it.type == CallEndpointCompat.TYPE_BLUETOOTH }
+                ?: startingEndpoints.firstOrNull { it.type == CallEndpointCompat.TYPE_SPEAKER }
+                ?: startingEndpoints.firstOrNull()
+        preferredEndpoint = selected
+        _audioState.value =
+            CallAudioState(
+                devices =
+                    startingEndpoints.map {
+                        AudioDevice(
+                            endpointId(it),
+                            it.audioDeviceType(),
+                            it.name.toString(),
+                        )
+                    },
+                selectedDeviceId = selected?.let(::endpointId),
+            )
+    }
+
+    // Audio choices clear after asynchronous call and observer cleanup completes.
+    fun close() {
+        if (!scope.isActive) return
+        startingEndpointsJob?.cancel()
+        startingEndpointsJob = null
+        endLocal()
+        val call = addCallJob
+        val disconnect = disconnectJob
+        val updates = endpointUpdatesJob
+        scope.launch {
+            try {
+                disconnect?.join()
+                updates?.cancelAndJoin()
+                // A pending addCall also owns disconnecting a call that arrives after disposal.
+                call?.join()
+            } finally {
+                release()
+                scope.cancel()
+                _audioState.value = CallAudioState()
+            }
+        }
     }
 }
 

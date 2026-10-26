@@ -11,7 +11,6 @@ declare const classes: {
   readonly "deviceHint": string;
   readonly "deviceRow": string;
   readonly "deviceSelect": string;
-  readonly "errorActions": string;
   readonly "errorPanel": string;
   readonly "micBar": string;
   readonly "micBars": string;
@@ -22,7 +21,6 @@ declare const classes: {
   readonly "panelInner": string;
   readonly "pulse": string;
   readonly "row": string;
-  readonly "rowEnd": string;
   readonly "settingsHeader": string;
   readonly "settingsSection": string;
   readonly "spacer": string;
@@ -31,6 +29,7 @@ declare const classes: {
   readonly "statusError": string;
   readonly "statusText": string;
   readonly "statusTool": string;
+  readonly "toolbarActions": string;
   readonly "transcriptBody": string;
   readonly "transcriptContent": string;
   readonly "transcriptEntry": string;

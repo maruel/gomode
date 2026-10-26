@@ -22,6 +22,7 @@ internal data class CallAudioState(
  * overlay hang-up.
  */
 internal interface VoiceCallController {
+    // Before a call, selection is the desired starting route; during a call it is the confirmed route.
     val audioState: StateFlow<CallAudioState>
 
     fun selectAudioDevice(deviceId: Int)
@@ -57,3 +58,11 @@ internal class NoopVoiceCallController : VoiceCallController {
 
     override fun endLocal() = Unit
 }
+
+internal fun VoiceState.withCallAudio(audio: CallAudioState): VoiceState =
+    copy(
+        availableDevices = audio.devices,
+        selectedDeviceId = audio.selectedDeviceId,
+        audioError = audio.error,
+        audioSwitching = audio.switching,
+    )

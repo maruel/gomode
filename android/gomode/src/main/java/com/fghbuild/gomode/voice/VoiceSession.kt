@@ -227,12 +227,7 @@ internal class VoiceSession(
             scope.launch {
                 callController.audioState.collect { audio ->
                     _state.update {
-                        it.copy(
-                            availableDevices = audio.devices,
-                            selectedDeviceId = audio.selectedDeviceId,
-                            audioError = audio.error,
-                            audioSwitching = audio.switching,
-                        )
+                        it.withCallAudio(audio)
                     }
                 }
             }
@@ -906,7 +901,7 @@ internal class VoiceSession(
     }
 
     override fun selectAudioDevice(deviceId: Int) {
-        if (telecomCallActive) {
+        if (callController.isSupported()) {
             callController.selectAudioDevice(deviceId)
         } else {
             applyCommunicationDevice(deviceId)
@@ -957,7 +952,9 @@ internal class VoiceSession(
         voiceTokenEndpointURL = null
         sessionTools = emptyList()
         // Preserve transcript so the user can review it after disconnecting.
-        _state.value = VoiceState(transcript = _state.value.transcript.map { it.copy(final = true) })
+        _state.value =
+            VoiceState(transcript = _state.value.transcript.map { it.copy(final = true) })
+                .withCallAudio(callController.audioState.value)
     }
 
     private fun finishDisconnectAudio(attempt: Long) {
