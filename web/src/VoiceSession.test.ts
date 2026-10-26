@@ -151,6 +151,14 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function outgoingMicrophoneTrack(): MediaStreamTrack | undefined {
+  return [...FakeMicrophoneContext.instances]
+    .reverse()
+    .find((context) => context.destinations.length > 0)
+    ?.destinations.at(-1)
+    ?.stream.getAudioTracks()[0];
+}
+
 const originalFetch = globalThis.fetch;
 let closeRequests: Array<{ url: string; authorization: string | null }> = [];
 let offerRequests: Array<{ url: string; authorization: string | null; body: unknown }> = [];
@@ -250,6 +258,43 @@ beforeEach(() => {
 });
 
 describe("VoiceSession", () => {
+  it("attenuates the transmitted microphone during replies and restores it after interruption and input replacement", async () => {
+    FakeMicrophoneContext.instances = [];
+    const session = new VoiceSession();
+    try {
+      await session.connect();
+      const context = FakeMicrophoneContext.instances.find((context) => context.gains.length > 0);
+      expect(context).toBeDefined();
+      context!.state = "suspended";
+      await session.enableMicrophoneMeter();
+      expect(context!.state).toBe("running");
+      const gain = context!.gains[0]!;
+      expect(gain.gain.value).toBe(1);
+      expect(FakePeerConnection.last?.addedTracks[0]).toBe(context!.destinations[0]!.stream.getAudioTracks()[0]);
+      const event = (kind: string) =>
+        FakePeerConnection.dataChannels
+          .at(-1)
+          ?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind }) }));
+      event("speech.started");
+      expect(gain.gain.value).toBeGreaterThan(0);
+      expect(gain.gain.value).toBeLessThanOrEqual(0.1);
+      await session.selectInputDevice("headset");
+      const replacement = context!.gains.at(-1)!;
+      expect(replacement.gain.value).toBeLessThanOrEqual(0.1);
+      session.setMicrophoneMode("muted");
+      expect(outgoingMicrophoneTrack()?.enabled).toBe(false);
+      event("interrupted");
+      expect(replacement.gain.value).toBe(1);
+      expect(outgoingMicrophoneTrack()?.enabled).toBe(false);
+      session.setMicrophoneMode("listening");
+      expect(outgoingMicrophoneTrack()?.enabled).toBe(true);
+      event("speech.started");
+      event("speech.ended");
+      expect(replacement.gain.value).toBe(1);
+    } finally {
+      session.disconnect();
+    }
+  });
   it("keeps the gesture-unlocked meter and meters during cloud playback without freezing on mute or silence", async () => {
     FakeMicrophoneContext.instances = [];
     const poll = microphoneFrames();
@@ -258,7 +303,7 @@ describe("VoiceSession", () => {
     const context = FakeMicrophoneContext.instances[0];
     expect(context).toBeDefined();
     await session.connect();
-    expect(FakeMicrophoneContext.instances).toHaveLength(1);
+    expect(FakeMicrophoneContext.instances.filter((context) => context.gains.length === 0)).toHaveLength(1);
     poll();
     expect(session.state.micLevel).toBeGreaterThan(0.3);
     session.setState((s) => ({ ...s, speaking: true }));
@@ -635,7 +680,7 @@ describe("VoiceSession", () => {
       await session.enumerateDevices();
       initial.resolve({ getTracks: () => [usb], getAudioTracks: () => [usb] } as unknown as MediaStream);
       await connecting;
-      expect(FakePeerConnection.last?.sender.replaceTrack).toHaveBeenCalledWith(bluetooth);
+      expect(FakePeerConnection.last?.sender.replaceTrack).toHaveBeenCalledWith(outgoingMicrophoneTrack());
       expect(session.state.selectedInputId).toBe("bt");
       expect(localStorage.getItem("gomode.voiceInputDevice")).toBe("bt");
     } finally {
@@ -708,7 +753,7 @@ describe("VoiceSession", () => {
         { kind: "audioinput", deviceId: "bt-mic", label: "Bluetooth microphone" } as MediaDeviceInfo,
       ]);
       await session.enumerateDevices();
-      expect(FakePeerConnection.last?.sender.replaceTrack).toHaveBeenCalledWith(newTrack);
+      expect(FakePeerConnection.last?.sender.replaceTrack).toHaveBeenCalledWith(outgoingMicrophoneTrack());
       expect(newTrack.enabled).toBe(false);
       expect(oldTrack.stop).toHaveBeenCalledOnce();
       vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue([]);
@@ -841,14 +886,16 @@ describe("VoiceSession", () => {
         getAudioTracks: () => [oldTrack],
       } as unknown as MediaStream)
       .mockImplementationOnce(async () => {
-        expect(FakePeerConnection.last?.addedTracks).toEqual([oldTrack]);
+        expect(FakePeerConnection.last?.addedTracks).toHaveLength(1);
+        expect(FakePeerConnection.last?.addedTracks[0]).not.toBe(oldTrack);
         return { getTracks: () => [newTrack], getAudioTracks: () => [newTrack] } as unknown as MediaStream;
       });
     const session = new VoiceSession();
     await session.selectInputDevice("usb");
     await session.connect();
-    expect(FakePeerConnection.last?.addedTracks).toEqual([oldTrack]);
-    expect(FakePeerConnection.last?.sender.replaceTrack).toHaveBeenCalledWith(newTrack);
+    expect(FakePeerConnection.last?.addedTracks).toHaveLength(1);
+    expect(FakePeerConnection.last?.addedTracks[0]).not.toBe(oldTrack);
+    expect(FakePeerConnection.last?.sender.replaceTrack).toHaveBeenCalledWith(outgoingMicrophoneTrack());
     expect(stop).toHaveBeenCalledOnce();
     expect(session.state.selectedInputId).toBe("");
     session.disconnect();
@@ -897,7 +944,7 @@ describe("VoiceSession", () => {
       getAudioTracks: () => [newTrack],
     } as unknown as MediaStream);
     await session.enumerateDevices();
-    expect(FakePeerConnection.last?.sender.replaceTrack).toHaveBeenCalledWith(newTrack);
+    expect(FakePeerConnection.last?.sender.replaceTrack).toHaveBeenCalledWith(outgoingMicrophoneTrack());
     expect(stop).toHaveBeenCalledOnce();
     expect(session.state.selectedInputId).toBe("");
     expect(session.state.audioInputError).toBeNull();
@@ -1022,7 +1069,7 @@ describe("VoiceSession", () => {
       getAudioTracks: () => [newTrack],
     } as unknown as MediaStream);
     await session.selectInputDevice("headset");
-    expect(pc?.sender.replaceTrack).toHaveBeenCalledWith(newTrack);
+    expect(pc?.sender.replaceTrack).toHaveBeenCalledWith(outgoingMicrophoneTrack());
     expect(newTrack.enabled).toBe(false);
     expect(stop).toHaveBeenCalledOnce();
     expect(session.state.selectedInputId).toBe("headset");

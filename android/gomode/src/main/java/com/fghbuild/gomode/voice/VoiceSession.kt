@@ -380,7 +380,11 @@ internal class VoiceSession(
                                 .setEnableInternalTracer(false)
                                 .createInitializationOptions(),
                         )
-                        pcFactory = PeerConnectionFactory.builder().createPeerConnectionFactory()
+                        pcFactory =
+                            PeerConnectionFactory
+                                .builder()
+                                .setAudioProcessingFactory(RtcMicrophoneProcessing.acquire(state))
+                                .createPeerConnectionFactory()
                     }
                     val factory =
                         pcFactory ?: run {
@@ -976,6 +980,9 @@ internal class VoiceSession(
     override fun close() {
         audioStateJob?.cancel()
         disconnect()
+        pcFactory?.dispose()
+        pcFactory = null
+        RtcMicrophoneProcessing.release(state)
     }
 
     /** Send a message via the WebRTC data channel. */

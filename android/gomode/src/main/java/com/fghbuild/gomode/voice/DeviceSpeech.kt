@@ -395,8 +395,10 @@ internal class AndroidDeviceSpeech(
         utteranceCounter++
         val utteranceID = "go-mode-$utteranceCounter"
         speechCallbacks[utteranceID] = SpeechCallbacks(onDone, onError)
+        microphone.assistantSpeaking = true
         if (speech.speak(text, TextToSpeech.QUEUE_ADD, null, utteranceID) == TextToSpeech.ERROR) {
             speechCallbacks.remove(utteranceID)
+            microphone.assistantSpeaking = speechCallbacks.isNotEmpty()
             onError("Text-to-speech failed")
         }
     }
@@ -406,6 +408,7 @@ internal class AndroidDeviceSpeech(
         error: String?,
     ) {
         val callbacks = utteranceId?.let { speechCallbacks.remove(it) } ?: return
+        microphone.assistantSpeaking = speechCallbacks.isNotEmpty()
         if (error == null) callbacks.onDone() else callbacks.onError(error)
     }
 
@@ -413,6 +416,7 @@ internal class AndroidDeviceSpeech(
         main.post {
             queuedSpeech.clear()
             speechCallbacks.clear()
+            microphone.assistantSpeaking = false
             engine?.stop()
         }
     }
@@ -427,6 +431,7 @@ internal class AndroidDeviceSpeech(
             recognizer = null
             queuedSpeech.clear()
             speechCallbacks.clear()
+            microphone.assistantSpeaking = false
             engine?.stop()
             engine?.shutdown()
             engine = null

@@ -7,6 +7,9 @@ export class FakeMicrophoneContext {
   state = "suspended";
   onstatechange: (() => void) | null = null;
   sample = 0.01;
+  gains: Array<{ gain: { value: number }; connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }> =
+    [];
+  destinations: Array<{ stream: MediaStream }> = [];
   source = { connect: vi.fn(), disconnect: vi.fn() };
   analyser = {
     fftSize: 0,
@@ -27,6 +30,19 @@ export class FakeMicrophoneContext {
   }
   createMediaStreamSource() {
     return this.source;
+  }
+  createGain() {
+    const gain = { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() };
+    this.gains.push(gain);
+    return gain;
+  }
+  createMediaStreamDestination() {
+    const track = { kind: "audio", enabled: true, stop: vi.fn() };
+    const destination = {
+      stream: { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream,
+    };
+    this.destinations.push(destination);
+    return destination;
   }
 }
 

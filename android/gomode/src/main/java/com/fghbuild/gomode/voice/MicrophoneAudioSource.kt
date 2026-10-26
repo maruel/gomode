@@ -32,6 +32,8 @@ private const val RETAINED_AUDIO_BYTES = 16_000
 internal class MicrophoneAudioSource(
     private val scope: CoroutineScope,
 ) {
+    @Volatile
+    var assistantSpeaking = false
     private val mutableRms = MutableStateFlow(0f)
     val rms = mutableRms.asStateFlow()
     private val captureLock = Mutex()
@@ -126,6 +128,7 @@ internal class MicrophoneAudioSource(
                 check(count >= 0) { "Microphone read failed ($count)" }
                 synchronized(deliveryLock) {
                     if (captureContext.isActive) {
+                        if (assistantSpeaking) attenuateMicrophonePcm(frame, count)
                         delivery.append(frame, count)
                         meter.append(frame, count)?.let { mutableRms.value = it }
                     }

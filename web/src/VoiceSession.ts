@@ -1,6 +1,7 @@
 // Browser voice sessions via WebRTC and speech, dispatching MCP and frontend tools.
 
 import { MicrophoneLevel } from "./MicrophoneLevel";
+import { MicrophoneInput } from "./MicrophoneInput";
 import { createSignal, untrack } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 
@@ -507,6 +508,8 @@ function newConversationID(): string {
 }
 
 export class VoiceSession {
+  private readonly _microphoneInput = new MicrophoneInput();
+  private _outgoingMicrophone: ReturnType<MicrophoneInput["connect"]> | null = null;
   readonly state: VoiceState;
   /** Public store updater (also the seam tests use to arrange session state). */
   readonly setState: (fn: (s: VoiceState) => VoiceState) => void;
@@ -936,6 +939,7 @@ export class VoiceSession {
         s.audioInputError = null;
       });
       let newStream: MediaStream | null = null;
+      let outgoing: ReturnType<MicrophoneInput["connect"]> | null = null;
       try {
         // Acquire new mic stream with the selected device.
         const constraints: MediaStreamConstraints = {
@@ -947,24 +951,34 @@ export class VoiceSession {
           newStream.getTracks().forEach((track) => track.stop());
           return;
         }
+        newStream.getAudioTracks().forEach((track) => {
+          track.enabled = false;
+        });
+        outgoing = this._microphoneInput.connect(newStream);
         // Replace tracks on the PeerConnection.
         const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
-        for (const t of newStream.getAudioTracks()) {
+        for (const t of outgoing.stream.getAudioTracks()) {
           // Keep the pending sender silent until installation can apply the current mode.
           t.enabled = false;
           if (sender) {
             await sender.replaceTrack(t);
             if (this._pc !== pc) {
+              outgoing.close();
               newStream.getTracks().forEach((track) => track.stop());
               return;
             }
           } else {
-            pc.addTrack(t, newStream);
+            pc.addTrack(t, outgoing.stream);
           }
         }
         newStream.getAudioTracks().forEach((track) => {
           track.enabled = !microphoneMuted(this.state);
         });
+        outgoing.stream.getAudioTracks().forEach((track) => {
+          track.enabled = this._microphoneActive();
+        });
+        this._outgoingMicrophone?.close();
+        this._outgoingMicrophone = outgoing;
         this._micStream = newStream;
         oldStream.getTracks().forEach((track) => track.stop());
         this._update((s) => {
@@ -975,7 +989,10 @@ export class VoiceSession {
         this._inputPreferenceProvisional = false;
         this._monitorMicrophone(newStream);
       } catch (error) {
-        if (this._micStream !== newStream) newStream?.getTracks().forEach((track) => track.stop());
+        if (this._micStream !== newStream) {
+          outgoing?.close();
+          newStream?.getTracks().forEach((track) => track.stop());
+        }
         if (this._pc === pc && error instanceof DOMException && error.name === "NotAllowedError") {
           this._microphoneDenied();
           return;
@@ -1011,9 +1028,19 @@ export class VoiceSession {
 
   /** Resume analysis from a user activation if browser audio policy paused it. */
   enableMicrophoneMeter(): Promise<void> {
+    const attempt = this._connectionAttempt;
     const activation = this._microphoneMeter.prepare();
+    const processing =
+      this.state.mode === "cloud"
+        ? this._microphoneInput.prepare().catch((error: unknown) => {
+            if (attempt === this._connectionAttempt)
+              this._update((s) => {
+                s.error = `Could not activate microphone processing: ${String(error)}`;
+              });
+          })
+        : Promise.resolve();
     if (this._micStream !== null) this._monitorMicrophone(this._micStream);
-    return activation;
+    return Promise.all([activation, processing]).then(() => undefined);
   }
 
   /** Select an audio output device. Applies immediately if connected. */
@@ -1243,7 +1270,9 @@ export class VoiceSession {
       });
       this._pc = pc;
 
-      // Mic audio → RTP track (browser handles Opus encoding + AEC).
+      await this._microphoneInput.prepare();
+      if (attempt !== this._connectionAttempt) return;
+      // Browser AEC precedes outgoing attenuation and Opus encoding.
       const inputId = this.state.selectedInputId;
       const micConstraints: MediaStreamConstraints = {
         audio: inputId ? { deviceId: { exact: inputId } } : true,
@@ -1269,9 +1298,13 @@ export class VoiceSession {
         rememberAudioDevice("Input", inputId);
         this._inputPreferenceProvisional = false;
       }
-      for (const t of micStream.getAudioTracks()) {
+      this._outgoingMicrophone = this._microphoneInput.connect(micStream);
+      micStream.getAudioTracks().forEach((track) => {
+        track.enabled = !microphoneMuted(this.state);
+      });
+      for (const t of this._outgoingMicrophone.stream.getAudioTracks()) {
         t.enabled = !microphoneMuted(this.state);
-        pc.addTrack(t, micStream);
+        pc.addTrack(t, this._outgoingMicrophone.stream);
       }
       this._update((s) => {
         s.audioSwitching = null;
@@ -1791,8 +1824,12 @@ export class VoiceSession {
     this.setState(produce(fn));
     untrack(() => {
       const active = this._microphoneActive();
+      this._microphoneInput.setSpeaking(this.state.speaking);
       if (active !== wasActive) {
         this._micStream?.getAudioTracks().forEach((track) => {
+          track.enabled = active;
+        });
+        this._outgoingMicrophone?.stream.getAudioTracks().forEach((track) => {
           track.enabled = active;
         });
       }
@@ -2047,6 +2084,10 @@ export class VoiceSession {
   // -----------------------------------------------------------------------
 
   private _releaseAudio(keepMeterContext: boolean): void {
+    this._outgoingMicrophone?.close();
+    this._outgoingMicrophone = null;
+    this._microphoneInput.setSpeaking(false);
+    if (!keepMeterContext) this._microphoneInput.close();
     try {
       this._micStream?.getTracks().forEach((t) => t.stop());
       this._micStream = null;

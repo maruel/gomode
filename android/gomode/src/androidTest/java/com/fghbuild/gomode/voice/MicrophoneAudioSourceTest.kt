@@ -90,8 +90,12 @@ class MicrophoneAudioSourceTest {
                 playback.play()
                 val first = withContext(Dispatchers.Main) { source.open(errors::add) }
                 assertPcmAvailable(first)
+                source.assistantSpeaking = true
+                assertPcmAvailable(first)
                 withContext(Dispatchers.Main) { source.finishUtterance() }
                 val next = withContext(Dispatchers.Main) { source.open(errors::add) }
+                assertPcmAvailable(next)
+                source.assistantSpeaking = false
                 assertPcmAvailable(next)
                 withContext(Dispatchers.Main) { source.stop() }
                 val resumed = withContext(Dispatchers.Main) { source.open(errors::add) }
