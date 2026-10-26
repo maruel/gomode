@@ -80,6 +80,41 @@
   align-items: center;
 }
 
+.accessNotice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-block: 0.5rem;
+  color: var(--color-text);
+}
+
+.accessNotice > span {
+  flex: 1 1 16rem;
+  overflow-wrap: anywhere;
+}
+
+.accessAction {
+  min-height: 44px;
+  padding: 0.5rem 0.75rem;
+  font: inherit;
+  color: var(--color-text);
+  cursor: pointer;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+}
+
+.accessAction:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.accessAction[aria-disabled="true"] {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 @media (width <= 360px) {
   .panelInner {
     padding-inline: 0.5rem;

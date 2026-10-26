@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
+import android.provider.Settings
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,6 +40,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +49,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
@@ -88,6 +91,7 @@ import com.fghbuild.gomode.voice.DeviceVoiceSession
 import com.fghbuild.gomode.voice.LocalModelOwner
 import com.fghbuild.gomode.voice.LocalModelSelection
 import com.fghbuild.gomode.voice.LocalModelState
+import com.fghbuild.gomode.voice.MicrophonePermissionRecovery
 import com.fghbuild.gomode.voice.TelecomCallController
 import com.fghbuild.gomode.voice.VoiceConversation
 import com.fghbuild.gomode.voice.VoicePanel
@@ -352,19 +356,53 @@ internal fun GoModeApp(
         }
         voiceItemBaseline = snapshot
     }
-    var onMicGranted by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var connectAfterMicPermission by rememberSaveable { mutableStateOf(false) }
+    val activity = LocalActivity.current
+    var microphoneDenied by rememberSaveable { mutableStateOf(false) }
+    var microphoneNeedsSettings by rememberSaveable { mutableStateOf(false) }
+    var microphoneHadExplicitDenial by rememberSaveable { mutableStateOf(false) }
+    var microphoneWasGranted by rememberSaveable {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        val granted =
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            microphoneDenied = false
+            microphoneNeedsSettings = false
+            microphoneHadExplicitDenial = false
+        } else if (microphoneWasGranted) {
+            voiceSession.disconnect()
+            microphoneDenied = true
+            microphoneNeedsSettings = microphoneHadExplicitDenial && activity != null &&
+                !ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.RECORD_AUDIO)
+        }
+        microphoneWasGranted = granted
+    }
     val micPermissionLauncher =
         rememberLauncherForActivityResult(
             ActivityResultContracts.RequestPermission(),
         ) { granted ->
+            val rationale =
+                activity != null &&
+                    ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.RECORD_AUDIO)
+            microphoneWasGranted = granted
+            microphoneDenied = !granted
+            // A dismissed first prompt also returns false without a rationale. Only a
+            // previously observed explicit denial proves that prompting has stopped.
+            microphoneNeedsSettings = !granted && microphoneHadExplicitDenial && !rationale
+            if (!granted && rationale) microphoneHadExplicitDenial = true
             if (granted) {
-                onMicGranted?.invoke()
-            } else {
-                scope.launch {
-                    snackbarHostState.showSnackbar("Microphone permission is required for voice mode")
+                microphoneHadExplicitDenial = false
+                if (connectAfterMicPermission && (localSelection != null || bearerStore.authReady.value)) {
+                    voiceSession.connect()
                 }
             }
-            onMicGranted = null
+            connectAfterMicPermission = false
         }
     val shellRecovery =
         shellRecoveryState(
@@ -490,6 +528,30 @@ internal fun GoModeApp(
                 (!keyboardOpen && (shellRecovery == null || voiceSessionActive))
             ) {
                 VoicePanel(
+                    microphoneRecovery =
+                        if (microphoneDenied) {
+                            MicrophonePermissionRecovery(
+                                onRequest =
+                                    if (microphoneNeedsSettings) {
+                                        null
+                                    } else {
+                                        {
+                                            connectAfterMicPermission = false
+                                            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                        }
+                                    },
+                                onOpenSettings = {
+                                    context.startActivity(
+                                        Intent(
+                                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                            "package:${context.packageName}".toUri(),
+                                        ),
+                                    )
+                                },
+                            )
+                        } else {
+                            null
+                        },
                     voiceState = voiceState,
                     voiceEnabled = voiceAvailable,
                     onConnect = {
@@ -503,9 +565,7 @@ internal fun GoModeApp(
                             ) {
                                 voiceSession.connect()
                             } else {
-                                onMicGranted = {
-                                    if (localSelection != null || bearerStore.authReady.value) voiceSession.connect()
-                                }
+                                connectAfterMicPermission = true
                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
                         }

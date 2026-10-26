@@ -47,7 +47,7 @@ interface SpeechCallbacks {
   listening(value: boolean): void;
   interim(text: string): void;
   final(text: string): void;
-  error(message: string): void;
+  error(message: string, permissionDenied?: boolean): void;
 }
 
 export class BrowserSpeech {
@@ -207,7 +207,7 @@ export class BrowserSpeech {
       if (this.recognition !== recognition || !this.accepting || !this.wantsListening) return;
       if (event.error === "no-speech") return;
       this.stopListening();
-      this.callbacks.error(`Browser speech recognition failed: ${event.error}`);
+      this.callbacks.error(`Browser speech recognition failed: ${event.error}`, event.error === "not-allowed");
     };
     recognition.onend = () => {
       if (this.recognition !== recognition) return;

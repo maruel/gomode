@@ -179,6 +179,7 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
   localStorage.clear();
   closeRequests = [];
   offerRequests = [];
@@ -266,6 +267,117 @@ class FakeAudioContext {
 }
 
 describe("VoiceSession", () => {
+  it("coalesces access requests and releases a late stream without clearing a newer failure", async () => {
+    const media = deferred<MediaStream>();
+    const getMedia = vi.mocked(navigator.mediaDevices.getUserMedia).mockReturnValue(media.promise);
+    const session = new VoiceSession();
+    const first = session.requestMicrophoneAccess();
+    await session.requestMicrophoneAccess();
+    expect(getMedia).toHaveBeenCalledOnce();
+    session.disconnect();
+    session.setState((state) => ({ ...state, error: "A newer connection failed" }));
+    const stop = vi.fn();
+    media.resolve({ getTracks: () => [{ stop }] } as unknown as MediaStream);
+    await first;
+    expect(stop).toHaveBeenCalledOnce();
+    expect(session.state.error).toBe("A newer connection failed");
+    expect(session.state.microphoneAccessPending).toBe(false);
+  });
+
+  it("reacts to microphone revocation and releases its permission subscription", async () => {
+    const originalPermissions = navigator.permissions;
+    const status = new EventTarget() as PermissionStatus;
+    Object.defineProperty(status, "state", { configurable: true, value: "granted" });
+    Object.defineProperty(navigator, "permissions", {
+      configurable: true,
+      value: { query: async () => status },
+    });
+    const session = new VoiceSession();
+    const stopObserving = session.observeMicrophoneAccess();
+    try {
+      await Promise.resolve();
+      expect(session.state.microphoneAccess).toBe("granted");
+      await session.connect();
+      Object.defineProperty(status, "state", { configurable: true, value: "denied" });
+      status.dispatchEvent(new Event("change"));
+      expect(session.state.microphoneAccess).toBe("denied");
+      expect(session.state.connectStatus).toBeNull();
+      expect(FakePeerConnection.dataChannels.at(-1)?.readyState).toBe("closed");
+      session.setState((state) => ({ ...state, error: "Gateway unavailable", audioInputError: "Device unavailable" }));
+      window.dispatchEvent(new window.Event("focus"));
+      expect(session.state.error).toBe("Gateway unavailable");
+      expect(session.state.audioInputError).toBe("Device unavailable");
+      Object.defineProperty(status, "state", { configurable: true, value: "granted" });
+      status.dispatchEvent(new Event("change"));
+      expect(session.state.microphoneAccess).toBe("granted");
+      expect(session.state.connected).toBe(false);
+      stopObserving();
+      Object.defineProperty(status, "state", { configurable: true, value: "denied" });
+      status.dispatchEvent(new Event("change"));
+      expect(session.state.microphoneAccess).toBe("granted");
+    } finally {
+      stopObserving();
+      session.disconnect();
+      Object.defineProperty(navigator, "permissions", { configurable: true, value: originalPermissions });
+    }
+  });
+
+  it("keeps blocked playback recoverable and ignores playback results after disconnect", async () => {
+    vi.stubGlobal("Audio", window.Audio);
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play");
+    const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    const session = new VoiceSession();
+    try {
+      play.mockRejectedValueOnce(new DOMException("Autoplay blocked", "NotAllowedError"));
+      await session.connect();
+      FakePeerConnection.last?.ontrack?.call(
+        FakePeerConnection.last as unknown as RTCPeerConnection,
+        { streams: [{}] } as unknown as RTCTrackEvent,
+      );
+      await Promise.resolve();
+      expect(session.state.audioPlaybackError).toContain("Autoplay blocked");
+      expect(session.state.microphoneAccess).toBe("granted");
+      play.mockResolvedValueOnce();
+      await session.resumeAudio();
+      expect(session.state.audioPlaybackError).toBeNull();
+      let reject: (error: Error) => void = () => {};
+      play.mockImplementationOnce(
+        () =>
+          new Promise<void>((_, fail) => {
+            reject = fail;
+          }),
+      );
+      const pending = session.resumeAudio();
+      session.disconnect();
+      reject(new Error("late failure"));
+      await pending;
+      expect(session.state.audioPlaybackError).toBeNull();
+      expect(pause).toHaveBeenCalledOnce();
+    } finally {
+      session.disconnect();
+      play.mockRestore();
+      pause.mockRestore();
+    }
+  });
+
+  it("offers microphone recovery after denial without starting a session on re-enable", async () => {
+    const session = new VoiceSession();
+    const getMedia = vi.mocked(navigator.mediaDevices.getUserMedia);
+    getMedia.mockRejectedValueOnce(new DOMException("Permission denied", "NotAllowedError"));
+    await session.connect();
+    expect(session.state.connected).toBe(false);
+    expect(session.state.microphoneAccess).toBe("denied");
+    expect(session.state.error).toBeNull();
+    const stop = vi.fn();
+    getMedia.mockResolvedValueOnce({ getTracks: () => [{ stop }] } as unknown as MediaStream);
+    await session.requestMicrophoneAccess();
+    expect(session.state.microphoneAccess).toBe("granted");
+    expect(session.state.connected).toBe(false);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(offerRequests).toHaveLength(0);
+    session.disconnect();
+  });
+
   it("prefers newly connected Bluetooth and remembers its routes across sessions", async () => {
     const sink = vi.fn(async (_id: string) => {});
     Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true, value: sink });

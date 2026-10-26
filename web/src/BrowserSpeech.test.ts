@@ -145,7 +145,7 @@ describe("BrowserSpeech", () => {
     FakeRecognition.instances[0]?.onerror?.({ error: "not-allowed" });
     FakeRecognition.instances[0]?.end();
     vi.advanceTimersByTime(1000);
-    expect(callbacks.error).toHaveBeenCalledWith(expect.stringContaining("not-allowed"));
+    expect(callbacks.error).toHaveBeenCalledWith(expect.stringContaining("not-allowed"), true);
     expect(FakeRecognition.instances).toHaveLength(1);
   });
 

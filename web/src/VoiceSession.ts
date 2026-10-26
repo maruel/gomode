@@ -338,6 +338,10 @@ export interface VoiceState {
   transcript: TranscriptEntry[];
   micLevel: number;
   error: string | null;
+  /** Browser permission, null when the browser cannot report it yet. */
+  microphoneAccess: PermissionState | null;
+  microphoneAccessPending: boolean;
+  audioPlaybackError: string | null;
   /** Available audio input devices (microphones). */
   audioInputs: AudioDevice[];
   /** Available audio output devices (speakers, headsets). */
@@ -572,6 +576,9 @@ export class VoiceSession {
       audioInputs: [],
       audioDevicesError: null,
       audioInputError: null,
+      microphoneAccess: null,
+      microphoneAccessPending: false,
+      audioPlaybackError: null,
       audioOutputError: null,
       audioSwitching: null,
       audioOutputs: [],
@@ -956,6 +963,10 @@ export class VoiceSession {
         this._monitorMicrophone(pc, newStream);
       } catch (error) {
         if (this._micStream !== newStream) newStream?.getTracks().forEach((track) => track.stop());
+        if (this._pc === pc && error instanceof DOMException && error.name === "NotAllowedError") {
+          this._microphoneDenied();
+          return;
+        }
         if (this._pc === pc)
           this._update((s) => {
             s.audioInputError = `Could not switch microphone: ${String(error)}`;
@@ -1061,6 +1072,104 @@ export class VoiceSession {
     if (this.state.mode === "browser") this._thinkingEarcon.prepare();
   }
 
+  /** Observe permission changes without prompting. The overlay owns this subscription. */
+  observeMicrophoneAccess(): () => void {
+    let disposed = false;
+    let permission: PermissionStatus | null = null;
+    const update = () => {
+      if (disposed || permission === null) return;
+      const access = permission.state;
+      if (
+        access === "denied" &&
+        this.state.microphoneAccess !== "denied" &&
+        (this._pc !== null || this._textSocket !== null || this.state.connectStatus !== null)
+      ) {
+        this.disconnect();
+      }
+      this._update((s) => {
+        s.microphoneAccess = access;
+      });
+    };
+    if (navigator.permissions) {
+      void navigator.permissions
+        .query({ name: "microphone" as PermissionName })
+        .then((status) => {
+          if (disposed) return;
+          permission = status;
+          permission.addEventListener("change", update);
+          update();
+        })
+        .catch((error: unknown) => {
+          // Some browsers expose Permissions but do not implement microphone queries.
+          if (!(error instanceof TypeError)) console.warn("Could not read microphone permission", error);
+        });
+    }
+    window.addEventListener("focus", update);
+    return () => {
+      disposed = true;
+      permission?.removeEventListener("change", update);
+      window.removeEventListener("focus", update);
+    };
+  }
+
+  /** A user gesture can request access without starting voice or retaining a microphone stream. */
+  async requestMicrophoneAccess(): Promise<void> {
+    if (this.state.microphoneAccessPending) return;
+    const attempt = this._connectionAttempt;
+    this._update((s) => {
+      s.microphoneAccessPending = true;
+    });
+    try {
+      if (!navigator.mediaDevices?.getUserMedia)
+        throw new Error("Microphone access requires HTTPS and a supported browser.");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+      if (attempt !== this._connectionAttempt) return;
+      this._update((s) => {
+        s.microphoneAccess = "granted";
+        s.error = null;
+      });
+      await this.enumerateDevices();
+    } catch (error) {
+      if (attempt !== this._connectionAttempt) return;
+      if (error instanceof DOMException && error.name === "NotAllowedError") this._microphoneDenied();
+      else
+        this._update((s) => {
+          s.error = `Could not enable microphone: ${String(error)}`;
+        });
+    } finally {
+      this._update((s) => {
+        s.microphoneAccessPending = false;
+      });
+    }
+  }
+
+  private _microphoneDenied(): void {
+    this.disconnect();
+    this._update((s) => {
+      s.microphoneAccess = "denied";
+      s.error = null;
+    });
+  }
+
+  /** Retry playback directly from a user gesture after browser autoplay restrictions. */
+  async resumeAudio(): Promise<void> {
+    const audio = this._speakerAudio;
+    if (audio === null) return;
+    try {
+      await audio.play();
+      if (this._speakerAudio === audio)
+        this._update((s) => {
+          s.audioPlaybackError = null;
+        });
+    } catch (error) {
+      if (this._speakerAudio === audio)
+        this._update((s) => {
+          s.audioPlaybackError = `Sound could not start: ${String(error)}`;
+        });
+    }
+  }
+
   /** Start a new voice session via WebRTC data channel through the host backend. */
   async connect(): Promise<void> {
     this._conversationID = newConversationID();
@@ -1145,12 +1254,17 @@ export class VoiceSession {
       this._update((s) => {
         s.audioSwitching = "input";
       });
+      if (!navigator.mediaDevices?.getUserMedia)
+        throw new Error("Microphone access requires HTTPS and a supported browser.");
       const micStream = await navigator.mediaDevices.getUserMedia(micConstraints);
       if (attempt !== this._connectionAttempt) {
         micStream.getTracks().forEach((track) => track.stop());
         return;
       }
       this._micStream = micStream;
+      this._update((s) => {
+        s.microphoneAccess = "granted";
+      });
       if (this._inputPreferenceProvisional) {
         rememberAudioDevice("Input", inputId);
         this._inputPreferenceProvisional = false;
@@ -1179,9 +1293,7 @@ export class VoiceSession {
           this._pendingAudioOutput ??= this.state.selectedOutputId;
           void this._applyPendingAudioDevices();
         }
-        audio.play().catch(() => {
-          // Autoplay may be blocked; user interaction will resume.
-        });
+        void this.resumeAudio();
       };
 
       // Create data channel carrying the voice gateway control protocol.
@@ -1259,7 +1371,8 @@ export class VoiceSession {
       });
     } catch (e: unknown) {
       if (attempt === this._connectionAttempt) {
-        this._setError(e instanceof Error ? e.message : "WebRTC connection failed");
+        if (e instanceof DOMException && e.name === "NotAllowedError") this._microphoneDenied();
+        else this._setError(e instanceof Error ? e.message : "WebRTC connection failed");
       }
     }
   }
@@ -1320,8 +1433,10 @@ export class VoiceSession {
           this._browserUserText(text, true);
           this._send(JSON.stringify(gatewayUserMessage(text)));
         },
-        error: (message) => {
-          if (this._ownsChannel(attempt, socket)) this._setError(message);
+        error: (message, permissionDenied) => {
+          if (!this._ownsChannel(attempt, socket)) return;
+          if (permissionDenied) this._microphoneDenied();
+          else this._setError(message);
         },
       });
       this._browserSpeech = speech;
@@ -1416,7 +1531,6 @@ export class VoiceSession {
       this._setupTimer = null;
     }
     this._releaseAll();
-    this._speakerAudio = null;
     // Preserve transcript for review; mark all entries final.
     this._update((s) => {
       s.connected = false;
@@ -1477,6 +1591,14 @@ export class VoiceSession {
 
   /** Release WebRTC transport and audio resources. */
   private _releaseAll(): void {
+    if (this._speakerAudio !== null) {
+      this._speakerAudio.pause();
+      this._speakerAudio.srcObject = null;
+    }
+    this._speakerAudio = null;
+    this._update((s) => {
+      s.audioPlaybackError = null;
+    });
     this._thinkingEarcon.setThinking(false);
     if (this._micMonitorFrame !== null) cancelAnimationFrame(this._micMonitorFrame);
     this._micMonitorFrame = null;

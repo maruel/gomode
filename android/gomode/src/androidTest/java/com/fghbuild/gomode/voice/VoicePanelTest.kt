@@ -69,6 +69,49 @@ class VoicePanelTest {
     val composeRule = createAndroidComposeRule<ComponentActivity>()
 
     @Test
+    fun deniedMicrophoneKeepsSettingsUsableAndOffersRecoveryAtNarrowWidth() {
+        var requests = 0
+        var settingsOpened = 0
+        var starts = 0
+        val recovery = mutableStateOf<MicrophonePermissionRecovery?>(null)
+        recovery.value = MicrophonePermissionRecovery(onRequest = { requests++ }, onOpenSettings = { requests++ })
+        composeRule.setContent {
+            MaterialTheme {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                    VoicePanel(
+                        voiceState = VoiceState(),
+                        voiceEnabled = true,
+                        onConnect = { starts++ },
+                        onDisconnect = {},
+                        onSelectMicrophoneMode = {},
+                        onSelectDevice = {},
+                        onOpenSettings = { settingsOpened++ },
+                        serviceStatusText = null,
+                        onCycleApp = {},
+                        canCycleApps = false,
+                        modifier = Modifier.width(280.dp),
+                        microphoneRecovery = recovery.value,
+                    )
+                }
+            }
+        }
+        composeRule.onNodeWithText("Enable microphone").assertIsDisplayed().performClick()
+        composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
+        assertEquals(1, requests)
+        assertEquals(1, settingsOpened)
+        assertEquals(0, starts)
+        capture("microphone-requestable")
+        composeRule.runOnIdle {
+            recovery.value = MicrophonePermissionRecovery(onRequest = null, onOpenSettings = { requests++ })
+        }
+        composeRule.onNodeWithText("Open app settings").assertIsDisplayed().performClick()
+        capture("microphone-denied")
+        assertEquals(2, requests)
+        composeRule.runOnIdle { recovery.value = null }
+        composeRule.onNodeWithTag("gomode-microphone-recovery").assertDoesNotExist()
+    }
+
+    @Test
     fun microphoneControlUsesAClockBadgeWithoutToolbarLabels() {
         val state = mutableStateOf(VoiceState(connected = true, listening = true))
         composeRule.setContent {

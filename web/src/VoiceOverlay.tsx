@@ -46,6 +46,10 @@ export interface VoiceOverlayMessages extends Partial<VoiceSettingsMessages> {
   listening: string;
   microphone: string;
   audioDevices?: string;
+  microphoneAccessOff?: string;
+  enableMicrophone?: string;
+  requestingMicrophone?: string;
+  enableSound?: string;
   microphoneMode?: string;
   microphoneNextState?: string;
   microphoneListening?: string;
@@ -93,6 +97,11 @@ export const defaultVoiceOverlayMessages: VoiceOverlayMessages = {
   listening: "Listening…",
   microphone: "Microphone",
   audioDevices: "Audio devices",
+  microphoneAccessOff:
+    "Microphone access is off. Allow access in your browser’s site permissions or device privacy settings, then try again.",
+  enableMicrophone: "Enable microphone",
+  requestingMicrophone: "Requesting access…",
+  enableSound: "Enable sound",
   microphoneMode: "Microphone mode",
   microphoneNextState: "Next",
   microphoneListening: "Listening",
@@ -166,6 +175,7 @@ export default function VoiceOverlay(props: {
   };
 
   let panelRef: HTMLDivElement | undefined;
+  let connectButtonRef: HTMLButtonElement | undefined;
   let settingsTrigger: HTMLButtonElement | null = null;
   const [settingsOpen, setSettingsOpen] = createSignal(false);
   const [settingsError, setSettingsError] = createSignal<string | null>(null);
@@ -211,6 +221,7 @@ export default function VoiceOverlay(props: {
   );
   const [spacerHeight, setSpacerHeight] = createSignal(0);
   onMount(() => {
+    onCleanup(session.observeMicrophoneAccess());
     const observer = new ResizeObserver(([entry]) => {
       if (!entry) return;
       setSpacerHeight(entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height);
@@ -245,6 +256,7 @@ export default function VoiceOverlay(props: {
   // -----------------------------------------------------------------------
 
   const handleMicClick = async () => {
+    if (!isActive() && session.state.microphoneAccessPending) return;
     if (session.state.connected || session.state.connectStatus !== null) {
       session.disconnect();
     } else {
@@ -353,9 +365,11 @@ export default function VoiceOverlay(props: {
                 <MicLevelBars micLevel={session.state.micLevel} />
               </Show>
               <button
+                ref={connectButtonRef}
                 type="button"
                 class={`${controls.control} ${isActive() ? controls.danger : controls.outlined}`}
                 onClick={() => handleMicClick()}
+                disabled={!isActive() && session.state.microphoneAccessPending}
                 title={isActive() ? messages().endSession : messages().connect}
                 aria-label={
                   session.state.connectStatus !== null
@@ -369,6 +383,35 @@ export default function VoiceOverlay(props: {
               </button>
             </div>
           </div>
+          <Show when={session.state.microphoneAccess === "denied"}>
+            <div role="status" class={styles.accessNotice}>
+              <span>{messages().microphoneAccessOff ?? defaultVoiceOverlayMessages.microphoneAccessOff}</span>
+              <button
+                type="button"
+                class={styles.accessAction}
+                aria-disabled={session.state.microphoneAccessPending}
+                onClick={async () => {
+                  if (session.state.microphoneAccessPending) return;
+                  await session.requestMicrophoneAccess();
+                  if (session.state.microphoneAccess === "granted") connectButtonRef?.focus();
+                }}
+              >
+                {session.state.microphoneAccessPending
+                  ? (messages().requestingMicrophone ?? defaultVoiceOverlayMessages.requestingMicrophone)
+                  : (messages().enableMicrophone ?? defaultVoiceOverlayMessages.enableMicrophone)}
+              </button>
+            </div>
+          </Show>
+          <Show when={session.state.audioPlaybackError}>
+            {(error) => (
+              <div role="status" class={styles.accessNotice}>
+                <span>{error()}</span>
+                <button type="button" class={styles.accessAction} onClick={() => session.resumeAudio()}>
+                  {messages().enableSound ?? defaultVoiceOverlayMessages.enableSound}
+                </button>
+              </div>
+            )}
+          </Show>
           <Show
             when={
               session.state.error !== null &&

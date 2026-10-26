@@ -79,6 +79,27 @@ browser device enumeration and output selection, not Android's earpiece-routing
 API. Unsupported output selection points users to system audio settings. Do not
 add a fake earpiece choice to the browser just to match the native screenshot.
 
+## Microphone permission recovery
+
+Denied microphone access keeps settings and audio selection available. Android
+offers another permission prompt when allowed and keeps app permissions reachable.
+It hides the prompt action after observing that the system stopped prompting;
+dismissing the first dialog keeps the prompt action available. Returning after a grant clears the notice without
+starting voice. The hosted-shell regression
+`WebShellSmokeTest.microphoneDenialOffersPromptThenSettingsWithoutStartingVoiceOnReenable`
+exercises dismissal, both denials, and the actual Settings grant on the stock emulator. Pass
+`captureVoicePanel=true` to capture `/data/local/tmp/gomode-microphone-denied.png`.
+The [Android reference](../screenshots/voice/android-microphone-denied.webp) uses
+the standalone hosted-shell fixture and the production app.
+
+Web shows instructions for browser site permissions and an Enable microphone
+action. A grant updates the notice without connecting; temporary permission
+streams are released. The [web reference](../screenshots/voice/web-microphone-denied.webp)
+uses the controlled preview at 320 × 740 with Chrome's microphone permission
+overridden to denied, including a real click on Enable microphone. This verifies
+permission recovery UI, not gateway transport. Blocked cloud voice playback has
+an independent Enable sound action that preserves the connection.
+
 ## Refresh web references
 
 Run from the repository root after `pnpm install --frozen-lockfile`:

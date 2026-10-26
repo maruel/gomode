@@ -19,7 +19,9 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.Until
 import com.fghbuild.gomode.data.SettingsRepository
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
@@ -30,9 +32,57 @@ import org.junit.runner.RunWith
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.regex.Pattern
 
 @RunWith(AndroidJUnit4::class)
 class WebShellSmokeTest : GoModeE2eTestBase() {
+    @StandaloneHostedFixture
+    @Test
+    fun microphoneDenialOffersPromptThenSettingsWithoutStartingVoiceOnReenable() {
+        openWebShell()
+        waitForHostedFrontend()
+        val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+
+        fun denyPermission() {
+            val deny =
+                device.wait(
+                    Until.findObject(By.res(Pattern.compile(".*:id/permission_deny.*_button"))),
+                    GOMODE_DEFAULT_TIMEOUT_MS,
+                )
+            requireNotNull(deny) { "Microphone permission prompt did not appear" }.click()
+        }
+        composeRule.onNodeWithTag("gomode-voice-connect").performClick()
+        requireNotNull(device.wait(Until.findObject(By.textContains("record audio")), GOMODE_DEFAULT_TIMEOUT_MS))
+        device.pressBack()
+        composeRule.onNodeWithText("Enable microphone").performClick()
+        denyPermission()
+        composeRule.onNodeWithText("Enable microphone").performClick()
+        denyPermission()
+        composeRule.onNodeWithText("Enable microphone").assertDoesNotExist()
+        composeRule.onNodeWithTag("gomode-microphone-recovery").assertExists()
+        if (InstrumentationRegistry.getArguments().getString("captureVoicePanel") == "true") {
+            device.executeShellCommand("screencap -p /data/local/tmp/gomode-microphone-denied.png")
+        }
+        composeRule.onNodeWithText("Open app settings").performClick()
+
+        fun clickSystemText(text: String) {
+            requireNotNull(device.wait(Until.findObject(By.text(text)), GOMODE_DEFAULT_TIMEOUT_MS)) {
+                "System settings did not show $text"
+            }.click()
+        }
+        clickSystemText("Permissions")
+        clickSystemText("Microphone")
+        clickSystemText("Allow only while using the app")
+        repeat(3) { device.pressBack() }
+        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+            composeRule.onAllNodesWithTag("gomode-microphone-recovery").fetchSemanticsNodes().isEmpty()
+        }
+        composeRule.onNodeWithTag("gomode-voice-connect").assertExists()
+        composeRule.onNodeWithTag("gomode-voice-disconnect").assertDoesNotExist()
+        tapDomElement("#save-note")
+        waitForText("Saved to your field notes.")
+    }
+
     @StandaloneHostedFixture
     @Test
     fun webShellLoadsHostedFrontendAndHandlesSpaBack() {

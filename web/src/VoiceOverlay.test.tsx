@@ -31,6 +31,9 @@ beforeEach(() => {
     connectStatus: null,
     connectPhase: null,
     error: null,
+    microphoneAccess: null,
+    microphoneAccessPending: false,
+    audioPlaybackError: null,
     listening: false,
     speaking: false,
     microphoneMode: "listening",
@@ -63,6 +66,55 @@ afterEach(() => {
 });
 
 describe("VoiceOverlay status", () => {
+  it("retains keyboard focus after an access request is denied and prevents duplicate requests", async () => {
+    let finish = () => {};
+    const request = vi.spyOn(voiceSession, "requestMicrophoneAccess").mockImplementation(() => {
+      voiceSession.setState((state) => ({ ...state, microphoneAccessPending: true }));
+      return new Promise<void>((resolve) => {
+        finish = () => {
+          voiceSession.setState((state) => ({ ...state, microphoneAccessPending: false }));
+          resolve();
+        };
+      });
+    });
+    try {
+      voiceSession.setState((state) => ({ ...state, microphoneAccess: "denied" }));
+      render(() => <VoiceOverlay />);
+      const user = userEvent.setup();
+      const enable = screen.getByRole("button", { name: "Enable microphone" });
+      enable.focus();
+      await user.keyboard("{Enter}");
+      expect(enable).toHaveFocus();
+      expect(enable).toHaveAttribute("aria-disabled", "true");
+      await user.keyboard("{Enter}");
+      expect(request).toHaveBeenCalledOnce();
+      expect(screen.getByRole("button", { name: "Connect voice assistant" })).toBeDisabled();
+      finish();
+      await waitFor(() => expect(enable).toHaveAttribute("aria-disabled", "false"));
+      expect(enable).toHaveFocus();
+    } finally {
+      finish();
+      request.mockRestore();
+    }
+  });
+
+  it("keeps controls usable while microphone access is denied and offers recovery", async () => {
+    const request = vi.spyOn(voiceSession, "requestMicrophoneAccess").mockImplementation(async () => {
+      voiceSession.setState((state) => ({ ...state, microphoneAccess: "granted" }));
+    });
+    voiceSession.setState((state) => ({ ...state, microphoneAccess: "denied" }));
+    render(() => <VoiceOverlay />);
+    expect(screen.getByText(/browser’s site permissions/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Voice settings" })).toBeEnabled();
+    expect(screen.getByRole("combobox", { name: "Microphone" })).toBeEnabled();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Enable microphone" }));
+    expect(request).toHaveBeenCalledOnce();
+    expect(connectMock).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Enable microphone" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Connect voice assistant" })).toHaveFocus();
+    request.mockRestore();
+  });
+
   it("hides the transcript without clearing it and restores new text from an icon", async () => {
     voiceSession.setState((state) => ({
       ...state,

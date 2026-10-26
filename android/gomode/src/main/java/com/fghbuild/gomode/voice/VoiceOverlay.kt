@@ -14,6 +14,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -55,6 +56,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedIconToggleButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -101,6 +103,11 @@ private const val BAR_MAX_HEIGHT = 20f
 private const val BAR_CONTAINER_SIZE = 24
 private val TranscriptHeight = 220.dp
 
+data class MicrophonePermissionRecovery(
+    val onRequest: (() -> Unit)?,
+    val onOpenSettings: () -> Unit,
+)
+
 @Composable
 fun VoicePanel(
     voiceState: VoiceState,
@@ -114,6 +121,7 @@ fun VoicePanel(
     onCycleApp: () -> Unit,
     canCycleApps: Boolean,
     modifier: Modifier = Modifier,
+    microphoneRecovery: MicrophonePermissionRecovery? = null,
 ) {
     val appControls: @Composable () -> Unit = {
         AppControls(onOpenSettings, onCycleApp, canCycleApps)
@@ -133,6 +141,25 @@ fun VoicePanel(
                 onSelectDevice,
                 appControls,
             )
+            microphoneRecovery?.let { recovery ->
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("gomode-microphone-recovery")) {
+                    Text(
+                        if (recovery.onRequest == null) {
+                            "Microphone access is off. Allow microphone access in app permissions."
+                        } else {
+                            "Microphone access is off. You can keep using the app without voice."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    FlowRow {
+                        recovery.onRequest?.let { request ->
+                            TextButton(onClick = request) { Text("Enable microphone") }
+                        }
+                        // Keep settings reachable even when denial predates this activity.
+                        TextButton(onClick = recovery.onOpenSettings) { Text("Open app settings") }
+                    }
+                }
+            }
             voiceState.audioError?.let { message ->
                 Text(
                     text = message,
