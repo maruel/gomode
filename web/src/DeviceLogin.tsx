@@ -1,6 +1,6 @@
 // Shared device-code login states, actionable recovery, and accessible, host-styled pairing views.
 
-import { createEffect, createSignal, createUniqueId, onCleanup, Show, type Accessor } from "solid-js";
+import { createEffect, createSignal, createUniqueId, onCleanup, onMount, Show, type Accessor } from "solid-js";
 import styles from "./DeviceLogin.module.css";
 
 export interface DeviceLoginEndpoints {
@@ -244,7 +244,6 @@ export function createDeviceLogin(options: DeviceLoginOptions) {
 }
 
 export interface DeviceLoginMessages {
-  start: string;
   starting: string;
   instructions: string;
   pending: string;
@@ -254,7 +253,9 @@ export interface DeviceLoginMessages {
   error: string;
   remaining: (seconds: number) => string;
   code: string;
-  lookup: string;
+  retry: string;
+  checking: string;
+  tooLong: string;
   approve: string;
   deny: string;
   warning: string;
@@ -267,7 +268,6 @@ export interface DeviceLoginMessages {
   requested: string;
 }
 export const defaultDeviceLoginMessages: DeviceLoginMessages = {
-  start: "Sign in with another device",
   starting: "Creating a code…",
   instructions: "On a device where you are signed in, open this address and enter the code.",
   pending: "Waiting for approval…",
@@ -277,7 +277,9 @@ export const defaultDeviceLoginMessages: DeviceLoginMessages = {
   error: "Sign-in failed. Create a new code.",
   remaining: (seconds) => `Expires in ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`,
   code: "Device code",
-  lookup: "Check code",
+  retry: "Try again",
+  checking: "Checking code…",
+  tooLong: "Enter the 12-character code shown on the other device.",
   approve: "Approve sign-in",
   deny: "Deny sign-in",
   warning:
@@ -359,6 +361,7 @@ export function DeviceLoginDisplay(props: {
   });
   const m = () => messages(props.messages);
   const r = () => recoveryMessages(props.recoveryMessages);
+  onMount(() => void login.start());
   let activeCode: HTMLParagraphElement | undefined;
   let outcome: HTMLParagraphElement | undefined;
   createEffect(() => {
@@ -416,7 +419,7 @@ export function DeviceLoginDisplay(props: {
               void login.start();
             }}
           >
-            {login.state() === "idle" ? m().start : r().newCode}
+            {r().newCode}
           </button>
         </Show>
       </div>
@@ -424,7 +427,7 @@ export function DeviceLoginDisplay(props: {
   );
 }
 
-/** Manual code entry and explicit decision; never reads a device secret or approves on navigation. */
+/** Formats and checks complete codes automatically; authorization always requires an explicit decision. */
 export function DeviceLoginApproval(props: {
   endpoints: DeviceLoginEndpoints;
   headers?: () => HeadersInit;
@@ -439,29 +442,45 @@ export function DeviceLoginApproval(props: {
   const [code, setCode] = createSignal("");
   const [details, setDetails] = createSignal<DeviceLoginRequest | null>(null);
   const [busy, setBusy] = createSignal(false);
+  const [checking, setChecking] = createSignal(false);
   const [state, setState] = createSignal<"idle" | "approved" | "denied">("idle");
   const [problem, setProblem] = createSignal<DeviceLoginFailure | null>(null);
   let review: HTMLParagraphElement | undefined;
   let outcome: HTMLParagraphElement | undefined;
+  let input: HTMLInputElement | undefined;
+  let composing = false;
+  let restoreInput = false;
+  onMount(() => input?.focus());
   createEffect(() => {
     if (details()) review?.focus();
-    else if (state() !== "idle" || problem()) outcome?.focus();
+    else if (state() !== "idle") outcome?.focus();
+    else if (problem() && !busy() && restoreInput) {
+      input?.focus();
+      restoreInput = false;
+    }
   });
   const r = () => recoveryMessages(props.recoveryMessages);
   const c = new AbortController();
-  onCleanup(() => c.abort());
+  let pendingLookup: AbortController | null = null;
+  onCleanup(() => {
+    c.abort();
+    pendingLookup?.abort();
+  });
   const reject = (issue: DeviceLoginFailure) => {
     if (c.signal.aborted) return;
+    restoreInput = details() !== null;
     setDetails(null);
     setProblem(issue);
     if (issue.kind === "login") props.onAuthenticationRequired?.();
   };
-  const verify = async () => {
-    if (props.verifyApprover && !(await props.verifyApprover(c.signal))) {
+  const verify = async (signal: AbortSignal) => {
+    const valid = !props.verifyApprover || (await props.verifyApprover(signal));
+    if (signal.aborted) return false;
+    if (!valid) {
       reject({ kind: "changed", retryAfter: null });
       return false;
     }
-    return !c.signal.aborted;
+    return true;
   };
   createEffect(() => {
     const d = details();
@@ -473,6 +492,8 @@ export function DeviceLoginApproval(props: {
     onCleanup(() => clearInterval(timer));
   });
   const status = () => {
+    if (checking()) return m().checking;
+    if (code().replaceAll("-", "").length > 12) return m().tooLong;
     const issue = problem();
     if (!issue) return state() === "approved" ? m().approvalApproved : state() === "denied" ? m().approvalDenied : "";
     if (issue.kind === "throttled") return r().approvalThrottled(issue.retryAfter);
@@ -491,14 +512,19 @@ export function DeviceLoginApproval(props: {
     return m().approvalError;
   };
   const lookup = async () => {
-    if (busy()) return;
-    setBusy(true);
+    // Match the 12-symbol code contract in devicelogin/engine.go's randomCode.
+    if (busy() || checking() || details() || !/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code())) return;
+    const controller = new AbortController();
+    pendingLookup = controller;
+    const value = code();
+    setChecking(true);
     setState("idle");
     setProblem(null);
     setDetails(null);
     try {
-      if (!(await verify())) return;
-      const result = await request(props.endpoints.lookup, { user_code: code() }, props.headers?.(), c.signal);
+      if (!(await verify(controller.signal))) return;
+      const result = await request(props.endpoints.lookup, { user_code: value }, props.headers?.(), controller.signal);
+      if (controller.signal.aborted || composing) return;
       if (!result.ok) {
         reject(failure(result, "lookup"));
         return;
@@ -519,14 +545,42 @@ export function DeviceLoginApproval(props: {
         reject({ kind: "expired", retryAfter: null });
         return;
       }
-      if (!c.signal.aborted) {
-        setDetails(d);
-      }
+      setDetails(d);
     } catch {
-      if (!c.signal.aborted) reject({ kind: "network", retryAfter: null });
+      if (!controller.signal.aborted) reject({ kind: "network", retryAfter: null });
     } finally {
-      setBusy(false);
+      if (pendingLookup === controller) {
+        pendingLookup = null;
+        setChecking(false);
+      }
     }
+  };
+  const edit = (el: HTMLInputElement, inputType: string) => {
+    let before = el.value.slice(0, el.selectionStart ?? el.value.length).replace(/[^a-z0-9]/gi, "").length;
+    let raw = el.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    // Deleting an inserted separator also deletes the adjacent symbol, so
+    // backspace and forward-delete cannot get stuck on a regenerated dash.
+    if (raw === code().replaceAll("-", "") && el.value.length < code().length) {
+      if (inputType === "deleteContentBackward" && before > 0) {
+        raw = raw.slice(0, before - 1) + raw.slice(before);
+        before--;
+      } else if (inputType === "deleteContentForward") {
+        raw = raw.slice(0, before) + raw.slice(before + 1);
+      }
+    }
+    const formatted = raw.match(/.{1,4}/g)?.join("-") ?? "";
+    el.value = formatted;
+    const caret = Math.min(formatted.length, before + Math.floor(Math.max(0, before - 1) / 4));
+    el.setSelectionRange(caret, caret);
+    if (formatted === code()) return;
+    pendingLookup?.abort();
+    pendingLookup = null;
+    setChecking(false);
+    setCode(formatted);
+    setDetails(null);
+    setState("idle");
+    setProblem(null);
+    void lookup();
   };
   const decide = async (approve: boolean) => {
     const d = details();
@@ -534,7 +588,7 @@ export function DeviceLoginApproval(props: {
     setBusy(true);
     let sent = false;
     try {
-      if (!(await verify())) return;
+      if (!(await verify(c.signal))) return;
       const h = new Headers(props.headers?.());
       h.set("X-Device-Login-CSRF", d.csrf_token);
       sent = true;
@@ -562,7 +616,7 @@ export function DeviceLoginApproval(props: {
     <section class={styles.root}>
       <Show when={state() === "idle"}>
         <form
-          aria-busy={busy()}
+          aria-busy={checking()}
           onSubmit={(e) => {
             e.preventDefault();
             void lookup();
@@ -570,26 +624,44 @@ export function DeviceLoginApproval(props: {
         >
           <label for={id}>{m().code}</label>
           <input
+            ref={input}
             id={id}
             class={styles.codeInput}
             placeholder="XXXX-XXXX-XXXX"
             value={code()}
             onInput={(e) => {
-              setCode(e.currentTarget.value);
-              setDetails(null);
-              setState("idle");
-              setProblem(null);
+              if (!composing && !e.isComposing) edit(e.currentTarget, e.inputType);
+            }}
+            onCompositionStart={() => {
+              composing = true;
+            }}
+            onCompositionEnd={(e) => {
+              composing = false;
+              edit(e.currentTarget, "insertCompositionText");
+              if (!details() && !problem()) void lookup();
             }}
             autocomplete="off"
             autocapitalize="characters"
+            inputmode="text"
+            enterkeyhint="done"
             spellcheck={false}
-            maxLength={16}
             required
+            aria-invalid={code().replaceAll("-", "").length > 12 || undefined}
             disabled={busy()}
           />
-          <Show when={!details()}>
+          <Show
+            when={
+              problem() &&
+              !checking() &&
+              (problem()?.kind === "network" ||
+                problem()?.kind === "delivery" ||
+                problem()?.kind === "audit" ||
+                problem()?.kind === "changed" ||
+                problem()?.kind === "throttled")
+            }
+          >
             <button type="submit" disabled={busy() || !code().trim()}>
-              {m().lookup}
+              {m().retry}
             </button>
           </Show>
         </form>

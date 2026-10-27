@@ -1,4 +1,4 @@
-// Tests pairing polling, typed recovery, unknown delivery, account changes, and explicit CSRF-protected decisions.
+// Tests automatic pairing and code entry, correction, recovery, identity changes, and explicit authorization.
 
 import { afterEach, describe, it } from "node:test";
 import { createRoot } from "solid-js";
@@ -10,7 +10,7 @@ const originalFetch = globalThis.fetch;
 const endpoints = { start: "/start", poll: "/poll", lookup: "/lookup", approve: "/approve" };
 const code = {
   device_code: "private",
-  user_code: "BCDF-GHJK",
+  user_code: "BCDF-GHJK-MNPQ",
   verification_uri: "https://host/device",
   expires_in: 600,
   interval: 5,
@@ -43,12 +43,12 @@ describe("device login", () => {
       dispose();
     }
   });
-  it("explains pairing before starting and removes the address and code on expiry", async () => {
+  it("starts pairing on arrival and removes the address and code on expiry", async () => {
     vi.useFakeTimers();
     globalThis.fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json({ ...code, expires_in: 2 }));
     render(() => <DeviceLoginDisplay options={{ endpoints, onSession: () => {} }} />);
     expect(screen.getByText(/On a device where you are signed in/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Sign in with another device" }));
+    expect(screen.queryByRole("button")).toBeNull();
     await flush();
     expect(screen.getByRole("link", { name: code.verification_uri })).toHaveAttribute("href", code.verification_uri);
     expect(screen.getByRole("group", { name: "Device code" })).toHaveFocus();
@@ -161,6 +161,168 @@ describe("device login", () => {
     await flush();
     expect(globalThis.fetch).toHaveBeenCalledTimes(2);
   });
+  it("formats code entry and looks up only a complete code, including paste", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(Response.json({ error: "expired_token" }, { status: 400 }));
+    globalThis.fetch = fetch;
+    render(() => <DeviceLoginApproval endpoints={endpoints} />);
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    expect(input).toHaveFocus();
+    expect(input).toHaveAttribute("inputmode", "text");
+    for (const value of ["b", "bcdfg", "bcdfghjk", "bcdfghjkmnp"]) {
+      fireEvent.input(input, { target: { value } });
+      fireEvent.submit(input.closest("form")!);
+      await flush();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(screen.getByRole("status").textContent).toBe("");
+    }
+    expect(input).toHaveValue("BCDF-GHJK-MNP");
+    fireEvent.input(input, { target: { value: "bcdfghjkmnpqr" } });
+    await flush();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("Enter the 12-character code");
+    fireEvent.input(input, { target: { value: "bcdf ghjk mnpq" } });
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    expect(input).toHaveValue("BCDF-GHJK-MNPQ");
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({ user_code: "BCDF-GHJK-MNPQ" });
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("This code expired."));
+    fireEvent.input(input, { target: { value: "BCDF-GHJK-MNP" } });
+    expect(screen.getByRole("status").textContent).toBe("");
+    expect(input).toHaveValue("BCDF-GHJK-MNP");
+  });
+  it("waits for composition to end and ignores duplicate formatted input", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      Response.json({
+        user_code: code.user_code,
+        ip: "192.0.2.0/24",
+        user_agent: "Phone",
+        created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 600000).toISOString(),
+        csrf_token: "csrf",
+      }),
+    );
+    globalThis.fetch = fetch;
+    render(() => <DeviceLoginApproval endpoints={endpoints} />);
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    fireEvent.compositionStart(input);
+    fireEvent.input(input, {
+      target: { value: "bcdfghjkmnpq" },
+      isComposing: true,
+      inputType: "insertCompositionText",
+    });
+    await flush();
+    expect(input).toHaveValue("bcdfghjkmnpq");
+    expect(fetch).not.toHaveBeenCalled();
+    fireEvent.compositionEnd(input);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Approve sign-in" })).toBeInTheDocument());
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(input).toHaveValue("BCDF-GHJK-MNPQ");
+    fireEvent.input(input, { target: { value: "BCDF-GHJK-MNPQ - " } });
+    fireEvent.submit(input.closest("form")!);
+    await flush();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Approve sign-in" })).toBeInTheDocument();
+    expect(input).toHaveValue("BCDF-GHJK-MNPQ");
+  });
+  it("does not interrupt composition with an earlier lookup result", async () => {
+    let finish!: (response: Response) => void;
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            finish = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(Response.json({ error: "expired_token" }, { status: 400 }));
+    globalThis.fetch = fetch;
+    render(() => <DeviceLoginApproval endpoints={endpoints} />);
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    fireEvent.input(input, { target: { value: code.user_code } });
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    fireEvent.compositionStart(input);
+    fireEvent.input(input, {
+      target: { value: code.user_code },
+      isComposing: true,
+      inputType: "insertCompositionText",
+    });
+    finish(
+      Response.json({
+        user_code: code.user_code,
+        ip: "192.0.2.0/24",
+        user_agent: "Phone",
+        created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 600000).toISOString(),
+        csrf_token: "csrf",
+      }),
+    );
+    await flush();
+    expect(screen.queryByRole("button", { name: "Approve sign-in" })).toBeNull();
+    expect(input).toHaveFocus();
+    fireEvent.compositionEnd(input);
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("This code expired."));
+  });
+  it("offers an explicit retry after a throttled lookup", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(Response.json({ error: "rate_limited" }, { status: 429, headers: { "Retry-After": "60" } }));
+    globalThis.fetch = fetch;
+    render(() => <DeviceLoginApproval endpoints={endpoints} />);
+    fireEvent.input(screen.getByRole("textbox", { name: "Device code" }), { target: { value: code.user_code } });
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Wait 60 seconds"));
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+  it("lets touch keyboards delete across inserted separators in either direction", () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    globalThis.fetch = fetch;
+    render(() => <DeviceLoginApproval endpoints={endpoints} />);
+    const input = screen.getByRole("textbox", { name: "Device code" }) as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "bcdfg" }, inputType: "insertText" });
+    expect(input).toHaveValue("BCDF-G");
+    fireEvent.input(input, {
+      target: { value: "BCDFG", selectionStart: 4, selectionEnd: 4 },
+      inputType: "deleteContentBackward",
+    });
+    expect(input).toHaveValue("BCDG");
+    expect(input.selectionStart).toBe(3);
+    fireEvent.input(input, { target: { value: "bcdfgh" }, inputType: "insertText" });
+    fireEvent.input(input, {
+      target: { value: "BCDFGH", selectionStart: 4, selectionEnd: 4 },
+      inputType: "deleteContentForward",
+    });
+    expect(input).toHaveValue("BCDF-H");
+    expect(input.selectionStart).toBe(4);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("ignores a stale lookup when a complete code is corrected and offers a network retry", async () => {
+    let finish!: (response: Response) => void;
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            finish = resolve;
+          }),
+      )
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(Response.json({ error: "expired_token" }, { status: 400 }));
+    globalThis.fetch = fetch;
+    render(() => <DeviceLoginApproval endpoints={endpoints} />);
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    fireEvent.input(input, { target: { value: "BCDFGHJKMNPQ" } });
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    expect(input).not.toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Checking code…");
+    fireEvent.input(input, { target: { value: "BCDFGHJKMNP2" } });
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    finish(Response.json({ error: "expired_token" }, { status: 400 }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Could not check the code."));
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("This code expired."));
+  });
   it("never approves during lookup and sends the CSRF header only after an explicit decision", async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
@@ -178,7 +340,6 @@ describe("device login", () => {
     globalThis.fetch = fetch;
     render(() => <DeviceLoginApproval endpoints={endpoints} headers={() => ({ Authorization: "Bearer normal" })} />);
     fireEvent.input(screen.getByRole("textbox", { name: "Device code" }), { target: { value: code.user_code } });
-    fireEvent.click(screen.getByRole("button", { name: "Check code" }));
     await waitFor(() => expect(screen.getByText("Car browser")).toBeInTheDocument());
     expect(screen.getByText(/Never approve a code sent by someone else/)).toHaveFocus();
     expect(fetch).toHaveBeenCalledTimes(1);
@@ -287,7 +448,6 @@ describe("device login", () => {
     const verify = vi.fn<() => Promise<boolean>>().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
     render(() => <DeviceLoginApproval endpoints={endpoints} verifyApprover={verify} />);
     fireEvent.input(screen.getByRole("textbox", { name: "Device code" }), { target: { value: code.user_code } });
-    fireEvent.click(screen.getByRole("button", { name: "Check code" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Approve sign-in" })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Approve sign-in" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Your account or request changed."));
@@ -303,7 +463,6 @@ describe("device login", () => {
     globalThis.fetch = fetch;
     const view = render(() => <DeviceLoginApproval endpoints={endpoints} verifyApprover={() => check} />);
     fireEvent.input(screen.getByRole("textbox", { name: "Device code" }), { target: { value: code.user_code } });
-    fireEvent.click(screen.getByRole("button", { name: "Check code" }));
     view.unmount();
     resolve(true);
     await flush();
@@ -325,9 +484,11 @@ describe("device login", () => {
       .mockResolvedValueOnce(Response.json({ state: "pending" }));
     render(() => <DeviceLoginApproval endpoints={endpoints} />);
     fireEvent.input(screen.getByRole("textbox", { name: "Device code" }), { target: { value: code.user_code } });
-    fireEvent.click(screen.getByRole("button", { name: "Check code" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Approve sign-in" })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "Approve sign-in" }));
+    const approve = screen.getByRole("button", { name: "Approve sign-in" });
+    approve.focus();
+    fireEvent.click(approve);
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Your decision could not be confirmed."));
+    expect(screen.getByRole("textbox", { name: "Device code" })).toHaveFocus();
   });
 });
