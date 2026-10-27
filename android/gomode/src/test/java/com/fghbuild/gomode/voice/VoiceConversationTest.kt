@@ -13,6 +13,8 @@ import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellSession
+import com.fghbuild.gomode.ui.web.WebShellLoadState
+import com.fghbuild.gomode.ui.web.completeFrontendPreparation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
@@ -50,6 +52,38 @@ class VoiceConversationTest {
     fun tearDown() {
         Dispatchers.resetMain()
     }
+
+    @Test
+    fun frontendPreparationGatesNewStartsWhileRecoveryKeepsAnExistingConversation() =
+        runTest {
+            val repository = SettingsRepository(MemoryPreferences())
+            val id = repository.addService("Server", "https://example.test")
+            repository.settings.first { it.activeServiceId == id }
+            val entry =
+                ServiceShellSession(
+                    ServiceShellKey(id, "https://example.test"),
+                ) {}.also { authenticate(it, "identity") }
+            val catalog = ServiceCatalog(backgroundScope)
+            val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { mapOf(entry.key to entry) }
+            try {
+                entry.invalidateIdentity()
+                assertFalse(owner.frontendReadyForConnection())
+                val error = org.junit.Assert.assertThrows(VoiceSetupException::class.java) { owner.begin(false) }
+                assertEquals(FRONTEND_NOT_READY, error.message)
+                completeFrontendPreparation(entry)
+                owner.begin(false)
+                assertTrue(owner.isCurrent())
+                entry.invalidateIdentity()
+                owner.begin(true)
+                assertTrue(owner.isCurrent())
+                assertFalse(owner.frontendReadyForConnection())
+                assertTrue(entry.frontendTools.declarations.isEmpty())
+            } finally {
+                owner.finish()
+                catalog.close()
+                entry.close()
+            }
+        }
 
     @Test
     fun revokedCallAuthorityCannotStartOrRecoverWithAReadyPage() =
@@ -91,7 +125,7 @@ class VoiceConversationTest {
                             when (request.requestUrl?.encodedPath) {
                                 "/.well-known/gomode.json" -> {
                                     MockResponse().setBody(
-                                        """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":1,
+                                        """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":2,
                         "toolGroups":[],"voiceGateway":{"url":"/","required":false,"authRequired":false}}}""",
                                     )
                                 }
@@ -165,6 +199,8 @@ class VoiceConversationTest {
                 }
             val sponsor = entries.values.single { it.key.serviceID == sponsorID }
             val participant = entries.values.single { it !== sponsor }
+            // Native participant identity must be pinned before frontend initial data completes.
+            participant.invalidateIdentity()
             val catalog = ServiceCatalog(backgroundScope)
             val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { entries }
             try {
@@ -228,6 +264,8 @@ class VoiceConversationTest {
                         """{"authChanged":true,"nativeAccess":true}""",
                     ),
                 )
+                participant.updateLoad(WebShellLoadState.Ready)
+                completeFrontendPreparation(participant)
             }
 
             try {
@@ -369,6 +407,8 @@ class VoiceConversationTest {
     ) {
         entry.bearerStore.onNavigation(entry.key.url)
         check(entry.bearerStore.receive(Uri.parse(entry.key.url), true, entry.key.url, """{"bearerToken":"$token"}"""))
+        entry.updateLoad(WebShellLoadState.Ready)
+        completeFrontendPreparation(entry)
     }
 
     private class MemoryPreferences : DataStore<Preferences> {

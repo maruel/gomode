@@ -8,18 +8,97 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/maruel/gomode"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
+
+func TestFixtureFrontendPreparation(t *testing.T) {
+	srv := newFixture(t)
+	resp, err := httpPost(t, srv.URL+"/fixture/config", "application/json", strings.NewReader(`{"frontendBlocked":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	var workers sync.WaitGroup
+	t.Cleanup(workers.Wait)
+	t.Cleanup(cancel)
+	type outcome struct {
+		body []byte
+		err  error
+	}
+	done := make(chan outcome, 1)
+	workers.Go(func() {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/fixture/frontend", http.NoBody)
+		if err != nil {
+			done <- outcome{err: err}
+			return
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			done <- outcome{err: err}
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		if closeErr := resp.Body.Close(); err == nil {
+			err = closeErr
+		}
+		done <- outcome{body: body, err: err}
+	})
+	for {
+		resp, err := httpGet(t, srv.URL+"/fixture/stats")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var stats fixtureStats
+		err = json.NewDecoder(resp.Body).Decode(&stats)
+		if closeErr := resp.Body.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stats.FrontendPreparations == 1 {
+			break
+		}
+		if err := ctx.Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case result := <-done:
+		t.Fatalf("frontend completed before release: %s, %v", result.body, result.err)
+	default:
+	}
+	resp, err = httpPost(t, srv.URL+"/fixture/config", "application/json", strings.NewReader(`{"frontendBlocked":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	result := <-done
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if string(bytes.TrimSpace(result.body)) != "[]" {
+		t.Fatalf("initial empty frontend data = %q, want []", result.body)
+	}
+}
 
 func newFixture(t *testing.T) *httptest.Server {
 	t.Helper()

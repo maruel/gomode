@@ -3,6 +3,7 @@
 package com.fghbuild.gomode.ui.web
 
 import android.webkit.WebView
+import androidx.core.net.toUri
 import com.caic.voicegateway.sdk.v1.ToolDeclaration
 import com.fghbuild.gomode.voice.nativeVoiceToolNames
 import kotlinx.coroutines.CancellableContinuation
@@ -26,9 +27,13 @@ internal class FrontendVoiceTools(
     private val pending = ConcurrentHashMap.newKeySet<CancellableContinuation<JsonObject>>()
     private var generation = 0L
     private var owner = WeakReference<WebView>(null)
+    private var registeredURL: String? = null
 
     val revision: Long
         get() = generation
+
+    val isReady: Boolean
+        get() = canDispatch()
 
     @Volatile
     var declarations: List<ToolDeclaration> = emptyList()
@@ -41,8 +46,10 @@ internal class FrontendVoiceTools(
         val tools = Json.decodeFromString<List<ToolDeclaration>>(payload)
         require(tools.map { it.name }.distinct().size == tools.size)
         require(tools.none { it.name in nativeVoiceToolNames })
+        val url = requireNotNull(view.url) { "Frontend document URL is unavailable" }
         invalidate()
         owner = WeakReference(view)
+        registeredURL = url
         declarations = tools
     }
 
@@ -54,6 +61,7 @@ internal class FrontendVoiceTools(
     fun clear() {
         invalidate()
         owner.clear()
+        registeredURL = null
         declarations = emptyList()
     }
 
@@ -78,12 +86,15 @@ internal class FrontendVoiceTools(
                 return@withContext buildJsonObject {
                     put(
                         "error",
-                        "Hosted authentication is unavailable.",
+                        "Hosted frontend is not ready.",
                     )
                 }
             }
             if (declarations.none { it.name == name }) return@withContext null
             val view = owner.get() ?: return@withContext null
+            if (!ownsOrigin(view)) {
+                return@withContext buildJsonObject { put("error", "Hosted page origin changed.") }
+            }
             val started = generation
             withTimeoutOrNull(5_000) {
                 suspendCancellableCoroutine { continuation ->
@@ -96,7 +107,9 @@ internal class FrontendVoiceTools(
                         pending.remove(continuation)
                         if (!continuation.isActive) return@evaluateJavascript
                         val value =
-                            if (!isCurrent() || !canDispatch() || owner.get() !== view || generation != started) {
+                            if (!isCurrent() || !canDispatch() || owner.get() !== view || generation != started ||
+                                !ownsOrigin(view)
+                            ) {
                                 buildJsonObject { put("error", "Hosted page changed during voice tool execution.") }
                             } else {
                                 runCatching { Json.parseToJsonElement(result).jsonObject }
@@ -114,4 +127,10 @@ internal class FrontendVoiceTools(
                 }
             } ?: buildJsonObject { put("error", "Frontend voice tool timed out.") }
         }
+
+    private fun ownsOrigin(view: WebView): Boolean {
+        val url = view.url ?: return false
+        val registered = registeredURL ?: return false
+        return isTrustedPermissionOrigin(url.toUri(), registered)
+    }
 }

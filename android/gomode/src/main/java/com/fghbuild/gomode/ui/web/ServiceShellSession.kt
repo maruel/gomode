@@ -7,6 +7,8 @@ import com.fghbuild.gomode.service.resolveNotificationURL
 import com.fghbuild.gomode.ui.ServiceBootstrapState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 
 internal data class ServiceShellKey(
@@ -32,14 +34,26 @@ internal class ServiceShellSession(
     val onSharedIdentityChanged: () -> Unit,
 ) {
     val bearerStore = ServiceBearerStore(key.url)
-    val frontendTools = FrontendVoiceTools { active && bearerStore.authReady.value }
+    val frontendPreparation = FrontendPreparation()
+    val frontendTools = FrontendVoiceTools { isFrontendReady }
     private val mutableState = MutableStateFlow(ServiceShellState())
     val state = mutableState.asStateFlow()
+    val isFrontendReady: Boolean
+        get() =
+            active && bearerStore.authReady.value && frontendPreparation.ready.value &&
+                state.value.load == WebShellLoadState.Ready
     private var active = true
     private var pageGeneration = 0L
     private var releasePage: (() -> Unit)? = null
     private var webPage: ServiceWebPage? = null
     private var webPageGeneration = -1L
+
+    suspend fun awaitFrontendReady(identity: Long) {
+        combine(state, bearerStore.authReady, frontendPreparation.ready, bearerStore.identityEpoch) { _, _, _, epoch ->
+            check(epoch == identity) { "Hosted identity changed during frontend preparation" }
+            isFrontendReady
+        }.first { it }
+    }
 
     fun page(context: Context): ServiceWebPage {
         val generation = state.value.webViewGeneration
@@ -68,8 +82,9 @@ internal class ServiceShellSession(
     }
 
     fun invalidateSharedIdentity() {
+        frontendPreparation.invalidateIdentity()
         bearerStore.invalidateIdentity(accountChanged = true)
-        frontendTools.invalidate()
+        frontendTools.clear()
         requireAttention()
         updateLoad(WebShellLoadState.Failed("Shared service account changed. Reload this service to sign in again."))
     }
@@ -82,8 +97,9 @@ internal class ServiceShellSession(
         message: String,
         canRetry: Boolean = false,
     ) {
+        frontendPreparation.navigate()
         bearerStore.invalidateIdentity()
-        frontendTools.invalidate()
+        frontendTools.clear()
         requireAttention()
         closePage(pageGeneration)
         updateLoad(WebShellLoadState.Failed(message, canRetry = canRetry, recreatePage = true))
@@ -148,8 +164,9 @@ internal class ServiceShellSession(
 
     // Every replacement document must validate access independently of the account pinned by voice.
     fun invalidatePageAuthentication() {
+        frontendPreparation.navigate()
         bearerStore.invalidateIdentity()
-        frontendTools.invalidate()
+        frontendTools.clear()
     }
 
     fun reloadPage(reload: () -> Unit) {
@@ -159,6 +176,7 @@ internal class ServiceShellSession(
     }
 
     fun openPage(): Long {
+        frontendPreparation.navigate()
         frontendTools.clear()
         pageGeneration++
         return pageGeneration
@@ -168,6 +186,7 @@ internal class ServiceShellSession(
 
     fun closePage(generation: Long) {
         if (!isCurrentPage(generation)) return
+        frontendPreparation.navigate()
         pageGeneration++
         frontendTools.clear()
         val release = releasePage
@@ -176,10 +195,12 @@ internal class ServiceShellSession(
     }
 
     fun invalidateIdentity() {
-        frontendTools.invalidate()
+        frontendPreparation.invalidateIdentity()
+        frontendTools.clear()
     }
 
     fun close() {
+        frontendPreparation.navigate()
         active = false
         pageGeneration++
         bearerStore.deactivate()

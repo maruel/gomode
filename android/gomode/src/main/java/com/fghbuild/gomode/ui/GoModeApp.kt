@@ -124,6 +124,27 @@ private enum class NativeScreen {
     Halo,
 }
 
+internal class PendingMicrophoneVoiceStart(
+    private val page: ServiceShellSession,
+    private val session: VoiceSessionController,
+) {
+    private val identity = page.bearerStore.identityEpoch.value
+    private val document = page.frontendPreparation.document
+
+    fun connectIfCurrent(
+        currentPage: ServiceShellSession,
+        currentSession: VoiceSessionController,
+    ) {
+        if (currentPage !== page || currentSession !== session ||
+            page.bearerStore.identityEpoch.value != identity || page.frontendPreparation.document != document
+        ) {
+            return
+        }
+        if (page.key.url.isNotBlank() && !page.isFrontendReady) return
+        session.connect()
+    }
+}
+
 internal sealed interface ServiceBootstrapState {
     data class Unvalidated(
         val reason: String? = null,
@@ -200,6 +221,7 @@ internal fun GoModeApp(
     val bearerToken by key(bearerStore) { bearerStore.token.collectAsStateWithLifecycle() }
     val authEpoch by key(bearerStore) { bearerStore.authEpoch.collectAsStateWithLifecycle() }
     val authReady by key(bearerStore) { bearerStore.authReady.collectAsStateWithLifecycle() }
+    val frontendReady by key(serviceSession) { serviceSession.frontendPreparation.ready.collectAsStateWithLifecycle() }
     val shellState by key(serviceSession) { serviceSession.state.collectAsStateWithLifecycle() }
     val bootstrapState = shellState.bootstrap
     val webLoadState = shellState.load
@@ -387,7 +409,8 @@ internal fun GoModeApp(
         }
         voiceItemBaseline = snapshot
     }
-    var connectAfterMicPermission by rememberSaveable { mutableStateOf(false) }
+    var connectAfterMicPermission by remember { mutableStateOf<PendingMicrophoneVoiceStart?>(null) }
+    DisposableEffect(Unit) { onDispose { connectAfterMicPermission = null } }
     val activity = LocalActivity.current
     var microphoneDenied by rememberSaveable { mutableStateOf(false) }
     var microphoneNeedsSettings by rememberSaveable { mutableStateOf(false) }
@@ -429,13 +452,16 @@ internal fun GoModeApp(
             if (!granted && rationale) microphoneHadExplicitDenial = true
             if (granted) {
                 microphoneHadExplicitDenial = false
-                if (connectAfterMicPermission && !carVoiceBusy &&
-                    (localSelection != null || bearerStore.authReady.value)
+                if (!carVoiceBusy &&
+                    (localSelection != null || bearerStore.authReady.value) &&
+                    (activeURL.isBlank() || serviceSession.isFrontendReady)
                 ) {
-                    manualVoiceSession.connect()
+                    val pending = connectAfterMicPermission
+                    connectAfterMicPermission = null
+                    pending?.connectIfCurrent(serviceSession, manualVoiceSession)
                 }
             }
-            connectAfterMicPermission = false
+            connectAfterMicPermission = null
         }
     val shellRecovery =
         shellRecoveryState(
@@ -473,10 +499,17 @@ internal fun GoModeApp(
             ?.voiceGateway
             ?.url
             ?.isNotBlank() == true
+    val frontendVoiceAvailable =
+        activeURL.isBlank() ||
+            (frontendReady && authReady && webLoadState == WebShellLoadState.Ready)
     val voiceAvailable =
-        carVoiceBusy || (sharedConversation && voiceSessionActive) ||
-            (localSelection != null && localModelState == LocalModelState.Ready) ||
-            (authReady && (voiceSessionActive || (configuredVoiceAvailable && shellRecovery == null)))
+        carVoiceBusy || voiceSessionActive ||
+            (
+                frontendVoiceAvailable && (
+                    (localSelection != null && localModelState == LocalModelState.Ready) ||
+                        (authReady && configuredVoiceAvailable && shellRecovery == null)
+                )
+            )
     val density = LocalDensity.current
     val keyboardOpen = WindowInsets.ime.getBottom(density) > 0
 
@@ -588,7 +621,7 @@ internal fun GoModeApp(
                                     } else {
                                         {
                                             if (!keyguard.isKeyguardLocked) {
-                                                connectAfterMicPermission = false
+                                                connectAfterMicPermission = null
                                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                             }
                                         }
@@ -613,7 +646,9 @@ internal fun GoModeApp(
                         activeNativeScreen = null
                         carVoiceOwner.cancel()
                         prepareAllPages = true
-                        if (localSelection != null || bearerStore.authReady.value) {
+                        if ((localSelection != null || bearerStore.authReady.value) &&
+                            (activeURL.isBlank() || serviceSession.isFrontendReady)
+                        ) {
                             if (ContextCompat.checkSelfPermission(
                                     context,
                                     Manifest.permission.RECORD_AUDIO,
@@ -621,7 +656,8 @@ internal fun GoModeApp(
                             ) {
                                 manualVoiceSession.connect()
                             } else {
-                                connectAfterMicPermission = true
+                                connectAfterMicPermission =
+                                    PendingMicrophoneVoiceStart(serviceSession, manualVoiceSession)
                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
                         }

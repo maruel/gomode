@@ -163,7 +163,7 @@ class ServiceNotificationNavigationTest {
                         if (request.path?.startsWith("/.well-known/") == true) {
                             return MockResponse().setHeader("Content-Type", "application/json").setBody(
                                 """{"service":"generic","serviceVersion":"1","apiVersion":1,"webShell":{
-                        "bridgeVersion":1,"toolGroups":[],"voiceGateway":{"required":false,"authRequired":false}}}""",
+                        "bridgeVersion":2,"toolGroups":[],"voiceGateway":{"required":false,"authRequired":false}}}""",
                             )
                         }
                         return MockResponse().setHeader("Content-Type", "text/html").setBody(

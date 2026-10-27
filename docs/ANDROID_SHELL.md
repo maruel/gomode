@@ -30,6 +30,91 @@ The host owns auth, hosted UI, MCP endpoints, and resource semantics.
 
 Login never depends on MCP discovery.
 
+The native shell and manifest must both use bridge version 2. Unsupported
+versions are rejected during manifest validation, before native voice starts.
+
+## Frontend preparation
+
+Authentication, document loading, MCP discovery, and frontend preparation are
+separate conditions. A completed WebView load does not establish SPA readiness.
+Hosts explicitly publish `ready: true` only after the current identity is
+established, all intended frontend tools are registered, and their required
+initial data has completed loading. An empty initial snapshot and zero frontend
+tools are valid. Routine data updates do not require a new preparation cycle
+while the tools remain usable.
+
+`createFrontendPreparationClient()` in `web/FrontendVoiceTools` captures the
+document Promise and both native message bridges when the frontend mounts, before
+asynchronous authentication. Its `publishAuth(auth)` method publishes a native
+auth message and returns an identity-owned `setReady(boolean)`/`dispose()` pair.
+Create the owner before exposing the new authenticated identity to frontend
+code. Keep preparation false until tool registration and required initial data
+are both complete. Dispose before logout, account replacement, an unusable
+frontend, or component teardown; retain the captured owner in asynchronous work.
+The host owns the actual user identity. Native acknowledgements bind accepted
+auth generations; they do not interpret product user IDs. Every account change
+requires a new auth owner and fresh required initial data for that account.
+Registration changes republish the ready owner's complete declarations. Not-ready
+and disposed owners publish an empty declaration array.
+Browser-only hosts can use the same helper without a native bridge.
+
+Hosts integrating the bridge directly use the same wire contract:
+
+1. Capture `window.goModeFrontendDocument`, `gomodeAuth`, and
+   `gomodeFrontendReadiness` when the frontend mounts, before asynchronous auth.
+   Android injects this immutable per-document Promise at document start. It
+   resolves to the document token after a trusted main-frame WebMessage exchange;
+   await the captured Promise before posting authentication.
+2. Add `frontendDocument` and a fresh `frontendRequest` identifier to the existing
+   `gomodeAuth` message. Request identifiers must be nonblank strings of at most
+   128 characters. The native listener validates both ownership fields before
+   mutating auth, alongside the existing trusted main-frame/origin/auth checks.
+3. Access-granting auth receives a `gomodeAuth.onmessage` acknowledgement containing
+   `frontendDocument`, `frontendRequest`, and `frontendToken`. Accept it only for
+   that captured document and request. The token belongs to this authenticated
+   preparation owner; never acquire it from a fresh global getter after data
+   loading completes. Logout, `authChanging`, and signed-out messages receive no
+   acknowledgement. Queue these revocations in order even if their preparation
+   owner is disposed before the document Promise resolves; disposed access-granting
+   owners must never post a late login.
+4. Send `{document, token, ready, tools}` through
+   `gomodeFrontendReadiness.postMessage(JSON.stringify(...))`. `tools` is the
+   complete frontend declaration array for ready owners, including `[]`; it is
+   applied atomically with readiness. Explicit false must include `tools: []` and
+   clears native declarations and pending frontend calls. Tool declarations alone
+   never authorize startup.
+
+Navigation, reload, renderer loss, identity changes, and disposal revoke native
+preparation. Document and identity tokens live only in memory. Signals from old
+owners, other origins, and subframes cannot authorize the current page.
+
+New car calls wait for the selected page, native authentication, native MCP
+catalog readiness, and explicit frontend preparation before creating their voice
+session. The existing 60-second overall startup deadline covers all these stages
+and transport connection together. The accepted identity is pinned across both
+MCP and frontend waits; changing accounts ends the original preparation. A
+frontend wait that times out reports only
+"Frontend not ready." on ordinary and protected call surfaces; cancellation and
+timeout release call and microphone foreground ownership, and late readiness
+cannot restart an ended attempt.
+
+Ordinary voice controls and their microphone-permission continuation also check
+the selected frontend. A pending microphone intent belongs to its original page,
+document, account generation, and controller; replacement or disposal cannot turn its
+permission result into a new call. New gateway conversations, cloud setup before
+microphone creation and signaling, and device setup before transport admit only prepared
+frontends. Local model prefill may run independently because it does not execute
+frontend tools; its call start still uses the ordinary/car startup gates. Retained
+participants expose and dispatch frontend tools only while prepared. Native MCP
+participant identity and authorization remain pinned independently of frontend
+preparation, before their context, schemas, or results can contribute.
+
+An ongoing conversation's transport recovery (`preserveTranscript = true`) may
+continue while a page is unavailable. Its frontend declarations are cleared and
+dispatch stays blocked until fresh preparation; recovery is distinct from a new
+voice start. Ending an ordinary call cancels call-owned tool callbacks without
+disposing the retained frontend's preparation, so the next call can reuse it.
+
 ## Hosted Authentication
 
 Each saved service has a shell entry keyed by service identity and URL. The entry
@@ -76,6 +161,11 @@ messages only from the main frame while the page stays on that origin.
 | `{ "authChanging": true }` | pauses this participant before logout/account switch; revoking the gateway sponsor ends shared voice |
 | `{ "authChanged": true, "nativeAccess": bool }` | reports a settled cookie-backed identity; `true` only for a confirmed user or a host without auth |
 
+Every message in this table must also include the captured `frontendDocument`
+token and a fresh `frontendRequest` identifier, as described in Frontend
+preparation above. These fields apply to logout and `authChanging` too; revocations
+receive no acknowledgement.
+
 Hosts send `authChanged` after resolving the identity on each page load. Around
 logout or account replacement, they send `authChanging` first and
 `authChanged` only after the session update completes. When the result is
@@ -85,8 +175,9 @@ access paused. Bearer hosts send a new bearer after validation and clear it
 before logout. The shell stores no token on disk.
 
 Frontend tools dispatch only through their owning entry while native access is
-ready. Identity changes synchronously reject pending frontend results; page
-replacement removes declarations. A host without MCP groups can still provide
+ready. Not-ready signals, preparation-owner replacement, identity changes, page
+replacement, and failed main-frame navigation clear native declarations and
+synchronously reject pending frontend results. A host without MCP groups can still provide
 browser tools after its page confirms native access; no MCP endpoint is invented.
 Entries share Android WebView cookies, so
 services sharing an origin share the cookie identity.

@@ -5,6 +5,7 @@
     <string name="car_dial_connecting">Connecting voice…</string>
     <string name="car_dial_connected">Voice connected</string>
     <string name="car_dial_failed_call">Could not start the call.</string>
+    <string name="car_dial_failed_frontend">Frontend not ready.</string>
     <string name="car_dial_failed_microphone">Microphone unavailable.</string>
     <string name="car_dial_failed_service">Service page unavailable.</string>
     <string name="car_dial_failed_settings">Could not load settings.</string>

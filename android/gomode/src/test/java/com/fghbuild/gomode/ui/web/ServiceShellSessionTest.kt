@@ -2,6 +2,8 @@
 package com.fghbuild.gomode.ui.web
 
 import android.net.Uri
+import android.webkit.WebView
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -9,9 +11,46 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 
 @RunWith(RobolectricTestRunner::class)
 class ServiceShellSessionTest {
+    @Test
+    fun invalidationClearsPreparedToolsAndRejectsThePreviousIdentitySignal() {
+        val invalidate =
+            listOf<(ServiceShellSession) -> Unit>(
+                { it.invalidateIdentity() },
+                { it.invalidateSharedIdentity() },
+                { it.invalidatePageAuthentication() },
+                { it.pageUnavailable("Unavailable") },
+            )
+        for (action in invalidate) {
+            val session = ServiceShellSession(ServiceShellKey("saved", "https://service.test")) {}
+            val view = WebView(RuntimeEnvironment.getApplication())
+            view.loadUrl(session.key.url)
+            session.frontendTools.register(view, """[{"name":"select","description":"Select","parameters":{}}]""")
+            val request =
+                JSONObject()
+                    .put(
+                        "frontendDocument",
+                        session.frontendPreparation.document,
+                    ).put("frontendRequest", "owner")
+            val ack = JSONObject(checkNotNull(session.frontendPreparation.acknowledge(request)))
+            val ready =
+                JSONObject()
+                    .put("document", session.frontendPreparation.document)
+                    .put("token", ack.getString("frontendToken"))
+                    .put("ready", true)
+            session.frontendPreparation.update(ready)
+            action(session)
+            assertTrue(session.frontendTools.declarations.isEmpty())
+            assertFalse(session.frontendPreparation.ready.value)
+            assertFalse(session.frontendPreparation.accepts(ready))
+            session.close()
+            view.destroy()
+        }
+    }
+
     @Test
     fun serviceIdentityAndURLKeepAuthAndLoadStateIndependent() {
         val first = ServiceShellSession(ServiceShellKey("first", "https://first.test/mobile")) {}

@@ -44,7 +44,7 @@ data class ShellCompatibility(
 
 object GoModeShellContract {
     const val API_VERSION = 1
-    const val BRIDGE_VERSION = 1
+    const val BRIDGE_VERSION = 2
 }
 
 fun Settings.compatibilityError(compatibility: ShellCompatibility = ShellCompatibility()): String? =

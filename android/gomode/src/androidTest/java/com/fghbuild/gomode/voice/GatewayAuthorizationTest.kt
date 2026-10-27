@@ -6,6 +6,7 @@ import android.webkit.CookieManager
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
+import com.fghbuild.gomode.completeFixtureFrontend
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
@@ -57,10 +58,15 @@ class GatewayAuthorizationTest {
     fun localResolvedEndpointReplacementIsRejectedBeforeNewSchemaAdmission() =
         endpointScopedCookieReplacement(false, true, local = true)
 
+    @Test
+    fun delayedFrontendCannotLeaveContributingMcpIdentityUnpinned() =
+        endpointScopedCookieReplacement(false, delayedFrontend = true)
+
     private fun endpointScopedCookieReplacement(
         waitForRepreparation: Boolean,
         replaceEndpoint: Boolean = false,
         local: Boolean = false,
+        delayedFrontend: Boolean = false,
     ) = runTest {
         MockWebServer().use { server ->
             server.dispatcher =
@@ -120,7 +126,7 @@ class GatewayAuthorizationTest {
                     Json.decodeFromString(
                         com.fghbuild.gomode.sdk.v1.Settings
                             .serializer(),
-                        """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":1,
+                        """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":2,
                             "toolGroups":[{"name":"fixture","endpoint":"/api/mcp", "protocolVersion":"2026-07-28",
                             "authRequired":true}],"voiceGateway":{"required":false}}}""",
                     ),
@@ -143,6 +149,7 @@ class GatewayAuthorizationTest {
                         """{"authChanged":true,"nativeAccess":true}""",
                     ),
                 )
+                completeFixtureFrontend(participant)
             }
 
             try {
@@ -153,7 +160,35 @@ class GatewayAuthorizationTest {
                     check(service?.error == null) { service?.error.orEmpty() }
                     service?.readiness == ServiceReadiness.READY
                 }
+                if (delayedFrontend) participant.invalidateIdentity()
                 owner.begin(false)
+                if (delayedFrontend) {
+                    assertFalse(participant.isFrontendReady)
+                    assertTrue(owner.contextText().contains(participantID))
+                    val discovery =
+                        checkNotNull(
+                            owner.execute(
+                                "discover_service",
+                                JsonObject(mapOf("server_id" to JsonPrimitive(participantID))),
+                                "conversation",
+                                "en-US",
+                            ) { true },
+                        )
+                    assertFalse(discovery.isError)
+                    assertTrue(discovery.structuredContent.toString().contains("Account facts"))
+                    val requestCount = server.requestCount
+                    participant.bearerStore.receive(
+                        Uri.parse(participant.key.url),
+                        true,
+                        participant.key.url,
+                        """{"bearerToken":"replacement-account"}""",
+                    )
+                    completeFixtureFrontend(participant)
+                    assertFalse(owner.isCurrent())
+                    assertTrue(runCatching { owner.contextText() }.exceptionOrNull() is VoiceSetupException)
+                    assertEquals(requestCount, server.requestCount)
+                    return@runTest
+                }
                 val args = JsonObject(mapOf("server_id" to JsonPrimitive(participantID)))
                 assertFalse(
                     checkNotNull(owner.execute("discover_service", args, "conversation", "en-US") { true }).isError,
@@ -214,6 +249,7 @@ class GatewayAuthorizationTest {
     ) {
         entry.bearerStore.onNavigation(entry.key.url)
         check(entry.bearerStore.receive(Uri.parse(entry.key.url), true, entry.key.url, """{"bearerToken":"$token"}"""))
+        completeFixtureFrontend(entry)
     }
 
     private class MemoryPreferences : DataStore<Preferences> {

@@ -51,6 +51,8 @@ class FrontendVoiceToolsTest {
             val entry = ServiceShellSession(ServiceShellKey("source", "https://service.test")) {}
             entry.bearerStore.onNavigation(entry.key.url)
             entry.bearerStore.receive(Uri.parse(entry.key.url), true, entry.key.url, """{"bearerToken":"account"}""")
+            entry.updateLoad(WebShellLoadState.Ready)
+            completeFrontendPreparation(entry)
             val identity = entry.bearerStore.identityEpoch.value
             entry.frontendTools.register(
                 view,
@@ -169,6 +171,21 @@ class FrontendVoiceToolsTest {
         }
 
     @Test
+    fun navigationCannotDeliverArgumentsOrResultsAcrossTheRegisteredOrigin() =
+        runTest {
+            view.pageURL = "https://foreign.test"
+            assertTrue(checkNotNull(tools.execute("select_item", JsonObject(emptyMap())) { true }).containsKey("error"))
+            assertEquals("", view.script)
+            view.pageURL = "https://service.test"
+            view.deferResult = true
+            val pending = async { tools.execute("select_item", JsonObject(emptyMap())) { true } }
+            runCurrent()
+            view.pageURL = "https://foreign.test"
+            view.callback?.onReceiveValue("{\"selected\":true}")
+            assertTrue(checkNotNull(pending.await()).containsKey("error"))
+        }
+
+    @Test
     fun frontendCannotOverrideNativeVoiceTools() {
         for (name in listOf("hang_up", "list_servers", "switch_server")) {
             val error =
@@ -181,9 +198,12 @@ class FrontendVoiceToolsTest {
     }
 
     private class ToolWebView : WebView(RuntimeEnvironment.getApplication()) {
+        var pageURL = "https://service.test"
         var script = ""
         var deferResult = false
         var callback: ValueCallback<String>? = null
+
+        override fun getUrl(): String = pageURL
 
         override fun evaluateJavascript(
             script: String,

@@ -212,22 +212,65 @@ internal class ServiceWebPage(
             addJavascriptInterface(hostBridge, "goModeHost")
             if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
                 WebViewCompat.addDocumentStartJavaScript(this, HIDDEN_MEDIA_GUARD, setOf(serviceOrigin(initialURL)))
+                WebViewCompat.addDocumentStartJavaScript(
+                    this,
+                    """
+                    if (window === window.top) {
+                      Object.defineProperty(window, 'goModeFrontendDocument', {value: new Promise(resolve => {
+                        gomodeFrontendDocument.onmessage = event => resolve(JSON.parse(event.data).document);
+                        gomodeFrontendDocument.postMessage('begin');
+                      })});
+                    }
+                    """.trimIndent(),
+                    setOf(serviceOrigin(initialURL)),
+                )
             }
             if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
                 WebViewCompat.addWebMessageListener(
                     this,
-                    "gomodeVoiceTools",
+                    "gomodeFrontendDocument",
+                    setOf(serviceOrigin(initialURL)),
+                ) { view, message, sourceOrigin, isMainFrame, reply ->
+                    if (message.data == "begin" && serviceSession.isCurrentPage(pageGeneration) &&
+                        acceptsFrontendVoiceTools(sourceOrigin, isMainFrame, view.url, initialURL)
+                    ) {
+                        // This document-start message, unlike onPageStarted, cannot
+                        // arrive after this document's auth/preparation messages.
+                        serviceSession.invalidatePageAuthentication()
+                        authHandler.onNavigation(view.url)
+                        frontendTools.clear(view)
+                        reply.postMessage(
+                            org.json
+                                .JSONObject()
+                                .put(
+                                    "document",
+                                    serviceSession.frontendPreparation.document,
+                                ).toString(),
+                        )
+                    }
+                }
+                WebViewCompat.addWebMessageListener(
+                    this,
+                    "gomodeFrontendReadiness",
                     setOf(serviceOrigin(initialURL)),
                 ) { view, message, sourceOrigin, isMainFrame, _ ->
                     if (serviceSession.isCurrentPage(pageGeneration) &&
-                        acceptsFrontendVoiceTools(sourceOrigin, isMainFrame, view.url, initialURL)
+                        acceptsFrontendVoiceTools(sourceOrigin, isMainFrame, view.url, initialURL) &&
+                        bearerStore.authReady.value
                     ) {
-                        message.data?.let { payload ->
-                            runCatching { frontendTools.register(view, payload) }
-                                .onFailure {
-                                    frontendTools.clear(view)
-                                    Log.e(TAG, "Invalid frontend voice tools", it)
-                                }
+                        runCatching {
+                            val payload = org.json.JSONObject(message.data ?: return@runCatching)
+                            if (!serviceSession.frontendPreparation.accepts(payload)) return@runCatching
+                            // The ready signal carries the complete tool snapshot, including [].
+                            val tools = payload.getJSONArray("tools")
+                            val ready = payload.getBoolean("ready")
+                            require(ready || tools.length() == 0) { "Unprepared frontend must not publish tools" }
+                            if (ready) frontendTools.register(view, tools.toString()) else frontendTools.clear(view)
+                            serviceSession.frontendPreparation.update(payload)
+                        }.onFailure {
+                            serviceSession.frontendPreparation.invalidateIdentity()
+                            frontendTools.clear(view)
+                            Log.e(TAG, "Invalid frontend preparation", it)
                         }
                     }
                 }
@@ -235,10 +278,21 @@ internal class ServiceWebPage(
                     this,
                     "gomodeAuth",
                     setOf(serviceOrigin(initialURL)),
-                ) { view, message, sourceOrigin, isMainFrame, _ ->
+                ) { view, message, sourceOrigin, isMainFrame, reply ->
                     if (!serviceSession.isCurrentPage(pageGeneration)) return@addWebMessageListener
                     message.data?.let { payload ->
-                        authHandler.receive(sourceOrigin, isMainFrame, view.url, payload)
+                        val parsed = runCatching { org.json.JSONObject(payload) }.getOrNull()
+                        if (parsed == null || !serviceSession.frontendPreparation.acceptsAuth(parsed)) {
+                            return@let
+                        }
+                        if (authHandler.receive(sourceOrigin, isMainFrame, view.url, payload) &&
+                            bearerStore.authReady.value
+                        ) {
+                            // A new preparation owner also revokes tools when its
+                            // bearer is unchanged and auth has no transition callback.
+                            frontendTools.clear(view)
+                            serviceSession.frontendPreparation.acknowledge(parsed)?.let(reply::postMessage)
+                        }
                     }
                 }
             } else {
@@ -281,16 +335,23 @@ internal class ServiceWebPage(
                     ) {
                         if (!serviceSession.isCurrentPage(pageGeneration)) return
 
+                        // Untrusted documents have no document-start handshake. Use
+                        // the current URL so a delayed callback cannot revoke a
+                        // replacement trusted document's accepted identity.
+                        val currentURL = view.url
+                        if (currentURL?.let { isTrustedPermissionOrigin(it.toUri(), initialURL) } != true) {
+                            serviceSession.invalidatePageAuthentication()
+                            authHandler.onNavigation(currentURL)
+                            frontendTools.clear(view)
+                        }
+
                         if (!canLaunchNativeUI &&
                             url?.let { isTrustedPermissionOrigin(it.toUri(), initialURL) } != true
                         ) {
                             serviceSession.requireAttention()
                             view.stopLoading()
                         }
-                        serviceSession.invalidatePageAuthentication()
-                        authHandler.onNavigation(url)
                         mediaPermissions.onNavigation()
-                        frontendTools.clear(view)
 
                         automaticRetryState = automaticTimeoutRetryStateOnPageStarted(automaticRetryState)
                         loadFailed = false
@@ -309,6 +370,13 @@ internal class ServiceWebPage(
                         url: String?,
                     ) {
                         if (!serviceSession.isCurrentPage(pageGeneration)) return
+
+                        val currentURL = view.url
+                        if (currentURL?.let { isTrustedPermissionOrigin(it.toUri(), initialURL) } != true) {
+                            serviceSession.invalidatePageAuthentication()
+                            authHandler.onNavigation(currentURL)
+                            frontendTools.clear(view)
+                        }
 
                         if (!loadFailed) {
                             automaticRetryState = automaticRetryState.copy(attempts = 0)
@@ -330,6 +398,10 @@ internal class ServiceWebPage(
                             return
                         }
 
+                        serviceSession.invalidatePageAuthentication()
+                        authHandler.onNavigation(null)
+                        frontendTools.clear(view)
+
                         loadFailed = true
                         if (shouldAutomaticallyRetryWebLoadError(error.errorCode, automaticRetryState.attempts)) {
                             automaticRetryState =
@@ -346,6 +418,27 @@ internal class ServiceWebPage(
                             loading = false
                             serviceSession.updateLoad(WebShellLoadState.Failed(message))
                         }
+                    }
+
+                    override fun onReceivedSslError(
+                        view: WebView,
+                        handler: android.webkit.SslErrorHandler,
+                        error: android.net.http.SslError,
+                    ) {
+                        handler.cancel()
+                        if (!serviceSession.isCurrentPage(pageGeneration) ||
+                            (view.url != null && error.url != view.url)
+                        ) {
+                            return
+                        }
+                        serviceSession.invalidatePageAuthentication()
+                        authHandler.onNavigation(null)
+                        frontendTools.clear(view)
+                        loadFailed = true
+                        automaticRetryState = automaticRetryState.copy(pending = false)
+                        recoveryLoadInProgress = false
+                        loading = false
+                        serviceSession.updateLoad(WebShellLoadState.Failed("Service page certificate is invalid."))
                     }
                 }
             val hostView = this
@@ -914,7 +1007,7 @@ internal class GoModeHostBridge {
 
     @JavascriptInterface
     @Suppress("FunctionOnlyReturningConstant")
-    fun shellVersion(): String = "1"
+    fun shellVersion(): String = "2"
 
     @JavascriptInterface
     fun isVoiceConnected(): Boolean = voiceConnected

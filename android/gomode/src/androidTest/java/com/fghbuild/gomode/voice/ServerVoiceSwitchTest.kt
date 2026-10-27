@@ -7,6 +7,8 @@ import androidx.activity.ComponentActivity
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -20,9 +22,11 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.GrantPermissionRule
+import androidx.test.uiautomator.UiDevice
 import com.fghbuild.gomode.R
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.frontendPreparationFixtureScript
 import com.fghbuild.gomode.ui.GoModeApp
 import com.fghbuild.gomode.ui.theme.GoModeTheme
 import com.fghbuild.gomode.ui.web.ServiceShellOwner
@@ -90,13 +94,18 @@ class ServerVoiceSwitchTest {
                             if (mounted.value) GoModeTheme { GoModeApp(shellOwner, owner) }
                         }
                         composeRule.waitUntil(30_000) {
-                            composeRule.onAllNodesWithTag("gomode-voice-connect").fetchSemanticsNodes().isNotEmpty()
+                            composeRule
+                                .onAllNodes(hasTestTag("gomode-voice-connect") and isEnabled())
+                                .fetchSemanticsNodes()
+                                .isNotEmpty()
                         }
                         val currentPage = visiblePage(cookieServer.url("/").toString())
                         composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
                         composeRule.onNodeWithTag("gomode-settings").assertExists()
-                        composeRule.onNodeWithTag("gomode-voice-connect").performClick()
+                        composeRule.onNodeWithTag("gomode-voice-connect").assertDoesNotExist()
+                        UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressBack()
                         composeRule.onNodeWithTag("gomode-settings").assertDoesNotExist()
+                        composeRule.onNodeWithTag("gomode-voice-connect").performClick()
                         assertSame(currentPage, visiblePage(cookieServer.url("/").toString()))
                         composeRule.waitUntil(30_000) { cookie.sessions.size == 1 }
                         waitForConnected()
@@ -313,7 +322,7 @@ class ServerVoiceSwitchTest {
                                             ).fetchSemanticsNodes()
                                             .isNotEmpty()
                                     }
-                                    waitForConnected()
+                                    assertConversationAlive(cookie, conversation, "native-retry-$recovery")
                                     bearer.failDiscovery = false
                                     composeRule.onNodeWithTag("gomode-retry-$id").performScrollTo().performClick()
                                 }
@@ -399,7 +408,7 @@ class ServerVoiceSwitchTest {
                                     .has("error"),
                             )
                             assertTrue(bearer.monitoringRequests.size == nativeRequestsBeforeRetry)
-                            waitForConnected()
+                            assertConversationAlive(cookie, conversation, "frontend-retry")
                             bearer.retryIdentity.countDown()
                             // Publication is asynchronous; explicitly discover until the validated participant is ready.
                             discoveryAttempt++
@@ -431,6 +440,9 @@ class ServerVoiceSwitchTest {
                                     .getJSONObject("result")
                                     .getString("source") == "bearer",
                             )
+                            composeRule.runOnIdle {
+                                composeRule.activity.onBackPressedDispatcher.onBackPressed()
+                            }
                             waitForConnected()
                             assertTrue(cookie.sessions.size == 1 && cookie.setupMessages.size == 1)
                             assertTrue(
@@ -439,9 +451,6 @@ class ServerVoiceSwitchTest {
                                     .fetchSemanticsNodes()
                                     .isNotEmpty(),
                             )
-                            composeRule.runOnIdle {
-                                composeRule.activity.onBackPressedDispatcher.onBackPressed()
-                            }
                             repository.switchService(cookieID)
                         }
                         conversation.send(catalogCommand("participant-logout", bearerID, "frontend", "revoke"))
@@ -518,7 +527,10 @@ class ServerVoiceSwitchTest {
                 try {
                     composeRule.setContent { if (mounted.value) GoModeTheme { GoModeApp(shellOwner, owner) } }
                     composeRule.waitUntil(30_000) {
-                        composeRule.onAllNodesWithTag("gomode-voice-connect").fetchSemanticsNodes().isNotEmpty()
+                        composeRule
+                            .onAllNodes(hasTestTag("gomode-voice-connect") and isEnabled())
+                            .fetchSemanticsNodes()
+                            .isNotEmpty()
                     }
                     composeRule.onNodeWithTag("gomode-voice-connect").performClick()
                     composeRule.waitUntil(30_000) { fixture.sessions.size == 1 }
@@ -650,6 +662,17 @@ class ServerVoiceSwitchTest {
         }
     }
 
+    private fun assertConversationAlive(
+        fixture: HostedVoiceFixture,
+        conversation: ControlledTransport,
+        id: String,
+    ) {
+        // The settings screen intentionally hides voice controls; prove the transport still answers.
+        assertTrue(conversation.send("""{"kind":"tool.call","id":"$id","name":"discover_service","args":{}}"""))
+        composeRule.waitUntil(30_000) { fixture.toolResults.any { it.optString("id") == id } }
+        assertTrue(fixture.sessions.size == 1 && fixture.setupMessages.size == 1)
+    }
+
     private fun waitForConnected() {
         composeRule.waitUntil(30_000) {
             composeRule.onAllNodesWithContentDescription("End voice").fetchSemanticsNodes().isNotEmpty()
@@ -715,7 +738,7 @@ class ServerVoiceSwitchTest {
                     json(
                         """
                         {"service":"fixture","serviceVersion":"1","apiVersion":1,"webShell":{
-                        "bridgeVersion":1,"toolGroups":[{"name":"fixture","endpoint":"$mcpPath",
+                        "bridgeVersion":2,"toolGroups":[{"name":"fixture","endpoint":"$mcpPath",
                         "protocolVersion":"2026-07-28","authRequired":true}],
                         "voiceGateway":{"required":false,"url":${if (gateway) "\"/\"" else "null"},"authRequired":false}}}
                         """.trimIndent(),
@@ -857,8 +880,8 @@ class ServerVoiceSwitchTest {
                     val auth =
                         if (bearer) {
                             """
-                            if ($reloadBearer) gomodeAuth.postMessage('{"bearerToken":null}');
-                            setTimeout(() => gomodeAuth.postMessage('{"bearerToken":"validated"}'), 0);
+                            if ($reloadBearer) fixtureAuth('{"bearerToken":null}');
+                            setTimeout(() => fixtureAuth('{"bearerToken":"validated"}'), 0);
                             if ($reloadBearer && !sessionStorage.getItem('reloaded')) {
                               sessionStorage.setItem('reloaded', '1');
                               setTimeout(() => location.reload(), 100);
@@ -866,7 +889,7 @@ class ServerVoiceSwitchTest {
                             """.trimIndent()
                         } else {
                             "document.cookie='session=confirmed; path=/';" +
-                                """gomodeAuth.postMessage('{"authChanged":true,"nativeAccess":true}');"""
+                                """fixtureAuth('{"authChanged":true,"nativeAccess":true}');"""
                         }
                     val script =
                         when {
@@ -891,10 +914,10 @@ class ServerVoiceSwitchTest {
                         """
                         window.executeGoModeVoiceTool = (name,args) => {
                           if (window.holdTool) { fetch('/pending-tool'); while (true) {} }
-                          if (name === 'revoke') { gomodeAuth.postMessage(JSON.stringify($revocation)); return {}; }
+                          if (name === 'revoke') { fixtureAuth(JSON.stringify($revocation)); return {}; }
                           return {source:'${if (bearer) "bearer" else "cookie"}',value:args.value};
                         };
-                        gomodeVoiceTools.postMessage(JSON.stringify([
+                        fixtureTools(JSON.stringify([
                           {name:'echo',description:'Echo from this page',parameters:{type:'object',properties:{value:{type:'string'}}}},
                           {name:'revoke',description:'Revoke fixture access',parameters:{type:'object',properties:{value:{type:'string'}}}}
                         ]));
@@ -903,7 +926,7 @@ class ServerVoiceSwitchTest {
                     MockResponse()
                         .setHeader("Content-Type", "text/html")
                         .setBody(
-                            "<!doctype html><html><body>Hosted service<script>$script $tools</script></body></html>",
+                            "<!doctype html><html><body>Hosted service<script>$frontendPreparationFixtureScript $script $tools</script></body></html>",
                         )
                 }
             }

@@ -453,9 +453,9 @@ class RetainedWebViewsTest {
                     .setHeader("Content-Type", "text/html")
                     .setBody(
                         """
-                        <html><body>Retained fixture<script>
-                        gomodeAuth.postMessage('{"authChanged":true,"nativeAccess":true}');
-                        gomodeVoiceTools.postMessage('[{"name":"fixture","description":"Fixture","parameters":{}}]');
+                        <html><body>Retained fixture<script>$frontendPreparationFixtureScript
+                        fixtureAuth('{"authChanged":true,"nativeAccess":true}');
+                        fixtureTools('[{"name":"fixture","description":"Fixture","parameters":{}}]');
                         </script></body></html>
                         """.trimIndent(),
                     )
@@ -490,15 +490,16 @@ class RetainedWebViewsTest {
         composeRule.runOnUiThread {
             firstView.evaluateJavascript(
                 """
-                gomodeAuth.postMessage(JSON.stringify({bearerToken:'first-token'}));
-                gomodeVoiceTools.postMessage(JSON.stringify([{name:'first_tool', description:'First', parameters:{}}]));
+                $frontendPreparationFixtureScript
+                fixtureAuth(JSON.stringify({bearerToken:'first-token'}));
+                fixtureTools(JSON.stringify([{name:'first_tool', description:'First', parameters:{}}]));
                 window.focus();
                 alert('hidden prompt');
                 """.trimIndent(),
                 null,
             )
             secondView.evaluateJavascript(
-                "gomodeAuth.postMessage(JSON.stringify({bearerToken:'second-token'}))",
+                "$frontendPreparationFixtureScript fixtureAuth(JSON.stringify({bearerToken:'second-token'}))",
                 null,
             )
         }

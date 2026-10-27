@@ -50,6 +50,7 @@ internal enum class CarDialFailure(
     @get:StringRes val message: Int,
 ) {
     CALL(R.string.car_dial_failed_call),
+    FRONTEND(R.string.car_dial_failed_frontend),
     MICROPHONE(R.string.car_dial_failed_microphone),
     SERVICE(R.string.car_dial_failed_service),
     SETTINGS(R.string.car_dial_failed_settings),
@@ -258,6 +259,7 @@ internal class CarDialVoiceOwner(
                     withTimeout(60_000) { connect(current, next) }
                 } catch (error: TimeoutCancellationException) {
                     Log.w("GoModeCarDial", "Voice setup timed out", error)
+                    if (next.page?.isFrontendReady == false) next.failure = CarDialFailure.FRONTEND
                     fail(current, next)
                 } catch (error: CancellationException) {
                     throw error
@@ -294,11 +296,13 @@ internal class CarDialVoiceOwner(
         mutableState.value = mutableState.value.copy(status = CarDialStatus.PREPARING)
         val page =
             pages.prepareCall(settings) { stage ->
+                Log.i("GoModeCarDial", "Car voice preparation: $stage")
                 next.failure =
                     when (stage) {
                         ServiceCallStage.PAGE -> CarDialFailure.SERVICE
                         ServiceCallStage.SIGN_IN -> CarDialFailure.SIGN_IN
                         ServiceCallStage.TOOLS -> CarDialFailure.TOOLS
+                        ServiceCallStage.FRONTEND -> CarDialFailure.FRONTEND
                     }
             }
         checkCurrent(current, next)
@@ -312,6 +316,7 @@ internal class CarDialVoiceOwner(
         val authorityCurrent = {
             next.authority.get() && settingsCurrent(settings) &&
                 page.bearerStore.identityEpoch.value == authorityEpoch &&
+                (state.value.status == CarDialStatus.CONNECTED || page.isFrontendReady) &&
                 // Main-thread dispatch checks eligibility synchronously; IO deltas use the
                 // lifetime watcher's cached decision without Binder work on every token.
                 (!Looper.getMainLooper().isCurrentThread || eligible())
@@ -369,10 +374,12 @@ internal class CarDialVoiceOwner(
             }
         mutableSession.value = voice
         checkCurrent(current, next)
+        Log.i("GoModeCarDial", "Starting prepared voice transport")
         voice.connect()
         val connected = voice.state.first { it.connected || it.error != null || it.connectStatus == null }
         if (!connected.connected) {
             Log.w("GoModeCarDial", "Voice session did not connect: ${connected.error}")
+            if (connected.error == FRONTEND_NOT_READY) next.failure = CarDialFailure.FRONTEND
             val language = (voice as? DeviceVoiceSession)?.speechLanguageState?.value
             if (language == SpeechLanguageState.Missing || language == SpeechLanguageState.Pending ||
                 language == SpeechLanguageState.Unsupported || language is SpeechLanguageState.Failed

@@ -11,6 +11,7 @@ import com.fghbuild.gomode.ui.ServiceBootstrapState
 import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellSession
 import com.fghbuild.gomode.ui.web.WebShellLoadState
+import com.fghbuild.gomode.ui.web.completeFrontendPreparation
 import com.fghbuild.gomode.voice.McpToolResult
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -58,6 +59,66 @@ class ServiceCatalogTest {
     fun tearDown() {
         Dispatchers.resetMain()
     }
+
+    @Test
+    fun `native ready preparation waits exactly once and cancelled waits ignore late frontend readiness`() =
+        runTest {
+            Fixture("ready").use { fixture ->
+                val entry = fixture.entry("a")
+                entry.invalidateIdentity()
+                val catalog = ServiceCatalog(backgroundScope)
+                try {
+                    catalog.reconcile(mapOf(entry.key to entry), emptyMap())
+                    catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.READY }
+                    assertTrue(catalog.isReady(entry.key))
+                    assertTrue(entry.bearerStore.authReady.value)
+                    assertEquals(WebShellLoadState.Ready, entry.state.value.load)
+                    var connections = 0
+                    val pending =
+                        async {
+                            entry.awaitFrontendReady(entry.bearerStore.identityEpoch.value)
+                            connections++
+                        }
+                    runCurrent()
+                    assertFalse(pending.isCompleted)
+                    assertEquals(0, connections)
+                    completeFrontendPreparation(entry)
+                    pending.await()
+                    assertEquals(1, connections)
+                    assertTrue(entry.frontendTools.declarations.isEmpty())
+                    completeFrontendPreparation(entry)
+                    runCurrent()
+                    assertEquals(1, connections)
+                    entry.invalidateIdentity()
+                    val cancelled =
+                        async {
+                            entry.awaitFrontendReady(entry.bearerStore.identityEpoch.value)
+                            connections++
+                        }
+                    runCurrent()
+                    cancelled.cancel()
+                    completeFrontendPreparation(entry)
+                    runCurrent()
+                    assertTrue(cancelled.isCancelled)
+                    assertEquals(1, connections)
+                    entry.invalidateIdentity()
+                    val replaced =
+                        async {
+                            runCatching {
+                                entry.awaitFrontendReady(entry.bearerStore.identityEpoch.value)
+                                connections++
+                            }
+                        }
+                    runCurrent()
+                    signIn(entry, "different-account")
+                    assertTrue(replaced.await().exceptionOrNull() is IllegalStateException)
+                    assertEquals(1, connections)
+                } finally {
+                    catalog.close()
+                    entry.close()
+                }
+            }
+        }
 
     @Test
     fun `late sign in duplicate names and logout stay scoped without requiring a gateway`() =
@@ -189,7 +250,7 @@ class ServiceCatalogTest {
         runTest {
             Fixture("MCP").use { fixture ->
                 val entry = fixture.entry("a")
-                val view = DeferredWebView()
+                val view = DeferredWebView(entry.key.url)
                 entry.frontendTools.register(
                     view,
                     """
@@ -235,8 +296,8 @@ class ServiceCatalogTest {
         runTest {
             Fixture("A").use { fixture ->
                 val entry = fixture.entry("a")
-                val original = DeferredWebView()
-                val replacement = DeferredWebView()
+                val original = DeferredWebView(entry.key.url)
+                val replacement = DeferredWebView(entry.key.url)
                 val declaration = """[{"name":"duplicate","description":"Frontend","parameters":{}}]"""
                 entry.frontendTools.register(original, declaration)
                 val catalog = ServiceCatalog(backgroundScope)
@@ -371,7 +432,7 @@ class ServiceCatalogTest {
                         ),
                     ),
                 )
-                val view = DeferredWebView()
+                val view = DeferredWebView(entry.key.url)
                 entry.frontendTools.register(
                     view,
                     """[{"name":"duplicate","description":"Frontend","parameters":{"type":"object"}}]""",
@@ -423,7 +484,11 @@ class ServiceCatalogTest {
             }
         }
 
-    private class DeferredWebView : WebView(RuntimeEnvironment.getApplication()) {
+    private class DeferredWebView(
+        private val documentURL: String,
+    ) : WebView(RuntimeEnvironment.getApplication()) {
+        override fun getUrl(): String = documentURL
+
         val invoked = CompletableDeferred<Unit>()
         private var callback: android.webkit.ValueCallback<String>? = null
 
@@ -591,7 +656,7 @@ class ServiceCatalogTest {
                         apiVersion = 1,
                         webShell =
                             WebShellSettings(
-                                bridgeVersion = 1,
+                                bridgeVersion = 2,
                                 toolGroups =
                                     listOf(
                                         ToolGroup(
@@ -631,6 +696,7 @@ class ServiceCatalogTest {
                     buildJsonObject { put("bearerToken", token) }.toString(),
                 ),
             )
+            completeFrontendPreparation(entry)
         }
 
         fun objectOf(vararg pairs: Pair<String, String>) =

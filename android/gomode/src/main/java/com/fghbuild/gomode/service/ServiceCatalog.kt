@@ -121,6 +121,11 @@ internal class ServiceCatalog(
         return authorization.isCurrent() && (settings == null || endpoint == authorization.endpointURL)
     }
 
+    fun isReady(key: ServiceShellKey): Boolean {
+        val member = members[key] ?: return false
+        return member.prepared?.let(member::current) == true
+    }
+
     fun notificationForDelivery(notification: CatalogNotification): CatalogNotification? {
         val member = members[notification.source] ?: return null
         val prepared = member.prepared ?: return null
@@ -477,7 +482,15 @@ internal class ServiceCatalog(
                     put("instruction_scope", "Apply these instructions only when using this server.")
                     put("context", monitoring.snapshot?.voiceContext.orEmpty())
                     put("mcp_tools", Json.encodeToJsonElement(value.mcp?.tools.orEmpty()))
-                    put("frontend_tools", Json.encodeToJsonElement(entry.frontendTools.declarations))
+                    put(
+                        "frontend_tools",
+                        Json.encodeToJsonElement(
+                            entry.frontendTools.declarations
+                                .takeIf {
+                                    entry.isFrontendReady
+                                }.orEmpty(),
+                        ),
+                    )
                     put("resources", Json.encodeToJsonElement(resources))
                     put("resource_templates", Json.encodeToJsonElement(templates))
                 },

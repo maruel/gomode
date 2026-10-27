@@ -306,6 +306,102 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    fun lockedFrontendPreparationMustFinishBeforeVoiceTransportStarts() {
+        exerciseFrontendPreparation(locked = true)
+    }
+
+    @Test
+    fun unlockedFrontendPreparationMustFinishBeforeVoiceTransportStarts() {
+        exerciseFrontendPreparation(locked = false)
+    }
+
+    private fun exerciseFrontendPreparation(locked: Boolean) {
+        prepareVoice("CLOUD")
+        frontendBlocked(true)
+        val before = fixtureStats()
+        val exercise = {
+            dial(NUMBER)
+            awaitFrontendWaiting(before)
+            assertNoTransport(before)
+            if (locked) assertLockedNativeSurface() else assertUnlockedShell()
+            val label = if (locked) "locked" else "unlocked"
+            assertTrue(device.takeScreenshot(File(context.getExternalFilesDir(null), "frontend-$label-wait.png")))
+            assertNoTransport(before)
+            frontendBlocked(false)
+            awaitVoice("CLOUD", before)
+            assertEquals(1, nativeTransportStarts())
+            assertEquals(before.getInt("rtcOffers") + 1, fixtureStats().getInt("rtcOffers"))
+            assertEquals(before.getInt("textSetups"), fixtureStats().getInt("textSetups"))
+            endNativeVoice()
+            awaitVoiceClosed()
+        }
+        try {
+            if (locked) withSecureKeyguard(exercise) else exercise()
+        } finally {
+            frontendBlocked(false)
+        }
+    }
+
+    @Test
+    fun hangingUpDuringFrontendPreparationIgnoresLateReadyAndRetainsTheWarmPage() {
+        prepareVoice("CLOUD")
+        frontendBlocked(true)
+        val before = fixtureStats()
+        try {
+            withSecureKeyguard {
+                dial(NUMBER)
+                awaitFrontendWaiting(before)
+                endNativeVoice()
+                awaitVoiceClosed()
+                assertNoTransport(before)
+                frontendBlocked(false)
+                awaitFrontendPublished(before)
+                awaitVoiceClosed()
+                assertNoTransport(before)
+                val prepared = fixtureStats().getInt("frontendPreparations")
+                dial(NUMBER)
+                awaitVoice("CLOUD", before)
+                assertEquals(1, nativeTransportStarts())
+                assertEquals(before.getInt("rtcOffers") + 1, fixtureStats().getInt("rtcOffers"))
+                assertEquals(prepared, fixtureStats().getInt("frontendPreparations"))
+                assertTrue(browserTool("after-cancel", "fixture_echo").getInt("count") > 0)
+                endNativeVoice()
+                awaitVoiceClosed()
+            }
+        } finally {
+            frontendBlocked(false)
+        }
+    }
+
+    @Test
+    fun frontendTimeoutKeepsItsSafeCauseAndReleasesCallAndMicrophoneOwnership() {
+        prepareVoice("CLOUD")
+        frontendBlocked(true)
+        val before = fixtureStats()
+        try {
+            withSecureKeyguard {
+                dial(NUMBER)
+                awaitFrontendWaiting(before)
+                assertTrue(device.wait(Until.hasObject(By.text("Frontend not ready.")), 60_000))
+                assertLockedNativeSurface()
+                assertTrue(
+                    device.takeScreenshot(File(context.getExternalFilesDir(null), "frontend-locked-timeout.png")),
+                )
+                awaitVoiceClosed()
+                assertNoTransport(before)
+                frontendBlocked(false)
+                awaitFrontendPublished(before)
+                awaitVoiceClosed()
+                assertNoTransport(before)
+                assertTrue(device.hasObject(By.text("Frontend not ready.")))
+                endNativeVoice()
+            }
+        } finally {
+            frontendBlocked(false)
+        }
+    }
+
+    @Test
     fun lockedStartupShowsOnlyNativeCallControls() {
         prepareVoice("CLOUD")
         fixtureConfig(4_000)
@@ -837,6 +933,56 @@ class CarDialInterceptionTest {
 
     private fun fixtureConfig(delayMS: Int) {
         fixtureRequest("/fixture/config", """{"settingsDelayMs":$delayMS}""")
+    }
+
+    private fun frontendBlocked(blocked: Boolean) {
+        fixtureRequest("/fixture/config", """{"frontendBlocked":$blocked}""")
+    }
+
+    private fun assertNoTransport(before: JSONObject) {
+        assertEquals("Native voice.connect began before frontend preparation", 0, nativeTransportStarts())
+        val current = fixtureStats()
+        for (key in listOf("rtcOffers", "rtcSetups", "textSetups", "micFrames")) {
+            assertEquals(
+                "Transport began before frontend preparation: $current",
+                before.getInt(key),
+                current.getInt(key),
+            )
+        }
+    }
+
+    private fun nativeStartupDiagnostics(): String {
+        val pid = shell("pidof $APP").trim().toIntOrNull() ?: return ""
+        return shell("logcat --pid=$pid -d -s GoModeCarDial:I *:S")
+    }
+
+    private fun nativeTransportStarts(): Int =
+        nativeStartupDiagnostics().lineSequence().count { it.contains("Starting prepared voice transport") }
+
+    private fun awaitFrontendWaiting(before: JSONObject) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
+        while (System.nanoTime() < deadline) {
+            val stats = fixtureStats()
+            if (stats.getInt("frontendPreparations") > before.getInt("frontendPreparations") &&
+                stats.getInt("mcpToolLists") > before.getInt("mcpToolLists") &&
+                nativeStartupDiagnostics().contains("Car voice preparation: FRONTEND")
+            ) {
+                awaitMicrophoneForeground()
+                assertNoTransport(before)
+                return
+            }
+            Thread.sleep(50)
+        }
+        throw AssertionError("Frontend did not reach its controlled preparation barrier: ${fixtureStats()}")
+    }
+
+    private fun awaitFrontendPublished(before: JSONObject) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        while (System.nanoTime() < deadline) {
+            if (fixtureStats().getInt("frontendPublished") > before.getInt("frontendPublished")) return
+            Thread.sleep(50)
+        }
+        throw AssertionError("Frontend did not publish its released preparation: ${fixtureStats()}")
     }
 
     private fun fixtureRequest(

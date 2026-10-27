@@ -742,7 +742,7 @@ class ServiceMonitorTest {
                 apiVersion = 1,
                 webShell =
                     WebShellSettings(
-                        bridgeVersion = 1,
+                        bridgeVersion = 2,
                         toolGroups =
                             listOf(
                                 ToolGroup(

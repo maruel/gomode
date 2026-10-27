@@ -344,6 +344,10 @@ internal class VoiceSession(
                             return@launch
                         }
                     if (!ownsAttempt(attempt)) return@launch
+                    if (!preserveTranscript && !voiceConversation.frontendReadyForConnection()) {
+                        setError(FRONTEND_NOT_READY)
+                        return@launch
+                    }
                     foreground.start(setup.serverName)
                     pinnedVoice =
                         GatewayVoiceSelection(
@@ -490,6 +494,12 @@ internal class VoiceSession(
                                                     ?: error("WebRTC local offer SDP unavailable after ICE gathering")
                                             lastOfferSDP = offerSDP
                                             if (!ownsAttempt(attempt)) return@launch
+                                            if (!preserveTranscript &&
+                                                !voiceConversation.frontendReadyForConnection()
+                                            ) {
+                                                setError(FRONTEND_NOT_READY)
+                                                return@launch
+                                            }
                                             val resp =
                                                 voiceGatewayClient.voiceRTCOffer(
                                                     VoiceRTCOfferReq(

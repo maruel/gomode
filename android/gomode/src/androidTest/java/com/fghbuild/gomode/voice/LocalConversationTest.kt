@@ -21,9 +21,11 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.GrantPermissionRule
 import com.caic.voicegateway.sdk.v1.TurnState
+import com.fghbuild.gomode.completeFixtureFrontend
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.frontendPreparationFixtureScript
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceReadiness
 import com.fghbuild.gomode.service.ServiceSettingsClient
@@ -188,7 +190,7 @@ class LocalConversationTest {
                 composeRule.waitUntil(30_000) {
                     catalog.state.value.values
                         .count { it.readiness == ServiceReadiness.READY } == 2 &&
-                        entries.all { it.frontendTools.declarations.isNotEmpty() }
+                        entries.all { it.isFrontendReady && it.frontendTools.declarations.isNotEmpty() }
                 }
                 composeRule.runOnIdle {
                     owner.select(
@@ -303,6 +305,7 @@ class LocalConversationTest {
                             entry.key.url,
                             """{"bearerToken":"A-token"}""",
                         )
+                        completeFixtureFrontend(entry)
                         owner.select(
                             LocalModelSelection("en-US", {
                                 withContext(Dispatchers.Main) { conversation.prepareLocal() }
@@ -322,7 +325,10 @@ class LocalConversationTest {
                     }
                     release.countDown()
                     composeRule.waitUntil(30_000) { owner.state.value == LocalModelState.Ready }
-                    composeRule.runOnIdle { session.connect() }
+                    composeRule.runOnIdle {
+                        completeFixtureFrontend(entry)
+                        session.connect()
+                    }
                     waitForListening(session, speech)
                     assertEquals(2, configs.size)
                     assertEquals(1, runner.replacements.get())
@@ -526,7 +532,7 @@ class LocalConversationTest {
         val toolStarted = CountDownLatch(1)
         val callMetadata = CopyOnWriteArrayList<JSONObject>()
         val releaseTool = CountDownLatch(1)
-        private val manifest = """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":1,
+        private val manifest = """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":2,
             "toolGroups":[{"name":"fixture","endpoint":"/api/mcp","protocolVersion":"2026-07-28","authRequired":true}],
             "voiceGateway":{"required":false}}}"""
 
@@ -538,11 +544,11 @@ class LocalConversationTest {
                         if (request.method == "GET") {
                             return MockResponse().setHeader("Content-Type", "text/html").setBody(
                                 """
-                                <html><body>Local host $name<script>
-                                gomodeAuth.postMessage(JSON.stringify({bearerToken:'$name-token'}));
+                                <html><body>Local host $name<script>$frontendPreparationFixtureScript
+                                fixtureAuth(JSON.stringify({bearerToken:'$name-token'}));
                                 window.executeGoModeVoiceTool = (name,args) => (
                                   {source:'$name-frontend',value:args.value});
-                                gomodeVoiceTools.postMessage(JSON.stringify([{
+                                fixtureTools(JSON.stringify([{
                                   name:'echo',description:'Echo',parameters:{
                                   type:'object',properties:{value:{type:'string'}}}}]));
                                 </script></body></html>
@@ -594,7 +600,7 @@ class LocalConversationTest {
         }
 
         fun entry(id: String) =
-            ServiceShellSession(ServiceShellKey(id, url)) {}.apply {
+            ServiceShellSession(ServiceShellKey(id, SettingsRepository.normalizeURL(url))) {}.apply {
                 updateBootstrap(
                     ServiceBootstrapState.Ready(
                         kotlinx.serialization.json.Json

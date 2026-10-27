@@ -14,6 +14,8 @@ import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellRegistry
+import com.fghbuild.gomode.ui.web.WebShellLoadState
+import com.fghbuild.gomode.ui.web.completeFrontendPreparation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -82,7 +84,7 @@ class VoiceSessionLifecycleTest {
                                 "/.well-known/gomode.json" -> {
                                     MockResponse().setBody(
                                         """
-                                        {"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":1,
+                                        {"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":2,
                                         "toolGroups":[{"name":"fixture","endpoint":"/mcp","protocolVersion":"2026-07-28",
                                         "authRequired":false}],"voiceGateway":{"required":false,"url":"/"}}}
                                         """.trimIndent(),
@@ -161,7 +163,7 @@ class VoiceSessionLifecycleTest {
                     override fun dispatch(request: RecordedRequest): MockResponse {
                         if (request.path == "/.well-known/gomode.json") {
                             return MockResponse().setBody(
-                                """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":1,
+                                """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":2,
                             "toolGroups":[{"name":"fixture","endpoint":"/mcp","protocolVersion":"2026-07-28",
                             "authRequired":false}],"voiceGateway":{"required":false,"url":"/"}}}""",
                             )
@@ -581,6 +583,8 @@ class VoiceSessionLifecycleTest {
                                     entry.key.url,
                                     """{"authChanged":true,"nativeAccess":true}""",
                                 )
+                                entry.updateLoad(WebShellLoadState.Ready)
+                                completeFrontendPreparation(entry)
                             }
                         }
                     }
@@ -670,7 +674,7 @@ class VoiceSessionLifecycleTest {
               "serviceVersion": "1",
               "apiVersion": 1,
               "webShell": {
-                "bridgeVersion": 1,
+                "bridgeVersion": 2,
                 "toolGroups": [{
                   "name": "service",
                   "endpoint": "/mcp",

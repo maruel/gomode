@@ -251,6 +251,10 @@ internal class DeviceVoiceSession(
             this.conversationID = conversationID ?: UUID.randomUUID().toString()
             clearTranscript()
         }
+        if (!frontendTools.isReady) {
+            setError(FRONTEND_NOT_READY)
+            return
+        }
         if (!speech.isAvailable()) {
             setError("On-device speech recognition is not available")
             return
@@ -301,6 +305,10 @@ internal class DeviceVoiceSession(
                             }
                         }
                     if (!ownsAttempt(attempt)) return@launch
+                    if (!frontendTools.isReady || voiceConversation?.frontendReadyForConnection() == false) {
+                        setError(FRONTEND_NOT_READY)
+                        return@launch
+                    }
                     foreground.start(setup.serverName)
                     if (preparedLocalModel == null) otherSetup = setup
                     if (callController.isSupported() &&

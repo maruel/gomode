@@ -16,6 +16,8 @@ import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellSession
+import com.fghbuild.gomode.ui.web.WebShellLoadState
+import com.fghbuild.gomode.ui.web.completeFrontendPreparation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Message
 import kotlinx.coroutines.CompletableDeferred
@@ -237,7 +239,7 @@ class DeviceVoiceSessionTest {
                         override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse =
                             MockResponse().setBody(
                                 if (request.path == "/.well-known/gomode.json") {
-                                    """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":1,"toolGroups":[],
+                                    """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":2,"toolGroups":[],
                         "voiceGateway":{"url":"/","required":false,"authRequired":false}}}"""
                                 } else {
                                     """{"choices":[{"id":"text","label":"Text","transports":["text"]}],"defaultChoiceID":"text"}"""
@@ -264,6 +266,8 @@ class DeviceVoiceSessionTest {
                                         """{"authChanged":true,"nativeAccess":true}""",
                                     ),
                                 )
+                                entry.updateLoad(WebShellLoadState.Ready)
+                                completeFrontendPreparation(entry)
                             }
                     }
                 val catalog = ServiceCatalog(backgroundScope)

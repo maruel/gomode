@@ -230,7 +230,7 @@ class ConcurrentServiceCatalogTest {
                     catalog.state.value.values
                         .count { it.readiness == ServiceReadiness.READY } == 2 &&
                         first.streams.get() >= 1 && second.streams.get() >= 1 && notifications.size >= 2 &&
-                        entries.all { it.frontendTools.declarations.isNotEmpty() }
+                        entries.all { it.isFrontendReady && it.frontendTools.declarations.isNotEmpty() }
                 }
                 val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
                 composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
@@ -302,7 +302,7 @@ class ConcurrentServiceCatalogTest {
                 }
                 composeRule.runOnUiThread {
                     composeRule.activity.findViewById<WebView>(R.id.web_shell).evaluateJavascript(
-                        "gomodeAuth.postMessage(JSON.stringify({bearerToken:null}))",
+                        "fixtureAuth(JSON.stringify({bearerToken:null}))",
                         null,
                     )
                 }
@@ -314,7 +314,7 @@ class ConcurrentServiceCatalogTest {
                 composeRule.runOnIdle {
                     assertNull(catalog.notificationForDelivery(oldEvent))
                     composeRule.activity.findViewById<WebView>(R.id.web_shell).evaluateJavascript(
-                        "gomodeAuth.postMessage(JSON.stringify({bearerToken:'B-token'}))",
+                        "fixtureAuth(JSON.stringify({bearerToken:'B-token'}))",
                         null,
                     )
                 }
@@ -483,9 +483,9 @@ class ConcurrentServiceCatalogTest {
                         if (request.method == "GET") {
                             return MockResponse().setHeader("Content-Type", "text/html").setBody(
                                 """
-                                <html><body>Generic retained participant $source<script>
-                                gomodeAuth.postMessage(JSON.stringify({bearerToken:'$source-token'}));
-                                gomodeVoiceTools.postMessage(JSON.stringify([{
+                                <html><body>Generic retained participant $source<script>$frontendPreparationFixtureScript
+                                fixtureAuth(JSON.stringify({bearerToken:'$source-token'}));
+                                fixtureTools(JSON.stringify([{
                                   name:'duplicate',description:'Frontend',parameters:{
                                   type:'object',properties:{value:{type:'string'}},
                                   required:['value'],additionalProperties:false}}]));
@@ -671,7 +671,7 @@ class ConcurrentServiceCatalogTest {
                             apiVersion = 1,
                             webShell =
                                 WebShellSettings(
-                                    bridgeVersion = 1,
+                                    bridgeVersion = 2,
                                     toolGroups =
                                         listOf(
                                             ToolGroup(

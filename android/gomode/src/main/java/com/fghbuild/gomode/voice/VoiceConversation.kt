@@ -16,6 +16,8 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 
+internal const val FRONTEND_NOT_READY = "Frontend not ready."
+
 internal data class VoiceConversationState(
     val sponsor: String,
     val gateway: String = "",
@@ -68,6 +70,7 @@ internal class VoiceConversation(
         if (sponsor != null && !sponsor.bearerStore.authReady.value) {
             throw VoiceSetupException("Sign in before connecting voice")
         }
+        if (sponsor != null && !frontendReadyForConnection()) throw VoiceSetupException(FRONTEND_NOT_READY)
         conversation?.lifetime?.finish()
         conversation =
             Conversation(
@@ -87,6 +90,12 @@ internal class VoiceConversation(
         conversation?.lifetime?.finish()
         conversation = null
         mutableState.value = null
+    }
+
+    fun frontendReadyForConnection(): Boolean {
+        val selected = settingsRepository.settings.value
+        if (selected.activeServiceURL.isBlank()) return true
+        return entries()[ServiceShellKey(selected.activeServiceId, selected.activeServiceURL)]?.isFrontendReady == true
     }
 
     // Page availability can revoke dispatch without changing the gateway sponsor's authenticated identity.
@@ -216,6 +225,7 @@ internal class VoiceConversation(
     private fun admitParticipants() {
         val current = conversation ?: return
         entries().forEach { (key, entry) ->
+            // Native MCP facts and schemas can contribute while frontend tools are still preparing.
             if (entry.bearerStore.authReady.value) {
                 val identity =
                     current.admitted.getOrPut(key) {

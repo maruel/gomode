@@ -24,7 +24,7 @@ SETTINGS = {
     "serviceVersion": "1.0.0",
     "apiVersion": 1,
     "webShell": {
-        "bridgeVersion": 1,
+        "bridgeVersion": 2,
         "toolGroups": [
             {
                 "name": "demo",

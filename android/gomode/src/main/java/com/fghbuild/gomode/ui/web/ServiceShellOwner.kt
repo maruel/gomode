@@ -19,12 +19,13 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
-internal enum class ServiceCallStage { PAGE, SIGN_IN, TOOLS }
+internal enum class ServiceCallStage { PAGE, SIGN_IN, TOOLS, FRONTEND }
 
 internal data class ServiceShellSnapshot(
     val settings: SettingsState,
@@ -108,9 +109,18 @@ internal class ServiceShellOwner(
         ) { "Service page is unavailable" }
         onStage(ServiceCallStage.SIGN_IN)
         target.bearerStore.authReady.first { it }
-        onStage(ServiceCallStage.TOOLS)
-        catalog.state.first { it[target.key]?.readiness == ServiceReadiness.READY }
-        return target
+        val identity = target.bearerStore.identityEpoch.value
+        while (true) {
+            onStage(ServiceCallStage.TOOLS)
+            combine(catalog.state, target.bearerStore.identityEpoch) { services, epoch ->
+                check(epoch == identity) { "Hosted identity changed during service preparation" }
+                services[target.key]?.readiness == ServiceReadiness.READY && catalog.isReady(key)
+            }.first { it }
+            onStage(ServiceCallStage.FRONTEND)
+            target.awaitFrontendReady(identity)
+            check(entries[key] === target) { "Saved service changed during preparation" }
+            if (target.isFrontendReady && catalog.isReady(key)) return target
+        }
     }
 
     fun setVoiceConnected(connected: Boolean) {

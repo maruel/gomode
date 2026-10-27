@@ -50,7 +50,17 @@
   // This demonstration host has no authentication, so it settles a cookie-backed
   // identity once loaded. Native connections then report the service as ready.
   window.addEventListener("load", () => {
-    window.gomodeAuth?.postMessage('{"authChanged":true,"nativeAccess":true}');
+    const binding = window.goModeFrontendDocument;
+    if (!binding || !window.gomodeAuth) return;
+    binding.then(document => {
+      const frontendRequest = '1';
+      window.gomodeAuth.onmessage = event => {
+        const ack = JSON.parse(event.data);
+        if (ack.frontendDocument !== document || ack.frontendRequest !== frontendRequest) return;
+        window.gomodeFrontendReadiness.postMessage(JSON.stringify({document,token:ack.frontendToken,ready:true,tools:[]}));
+      };
+      window.gomodeAuth.postMessage(JSON.stringify({authChanged:true,nativeAccess:true,frontendDocument:document,frontendRequest}));
+    });
   });
 </script>
 </body>

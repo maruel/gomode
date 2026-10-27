@@ -25,16 +25,19 @@ import (
 )
 
 type fixtureStats struct {
-	TextActive       int               `json:"textActive"`
-	TextSetups       int               `json:"textSetups"`
-	TextTurns        int               `json:"textTurns"`
-	RTCActive        int               `json:"rtcActive"`
-	RTCOffers        int               `json:"rtcOffers"`
-	RTCSetups        int               `json:"rtcSetups"`
-	MicFrames        int               `json:"micFrames"`
-	AssistantPackets int               `json:"assistantPackets"`
-	ReceiverReports  int               `json:"receiverReports"`
-	ToolResults      []json.RawMessage `json:"toolResults"`
+	FrontendPreparations int               `json:"frontendPreparations"`
+	FrontendPublished    int               `json:"frontendPublished"`
+	MCPToolLists         int               `json:"mcpToolLists"`
+	TextActive           int               `json:"textActive"`
+	TextSetups           int               `json:"textSetups"`
+	TextTurns            int               `json:"textTurns"`
+	RTCActive            int               `json:"rtcActive"`
+	RTCOffers            int               `json:"rtcOffers"`
+	RTCSetups            int               `json:"rtcSetups"`
+	MicFrames            int               `json:"micFrames"`
+	AssistantPackets     int               `json:"assistantPackets"`
+	ReceiverReports      int               `json:"receiverReports"`
+	ToolResults          []json.RawMessage `json:"toolResults"`
 }
 
 type mediaPeer struct {
@@ -57,7 +60,8 @@ func (f *fixture) handleStats(w http.ResponseWriter, _ *http.Request) {
 
 func (f *fixture) handleConfig(w http.ResponseWriter, r *http.Request) {
 	var cfg struct {
-		SettingsDelayMS int `json:"settingsDelayMs"`
+		SettingsDelayMS int  `json:"settingsDelayMs"`
+		FrontendBlocked bool `json:"frontendBlocked"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&cfg); err != nil || cfg.SettingsDelayMS < 0 || cfg.SettingsDelayMS > 30_000 {
 		http.Error(w, "settingsDelayMs must be between 0 and 30000", http.StatusBadRequest)
@@ -65,8 +69,30 @@ func (f *fixture) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	f.settingsDelay = time.Duration(cfg.SettingsDelayMS) * time.Millisecond
+	if f.frontendBlocked != cfg.FrontendBlocked {
+		f.frontendBlocked = cfg.FrontendBlocked
+		close(f.frontendChanged)
+		f.frontendChanged = make(chan struct{})
+	}
 	f.mu.Unlock()
 	writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (f *fixture) handleFrontend(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.stats.FrontendPreparations++
+	for f.frontendBlocked {
+		changed := f.frontendChanged
+		f.mu.Unlock()
+		select {
+		case <-changed:
+		case <-r.Context().Done():
+			return
+		}
+		f.mu.Lock()
+	}
+	f.mu.Unlock()
+	writeJSON(w, []any{})
 }
 
 func (f *fixture) handleOffer(w http.ResponseWriter, r *http.Request) {

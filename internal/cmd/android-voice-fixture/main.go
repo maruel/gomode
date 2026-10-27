@@ -28,33 +28,60 @@ import (
 // voice gateway routes the Android app calls. Its synthetic assistant supports
 // real text WebSockets and bidirectional Opus media over WebRTC.
 type fixture struct {
-	log           *slog.Logger
-	rtcIP         string
-	mu            sync.Mutex
-	stats         fixtureStats
-	peers         map[string]*mediaPeer
-	settingsDelay time.Duration
-	textPeer      *websocket.Conn
+	log             *slog.Logger
+	rtcIP           string
+	mu              sync.Mutex
+	stats           fixtureStats
+	peers           map[string]*mediaPeer
+	settingsDelay   time.Duration
+	frontendBlocked bool
+	frontendChanged chan struct{}
+	textPeer        *websocket.Conn
 }
 
 func (f *fixture) routes() http.Handler {
+	f.frontendChanged = make(chan struct{})
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(`<!doctype html><html lang="en"><title>Voice fixture</title>
-<h1>Voice fixture server</h1><button onclick="gomodeAuth.postMessage(JSON.stringify({authChanging:true}))">Fixture sign out</button>
+<h1>Voice fixture server</h1><button onclick="revokeFrontend()">Fixture sign out</button>
 <p id="counter">Tool count: 0</p><script>
 document.body.append(document.createTextNode(location.href));
-const documentID = crypto.randomUUID(); let count = 0;
+const binding = window.goModeFrontendDocument;
+let documentID = '', token = null, dataReady = false, count = 0, request = 0;
+const tools = ['fixture_echo','fixture_logout','fixture_reload','fixture_state'].map(name =>
+  ({name,description:'Exercise the hosted document',parameters:{type:'object',properties:{}}}));
+function publishPreparation() {
+  if (token) gomodeFrontendReadiness.postMessage(JSON.stringify({document:documentID,token,ready:dataReady,tools:dataReady?tools:[]}));
+}
+function revokeFrontend() {
+  dataReady = false; publishPreparation();
+  const frontendRequest = String(++request);
+  binding.then(document => gomodeAuth.postMessage(JSON.stringify({authChanging:true,frontendDocument:document,frontendRequest})));
+}
 window.executeGoModeVoiceTool = (name, args) => {
-  if (name === 'fixture_logout') gomodeAuth.postMessage(JSON.stringify({authChanging:true}));
+  if (name === 'fixture_logout') revokeFrontend();
   if (name === 'fixture_reload') location.reload();
   if (name !== 'fixture_state') document.getElementById('counter').textContent = 'Tool count: ' + (++count);
   return {url:location.href, document:documentID, count, visible:goModeHost.isPageVisible(), connected:goModeHost.isVoiceConnected()};
 };
-gomodeVoiceTools.postMessage(JSON.stringify(['fixture_echo','fixture_logout','fixture_reload','fixture_state'].map(name =>
-  ({name,description:'Exercise the hosted document',parameters:{type:'object',properties:{}}}))));
-gomodeAuth.postMessage(JSON.stringify({authChanged:true,nativeAccess:true}));
+binding.then(document => {
+  documentID = document;
+  const frontendRequest = String(++request);
+  gomodeAuth.onmessage = event => {
+    const value = JSON.parse(event.data);
+    if (value.frontendDocument !== document || value.frontendRequest !== frontendRequest || request !== Number(frontendRequest)) return;
+    token = value.frontendToken;
+    publishPreparation();
+    fetch('/fixture/frontend').then(response => response.json()).then(() => {
+      if (request !== Number(frontendRequest)) return;
+      dataReady = true; publishPreparation();
+      return fetch('/fixture/frontend-published', {method:'POST'});
+    }).catch(error => console.error('Fixture preparation failed', error));
+  };
+  gomodeAuth.postMessage(JSON.stringify({authChanged:true,nativeAccess:true,frontendDocument:document,frontendRequest}));
+});
 </script></html>`))
 	})
 	mux.HandleFunc("GET /.well-known/gomode.json", f.handleSettings)
@@ -67,6 +94,13 @@ gomodeAuth.postMessage(JSON.stringify({authChanged:true,nativeAccess:true}));
 	mux.HandleFunc("GET /fixture/stats", f.handleStats)
 	mux.HandleFunc("POST /fixture/config", f.handleConfig)
 	mux.HandleFunc("POST /fixture/tool", f.handleTool)
+	mux.HandleFunc("GET /fixture/frontend", f.handleFrontend)
+	mux.HandleFunc("POST /fixture/frontend-published", func(w http.ResponseWriter, _ *http.Request) {
+		f.mu.Lock()
+		f.stats.FrontendPublished++
+		f.mu.Unlock()
+		writeJSON(w, map[string]bool{"ok": true})
+	})
 	return mux
 }
 
@@ -79,7 +113,7 @@ func (f *fixture) settingsDocument() gomode.Settings {
 		ServiceVersion: "1.0.0",
 		APIVersion:     1,
 		WebShell: gomode.WebShellSettings{
-			BridgeVersion: 1,
+			BridgeVersion: 2,
 			ToolGroups: []gomode.ToolGroup{{
 				Name:            "fixture",
 				Description:     "Fixture task tools.",
@@ -134,6 +168,9 @@ func (f *fixture) handleMCP(w http.ResponseWriter, r *http.Request) {
 			CacheScope:        mcp.CacheScopePrivate,
 		}
 	case "tools/list":
+		f.mu.Lock()
+		f.stats.MCPToolLists++
+		f.mu.Unlock()
 		result = mcp.ToolsListResult{
 			ResultType: mcp.ResultTypeComplete,
 			Tools:      []mcp.ToolDescriptor{},
