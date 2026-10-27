@@ -558,9 +558,9 @@ internal fun GoModeApp(
                     Button(onClick = localModelOwner::retry) { Text("Retry local model") }
                 }
             }
-            // Keep failures visible even when the keyboard or shell recovery hides idle controls.
-            if (voiceState.error != null ||
-                (!keyboardOpen && (shellRecovery == null || voiceSessionActive))
+            // Settings owns the full screen; elsewhere, keep failures visible even with the keyboard open.
+            if (activeURL.isNotBlank() && activeNativeScreen != NativeScreen.Settings &&
+                (voiceState.error != null || (!keyboardOpen && (shellRecovery == null || voiceSessionActive)))
             ) {
                 VoicePanel(
                     speechRecovery = {

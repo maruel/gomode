@@ -134,11 +134,20 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
             composeRule.onAllNodesWithTag("gomode-settings").fetchSemanticsNodes().isNotEmpty()
         }
 
+        composeRule.onNodeWithTag("gomode-web-open-settings").assertDoesNotExist()
+        composeRule.onNodeWithTag("gomode-voice-connect").assertDoesNotExist()
+        if (InstrumentationRegistry.getArguments().getString("captureVoicePanel") == "true") {
+            UiDevice
+                .getInstance(InstrumentationRegistry.getInstrumentation())
+                .executeShellCommand("screencap -p /data/local/tmp/gomode-settings.png")
+        }
         pressActivityBack()
 
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
             composeRule.onAllNodesWithTag("gomode-web-shell").fetchSemanticsNodes().isNotEmpty()
         }
+        waitForSettingsButton()
+        composeRule.onNodeWithTag("gomode-voice-connect").assertExists()
     }
 
     @StandaloneHostedFixture
@@ -165,13 +174,14 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
 
     @StandaloneHostedFixture
     @Test
-    fun nextAppFlushesAPendingServiceEditBeforeClosingSettings() {
+    fun backFlushesAPendingServiceEditBeforeClosingSettings() {
         openWebShell()
         composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
         addService("Second")
         waitForSettingsButton()
         val observer = SettingsRepository(composeRule.activity.goModeSettingsDataStore)
         composeRule.waitUntil { observer.settings.value.services.size == 2 }
+        val activeServiceId = observer.settings.value.activeServiceId
         val first =
             observer.settings.value.services
                 .first()
@@ -194,12 +204,6 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
             device.pressBack()
             device.waitForIdle()
             composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { !isImeVisible() }
-            val deadline = composeRule.mainClock.currentTime + 500
-            composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
-                check(composeRule.mainClock.currentTime < deadline) { "Voice controls did not reappear" }
-                composeRule.mainClock.advanceTimeByFrame()
-                composeRule.onAllNodesWithTag("gomode-next-app").fetchSemanticsNodes().isNotEmpty()
-            }
             assertEquals(
                 first.label,
                 observer.settings.value.services
@@ -214,14 +218,14 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
                     .config[SemanticsProperties.EditableText]
                     .text,
             )
-            composeRule.onNodeWithTag("gomode-next-app").performClick()
+            pressActivityBack()
         } finally {
             composeRule.mainClock.autoAdvance = true
         }
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
             observer.settings.value.services
                 .first()
-                .label == "Pending name" && observer.settings.value.activeServiceId == first.id
+                .label == "Pending name" && observer.settings.value.activeServiceId == activeServiceId
         }
         waitForSettingsButton()
         composeRule.waitUntil { composeRule.onAllNodesWithTag("gomode-settings").fetchSemanticsNodes().isEmpty() }

@@ -57,7 +57,6 @@ class GoModeDocumentationScreenshotsTest : GoModeE2eTestBase() {
         composeRule.onNodeWithTag("gomode-service-url").performTextReplacement(baseUrl)
         device.pressBack()
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { !isImeVisible() }
-        waitForSettingsButton()
         capture(device, directory, "service-editor")
 
         composeRule.onNodeWithTag("gomode-create-service").performScrollTo().performClick()

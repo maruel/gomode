@@ -82,7 +82,6 @@ abstract class GoModeE2eTestBase {
     protected fun dismissServiceKeyboard() {
         UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressBack()
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { !isImeVisible() }
-        waitForSettingsButton()
     }
 
     // The settings button sits in the voice panel, which the shell hides while the soft
