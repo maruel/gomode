@@ -276,21 +276,22 @@ describe("VoiceSession", () => {
           .at(-1)
           ?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind }) }));
       event("speech.started");
-      expect(gain.gain.value).toBeGreaterThan(0);
-      expect(gain.gain.value).toBeLessThanOrEqual(0.1);
+      expect(gain.gain.linearRampToValueAtTime).toHaveBeenLastCalledWith(0.1, 0.03);
+      event("speech.started");
+      expect(gain.gain.linearRampToValueAtTime).toHaveBeenCalledOnce();
       await session.selectInputDevice("headset");
       const replacement = context!.gains.at(-1)!;
       expect(replacement.gain.value).toBeLessThanOrEqual(0.1);
       session.setMicrophoneMode("muted");
       expect(outgoingMicrophoneTrack()?.enabled).toBe(false);
       event("interrupted");
-      expect(replacement.gain.value).toBe(1);
+      expect(replacement.gain.linearRampToValueAtTime).toHaveBeenLastCalledWith(1, 0.1);
       expect(outgoingMicrophoneTrack()?.enabled).toBe(false);
       session.setMicrophoneMode("listening");
       expect(outgoingMicrophoneTrack()?.enabled).toBe(true);
       event("speech.started");
       event("speech.ended");
-      expect(replacement.gain.value).toBe(1);
+      expect(replacement.gain.linearRampToValueAtTime).toHaveBeenLastCalledWith(1, 0.1);
     } finally {
       session.disconnect();
     }

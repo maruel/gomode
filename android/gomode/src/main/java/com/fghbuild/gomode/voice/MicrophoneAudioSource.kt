@@ -122,13 +122,15 @@ internal class MicrophoneAudioSource(
             check(recorder.recordingState == AudioRecord.RECORDSTATE_RECORDING) { "Microphone did not start" }
             val frame = ByteArray(640)
             val meter = MicrophoneRmsWindow()
+            val gain = MicrophoneGainRamp(16_000, assistantSpeaking)
             val captureContext = kotlin.coroutines.coroutineContext
             while (captureContext.isActive) {
                 val count = recorder.read(frame, 0, frame.size, AudioRecord.READ_NON_BLOCKING)
                 check(count >= 0) { "Microphone read failed ($count)" }
                 synchronized(deliveryLock) {
                     if (captureContext.isActive) {
-                        if (assistantSpeaking) attenuateMicrophonePcm(frame, count)
+                        gain.setSpeaking(assistantSpeaking)
+                        gain.processPcm(frame, count)
                         delivery.append(frame, count)
                         meter.append(frame, count)?.let { mutableRms.value = it }
                     }

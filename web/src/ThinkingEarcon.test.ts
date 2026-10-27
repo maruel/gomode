@@ -9,6 +9,51 @@ import type { FakeGain } from "../tests/thinking-audio";
 import { FakeAudioContext, advance } from "../tests/thinking-audio";
 
 describe("WebAudioThinkingEarcon", () => {
+  it("defers preview context closure until its fade completes, including disposal and replacement", () => {
+    const preview = new WebAudioThinkingEarcon({ onPlaybackChange: vi.fn() });
+    preview.prepare();
+    const first = FakeAudioContext.instances[0];
+    ok(first);
+    preview.setThinking(true);
+    advance(first, 1);
+    preview.setThinking(false);
+    expect(first.close).not.toHaveBeenCalled();
+    preview.prepare();
+    const replacement = FakeAudioContext.instances.at(-1);
+    ok(replacement);
+    preview.setThinking(true);
+    advance(first, 0.2);
+    expect(first.close).toHaveBeenCalledOnce();
+    expect(replacement.close).not.toHaveBeenCalled();
+    advance(replacement, 1);
+    preview.dispose();
+    expect(replacement.close).not.toHaveBeenCalled();
+    advance(replacement, 0.2);
+    expect(replacement.close).toHaveBeenCalledOnce();
+  });
+  it("fades the complete output before releasing echoes and keeps replacement playback independent", () => {
+    const earcon = new WebAudioThinkingEarcon();
+    earcon.prepare();
+    const context = FakeAudioContext.instances[0];
+    ok(context);
+    earcon.setThinking(true);
+    advance(context, 1);
+    const output = context.nodes[0] as FakeGain;
+    const oldNodes = [...context.nodes];
+    earcon.setThinking(false);
+    expect(output.gain.linearRampToValueAtTime.mock.calls.at(-1)?.[0]).toBe(0);
+    expect(output.gain.linearRampToValueAtTime.mock.calls.at(-1)?.[1]).toBeCloseTo(context.currentTime + 0.15);
+    expect(output.disconnect).not.toHaveBeenCalled();
+    earcon.setThinking(true);
+    advance(context, 0.1);
+    expect(output.disconnect).not.toHaveBeenCalled();
+    advance(context, 0.1);
+    for (const node of oldNodes) expect(node.disconnect).toHaveBeenCalledOnce();
+    expect(context.nodes.at(-1)?.disconnect).not.toHaveBeenCalled();
+    earcon.dispose();
+    advance(context, 0.2);
+    expect(context.close).toHaveBeenCalledOnce();
+  });
   it("disconnects a note whose gain allocation fails before the oscillator starts", () => {
     const earcon = new WebAudioThinkingEarcon();
     earcon.prepare();
@@ -165,6 +210,7 @@ describe("WebAudioThinkingEarcon", () => {
     advance(context, 0.1);
     expect(context.sources.length - before).toBeLessThan(30);
     earcon.setThinking(false);
+    advance(context, 0.2);
     for (const node of context.nodes) expect(node.disconnect).toHaveBeenCalledOnce();
   });
 

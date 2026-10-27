@@ -32,12 +32,16 @@ internal object RtcMicrophoneProcessing {
 internal class MicrophoneDucking(
     private val speaking: () -> Boolean,
 ) : ExternalAudioProcessingFactory.AudioProcessing {
+    private lateinit var gain: MicrophoneGainRamp
+
     override fun initialize(
         sampleRateHz: Int,
         numChannels: Int,
-    ) = Unit
+    ) {
+        gain = MicrophoneGainRamp(sampleRateHz, speaking())
+    }
 
-    override fun reset(newRate: Int) = Unit
+    override fun reset(newRate: Int) = gain.configure(newRate)
 
     // WebRTC supplies native-endian float samples after AEC and gain control.
     override fun process(
@@ -45,22 +49,57 @@ internal class MicrophoneDucking(
         numFrames: Int,
         buffer: ByteBuffer,
     ) {
-        if (!speaking()) return
+        gain.setSpeaking(speaking())
         buffer.order(ByteOrder.nativeOrder())
         for (offset in 0 until numFrames * Float.SIZE_BYTES step Float.SIZE_BYTES) {
-            buffer.putFloat(offset, buffer.getFloat(offset) * SPEAKING_MICROPHONE_GAIN)
+            buffer.putFloat(offset, buffer.getFloat(offset) * gain.next())
         }
     }
 }
 
-internal fun attenuateMicrophonePcm(
-    frame: ByteArray,
-    count: Int,
+// Audio-thread-owned ramp state; each sample advances it independently of capture chunk size.
+internal class MicrophoneGainRamp(
+    private var sampleRateHz: Int,
+    speaking: Boolean,
 ) {
-    for (offset in 0 until count step 2) {
-        val sample = ((frame[offset].toInt() and 0xff) or (frame[offset + 1].toInt() shl 8)).toShort()
-        val attenuated = (sample * SPEAKING_MICROPHONE_GAIN).toInt()
-        frame[offset] = attenuated.toByte()
-        frame[offset + 1] = (attenuated shr 8).toByte()
+    private var current = if (speaking) SPEAKING_MICROPHONE_GAIN else 1f
+    private var target = current
+    private var remaining = 0
+    private var step = 0f
+
+    fun configure(sampleRateHz: Int) {
+        if (remaining > 0) {
+            remaining = maxOf(1, (remaining.toLong() * sampleRateHz / this.sampleRateHz).toInt())
+            step = (target - current) / remaining
+        }
+        this.sampleRateHz = sampleRateHz
+    }
+
+    fun setSpeaking(speaking: Boolean) {
+        val target = if (speaking) SPEAKING_MICROPHONE_GAIN else 1f
+        if (this.target == target) return
+        this.target = target
+        remaining = maxOf(1, sampleRateHz * (if (speaking) 30 else 100) / 1_000)
+        step = (target - current) / remaining
+    }
+
+    fun next(): Float {
+        if (remaining > 0) {
+            current += step
+            if (--remaining == 0) current = target
+        }
+        return current
+    }
+
+    fun processPcm(
+        frame: ByteArray,
+        count: Int,
+    ) {
+        for (offset in 0 until count step 2) {
+            val sample = ((frame[offset].toInt() and 0xff) or (frame[offset + 1].toInt() shl 8)).toShort()
+            val attenuated = (sample * next()).toInt()
+            frame[offset] = attenuated.toByte()
+            frame[offset + 1] = (attenuated shr 8).toByte()
+        }
     }
 }

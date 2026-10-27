@@ -1,4 +1,4 @@
-// Verifies signed PCM and WebRTC float attenuation and restoration after assistant speech.
+// Verifies continuous microphone gain ramps across PCM chunks, reversals, and sample-rate changes.
 package com.fghbuild.gomode.voice
 
 import org.junit.Assert.assertArrayEquals
@@ -10,45 +10,57 @@ import java.nio.ByteOrder
 
 class MicrophoneDuckingTest {
     @Test
-    fun `capture post processing attenuates signed samples only during speech`() {
+    fun `capture gain ramps down across buffers and reverses without a step`() {
         var speaking = false
         val processor = MicrophoneDucking { speaking }
-        val buffer = ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder())
-
-        fun fill() {
-            buffer.putFloat(0, 10_000f)
-            buffer.putFloat(4, -10_000f)
-            buffer.putFloat(8, 0f)
-            buffer.putFloat(12, 500f)
-        }
-        fill()
         processor.initialize(48_000, 1)
-        processor.process(3, 4, buffer)
-        assertEquals(10_000f, buffer.getFloat(0), 0f)
+        val buffer = ByteBuffer.allocateDirect(480 * Float.SIZE_BYTES).order(ByteOrder.nativeOrder())
+
+        fun process(): FloatArray {
+            for (offset in 0 until buffer.capacity() step Float.SIZE_BYTES) buffer.putFloat(offset, 10_000f)
+            processor.process(3, 480, buffer)
+            assertEquals(0, buffer.position())
+            return FloatArray(480) { buffer.getFloat(it * Float.SIZE_BYTES) }
+        }
+        assertTrue(process().all { it == 10_000f })
         speaking = true
-        processor.process(3, 4, buffer)
-        assertTrue(buffer.getFloat(0) in 1f..1_000f)
-        assertEquals(-buffer.getFloat(0), buffer.getFloat(4), 0f)
-        assertEquals(0f, buffer.getFloat(8), 0f)
-        assertTrue(buffer.getFloat(12) in 1f..50f)
-        assertEquals(0, buffer.position())
+        val first = process()
+        val second = process()
+        assertTrue(first.first() in 9_990f..10_000f)
+        assertTrue((1 until first.size).all { first[it] < first[it - 1] })
+        assertTrue(kotlin.math.abs(second.first() - first.last()) < 10)
         speaking = false
-        processor.reset(16_000)
-        fill()
-        processor.process(1, 4, buffer)
-        assertEquals(10_000f, buffer.getFloat(0), 0f)
+        val reversed = process()
+        assertTrue(kotlin.math.abs(reversed.first() - second.last()) < 10)
+        assertTrue((1 until reversed.size).all { reversed[it] > reversed[it - 1] })
+        repeat(10) { process() }
+        assertTrue(process().all { it == 10_000f })
+        speaking = true
+        repeat(4) { process() }
+        assertTrue(process().all { it in 999f..1_001f })
+        processor.initialize(48_000, 1)
+        assertTrue("restarting capture during speech must retain attenuation", process().all { it in 999f..1_001f })
     }
 
     @Test
-    fun `recognizer PCM reduction handles negative extremes and leaves unread bytes intact`() {
-        val buffer = ByteBuffer.allocate(10).order(ByteOrder.LITTLE_ENDIAN)
-        listOf(Short.MAX_VALUE, Short.MIN_VALUE, 0, -1, 1234).forEach { buffer.putShort(it.toShort()) }
-        val frame = buffer.array()
-        attenuateMicrophonePcm(frame, 8)
-        assertTrue(buffer.getShort(0).toInt() in 1..3276)
-        assertTrue(buffer.getShort(2).toInt() in -3277..-1)
-        assertEquals(0, buffer.getShort(4).toInt())
-        assertEquals(0, buffer.getShort(6).toInt())
-        assertArrayEquals(byteArrayOf(0xd2.toByte(), 4), frame.copyOfRange(8, 10))
+    fun `recognizer ramps handle signed PCM and leave unread bytes intact`() {
+        val gain = MicrophoneGainRamp(16_000, false)
+        gain.setSpeaking(true)
+        val frame = ByteBuffer.allocate(1_282).order(ByteOrder.LITTLE_ENDIAN)
+        for (offset in 0 until 1_280 step 4) {
+            frame.putShort(offset, Short.MAX_VALUE)
+            frame.putShort(offset + 2, Short.MIN_VALUE)
+        }
+        frame.putShort(1_280, 1234)
+        gain.processPcm(frame.array(), 1_280)
+        assertTrue(frame.getShort(0).toInt() in 32_000..32_767)
+        assertTrue(frame.getShort(1_276).toInt() in 3_270..3_280)
+        assertTrue(frame.getShort(1_278).toInt() in -3_280..-3_270)
+        assertArrayEquals(byteArrayOf(0xd2.toByte(), 4), frame.array().copyOfRange(1_280, 1_282))
+        gain.setSpeaking(false)
+        gain.configure(48_000)
+        val values = FloatArray(4_800) { gain.next() }
+        assertTrue(values.first() in 0.1f..0.101f)
+        assertEquals(1f, values.last(), 0f)
     }
 }

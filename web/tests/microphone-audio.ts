@@ -5,10 +5,19 @@ import { vi } from "./expect";
 export class FakeMicrophoneContext {
   static instances: FakeMicrophoneContext[] = [];
   state = "suspended";
+  currentTime = 0;
   onstatechange: (() => void) | null = null;
   sample = 0.01;
-  gains: Array<{ gain: { value: number }; connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }> =
-    [];
+  gains: Array<{
+    gain: {
+      value: number;
+      cancelScheduledValues: ReturnType<typeof vi.fn>;
+      setValueAtTime: ReturnType<typeof vi.fn>;
+      linearRampToValueAtTime: ReturnType<typeof vi.fn>;
+    };
+    connect: ReturnType<typeof vi.fn>;
+    disconnect: ReturnType<typeof vi.fn>;
+  }> = [];
   destinations: Array<{ stream: MediaStream }> = [];
   source = { connect: vi.fn(), disconnect: vi.fn() };
   analyser = {
@@ -32,7 +41,11 @@ export class FakeMicrophoneContext {
     return this.source;
   }
   createGain() {
-    const gain = { gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() };
+    const gain = {
+      gain: { value: 1, cancelScheduledValues: vi.fn(), setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn() },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    };
     this.gains.push(gain);
     return gain;
   }

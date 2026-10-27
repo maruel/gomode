@@ -7,10 +7,13 @@ import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.media.VolumeShaper
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
 import android.util.Log
+
+private const val THINKING_FADE_OUT_MS = 150L
 
 internal interface ThinkingEarcon {
     fun setThinking(active: Boolean)
@@ -27,6 +30,7 @@ internal class AndroidThinkingEarcon(
         @Volatile var cancelled = false
         var track: AudioTrack? = null
         var focus: AudioFocusRequest? = null
+        var fade: VolumeShaper? = null
     }
 
     private val lock = Any()
@@ -64,17 +68,31 @@ internal class AndroidThinkingEarcon(
                     changed(revision, false, null)
                     return
                 }
-                playback.cancelled = true
-                // Pause immediately silences queued frames and interrupts any blocking worker write.
                 try {
-                    playback.track?.pause()
-                    playback.track?.flush()
+                    val track = playback.track
+                    if (track == null) {
+                        finishStop(playback)
+                    } else {
+                        // Shape actual playback, including frames already queued by the worker.
+                        val fade =
+                            track.createVolumeShaper(
+                                VolumeShaper.Configuration
+                                    .Builder()
+                                    .setDuration(THINKING_FADE_OUT_MS)
+                                    .setInterpolatorType(VolumeShaper.Configuration.INTERPOLATOR_TYPE_LINEAR)
+                                    .setCurve(floatArrayOf(0f, 1f), floatArrayOf(1f, 0f))
+                                    .build(),
+                            )
+                        playback.fade = fade
+                        fade.apply(VolumeShaper.Operation.PLAY)
+                        main.postDelayed({ synchronized(lock) { finishStop(playback) } }, THINKING_FADE_OUT_MS)
+                    }
                 } catch (
                     @Suppress("TooGenericExceptionCaught") error: Exception, // Preserve voice state.
                 ) {
-                    Log.w("GoModeThinkingEarcon", "Could not pause thinking piano", error)
+                    Log.w("GoModeThinkingEarcon", "Could not fade thinking piano", error)
+                    finishStop(playback)
                 }
-                abandonFocus(playback)
                 changed(revision, false, null)
                 return
             }
@@ -109,6 +127,21 @@ internal class AndroidThinkingEarcon(
                 Log.w("GoModeThinkingEarcon", "Could not start thinking piano", error)
             }
         }
+    }
+
+    private fun finishStop(playback: Playback) {
+        playback.cancelled = true
+        try {
+            playback.track?.pause()
+            playback.track?.flush()
+            playback.fade?.close()
+            playback.fade = null
+        } catch (
+            @Suppress("TooGenericExceptionCaught") error: Exception, // Worker teardown still releases the track.
+        ) {
+            Log.w("GoModeThinkingEarcon", "Could not stop thinking piano", error)
+        }
+        abandonFocus(playback)
     }
 
     private fun stream(playback: Playback) {
@@ -149,11 +182,12 @@ internal class AndroidThinkingEarcon(
             // Detach under the lifecycle lock; release only after this worker has stopped writing.
             val report =
                 synchronized(lock) {
+                    if (playback.fade != null) finishStop(playback)
                     playback.track = null
                     val report = current === playback
+                    abandonFocus(playback)
                     if (report) {
                         current = null
-                        abandonFocus(playback)
                     }
                     report
                 }

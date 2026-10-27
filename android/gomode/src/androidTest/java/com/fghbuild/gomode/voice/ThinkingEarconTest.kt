@@ -79,7 +79,9 @@ class ThinkingEarconTest {
                 awaitPlayback(true)
                 instrumentation.runOnMainSync {
                     earcon.setThinking(false)
+                    assertTrue("the active track remains alive for its fade-out", playing())
                     earcon.setThinking(false)
+                    assertTrue("repeated stop must not cut the fade short", playing())
                 }
                 awaitPlayback(false)
                 awaitWorkersStopped()

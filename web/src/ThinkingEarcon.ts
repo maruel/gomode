@@ -1,6 +1,9 @@
 // Plays the shared piano score with bounded live synthesis during half-duplex thinking turns.
 
 import score from "../../assets/thinking-score.json";
+import { AudioGain } from "./AudioGain";
+
+const FADE_OUT_SECONDS = 0.15;
 
 export interface ThinkingEarcon {
   prepare(): void;
@@ -16,6 +19,7 @@ class ThinkingPiano {
   private readonly nodes: AudioNode[] = [];
   private readonly voices = new Set<PianoVoice>();
   private readonly output: GainNode;
+  private readonly gain: AudioGain;
   private readonly input: BiquadFilterNode;
   private readonly started: number;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -29,14 +33,13 @@ class ThinkingPiano {
   ) {
     this.started = context.currentTime + 0.2;
     this.output = this.own(context.createGain());
+    this.gain = new AudioGain(this.output.gain, 0);
     this.input = this.own(context.createBiquadFilter());
   }
 
   private connect(): void {
     const context = this.context;
-    this.output.gain.setValueAtTime(0, context.currentTime);
-    this.output.gain.setValueAtTime(0, this.started);
-    this.output.gain.linearRampToValueAtTime(1, this.started + 1.2);
+    this.gain.rampTo(1, 1.2, this.started);
     this.output.connect(context.destination);
     this.input.type = "lowpass";
     this.input.frequency.value = 4200;
@@ -70,7 +73,6 @@ class ThinkingPiano {
       try {
         this.schedule();
       } catch (error: unknown) {
-        this.stop();
         this.onStopped(error);
       }
     }, 100);
@@ -79,7 +81,6 @@ class ThinkingPiano {
   private schedule(): void {
     const now = this.context.currentTime;
     if (!this.loop && now >= this.started + score.duration) {
-      this.stop();
       this.onStopped(null);
       return;
     }
@@ -149,12 +150,19 @@ class ThinkingPiano {
     for (const node of voice.nodes) node.disconnect();
   }
 
-  stop(): void {
+  stop(fade: boolean, onStopped: () => void): void {
     if (this.timer !== null) clearInterval(this.timer);
     this.timer = null;
-    // Silence every echo and queued note before releasing the voice graph.
-    for (const node of this.nodes) node.disconnect();
-    for (const voice of this.voices) this.release(voice, true);
+    const release = () => {
+      for (const node of this.nodes) node.disconnect();
+      for (const voice of this.voices) this.release(voice, true);
+      onStopped();
+    };
+    if (fade && this.context.currentTime > this.started) {
+      // Fade the master output, including echoes and already scheduled notes.
+      this.gain.rampTo(0, FADE_OUT_SECONDS, this.context.currentTime);
+      setTimeout(release, FADE_OUT_SECONDS * 1_000);
+    } else release();
   }
 }
 
@@ -162,12 +170,13 @@ export class WebAudioThinkingEarcon implements ThinkingEarcon {
   private static activePreview: WebAudioThinkingEarcon | null = null;
   private context: AudioContext | null = null;
   private piano: ThinkingPiano | null = null;
+  private readonly retiring = new Map<ThinkingPiano, AudioContext>();
   private activation = 0;
 
   constructor(private readonly preview?: { onPlaybackChange: (playing: boolean, error: Error | null) => void }) {}
 
   private failed(error: unknown): void {
-    this.setThinking(false);
+    this.stop(false);
     this.preview?.onPlaybackChange(false, error instanceof Error ? error : new Error(String(error)));
     console.warn("Could not play thinking audio", error);
   }
@@ -188,12 +197,7 @@ export class WebAudioThinkingEarcon implements ThinkingEarcon {
 
   setThinking(active: boolean): void {
     if (!active) {
-      this.activation++;
-      this.piano?.stop();
-      this.piano = null;
-      if (WebAudioThinkingEarcon.activePreview === this) WebAudioThinkingEarcon.activePreview = null;
-      this.preview?.onPlaybackChange(false, null);
-      if (this.preview !== undefined) this.closeContext();
+      this.stop(true);
       return;
     }
     if (this.context === null || this.piano !== null) return;
@@ -204,7 +208,6 @@ export class WebAudioThinkingEarcon implements ThinkingEarcon {
     try {
       const piano = new ThinkingPiano(this.context, this.preview === undefined, (error) => {
         if (this.piano !== piano) return;
-        this.piano = null;
         if (error !== null) this.failed(error);
         else this.setThinking(false);
       });
@@ -221,11 +224,30 @@ export class WebAudioThinkingEarcon implements ThinkingEarcon {
     this.closeContext();
   }
 
+  private stop(fade: boolean): void {
+    this.activation++;
+    const piano = this.piano;
+    const context = this.context;
+    this.piano = null;
+    if (piano !== null && context !== null) {
+      this.retiring.set(piano, context);
+      piano.stop(fade, () => {
+        this.retiring.delete(piano);
+        if (context !== this.context && ![...this.retiring.values()].includes(context)) this.releaseContext(context);
+      });
+    }
+    if (WebAudioThinkingEarcon.activePreview === this) WebAudioThinkingEarcon.activePreview = null;
+    this.preview?.onPlaybackChange(false, null);
+    if (this.preview !== undefined) this.closeContext();
+  }
+
   private closeContext(): void {
     const context = this.context;
     this.context = null;
-    if (context !== null) {
-      void context.close().catch((error: unknown) => console.warn("Could not close thinking audio", error));
-    }
+    if (context !== null && ![...this.retiring.values()].includes(context)) this.releaseContext(context);
+  }
+
+  private releaseContext(context: AudioContext): void {
+    void context.close().catch((error: unknown) => console.warn("Could not close thinking audio", error));
   }
 }

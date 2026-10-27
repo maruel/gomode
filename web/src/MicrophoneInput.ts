@@ -1,8 +1,10 @@
 // Attenuates outgoing WebRTC microphone audio during assistant speech.
 
+import { AudioGain } from "./AudioGain";
+
 export class MicrophoneInput {
   private context: AudioContext | null = null;
-  private gains = new Set<GainNode>();
+  private gains = new Map<GainNode, AudioGain>();
   private speaking = false;
 
   async prepare(): Promise<void> {
@@ -17,10 +19,10 @@ export class MicrophoneInput {
     const gain = context.createGain();
     const destination = context.createMediaStreamDestination();
     // -20 dB reduces speaker leakage while leaving louder user interruptions possible.
-    gain.gain.value = this.speaking ? 0.1 : 1;
+    const envelope = new AudioGain(gain.gain, this.speaking ? 0.1 : 1);
     source.connect(gain);
     gain.connect(destination);
-    this.gains.add(gain);
+    this.gains.set(gain, envelope);
     return {
       stream: destination.stream,
       close: () => {
@@ -33,8 +35,11 @@ export class MicrophoneInput {
   }
 
   setSpeaking(speaking: boolean): void {
+    if (this.speaking === speaking) return;
     this.speaking = speaking;
-    for (const gain of this.gains) gain.gain.value = speaking ? 0.1 : 1;
+    const at = this.context?.currentTime;
+    if (at === undefined) return;
+    for (const gain of this.gains.values()) gain.rampTo(speaking ? 0.1 : 1, speaking ? 0.03 : 0.1, at);
   }
 
   close(): void {

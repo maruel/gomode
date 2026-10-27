@@ -4,6 +4,7 @@ import { vi } from "./expect";
 
 class FakeParam {
   value = 0;
+  cancelScheduledValues = vi.fn();
   setValueAtTime = vi.fn();
   linearRampToValueAtTime = vi.fn();
   exponentialRampToValueAtTime = vi.fn();
