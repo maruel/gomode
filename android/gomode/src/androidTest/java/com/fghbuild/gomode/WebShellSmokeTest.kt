@@ -9,6 +9,7 @@ import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onFirst
@@ -295,6 +296,11 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
             composeRule.onAllNodesWithTag("gomode-shell-retry").fetchSemanticsNodes().isNotEmpty()
         }
         assertTrue("Retained page did not report renderer loss", rendererCallbacks.get() > 0)
+        composeRule.onNodeWithTag("gomode-shell-retry").assertContentDescriptionEquals("Retry service")
+        composeRule.onNodeWithTag("gomode-shell-open-settings").assertContentDescriptionEquals("Settings")
+        UiDevice
+            .getInstance(InstrumentationRegistry.getInstrumentation())
+            .executeShellCommand("screencap -p /data/local/tmp/gomode-service-recovery.png")
         composeRule.onNodeWithTag("gomode-shell-retry").performClick()
         waitForHostedFrontend()
         assertNotSame(second, waitForWebView())

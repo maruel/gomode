@@ -186,6 +186,9 @@ export function createDeviceLogin(options: DeviceLoginOptions) {
         !(data.interval > 0)
       )
         throw new Error("invalid_response");
+      const verificationURL = new URL(data.verification_uri);
+      if (verificationURL.protocol !== "https:" && verificationURL.protocol !== "http:")
+        throw new Error("invalid_response");
       setCode(data);
       setState("pending");
       const expires = Date.now() + data.expires_in * 1000;
@@ -342,7 +345,7 @@ function messages(value: Messages | undefined) {
   return { ...defaultDeviceLoginMessages, ...(typeof value === "function" ? value() : value) };
 }
 
-/** Minimal large-code display. Public --device-login-* CSS tokens inherit host styling. */
+/** Pairing instructions and active code. Public --device-login-* CSS tokens inherit host styling. */
 export function DeviceLoginDisplay(props: {
   options: DeviceLoginOptions;
   messages?: Messages;
@@ -356,6 +359,13 @@ export function DeviceLoginDisplay(props: {
   });
   const m = () => messages(props.messages);
   const r = () => recoveryMessages(props.recoveryMessages);
+  let activeCode: HTMLParagraphElement | undefined;
+  let outcome: HTMLParagraphElement | undefined;
+  createEffect(() => {
+    const state = login.state();
+    if (state === "pending") activeCode?.focus();
+    else if (state !== "idle" && state !== "starting") outcome?.focus();
+  });
   const status = () => {
     const problem = login.failure();
     if (login.state() !== "error" || !problem)
@@ -373,36 +383,43 @@ export function DeviceLoginDisplay(props: {
   };
   return (
     <section class={styles.root}>
-      <Show when={login.state() !== "idle" && login.state() !== "starting" && login.code()}>
+      <Show when={login.state() === "idle" || login.state() === "starting" || login.state() === "pending"}>
+        <p class={styles.instructions}>{m().instructions}</p>
+      </Show>
+      <Show when={login.state() === "pending" && login.code()}>
         {(code) => (
-          <>
-            <p>{m().instructions}</p>
-            <p class={styles.code} aria-label={m().code}>
+          <div class={styles.pairing}>
+            <a class={styles.url} href={code().verification_uri} target="_blank" rel="noopener noreferrer">
+              {code().verification_uri}
+            </a>
+            <span class={styles.caption}>{m().code}</span>
+            <p ref={activeCode} class={styles.code} role="group" aria-label={m().code} tabIndex={-1}>
               {code().user_code}
             </p>
-            <p class={styles.url}>{code().verification_uri}</p>
-            <Show when={login.state() === "pending"}>
-              <p>{m().remaining(login.remaining())}</p>
-            </Show>
-          </>
+            <p class={styles.remaining}>{m().remaining(login.remaining())}</p>
+          </div>
         )}
       </Show>
-      <p role="status">{status()}</p>
-      <Show when={login.failure()?.kind === "delivery" && props.options.onCheckSession}>
-        <button type="button" onClick={() => props.options.onCheckSession?.()}>
-          {r().checkSignIn}
-        </button>
-      </Show>
-      <Show when={login.state() !== "starting" && login.state() !== "pending" && login.state() !== "approved"}>
-        <button
-          type="button"
-          onClick={() => {
-            void login.start();
-          }}
-        >
-          {login.state() === "idle" ? m().start : r().newCode}
-        </button>
-      </Show>
+      <p ref={outcome} class={styles.status} role="status" tabIndex={-1}>
+        {status()}
+      </p>
+      <div class={styles.actions}>
+        <Show when={login.failure()?.kind === "delivery" && props.options.onCheckSession}>
+          <button type="button" onClick={() => props.options.onCheckSession?.()}>
+            {r().checkSignIn}
+          </button>
+        </Show>
+        <Show when={login.state() !== "starting" && login.state() !== "pending" && login.state() !== "approved"}>
+          <button
+            type="button"
+            onClick={() => {
+              void login.start();
+            }}
+          >
+            {login.state() === "idle" ? m().start : r().newCode}
+          </button>
+        </Show>
+      </div>
     </section>
   );
 }
@@ -424,6 +441,12 @@ export function DeviceLoginApproval(props: {
   const [busy, setBusy] = createSignal(false);
   const [state, setState] = createSignal<"idle" | "approved" | "denied">("idle");
   const [problem, setProblem] = createSignal<DeviceLoginFailure | null>(null);
+  let review: HTMLParagraphElement | undefined;
+  let outcome: HTMLParagraphElement | undefined;
+  createEffect(() => {
+    if (details()) review?.focus();
+    else if (state() !== "idle" || problem()) outcome?.focus();
+  });
   const r = () => recoveryMessages(props.recoveryMessages);
   const c = new AbortController();
   onCleanup(() => c.abort());
@@ -468,6 +491,7 @@ export function DeviceLoginApproval(props: {
     return m().approvalError;
   };
   const lookup = async () => {
+    if (busy()) return;
     setBusy(true);
     setState("idle");
     setProblem(null);
@@ -506,7 +530,7 @@ export function DeviceLoginApproval(props: {
   };
   const decide = async (approve: boolean) => {
     const d = details();
-    if (!d) return;
+    if (!d || busy()) return;
     setBusy(true);
     let sent = false;
     try {
@@ -536,70 +560,83 @@ export function DeviceLoginApproval(props: {
   };
   return (
     <section class={styles.root}>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          void lookup();
-        }}
-      >
-        <label for={id}>{m().code}</label>
-        <input
-          id={id}
-          value={code()}
-          onInput={(e) => {
-            setCode(e.currentTarget.value);
-            setDetails(null);
-            setState("idle");
-            setProblem(null);
+      <Show when={state() === "idle"}>
+        <form
+          aria-busy={busy()}
+          onSubmit={(e) => {
+            e.preventDefault();
+            void lookup();
           }}
-          autocomplete="off"
-          autocapitalize="characters"
-          spellcheck={false}
-          maxLength={16}
-          required
-          disabled={busy()}
-        />
-        <button type="submit" disabled={busy()}>
-          {m().lookup}
-        </button>
-      </form>
-      <Show when={details()}>
-        {(d) => (
-          <>
-            <p class={styles.code}>{d().user_code}</p>
-            <p>{m().warning}</p>
-            <dl>
-              <dt>{m().address}</dt>
-              <dd>{d().ip}</dd>
-              <dt>{m().device}</dt>
-              <dd>{d().user_agent}</dd>
-              <dt>{m().requested}</dt>
-              <dd>{new Date(d().created_at).toLocaleString()}</dd>
-            </dl>
-            <div class={styles.actions}>
-              <button
-                type="button"
-                disabled={busy()}
-                onClick={() => {
-                  void decide(true);
-                }}
-              >
-                {m().approve}
-              </button>
-              <button
-                type="button"
-                disabled={busy()}
-                onClick={() => {
-                  void decide(false);
-                }}
-              >
-                {m().deny}
-              </button>
+        >
+          <label for={id}>{m().code}</label>
+          <input
+            id={id}
+            class={styles.codeInput}
+            placeholder="XXXX-XXXX-XXXX"
+            value={code()}
+            onInput={(e) => {
+              setCode(e.currentTarget.value);
+              setDetails(null);
+              setState("idle");
+              setProblem(null);
+            }}
+            autocomplete="off"
+            autocapitalize="characters"
+            spellcheck={false}
+            maxLength={16}
+            required
+            disabled={busy()}
+          />
+          <Show when={!details()}>
+            <button type="submit" disabled={busy() || !code().trim()}>
+              {m().lookup}
+            </button>
+          </Show>
+        </form>
+        <Show when={details()}>
+          {(d) => (
+            <div class={styles.review} aria-busy={busy()}>
+              <p ref={review} class={styles.warning} tabIndex={-1}>
+                {m().warning}
+              </p>
+              <dl>
+                <dt>{m().address}</dt>
+                <dd>{d().ip}</dd>
+                <dt>{m().requested}</dt>
+                <dd>{new Date(d().created_at).toLocaleString()}</dd>
+              </dl>
+              <details class={styles.browser}>
+                <summary>{m().device}</summary>
+                <p>{d().user_agent}</p>
+              </details>
+              <div class={styles.actions}>
+                <button
+                  type="button"
+                  disabled={busy()}
+                  onClick={() => {
+                    void decide(true);
+                  }}
+                >
+                  {m().approve}
+                </button>
+                <button
+                  class={styles.secondary}
+                  type="button"
+                  disabled={busy()}
+                  onClick={() => {
+                    void decide(false);
+                  }}
+                >
+                  {m().deny}
+                </button>
+              </div>
             </div>
-          </>
-        )}
+          )}
+        </Show>
       </Show>
-      <p role="status">{status()}</p>
+      <p ref={outcome} class={styles.status} role="status" tabIndex={-1}>
+        {status()}
+      </p>
     </section>
   );
 }

@@ -23,8 +23,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
@@ -1022,12 +1028,12 @@ private fun ShellRecoveryStrip(
             )
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 recovery.retryTarget?.let {
-                    Button(onClick = onRetry, modifier = Modifier.testTag("gomode-shell-retry")) {
-                        Text("Retry service")
+                    FilledTonalIconButton(onClick = onRetry, modifier = Modifier.testTag("gomode-shell-retry")) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Retry service")
                     }
                 }
-                Button(onClick = onOpenSettings, modifier = Modifier.testTag("gomode-shell-open-settings")) {
-                    Text("Settings")
+                IconButton(onClick = onOpenSettings, modifier = Modifier.testTag("gomode-shell-open-settings")) {
+                    Icon(Icons.Default.Settings, contentDescription = "Settings")
                 }
             }
         }

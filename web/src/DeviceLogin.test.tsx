@@ -4,7 +4,7 @@ import { afterEach, describe, it } from "node:test";
 import { createRoot } from "solid-js";
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { expect, vi } from "../tests/expect";
-import { createDeviceLogin, DeviceLoginApproval, type DeviceLoginState } from "./DeviceLogin";
+import { createDeviceLogin, DeviceLoginApproval, DeviceLoginDisplay, type DeviceLoginState } from "./DeviceLogin";
 
 const originalFetch = globalThis.fetch;
 const endpoints = { start: "/start", poll: "/poll", lookup: "/lookup", approve: "/approve" };
@@ -24,6 +24,40 @@ afterEach(() => {
 });
 
 describe("device login", () => {
+  it("rejects an unsafe verification link before exposing the code or polling", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(Response.json({ ...code, verification_uri: "javascript:alert(1)" }));
+    globalThis.fetch = fetch;
+    let dispose = () => {};
+    const login = createRoot((d) => {
+      dispose = d;
+      return createDeviceLogin({ endpoints, onSession: () => {} });
+    });
+    try {
+      await login.start();
+      expect(login.state()).toBe("error");
+      expect(login.code()).toBeNull();
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      dispose();
+    }
+  });
+  it("explains pairing before starting and removes the address and code on expiry", async () => {
+    vi.useFakeTimers();
+    globalThis.fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json({ ...code, expires_in: 2 }));
+    render(() => <DeviceLoginDisplay options={{ endpoints, onSession: () => {} }} />);
+    expect(screen.getByText(/On a device where you are signed in/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in with another device" }));
+    await flush();
+    expect(screen.getByRole("link", { name: code.verification_uri })).toHaveAttribute("href", code.verification_uri);
+    expect(screen.getByRole("group", { name: "Device code" })).toHaveFocus();
+    vi.advanceTimersByTime(2000);
+    expect(screen.queryByLabelText("Device code")).toBeNull();
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getByRole("status")).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Create a new code" })).toBeInTheDocument();
+  });
   it("respects pending and increased slow-down intervals and passes the normal host session response", async () => {
     vi.useFakeTimers();
     const onSession = vi.fn();
@@ -146,6 +180,7 @@ describe("device login", () => {
     fireEvent.input(screen.getByRole("textbox", { name: "Device code" }), { target: { value: code.user_code } });
     fireEvent.click(screen.getByRole("button", { name: "Check code" }));
     await waitFor(() => expect(screen.getByText("Car browser")).toBeInTheDocument());
+    expect(screen.getByText(/Never approve a code sent by someone else/)).toHaveFocus();
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/Never approve a code sent by someone else/)).toBeInTheDocument();
     expect(screen.getByText(/This device will receive your account’s permissions/)).toBeInTheDocument();
@@ -158,6 +193,9 @@ describe("device login", () => {
       user_code: code.user_code,
       approve: true,
     });
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Sign-in approved."));
+    expect(screen.getByRole("status")).toHaveFocus();
+    expect(screen.queryByRole("textbox")).toBeNull();
   });
   for (const [error, kind, status] of [
     ["audit_failed", "audit", 500],

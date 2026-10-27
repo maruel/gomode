@@ -4,50 +4,159 @@
   color: var(--device-login-color, inherit);
   background: var(--device-login-background, transparent);
   font: inherit;
+  line-height: 1.5;
   max-width: 42rem;
+  min-width: 0;
+  margin-block: 1.5rem;
   overflow-wrap: anywhere;
 }
-.root form,
+.instructions {
+  margin-block: 0 1.25rem;
+}
+.root form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem 0.75rem;
+  align-items: start;
+}
+.root label {
+  grid-column: 1 / -1;
+  font-weight: 600;
+}
 .actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--device-login-gap, 0.75rem);
   align-items: center;
 }
+.actions:empty,
+.status:empty {
+  display: none;
+}
 .root button,
 .root input {
+  box-sizing: border-box;
   font: inherit;
   min-height: 3rem;
-  padding: 0.5rem 1rem;
-  color: inherit;
+  padding: 0.625rem 1rem;
+  border: 1px solid var(--device-login-border, ButtonBorder);
+  border-radius: var(--device-login-radius, 0.3rem);
 }
 .root button {
   color: var(--device-login-button-color, ButtonText);
   background: var(--device-login-button-background, ButtonFace);
-  border: 1px solid var(--device-login-border, ButtonBorder);
-  border-radius: var(--device-login-radius, 0.3rem);
+  font-weight: 600;
+  cursor: pointer;
+}
+.root button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.root button:enabled:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+.root button.secondary {
+  color: var(--device-login-color, inherit);
+  background: var(--device-login-background, transparent);
 }
 .root input {
   color: var(--device-login-input-color, CanvasText);
   background: var(--device-login-input-background, Canvas);
   min-width: 0;
-  max-width: 100%;
-  box-sizing: border-box;
+  width: 100%;
+}
+.root input.codeInput {
+  font-family: ui-monospace, monospace;
+  font-size: 1.125rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 .root :focus-visible {
   outline: 3px solid var(--device-login-focus, Highlight);
   outline-offset: 3px;
 }
+.pairing {
+  padding-block: 1.25rem;
+  border-block: 1px solid var(--device-login-border, ButtonBorder);
+  text-align: center;
+}
+.caption {
+  display: block;
+  margin-block-start: 1.5rem;
+  font-weight: 600;
+}
 .code {
-  font-size: clamp(2rem, 10cqi, 4rem);
+  font-size: clamp(2rem, 8cqi, 3rem);
   font-weight: 700;
-  font-family: monospace;
-  letter-spacing: 0.08em;
+  font-family: ui-monospace, monospace;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  margin-block: 0.25rem 0.75rem;
+  user-select: all;
 }
 .url {
-  font-size: 1.2rem;
+  display: inline-block;
+  max-width: 100%;
+  color: var(--device-login-link-color, LinkText);
+  font-size: 1.125rem;
+  text-underline-offset: 0.2em;
+}
+.remaining {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.status {
+  margin-block: 1rem;
+  font-weight: 600;
+}
+.review {
+  margin-block-start: 1.25rem;
+  padding-block-start: 1.25rem;
+  border-block-start: 1px solid var(--device-login-border, ButtonBorder);
+}
+.warning {
+  margin-block: 0 1rem;
+  padding-inline-start: 1rem;
+  border-inline-start: 3px solid var(--device-login-border, ButtonBorder);
+}
+.browser {
+  margin-block: 1rem 1.5rem;
+}
+.browser summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.browser p {
+  margin-block: 0.5rem 0;
+}
+.root dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.5rem 1rem;
+  margin-block: 1rem 1.5rem;
+}
+.root dt {
+  font-weight: 600;
 }
 .root dd {
-  margin-inline-start: 0;
-  margin-block-end: 0.75rem;
+  margin: 0;
+}
+@container (max-width: 28rem) {
+  .root form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .root form button {
+    width: 100%;
+  }
+  .root dl {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.125rem;
+  }
+  .root dd + dt {
+    margin-block-start: 0.75rem;
+  }
+  .actions > button {
+    flex: 1 1 auto;
+  }
 }
