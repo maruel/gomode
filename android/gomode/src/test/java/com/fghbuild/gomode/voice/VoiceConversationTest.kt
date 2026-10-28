@@ -125,7 +125,7 @@ class VoiceConversationTest {
                             when (request.requestUrl?.encodedPath) {
                                 "/.well-known/gomode.json" -> {
                                     MockResponse().setBody(
-                                        """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":2,
+                                        """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":3,
                         "toolGroups":[],"voiceGateway":{"url":"/","required":false,"authRequired":false}}}""",
                                     )
                                 }

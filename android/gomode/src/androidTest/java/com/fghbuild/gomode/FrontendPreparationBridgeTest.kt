@@ -270,7 +270,10 @@ class FrontendPreparationBridgeTest {
 
     private fun signal(view: WebView): String {
         val serialized =
-            evaluate(view, "JSON.stringify({document:capturedDocument,token:capturedToken,ready:true,tools:[]})")
+            evaluate(
+                view,
+                "JSON.stringify({document:capturedDocument,token:capturedToken,scope:\"fixture\",ready:true,tools:[]})",
+            )
         return JSONArray("[$serialized]").getString(0)
     }
 
@@ -308,7 +311,7 @@ class FrontendPreparationBridgeTest {
                     window.authAcknowledged = false; window.frameSent = null;
                     addEventListener('message', event => { if ('frameSent' in event.data) frameSent = event.data.frameSent; });
                     function publishReady(ready) {
-                      gomodeFrontendReadiness.postMessage(JSON.stringify({document:capturedDocument,token:capturedToken,ready,tools:ready?tools:[]}));
+                      gomodeFrontendReadiness.postMessage(JSON.stringify({document:capturedDocument,token:capturedToken,scope:"fixture",ready,tools:ready?tools:[]}));
                     }
                     function authenticate(payload) {
                       window.authAcknowledged = false;

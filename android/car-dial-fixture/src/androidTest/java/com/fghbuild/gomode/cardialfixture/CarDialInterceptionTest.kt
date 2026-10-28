@@ -323,6 +323,9 @@ class CarDialInterceptionTest {
             dial(NUMBER)
             awaitFrontendWaiting(before)
             assertNoTransport(before)
+            val waiting = startupTimingRecords().last { it.contains("event=stage_started stage=FRONTEND") }
+            val attempt = waiting.substringAfter("attempt=").substringBefore(' ')
+            assertTrue(waiting, waiting.contains("source=CAR") && waiting.contains("remaining_ms="))
             if (locked) assertLockedNativeSurface() else assertUnlockedShell()
             val label = if (locked) "locked" else "unlocked"
             assertTrue(device.takeScreenshot(File(context.getExternalFilesDir(null), "frontend-$label-wait.png")))
@@ -332,6 +335,7 @@ class CarDialInterceptionTest {
             assertEquals(1, nativeTransportStarts())
             assertEquals(before.getInt("rtcOffers") + 1, fixtureStats().getInt("rtcOffers"))
             assertEquals(before.getInt("textSetups"), fixtureStats().getInt("textSetups"))
+            assertStartupOutcome(attempt, "CONNECTED")
             endNativeVoice()
             awaitVoiceClosed()
         }
@@ -351,9 +355,12 @@ class CarDialInterceptionTest {
             withSecureKeyguard {
                 dial(NUMBER)
                 awaitFrontendWaiting(before)
+                val waiting = startupTimingRecords().last { it.contains("event=stage_started stage=FRONTEND") }
+                val attempt = waiting.substringAfter("attempt=").substringBefore(' ')
                 endNativeVoice()
                 awaitVoiceClosed()
                 assertNoTransport(before)
+                assertStartupOutcome(attempt, "CANCELED")
                 frontendBlocked(false)
                 awaitFrontendPublished(before)
                 awaitVoiceClosed()
@@ -389,6 +396,9 @@ class CarDialInterceptionTest {
                 )
                 awaitVoiceClosed()
                 assertNoTransport(before)
+                val terminal = startupTimingRecords().single { it.contains("event=finished") }
+                assertTrue(terminal, terminal.contains("outcome=TIMED_OUT stage=FRONTEND"))
+                assertTrue(terminal, terminal.contains("remaining_ms=0"))
                 frontendBlocked(false)
                 awaitFrontendPublished(before)
                 awaitVoiceClosed()
@@ -958,6 +968,28 @@ class CarDialInterceptionTest {
 
     private fun nativeTransportStarts(): Int =
         nativeStartupDiagnostics().lineSequence().count { it.contains("Starting prepared voice transport") }
+
+    private fun startupTimingRecords(): List<String> {
+        val pid = shell("pidof $APP").trim().toIntOrNull() ?: return emptyList()
+        return shell("logcat --pid=$pid -d -s GoModeVoiceStartup:I *:S")
+            .lineSequence()
+            .filter { it.contains("source=CAR") }
+            .toList()
+    }
+
+    private fun assertStartupOutcome(
+        attempt: String,
+        outcome: String,
+    ) {
+        val terminal =
+            startupTimingRecords().filter {
+                it.contains(
+                    "attempt=$attempt ",
+                ) && it.contains("event=finished")
+            }
+        assertEquals(terminal.toString(), 1, terminal.size)
+        assertTrue(terminal.toString(), terminal.single().contains("outcome=$outcome "))
+    }
 
     private fun awaitFrontendWaiting(before: JSONObject) {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)

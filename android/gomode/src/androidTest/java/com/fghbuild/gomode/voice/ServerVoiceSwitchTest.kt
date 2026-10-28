@@ -738,7 +738,7 @@ class ServerVoiceSwitchTest {
                     json(
                         """
                         {"service":"fixture","serviceVersion":"1","apiVersion":1,"webShell":{
-                        "bridgeVersion":2,"toolGroups":[{"name":"fixture","endpoint":"$mcpPath",
+                        "bridgeVersion":3,"toolGroups":[{"name":"fixture","endpoint":"$mcpPath",
                         "protocolVersion":"2026-07-28","authRequired":true}],
                         "voiceGateway":{"required":false,"url":${if (gateway) "\"/\"" else "null"},"authRequired":false}}}
                         """.trimIndent(),

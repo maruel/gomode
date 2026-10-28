@@ -46,11 +46,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -162,6 +166,7 @@ internal class VoiceSession(
     voiceChimePlayer: VoiceChimePlayer = AndroidVoiceChime(),
     private val callController: VoiceCallController = NoopVoiceCallController(),
     private val switchServer: suspend (String) -> Unit = { id -> settingsRepository.switchService(id) },
+    private val startupTiming: () -> VoiceStartupTiming? = { null },
 ) : VoiceSessionController {
     private val foreground = VoiceForegroundLease(appContext)
     private val audioManager = appContext.getSystemService(AudioManager::class.java)
@@ -186,6 +191,9 @@ internal class VoiceSession(
     private var setupTimeoutJob: Job? = null
     private var reconnectJob: Job? = null
     private var connectJob: Job? = null
+
+    // Recovery keeps its captured request instead of acquiring a newer UI owner.
+    private var startupTimingOwner: VoiceStartupTiming? = null
     private var signalingJob: Job? = null
     private val attemptGeneration = AtomicLong()
     private val pendingGatewayTools = mutableMapOf<Long, Int>()
@@ -211,6 +219,7 @@ internal class VoiceSession(
     override val state: StateFlow<VoiceState> = _state.asStateFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var toolWork = SupervisorJob()
 
     /** True while the model is speaking — injected text is queued and sent after the turn ends. */
     private var speakerActive = false
@@ -276,6 +285,8 @@ internal class VoiceSession(
 
     private fun invalidateAttempt(): Long {
         val attempt = attemptGeneration.incrementAndGet()
+        toolWork.cancel()
+        toolWork = SupervisorJob()
         connectJob?.cancel()
         connectJob = null
         signalingJob?.cancel()
@@ -288,6 +299,8 @@ internal class VoiceSession(
     /** Connect via WebRTC data channel through the configured service voice gateway. */
     @Suppress("TooGenericExceptionCaught") // Error boundary: surface all failures to UI.
     override fun connect(preserveTranscript: Boolean, conversationID: String?) {
+        if (!preserveTranscript) startupTimingOwner = startupTiming()
+        val timing = startupTimingOwner
         val attempt = invalidateAttempt()
         awaitingGatewayTurn = false
         reconnectJob?.cancel()
@@ -336,6 +349,7 @@ internal class VoiceSession(
         connectJob =
             scope.launch {
                 try {
+                    timing?.enter(VoiceStartupStage.TOOLS)
                     val setup =
                         try {
                             voiceConversation.prepare(pinnedVoice)
@@ -371,6 +385,7 @@ internal class VoiceSession(
                         return@launch
                     }
                     telecomCallActive = callController.isSupported()
+                    timing?.enter(VoiceStartupStage.TRANSPORT)
                     if (telecomCallActive) {
                         // The self-managed call owns call audio from here on.
                         abandonAudioFocus()
@@ -487,7 +502,7 @@ internal class VoiceSession(
                                     scope.launch {
                                         try {
                                             if (!ownsAttempt(attempt)) return@launch
-                                            setLocalDescriptionAndWaitForICE(pc, desc)
+                                            setLocalDescriptionAndWaitForICE(pc, desc, timing)
                                             if (!ownsAttempt(attempt)) return@launch
                                             val offerSDP =
                                                 pc.localDescription?.description
@@ -536,14 +551,20 @@ internal class VoiceSession(
                                             lastAnswerSDP = resp.sdp
                                             val answer = SessionDescription(SessionDescription.Type.ANSWER, resp.sdp)
                                             pc.setRemoteDescription(noOpSdpObserver(), answer)
-                                            startSetupTimeout(pc, voiceGatewayClient, voiceGatewayHeaders)
+                                            startSetupTimeout(pc, voiceGatewayClient, voiceGatewayHeaders, timing)
                                             Log.i(TAG, "WebRTC signaling complete, session=${resp.sessionID}")
                                         } catch (e: CancellationException) {
                                             throw e
                                         } catch (e: GatewayConnectionException) {
-                                            if (ownsAttempt(attempt)) setError(requireNotNull(e.message))
+                                            if (ownsAttempt(attempt)) {
+                                                timing?.finishFailure(e)
+                                                setError(requireNotNull(e.message))
+                                            }
                                         } catch (e: Exception) {
-                                            if (ownsAttempt(attempt)) setError("SDP exchange failed: ${e.message}")
+                                            if (ownsAttempt(attempt)) {
+                                                timing?.finishFailure(e)
+                                                setError("SDP exchange failed: ${e.message}")
+                                            }
                                         }
                                     }
                             }
@@ -568,7 +589,10 @@ internal class VoiceSession(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    if (ownsAttempt(attempt)) setError("WebRTC connection failed: ${e.message}")
+                    if (ownsAttempt(attempt)) {
+                        timing?.finishFailure(e)
+                        setError("WebRTC connection failed: ${e.message}")
+                    }
                 }
             }
     }
@@ -719,6 +743,7 @@ internal class VoiceSession(
         pc: PeerConnection,
         gatewayClient: ApiClient,
         headers: Map<String, String>,
+        timing: VoiceStartupTiming?,
     ) {
         setupTimeoutJob?.cancel()
         setupTimeoutJob =
@@ -730,6 +755,7 @@ internal class VoiceSession(
                     gatewayClient = gatewayClient,
                     headers = headers,
                     fallback = "Connection timed out — server did not respond",
+                    onFailure = { timing?.finish(VoiceStartupOutcome.TIMED_OUT) },
                 )
             }
     }
@@ -752,10 +778,12 @@ internal class VoiceSession(
         gatewayClient: ApiClient,
         headers: Map<String, String>,
         fallback: String,
+        onFailure: () -> Unit = {},
     ) {
         scope.launch {
             val message = diagnosticErrorMessage(gatewayClient, headers, fallback)
             if (peerConnection === pc && !_state.value.connected && _state.value.error == null) {
+                onFailure()
                 setError(message)
             }
         }
@@ -799,12 +827,16 @@ internal class VoiceSession(
     private suspend fun setLocalDescriptionAndWaitForICE(
         pc: PeerConnection,
         desc: SessionDescription,
+        timing: VoiceStartupTiming?,
     ) {
         val candidate = CompletableDeferred<Unit>()
         usableICECandidateWaiter = candidate
         try {
             setLocalDescription(pc, desc)
             waitForUsableICECandidate(pc, candidate)
+        } catch (error: TimeoutCancellationException) {
+            if (peerConnection === pc) timing?.noteTimeout()
+            throw error
         } finally {
             if (usableICECandidateWaiter === candidate) {
                 usableICECandidateWaiter = null
@@ -1160,6 +1192,23 @@ internal class VoiceSession(
     }
 
     private suspend fun handleToolCall(
+        msg: ToolCall,
+        attempt: Long,
+        originChannel: DataChannel,
+    ) {
+        if (!ownsAttempt(attempt)) return
+        coroutineScope {
+            val invocation = currentCoroutineContext().job
+            val cancellation = toolWork.invokeOnCompletion { invocation.cancel() }
+            try {
+                handleToolCallOwned(msg, attempt, originChannel)
+            } finally {
+                cancellation.dispose()
+            }
+        }
+    }
+
+    private suspend fun handleToolCallOwned(
         msg: ToolCall,
         attempt: Long,
         originChannel: DataChannel,

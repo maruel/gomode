@@ -250,7 +250,7 @@ class ServiceCatalogTest {
         runTest {
             Fixture("MCP").use { fixture ->
                 val entry = fixture.entry("a")
-                val view = DeferredWebView(entry.key.url)
+                val view = DeferredWebView(entry.key.url, entry.frontendTools)
                 entry.frontendTools.register(
                     view,
                     """
@@ -258,6 +258,7 @@ class ServiceCatalogTest {
                       "type":"object","properties":{"word":{"type":"string"}},"required":["word"],
                       "additionalProperties":false}}]
                     """.trimIndent(),
+                    org.json.JSONObject("""{"document":"document","token":"identity","scope":"scope"}"""),
                 )
                 val catalog = ServiceCatalog(backgroundScope)
                 try {
@@ -296,10 +297,14 @@ class ServiceCatalogTest {
         runTest {
             Fixture("A").use { fixture ->
                 val entry = fixture.entry("a")
-                val original = DeferredWebView(entry.key.url)
-                val replacement = DeferredWebView(entry.key.url)
+                val original = DeferredWebView(entry.key.url, entry.frontendTools)
+                val replacement = DeferredWebView(entry.key.url, entry.frontendTools)
                 val declaration = """[{"name":"duplicate","description":"Frontend","parameters":{}}]"""
-                entry.frontendTools.register(original, declaration)
+                entry.frontendTools.register(
+                    original,
+                    declaration,
+                    org.json.JSONObject("""{"document":"document","token":"identity","scope":"scope"}"""),
+                )
                 val catalog = ServiceCatalog(backgroundScope)
                 try {
                     catalog.reconcile(mapOf(entry.key to entry), emptyMap())
@@ -311,7 +316,11 @@ class ServiceCatalogTest {
                         }
                     assertTrue(async(Dispatchers.IO) { fixture.toolsListEntered.await(5, TimeUnit.SECONDS) }.await())
                     entry.openPage()
-                    entry.frontendTools.register(replacement, declaration)
+                    entry.frontendTools.register(
+                        replacement,
+                        declaration,
+                        org.json.JSONObject("""{"document":"document","token":"identity","scope":"scope"}"""),
+                    )
                     fixture.releaseToolsList.countDown()
                     assertTrue(requireNotNull(pending.await()).isError)
                     assertFalse(
@@ -432,10 +441,11 @@ class ServiceCatalogTest {
                         ),
                     ),
                 )
-                val view = DeferredWebView(entry.key.url)
+                val view = DeferredWebView(entry.key.url, entry.frontendTools)
                 entry.frontendTools.register(
                     view,
                     """[{"name":"duplicate","description":"Frontend","parameters":{"type":"object"}}]""",
+                    org.json.JSONObject("""{"document":"document","token":"identity","scope":"scope"}"""),
                 )
                 val catalog = ServiceCatalog(backgroundScope)
                 try {
@@ -486,6 +496,7 @@ class ServiceCatalogTest {
 
     private class DeferredWebView(
         private val documentURL: String,
+        private val tools: com.fghbuild.gomode.ui.web.FrontendVoiceTools,
     ) : WebView(RuntimeEnvironment.getApplication()) {
         override fun getUrl(): String = documentURL
 
@@ -496,7 +507,12 @@ class ServiceCatalogTest {
             script: String,
             resultCallback: android.webkit.ValueCallback<String>?,
         ) {
-            callback = resultCallback
+            if (!script.contains("dispatchGoModeVoiceTool")) return
+            val call = org.json.JSONObject(script.substringAfter("?.(").dropLast(1))
+            callback =
+                android.webkit.ValueCallback { result ->
+                    tools.complete(this, call.put("result", org.json.JSONObject(result)).toString())
+                }
             invoked.complete(Unit)
         }
 
@@ -656,7 +672,7 @@ class ServiceCatalogTest {
                         apiVersion = 1,
                         webShell =
                             WebShellSettings(
-                                bridgeVersion = 2,
+                                bridgeVersion = 3,
                                 toolGroups =
                                     listOf(
                                         ToolGroup(

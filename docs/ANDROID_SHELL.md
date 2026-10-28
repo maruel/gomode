@@ -30,7 +30,7 @@ The host owns auth, hosted UI, MCP endpoints, and resource semantics.
 
 Login never depends on MCP discovery.
 
-The native shell and manifest must both use bridge version 2. Unsupported
+The native shell and manifest must both use bridge version 3. Unsupported
 versions are rejected during manifest validation, before native voice starts.
 
 ## Frontend preparation
@@ -44,19 +44,40 @@ tools are valid. Routine data updates do not require a new preparation cycle
 while the tools remain usable.
 
 `createFrontendPreparationClient()` in `web/FrontendVoiceTools` captures the
-document Promise and both native message bridges when the frontend mounts, before
+document Promise and native message bridges when the frontend mounts, before
 asynchronous authentication. Its `publishAuth(auth)` method publishes a native
-auth message and returns an identity-owned `setReady(boolean)`/`dispose()` pair.
-Create the owner before exposing the new authenticated identity to frontend
-code. Keep preparation false until tool registration and required initial data
-are both complete. Dispose before logout, account replacement, an unusable
-frontend, or component teardown; retain the captured owner in asynchronous work.
-The host owns the actual user identity. Native acknowledgements bind accepted
-auth generations; they do not interpret product user IDs. Every account change
-requires a new auth owner and fresh required initial data for that account.
-Registration changes republish the ready owner's complete declarations. Not-ready
-and disposed owners publish an empty declaration array.
-Browser-only hosts can use the same helper without a native bridge.
+auth message and returns an authenticated identity owner. Create the owner before
+exposing the new identity to frontend code; dispose it on logout, account
+replacement, or frontend teardown. The host owns the actual user identity.
+Native acknowledgements bind accepted auth generations, not product user IDs.
+
+An identity owner creates one current product scope with `createScope()`.
+Creating a scope revokes its predecessor without replacing authenticated identity
+or requiring another native acknowledgement. The host owns the scope's product
+boundary, such as a workspace or an account's task frontend:
+
+```ts
+const identity = capturedClient.publishAuth({ authChanged: true, nativeAccess: true });
+const scope = identity.createScope();
+scope.setTools(intendedTools); // [] explicitly completes zero-tool registration.
+scope.setDataReady(initialDataComplete);
+```
+
+`setTools` atomically supplies every intended tool and its executable callback.
+`setDataReady` reports the authoritative required-data completion condition,
+including a successful empty result. Both must be supplied before `scope.ready()`
+is true; declarations or an absent tool owner never imply readiness. A host may
+set data readiness false when the frontend becomes unusable. Routine updates
+need not reset it. Retain the captured scope in asynchronous work and dispose it
+when its product owner is replaced or removed. Disposed scope handles cannot
+register, prepare, execute, or revoke a replacement scope.
+
+`scope.ready()` is local authenticated readiness and works without native bridges.
+Native publication also waits for the identity's matching acknowledgement and
+publishes the current scope's complete declarations atomically. Not-ready and
+disposed scopes publish an empty declaration array. Browser conversations capture
+the scope at connection start with `captureFrontendVoiceTools()`; a conversation
+cannot dispatch same-named tools belonging to a replacement scope.
 
 Hosts integrating the bridge directly use the same wire contract:
 
@@ -77,12 +98,46 @@ Hosts integrating the bridge directly use the same wire contract:
    acknowledgement. Queue these revocations in order even if their preparation
    owner is disposed before the document Promise resolves; disposed access-granting
    owners must never post a late login.
-4. Send `{document, token, ready, tools}` through
+4. Send `{document, token, scope, ready, tools}` through
    `gomodeFrontendReadiness.postMessage(JSON.stringify(...))`. `tools` is the
    complete frontend declaration array for ready owners, including `[]`; it is
    applied atomically with readiness. Explicit false must include `tools: []` and
    clears native declarations and pending frontend calls. Tool declarations alone
    never authorize startup.
+
+`scope` is a nonblank ephemeral registration identifier (at most 128 characters).
+Replace it whenever tools change, required data becomes unusable, or the product
+scope changes. It prevents an already queued native dispatch from invoking a
+replacement registration, even within the same identity and public scope.
+
+### Frontend tool invocation
+
+Tools may return a JSON object synchronously or through a Promise. Each receives
+`{signal, isCurrent}`. Pass the signal to cancellable requests and check
+`isCurrent()` after awaited work, immediately before committing navigation or
+other host actions. Cancellation cannot undo an action already committed.
+
+The shared runner bounds invocation completion to five seconds, aborts retired
+work, catches thrown/rejected failures, and rejects non-object results. Browser
+conversations retain their captured preparation registration and supply their
+call lifetime signal; they never acquire replacement tools through a global.
+
+Native bridge version 3 dispatches
+`window.dispatchGoModeVoiceTool({document, token, scope, invocation, name, args})`.
+The frontend validates the captured binding before executing and completes with
+`gomodeFrontendToolResult.postMessage(JSON.stringify({document, token, scope,
+invocation, result}))`. Native owns a unique invocation identifier and its
+five-second deadline, validates the trusted origin/main frame and current page,
+identity, registration and call authority, then settles the matching request
+once. Immediate `evaluateJavascript` return values are not tool results.
+
+Native cancellation invokes `window.cancelGoModeVoiceTool({document, token,
+scope, invocation})`. Both sides promptly retire pending work on cancellation,
+expiry, call/transport replacement, preparation invalidation or disposal. Late,
+duplicate, old-page, subframe and foreign-origin completions cannot authorize or
+settle a new invocation. Unsupported manifest/app bridge versions fail during
+normal compatibility validation, before waiting for preparation; browser-only
+frontends execute locally without native acknowledgements.
 
 Navigation, reload, renderer loss, identity changes, and disposal revoke native
 preparation. Document and identity tokens live only in memory. Signals from old
@@ -114,6 +169,49 @@ continue while a page is unavailable. Its frontend declarations are cleared and
 dispatch stays blocked until fresh preparation; recovery is distinct from a new
 voice start. Ending an ordinary call cancels call-owned tool callbacks without
 disposing the retained frontend's preparation, so the next call can reuse it.
+
+## Browser integration
+
+Mount `HostModeProvider` inside the host router around consumers of native mode,
+browser notification/voice availability, and native voice connection state.
+`useHostMode()` is the shared source for those capabilities; it follows route
+query changes and native voice events.
+
+`BrowserVoiceShell` is a lightweight browser integration component. Supply the
+expected service and MCP tool-group names, the client name, and the current
+preparation scope. It performs abortable manifest discovery only in browser mode
+and when local preparation is ready. Missing discovery routes and HTML SPA
+fallbacks mean unavailable voice; malformed advertised JSON, missing or unsupported
+discovery API versions, and invalid endpoint contracts are setup errors. The
+browser currently supports discovery API version 1. Gateway origins require
+HTTPS, with HTTP localhost and canonical loopback addresses allowed for local
+development. MCP and token endpoints must be same-origin.
+External gateways require a same-origin token endpoint and a host authorization
+adapter.
+
+The host supplies `authorize(endpoint)` for its token-exchange HTTP method,
+headers, response validation and session policy. An optional `mcpEndpoint`
+decorator binds a validated endpoint to captured host authority; its result is
+validated again before use. `gatewayHeaders` are captured for configuration and
+only sent to same-origin gateway signaling. Capture the owning host session in
+these adapters rather than looking up a replacement identity after an await.
+
+The shell dynamically loads its runtime and overlay after discovery, rechecking
+ownership after the import. Replacement, disposal, or a transition to native
+mode aborts discovery and prevents late configuration. The active runtime owns
+voice-session cleanup and notification suppression.
+Pending Connect actions retain their originating runtime and user intent; device
+enumeration cannot start voice after cancellation, supersession, a mode change,
+or owner teardown. The runtime's render-prop child receives
+`{session, mcp}` for host-owned task context or watched-document subscriptions;
+clean those listeners and subscriptions up with the child. Hosts must not eagerly
+import the voice runtime or overlay merely to provide those integrations.
+
+Supply localized `setupFailed` text and an `onError` diagnostic callback. The
+optional `messages(defaults)` factory receives the overlay's default dictionary
+inside the lazy runtime, so translating all labels does not require an eager UI
+import. Return translated messages without mutating the defaults. Host containers
+continue to own theme mappings and layout.
 
 ## Hosted Authentication
 

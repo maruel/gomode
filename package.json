@@ -18,6 +18,8 @@
     "sdk/gomode/ts"
   ],
   "exports": {
+    "./web/BrowserVoiceShell": "./web/src/BrowserVoiceShell.tsx",
+    "./web/BrowserVoiceManifest": "./web/src/BrowserVoiceManifest.ts",
     "./web/FrontendVoiceTools": "./web/src/FrontendVoiceTools.ts",
     "./web/HostMode": "./web/src/HostMode.tsx",
     "./web/McpClient": "./web/src/McpClient.ts",

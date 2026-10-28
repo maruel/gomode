@@ -130,13 +130,13 @@ class ServiceSettingsClientTest {
 
     @Test
     fun `compatibility accepts matching shell contract`() {
-        assertNull(settings(bridgeVersion = 2).compatibilityError())
+        assertNull(settings(bridgeVersion = 3).compatibilityError())
         assertEquals(
-            "Service requires bridge version 2. This app provides 1.",
-            settings(bridgeVersion = 2).compatibilityError(ShellCompatibility(bridgeVersion = 1)),
+            "Service requires bridge version 3. This app provides 1.",
+            settings(bridgeVersion = 3).compatibilityError(ShellCompatibility(bridgeVersion = 1)),
         )
         assertEquals(
-            "Service requires bridge version 1. This app provides 2.",
+            "Service requires bridge version 1. This app provides 3.",
             settings(bridgeVersion = 1).compatibilityError(),
         )
     }
@@ -150,9 +150,9 @@ class ServiceSettingsClientTest {
 
     @Test
     fun `compatibility rejects unsupported bridge version`() {
-        val message = settings(bridgeVersion = 3).compatibilityError()
+        val message = settings(bridgeVersion = 2).compatibilityError()
 
-        assertEquals("Service requires bridge version 3. This app provides 2.", message)
+        assertEquals("Service requires bridge version 2. This app provides 3.", message)
     }
 
     @Test
@@ -209,7 +209,7 @@ class ServiceSettingsClientTest {
 
     private fun settings(
         apiVersion: Int = 1,
-        bridgeVersion: Int = 2,
+        bridgeVersion: Int = 3,
     ): Settings =
         Settings(
             service = "example-coding-service",
@@ -242,7 +242,7 @@ class ServiceSettingsClientTest {
               "serviceVersion": "0.10.0",
               "apiVersion": 1,
               "webShell": {
-                "bridgeVersion": 2,
+                "bridgeVersion": 3,
                 "toolGroups": [
                   {
                     "name": "service",

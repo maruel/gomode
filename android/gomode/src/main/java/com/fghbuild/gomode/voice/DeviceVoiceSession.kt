@@ -28,6 +28,9 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -36,6 +39,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -109,6 +113,7 @@ internal class DeviceVoiceSession(
     private val thinkingEarcon: ThinkingEarcon = AndroidThinkingEarcon(appContext),
     private val callController: VoiceCallController = NoopVoiceCallController(),
     private val switchServer: suspend (String) -> Unit = { id -> settingsRepository.switchService(id) },
+    private val startupTiming: () -> VoiceStartupTiming? = { null },
     private val setupProvider: suspend () -> VoiceSetup = {
         prepareVoiceSetup(settingsRepository, settingsClient, bearerTokenFor)
     },
@@ -129,6 +134,7 @@ internal class DeviceVoiceSession(
             ignoreUnknownKeys = true
         }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var toolWork = SupervisorJob()
     private val attemptGeneration = AtomicLong()
     private val pendingGatewayTools = mutableMapOf<Long, Int>()
     private var awaitingModelTurn = false
@@ -168,6 +174,9 @@ internal class DeviceVoiceSession(
         }
 
     private var connectJob: Job? = null
+
+    // Recovery keeps its captured request instead of acquiring a newer UI owner.
+    private var startupTimingOwner: VoiceStartupTiming? = null
     private var webSocket: WebSocket? = null
     private var otherEngine: OnDeviceVoiceEngine? = null
     private var preparedLocalModel: PreparedLocalModel? = null
@@ -222,6 +231,8 @@ internal class DeviceVoiceSession(
         preserveTranscript: Boolean,
         conversationID: String?,
     ) {
+        if (!preserveTranscript) startupTimingOwner = startupTiming()
+        val timing = startupTimingOwner
         thinkingEarcon.setThinking(false)
         _state.update {
             it.copy(turnState = TurnState.Idle, connected = false, listening = false, speaking = false, micLevel = 0f)
@@ -274,9 +285,11 @@ internal class DeviceVoiceSession(
         connectJob =
             scope.launch {
                 try {
+                    timing?.enter(VoiceStartupStage.SPEECH_LANGUAGE)
                     val language = speech.checkLanguage()
                     if (!ownsAttempt(attempt)) return@launch
                     if (language != SpeechLanguageState.Ready && language !is SpeechLanguageState.Unverified) {
+                        timing?.finish(VoiceStartupOutcome.FAILED)
                         disconnect()
                         return@launch
                     }
@@ -287,8 +300,10 @@ internal class DeviceVoiceSession(
                     if (engineType == OnDeviceEngine.LOCAL_LLM) {
                         checkNotNull(voiceConversation) { "Local conversation owner is unavailable" }
                         setStatus("Preparing local model…")
+                        timing?.enter(VoiceStartupStage.MODEL)
                         preparedLocalModel = localModelOwner.acquire()
                     }
+                    timing?.enter(VoiceStartupStage.TOOLS)
                     val setup =
                         preparedLocalModel?.setup ?: try {
                             voiceConversation?.prepare() ?: setupProvider()
@@ -317,8 +332,9 @@ internal class DeviceVoiceSession(
                         setError("Could not start the voice call")
                         return@launch
                     }
+                    timing?.enter(VoiceStartupStage.TRANSPORT)
                     if (engineType == OnDeviceEngine.REMOTE_GATEWAY) {
-                        openWebSocket(attempt, setup)
+                        openWebSocket(attempt, setup, timing)
                     } else {
                         openLocalEngine(attempt, setup, engineType)
                     }
@@ -327,12 +343,18 @@ internal class DeviceVoiceSession(
                         Log.i(TAG, "Service authentication changed during voice setup", e)
                         disconnect()
                     }
+                } catch (e: TimeoutCancellationException) {
+                    if (ownsAttempt(attempt)) timing?.noteTimeout()
+                    throw e
                 } catch (e: CancellationException) {
                     throw e
                 } catch (
                     @Suppress("TooGenericExceptionCaught") e: Exception,
                 ) {
-                    if (ownsAttempt(attempt)) setError("Voice connection failed: ${e.message}")
+                    if (ownsAttempt(attempt)) {
+                        timing?.finishFailure(e)
+                        setError("Voice connection failed: ${e.message}")
+                    }
                 }
             }
     }
@@ -375,6 +397,7 @@ internal class DeviceVoiceSession(
     private fun openWebSocket(
         attempt: Long,
         setup: VoiceSetup,
+        timing: VoiceStartupTiming?,
     ) {
         val request =
             Request
@@ -432,6 +455,7 @@ internal class DeviceVoiceSession(
                         // so accept any socket while this attempt owns none.
                         val current = this@DeviceVoiceSession.webSocket
                         if (ownsAttempt(attempt) && (current == null || current === webSocket)) {
+                            timing?.finishFailure(t)
                             val message =
                                 response?.let { gatewayHTTPError(it.code, it.request.url.encodedPath) }
                                     ?: if (t is java.io.IOException) gatewayNetworkError(t).message else t.message
@@ -832,6 +856,23 @@ internal class DeviceVoiceSession(
         attempt: Long,
         turn: Long,
     ): JsonElement {
+        if (!ownsAttempt(attempt)) return errorJson("Voice session ended.")
+        return coroutineScope {
+            val invocation = currentCoroutineContext().job
+            val cancellation = toolWork.invokeOnCompletion { invocation.cancel() }
+            try {
+                handleToolCallLocalOwned(msg, attempt, turn)
+            } finally {
+                cancellation.dispose()
+            }
+        }
+    }
+
+    private suspend fun handleToolCallLocalOwned(
+        msg: ToolCall,
+        attempt: Long,
+        turn: Long,
+    ): JsonElement {
         fun currentTurn() = ownsAttempt(attempt) && turn == localTurnGeneration.get()
         if (!currentTurn()) return errorJson("Turn was interrupted")
         if (voiceConversation?.isCurrent() == false) {
@@ -906,6 +947,23 @@ internal class DeviceVoiceSession(
     }
 
     private suspend fun handleToolCall(
+        msg: ToolCall,
+        attempt: Long,
+        origin: WebSocket,
+    ) {
+        if (!ownsAttempt(attempt)) return
+        coroutineScope {
+            val invocation = currentCoroutineContext().job
+            val cancellation = toolWork.invokeOnCompletion { invocation.cancel() }
+            try {
+                handleToolCallOwned(msg, attempt, origin)
+            } finally {
+                cancellation.dispose()
+            }
+        }
+    }
+
+    private suspend fun handleToolCallOwned(
         msg: ToolCall,
         attempt: Long,
         origin: WebSocket,
@@ -1238,10 +1296,12 @@ internal class DeviceVoiceSession(
     }
 
     private fun invalidateAttempt(): Long {
+        val attempt = attemptGeneration.incrementAndGet()
+        toolWork.cancel()
+        toolWork = SupervisorJob()
         pendingUserUtterance = null
         speechGeneration++
         localTurnGeneration.incrementAndGet()
-        val attempt = attemptGeneration.incrementAndGet()
         return attempt
     }
 

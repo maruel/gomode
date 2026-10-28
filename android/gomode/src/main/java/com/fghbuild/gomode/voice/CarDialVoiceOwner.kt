@@ -1,4 +1,4 @@
-// Owns bounded system-dial requests and native call startup independently of Activity replacement.
+// Owns bounded system-dial requests, timed native startup, and call lifetime across Activity replacement.
 package com.fghbuild.gomode.voice
 
 import android.Manifest
@@ -43,6 +43,8 @@ import kotlinx.coroutines.withTimeout
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 
+private const val STARTUP_TIMEOUT_MS = 60_000L
+
 internal enum class CarDialStatus { IDLE, WAITING, CONNECTING, PREPARING, CONNECTED, FAILED }
 
 // Fixed messages are safe above keyguard; provider errors stay in diagnostic logs.
@@ -79,6 +81,7 @@ private class CarDialRequest(
 private class CarDialAttempt(
     val server: ServiceInstance,
 ) {
+    val timing = VoiceStartupTiming(VoiceStartupSource.CAR)
     var failure = CarDialFailure.CALL
     val authority = AtomicBoolean(true)
     var selection: SettingsState? = null
@@ -230,12 +233,17 @@ internal class CarDialVoiceOwner(
         current: CarDialRequest,
         next: CarDialAttempt,
     ) {
-        if (request !== current || !eligible()) return
+        if (request !== current || !eligible()) {
+            next.timing.finish(VoiceStartupOutcome.CANCELED)
+            return
+        }
         // Invalidate source callbacks before its teardown can report an old hang-up.
+        attempt?.timing?.finish(VoiceStartupOutcome.SUPERSEDED)
         attempt?.authority?.set(false)
         attempt = next
         mutableState.value = mutableState.value.copy(status = CarDialStatus.CONNECTING)
         // Begin foreground ownership while the native Activity is visibly resumed.
+        next.timing.enter(VoiceStartupStage.MICROPHONE)
         try {
             foreground.start(next.server.label)
         } catch (error: SecurityException) {
@@ -256,18 +264,22 @@ internal class CarDialVoiceOwner(
         startup =
             scope.launch {
                 try {
-                    withTimeout(60_000) { connect(current, next) }
+                    next.timing.startDeadline(STARTUP_TIMEOUT_MS)
+                    withTimeout(STARTUP_TIMEOUT_MS) { connect(current, next) }
                 } catch (error: TimeoutCancellationException) {
+                    next.timing.finish(VoiceStartupOutcome.TIMED_OUT)
                     Log.w("GoModeCarDial", "Voice setup timed out", error)
                     if (next.page?.isFrontendReady == false) next.failure = CarDialFailure.FRONTEND
                     fail(current, next)
                 } catch (error: CancellationException) {
+                    next.timing.finish(VoiceStartupOutcome.CANCELED)
                     throw error
                 } catch (
                     // This boundary maps setup failures to a native, non-sensitive call status.
                     @Suppress("TooGenericExceptionCaught") error: Exception,
                 ) {
                     Log.w("GoModeCarDial", "Voice setup failed", error)
+                    next.timing.finishFailure(error)
                     fail(current, next)
                 }
             }
@@ -278,6 +290,7 @@ internal class CarDialVoiceOwner(
         next: CarDialAttempt,
     ) {
         checkCurrent(current, next)
+        next.timing.enter(VoiceStartupStage.CALL)
         val ended = { if (request === current && attempt === next) cancel(current.identity) }
         val call = TelecomCallController(context, ended)
         callController = call
@@ -286,6 +299,7 @@ internal class CarDialVoiceOwner(
         }
         // The replacement call now owns hang-up before storage, auth, networking or model work.
         next.failure = CarDialFailure.SETTINGS
+        next.timing.enter(VoiceStartupStage.SETTINGS)
         withTimeout(1_000) {
             settingsRepository.switchService(next.server.id)
             settingsRepository.settings.first { it.activeServiceId == next.server.id }
@@ -296,6 +310,14 @@ internal class CarDialVoiceOwner(
         mutableState.value = mutableState.value.copy(status = CarDialStatus.PREPARING)
         val page =
             pages.prepareCall(settings) { stage ->
+                next.timing.enter(
+                    when (stage) {
+                        ServiceCallStage.PAGE -> VoiceStartupStage.PAGE
+                        ServiceCallStage.SIGN_IN -> VoiceStartupStage.SIGN_IN
+                        ServiceCallStage.TOOLS -> VoiceStartupStage.TOOLS
+                        ServiceCallStage.FRONTEND -> VoiceStartupStage.FRONTEND
+                    },
+                )
                 Log.i("GoModeCarDial", "Car voice preparation: $stage")
                 next.failure =
                     when (stage) {
@@ -353,6 +375,7 @@ internal class CarDialVoiceOwner(
                         languageTag = settings.voiceLanguageTag,
                         callController = call,
                         switchServer = { id -> settingsRepository.switchService(id) },
+                        startupTiming = { next.timing },
                     )
                 }
 
@@ -369,12 +392,14 @@ internal class CarDialVoiceOwner(
                         isAuthorityCurrent = authorityCurrent,
                         voiceConversation = voiceConversation,
                         switchServer = { id -> settingsRepository.switchService(id) },
+                        startupTiming = { next.timing },
                     )
                 }
             }
         mutableSession.value = voice
         checkCurrent(current, next)
         Log.i("GoModeCarDial", "Starting prepared voice transport")
+        next.timing.enter(VoiceStartupStage.TRANSPORT)
         voice.connect()
         val connected = voice.state.first { it.connected || it.error != null || it.connectStatus == null }
         if (!connected.connected) {
@@ -392,6 +417,7 @@ internal class CarDialVoiceOwner(
         checkCurrent(current, next)
         pages.setVoiceConnected(true)
         mutableState.value = mutableState.value.copy(status = CarDialStatus.CONNECTED)
+        next.timing.finish(VoiceStartupOutcome.CONNECTED)
     }
 
     private fun allowsFocusChanges(settings: SettingsState): Boolean =
@@ -461,6 +487,9 @@ internal class CarDialVoiceOwner(
     }
 
     private fun finish(finalState: CarDialVoiceState) {
+        attempt?.timing?.finish(
+            if (finalState.status == CarDialStatus.FAILED) VoiceStartupOutcome.FAILED else VoiceStartupOutcome.CANCELED,
+        )
         attempt?.authority?.set(false)
         request = null
         attempt = null

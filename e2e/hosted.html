@@ -57,7 +57,7 @@
       window.gomodeAuth.onmessage = event => {
         const ack = JSON.parse(event.data);
         if (ack.frontendDocument !== document || ack.frontendRequest !== frontendRequest) return;
-        window.gomodeFrontendReadiness.postMessage(JSON.stringify({document,token:ack.frontendToken,ready:true,tools:[]}));
+        window.gomodeFrontendReadiness.postMessage(JSON.stringify({document,token:ack.frontendToken,scope:"hosted",ready:true,tools:[]}));
       };
       window.gomodeAuth.postMessage(JSON.stringify({authChanged:true,nativeAccess:true,frontendDocument:document,frontendRequest}));
     });

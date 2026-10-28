@@ -1,6 +1,6 @@
 // Voice overlay component: persistent bottom panel with microphone and voice controls.
 
-import { createEffect, createSignal, createUniqueId, For, Show, onCleanup, onMount, type Accessor } from "solid-js";
+import { createEffect, createSignal, createUniqueId, For, Show, on, onCleanup, onMount, type Accessor } from "solid-js";
 
 import { TurnStateThinking, TurnStateTranscribing } from "../../sdk/voicegateway/ts/v1/types.gen";
 import { bluetoothAudioDeviceLabel, microphoneMuted, voiceSession } from "./VoiceSession";
@@ -167,10 +167,24 @@ function safeErrorDetail(error: string): string {
 
 export default function VoiceOverlay(props: {
   messages?: VoiceOverlayMessages | Accessor<VoiceOverlayMessages>;
+  /** The owning runtime may revoke a pending start before its controls finish unmounting. */
+  canStart?: Accessor<boolean>;
   // The host owns its server catalog, navigation, and voice-context handoff.
   nextServer?: { name: string; onSelect: () => void };
 }) {
   const session = voiceSession;
+  let disposed = false;
+  let startAttempt = 0;
+  const canStart = () => !disposed && (props.canStart?.() ?? true);
+  onCleanup(() => {
+    disposed = true;
+    startAttempt++;
+  });
+  createEffect(
+    on([() => session.state.mode, () => props.canStart?.() ?? true], () => {
+      startAttempt++;
+    }),
+  );
   const messages = () => {
     const value = props.messages;
     return (typeof value === "function" ? value() : value) ?? defaultVoiceOverlayMessages;
@@ -243,8 +257,7 @@ export default function VoiceOverlay(props: {
   );
   onCleanup(() => notifications.setVoiceActive(false));
 
-  // No onCleanup disconnect — the singleton voice session survives component remounts.
-  // Only explicit user action or page unload (beforeunload handler) disconnects.
+  // The mounting runtime owns active-session cleanup; this overlay cancels its pending starts.
 
   // -----------------------------------------------------------------------
   // Panel state
@@ -258,10 +271,13 @@ export default function VoiceOverlay(props: {
   // -----------------------------------------------------------------------
 
   const handleMicClick = async () => {
+    if (disposed) return;
+    const attempt = ++startAttempt;
     if (!isActive() && session.state.microphoneAccessPending) return;
     if (session.state.connected || session.state.connectStatus !== null) {
       session.disconnect();
     } else {
+      if (!canStart()) return;
       if (languageError() !== null) {
         setSettingsOpen(true);
         panelRef?.querySelector<HTMLInputElement>('input[type="text"]')?.focus();
@@ -270,7 +286,9 @@ export default function VoiceOverlay(props: {
       // Browser audio must be unlocked synchronously while the click or key event
       // still carries user activation. Device enumeration yields before connect().
       session.prepareAudio();
-      if (session.state.mode === "cloud") await session.enumerateDevices();
+      const mode = session.state.mode;
+      if (mode === "cloud") await session.enumerateDevices();
+      if (!canStart() || attempt !== startAttempt || mode !== session.state.mode || isActive()) return;
       void session.connect();
     }
   };

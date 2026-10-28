@@ -1,10 +1,11 @@
-// Tests that disconnected voice attempts cannot continue discovery or deliver stale tool results.
+// Tests voice startup failure attribution and rejection of callbacks from disconnected attempts.
 package com.fghbuild.gomode.voice
 
 import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
+import com.caic.voicegateway.sdk.v1.ApiClient
 import com.caic.voicegateway.sdk.v1.MessageKind
 import com.caic.voicegateway.sdk.v1.ToolCall
 import com.fghbuild.gomode.data.OnDeviceEngine
@@ -12,20 +13,28 @@ import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceSettingsClient
+import com.fghbuild.gomode.ui.observeVoiceStartup
 import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellRegistry
 import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.ui.web.completeFrontendPreparation
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -45,8 +54,15 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.shadows.ShadowLog
+import org.robolectric.shadows.ShadowSystemClock
 import org.webrtc.DataChannel
+import org.webrtc.NativePeerConnectionFactory
+import org.webrtc.PeerConnection
+import org.webrtc.SdpObserver
+import org.webrtc.SessionDescription
 import java.lang.reflect.InvocationTargetException
+import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.Continuation
@@ -71,6 +87,213 @@ class VoiceSessionLifecycleTest {
     }
 
     @Test
+    fun disconnectCancelsPendingToolWorkBeforeItCanCommitToAnotherCall() =
+        runTest {
+            val store = InMemoryPreferencesDataStore()
+            val settings = SettingsRepository(store)
+            val first = settings.addService("First", "https://first.example")
+            val second = settings.addService("Second", "https://second.example")
+            settings.settings.first { it.activeServiceId == second }
+            val session = createCloudSession(settings)
+            val channel = RecordingDataChannel()
+            attachAuthorizedChannel(session, channel)
+            val entered = CompletableDeferred<Unit>()
+            var canceled = false
+            store.beforeWrite = {
+                entered.complete(Unit)
+                try {
+                    awaitCancellation()
+                } finally {
+                    canceled = true
+                }
+            }
+            val pending =
+                async {
+                    invokeHandleToolCall(
+                        session,
+                        ToolCall(
+                            MessageKind.ToolCall,
+                            "pending",
+                            "switch_server",
+                            Json.parseToJsonElement("""{"server_id":"$first"}"""),
+                        ),
+                        channel,
+                    )
+                }
+            entered.await()
+            session.disconnect()
+            runCurrent()
+            val generation =
+                VoiceSession::class.java
+                    .getDeclaredField("attemptGeneration")
+                    .apply { isAccessible = true }
+                    .get(session) as java.util.concurrent.atomic.AtomicLong
+            assertEquals(1L, generation.get())
+            assertTrue(pending.isCancelled)
+            assertTrue(canceled)
+            assertEquals(second, settings.settings.value.activeServiceId)
+            assertTrue(channel.sent.isEmpty())
+            store.beforeWrite = {}
+            session.close()
+        }
+
+    @Test
+    fun iceDeadlineRecordsNonterminalTimeoutBeforeRethrowingWithoutChangingControllerState() =
+        runTest {
+            Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+            for (completeDescription in listOf(false, true)) {
+                ShadowLog.clear()
+                val timing = VoiceStartupTiming(VoiceStartupSource.MANUAL)
+                timing.enter(VoiceStartupStage.TRANSPORT)
+                val session = createCloudSession(SettingsRepository(InMemoryPreferencesDataStore()))
+                val peer = RecordingPeerConnection(completeDescription)
+                attachWaitingPeer(session, peer)
+                try {
+                    var continuedToOffer = false
+                    val outcome =
+                        backgroundScope.async {
+                            runCatching {
+                                invokeIceWait(
+                                    session,
+                                    peer,
+                                    timing,
+                                )
+                                continuedToOffer = true
+                            }.exceptionOrNull()
+                        }
+                    runCurrent()
+                    @Suppress("UNCHECKED_CAST") // Capture the pending candidate before the timeout clears it.
+                    val candidate =
+                        VoiceSession::class.java.getDeclaredField("usableICECandidateWaiter").run {
+                            isAccessible = true
+                            get(session) as CompletableDeferred<Unit>
+                        }
+                    advanceTimeBy(9_999)
+                    ShadowSystemClock.advanceBy(Duration.ofMillis(9_999))
+                    runCurrent()
+                    assertFalse(outcome.isCompleted)
+                    advanceTimeBy(1)
+                    ShadowSystemClock.advanceBy(Duration.ofMillis(1))
+                    runCurrent()
+                    assertTrue(outcome.await() is TimeoutCancellationException)
+                    peer.completeDescriptionLate()
+                    candidate.complete(Unit)
+                    runCurrent()
+                    assertFalse("Late ICE completion must not resume offer signaling", continuedToOffer)
+                    assertFalse(session.state.value.connected)
+                    assertNull(session.state.value.error)
+                    assertEquals("Waiting for server", session.state.value.connectStatus)
+                    val records =
+                        ShadowLog
+                            .getLogsForTag(
+                                "GoModeVoiceStartup",
+                            ).map { it.msg }
+                    assertFalse(records.any { it.contains("event=finished") })
+                    assertEquals(1, records.count { it.contains("event=stage_timeout stage=TRANSPORT") })
+                } finally {
+                    session.close()
+                }
+            }
+        }
+
+    @Test
+    fun canceledIceWorkRetainsCancellationInsteadOfBeingClassifiedAsTimeout() =
+        runTest {
+            Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+            val timing = VoiceStartupTiming(VoiceStartupSource.MANUAL)
+            val session = createCloudSession(SettingsRepository(InMemoryPreferencesDataStore()))
+            val peer = RecordingPeerConnection()
+            attachWaitingPeer(session, peer)
+            try {
+                val pending = backgroundScope.async { invokeIceWait(session, peer, timing) }
+                runCurrent()
+                pending.cancel()
+                runCurrent()
+                timing.finish(VoiceStartupOutcome.CANCELED)
+                advanceTimeBy(10_000)
+                runCurrent()
+                val terminal =
+                    ShadowLog
+                        .getLogsForTag(
+                            "GoModeVoiceStartup",
+                        ).filter { it.msg.contains("event=finished") }
+                assertEquals(1, terminal.size)
+                assertTrue(terminal.toString(), terminal.single().msg.contains("outcome=CANCELED"))
+                assertNull(session.state.value.error)
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
+    fun setupTimeoutSealsTheActualFailureCauseForCarAndManualObservers() =
+        runTest {
+            Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+            for (source in listOf(VoiceStartupSource.CAR, VoiceStartupSource.MANUAL)) {
+                ShadowLog.clear()
+                val timing = VoiceStartupTiming(source)
+                if (source == VoiceStartupSource.CAR) timing.startDeadline(60_000)
+                timing.enter(VoiceStartupStage.TRANSPORT)
+                val session =
+                    createCloudSession(SettingsRepository(InMemoryPreferencesDataStore()), startupTiming = { timing })
+                val peer = RecordingPeerConnection()
+                VoiceSession::class.java.getDeclaredField("peerConnection").apply {
+                    isAccessible = true
+                    set(session, peer)
+                }
+                VoiceSession::class.java.getDeclaredField("_state").apply {
+                    isAccessible = true
+                    @Suppress("UNCHECKED_CAST") // Keep the flow exposed by the controller's read-only state.
+                    val current = get(session) as MutableStateFlow<VoiceState>
+                    current.value = VoiceState(connectStatus = "Waiting for server")
+                }
+                try {
+                    val timeout =
+                        VoiceSession::class.java
+                            .getDeclaredMethod(
+                                "startSetupTimeout",
+                                PeerConnection::class.java,
+                                ApiClient::class.java,
+                                Map::class.java,
+                                VoiceStartupTiming::class.java,
+                            ).apply { isAccessible = true }
+                    timeout.invoke(
+                        session,
+                        peer,
+                        ApiClient("https://unused.invalid"),
+                        emptyMap<String, String>(),
+                        timing,
+                    )
+                    observeVoiceStartup(backgroundScope, session, timing)
+                    runCurrent()
+                    advanceTimeBy(14_999)
+                    ShadowSystemClock.advanceBy(Duration.ofMillis(14_999))
+                    runCurrent()
+                    assertNull(session.state.value.error)
+                    advanceTimeBy(1)
+                    ShadowSystemClock.advanceBy(Duration.ofMillis(1))
+                    runCurrent()
+                    assertEquals("Connection timed out — server did not respond", session.state.value.error)
+                    assertTrue(peer.closed && peer.disposed)
+                    val terminal =
+                        ShadowLog
+                            .getLogsForTag(
+                                "GoModeVoiceStartup",
+                            ).filter { it.msg.contains("event=finished") }
+                    assertEquals(1, terminal.size)
+                    assertTrue(terminal.toString(), terminal.single().msg.contains("outcome=TIMED_OUT stage=TRANSPORT"))
+                    timing.finish(VoiceStartupOutcome.CONNECTED)
+                    assertEquals(
+                        1,
+                        ShadowLog.getLogsForTag("GoModeVoiceStartup").count { it.msg.contains("event=finished") },
+                    )
+                } finally {
+                    session.close()
+                }
+            }
+        }
+
+    @Test
     fun changedOrUnavailableVoiceDuringDiscoveryStopsSetupBeforeMCP() =
         runBlocking {
             listOf("choice", "speaking voice", "recovery catalog").forEach { change ->
@@ -84,7 +307,7 @@ class VoiceSessionLifecycleTest {
                                 "/.well-known/gomode.json" -> {
                                     MockResponse().setBody(
                                         """
-                                        {"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":2,
+                                        {"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":3,
                                         "toolGroups":[{"name":"fixture","endpoint":"/mcp","protocolVersion":"2026-07-28",
                                         "authRequired":false}],"voiceGateway":{"required":false,"url":"/"}}}
                                         """.trimIndent(),
@@ -163,7 +386,7 @@ class VoiceSessionLifecycleTest {
                     override fun dispatch(request: RecordedRequest): MockResponse {
                         if (request.path == "/.well-known/gomode.json") {
                             return MockResponse().setBody(
-                                """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":2,
+                                """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":3,
                             "toolGroups":[{"name":"fixture","endpoint":"/mcp","protocolVersion":"2026-07-28",
                             "authRequired":false}],"voiceGateway":{"required":false,"url":"/"}}}""",
                             )
@@ -519,6 +742,82 @@ class VoiceSessionLifecycleTest {
         }
     }
 
+    private class RecordingPeerConnection(
+        private val completeDescription: Boolean = true,
+    ) : PeerConnection(NativePeerConnectionFactory { 1L }) {
+        var closed = false
+        var disposed = false
+        private var descriptionObserver: SdpObserver? = null
+
+        override fun setLocalDescription(
+            observer: SdpObserver,
+            description: SessionDescription,
+        ) {
+            descriptionObserver = observer
+            if (completeDescription) observer.onSetSuccess()
+        }
+
+        fun completeDescriptionLate() {
+            descriptionObserver?.onSetSuccess()
+        }
+
+        override fun iceGatheringState(): IceGatheringState = IceGatheringState.GATHERING
+
+        override fun close() {
+            closed = true
+        }
+
+        override fun dispose() {
+            disposed = true
+        }
+    }
+
+    private fun attachWaitingPeer(
+        session: VoiceSession,
+        peer: PeerConnection,
+    ) {
+        VoiceSession::class.java.getDeclaredField("peerConnection").apply {
+            isAccessible = true
+            set(session, peer)
+        }
+        VoiceSession::class.java.getDeclaredField("_state").apply {
+            isAccessible = true
+            @Suppress("UNCHECKED_CAST") // Keep the controller's exposed state flow.
+            val state = get(session) as MutableStateFlow<VoiceState>
+            state.value = VoiceState(connectStatus = "Waiting for server")
+        }
+    }
+
+    private suspend fun invokeIceWait(
+        session: VoiceSession,
+        peer: PeerConnection,
+        timing: VoiceStartupTiming,
+    ): Unit =
+        suspendCoroutine { continuation ->
+            val method =
+                VoiceSession::class.java
+                    .getDeclaredMethod(
+                        "setLocalDescriptionAndWaitForICE",
+                        PeerConnection::class.java,
+                        SessionDescription::class.java,
+                        VoiceStartupTiming::class.java,
+                        Continuation::class.java,
+                    ).apply { isAccessible = true }
+            try {
+                val result =
+                    method.invoke(
+                        session,
+                        peer,
+                        SessionDescription(SessionDescription.Type.OFFER, "offer"),
+                        timing,
+                        continuation,
+                    )
+                if (result !== COROUTINE_SUSPENDED) continuation.resume(Unit)
+            } catch (error: InvocationTargetException) {
+                continuation.resumeWithException(requireNotNull(error.cause))
+            }
+        }
+
     private fun attachAuthorizedChannel(
         session: VoiceSession,
         channel: RecordingDataChannel,
@@ -559,6 +858,7 @@ class VoiceSessionLifecycleTest {
     private fun createCloudSession(
         settings: SettingsRepository,
         beginConversation: Boolean = false,
+        startupTiming: () -> VoiceStartupTiming? = { null },
     ): VoiceSession {
         val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
         val registry = ServiceShellRegistry()
@@ -595,6 +895,7 @@ class VoiceSessionLifecycleTest {
             settings,
             voiceConversation = owner,
             languageTag = "en-US",
+            startupTiming = startupTiming,
         )
     }
 
@@ -654,11 +955,13 @@ class VoiceSessionLifecycleTest {
         }
 
     private class InMemoryPreferencesDataStore : DataStore<Preferences> {
+        var beforeWrite: suspend () -> Unit = {}
         private val current = MutableStateFlow(emptyPreferences())
 
         override val data: Flow<Preferences> = current
 
         override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences {
+            beforeWrite()
             while (true) {
                 val before = current.value
                 val after = transform(before)
@@ -674,7 +977,7 @@ class VoiceSessionLifecycleTest {
               "serviceVersion": "1",
               "apiVersion": 1,
               "webShell": {
-                "bridgeVersion": 2,
+                "bridgeVersion": 3,
                 "toolGroups": [{
                   "name": "service",
                   "endpoint": "/mcp",

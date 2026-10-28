@@ -126,7 +126,7 @@ class GatewayAuthorizationTest {
                     Json.decodeFromString(
                         com.fghbuild.gomode.sdk.v1.Settings
                             .serializer(),
-                        """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":2,
+                        """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":3,
                             "toolGroups":[{"name":"fixture","endpoint":"/api/mcp", "protocolVersion":"2026-07-28",
                             "authRequired":true}],"voiceGateway":{"required":false}}}""",
                     ),

@@ -13,7 +13,7 @@ import {
   configureVoiceGateway,
   voiceToolDeclarations,
 } from "./VoiceSession";
-import { registerFrontendVoiceTool } from "./FrontendVoiceTools";
+import { captureFrontendVoiceTools, createFrontendPreparationClient } from "./FrontendVoiceTools";
 import { mcpClient } from "./McpClient";
 
 // MCP calls are spied on; gateway signaling is exercised through fetch.
@@ -1198,23 +1198,29 @@ describe("VoiceSession", () => {
   });
 
   it("keeps hang_up local to voice and rejects MCP name conflicts", async () => {
-    const tools = voiceToolDeclarations([
-      {
-        name: "items_list",
-        description: "List items",
-        inputSchema: { type: "object", properties: {} },
-      },
-    ]);
+    const tools = voiceToolDeclarations(
+      [
+        {
+          name: "items_list",
+          description: "List items",
+          inputSchema: { type: "object", properties: {} },
+        },
+      ],
+      [],
+    );
     expect(tools.map((tool) => tool.name)).toEqual(["hang_up", "items_list"]);
 
     expect(() =>
-      voiceToolDeclarations([
-        {
-          name: "hang_up",
-          description: "Unexpected MCP tool",
-          inputSchema: { type: "object", properties: {} },
-        },
-      ]),
+      voiceToolDeclarations(
+        [
+          {
+            name: "hang_up",
+            description: "Unexpected MCP tool",
+            inputSchema: { type: "object", properties: {} },
+          },
+        ],
+        [],
+      ),
     ).toThrow('MCP tool "hang_up" conflicts with the reserved voice command.');
 
     const chime = {
@@ -1233,18 +1239,64 @@ describe("VoiceSession", () => {
     expect(session.state.connected).toBe(false);
   });
 
-  it("executes frontend tools locally and returns errors through the gateway", async () => {
-    const execute = vi.fn(() => ({ selected: "item-1" }));
-    const unregister = registerFrontendVoiceTool({
-      declaration: { name: "select_item", description: "Select an item", parameters: { type: "object" } },
-      execute,
-    });
+  it("preserves MCP success status when structured content contains domain error data", async () => {
     const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
     try {
-      expect(voiceToolDeclarations([]).some((tool) => tool.name === "select_item")).toBe(true);
-      expect(() => voiceToolDeclarations([{ name: "select_item", description: "Conflict", inputSchema: {} }])).toThrow(
-        /conflicts/,
+      await session.connect();
+      const channel = FakePeerConnection.dataChannels[0];
+      channel?.onopen?.();
+      for (const [index, error] of [null, "domain validation metadata"].entries()) {
+        const content = { error, result: "saved" };
+        mcpMocks.mcpCallTool.mockResolvedValue({ isError: false, structuredContent: content });
+        const id = `mcp-success-${index}`;
+        dispatchToolCall(channel, id, "save");
+        await vi.waitFor(() =>
+          expect(channel?.send).toHaveBeenCalledWith(
+            JSON.stringify({ kind: "tool.result", id, name: "save", result: content }),
+          ),
+        );
+        expect(session.state.transcript).not.toEqual(
+          expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("[save]") })]),
+        );
+      }
+      mcpMocks.mcpCallTool.mockResolvedValue({ structuredContent: { error: "ordinary domain field" } });
+      dispatchToolCall(channel, "mcp-default-success", "save");
+      await vi.waitFor(() =>
+        expect(channel?.send).toHaveBeenCalledWith(
+          JSON.stringify({
+            kind: "tool.result",
+            id: "mcp-default-success",
+            name: "save",
+            result: { error: "ordinary domain field" },
+          }),
+        ),
       );
+      expect(session.state.transcript).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("[save]") })]),
+      );
+    } finally {
+      session.disconnect();
+    }
+  });
+
+  it("executes frontend tools locally and returns errors through the gateway", async () => {
+    const execute = vi.fn(() => ({ selected: "item-1" }));
+    const preparation = createFrontendPreparationClient().publishAuth({ authChanged: true, nativeAccess: true });
+    const scope = preparation.createScope();
+    scope.setTools([
+      {
+        declaration: { name: "select_item", description: "Select an item", parameters: { type: "object" } },
+        execute,
+      },
+    ]);
+    scope.setDataReady(true);
+    const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
+    try {
+      const declarations = captureFrontendVoiceTools().declarations;
+      expect(voiceToolDeclarations([], declarations).some((tool) => tool.name === "select_item")).toBe(true);
+      expect(() =>
+        voiceToolDeclarations([{ name: "select_item", description: "Conflict", inputSchema: {} }], declarations),
+      ).toThrow(/conflicts/);
       await session.connect();
       const channel = FakePeerConnection.dataChannels[0];
       channel?.onopen?.();
@@ -1268,9 +1320,71 @@ describe("VoiceSession", () => {
           }),
         ),
       );
+      expect(session.state.transcript).toEqual(
+        expect.arrayContaining([expect.objectContaining({ text: "[select_item] Missing item" })]),
+      );
+      const replacement = preparation.createScope();
+      const replacementExecute = vi.fn(() => ({ selected: "replacement" }));
+      replacement.setTools([
+        { declaration: { name: "select_item", description: "Select", parameters: {} }, execute: replacementExecute },
+      ]);
+      replacement.setDataReady(true);
+      dispatchToolCall(channel, "frontend-retired", "select_item");
+      await vi.waitFor(() =>
+        expect(channel?.send).toHaveBeenCalledWith(
+          JSON.stringify({
+            kind: "tool.result",
+            id: "frontend-retired",
+            name: "select_item",
+            result: { error: 'Frontend voice tool "select_item" is unavailable.' },
+          }),
+        ),
+      );
+      expect(replacementExecute).not.toHaveBeenCalled();
+      expect(mcpMocks.mcpCallTool).not.toHaveBeenCalled();
     } finally {
       session.disconnect();
-      unregister();
+      preparation.dispose();
+    }
+  });
+
+  it("awaits frontend completion and aborts pending host actions when the call ends", async () => {
+    const preparation = createFrontendPreparationClient().publishAuth({ authChanged: true, nativeAccess: true });
+    const scope = preparation.createScope();
+    const gate = deferred<void>();
+    let committed = false;
+    let aborted = false;
+    scope.setTools([
+      {
+        declaration: { name: "select_item", description: "Select", parameters: {} },
+        execute: async (_args, context) => {
+          context.signal.addEventListener("abort", () => {
+            aborted = true;
+          });
+          await gate.promise;
+          if (context.isCurrent()) committed = true;
+          return { selected: true };
+        },
+      },
+    ]);
+    scope.setDataReady(true);
+    const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
+    try {
+      await session.connect();
+      const channel = FakePeerConnection.dataChannels[0];
+      channel?.onopen?.();
+      dispatchToolCall(channel, "pending-frontend", "select_item");
+      await vi.waitFor(() => expect(session.state.activeTool).toBe("select_item"));
+      expect(channel?.send).not.toHaveBeenCalledWith(expect.stringContaining("pending-frontend"));
+      session.disconnect();
+      expect(aborted).toBe(true);
+      gate.resolve();
+      await gate.promise;
+      expect(committed).toBe(false);
+      expect(channel?.send).not.toHaveBeenCalledWith(expect.stringContaining("pending-frontend"));
+    } finally {
+      session.disconnect();
+      preparation.dispose();
     }
   });
 

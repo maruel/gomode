@@ -1,4 +1,4 @@
-// Publishes the bridge-v2 preparation contract for generic instrumented hosted frontends.
+// Publishes the bridge-v3 preparation contract for generic instrumented hosted frontends.
 package com.fghbuild.gomode
 
 import com.fghbuild.gomode.ui.web.ServiceShellSession
@@ -21,10 +21,16 @@ internal val frontendPreparationFixtureScript =
     """
     (() => {
       const binding = window.goModeFrontendDocument;
-      let document = null, token = null, request = 0, ready = true, tools = [];
+      let document = null, token = null, request = 0, scopeID = 0, ready = true, tools = [];
+      window.dispatchGoModeVoiceTool = call => {
+        if (call.document !== document || call.token !== token || call.scope !== String(scopeID)) return;
+        Promise.resolve().then(() => window.executeGoModeVoiceTool(call.name,call.args)).then(result =>
+          gomodeFrontendToolResult.postMessage(JSON.stringify({...call,result})));
+      };
+      window.cancelGoModeVoiceTool = () => {};
       function publish() {
         if (token === null) return;
-        gomodeFrontendReadiness.postMessage(JSON.stringify({document,token,ready,tools:ready?tools:[]}));
+        gomodeFrontendReadiness.postMessage(JSON.stringify({document,token,scope:String(scopeID),ready,tools:ready?tools:[]}));
       }
       gomodeAuth.onmessage = event => {
         const value = JSON.parse(event.data);
@@ -42,7 +48,7 @@ internal val frontendPreparationFixtureScript =
           gomodeAuth.postMessage(JSON.stringify({...auth,frontendDocument:document,frontendRequest:id}));
         });
       };
-      window.fixtureTools = encoded => { tools = JSON.parse(encoded); publish(); };
-      window.fixtureReady = value => { ready = value; publish(); };
+      window.fixtureTools = encoded => { scopeID++; tools = JSON.parse(encoded); publish(); };
+      window.fixtureReady = value => { if(ready&&!value)scopeID++; ready = value; publish(); };
     })();
     """.trimIndent()

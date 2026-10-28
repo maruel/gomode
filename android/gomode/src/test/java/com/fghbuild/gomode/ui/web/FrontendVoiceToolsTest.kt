@@ -7,6 +7,7 @@ import android.webkit.ValueCallback
 import android.webkit.WebView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -32,9 +33,11 @@ class FrontendVoiceToolsTest {
     fun setUp() {
         Dispatchers.setMain(Dispatchers.Unconfined)
         view = ToolWebView()
+        view.receive = { tools.complete(view, it) }
         tools.register(
             view,
             """[{"name":"select_item","description":"Select item","parameters":{}}]""",
+            org.json.JSONObject("""{"document":"document","token":"identity","scope":"scope"}"""),
         )
     }
 
@@ -57,7 +60,9 @@ class FrontendVoiceToolsTest {
             entry.frontendTools.register(
                 view,
                 """[{"name":"select_item","description":"Select item","parameters":{}}]""",
+                org.json.JSONObject("""{"document":"document","token":"identity","scope":"scope"}"""),
             )
+            view.receive = { entry.frontendTools.complete(view, it) }
             view.deferResult = true
             val request =
                 async(Dispatchers.Unconfined) {
@@ -104,7 +109,11 @@ class FrontendVoiceToolsTest {
             val request = async { tools.execute("select_item", JsonObject(emptyMap())) { true } }
             runCurrent()
             tools.clear(view)
-            tools.register(view, "[]")
+            tools.register(
+                view,
+                "[]",
+                org.json.JSONObject("""{"document":"document","token":"identity","scope":"scope"}"""),
+            )
             view.callback?.onReceiveValue("{\"selected\":true}")
             assertEquals(true, request.await()?.containsKey("error"))
         }
@@ -114,7 +123,11 @@ class FrontendVoiceToolsTest {
         runTest {
             val newer = ToolWebView()
             try {
-                tools.register(newer, """[{"name":"new_item","description":"New item","parameters":{}}]""")
+                tools.register(
+                    newer,
+                    """[{"name":"new_item","description":"New item","parameters":{}}]""",
+                    org.json.JSONObject("""{"document":"document","token":"identity","scope":"scope"}"""),
+                )
                 tools.clear(view)
                 assertEquals(listOf("new_item"), tools.declarations.map { it.name })
                 assertNull(tools.execute("select_item", JsonObject(emptyMap())) { true })
@@ -130,8 +143,13 @@ class FrontendVoiceToolsTest {
             val otherView = ToolWebView()
             val otherTools = FrontendVoiceTools()
             try {
-                otherTools.register(otherView, """[{"name":"select_item","description":"Other","parameters":{}}]""")
+                otherTools.register(
+                    otherView,
+                    """[{"name":"select_item","description":"Other","parameters":{}}]""",
+                    org.json.JSONObject("""{"document":"document","token":"identity","scope":"scope"}"""),
+                )
                 tools.execute("select_item", JsonObject(emptyMap())) { true }
+                otherView.receive = { otherTools.complete(otherView, it) }
                 assertEquals("", otherView.script)
                 otherTools.execute("select_item", JsonObject(emptyMap())) { true }
                 assertEquals(true, otherView.script.contains("select_item"))
@@ -162,7 +180,12 @@ class FrontendVoiceToolsTest {
         runTest {
             var authorized = true
             val guarded = FrontendVoiceTools { authorized }
-            guarded.register(view, """[{"name":"select_item","description":"Select","parameters":{}}]""")
+            view.receive = { guarded.complete(view, it) }
+            guarded.register(
+                view,
+                """[{"name":"select_item","description":"Select","parameters":{}}]""",
+                org.json.JSONObject("""{"document":"document","token":"identity","scope":"scope"}"""),
+            )
             authorized = false
             guarded.invalidate()
             assertEquals(true, guarded.execute("select_item", JsonObject(emptyMap())) { true }?.containsKey("error"))
@@ -190,18 +213,88 @@ class FrontendVoiceToolsTest {
         for (name in listOf("hang_up", "list_servers", "switch_server")) {
             val error =
                 runCatching {
-                    tools.register(view, """[{"name":"$name","description":"Override","parameters":{}}]""")
+                    tools.register(
+                        view,
+                        """[{"name":"$name","description":"Override","parameters":{}}]""",
+                        org.json.JSONObject("""{"document":"document","token":"identity","scope":"scope"}"""),
+                    )
                 }.exceptionOrNull()
             assertEquals(true, error is IllegalArgumentException)
         }
         assertEquals(listOf("select_item"), tools.declarations.map { it.name })
     }
 
+    @Test
+    fun asynchronousCompletionsAreCorrelatedAndDuplicatesCannotSettleAnotherCall() =
+        runTest {
+            view.deferResult = true
+            val first = async { tools.execute("select_item", JsonObject(emptyMap())) { true } }
+            runCurrent()
+            val firstReply = checkNotNull(view.callback)
+            val second = async { tools.execute("select_item", JsonObject(emptyMap())) { true } }
+            runCurrent()
+            val secondReply = checkNotNull(view.callback)
+            secondReply.onReceiveValue("""{"selected":"second"}""")
+            runCurrent()
+            assertFalse(first.isCompleted)
+            assertEquals("{\"selected\":\"second\"}", second.await().toString())
+            secondReply.onReceiveValue("""{"selected":"duplicate"}""")
+            assertFalse(first.isCompleted)
+            firstReply.onReceiveValue("""{"selected":"first"}""")
+            assertEquals("{\"selected\":\"first\"}", first.await().toString())
+        }
+
+    @Test
+    fun deadlineAndCallerCancellationRetireCallsAndSendScopedCancellation() =
+        runTest {
+            Dispatchers.setMain(kotlinx.coroutines.test.StandardTestDispatcher(testScheduler))
+            view.deferResult = true
+            val timed = async { tools.execute("select_item", JsonObject(emptyMap())) { true } }
+            runCurrent()
+            val late = checkNotNull(view.callback)
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertEquals("{\"error\":\"Frontend voice tool timed out.\"}", timed.await().toString())
+            org.robolectric.Shadows
+                .shadowOf(android.os.Looper.getMainLooper())
+                .idle()
+            assertTrue(view.script.contains("cancelGoModeVoiceTool"))
+            late.onReceiveValue("""{"selected":true}""")
+            val canceled = async { tools.execute("select_item", JsonObject(emptyMap())) { true } }
+            runCurrent()
+            canceled.cancel()
+            runCurrent()
+            assertTrue(canceled.isCancelled)
+            org.robolectric.Shadows
+                .shadowOf(android.os.Looper.getMainLooper())
+                .idle()
+            assertTrue(view.script.contains("cancelGoModeVoiceTool"))
+            assertEquals(
+                0,
+                (
+                    FrontendVoiceTools::class.java
+                        .getDeclaredField("pending")
+                        .apply { isAccessible = true }
+                        .get(tools) as Map<*, *>
+                ).size,
+            )
+        }
+
+    @Test
+    fun lostCallerAuthorityBeforeDispatchCannotExecuteFrontendCode() =
+        runTest {
+            var checks = 0
+            val result = tools.execute("select_item", JsonObject(emptyMap())) { ++checks == 1 }
+            assertTrue(checkNotNull(result).containsKey("error"))
+            assertEquals("", view.script)
+        }
+
     private class ToolWebView : WebView(RuntimeEnvironment.getApplication()) {
         var pageURL = "https://service.test"
         var script = ""
         var deferResult = false
         var callback: ValueCallback<String>? = null
+        var receive: (String) -> Unit = {}
 
         override fun getUrl(): String = pageURL
 
@@ -210,8 +303,14 @@ class FrontendVoiceToolsTest {
             resultCallback: ValueCallback<String>?,
         ) {
             this.script = script
-            callback = resultCallback
-            if (!deferResult) resultCallback?.onReceiveValue("{\"selected\":true}")
+            if (!script.contains("dispatchGoModeVoiceTool")) return
+            val call = org.json.JSONObject(script.substringAfter("?.(").dropLast(1))
+            callback =
+                ValueCallback { value ->
+                    call.put("result", org.json.JSONObject(value))
+                    receive(call.toString())
+                }
+            if (!deferResult) callback?.onReceiveValue("{\"selected\":true}")
         }
     }
 }

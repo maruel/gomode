@@ -14,6 +14,7 @@ import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceSettingsClient
+import com.fghbuild.gomode.ui.observeVoiceStartup
 import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellSession
 import com.fghbuild.gomode.ui.web.WebShellLoadState
@@ -24,6 +25,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,6 +41,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -61,7 +64,11 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.shadows.ShadowLog
 import org.robolectric.shadows.ShadowSpeechRecognizer
+import org.robolectric.shadows.ShadowSystemClock
+import java.io.IOException
+import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.concurrent.TimeUnit
 
@@ -77,6 +84,51 @@ class DeviceVoiceSessionTest {
     fun tearDown() {
         Dispatchers.resetMain()
     }
+
+    @Test
+    fun `disconnect cancels a remote tool handler before it changes the selected service`() =
+        runTest {
+            val store = InMemoryPreferencesDataStore()
+            val settings = SettingsRepository(store)
+            val first = settings.addService("First", "https://first.example")
+            val second = settings.addService("Second", "https://second.example")
+            settings.settings.first { it.activeServiceId == second }
+            val socket = FakeWebSocket()
+            var listener: WebSocketListener? = null
+            val session =
+                createSession(FakeSpeech(), settingsRepo = settings) { _, backend ->
+                    listener = backend
+                    socket
+                }
+            var entered = false
+            var canceled = false
+            try {
+                session.connect()
+                val backend = checkNotNull(listener)
+                backend.onOpen(socket, upgradeResponse())
+                backend.onMessage(socket, """{"kind":"session.ready"}""")
+                store.beforeWrite = {
+                    entered = true
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        canceled = true
+                    }
+                }
+                backend.onMessage(
+                    socket,
+                    """{"kind":"tool.call","id":"pending","name":"switch_server","args":{"server_id":"$first"}}""",
+                )
+                assertTrue(entered)
+                session.disconnect()
+                assertTrue(canceled)
+                assertEquals(second, settings.settings.value.activeServiceId)
+                assertFalse(socket.sent.any { it.contains("pending") })
+            } finally {
+                store.beforeWrite = {}
+                session.close()
+            }
+        }
 
     @Test
     fun `device microphone levels follow live input and reset on mute error and disconnect`() {
@@ -146,6 +198,178 @@ class DeviceVoiceSessionTest {
             session.close()
         }
     }
+
+    @Test
+    fun `recovery retains the original timing lease and cannot acquire a replacement owner`() =
+        runTest {
+            Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+            for (replacement in listOf(false, true)) {
+                ShadowLog.clear()
+                val original = VoiceStartupTiming(VoiceStartupSource.MANUAL)
+                var exposed = original
+                var setups = 0
+                val session =
+                    createSession(
+                        FakeSpeech(),
+                        startupTiming = { exposed },
+                        setupProvider = {
+                            if (setups++ == 0) withTimeout(7) { awaitCancellation() }
+                            throw SocketTimeoutException("Private recovery timeout")
+                        },
+                    )
+                try {
+                    session.connect()
+                    runCurrent()
+                    advanceTimeBy(7)
+                    ShadowSystemClock.advanceBy(Duration.ofMillis(7))
+                    runCurrent()
+                    assertTrue(
+                        ShadowLog.getLogsForTag("GoModeVoiceStartup").any { it.msg.contains("event=stage_timeout") },
+                    )
+                    if (replacement) {
+                        original.finish(VoiceStartupOutcome.SUPERSEDED)
+                        exposed = VoiceStartupTiming(VoiceStartupSource.MANUAL)
+                    }
+                    val newerPrefix =
+                        ShadowLog
+                            .getLogsForTag("GoModeVoiceStartup")
+                            .last()
+                            .msg
+                            .substringBefore(" source=")
+                    session.connect(preserveTranscript = true)
+                    observeVoiceStartup(backgroundScope, session, original)
+                    runCurrent()
+                    val records = ShadowLog.getLogsForTag("GoModeVoiceStartup").map { it.msg }
+                    val terminal = records.filter { it.contains("event=finished") }
+                    assertEquals(1, terminal.size)
+                    if (replacement) {
+                        assertTrue(terminal.single().contains("outcome=SUPERSEDED"))
+                        assertFalse(terminal.single().startsWith(newerPrefix))
+                    } else {
+                        assertTrue(terminal.toString(), terminal.single().contains("outcome=TIMED_OUT"))
+                        assertEquals(1, records.map { it.substringBefore(" source=") }.distinct().size)
+                    }
+                } finally {
+                    session.close()
+                }
+            }
+        }
+
+    @Test
+    fun `setup deadline records nonterminal timeout while preserving cancellation propagation`() =
+        runTest {
+            Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+            val timing = VoiceStartupTiming(VoiceStartupSource.MANUAL)
+            val session =
+                createSession(
+                    FakeSpeech(),
+                    startupTiming = { timing },
+                    setupProvider = { withTimeout(23) { awaitCancellation() } },
+                )
+            try {
+                session.connect()
+                runCurrent()
+                advanceTimeBy(23)
+                ShadowSystemClock.advanceBy(Duration.ofMillis(23))
+                runCurrent()
+                assertFalse(session.state.value.connected)
+                assertNull(session.state.value.error)
+                assertEquals("Connecting…", session.state.value.connectStatus)
+                val records =
+                    ShadowLog
+                        .getLogsForTag(
+                            "GoModeVoiceStartup",
+                        ).map { it.msg }
+                assertFalse(records.any { it.contains("event=finished") })
+                assertEquals(1, records.count { it.contains("event=stage_timeout stage=TOOLS") })
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
+    fun `setup and websocket timeouts retain typed causes without parsing provider text`() =
+        runTest {
+            val failures =
+                listOf(
+                    SocketTimeoutException("Private network detail") to "TIMED_OUT",
+                    gatewayNetworkError(SocketTimeoutException("Private nested detail")) to "TIMED_OUT",
+                    IOException("Private failure mentioning timeout") to "FAILED",
+                )
+            for (stage in listOf("setup", "socket")) {
+                for ((failure, expected) in failures) {
+                    ShadowLog.clear()
+                    val timing = VoiceStartupTiming(VoiceStartupSource.MANUAL)
+                    val socket = FakeWebSocket()
+                    var listener: WebSocketListener? = null
+                    val session =
+                        createSession(
+                            FakeSpeech(),
+                            startupTiming = { timing },
+                            setupProvider = {
+                                if (stage == "setup") throw failure
+                                testSetup()
+                            },
+                        ) { _, callbacks ->
+                            listener = callbacks
+                            socket
+                        }
+                    try {
+                        session.connect()
+                        if (stage == "socket") requireNotNull(listener).onFailure(socket, failure, null)
+                        observeVoiceStartup(backgroundScope, session, timing)
+                        runCurrent()
+                        assertFalse(session.state.value.connected)
+                        assertTrue(session.state.value.error != null)
+                        val records = ShadowLog.getLogsForTag("GoModeVoiceStartup").map { it.msg }
+                        val terminal = records.filter { it.contains("event=finished") }
+                        assertEquals(1, terminal.size)
+                        assertTrue(terminal.toString(), terminal.single().contains("outcome=$expected "))
+                        assertFalse(records.any { it.contains("Private") })
+                    } finally {
+                        session.close()
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun `unavailable speech language reports failed startup without changing idle recovery state`() =
+        runTest {
+            for (language in listOf(
+                SpeechLanguageState.Missing,
+                SpeechLanguageState.Pending,
+                SpeechLanguageState.Unsupported,
+                SpeechLanguageState.Failed("Private speech provider detail"),
+            )) {
+                ShadowLog.clear()
+                val timing = VoiceStartupTiming(VoiceStartupSource.MANUAL)
+                val speech = FakeSpeech().apply { languageState.value = language }
+                var opened = false
+                val session =
+                    createSession(speech, startupTiming = { timing }) { _, _ ->
+                        opened = true
+                        FakeWebSocket()
+                    }
+                try {
+                    session.connect()
+                    observeVoiceStartup(backgroundScope, session, timing)
+                    runCurrent()
+                    assertFalse(opened)
+                    assertFalse(session.state.value.connected)
+                    assertNull(session.state.value.connectStatus)
+                    assertNull(session.state.value.error)
+                    assertEquals(language, speech.languageState.value)
+                    val records = ShadowLog.getLogsForTag("GoModeVoiceStartup").map { it.msg }
+                    val terminal = records.filter { it.contains("event=finished") }
+                    assertEquals(1, terminal.size)
+                    assertTrue(terminal.toString(), terminal.single().contains("outcome=FAILED stage=SPEECH_LANGUAGE"))
+                    assertFalse(records.any { it.contains("Private speech") })
+                } finally {
+                    session.close()
+                }
+            }
+        }
 
     @Test
     fun `missing speech language blocks transport and download does not start voice`() {
@@ -239,7 +463,7 @@ class DeviceVoiceSessionTest {
                         override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse =
                             MockResponse().setBody(
                                 if (request.path == "/.well-known/gomode.json") {
-                                    """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":2,"toolGroups":[],
+                                    """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":3,"toolGroups":[],
                         "voiceGateway":{"url":"/","required":false,"authRequired":false}}}"""
                                 } else {
                                     """{"choices":[{"id":"text","label":"Text","transports":["text"]}],"defaultChoiceID":"text"}"""
@@ -1842,6 +2066,7 @@ class DeviceVoiceSessionTest {
                                         ),
                                     )
                                 assertTrue(servers.toString().contains(serverId))
+                                turnProcessed = true
                                 onToolCall(
                                     com.caic.voicegateway.sdk.v1.ToolCall(
                                         kind = com.caic.voicegateway.sdk.v1.MessageKind.ToolCall,
@@ -1850,8 +2075,7 @@ class DeviceVoiceSessionTest {
                                         args = kotlinx.serialization.json.JsonObject(emptyMap()),
                                     ),
                                 )
-                                turnProcessed = true
-                                return EngineTurnResult(assistantText = "Done")
+                                throw AssertionError("Hang-up must cancel remaining tool work")
                             }
 
                             override suspend fun injectContext(text: String) = Unit
@@ -1994,6 +2218,7 @@ class DeviceVoiceSessionTest {
         localModelOwner: LocalModelOwner = (RuntimeEnvironment.getApplication() as GoModeApplication).localModelOwner,
         voiceConversation: VoiceConversation? = null,
         thinkingEarcon: ThinkingEarcon = RecordingThinkingEarcon(),
+        startupTiming: () -> VoiceStartupTiming? = { null },
         factory: (Request, WebSocketListener) -> WebSocket = { _, _ -> FakeWebSocket() },
     ): DeviceVoiceSession {
         val localConversation =
@@ -2019,6 +2244,7 @@ class DeviceVoiceSessionTest {
             localModelOwner = localModelOwner,
             voiceChimePlayer = NoopChime(),
             thinkingEarcon = thinkingEarcon,
+            startupTiming = startupTiming,
             callController = calls,
             setupProvider = setupProvider,
             webSocketFactory = factory,
@@ -2419,6 +2645,7 @@ class DeviceVoiceSessionTest {
     }
 
     private class InMemoryPreferencesDataStore : DataStore<Preferences> {
+        var beforeWrite: suspend () -> Unit = {}
         private val writeMutex = Mutex()
         private val current = MutableStateFlow(emptyPreferences())
 
@@ -2426,6 +2653,7 @@ class DeviceVoiceSessionTest {
 
         override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences =
             writeMutex.withLock {
+                beforeWrite()
                 transform(current.value).also { current.value = it }
             }
     }

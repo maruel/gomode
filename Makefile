@@ -18,7 +18,7 @@ node_modules/.modules.yaml: package.json pnpm-lock.yaml
 	@pnpm install --frozen-lockfile --silent
 	@touch $@
 
-FRONTEND_TEST = pnpm exec node --test scripts/css_module_types.test.mjs scripts/voice_preview.test.mjs && NODE_OPTIONS=--no-experimental-webstorage pnpm exec tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts
+FRONTEND_TEST = pnpm exec node --test scripts/browser_integration.test.mjs scripts/css_module_types.test.mjs scripts/voice_preview.test.mjs && NODE_OPTIONS=--no-experimental-webstorage pnpm exec tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts
 FRONTEND_TEST_FILES = "web/src/**/*.test.ts" "web/src/**/*.test.tsx"
 
 help:

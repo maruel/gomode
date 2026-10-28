@@ -50,7 +50,7 @@ class VoiceChoicesSettingsTest {
                 val active = mutableStateOf(false)
                 val manifest =
                     """
-                    {"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":2,
+                    {"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":3,
                     "toolGroups":[],"voiceGateway":{"required":false,"url":"/"}}}
                     """.trimIndent()
                 val catalog =
@@ -152,7 +152,7 @@ class VoiceChoicesSettingsTest {
                 server.enqueue(
                     MockResponse().setBody(
                         """
-                        {"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":2,
+                        {"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":3,
                         "toolGroups":[],"voiceGateway":{"required":false,"url":"/"}}}
                         """.trimIndent(),
                     ),

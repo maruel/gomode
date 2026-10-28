@@ -53,14 +53,20 @@ let documentID = '', token = null, dataReady = false, count = 0, request = 0;
 const tools = ['fixture_echo','fixture_logout','fixture_reload','fixture_state'].map(name =>
   ({name,description:'Exercise the hosted document',parameters:{type:'object',properties:{}}}));
 function publishPreparation() {
-  if (token) gomodeFrontendReadiness.postMessage(JSON.stringify({document:documentID,token,ready:dataReady,tools:dataReady?tools:[]}));
+  if (token) gomodeFrontendReadiness.postMessage(JSON.stringify({document:documentID,token,scope:String(request),ready:dataReady,tools:dataReady?tools:[]}));
 }
 function revokeFrontend() {
   dataReady = false; publishPreparation();
   const frontendRequest = String(++request);
   binding.then(document => gomodeAuth.postMessage(JSON.stringify({authChanging:true,frontendDocument:document,frontendRequest})));
 }
-window.executeGoModeVoiceTool = (name, args) => {
+window.dispatchGoModeVoiceTool = call => {
+  if (call.document !== documentID || call.token !== token || call.scope !== String(request)) return;
+  Promise.resolve().then(() => executeTool(call.name,call.args)).then(result =>
+    gomodeFrontendToolResult.postMessage(JSON.stringify({...call,result})));
+};
+window.cancelGoModeVoiceTool = () => {};
+function executeTool(name, args) {
   if (name === 'fixture_logout') revokeFrontend();
   if (name === 'fixture_reload') location.reload();
   if (name !== 'fixture_state') document.getElementById('counter').textContent = 'Tool count: ' + (++count);
@@ -113,7 +119,7 @@ func (f *fixture) settingsDocument() gomode.Settings {
 		ServiceVersion: "1.0.0",
 		APIVersion:     1,
 		WebShell: gomode.WebShellSettings{
-			BridgeVersion: 2,
+			BridgeVersion: 3,
 			ToolGroups: []gomode.ToolGroup{{
 				Name:            "fixture",
 				Description:     "Fixture task tools.",

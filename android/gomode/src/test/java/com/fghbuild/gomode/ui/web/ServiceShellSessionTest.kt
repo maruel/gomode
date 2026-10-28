@@ -28,7 +28,11 @@ class ServiceShellSessionTest {
             val session = ServiceShellSession(ServiceShellKey("saved", "https://service.test")) {}
             val view = WebView(RuntimeEnvironment.getApplication())
             view.loadUrl(session.key.url)
-            session.frontendTools.register(view, """[{"name":"select","description":"Select","parameters":{}}]""")
+            session.frontendTools.register(
+                view,
+                """[{"name":"select","description":"Select","parameters":{}}]""",
+                org.json.JSONObject("""{"document":"document","token":"identity","scope":"scope"}"""),
+            )
             val request =
                 JSONObject()
                     .put(

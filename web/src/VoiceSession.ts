@@ -43,7 +43,7 @@ import {
 } from "../../sdk/voicegateway/ts/v1/types.gen";
 
 import { mcpClient, type McpToolDescriptor } from "./McpClient";
-import { executeFrontendVoiceTool, frontendVoiceToolDeclarations } from "./FrontendVoiceTools";
+import { captureFrontendVoiceTools, type FrontendVoiceToolsSnapshot } from "./FrontendVoiceTools";
 import { GO_MODE_ITEMS_RESOURCE_URI, initialServiceContext } from "./ServiceItems";
 import { WebAudioVoiceChime, type VoiceChimePlayer } from "./VoiceChime";
 import { WebAudioThinkingEarcon, type ThinkingEarcon } from "./ThinkingEarcon";
@@ -279,11 +279,13 @@ async function refreshedServiceToken(
  * Voice-local tool declarations, kept outside the service MCP tool set.
  * Keep this list and its dispatcher in sync with android/gomode/src/main/java/com/fghbuild/gomode/voice/VoiceSession.kt.
  */
-export function voiceToolDeclarations(mcpTools: McpToolDescriptor[]): SessionSetup["tools"] {
+export function voiceToolDeclarations(
+  mcpTools: McpToolDescriptor[],
+  frontendTools: SessionSetup["tools"],
+): SessionSetup["tools"] {
   if (mcpTools.some((tool) => tool.name === HANG_UP_TOOL_NAME)) {
     throw new Error(`MCP tool "${HANG_UP_TOOL_NAME}" conflicts with the reserved voice command.`);
   }
-  const frontendTools = frontendVoiceToolDeclarations();
   for (const tool of frontendTools) {
     if (mcpTools.some((mcp) => mcp.name === tool.name)) {
       throw new Error(`MCP tool "${tool.name}" conflicts with a frontend voice tool.`);
@@ -536,7 +538,8 @@ export class VoiceSession {
   private _sessionChoiceID: string | null = null;
   private _sessionVoiceName: string | null = null;
   private _conversationID = newConversationID();
-  private _frontendToolNames = new Set<string>();
+  private _frontendInvocationLifetime = new AbortController();
+  private _frontendTools: FrontendVoiceToolsSnapshot | null = null;
   private _pc: RTCPeerConnection | null = null;
   private _dc: RTCDataChannel | null = null;
   private _textSocket: WebSocket | null = null;
@@ -1215,6 +1218,7 @@ export class VoiceSession {
 
   /** Start a new voice session via WebRTC data channel through the host backend. */
   async connect(): Promise<void> {
+    this._frontendTools = captureFrontendVoiceTools();
     this._conversationID = newConversationID();
     this.prepareAudio();
     this._sessionGateway = gatewaySnapshot();
@@ -1248,6 +1252,8 @@ export class VoiceSession {
       await this._connectBrowser(preserveTranscript);
       return;
     }
+    this._frontendInvocationLifetime.abort();
+    this._frontendInvocationLifetime = new AbortController();
     const attempt = ++this._connectionAttempt;
     if (this._reconnectTimer !== null) {
       clearTimeout(this._reconnectTimer);
@@ -1426,6 +1432,8 @@ export class VoiceSession {
   }
 
   private async _connectBrowser(preserveTranscript: boolean): Promise<void> {
+    this._frontendInvocationLifetime.abort();
+    this._frontendInvocationLifetime = new AbortController();
     const attempt = ++this._connectionAttempt;
     this._reconnectEnabled = false;
     if (this._reconnectTimer !== null) clearTimeout(this._reconnectTimer);
@@ -1578,6 +1586,8 @@ export class VoiceSession {
   }
 
   disconnect(): void {
+    this._frontendInvocationLifetime.abort();
+    this._frontendInvocationLifetime = new AbortController();
     this._leaveVoiceMode();
     this._connectionAttempt++;
     this._audioSelectionAttempt++;
@@ -1778,6 +1788,7 @@ export class VoiceSession {
   }
 
   private _setError(message: string): void {
+    this._frontendInvocationLifetime.abort();
     this._leaveVoiceMode();
     this._connectionAttempt++;
     this._audioSelectionAttempt++;
@@ -1873,9 +1884,8 @@ export class VoiceSession {
   // -----------------------------------------------------------------------
 
   private _sendSetup(tools: McpToolDescriptor[], systemInstruction: string, serviceContext: string): void {
-    this._frontendToolNames = new Set(frontendVoiceToolDeclarations().map((tool) => tool.name));
     const setup = gatewaySessionSetup(
-      voiceToolDeclarations(tools),
+      voiceToolDeclarations(tools, this._frontendTools?.declarations ?? []),
       systemInstruction,
       serviceContext,
       this.state.languageTag,
@@ -2042,13 +2052,24 @@ export class VoiceSession {
       this._update((s) => {
         s.activeTool = msg.name ?? null;
       });
-      const result = this._frontendToolNames.has(msg.name)
-        ? { structuredContent: executeFrontendVoiceTool(msg.name, msg.args ?? {}), isError: false }
+      const frontend = this._frontendTools?.declarations.some((tool) => tool.name === msg.name)
+        ? this._frontendTools
+        : null;
+      const result = frontend
+        ? {
+            structuredContent: await frontend.execute(
+              msg.name,
+              msg.args ?? {},
+              this._frontendInvocationLifetime.signal,
+            ),
+            isError: false,
+          }
         : await mcpClient.callTool(msg.name, msg.args ?? {}, {
             locale: this.state.languageTag,
             sessionID: this._conversationID,
           });
       if (!this._ownsChannel(attempt, channel)) return;
+      if (frontend && result.structuredContent["error"] !== undefined) result.isError = true;
       this._update((s) => {
         s.activeTool = null;
       });

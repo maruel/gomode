@@ -1,4 +1,4 @@
-// Root Compose surface coordinating autosaved settings, service shells, recovery, and voice controls.
+// Root Compose surface coordinating service shells, permissions, timed voice startup, and recovery.
 package com.fghbuild.gomode.ui
 
 import android.Manifest
@@ -110,9 +110,14 @@ import com.fghbuild.gomode.voice.VoicePanel
 import com.fghbuild.gomode.voice.VoiceService
 import com.fghbuild.gomode.voice.VoiceSession
 import com.fghbuild.gomode.voice.VoiceSessionController
+import com.fghbuild.gomode.voice.VoiceStartupOutcome
+import com.fghbuild.gomode.voice.VoiceStartupSource
+import com.fghbuild.gomode.voice.VoiceStartupStage
+import com.fghbuild.gomode.voice.VoiceStartupTiming
 import com.fghbuild.gomode.voice.VoiceState
 import com.fghbuild.gomode.voice.usesGatewayVoice
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -133,6 +138,7 @@ private enum class NativeScreen {
 internal class PendingMicrophoneVoiceStart(
     private val page: ServiceShellSession,
     private val session: VoiceSessionController,
+    val timing: VoiceStartupTiming,
 ) {
     private val identity = page.bearerStore.identityEpoch.value
     private val document = page.frontendPreparation.document
@@ -140,14 +146,44 @@ internal class PendingMicrophoneVoiceStart(
     fun connectIfCurrent(
         currentPage: ServiceShellSession,
         currentSession: VoiceSessionController,
-    ) {
+    ): Boolean {
         if (currentPage !== page || currentSession !== session ||
             page.bearerStore.identityEpoch.value != identity || page.frontendPreparation.document != document
         ) {
-            return
+            timing.finish(VoiceStartupOutcome.SUPERSEDED)
+            return false
         }
-        if (page.key.url.isNotBlank() && !page.isFrontendReady) return
+        if (page.key.url.isNotBlank() && !page.isFrontendReady) {
+            timing.finish(VoiceStartupOutcome.CANCELED)
+            return false
+        }
+        timing.enter(VoiceStartupStage.TRANSPORT)
         session.connect()
+        return true
+    }
+}
+
+// Start observing only after connect(), because idle is expected while permission
+// is pending. The captured record seals independently of later UI/session owners.
+internal fun observeVoiceStartup(
+    scope: CoroutineScope,
+    session: VoiceSessionController,
+    timing: VoiceStartupTiming,
+) {
+    scope.launch {
+        try {
+            val result = session.state.first { it.connected || it.error != null || it.connectStatus == null }
+            timing.finish(
+                when {
+                    result.connected -> VoiceStartupOutcome.CONNECTED
+                    result.error != null -> VoiceStartupOutcome.FAILED
+                    else -> VoiceStartupOutcome.CANCELED
+                },
+            )
+        } catch (error: CancellationException) {
+            timing.finish(VoiceStartupOutcome.CANCELED)
+            throw error
+        }
     }
 }
 
@@ -293,6 +329,7 @@ internal fun GoModeApp(
         onDispose { voiceCallController.close() }
     }
     val voiceServiceOwner = if (sharedConversation) voiceConversation else bearerStore
+    var manualStartup by remember { mutableStateOf<VoiceStartupTiming?>(null) }
     val manualVoiceSession: VoiceSessionController =
         remember(
             settingsRepository,
@@ -317,6 +354,7 @@ internal fun GoModeApp(
                         localModelOwner = localModelOwner,
                         callController = voiceCallController,
                         switchServer = switchVoiceServer,
+                        startupTiming = { manualStartup },
                     )
                 }
 
@@ -328,6 +366,7 @@ internal fun GoModeApp(
                         languageTag = settings.voiceLanguageTag,
                         callController = voiceCallController,
                         switchServer = switchVoiceServer,
+                        startupTiming = { manualStartup },
                     )
                 }
             }
@@ -335,6 +374,7 @@ internal fun GoModeApp(
     DisposableEffect(manualVoiceSession) {
         carVoiceOwner.registerManualSession(manualVoiceSession)
         onDispose {
+            manualStartup?.finish(VoiceStartupOutcome.CANCELED)
             carVoiceOwner.unregisterManualSession(manualVoiceSession)
             manualVoiceSession.close()
         }
@@ -416,7 +456,12 @@ internal fun GoModeApp(
         voiceItemBaseline = snapshot
     }
     var connectAfterMicPermission by remember { mutableStateOf<PendingMicrophoneVoiceStart?>(null) }
-    DisposableEffect(Unit) { onDispose { connectAfterMicPermission = null } }
+    DisposableEffect(Unit) {
+        onDispose {
+            connectAfterMicPermission?.timing?.finish(VoiceStartupOutcome.CANCELED)
+            connectAfterMicPermission = null
+        }
+    }
     val activity = LocalActivity.current
     var microphoneDenied by rememberSaveable { mutableStateOf(false) }
     var microphoneNeedsSettings by rememberSaveable { mutableStateOf(false) }
@@ -464,9 +509,12 @@ internal fun GoModeApp(
                 ) {
                     val pending = connectAfterMicPermission
                     connectAfterMicPermission = null
-                    pending?.connectIfCurrent(serviceSession, manualVoiceSession)
+                    if (pending?.connectIfCurrent(serviceSession, manualVoiceSession) == true) {
+                        observeVoiceStartup(scope, manualVoiceSession, pending.timing)
+                    }
                 }
             }
+            connectAfterMicPermission?.timing?.finish(VoiceStartupOutcome.CANCELED)
             connectAfterMicPermission = null
         }
     val shellRecovery =
@@ -627,6 +675,7 @@ internal fun GoModeApp(
                                     } else {
                                         {
                                             if (!keyguard.isKeyguardLocked) {
+                                                connectAfterMicPermission?.timing?.finish(VoiceStartupOutcome.CANCELED)
                                                 connectAfterMicPermission = null
                                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                             }
@@ -649,9 +698,19 @@ internal fun GoModeApp(
                     voiceState = voiceState,
                     voiceEnabled = voiceAvailable,
                     onConnect = {
+                        manualStartup?.finish(VoiceStartupOutcome.SUPERSEDED)
+                        connectAfterMicPermission = null
+                        val timing = VoiceStartupTiming(VoiceStartupSource.MANUAL)
+                        manualStartup = timing
                         activeNativeScreen = null
                         carVoiceOwner.cancel()
                         prepareAllPages = true
+                        // Manual starts are enabled only after these prerequisites.
+                        // Record checkpoints without adding a second preparation wait.
+                        timing.enter(VoiceStartupStage.PAGE)
+                        timing.enter(VoiceStartupStage.SIGN_IN)
+                        timing.enter(VoiceStartupStage.TOOLS)
+                        timing.enter(VoiceStartupStage.FRONTEND)
                         if ((localSelection != null || bearerStore.authReady.value) &&
                             (activeURL.isBlank() || serviceSession.isFrontendReady)
                         ) {
@@ -660,18 +719,26 @@ internal fun GoModeApp(
                                     Manifest.permission.RECORD_AUDIO,
                                 ) == PackageManager.PERMISSION_GRANTED
                             ) {
+                                timing.enter(VoiceStartupStage.TRANSPORT)
                                 manualVoiceSession.connect()
+                                observeVoiceStartup(scope, manualVoiceSession, timing)
                             } else {
+                                timing.enter(VoiceStartupStage.MICROPHONE)
                                 connectAfterMicPermission =
-                                    PendingMicrophoneVoiceStart(serviceSession, manualVoiceSession)
+                                    PendingMicrophoneVoiceStart(serviceSession, manualVoiceSession, timing)
                                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
+                        } else {
+                            timing.finish(VoiceStartupOutcome.FAILED)
                         }
                     },
                     onDisconnect = {
+                        connectAfterMicPermission?.timing?.finish(VoiceStartupOutcome.CANCELED)
+                        connectAfterMicPermission = null
                         if (carVoiceState.status != CarDialStatus.IDLE) {
                             carVoiceOwner.cancel()
                         } else {
+                            manualStartup?.finish(VoiceStartupOutcome.CANCELED)
                             manualVoiceSession.disconnect()
                         }
                     },

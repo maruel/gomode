@@ -3,7 +3,8 @@
 This SolidJS source package owns host-mode detection, the browser MCP client,
 voice transport and controls, and notifications for backend-hosted Go Mode
 frontends. Keep it host neutral. Product data, route choice, and auth policy
-belong to the host application; call `configureMcpClient` at host startup.
+belong to the host application. Supply the selected MCP group and captured auth
+adapters to `BrowserVoiceShell`; it owns browser client and gateway setup.
 
 CSS Module declarations (`*.module.css.d.ts`) ship with the source package.
 `make fix` regenerates them; `make verify` and build check freshness. Run

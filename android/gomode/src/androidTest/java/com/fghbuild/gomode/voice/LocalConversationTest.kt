@@ -532,7 +532,7 @@ class LocalConversationTest {
         val toolStarted = CountDownLatch(1)
         val callMetadata = CopyOnWriteArrayList<JSONObject>()
         val releaseTool = CountDownLatch(1)
-        private val manifest = """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":2,
+        private val manifest = """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":3,
             "toolGroups":[{"name":"fixture","endpoint":"/api/mcp","protocolVersion":"2026-07-28","authRequired":true}],
             "voiceGateway":{"required":false}}}"""
 

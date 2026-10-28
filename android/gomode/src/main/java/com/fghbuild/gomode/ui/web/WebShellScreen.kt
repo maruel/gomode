@@ -265,13 +265,33 @@ internal class ServiceWebPage(
                             val tools = payload.getJSONArray("tools")
                             val ready = payload.getBoolean("ready")
                             require(ready || tools.length() == 0) { "Unprepared frontend must not publish tools" }
-                            if (ready) frontendTools.register(view, tools.toString()) else frontendTools.clear(view)
+                            if (ready) {
+                                frontendTools.register(
+                                    view,
+                                    tools.toString(),
+                                    payload,
+                                )
+                            } else {
+                                frontendTools.clear(view)
+                            }
                             serviceSession.frontendPreparation.update(payload)
                         }.onFailure {
                             serviceSession.frontendPreparation.invalidateIdentity()
                             frontendTools.clear(view)
                             Log.e(TAG, "Invalid frontend preparation", it)
                         }
+                    }
+                }
+                WebViewCompat.addWebMessageListener(
+                    this,
+                    "gomodeFrontendToolResult",
+                    setOf(serviceOrigin(initialURL)),
+                ) { view, message, sourceOrigin, isMainFrame, _ ->
+                    if (serviceSession.isCurrentPage(pageGeneration) &&
+                        acceptsFrontendVoiceTools(sourceOrigin, isMainFrame, view.url, initialURL) &&
+                        bearerStore.authReady.value
+                    ) {
+                        message.data?.let { frontendTools.complete(view, it) }
                     }
                 }
                 WebViewCompat.addWebMessageListener(
@@ -1007,7 +1027,7 @@ internal class GoModeHostBridge {
 
     @JavascriptInterface
     @Suppress("FunctionOnlyReturningConstant")
-    fun shellVersion(): String = "2"
+    fun shellVersion(): String = "3"
 
     @JavascriptInterface
     fun isVoiceConnected(): Boolean = voiceConnected

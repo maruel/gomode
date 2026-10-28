@@ -1,261 +1,377 @@
-// Tests frontend voice tool registration, native publication, errors, and disposal.
+// Tests explicit tool/data preparation, authenticated ownership, and dispatch isolation across scope replacement.
 
-import { it } from "node:test";
+import { afterEach, beforeEach, it } from "node:test";
 import { expect, vi } from "../tests/expect";
+import { deferred } from "../tests/deferred";
 import {
+  captureFrontendVoiceTools,
   createFrontendPreparationClient,
   executeFrontendVoiceTool,
-  registerFrontendVoiceTool,
+  type FrontendPreparation,
 } from "./FrontendVoiceTools";
 
-it("registers browser tools and removes handlers on disposal", () => {
-  const execute = vi.fn(() => ({ selected: true }));
-  const tool = { declaration: { name: "select_item", description: "Select item", parameters: {} }, execute };
-  const unregister = registerFrontendVoiceTool(tool);
-  try {
-    expect(window.executeGoModeVoiceTool?.("select_item", { id: "one" })).toEqual({ selected: true });
-    expect(execute).toHaveBeenCalledWith({ id: "one" });
-    expect(() => registerFrontendVoiceTool(tool)).toThrow(/reserved/);
-    expect(() => registerFrontendVoiceTool({ ...tool, declaration: { ...tool.declaration, name: "hang_up" } })).toThrow(
-      /reserved/,
-    );
-  } finally {
-    unregister();
-  }
-  expect(window.executeGoModeVoiceTool).toBeUndefined();
-  expect(executeFrontendVoiceTool("select_item", {})).toHaveProperty("error");
-});
-
-it("waits for its authenticated acknowledgement and explicitly prepares zero tools", async () => {
-  const postMessage = vi.fn();
-  const messages = vi.fn();
-  const auth: { postMessage: typeof postMessage; onmessage?: ((event: { data: string }) => void) | null } = {
-    postMessage,
-  };
-  Object.assign(window, { gomodeAuth: auth });
+let owner: FrontendPreparation | null = null;
+const requests: Record<string, unknown>[] = [];
+const readiness: Record<string, unknown>[] = [];
+const bridge: { postMessage(message: string): void; onmessage?: ((event: { data: string }) => void) | null } = {
+  postMessage(message) {
+    requests.push(JSON.parse(message));
+  },
+};
+beforeEach(() => {
+  requests.length = 0;
+  readiness.length = 0;
+  Object.assign(window, { gomodeAuth: bridge });
   window.goModeFrontendDocument = Promise.resolve("document");
-  window.gomodeFrontendReadiness = { postMessage: messages };
-  const owner = createFrontendPreparationClient().publishAuth({ authChanged: true, nativeAccess: true });
-  try {
-    await Promise.resolve();
-    owner.setReady(true);
-    expect(messages).not.toHaveBeenCalled();
-    const request = JSON.parse(postMessage.mock.calls[0]?.[0] as string) as Record<string, unknown>;
-    auth.onmessage?.({ data: JSON.stringify({ ...request, frontendToken: "identity" }) });
-    expect(JSON.parse(messages.mock.calls[0]?.[0] as string)).toEqual({
-      document: "document",
-      token: "identity",
-      ready: true,
-      tools: [],
-    });
-    owner.setReady(false);
-    expect(JSON.parse(messages.mock.calls[1]?.[0] as string)).toHaveProperty("ready", false);
-  } finally {
-    owner.dispose();
-    Reflect.deleteProperty(window, "gomodeAuth");
-    delete window.goModeFrontendDocument;
-    delete window.gomodeFrontendReadiness;
-  }
+  window.gomodeFrontendReadiness = { postMessage: (message) => readiness.push(JSON.parse(message)) };
 });
-
-it("old identity work and old document acknowledgements cannot prepare a replacement", async () => {
-  const postMessage = vi.fn();
-  const messages = vi.fn();
-  const auth: { postMessage: typeof postMessage; onmessage?: ((event: { data: string }) => void) | null } = {
-    postMessage,
-  };
-  Object.assign(window, { gomodeAuth: auth });
-  window.goModeFrontendDocument = Promise.resolve("first-document");
-  window.gomodeFrontendReadiness = { postMessage: messages };
-  const first = createFrontendPreparationClient().publishAuth({ bearerToken: "first" });
-  await Promise.resolve();
-  const receiveFirst = auth.onmessage;
-  const firstRequest = JSON.parse(postMessage.mock.calls[0]?.[0] as string) as Record<string, unknown>;
-  window.goModeFrontendDocument = Promise.resolve("second-document");
-  const second = createFrontendPreparationClient().publishAuth({ bearerToken: "second" });
-  try {
-    await Promise.resolve();
-    first.setReady(true);
-    receiveFirst?.({ data: JSON.stringify({ ...firstRequest, frontendToken: "old" }) });
-    auth.onmessage?.({ data: JSON.stringify({ ...firstRequest, frontendToken: "old" }) });
-    expect(messages).not.toHaveBeenCalled();
-    const secondRequest = JSON.parse(postMessage.mock.calls[1]?.[0] as string) as Record<string, unknown>;
-    auth.onmessage?.({ data: JSON.stringify({ ...secondRequest, frontendToken: "new" }) });
-    expect(JSON.parse(messages.mock.calls[0]?.[0] as string)).toHaveProperty("ready", false);
-    second.setReady(true);
-    expect(JSON.parse(messages.mock.calls[1]?.[0] as string)).toHaveProperty("token", "new");
-    first.dispose();
-    second.setReady(false);
-    expect(JSON.parse(messages.mock.calls[2]?.[0] as string)).toHaveProperty("ready", false);
-  } finally {
-    second.dispose();
-    Reflect.deleteProperty(window, "gomodeAuth");
-    delete window.goModeFrontendDocument;
-    delete window.gomodeFrontendReadiness;
-  }
-});
-
-it("publishes the complete registered tool snapshot whether data or registration completes first", async () => {
-  const postMessage = vi.fn();
-  const messages = vi.fn();
-  const auth: { postMessage: typeof postMessage; onmessage?: ((event: { data: string }) => void) | null } = {
-    postMessage,
-  };
-  Object.assign(window, { gomodeAuth: auth });
-  window.goModeFrontendDocument = Promise.resolve("document");
-  window.gomodeFrontendReadiness = { postMessage: messages };
-  for (const earlyData of [false, true]) {
-    const owner = createFrontendPreparationClient().publishAuth({ authChanged: true, nativeAccess: true });
-    await Promise.resolve();
-    const request = JSON.parse(postMessage.mock.lastCall?.[0] as string) as Record<string, unknown>;
-    if (earlyData) owner.setReady(true);
-    const unregister = registerFrontendVoiceTool({
-      declaration: { name: "select_item", description: "Select", parameters: {} },
-      execute: () => ({}),
-    });
-    try {
-      auth.onmessage?.({ data: JSON.stringify({ ...request, frontendToken: "identity" }) });
-      if (!earlyData) owner.setReady(true);
-      const state = JSON.parse(messages.mock.lastCall?.[0] as string) as { ready: boolean; tools: { name: string }[] };
-      expect(state.ready).toBe(true);
-      expect(state.tools.map((tool) => tool.name)).toEqual(["select_item"]);
-    } finally {
-      owner.dispose();
-      unregister();
-      expect(JSON.parse(messages.mock.lastCall?.[0] as string)).toMatchObject({ ready: false, tools: [] });
-    }
-  }
+afterEach(() => {
+  owner?.dispose();
+  owner = null;
   Reflect.deleteProperty(window, "gomodeAuth");
   delete window.goModeFrontendDocument;
   delete window.gomodeFrontendReadiness;
 });
+function authenticate() {
+  owner = createFrontendPreparationClient().publishAuth({ authChanged: true, nativeAccess: true });
+  return owner;
+}
+function acknowledge(request: Record<string, unknown>, token: string) {
+  bridge.onmessage?.({ data: JSON.stringify({ ...request, frontendToken: token }) });
+}
+const tool = {
+  declaration: { name: "select_item", description: "Select", parameters: {} },
+  execute: () => ({ selected: true }),
+};
 
-it("preserves ordered auth revocation despite synchronous owner disposal or replacement", async () => {
-  const postMessage = vi.fn();
-  const messages = vi.fn();
-  const auth: { postMessage: typeof postMessage; onmessage?: ((event: { data: string }) => void) | null } = {
-    postMessage,
-  };
-  Object.assign(window, { gomodeAuth: auth });
-  window.goModeFrontendDocument = Promise.resolve("document");
-  window.gomodeFrontendReadiness = { postMessage: messages };
-  const old = createFrontendPreparationClient().publishAuth({ bearerToken: "old" });
-  await Promise.resolve();
-  const oldRequest = JSON.parse(postMessage.mock.lastCall?.[0] as string) as Record<string, unknown>;
-  const receiveOld = auth.onmessage;
-  createFrontendPreparationClient().publishAuth({ authChanging: true }).dispose();
-  createFrontendPreparationClient().publishAuth({ bearerToken: null }).dispose();
-  createFrontendPreparationClient().publishAuth({ authChanged: true, nativeAccess: false }).dispose();
-  const current = createFrontendPreparationClient().publishAuth({ bearerToken: "current" });
-  const receiveCurrent = auth.onmessage;
-  current.setReady(true);
-  try {
-    await Promise.resolve();
-    const requests = postMessage.mock.calls.map((call) => JSON.parse(call[0] as string) as Record<string, unknown>);
-    expect(
-      requests.map((request) => {
-        const payload = { ...request };
-        delete payload.frontendDocument;
-        delete payload.frontendRequest;
-        return payload;
-      }),
-    ).toEqual([
-      { bearerToken: "old" },
-      { authChanging: true },
-      { bearerToken: null },
-      { authChanged: true, nativeAccess: false },
-      { bearerToken: "current" },
-    ]);
-    expect(auth.onmessage).toBe(receiveCurrent);
-    receiveOld?.({ data: JSON.stringify({ ...oldRequest, frontendToken: "old-token" }) });
-    expect(messages).not.toHaveBeenCalled();
-    auth.onmessage?.({ data: JSON.stringify({ ...requests.at(-1), frontendToken: "current-token" }) });
-    expect(JSON.parse(messages.mock.lastCall?.[0] as string)).toMatchObject({ token: "current-token", ready: true });
-    old.dispose();
-    expect(auth.onmessage).toBe(receiveCurrent);
-  } finally {
-    current.dispose();
-    Reflect.deleteProperty(window, "gomodeAuth");
-    delete window.goModeFrontendDocument;
-    delete window.gomodeFrontendReadiness;
+it("requires explicit tool registration and initial-data completion in either order, including zero tools", async () => {
+  for (const dataFirst of [false, true]) {
+    for (const tools of [[], [tool]]) {
+      const identity = authenticate();
+      const scope = identity.createScope();
+      await Promise.resolve();
+      acknowledge(requests.at(-1)!, "identity");
+      expect(scope.ready()).toBe(false);
+      if (dataFirst) scope.setDataReady(true);
+      else scope.setTools(tools);
+      expect(scope.ready()).toBe(false);
+      expect(readiness.at(-1)).toMatchObject({ ready: false, tools: [] });
+      if (dataFirst) scope.setTools(tools);
+      else scope.setDataReady(true);
+      expect(scope.ready()).toBe(true);
+      expect(readiness.at(-1)).toMatchObject({ ready: true, tools: tools.map((value) => value.declaration) });
+      scope.dispose();
+      expect(scope.ready()).toBe(false);
+      expect(readiness.at(-1)).toMatchObject({ ready: false, tools: [] });
+    }
   }
 });
 
-it("captures the granting identity before asynchronous document ownership resolves", async () => {
-  const postMessage = vi.fn();
-  let resolveBinding!: (document: string) => void;
-  const binding = new Promise<string>((resolve) => {
-    resolveBinding = resolve;
-  });
-  Object.assign(window, { gomodeAuth: { postMessage } });
-  window.goModeFrontendDocument = binding;
-  const auth = { bearerToken: "captured" };
-  const owner = createFrontendPreparationClient().publishAuth(auth);
-  auth.bearerToken = "replacement";
-  resolveBinding("document");
-  await binding;
-  expect(JSON.parse(postMessage.mock.lastCall?.[0] as string)).toHaveProperty("bearerToken", "captured");
-  owner.dispose();
-  Reflect.deleteProperty(window, "gomodeAuth");
+it("makes browser readiness local while native publication waits for matching auth acknowledgement", async () => {
+  const scope = authenticate().createScope();
+  scope.setTools([]);
+  scope.setDataReady(true);
+  expect(scope.ready()).toBe(true);
+  expect(readiness).toEqual([]);
+  await Promise.resolve();
+  const request = requests[0]!;
+  acknowledge({ ...request, frontendDocument: "other" }, "wrong-document");
+  acknowledge({ ...request, frontendRequest: "retired" }, "wrong-request");
+  expect(readiness).toEqual([]);
+  acknowledge(request, "identity");
+  expect(readiness).toHaveLength(1);
+  expect(readiness[0]).toMatchObject({ document: "document", token: "identity", ready: true, tools: [] });
+  owner?.dispose();
   delete window.goModeFrontendDocument;
-});
-
-it("disposing while document ownership is unresolved never publishes late authentication", async () => {
-  const postMessage = vi.fn();
-  let resolveBinding!: (document: string) => void;
-  const binding = new Promise<string>((resolve) => {
-    resolveBinding = resolve;
-  });
-  Object.assign(window, { gomodeAuth: { postMessage } });
-  window.goModeFrontendDocument = binding;
-  const owner = createFrontendPreparationClient().publishAuth({ bearerToken: "first" });
-  owner.setReady(true);
-  owner.dispose();
-  resolveBinding("late-document");
-  await binding;
-  expect(postMessage).not.toHaveBeenCalled();
   Reflect.deleteProperty(window, "gomodeAuth");
-  delete window.goModeFrontendDocument;
+  const browser = authenticate().createScope();
+  browser.setTools([]);
+  browser.setDataReady(true);
+  expect(browser.ready()).toBe(true);
 });
 
-it("keeps browser-only preparation local when the native bridge is absent", () => {
-  const owner = createFrontendPreparationClient().publishAuth({ authChanged: true, nativeAccess: true });
-  owner.setReady(true);
-  owner.setReady(false);
-  owner.dispose();
-  expect(window.gomodeFrontendReadiness).toBeUndefined();
-  expect(window.executeGoModeVoiceTool).toBeUndefined();
+it("replaces workspace scopes without reauthenticating and cannot dispatch a replacement from an old conversation", async () => {
+  const identity = authenticate();
+  const first = identity.createScope();
+  const execute = vi.fn(tool.execute);
+  first.setTools([{ ...tool, execute }]);
+  first.setDataReady(true);
+  await Promise.resolve();
+  acknowledge(requests[0]!, "identity");
+  const conversation = captureFrontendVoiceTools();
+  expect(await conversation.execute("select_item", {})).toEqual({ selected: true });
+  const replacement = identity.createScope();
+  expect(requests).toHaveLength(1);
+  expect(readiness.at(-1)).toMatchObject({ token: "identity", ready: false, tools: [] });
+  replacement.setTools([tool]);
+  replacement.setDataReady(true);
+  first.setDataReady(true);
+  first.setTools([tool]);
+  first.dispose();
+  expect(replacement.ready()).toBe(true);
+  expect(await conversation.execute("select_item", {})).toHaveProperty("error");
+  expect(execute).toHaveBeenCalledOnce();
+  expect(await executeFrontendVoiceTool("select_item", {})).toEqual({ selected: true });
+  replacement.setDataReady(false);
+  expect(captureFrontendVoiceTools().declarations).toEqual([]);
+  expect(await executeFrontendVoiceTool("select_item", {})).toHaveProperty("error");
 });
 
-it("binds delayed authentication and readiness to the frontend captured before async work", async () => {
-  const oldMessages = vi.fn();
-  const replacementMessages = vi.fn();
-  const oldAuth: { postMessage: ReturnType<typeof vi.fn>; onmessage?: ((event: { data: string }) => void) | null } = {
-    postMessage: vi.fn(),
-  };
-  const replacementAuth = { postMessage: vi.fn() };
-  Object.assign(window, { gomodeAuth: oldAuth });
-  window.goModeFrontendDocument = Promise.resolve("old-page");
-  window.gomodeFrontendReadiness = { postMessage: oldMessages };
+it("keeps all dispatch blocked while incomplete, handles tool errors, and rejects reserved/duplicate registrations", async () => {
+  const scope = authenticate().createScope();
+  const execute = vi.fn(() => {
+    throw new Error("Missing item");
+  });
+  scope.setTools([{ ...tool, execute }]);
+  expect(await executeFrontendVoiceTool("select_item", {})).toHaveProperty("error");
+  expect(execute).not.toHaveBeenCalled();
+  scope.setDataReady(true);
+  expect(await executeFrontendVoiceTool("select_item", {})).toEqual({ error: "Missing item" });
+  expect(() => scope.setTools([tool, tool])).toThrow(/reserved/);
+  expect(() => scope.setTools([{ ...tool, declaration: { ...tool.declaration, name: "hang_up" } }])).toThrow(
+    /reserved/,
+  );
+  scope.dispose();
+  expect(window.dispatchGoModeVoiceTool).toBeUndefined();
+});
+
+it("retires identity scopes and ignores stale acknowledgement callbacks or disposed-owner preparation", async () => {
+  const first = authenticate();
+  const scope = first.createScope();
+  scope.setTools([tool]);
+  scope.setDataReady(true);
+  await Promise.resolve();
+  const oldRequest = requests[0]!;
+  const oldReceive = bridge.onmessage;
+  const current = authenticate();
+  oldReceive?.({ data: JSON.stringify({ ...oldRequest, frontendToken: "old" }) });
+  acknowledge(oldRequest, "old");
+  expect(readiness).toEqual([]);
+  expect(scope.ready()).toBe(false);
+  const retiredScope = first.createScope();
+  retiredScope.setTools([tool]);
+  retiredScope.setDataReady(true);
+  expect(retiredScope.ready()).toBe(false);
+  await Promise.resolve();
+  acknowledge(requests.at(-1)!, "current");
+  const next = current.createScope();
+  next.setTools([]);
+  next.setDataReady(true);
+  first.dispose();
+  expect(readiness.at(-1)).toMatchObject({ token: "current", ready: true });
+});
+
+it("captures bridges, document binding and granting auth before asynchronous ownership resolves", async () => {
+  const binding = deferred<string>();
+  window.goModeFrontendDocument = binding.promise;
   const client = createFrontendPreparationClient();
+  const replacement = vi.fn();
+  Object.assign(window, { gomodeAuth: { postMessage: replacement } });
+  window.gomodeFrontendReadiness = { postMessage: replacement };
+  window.goModeFrontendDocument = Promise.resolve("replacement");
+  const auth = { bearerToken: "captured" };
+  owner = client.publishAuth(auth);
+  auth.bearerToken = "changed";
+  const scope = owner.createScope();
+  scope.setTools([]);
+  scope.setDataReady(true);
+  binding.resolve("document");
+  await binding.promise;
+  expect(requests[0]).toMatchObject({ bearerToken: "captured", frontendDocument: "document" });
+  acknowledge(requests[0]!, "identity");
+  expect(readiness.at(-1)).toMatchObject({ token: "identity", ready: true });
+  expect(replacement).not.toHaveBeenCalled();
+});
+
+it("keeps revocation messages ordered while disposed granting work cannot authenticate late", async () => {
+  const binding = deferred<string>();
+  window.goModeFrontendDocument = binding.promise;
+  const client = createFrontendPreparationClient();
+  client.publishAuth({ bearerToken: "old" }).dispose();
+  client.publishAuth({ authChanging: true }).dispose();
+  client.publishAuth({ bearerToken: null }).dispose();
+  owner = client.publishAuth({ authChanged: true, nativeAccess: true });
+  binding.resolve("document");
+  await binding.promise;
+  expect(requests.map(({ frontendDocument: _document, frontendRequest: _request, ...auth }) => auth)).toEqual([
+    { authChanging: true },
+    { bearerToken: null },
+    { authChanged: true, nativeAccess: true },
+  ]);
+});
+
+it("never grants local readiness for a signed-out identity", async () => {
+  owner = createFrontendPreparationClient().publishAuth({ authChanged: true, nativeAccess: false });
+  const scope = owner.createScope();
+  scope.setTools([tool]);
+  scope.setDataReady(true);
+  expect(scope.ready()).toBe(false);
+  expect(await executeFrontendVoiceTool("select_item", {})).toHaveProperty("error");
+});
+
+it("awaits a Promise and cancels its captured registration before post-await effects", async () => {
+  const scope = authenticate().createScope();
+  const gate = deferred<void>();
+  let committed = false;
+  let canceled = false;
+  scope.setTools([
+    {
+      ...tool,
+      execute: async (_args, context) => {
+        context.signal.addEventListener("abort", () => {
+          canceled = true;
+        });
+        await gate.promise;
+        if (context.isCurrent()) committed = true;
+        return { selected: true };
+      },
+    },
+  ]);
+  scope.setDataReady(true);
+  const pending = captureFrontendVoiceTools().execute("select_item", {});
+  scope.setTools([tool]);
+  gate.resolve();
+  expect(await pending).toHaveProperty("error");
+  expect(canceled).toBe(true);
+  expect(committed).toBe(false);
+});
+
+it("correlates concurrent native Promises and rejects queued registrations before execution", async () => {
+  const responses: Record<string, unknown>[] = [];
+  window.gomodeFrontendToolResult = { postMessage: (value) => responses.push(JSON.parse(value)) };
+  // The client captures the bridge at mount.
+  const identity = authenticate();
+  const scope = identity.createScope();
+  const gates = [deferred<void>(), deferred<void>()];
+  const execute = vi.fn(async (args: Record<string, unknown>) => {
+    await gates[Number(args.index)]!.promise;
+    return { index: args.index };
+  });
+  scope.setTools([{ ...tool, execute }]);
+  scope.setDataReady(true);
   await Promise.resolve();
-  Object.assign(window, { gomodeAuth: replacementAuth });
-  window.goModeFrontendDocument = Promise.resolve("replacement-page");
-  window.gomodeFrontendReadiness = { postMessage: replacementMessages };
-  const owner = client.publishAuth({ bearerToken: "old-auth-result" });
+  acknowledge(requests.at(-1)!, "identity");
+  const binding = readiness.at(-1)!;
+  const call = (invocation: string, index: number) => ({
+    document: "document",
+    token: "identity",
+    scope: String(binding.scope),
+    invocation,
+    name: "select_item",
+    args: { index },
+  });
+  window.dispatchGoModeVoiceTool!(call("first", 0));
+  window.dispatchGoModeVoiceTool!(call("second", 1));
+  gates[1]!.resolve();
+  await vi.waitFor(() => expect(responses).toHaveLength(1));
+  expect(responses[0]).toMatchObject({ invocation: "second", result: { index: 1 } });
+  window.cancelGoModeVoiceTool!(call("first", 0));
+  gates[0]!.resolve();
+  await Promise.resolve();
+  expect(responses).toHaveLength(1);
+  const replacementExecute = vi.fn(tool.execute);
+  scope.setTools([{ ...tool, execute: replacementExecute }]);
+  window.dispatchGoModeVoiceTool!(call("queued", 0));
+  expect(execute).toHaveBeenCalledTimes(2);
+  expect(replacementExecute).not.toHaveBeenCalled();
+  scope.setDataReady(false);
+  scope.setDataReady(true);
+  window.dispatchGoModeVoiceTool!(call("queued-after-data", 0));
+  expect(replacementExecute).not.toHaveBeenCalled();
+  delete window.gomodeFrontendToolResult;
+});
+
+it("times out cooperative async work and rejects non-object results and rejected Promises", async () => {
+  vi.useFakeTimers();
   try {
-    await Promise.resolve();
-    const request = JSON.parse(oldAuth.postMessage.mock.lastCall?.[0] as string) as Record<string, unknown>;
-    expect(request.frontendDocument).toBe("old-page");
-    expect(replacementAuth.postMessage).not.toHaveBeenCalled();
-    oldAuth.onmessage?.({ data: JSON.stringify({ ...request, frontendToken: "old-token" }) });
-    owner.setReady(true);
-    expect(JSON.parse(oldMessages.mock.lastCall?.[0] as string)).toMatchObject({ document: "old-page", ready: true });
-    expect(replacementMessages).not.toHaveBeenCalled();
+    const scope = authenticate().createScope();
+    const gate = deferred<void>();
+    let aborted = false;
+    scope.setTools([
+      {
+        ...tool,
+        execute: async (_args, context) => {
+          context.signal.addEventListener("abort", () => {
+            aborted = true;
+          });
+          await gate.promise;
+          return { late: true };
+        },
+      },
+    ]);
+    scope.setDataReady(true);
+    const pending = captureFrontendVoiceTools().execute("select_item", {});
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await pending).toEqual({ error: "Frontend voice tool timed out." });
+    expect(aborted).toBe(true);
+    gate.resolve();
+    scope.setTools([
+      {
+        ...tool,
+        execute: async () => {
+          throw new Error("Rejected");
+        },
+      },
+    ]);
+    expect(await captureFrontendVoiceTools().execute("select_item", {})).toEqual({ error: "Rejected" });
+    scope.setTools([{ ...tool, execute: () => [] as unknown as Record<string, unknown> }]);
+    expect(await captureFrontendVoiceTools().execute("select_item", {})).toEqual({
+      error: "Frontend voice tool returned an invalid result.",
+    });
   } finally {
-    owner.dispose();
-    Reflect.deleteProperty(window, "gomodeAuth");
-    delete window.goModeFrontendDocument;
-    delete window.gomodeFrontendReadiness;
+    vi.useRealTimers();
   }
+});
+
+it("caller cancellation and data revocation retire work without reauthorizing old snapshots", async () => {
+  for (const revoke of ["caller", "data", "identity", "scope"]) {
+    const scope = authenticate().createScope();
+    const gate = deferred<void>();
+    let current = true;
+    scope.setTools([
+      {
+        ...tool,
+        execute: async (_args, context) => {
+          await gate.promise;
+          current = context.isCurrent();
+          return { done: true };
+        },
+      },
+    ]);
+    scope.setDataReady(true);
+    const snapshot = captureFrontendVoiceTools();
+    const caller = new AbortController();
+    const pending = snapshot.execute("select_item", {}, caller.signal);
+    if (revoke === "caller") caller.abort();
+    if (revoke === "data") {
+      scope.setDataReady(false);
+      scope.setDataReady(true);
+    }
+    if (revoke === "identity") authenticate();
+    if (revoke === "scope") owner!.createScope();
+    expect(await pending).toHaveProperty("error");
+    gate.resolve();
+    await Promise.resolve();
+    expect(current).toBe(false);
+    if (revoke !== "caller") expect(await snapshot.execute("select_item", {})).toHaveProperty("error");
+  }
+});
+
+it("closes invocation liveness after successful completion without aborting unrelated work", async () => {
+  const scope = authenticate().createScope();
+  let isCurrent = () => false;
+  scope.setTools([
+    {
+      ...tool,
+      execute: (_args, context) => {
+        isCurrent = context.isCurrent;
+        expect(isCurrent()).toBe(true);
+        return { done: true };
+      },
+    },
+  ]);
+  scope.setDataReady(true);
+  expect(await captureFrontendVoiceTools().execute("select_item", {})).toEqual({ done: true });
+  expect(isCurrent()).toBe(false);
+  expect(scope.ready()).toBe(true);
 });

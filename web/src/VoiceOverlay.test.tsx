@@ -5,6 +5,7 @@ import { expect, vi } from "../tests/expect";
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
 import { createSignal } from "solid-js";
+import { deferred } from "../tests/deferred";
 import { installBrowserSpeech } from "../tests/browser-speech";
 
 import { TurnStateIdle, TurnStateThinking, TurnStateTranscribing } from "../../sdk/voicegateway/ts/v1/types.gen";
@@ -601,6 +602,67 @@ describe("VoiceOverlay settings", () => {
 });
 
 describe("VoiceOverlay connection", () => {
+  it("does not revive a pending start when its runtime permission is revoked and restored", async () => {
+    const [allowed, setAllowed] = createSignal(true);
+    render(() => <VoiceOverlay canStart={allowed} />);
+    const enumeration = deferred<void>();
+    enumerateDevicesMock.mockReturnValueOnce(enumeration.promise);
+    fireEvent.click(screen.getByRole("button", { name: "Connect voice assistant" }));
+    setAllowed(false);
+    setAllowed(true);
+    enumeration.resolve();
+    await enumeration.promise;
+    expect(connectMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Connect voice assistant" }));
+    await waitFor(() => expect(connectMock).toHaveBeenCalledOnce());
+  });
+
+  it("lets only the latest Connect action continue after device enumeration", async () => {
+    render(() => <VoiceOverlay />);
+    const first = deferred<void>();
+    const second = deferred<void>();
+    enumerateDevicesMock.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const button = screen.getByRole("button", { name: "Connect voice assistant" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    try {
+      first.resolve();
+      await first.promise;
+      expect(connectMock).not.toHaveBeenCalled();
+      second.resolve();
+      await second.promise;
+      expect(connectMock).toHaveBeenCalledOnce();
+    } finally {
+      first.resolve();
+      second.resolve();
+      await Promise.all([first.promise, second.promise]);
+    }
+  });
+
+  it("does not start a changed voice mode from an older pending Connect action", async () => {
+    render(() => <VoiceOverlay />);
+    const enumeration = deferred<void>();
+    enumerateDevicesMock.mockReturnValueOnce(enumeration.promise);
+    fireEvent.click(screen.getByRole("button", { name: "Connect voice assistant" }));
+    voiceSession.setState((state) => ({ ...state, mode: "browser" }));
+    enumeration.resolve();
+    await enumeration.promise;
+    expect(connectMock).not.toHaveBeenCalled();
+  });
+
+  it("cannot revive a pending Connect action after an explicit cancel", async () => {
+    render(() => <VoiceOverlay />);
+    const enumeration = deferred<void>();
+    enumerateDevicesMock.mockReturnValueOnce(enumeration.promise);
+    fireEvent.click(screen.getByRole("button", { name: "Connect voice assistant" }));
+    voiceSession.setState((state) => ({ ...state, connectStatus: "Waiting", connectPhase: "waiting" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel connection" }));
+    expect(disconnectMock).toHaveBeenCalledOnce();
+    enumeration.resolve();
+    await enumeration.promise;
+    expect(connectMock).not.toHaveBeenCalled();
+  });
+
   it("calls connect() on mic button click", async () => {
     const user = userEvent.setup();
     render(() => <VoiceOverlay />);
