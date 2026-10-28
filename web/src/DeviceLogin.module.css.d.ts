@@ -10,7 +10,6 @@ declare const classes: {
   readonly "remaining": string;
   readonly "review": string;
   readonly "root": string;
-  readonly "secondary": string;
   readonly "status": string;
   readonly "url": string;
   readonly "warning": string;

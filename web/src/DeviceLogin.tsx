@@ -257,10 +257,8 @@ export interface DeviceLoginMessages {
   checking: string;
   tooLong: string;
   approve: string;
-  deny: string;
   warning: string;
   approvalApproved: string;
-  approvalDenied: string;
   approvalError: string;
   approvalExpired: string;
   device: string;
@@ -281,11 +279,9 @@ export const defaultDeviceLoginMessages: DeviceLoginMessages = {
   checking: "Checking code…",
   tooLong: "Enter the 12-character code shown on the other device.",
   approve: "Approve sign-in",
-  deny: "Deny sign-in",
   warning:
     "Only approve a code shown on a device in front of you that you want to sign in. Never approve a code sent by someone else. This device will receive your account’s permissions.",
   approvalApproved: "Sign-in approved. You can close this page.",
-  approvalDenied: "Sign-in denied. You can close this page.",
   approvalError: "Could not check or approve this code. Check it again.",
   approvalExpired: "This code expired. Create a new code on the device you want to sign in.",
   device: "Browser",
@@ -324,7 +320,7 @@ export const defaultDeviceLoginRecoveryMessages: DeviceLoginRecoveryMessages = {
       ? "Too many attempts. Wait ten minutes before checking the code again."
       : `Too many attempts. Wait ${seconds} seconds before checking the code again.`,
   audit: "Sign-in could not be recorded. Create a new code.",
-  approvalAudit: "Your decision could not be recorded. Check the code again before approving or denying.",
+  approvalAudit: "Your approval could not be recorded. Check the code again before approving.",
   session: "A session could not be completed. Create a new code.",
   delivery: "Sign-in could not be confirmed. Check whether this browser is signed in, or create a new code.",
   approvalDelivery: "Your decision could not be confirmed. Check the code again, and check the other device.",
@@ -443,7 +439,7 @@ export function DeviceLoginApproval(props: {
   const [details, setDetails] = createSignal<DeviceLoginRequest | null>(null);
   const [busy, setBusy] = createSignal(false);
   const [checking, setChecking] = createSignal(false);
-  const [state, setState] = createSignal<"idle" | "approved" | "denied">("idle");
+  const [state, setState] = createSignal<"idle" | "approved">("idle");
   const [problem, setProblem] = createSignal<DeviceLoginFailure | null>(null);
   let review: HTMLParagraphElement | undefined;
   let outcome: HTMLParagraphElement | undefined;
@@ -495,7 +491,7 @@ export function DeviceLoginApproval(props: {
     if (checking()) return m().checking;
     if (code().replaceAll("-", "").length > 12) return m().tooLong;
     const issue = problem();
-    if (!issue) return state() === "approved" ? m().approvalApproved : state() === "denied" ? m().approvalDenied : "";
+    if (!issue) return state() === "approved" ? m().approvalApproved : "";
     if (issue.kind === "throttled") return r().approvalThrottled(issue.retryAfter);
     if (issue.kind === "audit") return r().approvalAudit;
     if (issue.kind === "delivery") return r().approvalDelivery;
@@ -582,7 +578,7 @@ export function DeviceLoginApproval(props: {
     setProblem(null);
     void lookup();
   };
-  const decide = async (approve: boolean) => {
+  const approve = async () => {
     const d = details();
     if (!d || busy()) return;
     setBusy(true);
@@ -592,18 +588,18 @@ export function DeviceLoginApproval(props: {
       const h = new Headers(props.headers?.());
       h.set("X-Device-Login-CSRF", d.csrf_token);
       sent = true;
-      const result = await request(props.endpoints.approve, { user_code: d.user_code, approve }, h, c.signal);
+      const result = await request(props.endpoints.approve, { user_code: d.user_code, approve: true }, h, c.signal);
       if (c.signal.aborted) return;
       if (result.ok) {
         if (
           !result.data ||
           typeof result.data !== "object" ||
           !("state" in result.data) ||
-          result.data.state !== (approve ? "approved" : "denied")
+          result.data.state !== "approved"
         )
           throw new Error("invalid_response");
         setProblem(null);
-        setState(approve ? "approved" : "denied");
+        setState("approved");
       } else reject(failure(result, "approve"));
       setDetails(null);
     } catch {
@@ -686,20 +682,10 @@ export function DeviceLoginApproval(props: {
                   type="button"
                   disabled={busy()}
                   onClick={() => {
-                    void decide(true);
+                    void approve();
                   }}
                 >
                   {m().approve}
-                </button>
-                <button
-                  class={styles.secondary}
-                  type="button"
-                  disabled={busy()}
-                  onClick={() => {
-                    void decide(false);
-                  }}
-                >
-                  {m().deny}
                 </button>
               </div>
             </div>

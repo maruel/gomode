@@ -63,7 +63,7 @@ login eligibility, audit persistence, and creation of its normal tracked session
 Use the host's normal session issuer: device sign-in grants the same permissions,
 lifetime, and capabilities as ordinary login. Session revocation remains owned
 by the host. `DeviceLoginApproval` shows the code and requesting browser details
-before an explicit approve or deny action. `DeviceLoginDisplay` and the headless
+before explicit approval. `DeviceLoginDisplay` and the headless
 `createDeviceLogin` primitive consume the host's normal login response and CSS
 tokens. See [the package contract](../devicelogin/devicelogin.go) for single-use
 completion and audit failure semantics.

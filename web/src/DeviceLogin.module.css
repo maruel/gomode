@@ -56,10 +56,6 @@
   text-decoration: underline;
   text-underline-offset: 0.2em;
 }
-.root button.secondary {
-  color: var(--device-login-color, inherit);
-  background: var(--device-login-background, transparent);
-}
 .root input {
   color: var(--device-login-input-color, CanvasText);
   background: var(--device-login-input-background, Canvas);
