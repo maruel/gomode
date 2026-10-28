@@ -2,12 +2,14 @@
 package com.caic.voicegateway.sdk.v1
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -33,7 +35,10 @@ class ApiClient(
     baseURL: String,
     private val tokenProvider: (() -> String?)? = null,
     private val httpClient: OkHttpClient = OkHttpClient(),
+    // Optional UTF-8 limit for named SSE lines and accumulated event data; null accepts any event size.
+    private val maxSSEEventBytes: Long? = null,
 ) {
+    init { require(maxSSEEventBytes == null || maxSSEEventBytes >= 0) }
     private val baseURL: String = baseURL.trimEnd('/')
     private val json = Json { ignoreUnknownKeys = true }
     private val jsonMediaType = "application/json".toMediaType()
@@ -137,7 +142,104 @@ class ApiClient(
         awaitClose { source.cancel() }
     }
 
+    private class SSETransportFailure(cause: java.io.IOException) : java.io.IOException(cause)
+
+    private inline fun <T> sseIO(read: () -> T): T = try {
+        read()
+    } catch (e: java.io.IOException) {
+        throw SSETransportFailure(e)
+    }
+
+    // Named streams own framing because EventSource normalizes empty IDs to null.
+    // One frame is materialized at a time; flow backpressure bounds queued events, not event size.
+    private fun <T> namedSSEFlow(
+        path: String,
+        lastEventID: String?,
+        onEventID: ((String) -> Unit)?,
+        decode: (String, String) -> T?,
+    ): Flow<T> = callbackFlow {
+        val request = Request.Builder().url("$baseURL$path")
+            .header("Accept", "text/event-stream")
+            .apply {
+                if (lastEventID != null) header("Last-Event-ID", lastEventID)
+                tokenProvider?.invoke()?.let { header("Authorization", "Bearer $it") }
+            }.build()
+        val call = httpClient.newCall(request)
+        val reader = launch(Dispatchers.IO) {
+            try {
+                sseIO { call.execute() }.use { response ->
+                    if (!response.isSuccessful) throw java.io.IOException("SSE connection failed: HTTP ${response.code}")
+                    val source = response.body?.source() ?: throw java.io.IOException("Missing SSE body")
+                    val lineBytes = okio.Buffer()
+                    val data = StringBuilder()
+                    var dataSize = 0L
+                    var eventType = "message"
+                    var eventID: String? = null
+                    var previousCR = false
+                    while (!sseIO { source.exhausted() }) {
+                        val byte = sseIO { source.readByte() }.toInt() and 255
+                        if (byte == 10 && previousCR) { previousCR = false; continue }
+                        previousCR = byte == 13
+                        if (byte != 10 && byte != 13) {
+                            if (maxSSEEventBytes != null && lineBytes.size >= maxSSEEventBytes) throw java.io.IOException("SSE line too large")
+                            lineBytes.writeByte(byte)
+                            continue
+                        }
+                        val line = lineBytes.readUtf8()
+                        if (line.isEmpty()) {
+                            eventID?.let { onEventID?.invoke(it) }
+                            if (data.isNotEmpty()) {
+                                val event = decode(eventType, data.substring(0, data.length - 1))
+                                if (event != null) send(event)
+                            }
+                            eventType = "message"
+                            eventID = null
+                            data.setLength(0)
+                            dataSize = 0
+                            continue
+                        }
+                        if (line.startsWith(":")) continue
+                        val field = line.substringBefore(":")
+                        val value = line.substringAfter(":", "").removePrefix(" ")
+                        when (field) {
+                            "event" -> eventType = value.ifEmpty { "message" }
+                            "id" -> if (!value.contains('\u0000')) eventID = value
+                            "data" -> {
+                                if (maxSSEEventBytes != null) {
+                                    dataSize += value.toByteArray(Charsets.UTF_8).size + if (data.isEmpty()) 0 else 1
+                                    if (dataSize > maxSSEEventBytes) throw java.io.IOException("SSE frame too large")
+                                }
+                                data.append(value).append('\n')
+                            }
+                        }
+                    }
+                }
+                close()
+            } catch (e: CancellationException) {
+                // A callback can cancel only this child; terminate its output too.
+                close(e)
+                throw e
+            } catch (e: Exception) {
+                close(e)
+            }
+        }
+        awaitClose { call.cancel(); reader.cancel() }
+    }
+
     // Reconnecting SSE wrappers with exponential backoff.
+
+    private fun <T> reconnectingNamedFlow(connect: () -> Flow<T>): Flow<T> = flow {
+        var delayMs = 500L
+        while (true) {
+            try {
+                connect().onEach { delayMs = 500L }.collect { emit(it) }
+            } catch (e: SSETransportFailure) {
+                // Only exceptions marked at network reads are retryable.
+            }
+            delay(jitteredDelay(delayMs))
+            delayMs = (delayMs * 3 / 2).coerceAtMost(30_000L)
+        }
+    }
 
     private fun <T> reconnectingFlow(connect: () -> Flow<T>): Flow<T> = flow {
         var delayMs = 500L
