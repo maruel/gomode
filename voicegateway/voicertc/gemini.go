@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"golang.org/x/sync/errgroup"
 
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
@@ -152,20 +153,26 @@ func (b *geminiBridgeBackend) connect(
 		return nil, fmt.Errorf("connect to Gemini: %w", err)
 	}
 	wsConn.SetReadLimit(wsReadLimit)
+	sessionCtx, sessionCancel := context.WithCancel(ctx)
+	workers, workerCtx := errgroup.WithContext(sessionCtx)
 	sess := &geminiBridgeSession{
-		id:    sessionID,
-		model: b.model,
-		sink:  sink,
-		ws:    wsConn,
+		id:      sessionID,
+		model:   b.model,
+		sink:    sink,
+		ws:      wsConn,
+		workers: workers,
+		cancel:  sessionCancel,
 	}
-	go sess.rxLoop(ctx)
+	sess.workers.Go(func() error { sess.rxLoop(workerCtx); return nil })
 	return sess, nil
 }
 
 type geminiBridgeSession struct {
-	id    string
-	model string
-	sink  backendSink
+	id      string
+	model   string
+	sink    backendSink
+	workers *errgroup.Group
+	cancel  context.CancelFunc
 
 	mu                sync.Mutex
 	ws                *websocket.Conn
@@ -230,7 +237,9 @@ func (s *geminiBridgeSession) close() error {
 	if wsConn == nil {
 		return nil
 	}
-	return wsConn.Close(websocket.StatusNormalClosure, "session closed")
+	err := wsConn.Close(websocket.StatusNormalClosure, "session closed")
+	s.cancel()
+	return errors.Join(err, s.workers.Wait())
 }
 
 func (s *geminiBridgeSession) rxLoop(ctx context.Context) {
@@ -241,8 +250,16 @@ func (s *geminiBridgeSession) rxLoop(ctx context.Context) {
 		return
 	}
 	readCtx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
-	go func() { cancel(geminiKeepAlive(readCtx, wsConn)) }()
+	workers, workerCtx := errgroup.WithContext(readCtx)
+	workers.Go(func() error {
+		err := geminiKeepAlive(workerCtx, wsConn)
+		cancel(err)
+		return err
+	})
+	defer func() {
+		cancel(nil)
+		_ = workers.Wait() // The read loop reports the cancellation cause.
+	}()
 
 	for {
 		_, data, err := wsConn.Read(readCtx)

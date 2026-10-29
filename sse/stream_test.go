@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -36,7 +37,8 @@ func TestStreamWriteDeadline(t *testing.T) {
 	started := make(chan struct{}, 1)
 	stream := New(pipeWriter{Conn: server, started: started})
 	errs := make(chan error, 1)
-	go func() { errs <- stream.Writef("data: blocked\n\n") }()
+	var wg sync.WaitGroup
+	wg.Go(func() { errs <- stream.Writef("data: blocked\n\n") })
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -47,6 +49,7 @@ func TestStreamWriteDeadline(t *testing.T) {
 	}
 	select {
 	case err := <-errs:
+		wg.Wait()
 		if !errors.Is(err, os.ErrDeadlineExceeded) {
 			t.Errorf("Writef error = %v, want deadline exceeded", err)
 		}

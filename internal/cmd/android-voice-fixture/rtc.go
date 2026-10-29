@@ -48,6 +48,11 @@ type mediaPeer struct {
 	cancel      context.CancelFunc
 	closed      sync.Once
 	dataChannel *webrtc.DataChannel
+	mu          sync.Mutex
+	closing     bool
+	workers     sync.WaitGroup
+	lifecycle   sync.WaitGroup
+	done        chan struct{}
 }
 
 func (f *fixture) handleStats(w http.ResponseWriter, _ *http.Request) {
@@ -139,11 +144,26 @@ func (f *fixture) answer(ctx context.Context, offer string) (string, string, err
 		return "", "", err
 	}
 	// A WebRTC session outlives its HTTP offer exchange; close/call teardown owns cancellation.
-	mediaCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	mediaCtx, cancel := context.WithCancel(context.WithoutCancel(ctx)) //nolint:gosec // The peer owns cancellation beyond the offer request.
 	f.mu.Lock()
 	f.stats.RTCOffers++
 	id := fmt.Sprintf("fixture-%d", f.stats.RTCOffers)
-	peer := &mediaPeer{fixture: f, id: id, pc: pc, ctx: mediaCtx, cancel: cancel}
+	peer := &mediaPeer{fixture: f, id: id, pc: pc, ctx: mediaCtx, cancel: cancel, done: make(chan struct{})}
+	peer.lifecycle.Go(func() {
+		<-mediaCtx.Done()
+		peer.mu.Lock()
+		peer.closing = true
+		peer.mu.Unlock()
+		if err := pc.Close(); err != nil {
+			f.log.Warn("close fixture peer", "err", err)
+		}
+		peer.workers.Wait()
+		f.mu.Lock()
+		delete(f.peers, id)
+		f.stats.RTCActive--
+		f.mu.Unlock()
+		close(peer.done)
+	})
 	if f.peers == nil {
 		f.peers = make(map[string]*mediaPeer)
 	}
@@ -159,13 +179,13 @@ func (f *fixture) answer(ctx context.Context, offer string) (string, string, err
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
 			// PeerConnection.Close can wait for its callbacks. Finish closure outside that callback.
-			go peer.close()
+			peer.requestClose()
 		}
 	})
 	pc.OnTrack(peer.receiveMic)
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
 		if state == webrtc.ICEConnectionStateDisconnected {
-			go peer.close()
+			peer.requestClose()
 		}
 	})
 	pc.OnDataChannel(peer.handleMessages)
@@ -195,30 +215,35 @@ func (f *fixture) answer(ctx context.Context, offer string) (string, string, err
 	case <-ctx.Done():
 		return "", "", ctx.Err()
 	}
-	go peer.receiveReports(sender)
-	go peer.sendTone(track)
+	peer.mu.Lock()
+	if !peer.closing {
+		peer.workers.Go(func() { peer.receiveReports(sender) })
+		peer.workers.Go(func() { peer.sendTone(track) })
+	}
+	peer.mu.Unlock()
 	failed = false
 	return pc.LocalDescription().SDP, id, nil
 }
 
 func (p *mediaPeer) close() {
-	p.closed.Do(func() {
-		p.cancel()
-		if err := p.pc.Close(); err != nil {
-			p.fixture.log.Warn("close fixture peer", "err", err)
-		}
-		p.fixture.mu.Lock()
-		delete(p.fixture.peers, p.id)
-		p.fixture.stats.RTCActive--
-		p.fixture.mu.Unlock()
-	})
+	p.requestClose()
+	select {
+	case <-p.done:
+		p.lifecycle.Wait()
+	case <-time.After(5 * time.Second):
+		p.fixture.log.Warn("timed out closing fixture peer", "session", p.id)
+	}
+}
+
+func (p *mediaPeer) requestClose() {
+	p.closed.Do(p.cancel)
 }
 
 func (p *mediaPeer) handleMessages(dc *webrtc.DataChannel) {
 	p.fixture.mu.Lock()
 	p.dataChannel = dc
 	p.fixture.mu.Unlock()
-	dc.OnClose(func() { go p.close() })
+	dc.OnClose(p.requestClose)
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 		var env voicev1.MessageEnvelope
 		if err := json.Unmarshal(msg.Data, &env); err != nil {

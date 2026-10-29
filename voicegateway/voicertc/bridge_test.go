@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -63,6 +64,74 @@ func TestBridgeSetOnSessionClosed(t *testing.T) {
 	b.CloseAll(t.Context())
 	if b.HasSession("second") || closed["first"] != 1 || closed["second"] != 1 {
 		t.Fatalf("closed callbacks = %v, want one per session", closed)
+	}
+}
+
+type blockingCloseSession struct {
+	fakeBackendSession
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingCloseSession) close() error {
+	close(s.entered)
+	<-s.release
+	return nil
+}
+
+func TestBridgeCloseAllWaitsForConcurrentClose(t *testing.T) {
+	t.Parallel()
+	backend := &fakeBackendConnector{}
+	textCtx, textCancel := context.WithCancel(t.Context())
+	t.Cleanup(textCancel)
+	blocked := &blockingCloseSession{entered: make(chan struct{}), release: make(chan struct{})}
+	unblock := sync.OnceFunc(func() { close(blocked.release) })
+	t.Cleanup(unblock)
+	b := &Bridge{
+		backends: map[string]backendConnector{"default": backend},
+		textCtx:  textCtx, textCancel: textCancel,
+		sessions: map[string]*session{"first": {id: "first", cancel: func() {}, backend: blocked}},
+	}
+	var wg sync.WaitGroup
+	t.Cleanup(func() {
+		unblock()
+		wg.Wait()
+	})
+	wg.Go(func() { b.Close("first") })
+	select {
+	case <-blocked.entered:
+	case <-time.After(time.Second):
+		t.Fatal("session close did not start")
+	}
+	done := make(chan struct{})
+	wg.Go(func() { b.CloseAll(t.Context()); close(done) })
+	deadline := time.Now().Add(time.Second)
+	for {
+		b.sessionsMu.Lock()
+		closing := b.closing
+		b.sessionsMu.Unlock()
+		if closing {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("bridge shutdown did not start")
+		}
+		runtime.Gosched()
+	}
+	select {
+	case <-done:
+		t.Fatal("bridge shutdown returned before session close completed")
+	case <-time.After(100 * time.Millisecond):
+	}
+	unblock()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("bridge shutdown did not finish after session close")
+	}
+	wg.Wait()
+	if !backend.closed {
+		t.Fatal("bridge did not close backend")
 	}
 }
 

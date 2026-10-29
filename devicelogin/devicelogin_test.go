@@ -428,6 +428,17 @@ type blockingWriter struct {
 	release chan struct{}
 }
 
+func awaitTestValue[T any](t *testing.T, ch <-chan T) T {
+	select {
+	case value := <-ch:
+		return value
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for test worker")
+		var zero T
+		return zero
+	}
+}
+
 func (w *blockingWriter) WriteHeader(status int) {
 	close(w.entered)
 	<-w.release
@@ -441,12 +452,15 @@ func testServerConcurrency(t *testing.T) {
 		second := start(t, s)
 		d := lookup(t, s, first.UserCode)
 		entered, release := make(chan struct{}), make(chan struct{})
+		unblock := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(unblock)
 		s.host = &blockingAuditHost{testHost: s.host.(*testHost), entered: entered, release: release, approvedOnly: true}
 		done := make(chan *httptest.ResponseRecorder, 1)
-		go func() {
+		var wg sync.WaitGroup
+		wg.Go(func() {
 			done <- call(t, s.Approve, map[string]any{"user_code": first.UserCode, "approve": true}, "user", d.CSRFToken)
-		}()
-		<-entered
+		})
+		awaitTestValue(t, entered)
 		// A different request can complete its own audit and transition while first is blocked.
 		other := lookup(t, s, second.UserCode)
 		w := call(t, s.Approve, map[string]any{"user_code": second.UserCode, "approve": false}, "user", other.CSRFToken)
@@ -464,8 +478,10 @@ func testServerConcurrency(t *testing.T) {
 		if !bytes.Contains(w.Body.Bytes(), []byte("authorization_pending")) || sessions.Load() != 0 {
 			t.Fatal(w.Body.String())
 		}
-		close(release)
-		if w = <-done; w.Code != 200 {
+		unblock()
+		w = awaitTestValue(t, done)
+		wg.Wait()
+		if w.Code != 200 {
 			t.Fatal(w.Body.String())
 		}
 	})
@@ -474,17 +490,21 @@ func testServerConcurrency(t *testing.T) {
 		v := start(t, s)
 		d := lookup(t, s, v.UserCode)
 		entered, release := make(chan struct{}), make(chan struct{})
+		unblock := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(unblock)
 		s.host = &blockingAuditHost{testHost: s.host.(*testHost), entered: entered, release: release}
 		done := make(chan *httptest.ResponseRecorder, 1)
-		go func() {
+		var wg sync.WaitGroup
+		wg.Go(func() {
 			done <- call(t, s.Approve, map[string]any{"user_code": v.UserCode, "approve": true}, "user", d.CSRFToken)
-		}()
-		<-entered
+		})
+		awaitTestValue(t, entered)
 		s.engine.mu.Lock()
 		s.engine.codes[normalize(v.UserCode)].ExpiresAt = time.Now().Add(-time.Second)
 		s.engine.mu.Unlock()
-		close(release)
-		w := <-done
+		unblock()
+		w := awaitTestValue(t, done)
+		wg.Wait()
 		if !bytes.Contains(w.Body.Bytes(), []byte("expired_token")) {
 			t.Fatal(w.Body.String())
 		}
@@ -533,14 +553,18 @@ func testServerConcurrency(t *testing.T) {
 				r.Header.Set("Authorization", "user")
 				r.Header.Set("X-Device-Login-CSRF", d.CSRFToken)
 				w := &blockingWriter{httptest.NewRecorder(), make(chan struct{}), make(chan struct{})}
+				unblock := sync.OnceFunc(func() { close(w.release) })
+				t.Cleanup(unblock)
 				done := make(chan struct{})
-				go func() { f(w, r); close(done) }()
-				<-w.entered
+				var wg sync.WaitGroup
+				wg.Go(func() { f(w, r); close(done) })
+				awaitTestValue(t, w.entered)
 				// Both store insertion and lookup must progress before blocked response is released.
 				other := start(t, s)
 				lookup(t, s, other.UserCode)
-				close(w.release)
-				<-done
+				unblock()
+				awaitTestValue(t, done)
+				wg.Wait()
 			})
 		}
 	})
@@ -548,13 +572,17 @@ func testServerConcurrency(t *testing.T) {
 		s, _, _ := fixture()
 		v := start(t, s)
 		entered, release := make(chan struct{}), make(chan struct{})
+		unblock := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(unblock)
 		s.host = &blockingURLHost{testHost: s.host.(*testHost), entered: entered, release: release}
 		done := make(chan struct{})
-		go func() { call(t, s.Start, struct{}{}, "", ""); close(done) }()
-		<-entered
+		var wg sync.WaitGroup
+		wg.Go(func() { call(t, s.Start, struct{}{}, "", ""); close(done) })
+		awaitTestValue(t, entered)
 		lookup(t, s, v.UserCode)
-		close(release)
-		<-done
+		unblock()
+		awaitTestValue(t, done)
+		wg.Wait()
 	})
 }
 

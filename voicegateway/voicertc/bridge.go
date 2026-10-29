@@ -81,11 +81,16 @@ type Bridge struct {
 	sessionsMu      sync.Mutex
 	sessions        map[string]*session
 	onSessionClosed func(string)
+	closing         bool
+	cleanupWG       sync.WaitGroup
+	cleanupActive   int
+	cleanupDone     chan struct{}
 
 	textCtx    context.Context
 	textCancel context.CancelFunc
 	textMu     sync.Mutex
-	textWG     sync.WaitGroup
+	textActive int
+	textDone   chan struct{}
 }
 
 // NewBridge creates a Bridge that multiplexes WebRTC traffic through a single
@@ -251,7 +256,7 @@ func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID strin
 		return "", "", fmt.Errorf("create peer connection: %w", err)
 	}
 
-	sessionCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	sessionCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionLifetime)
 	sess := &session{
 		id:                  generateSessionID(),
 		pc:                  pc,
@@ -301,7 +306,7 @@ func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID strin
 		sess.mu.Lock()
 		if sess.backendSetupComplete {
 			sess.mu.Unlock()
-			go sess.audioRxLoop(sessionCtx, track)
+			sess.startWorker(func() { sess.audioRxLoop(sessionCtx, track) })
 		} else {
 			// Store the track until the backend accepts setup. Sending realtime
 			// audio before setupComplete can make realtime backends reject the session.
@@ -335,6 +340,13 @@ func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID strin
 				return
 			}
 			sess.mu.Lock()
+			if sess.closing {
+				sess.mu.Unlock()
+				if err := backendSession.close(); err != nil {
+					slog.WarnContext(sessionCtx, "voicertc: close late backend session", "session", sess.id, "err", err)
+				}
+				return
+			}
 			sess.backend = backendSession
 			sess.backendConnected = true
 			sess.mu.Unlock()
@@ -437,13 +449,32 @@ func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID strin
 		return "", "", ctx.Err()
 	}
 
+	localDesc := pc.LocalDescription()
+	if localDesc == nil {
+		return "", "", errors.New("no local description after ICE gathering")
+	}
+
 	// Register session.
 	b.sessionsMu.Lock()
+	if b.closing {
+		b.sessionsMu.Unlock()
+		return "", "", errors.New("voice gateway is shutting down")
+	}
 	b.sessions[sess.id] = sess
-	b.sessionsMu.Unlock()
-
-	// Background cleanup.
-	go func() {
+	if b.cleanupActive == 0 {
+		b.cleanupDone = make(chan struct{})
+	}
+	b.cleanupActive++
+	b.cleanupWG.Go(func() {
+		defer func() {
+			b.sessionsMu.Lock()
+			b.cleanupActive--
+			if b.cleanupActive == 0 {
+				close(b.cleanupDone)
+				b.cleanupDone = nil
+			}
+			b.sessionsMu.Unlock()
+		}()
 		defer func() {
 			closed, callback := b.removeSession(sess.id)
 			if closed == nil {
@@ -456,20 +487,13 @@ func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID strin
 			slog.InfoContext(sessionCtx, "voicertc: session cleaned up", "session", sess.id)
 		}()
 
-		lifetimeTimer := time.NewTimer(sessionLifetime)
-		defer lifetimeTimer.Stop()
-
-		select {
-		case <-sessionCtx.Done():
-		case <-lifetimeTimer.C:
+		<-sessionCtx.Done()
+		if errors.Is(sessionCtx.Err(), context.DeadlineExceeded) {
 			slog.InfoContext(sessionCtx, "voicertc: session lifetime reached", "session", sess.id)
 		}
-	}()
+	})
+	b.sessionsMu.Unlock()
 
-	localDesc := pc.LocalDescription()
-	if localDesc == nil {
-		return "", "", errors.New("no local description after ICE gathering")
-	}
 	registered = true
 	return b.rewriteMappedCandidatePort(localDesc.SDP), sess.id, nil
 }
@@ -510,8 +534,27 @@ func (b *Bridge) DiagnoseVoiceRTC(_ context.Context, sessionID string, client *v
 
 // Close tears down a session by ID. No-op if not found.
 func (b *Bridge) Close(sessionID string) {
-	sess, callback := b.removeSession(sessionID)
+	b.sessionsMu.Lock()
+	sess := b.sessions[sessionID]
+	callback := b.onSessionClosed
 	if sess != nil {
+		delete(b.sessions, sessionID)
+		if b.cleanupActive == 0 {
+			b.cleanupDone = make(chan struct{})
+		}
+		b.cleanupActive++
+	}
+	b.sessionsMu.Unlock()
+	if sess != nil {
+		defer func() {
+			b.sessionsMu.Lock()
+			b.cleanupActive--
+			if b.cleanupActive == 0 {
+				close(b.cleanupDone)
+				b.cleanupDone = nil
+			}
+			b.sessionsMu.Unlock()
+		}()
 		sess.cancel()
 		sess.close()
 		if callback != nil {
@@ -523,12 +566,14 @@ func (b *Bridge) Close(sessionID string) {
 // CloseAll tears down all sessions and the UDP mux. Called on server shutdown.
 func (b *Bridge) CloseAll(ctx context.Context) {
 	b.sessionsMu.Lock()
+	b.closing = true
 	sessions := make([]*session, 0, len(b.sessions))
 	for _, s := range b.sessions {
 		sessions = append(sessions, s)
 	}
 	b.sessions = make(map[string]*session)
 	callback := b.onSessionClosed
+	cleanupDone := b.cleanupDone
 	b.sessionsMu.Unlock()
 	for _, s := range sessions {
 		s.cancel()
@@ -537,22 +582,30 @@ func (b *Bridge) CloseAll(ctx context.Context) {
 			callback(s.id)
 		}
 	}
+	if cleanupDone != nil {
+		waitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		select {
+		case <-cleanupDone:
+			b.cleanupWG.Wait()
+		case <-waitCtx.Done():
+			slog.WarnContext(ctx, "voicertc: session cleanup did not stop before shutdown")
+		}
+		cancel()
+	}
 
-	// Cancel text sessions before closing the backend they share. Hold textMu so
-	// a session that is registering cannot Add after this Wait begins.
+	// Cancel text sessions before closing the backend they share. Holding textMu
+	// prevents a new session from registering after cancellation.
 	b.textMu.Lock()
 	b.textCancel()
+	waited := b.textDone
 	b.textMu.Unlock()
-	waited := make(chan struct{})
-	go func() {
-		b.textWG.Wait()
-		close(waited)
-	}()
 	waitCtx, waitCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	select {
-	case <-waited:
-	case <-waitCtx.Done():
-		slog.WarnContext(ctx, "voicertc: text sessions did not stop before shutdown")
+	if waited != nil {
+		select {
+		case <-waited:
+		case <-waitCtx.Done():
+			slog.WarnContext(ctx, "voicertc: text sessions did not stop before shutdown")
+		}
 	}
 	waitCancel()
 
@@ -602,16 +655,27 @@ func (b *Bridge) ServeTextChoice(ctx context.Context, w http.ResponseWriter, r *
 	defer cancel()
 	stop := context.AfterFunc(b.textCtx, cancel) //nolint:contextcheck // the bridge shutdown context cancels every text session
 	defer stop()
-	// Hold textMu so a CloseAll cannot start its Wait between the check and Add.
+	// Hold textMu so CloseAll cannot cancel between the check and registration.
 	b.textMu.Lock()
 	if b.textCtx.Err() != nil {
 		b.textMu.Unlock()
 		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "voice gateway is shutting down")
 		return errors.New("voice gateway is shutting down")
 	}
-	b.textWG.Add(1)
+	if b.textActive == 0 {
+		b.textDone = make(chan struct{})
+	}
+	b.textActive++
 	b.textMu.Unlock()
-	defer b.textWG.Done()
+	defer func() {
+		b.textMu.Lock()
+		b.textActive--
+		if b.textActive == 0 {
+			close(b.textDone)
+			b.textDone = nil
+		}
+		b.textMu.Unlock()
+	}()
 	return serveTextSession(sessionCtx, w, r, generateSessionID(), b.activityLogDir, backend)
 }
 
@@ -750,6 +814,10 @@ type session struct {
 	backendConnected     bool
 	sessionReadySent     bool
 	lastError            string
+	workers              sync.WaitGroup
+	workerActive         int
+	workersDone          chan struct{}
+	closing              bool
 
 	audioMu             sync.Mutex
 	audioBuf            []byte // pending backend PCM bytes, drained by audioSendLoop
@@ -759,6 +827,30 @@ type session struct {
 
 func (s *session) cancelSession() {
 	s.cancel()
+}
+
+func (s *session) startWorker(f func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return
+	}
+	if s.workerActive == 0 {
+		s.workersDone = make(chan struct{})
+	}
+	s.workerActive++
+	s.workers.Go(func() {
+		defer func() {
+			s.mu.Lock()
+			s.workerActive--
+			if s.workerActive == 0 {
+				close(s.workersDone)
+				s.workersDone = nil
+			}
+			s.mu.Unlock()
+		}()
+		f()
+	})
 }
 
 func (s *session) setICEConnectionState(state string) {
@@ -841,7 +933,7 @@ func (s *session) backendReady(ctx context.Context) {
 
 	if track != nil {
 		slog.InfoContext(ctx, "voicertc: starting mic forwarding after backend setup", "session", s.id)
-		go s.audioRxLoop(ctx, track)
+		s.startWorker(func() { s.audioRxLoop(ctx, track) })
 	}
 }
 
@@ -901,7 +993,7 @@ func (s *session) startAudioOutput(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	go s.audioSendLoop(ctx, enc)
+	s.startWorker(func() { s.audioSendLoop(ctx, enc) })
 	return nil
 }
 
@@ -1145,6 +1237,8 @@ func upsample24to48(pcmBytes []byte) []int16 {
 // close tears down the backend session and PeerConnection.
 func (s *session) close() {
 	s.mu.Lock()
+	s.closing = true
+	workersDone := s.workersDone
 	backendSession := s.backend
 	s.backend = nil
 	pc := s.pc
@@ -1155,6 +1249,14 @@ func (s *session) close() {
 	}
 	if pc != nil {
 		_ = pc.Close()
+	}
+	if workersDone != nil {
+		select {
+		case <-workersDone:
+			s.workers.Wait()
+		case <-time.After(5 * time.Second):
+			slog.Warn("voicertc: audio workers did not stop before shutdown", "session", s.id)
+		}
 	}
 	if s.activityLog != nil {
 		if err := s.activityLog.close(); err != nil {

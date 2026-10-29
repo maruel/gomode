@@ -365,7 +365,7 @@ func TestHandlerHandleMCP(t *testing.T) {
 	t.Run("subscription initial state and resource update", func(t *testing.T) {
 		registry := newSubscriptionTestRegistry()
 		h := &Handler{Registry: registry, ServerInfo: Implementation{Name: "test", Version: "1.0.0"}}
-		r := openSubscriptionStream(t, h, "test://resource")
+		r, cancel := openSubscriptionStream(t, h, "test://resource")
 
 		ack := readSSEMessage(t, r)
 		if ack.Method != NotificationMethodSubscriptionsAcknowledged {
@@ -428,11 +428,16 @@ func TestHandlerHandleMCP(t *testing.T) {
 		// contents: no further notification may follow.
 		registry.setResource("changed")
 		duplicate := make(chan JSONRPCNotification, 1)
-		go func() {
+		var wg sync.WaitGroup
+		t.Cleanup(func() {
+			cancel()
+			wg.Wait()
+		})
+		wg.Go(func() {
 			if msg, err := readSSEMessageNoFatal(r); err == nil {
 				duplicate <- msg
 			}
-		}()
+		})
 		select {
 		case msg := <-duplicate:
 			t.Fatalf("notification for unchanged content: method %q", msg.Method)
@@ -444,7 +449,7 @@ func TestHandlerHandleMCP(t *testing.T) {
 		registry := newSubscriptionTestRegistry()
 		registry.readErr = errors.New("resource read unavailable")
 		h := &Handler{Registry: registry, ServerInfo: Implementation{Name: "test", Version: "1.0.0"}}
-		r := openSubscriptionStream(t, h, "test://resource")
+		r, _ := openSubscriptionStream(t, h, "test://resource")
 
 		ack := readSSEMessage(t, r)
 		if ack.Method != NotificationMethodSubscriptionsAcknowledged {
@@ -584,7 +589,7 @@ func nativeMCPRequestJSON(method, paramsFields string) string {
 
 // openSubscriptionStream opens a subscriptions/listen SSE stream for one
 // resource target and returns the body reader.
-func openSubscriptionStream(t *testing.T, h *Handler, uri string) *bufio.Reader {
+func openSubscriptionStream(t *testing.T, h *Handler, uri string) (*bufio.Reader, context.CancelFunc) {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(h.HandleMCP))
 	t.Cleanup(server.Close)
@@ -609,7 +614,7 @@ func openSubscriptionStream(t *testing.T, h *Handler, uri string) *bufio.Reader 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
-	return bufio.NewReader(resp.Body)
+	return bufio.NewReader(resp.Body), cancel
 }
 
 func readSSEMessage(t *testing.T, r *bufio.Reader) JSONRPCNotification {

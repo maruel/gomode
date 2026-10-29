@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -104,12 +105,19 @@ func mainImpl(args []string) (err error) {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	shutdownBase := context.WithoutCancel(ctx)
-	go func() {
-		<-ctx.Done()
-		shutCtx, shutCancel := context.WithTimeout(shutdownBase, 5*time.Second)
-		_ = srv.Shutdown(shutCtx)
-		shutCancel()
+	shutdownCtx, stopShutdown := context.WithCancel(ctx)
+	var shutdownWG sync.WaitGroup
+	var shutdownErr error
+	shutdownWG.Go(func() {
+		<-shutdownCtx.Done()
+		shutCtx, shutCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer shutCancel()
+		shutdownErr = srv.Shutdown(shutCtx)
+	})
+	defer func() {
+		stopShutdown()
+		shutdownWG.Wait()
+		err = errors.Join(err, shutdownErr)
 	}()
 
 	log.InfoContext(ctx, "voice-gateway", "http", cfg.Server.HTTP, "udp", cfg.Server.WebRTCUDPPort, "config", *configPath)
@@ -165,7 +173,18 @@ func envDefault(name, def string) string {
 
 // startRestartWatch triggers graceful shutdown after a rebuild or config change.
 // systemd's Restart=always or launchd's KeepAlive restarts the service.
-func startRestartWatch(ctx context.Context, path string, cancel context.CancelCauseFunc) (*fsnotify.Watcher, error) {
+type restartWatcher struct {
+	watcher *fsnotify.Watcher
+	wg      sync.WaitGroup
+}
+
+func (w *restartWatcher) Close() error {
+	err := w.watcher.Close()
+	w.wg.Wait()
+	return err
+}
+
+func startRestartWatch(ctx context.Context, path string, cancel context.CancelCauseFunc) (*restartWatcher, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve config path: %w", err)
@@ -198,7 +217,8 @@ func startRestartWatch(ctx context.Context, path string, cancel context.CancelCa
 		}
 		break
 	}
-	go func() {
+	watcher := &restartWatcher{watcher: w}
+	watcher.wg.Go(func() {
 		for {
 			select {
 			case <-ctx.Done():
@@ -245,8 +265,8 @@ func startRestartWatch(ctx context.Context, path string, cancel context.CancelCa
 				return
 			}
 		}
-	}()
-	return w, nil
+	})
+	return watcher, nil
 }
 
 // isNormalShutdown accepts cancellation only when every error in the tree is

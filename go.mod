@@ -19,6 +19,7 @@ require (
 	github.com/pion/rtcp v1.2.17
 	github.com/pion/transport/v4 v4.1.1
 	github.com/pion/webrtc/v4 v4.2.20
+	golang.org/x/sync v0.23.0
 	golang.org/x/text v0.42.0
 )
 
@@ -245,7 +246,6 @@ require (
 	golang.org/x/image v0.43.0 // indirect
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/net v0.59.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/time v0.16.0 // indirect

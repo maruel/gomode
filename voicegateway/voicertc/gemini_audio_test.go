@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/coder/websocket"
 )
 
@@ -49,7 +51,8 @@ func TestGeminiBridgeSession(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		s := &geminiBridgeSession{ws: conn, assistantSpeaking: true}
+		workers, _ := errgroup.WithContext(ctx)
+		s := &geminiBridgeSession{ws: conn, assistantSpeaking: true, workers: workers, cancel: cancel}
 		defer func() { _ = s.close() }()
 
 		// Low room noise, quiet speech, a short pause, more speech, a long

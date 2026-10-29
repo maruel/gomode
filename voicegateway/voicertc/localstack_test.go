@@ -480,10 +480,13 @@ func TestLocalStackSession(t *testing.T) {
 				tts:     blockingTTS{firstChunk: firstChunk, releaseSecondChunk: releaseSecondChunk},
 			}
 			done := make(chan struct{})
-			go func() {
+			var workers sync.WaitGroup
+			var release sync.Once
+			t.Cleanup(func() { release.Do(func() { close(releaseSecondChunk) }); workers.Wait() })
+			workers.Go(func() {
 				s.speak(t.Context(), "hello")
 				close(done)
-			}()
+			})
 			select {
 			case <-firstChunk:
 			case <-time.After(time.Second):
@@ -492,7 +495,7 @@ func TestLocalStackSession(t *testing.T) {
 			if got := sink.pcmLen(); got != 2 {
 				t.Fatalf("pcmLen = %d, want first chunk before synthesis completes", got)
 			}
-			close(releaseSecondChunk)
+			release.Do(func() { close(releaseSecondChunk) })
 			select {
 			case <-done:
 			case <-time.After(time.Second):

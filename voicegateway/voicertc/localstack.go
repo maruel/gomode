@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
@@ -129,11 +131,13 @@ func (b *localStackBackend) newTextSession(ctx context.Context, sessionID string
 
 func (b *localStackBackend) newSession(ctx context.Context, sessionID string, sink backendSink, clientSpeech bool) *localStackSession {
 	sessionCtx, cancel := context.WithCancel(ctx)
+	turns, sessionCtx := errgroup.WithContext(sessionCtx)
 	s := &localStackSession{
 		id:            sessionID,
 		sink:          sink,
 		baseCtx:       sessionCtx,
 		sessionCancel: cancel,
+		turns:         turns,
 		asr:           b.asr,
 		llm:           b.llm,
 		tts:           b.tts,
@@ -175,7 +179,7 @@ type localStackSession struct {
 	// synthesis, so this session only runs the text LLM turn.
 	clientSpeech bool
 
-	turnWG sync.WaitGroup
+	turns *errgroup.Group
 	// events serializes admission, generation commits and tool dispatch, never streaming.
 	events            sync.Mutex
 	mu                sync.Mutex
@@ -280,8 +284,7 @@ func (s *localStackSession) close() error {
 	s.outstanding = nil
 	s.mu.Unlock()
 	s.events.Unlock()
-	s.turnWG.Wait()
-	return nil
+	return s.turns.Wait()
 }
 
 // reportTurnState sends state unless a newer turn superseded generation. It
@@ -353,30 +356,29 @@ func (s *localStackSession) startTurn(ctx context.Context, utterance []byte) {
 	previous := s.transcriptionTail
 	done := make(chan struct{})
 	s.transcriptionTail = done
-	s.turnWG.Add(1)
-	s.mu.Unlock()
-	go func() {
-		defer s.turnWG.Done()
+	s.turns.Go(func() error {
 		defer close(done)
 		defer s.finishTurn(generation)
 		if previous != nil {
 			select {
 			case <-previous:
 			case <-s.baseCtx.Done():
-				return
+				return nil
 			}
 		}
 		if s.baseCtx.Err() != nil {
-			return
+			return nil
 		}
 		text, err := s.asr.transcribe(s.baseCtx, utterance) //nolint:contextcheck // turn goroutines run on the session lifetime context
 		if err != nil {
 			s.warnTurn(s.baseCtx, "asr", err) //nolint:contextcheck // turn goroutines run on the session lifetime context
-			return
+			return nil
 		}
 		s.emit(&voicev1.TranscriptDelta{Kind: voicev1.MessageKindTranscriptDelta, Speaker: voicev1.SpeakerUser, Text: text})
 		s.startUserMessage(ctx, text)
-	}()
+		return nil
+	})
+	s.mu.Unlock()
 }
 
 func (s *localStackSession) startAdmittedStep(ctx context.Context, conv llmConversation, step llmStep, cancel context.CancelFunc, reportThinking bool) {
@@ -389,20 +391,22 @@ func (s *localStackSession) startAdmittedStep(ctx context.Context, conv llmConve
 	s.speaking = false
 	s.turnGeneration++
 	generation := s.turnGeneration
-	s.turnWG.Add(1)
-	s.mu.Unlock()
-	if reportThinking {
-		s.reportTurnState(generation, voicev1.TurnStateThinking)
-	}
-	go func() {
-		defer s.turnWG.Done()
+	ready := make(chan struct{})
+	s.turns.Go(func() error {
 		defer s.finishTurn(generation)
+		<-ready
 		if s.clientSpeech {
 			s.handleTextStep(ctx, conv, step)
 		} else {
 			s.handleLLMStep(ctx, conv, step)
 		}
-	}()
+		return nil
+	})
+	s.mu.Unlock()
+	if reportThinking {
+		s.reportTurnState(generation, voicev1.TurnStateThinking)
+	}
+	close(ready)
 }
 
 // handleTextStep streams one LLM step as assistant text for a client-speech
@@ -499,28 +503,31 @@ func (s *localStackSession) speak(ctx context.Context, text string) {
 	}
 	fragmenter := newSentenceFragmenter(defaultSentenceFragmentMaxRunes)
 	fragments := append(fragmenter.push(text), fragmenter.flush()...)
-	s.speakFragments(ctx, slices.Values(fragments))
+	s.speakFragments(ctx, ctx, slices.Values(fragments))
 }
 
 func (s *localStackSession) startSpeechQueue(ctx context.Context) *assistantSpeechQueue {
+	workers, workerCtx := errgroup.WithContext(ctx)
 	q := &assistantSpeechQueue{
-		items: make(chan assistantSpeechQueueItem, 4),
-		done:  make(chan struct{}),
+		items:   make(chan assistantSpeechQueueItem, 4),
+		done:    make(chan struct{}),
+		workers: workers,
 	}
-	go func() {
-		s.speakFragments(ctx, queuedTextFragments(q.items))
+	q.workers.Go(func() error {
+		s.speakFragments(workerCtx, ctx, queuedTextFragments(q.items))
 		close(q.done)
-	}()
+		return nil
+	})
 	return q
 }
 
-func (s *localStackSession) speakFragments(ctx context.Context, fragments iter.Seq[string]) {
+func (s *localStackSession) speakFragments(ctx, turnCtx context.Context, fragments iter.Seq[string]) {
 	var started bool
 	var audioStartedAt time.Time
 	var audioBytes int
 	defer func() {
 		if started {
-			s.setSpeaking(ctx, false)
+			s.setSpeaking(turnCtx, false)
 		}
 	}()
 
@@ -553,7 +560,7 @@ func (s *localStackSession) speakFragments(ctx context.Context, fragments iter.S
 				if !started {
 					started = true
 					audioStartedAt = time.Now()
-					s.setSpeaking(ctx, true)
+					s.setSpeaking(turnCtx, true)
 					s.emit(&voicev1.SpeechStarted{Kind: voicev1.MessageKindSpeechStarted, Speaker: voicev1.SpeakerAssistant})
 				}
 				s.emit(&voicev1.TranscriptDelta{Kind: voicev1.MessageKindTranscriptDelta, Speaker: voicev1.SpeakerAssistant, Text: text})
@@ -817,8 +824,9 @@ func (placeholderTTS) synthesize(_ context.Context, text string) iter.Seq2[[]byt
 }
 
 type assistantSpeechQueue struct {
-	items chan assistantSpeechQueueItem
-	done  chan struct{}
+	items   chan assistantSpeechQueueItem
+	done    chan struct{}
+	workers *errgroup.Group
 }
 
 func (q *assistantSpeechQueue) send(ctx context.Context, text string) bool {
@@ -856,7 +864,7 @@ func (q *assistantSpeechQueue) flush(ctx context.Context) bool {
 
 func (q *assistantSpeechQueue) close() {
 	close(q.items)
-	<-q.done
+	_ = q.workers.Wait() // The worker reports synthesis errors directly.
 }
 
 type assistantSpeechQueueItem struct {

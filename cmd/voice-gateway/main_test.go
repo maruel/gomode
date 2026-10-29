@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -146,13 +147,14 @@ func TestStartRestartWatch(t *testing.T) {
 		cmd.Stderr = &out
 		done := make(chan struct{})
 		var runErr error
-		go func() {
+		var wg sync.WaitGroup
+		wg.Go(func() {
 			runErr = cmd.Run()
 			close(done)
-		}()
+		})
 		t.Cleanup(func() {
 			cancel()
-			<-done
+			wg.Wait()
 		})
 		tick := time.NewTicker(10 * time.Millisecond)
 		defer tick.Stop()

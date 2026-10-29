@@ -19,6 +19,7 @@ import (
 	internetgateway2 "github.com/huin/goupnp/dcps/internetgateway2"
 	"github.com/huin/goupnp/httpu"
 	"github.com/huin/goupnp/ssdp"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -58,8 +59,8 @@ type upnpMapping struct {
 	externalPort uint16
 	internalPort uint16
 
-	refreshCancel context.CancelFunc
-	refreshDone   chan struct{}
+	refreshCancel  context.CancelFunc
+	refreshWorkers *errgroup.Group
 
 	refreshMu  sync.Mutex
 	refreshErr error
@@ -491,15 +492,14 @@ func refreshUPnPPortMapping(ctx context.Context, client upnpWANConnection, inter
 func (m *upnpMapping) startRefresh(ctx context.Context, internalIP string) {
 	refreshCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	m.refreshCancel = cancel
-	m.refreshDone = make(chan struct{})
-	go func() {
-		defer close(m.refreshDone)
+	m.refreshWorkers, refreshCtx = errgroup.WithContext(refreshCtx)
+	m.refreshWorkers.Go(func() error {
 		timer := time.NewTimer(upnpRefreshInterval)
 		defer timer.Stop()
 		for {
 			select {
 			case <-refreshCtx.Done():
-				return
+				return nil
 			case <-timer.C:
 				if err := m.refresh(refreshCtx, internalIP); err != nil {
 					slog.ErrorContext(refreshCtx, "voicertc: refresh UPnP UDP mapping", "externalPort", m.externalPort, "internalPort", m.internalPort, "err", err)
@@ -507,7 +507,7 @@ func (m *upnpMapping) startRefresh(ctx context.Context, internalIP string) {
 				timer.Reset(upnpRefreshInterval)
 			}
 		}
-	}()
+	})
 }
 
 func (m *upnpMapping) refresh(ctx context.Context, internalIP string) error {
@@ -535,13 +535,12 @@ func (m *upnpMapping) refreshError() string {
 }
 
 func (m *upnpMapping) stopRefresh() {
-	if m.refreshCancel == nil || m.refreshDone == nil {
+	if m.refreshCancel == nil {
 		return
 	}
 	m.refreshCancel()
-	<-m.refreshDone
+	_ = m.refreshWorkers.Wait() // The worker reports refresh errors directly.
 	m.refreshCancel = nil
-	m.refreshDone = nil
 }
 
 func deleteUPnPPortMapping(ctx context.Context, client upnpWANConnection, port uint16) error {

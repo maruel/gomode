@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/coder/websocket"
 )
 
@@ -84,12 +86,14 @@ func newGeminiIdleSession(t *testing.T, onPing func(context.Context, []byte) boo
 		t.Fatal(err)
 	}
 	sink := &captureSink{}
-	s := &geminiBridgeSession{ws: conn, sink: sink}
+	workers, workerCtx := errgroup.WithContext(ctx)
+	s := &geminiBridgeSession{ws: conn, sink: sink, workers: workers, cancel: cancel}
 	t.Cleanup(func() { _ = s.close() })
 	done := make(chan struct{})
-	go func() {
-		s.rxLoop(ctx)
+	workers.Go(func() error {
+		s.rxLoop(workerCtx)
 		close(done)
-	}()
+		return nil
+	})
 	return sink, cancel, done
 }
