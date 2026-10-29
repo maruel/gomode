@@ -358,8 +358,17 @@ func TestBridge(t *testing.T) {
 		t.Run("records activity", testBridgeRecordsActivity)
 	})
 
-	t.Run("CloseAll", testBridgeCloseAll)
-	t.Run("CloseAll waits for an in-flight turn", testBridgeCloseAllWaitsForTurn)
+	t.Run("Close", func(t *testing.T) {
+		t.Parallel()
+		t.Run("timeout", testBridgeCloseTimeout)
+	})
+	t.Run("CloseAll", func(t *testing.T) {
+		t.Parallel()
+		t.Run("text session", testBridgeCloseAll)
+		t.Run("waits for an in-flight turn", testBridgeCloseAllWaitsForTurn)
+		t.Run("waits for concurrent close", testBridgeCloseAllWaitsForConcurrentClose)
+	})
+	t.Run("SetOnSessionClosed", testBridgeSetOnSessionClosed)
 }
 
 // lifecycleRecorder records ordered lifecycle events from test doubles.

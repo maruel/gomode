@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coder/websocket"
@@ -33,7 +34,7 @@ import (
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
-func TestBridgeSetOnSessionClosed(t *testing.T) {
+func testBridgeSetOnSessionClosed(t *testing.T) {
 	t.Parallel()
 	backend := &fakeBackendConnector{}
 	textCtx, textCancel := context.WithCancel(t.Context())
@@ -43,10 +44,12 @@ func TestBridgeSetOnSessionClosed(t *testing.T) {
 		choices:    defaultBackendChoices(backend),
 		textCtx:    textCtx,
 		textCancel: textCancel,
-		sessions: map[string]*session{
-			"first":  {id: "first", cancel: func() {}},
-			"second": {id: "second", cancel: func() {}},
-		},
+		sessions:   make(map[string]*session),
+	}
+	for _, id := range []string{"first", "second"} {
+		ctx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+		b.registerSession(ctx, &session{id: id, cancel: cancel})
 	}
 	closed := make(map[string]int)
 	b.SetOnSessionClosed(func(id string) {
@@ -79,7 +82,7 @@ func (s *blockingCloseSession) close() error {
 	return nil
 }
 
-func TestBridgeCloseAllWaitsForConcurrentClose(t *testing.T) {
+func testBridgeCloseAllWaitsForConcurrentClose(t *testing.T) {
 	t.Parallel()
 	backend := &fakeBackendConnector{}
 	textCtx, textCancel := context.WithCancel(t.Context())
@@ -90,8 +93,11 @@ func TestBridgeCloseAllWaitsForConcurrentClose(t *testing.T) {
 	b := &Bridge{
 		backends: map[string]backendConnector{"default": backend},
 		textCtx:  textCtx, textCancel: textCancel,
-		sessions: map[string]*session{"first": {id: "first", cancel: func() {}, backend: blocked}},
+		sessions: make(map[string]*session),
 	}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	b.registerSession(ctx, &session{id: "first", cancel: cancel, backend: blocked})
 	var wg sync.WaitGroup
 	t.Cleanup(func() {
 		unblock()
@@ -133,6 +139,27 @@ func TestBridgeCloseAllWaitsForConcurrentClose(t *testing.T) {
 	if !backend.closed {
 		t.Fatal("bridge did not close backend")
 	}
+}
+
+func testBridgeCloseTimeout(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		blocked := &blockingCloseSession{entered: make(chan struct{}), release: make(chan struct{})}
+		t.Cleanup(func() { close(blocked.release) })
+		ctx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+		b := &Bridge{sessions: make(map[string]*session)}
+		sess := &session{id: "first", cancel: cancel, backend: blocked}
+		b.registerSession(ctx, sess)
+		start := time.Now()
+		b.Close(sess.id)
+		if elapsed := time.Since(start); elapsed != 5*time.Second {
+			t.Fatalf("Close returned after %s, want 5s", elapsed)
+		}
+		if b.HasSession(sess.id) {
+			t.Fatal("closing session remains active")
+		}
+	})
 }
 
 func TestClassifyVoiceRTCConnectivity(t *testing.T) {

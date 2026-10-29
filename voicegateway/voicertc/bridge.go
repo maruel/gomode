@@ -82,9 +82,6 @@ type Bridge struct {
 	sessions        map[string]*session
 	onSessionClosed func(string)
 	closing         bool
-	cleanupWG       sync.WaitGroup
-	cleanupActive   int
-	cleanupDone     chan struct{}
 
 	textCtx    context.Context
 	textCancel context.CancelFunc
@@ -454,45 +451,9 @@ func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID strin
 		return "", "", errors.New("no local description after ICE gathering")
 	}
 
-	// Register session.
-	b.sessionsMu.Lock()
-	if b.closing {
-		b.sessionsMu.Unlock()
+	if !b.registerSession(sessionCtx, sess) {
 		return "", "", errors.New("voice gateway is shutting down")
 	}
-	b.sessions[sess.id] = sess
-	if b.cleanupActive == 0 {
-		b.cleanupDone = make(chan struct{})
-	}
-	b.cleanupActive++
-	b.cleanupWG.Go(func() {
-		defer func() {
-			b.sessionsMu.Lock()
-			b.cleanupActive--
-			if b.cleanupActive == 0 {
-				close(b.cleanupDone)
-				b.cleanupDone = nil
-			}
-			b.sessionsMu.Unlock()
-		}()
-		defer func() {
-			closed, callback := b.removeSession(sess.id)
-			if closed == nil {
-				return
-			}
-			closed.close()
-			if callback != nil {
-				callback(sess.id)
-			}
-			slog.InfoContext(sessionCtx, "voicertc: session cleaned up", "session", sess.id)
-		}()
-
-		<-sessionCtx.Done()
-		if errors.Is(sessionCtx.Err(), context.DeadlineExceeded) {
-			slog.InfoContext(sessionCtx, "voicertc: session lifetime reached", "session", sess.id)
-		}
-	})
-	b.sessionsMu.Unlock()
 
 	registered = true
 	return b.rewriteMappedCandidatePort(localDesc.SDP), sess.id, nil
@@ -509,7 +470,8 @@ func (b *Bridge) SetOnSessionClosed(callback func(string)) {
 // HasSession reports whether the bridge still owns the session ID.
 func (b *Bridge) HasSession(sessionID string) bool {
 	b.sessionsMu.Lock()
-	_, ok := b.sessions[sessionID]
+	sess := b.sessions[sessionID]
+	ok := sess != nil && !sess.stopping
 	b.sessionsMu.Unlock()
 	return ok
 }
@@ -519,6 +481,9 @@ func (b *Bridge) DiagnoseVoiceRTC(_ context.Context, sessionID string, client *v
 	udpEndpoints, udpMappingError := b.udpDiagnostics()
 	b.sessionsMu.Lock()
 	sess := b.sessions[sessionID]
+	if sess != nil && sess.stopping {
+		sess = nil
+	}
 	b.sessionsMu.Unlock()
 	if sess == nil {
 		server := voicev1.VoiceRTCServerDiagnostics{
@@ -533,32 +498,23 @@ func (b *Bridge) DiagnoseVoiceRTC(_ context.Context, sessionID string, client *v
 }
 
 // Close tears down a session by ID. No-op if not found.
+// It waits at most five seconds; cleanup and the close callback may continue
+// after it returns.
 func (b *Bridge) Close(sessionID string) {
 	b.sessionsMu.Lock()
 	sess := b.sessions[sessionID]
-	callback := b.onSessionClosed
-	if sess != nil {
-		delete(b.sessions, sessionID)
-		if b.cleanupActive == 0 {
-			b.cleanupDone = make(chan struct{})
-		}
-		b.cleanupActive++
+	if sess != nil && !sess.stopping {
+		sess.stopping = true
+		sess.cancel()
+	} else {
+		sess = nil
 	}
 	b.sessionsMu.Unlock()
 	if sess != nil {
-		defer func() {
-			b.sessionsMu.Lock()
-			b.cleanupActive--
-			if b.cleanupActive == 0 {
-				close(b.cleanupDone)
-				b.cleanupDone = nil
-			}
-			b.sessionsMu.Unlock()
-		}()
-		sess.cancel()
-		sess.close()
-		if callback != nil {
-			callback(sessionID)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if !sess.waitCleanup(ctx) {
+			slog.Warn("voicertc: session cleanup did not stop before close", "session", sessionID)
 		}
 	}
 }
@@ -570,28 +526,18 @@ func (b *Bridge) CloseAll(ctx context.Context) {
 	sessions := make([]*session, 0, len(b.sessions))
 	for _, s := range b.sessions {
 		sessions = append(sessions, s)
-	}
-	b.sessions = make(map[string]*session)
-	callback := b.onSessionClosed
-	cleanupDone := b.cleanupDone
-	b.sessionsMu.Unlock()
-	for _, s := range sessions {
+		s.stopping = true
 		s.cancel()
-		s.close()
-		if callback != nil {
-			callback(s.id)
-		}
 	}
-	if cleanupDone != nil {
-		waitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		select {
-		case <-cleanupDone:
-			b.cleanupWG.Wait()
-		case <-waitCtx.Done():
+	b.sessionsMu.Unlock()
+	waitCtx, waitCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	for _, s := range sessions {
+		if !s.waitCleanup(waitCtx) {
 			slog.WarnContext(ctx, "voicertc: session cleanup did not stop before shutdown")
+			break
 		}
-		cancel()
 	}
+	waitCancel()
 
 	// Cancel text sessions before closing the backend they share. Holding textMu
 	// prevents a new session from registering after cancellation.
@@ -599,7 +545,7 @@ func (b *Bridge) CloseAll(ctx context.Context) {
 	b.textCancel()
 	waited := b.textDone
 	b.textMu.Unlock()
-	waitCtx, waitCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	waitCtx, waitCancel = context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	if waited != nil {
 		select {
 		case <-waited:
@@ -679,15 +625,34 @@ func (b *Bridge) ServeTextChoice(ctx context.Context, w http.ResponseWriter, r *
 	return serveTextSession(sessionCtx, w, r, generateSessionID(), b.activityLogDir, backend)
 }
 
-func (b *Bridge) removeSession(sessionID string) (sess *session, onClosed func(string)) {
+func (b *Bridge) registerSession(ctx context.Context, sess *session) bool {
 	b.sessionsMu.Lock()
-	sess = b.sessions[sessionID]
-	if sess != nil {
-		delete(b.sessions, sessionID)
+	defer b.sessionsMu.Unlock()
+	if b.closing {
+		return false
 	}
-	onClosed = b.onSessionClosed
-	b.sessionsMu.Unlock()
-	return sess, onClosed
+	sess.cleanupDone = make(chan struct{})
+	b.sessions[sess.id] = sess
+	sess.cleanup.Go(func() {
+		<-ctx.Done()
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			slog.InfoContext(ctx, "voicertc: session lifetime reached", "session", sess.id)
+		}
+		b.sessionsMu.Lock()
+		sess.stopping = true
+		callback := b.onSessionClosed
+		b.sessionsMu.Unlock()
+		sess.close()
+		if callback != nil {
+			callback(sess.id)
+		}
+		slog.InfoContext(ctx, "voicertc: session cleaned up", "session", sess.id)
+		b.sessionsMu.Lock()
+		delete(b.sessions, sess.id)
+		close(sess.cleanupDone)
+		b.sessionsMu.Unlock()
+	})
+	return true
 }
 
 func (b *Bridge) ensureWebRTCAPI(ctx context.Context) (*webrtc.API, error) {
@@ -793,6 +758,11 @@ func backendForConfig(ctx context.Context, cfg *voicegateway.Config, geminiAPIKe
 type session struct {
 	id string
 
+	// stopping is protected by the bridge's sessionsMu.
+	stopping    bool
+	cleanup     sync.WaitGroup
+	cleanupDone chan struct{}
+
 	activityLog *activityLog
 
 	mu                   sync.Mutex
@@ -823,6 +793,16 @@ type session struct {
 	audioBuf            []byte // pending backend PCM bytes, drained by audioSendLoop
 	audioBufStartedAt   time.Time
 	audioFirstRTPLogged bool
+}
+
+func (s *session) waitCleanup(ctx context.Context) bool {
+	select {
+	case <-s.cleanupDone:
+		s.cleanup.Wait()
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (s *session) cancelSession() {
