@@ -2,7 +2,9 @@
 package main
 
 import (
-	"log"
+	"flag"
+	"fmt"
+	"os"
 
 	"github.com/maruel/apisdkgen"
 	"github.com/maruel/gomode"
@@ -12,16 +14,32 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "gen-sdk:", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	check := flag.Bool("check", false, "verify generated SDKs without writing them")
+	flag.Parse()
 	for _, api := range []apisdkgen.API{
 		apisdkgen.NewAPI(".", output("sdk/gomode", "sdk/gomode/kotlin/src/main/kotlin/com/fghbuild/gomode/sdk/v1", "sdk/gomode/swift/Sources/GoModeSDK"), gomode.SDKAPI()),
 		apisdkgen.NewAPI("mcp", output("sdk/mcp", "sdk/mcp/kotlin/src/main/kotlin/com/fghbuild/mcp/sdk/v1", "sdk/mcp/swift/Sources/MCPSDK"), mcp.SDKAPI()),
 		apisdkgen.NewAPI("oauth", output("sdk/oauth", "sdk/oauth/kotlin/src/main/kotlin/com/caic/oauth/sdk/v1", "sdk/oauth/swift/Sources/OAuthSDK"), oauth.SDKAPI()),
 		apisdkgen.NewAPI("voicegateway/api/v1", output("sdk/voicegateway", "sdk/voicegateway/kotlin/src/main/kotlin/com/caic/voicegateway/sdk/v1", "sdk/voicegateway/swift/Sources/VoiceGatewaySDK"), voicev1.SDKAPI()),
 	} {
-		if err := apisdkgen.Generate(&api); err != nil {
-			log.Fatal(err)
+		var err error
+		if *check {
+			err = api.Verify()
+		} else {
+			err = api.Generate()
+		}
+		if err != nil {
+			return err
 		}
 	}
+	return nil
 }
 
 func output(dir, kotlin, swift string) apisdkgen.OutputConfig {

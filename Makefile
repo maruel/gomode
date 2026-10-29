@@ -6,14 +6,6 @@
 # Compile Kotlin inside Gradle's single-use JVM so it cannot leave a compiler daemon.
 export GRADLE_OPTS := $(GRADLE_OPTS) -Dorg.gradle.daemon=false -Dorg.gradle.project.kotlin.compiler.execution.strategy=in-process
 
-# Read-only verification lanes. Each command is passed through two shells, so
-# keep single quotes out of these values.
-VERIFY_GO = go test -run=^$$ ./... && go test -race -run=^$$ ./voicegateway/voicertc && go tool golangci-lint run ./... && go mod tidy -diff && go build ./...
-VERIFY_PY = uv run --locked ruff check --quiet scripts && uv run --locked ruff format --check --quiet scripts && uv run --locked python scripts/generate_thinking_score.py --check
-VERIFY_SH = files=$$(git ls-files "*.sh" "scripts/hooks/*"); [ -z "$$files" ] || go tool shfmt -d $$files
-VERIFY_MISC = uv run --locked python scripts/lint_binaries.py && uv run --locked python scripts/update_agents_file_index.py --check && git diff --check
-VERIFY_ANDROID = cd ./android && ./gradlew :gomode:ktlintCheck :halo-sdk:ktlintCheck :car-dial-fixture:ktlintCheck :gomode:detekt :car-dial-fixture:detekt :gomode:lintDebug :car-dial-fixture:lintDebug :oauth-sdk:assemble --quiet
-
 node_modules/.modules.yaml: package.json pnpm-lock.yaml
 	@pnpm install --frozen-lockfile --silent
 	@touch $@
@@ -64,8 +56,17 @@ fix: android-sdk node_modules/.modules.yaml
 	@uv run --locked python scripts/update_agents_file_index.py
 
 verify: android-sdk node_modules/.modules.yaml
-	@go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-	@./scripts/run-concurrently.sh go,format,lint,ts,python,shell,misc,android '$(VERIFY_GO)' 'pnpm exec prettier --check --log-level warn web/src web/tests e2e/voice-preview scripts/*.mjs eslint.config.js package.json .github/workflows' 'pnpm exec eslint --max-warnings 0 web/src web/tests e2e/voice-preview/*.tsx scripts/*.mjs' 'pnpm exec node scripts/css_module_types.mjs --source-path web/src && pnpm exec tsc --noEmit -p web/tsconfig.json' '$(VERIFY_PY)' '$(VERIFY_SH)' '$(VERIFY_MISC)' '$(VERIFY_ANDROID)'
+	@./scripts/run-concurrently.sh sdk,workflows,go,format,lint,ts,python,shell,misc,android \
+		'go run ./internal/cmd/gen-sdk -check' \
+		'go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12' \
+		'go test -run=^$$ ./... && go test -race -run=^$$ ./voicegateway/voicertc && go tool golangci-lint run ./... && go mod tidy -diff && go build ./...' \
+		'pnpm exec prettier --check --log-level warn web/src web/tests e2e/voice-preview scripts/*.mjs eslint.config.js package.json .github/workflows' \
+		'pnpm exec eslint --max-warnings 0 web/src web/tests e2e/voice-preview/*.tsx scripts/*.mjs' \
+		'pnpm exec node scripts/css_module_types.mjs --source-path web/src && pnpm exec tsc --noEmit -p web/tsconfig.json' \
+		'uv run --locked ruff check --quiet scripts && uv run --locked ruff format --check --quiet scripts && uv run --locked python scripts/generate_thinking_score.py --check' \
+		'files=$$(git ls-files "*.sh" "scripts/hooks/*"); [ -z "$$files" ] || go tool shfmt -d $$files' \
+		'uv run --locked python scripts/lint_binaries.py && uv run --locked python scripts/update_agents_file_index.py --check && git diff --check' \
+		'cd ./android && ./gradlew :gomode:ktlintCheck :halo-sdk:ktlintCheck :car-dial-fixture:ktlintCheck :gomode:detekt :car-dial-fixture:detekt :gomode:lintDebug :car-dial-fixture:lintDebug :oauth-sdk:assemble --quiet'
 
 git-hooks:
 	@./scripts/install-git-hooks.sh
