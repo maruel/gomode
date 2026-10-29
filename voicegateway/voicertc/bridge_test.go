@@ -31,44 +31,9 @@ import (
 	"github.com/pion/webrtc/v4/pkg/media"
 
 	"github.com/maruel/gomode/voicegateway"
+	voiceapi "github.com/maruel/gomode/voicegateway/api"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
-
-func testBridgeSetOnSessionClosed(t *testing.T) {
-	t.Parallel()
-	backend := &fakeBackendConnector{}
-	textCtx, textCancel := context.WithCancel(t.Context())
-	t.Cleanup(textCancel)
-	b := &Bridge{
-		backends:   map[string]backendConnector{"default": backend},
-		choices:    defaultBackendChoices(backend),
-		textCtx:    textCtx,
-		textCancel: textCancel,
-		sessions:   make(map[string]*session),
-	}
-	for _, id := range []string{"first", "second"} {
-		ctx, cancel := context.WithCancel(t.Context())
-		t.Cleanup(cancel)
-		b.registerSession(ctx, &session{id: id, cancel: cancel})
-	}
-	closed := make(map[string]int)
-	b.SetOnSessionClosed(func(id string) {
-		if b.HasSession(id) {
-			t.Errorf("callback observed active session %q", id)
-		}
-		closed[id]++
-	})
-
-	b.Close("first")
-	b.Close("first")
-	if b.HasSession("first") || !b.HasSession("second") {
-		t.Fatalf("unexpected active sessions after Close")
-	}
-	b.CloseAll(t.Context())
-	if b.HasSession("second") || closed["first"] != 1 || closed["second"] != 1 {
-		t.Fatalf("closed callbacks = %v, want one per session", closed)
-	}
-}
 
 type blockingCloseSession struct {
 	fakeBackendSession
@@ -80,86 +45,6 @@ func (s *blockingCloseSession) close() error {
 	close(s.entered)
 	<-s.release
 	return nil
-}
-
-func testBridgeCloseAllWaitsForConcurrentClose(t *testing.T) {
-	t.Parallel()
-	backend := &fakeBackendConnector{}
-	textCtx, textCancel := context.WithCancel(t.Context())
-	t.Cleanup(textCancel)
-	blocked := &blockingCloseSession{entered: make(chan struct{}), release: make(chan struct{})}
-	unblock := sync.OnceFunc(func() { close(blocked.release) })
-	t.Cleanup(unblock)
-	b := &Bridge{
-		backends: map[string]backendConnector{"default": backend},
-		textCtx:  textCtx, textCancel: textCancel,
-		sessions: make(map[string]*session),
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	t.Cleanup(cancel)
-	b.registerSession(ctx, &session{id: "first", cancel: cancel, backend: blocked})
-	var wg sync.WaitGroup
-	t.Cleanup(func() {
-		unblock()
-		wg.Wait()
-	})
-	wg.Go(func() { b.Close("first") })
-	select {
-	case <-blocked.entered:
-	case <-time.After(time.Second):
-		t.Fatal("session close did not start")
-	}
-	done := make(chan struct{})
-	wg.Go(func() { b.CloseAll(t.Context()); close(done) })
-	deadline := time.Now().Add(time.Second)
-	for {
-		b.sessionsMu.Lock()
-		closing := b.closing
-		b.sessionsMu.Unlock()
-		if closing {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("bridge shutdown did not start")
-		}
-		runtime.Gosched()
-	}
-	select {
-	case <-done:
-		t.Fatal("bridge shutdown returned before session close completed")
-	case <-time.After(100 * time.Millisecond):
-	}
-	unblock()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("bridge shutdown did not finish after session close")
-	}
-	wg.Wait()
-	if !backend.closed {
-		t.Fatal("bridge did not close backend")
-	}
-}
-
-func testBridgeCloseTimeout(t *testing.T) {
-	t.Parallel()
-	synctest.Test(t, func(t *testing.T) {
-		blocked := &blockingCloseSession{entered: make(chan struct{}), release: make(chan struct{})}
-		t.Cleanup(func() { close(blocked.release) })
-		ctx, cancel := context.WithCancel(t.Context())
-		t.Cleanup(cancel)
-		b := &Bridge{sessions: make(map[string]*session)}
-		sess := &session{id: "first", cancel: cancel, backend: blocked}
-		b.registerSession(ctx, sess)
-		start := time.Now()
-		b.Close(sess.id)
-		if elapsed := time.Since(start); elapsed != 5*time.Second {
-			t.Fatalf("Close returned after %s, want 5s", elapsed)
-		}
-		if b.HasSession(sess.id) {
-			t.Fatal("closing session remains active")
-		}
-	})
 }
 
 func TestClassifyVoiceRTCConnectivity(t *testing.T) {
@@ -1138,45 +1023,6 @@ func TestBuildGeminiSetup(t *testing.T) {
 	}
 }
 
-func testBridgeVoiceMetadata(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name    string
-		backend backendConnector
-		voices  bool
-	}{
-		{name: "Gemini audio", backend: &geminiBridgeBackend{apiKey: "test", model: voicegateway.DefaultGeminiModel}, voices: true},
-		{name: "local audio", backend: newLocalStackBackend(nil, fixedASR{text: "test"}, &smokeLLM{text: "test"}, placeholderTTS{})},
-		{name: "local text", backend: newLocalStackBackend(nil, nil, &smokeLLM{text: "test"}, nil)},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			b, err := newBridgeWithBackend(t.Context(), tc.backend, 0, t.TempDir())
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { b.CloseAll(t.Context()) })
-			first := b.VoiceChoices()
-			ch := first.Choices[0]
-			if !tc.voices {
-				if len(ch.Voices) != 0 || ch.DefaultVoice != "" {
-					t.Fatalf("unexpected voice metadata: %+v", ch)
-				}
-				return
-			}
-			if len(ch.Voices) != 30 || ch.DefaultVoice != "Orus" || !slices.IsSorted(ch.Voices) || !slices.Contains(ch.Voices, "Kore") || !slices.Contains(ch.Voices, "Orus") {
-				t.Fatalf("invalid catalog: %+v", ch)
-			}
-			ch.Voices[0] = "changed"
-			ch.Transports[0] = voicev1.VoiceTransportText
-			next := b.VoiceChoices().Choices[0]
-			if next.Voices[0] != "Achernar" || next.Transports[0] != voicev1.VoiceTransportWebRTC {
-				t.Fatalf("metadata was mutated through an advertised copy: %+v", next)
-			}
-		})
-	}
-}
-
 type voiceRTCTestSession struct {
 	wg                sync.WaitGroup
 	sessionID         string
@@ -1647,3 +1493,574 @@ const browserDTXMeasurement = `(async () => {
   }
   return [await run(false), await run(true)];
 })()`
+
+func TestBridge(t *testing.T) {
+	t.Parallel()
+	t.Run("VoiceChoices", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			name    string
+			backend backendConnector
+			voices  bool
+		}{
+			{name: "Gemini audio", backend: &geminiBridgeBackend{apiKey: "test", model: voicegateway.DefaultGeminiModel}, voices: true},
+			{name: "local audio", backend: newLocalStackBackend(nil, fixedASR{text: "test"}, &smokeLLM{text: "test"}, placeholderTTS{})},
+			{name: "local text", backend: newLocalStackBackend(nil, nil, &smokeLLM{text: "test"}, nil)},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				b, err := newBridgeWithBackend(t.Context(), tc.backend, 0, t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { b.CloseAll(t.Context()) })
+				first := b.VoiceChoices()
+				ch := first.Choices[0]
+				if !tc.voices {
+					if len(ch.Voices) != 0 || ch.DefaultVoice != "" {
+						t.Fatalf("unexpected voice metadata: %+v", ch)
+					}
+					return
+				}
+				if len(ch.Voices) != 30 || ch.DefaultVoice != "Orus" || !slices.IsSorted(ch.Voices) || !slices.Contains(ch.Voices, "Kore") || !slices.Contains(ch.Voices, "Orus") {
+					t.Fatalf("invalid catalog: %+v", ch)
+				}
+				ch.Voices[0] = "changed"
+				ch.Transports[0] = voicev1.VoiceTransportText
+				next := b.VoiceChoices().Choices[0]
+				if next.Voices[0] != "Achernar" || next.Transports[0] != voicev1.VoiceTransportWebRTC {
+					t.Fatalf("metadata was mutated through an advertised copy: %+v", next)
+				}
+			})
+		}
+	})
+	t.Run("HandleOffer", func(t *testing.T) {
+		t.Parallel()
+		t.Run("OpusDTX", func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			t.Cleanup(cancel)
+			b, err := newBridgeWithBackend(ctx, &fakeBackendConnector{}, 0, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { b.CloseAll(ctx) })
+			for _, pt := range []webrtc.PayloadType{109, 111} {
+				m := &webrtc.MediaEngine{}
+				// An ordinary client offer omits usedtx and may use a payload number
+				// different from the gateway's registered codec number.
+				if err := m.RegisterCodec(webrtc.RTPCodecParameters{
+					RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2},
+					PayloadType:        pt,
+				}, webrtc.RTPCodecTypeAudio); err != nil {
+					t.Fatal(err)
+				}
+				pc, err := webrtc.NewAPI(webrtc.WithMediaEngine(m)).NewPeerConnection(webrtc.Configuration{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = pc.Close() })
+				if _, err := pc.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio); err != nil {
+					t.Fatal(err)
+				}
+				offer, err := pc.CreateOffer(nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := pc.SetLocalDescription(offer); err != nil {
+					t.Fatal(err)
+				}
+				answer, _, err := b.HandleOffer(ctx, offer.SDP)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(answer, "usedtx=1") {
+					t.Fatalf("answer for payload %d omitted uplink DTX", pt)
+				}
+				if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer}); err != nil {
+					t.Fatalf("client rejected answer for payload %d: %v", pt, err)
+				}
+			}
+		})
+	})
+
+	t.Run("ServeTextSession", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("delivers generation failures over WebSocket", func(t *testing.T) {
+			t.Parallel()
+			llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/chat/completions" || r.Method != http.MethodPost {
+					t.Errorf("LLM request = %s %s", r.Method, r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				if err := json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]string{"type": "invalid_request_error", "message": "insufficient tool messages following tool_calls message"},
+				}); err != nil {
+					t.Error(err)
+				}
+			}))
+			t.Cleanup(llmServer.Close)
+			endpoint, err := localStackGenAIEndpoint(t.Context(), "openaicompatible", llmServer.URL+"/v1/chat/completions", "test-model")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := endpoint.runtime.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			conn := dialTextSession(t, newTestTextBridge(t, &genaiLLMAdapter{provider: endpoint.provider}))
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			t.Cleanup(cancel)
+			writeMessage(t, ctx, conn, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})
+			expectKind(t, ctx, conn, voicev1.MessageKindSessionReady)
+			writeMessage(t, ctx, conn, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "status"})
+			expectTurnStatus(t, ctx, conn, voicev1.TurnStateThinking)
+			kind, data := readMessage(t, ctx, conn)
+			if kind != voicev1.MessageKindError {
+				t.Fatalf("kind = %q, want error", kind)
+			}
+			var msg voicev1.Error
+			if err := json.Unmarshal(data, &msg); err != nil {
+				t.Fatal(err)
+			}
+			if msg.Message != "Voice turn failed (llm)" || msg.Recoverable {
+				t.Fatalf("error = %+v", msg)
+			}
+			expectTurnStatus(t, ctx, conn, voicev1.TurnStateIdle)
+		})
+
+		t.Run("streams assistant text", func(t *testing.T) {
+			t.Parallel()
+			conv := &fakeConversation{
+				userStep: fakeLLMStep{deltas: []string{"Hello ", "world"}, reply: llmReply{text: "Hello world"}},
+			}
+			conn := dialTextSession(t, newTestTextBridge(t, fixedConversationLLM{conv: conv}))
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			t.Cleanup(cancel)
+
+			writeMessage(t, ctx, conn, voicev1.SessionSetup{
+				Kind:    voicev1.MessageKindSessionSetup,
+				Context: voicev1.Context{SystemInstruction: "be terse"},
+			})
+			expectKind(t, ctx, conn, voicev1.MessageKindSessionReady)
+
+			writeMessage(t, ctx, conn, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "hi"})
+			expectTurnStatus(t, ctx, conn, voicev1.TurnStateThinking)
+			expectAssistantText(t, ctx, conn, "Hello ")
+			expectAssistantText(t, ctx, conn, "world")
+			expectTurnStatus(t, ctx, conn, voicev1.TurnStateIdle)
+			if got := conv.userCalls(); got != 1 {
+				t.Errorf("user calls = %d, want 1", got)
+			}
+		})
+
+		t.Run("runs a tool round trip", func(t *testing.T) {
+			t.Parallel()
+			conv := &fakeConversation{
+				userStep: fakeLLMStep{reply: llmReply{toolCalls: []llmToolCall{{
+					id:   "call-1",
+					name: "tasks_list",
+					args: json.RawMessage(`{}`),
+				}}}},
+				toolResultStep: fakeLLMStep{deltas: []string{"Done"}, reply: llmReply{text: "Done"}},
+			}
+			conn := dialTextSession(t, newTestTextBridge(t, fixedConversationLLM{conv: conv}))
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			t.Cleanup(cancel)
+
+			writeMessage(t, ctx, conn, voicev1.SessionSetup{
+				Kind:    voicev1.MessageKindSessionSetup,
+				Context: voicev1.Context{SystemInstruction: "be terse"},
+			})
+			expectKind(t, ctx, conn, voicev1.MessageKindSessionReady)
+
+			writeMessage(t, ctx, conn, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "list tasks"})
+			expectTurnStatus(t, ctx, conn, voicev1.TurnStateThinking)
+			call := expectToolCall(t, ctx, conn)
+			if call.ID != "call-1" || call.Name != "tasks_list" {
+				t.Fatalf("tool call = %+v, want id call-1 name tasks_list", call)
+			}
+			writeMessage(t, ctx, conn, voicev1.ToolResult{
+				Kind:   voicev1.MessageKindToolResult,
+				ID:     call.ID,
+				Name:   call.Name,
+				Result: json.RawMessage(`{"tasks":[]}`),
+			})
+			expectAssistantText(t, ctx, conn, "Done")
+			expectTurnStatus(t, ctx, conn, voicev1.TurnStateIdle)
+			if got := conv.toolResultCalls(); got != 1 {
+				t.Errorf("tool result calls = %d, want 1", got)
+			}
+		})
+
+		t.Run("ignores a tool result for an unknown call", func(t *testing.T) {
+			t.Parallel()
+			conv := &fakeConversation{
+				userStep: fakeLLMStep{reply: llmReply{toolCalls: []llmToolCall{{
+					id:   "call-2",
+					name: "tasks_list",
+					args: json.RawMessage(`{}`),
+				}}}},
+				toolResultStep: fakeLLMStep{deltas: []string{"Done"}, reply: llmReply{text: "Done"}},
+			}
+			conn := dialTextSession(t, newTestTextBridge(t, fixedConversationLLM{conv: conv}))
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			t.Cleanup(cancel)
+
+			writeMessage(t, ctx, conn, voicev1.SessionSetup{
+				Kind:    voicev1.MessageKindSessionSetup,
+				Context: voicev1.Context{SystemInstruction: "be terse"},
+			})
+			expectKind(t, ctx, conn, voicev1.MessageKindSessionReady)
+
+			writeMessage(t, ctx, conn, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "list tasks"})
+			expectTurnStatus(t, ctx, conn, voicev1.TurnStateThinking)
+			call := expectToolCall(t, ctx, conn)
+
+			// A result for a call this session never made must not advance the turn.
+			writeMessage(t, ctx, conn, voicev1.ToolResult{
+				Kind:   voicev1.MessageKindToolResult,
+				ID:     "call-1",
+				Name:   "tasks_list",
+				Result: json.RawMessage(`{"stale":true}`),
+			})
+			writeMessage(t, ctx, conn, voicev1.ToolResult{
+				Kind:   voicev1.MessageKindToolResult,
+				ID:     call.ID,
+				Name:   call.Name,
+				Result: json.RawMessage(`{"tasks":[]}`),
+			})
+			expectKind(t, ctx, conn, voicev1.MessageKindError)
+			expectAssistantText(t, ctx, conn, "Done")
+			expectTurnStatus(t, ctx, conn, voicev1.TurnStateIdle)
+			if got := conv.toolResultIDsSnapshot(); !slices.Equal(got, []string{call.ID}) {
+				t.Fatalf("tool result ids = %v, want [%s]", got, call.ID)
+			}
+		})
+
+		t.Run("closes on session.close", func(t *testing.T) {
+			t.Parallel()
+			conn := dialTextSession(t, newTestTextBridge(t, fixedConversationLLM{conv: &fakeConversation{}}))
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			t.Cleanup(cancel)
+
+			writeMessage(t, ctx, conn, voicev1.SessionSetup{
+				Kind:    voicev1.MessageKindSessionSetup,
+				Context: voicev1.Context{SystemInstruction: "be terse"},
+			})
+			expectKind(t, ctx, conn, voicev1.MessageKindSessionReady)
+			writeMessage(t, ctx, conn, voicev1.SessionClose{Kind: voicev1.MessageKindSessionClose})
+			if _, _, err := conn.Read(ctx); err == nil {
+				t.Fatal("read after session.close = nil error, want connection close")
+			}
+		})
+
+		t.Run("reports an unknown message kind", func(t *testing.T) {
+			t.Parallel()
+			conn := dialTextSession(t, newTestTextBridge(t, fixedConversationLLM{conv: &fakeConversation{}}))
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			t.Cleanup(cancel)
+
+			writeMessage(t, ctx, conn, map[string]string{"kind": "bogus"})
+			kind, data := readMessage(t, ctx, conn)
+			if kind != voicev1.MessageKindError {
+				t.Fatalf("kind = %q, want %q", kind, voicev1.MessageKindError)
+			}
+			var msg voicev1.Error
+			if err := json.Unmarshal(data, &msg); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(msg.Message, "unsupported") {
+				t.Errorf("error message = %q, want unsupported", msg.Message)
+			}
+		})
+
+		t.Run("cancels a turn then accepts the next", func(t *testing.T) {
+			t.Parallel()
+			conv := &blockingFirstConversation{started: make(chan struct{}), finishedFirst: make(chan struct{})}
+			conn := dialTextSession(t, newTestTextBridge(t, fixedConversationLLM{conv: conv}))
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			t.Cleanup(cancel)
+
+			writeMessage(t, ctx, conn, voicev1.SessionSetup{
+				Kind:    voicev1.MessageKindSessionSetup,
+				Context: voicev1.Context{SystemInstruction: "be terse"},
+			})
+			expectKind(t, ctx, conn, voicev1.MessageKindSessionReady)
+
+			writeMessage(t, ctx, conn, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "one"})
+			select {
+			case <-conv.started:
+			case <-ctx.Done():
+				t.Fatal("first turn did not start")
+			}
+			writeMessage(t, ctx, conn, voicev1.TurnCancel{Kind: voicev1.MessageKindTurnCancel})
+			writeMessage(t, ctx, conn, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "two"})
+
+			// The cancelled turn's interrupted and idle notices race each other; wait
+			// for the next turn's assistant text.
+			if text := expectAssistantTextSkippingStatus(t, ctx, conn); text != "second" {
+				t.Fatalf("assistant text = %q, want second", text)
+			}
+			select {
+			case <-conv.finishedFirst:
+			case <-ctx.Done():
+				t.Fatal("cancelled turn did not finish")
+			}
+			if got := conv.finished.Load(); got != 1 {
+				t.Fatalf("finished steps = %d, want 1", got)
+			}
+		})
+		t.Run("rejects a backend without text support", func(t *testing.T) {
+			t.Parallel()
+			bridge := &Bridge{backends: map[string]backendConnector{"default": textlessBackend{}}, choices: defaultBackendChoices(textlessBackend{})}
+			rec := httptest.NewRecorder()
+			err := bridge.ServeTextSession(t.Context(), rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody))
+			if err == nil {
+				t.Fatal("ServeTextSession() error = nil, want error")
+			}
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+			}
+			var body voiceapi.ErrorResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Error.Code != voiceapi.CodeVoiceBridgeUnavailable {
+				t.Fatalf("code = %q, want %q", body.Error.Code, voiceapi.CodeVoiceBridgeUnavailable)
+			}
+		})
+
+		t.Run("rejects an upgrade-less request without an activity log", func(t *testing.T) {
+			t.Parallel()
+			bridge := newTestTextBridge(t, fixedConversationLLM{conv: &fakeConversation{}})
+			rec := httptest.NewRecorder()
+			if err := bridge.ServeTextSession(t.Context(), rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody)); err == nil {
+				t.Fatal("ServeTextSession() error = nil, want upgrade failure")
+			}
+			matches, err := filepath.Glob(filepath.Join(bridge.activityLogDir, "*.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(matches) != 0 {
+				t.Fatalf("activity log files = %v, want none", matches)
+			}
+		})
+		t.Run("records activity", func(t *testing.T) {
+			t.Parallel()
+			conv := &fakeConversation{userStep: fakeLLMStep{deltas: []string{"hi"}, reply: llmReply{text: "hi"}}}
+			bridge := newTestTextBridge(t, fixedConversationLLM{conv: conv})
+			conn := dialTextSession(t, bridge)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			t.Cleanup(cancel)
+
+			writeMessage(t, ctx, conn, voicev1.SessionSetup{
+				Kind:    voicev1.MessageKindSessionSetup,
+				Context: voicev1.Context{SystemInstruction: "be terse"},
+			})
+			expectKind(t, ctx, conn, voicev1.MessageKindSessionReady)
+			writeMessage(t, ctx, conn, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "hi"})
+			expectTurnStatus(t, ctx, conn, voicev1.TurnStateThinking)
+			expectAssistantText(t, ctx, conn, "hi")
+			expectTurnStatus(t, ctx, conn, voicev1.TurnStateIdle)
+
+			bridge.CloseAll(ctx)
+
+			matches, err := filepath.Glob(filepath.Join(bridge.activityLogDir, "*.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(matches) != 1 {
+				t.Fatalf("activity log files = %v, want 1", matches)
+			}
+			data, err := os.ReadFile(matches[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"session.setup", "user.message", "assistant.text.delta"} {
+				if !bytes.Contains(data, []byte(want)) {
+					t.Errorf("activity log missing %q:\n%s", want, data)
+				}
+			}
+		})
+	})
+
+	t.Run("Close", func(t *testing.T) {
+		t.Parallel()
+		t.Run("timeout", func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				blocked := &blockingCloseSession{entered: make(chan struct{}), release: make(chan struct{})}
+				t.Cleanup(func() { close(blocked.release) })
+				ctx, cancel := context.WithCancel(t.Context())
+				t.Cleanup(cancel)
+				b := &Bridge{sessions: make(map[string]*session)}
+				sess := &session{id: "first", cancel: cancel, backend: blocked}
+				b.registerSession(ctx, sess)
+				start := time.Now()
+				b.Close(sess.id)
+				if elapsed := time.Since(start); elapsed != 5*time.Second {
+					t.Fatalf("Close returned after %s, want 5s", elapsed)
+				}
+				if b.HasSession(sess.id) {
+					t.Fatal("closing session remains active")
+				}
+			})
+		})
+	})
+	t.Run("CloseAll", func(t *testing.T) {
+		t.Parallel()
+		t.Run("text session", func(t *testing.T) {
+			t.Parallel()
+			bridge := newTestTextBridge(t, fixedConversationLLM{conv: &fakeConversation{}})
+			conn := dialTextSession(t, bridge)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			t.Cleanup(cancel)
+
+			writeMessage(t, ctx, conn, voicev1.SessionSetup{
+				Kind:    voicev1.MessageKindSessionSetup,
+				Context: voicev1.Context{SystemInstruction: "be terse"},
+			})
+			expectKind(t, ctx, conn, voicev1.MessageKindSessionReady)
+
+			bridge.CloseAll(ctx)
+
+			if _, _, err := conn.Read(ctx); err == nil {
+				t.Fatal("read after CloseAll = nil error, want closed connection")
+			}
+		})
+		t.Run("waits for an in-flight turn", func(t *testing.T) {
+			t.Parallel()
+			rec := &lifecycleRecorder{}
+			conv := &blockingTurnConversation{rec: rec, entered: make(chan struct{})}
+			backend := newLocalStackBackend(nil, nil, fixedConversationLLM{conv: conv}, nil)
+			backend.runtime = recordingBackendRuntime{rec: rec}
+			textCtx, textCancel := context.WithCancel(t.Context())
+			t.Cleanup(textCancel)
+			bridge := &Bridge{
+				backends:       map[string]backendConnector{"default": backend},
+				choices:        defaultBackendChoices(backend),
+				activityLogDir: t.TempDir(),
+				textCtx:        textCtx,
+				textCancel:     textCancel,
+			}
+			conn := dialTextSession(t, bridge)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			t.Cleanup(cancel)
+
+			writeMessage(t, ctx, conn, voicev1.SessionSetup{
+				Kind:    voicev1.MessageKindSessionSetup,
+				Context: voicev1.Context{SystemInstruction: "be terse"},
+			})
+			expectKind(t, ctx, conn, voicev1.MessageKindSessionReady)
+			writeMessage(t, ctx, conn, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "hi"})
+			select {
+			case <-conv.entered:
+			case <-ctx.Done():
+				t.Fatal("turn did not start")
+			}
+
+			bridge.CloseAll(ctx)
+
+			if events := rec.snapshot(); !slices.Equal(events, []string{"turn-returned", "backend-close"}) {
+				t.Fatalf("lifecycle events = %v, want [turn-returned backend-close]", events)
+			}
+		})
+		t.Run("waits for concurrent close", func(t *testing.T) {
+			t.Parallel()
+			backend := &fakeBackendConnector{}
+			textCtx, textCancel := context.WithCancel(t.Context())
+			t.Cleanup(textCancel)
+			blocked := &blockingCloseSession{entered: make(chan struct{}), release: make(chan struct{})}
+			unblock := sync.OnceFunc(func() { close(blocked.release) })
+			t.Cleanup(unblock)
+			b := &Bridge{
+				backends: map[string]backendConnector{"default": backend},
+				textCtx:  textCtx, textCancel: textCancel,
+				sessions: make(map[string]*session),
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			b.registerSession(ctx, &session{id: "first", cancel: cancel, backend: blocked})
+			var wg sync.WaitGroup
+			t.Cleanup(func() {
+				unblock()
+				wg.Wait()
+			})
+			wg.Go(func() { b.Close("first") })
+			select {
+			case <-blocked.entered:
+			case <-time.After(time.Second):
+				t.Fatal("session close did not start")
+			}
+			done := make(chan struct{})
+			wg.Go(func() { b.CloseAll(t.Context()); close(done) })
+			deadline := time.Now().Add(time.Second)
+			for {
+				b.sessionsMu.Lock()
+				closing := b.closing
+				b.sessionsMu.Unlock()
+				if closing {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("bridge shutdown did not start")
+				}
+				runtime.Gosched()
+			}
+			select {
+			case <-done:
+				t.Fatal("bridge shutdown returned before session close completed")
+			case <-time.After(100 * time.Millisecond):
+			}
+			unblock()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("bridge shutdown did not finish after session close")
+			}
+			wg.Wait()
+			if !backend.closed {
+				t.Fatal("bridge did not close backend")
+			}
+		})
+	})
+	t.Run("SetOnSessionClosed", func(t *testing.T) {
+		t.Parallel()
+		backend := &fakeBackendConnector{}
+		textCtx, textCancel := context.WithCancel(t.Context())
+		t.Cleanup(textCancel)
+		b := &Bridge{
+			backends:   map[string]backendConnector{"default": backend},
+			choices:    defaultBackendChoices(backend),
+			textCtx:    textCtx,
+			textCancel: textCancel,
+			sessions:   make(map[string]*session),
+		}
+		for _, id := range []string{"first", "second"} {
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			b.registerSession(ctx, &session{id: id, cancel: cancel})
+		}
+		closed := make(map[string]int)
+		b.SetOnSessionClosed(func(id string) {
+			if b.HasSession(id) {
+				t.Errorf("callback observed active session %q", id)
+			}
+			closed[id]++
+		})
+
+		b.Close("first")
+		b.Close("first")
+		if b.HasSession("first") || !b.HasSession("second") {
+			t.Fatalf("unexpected active sessions after Close")
+		}
+		b.CloseAll(t.Context())
+		if b.HasSession("second") || closed["first"] != 1 || closed["second"] != 1 {
+			t.Fatalf("closed callbacks = %v, want one per session", closed)
+		}
+	})
+}

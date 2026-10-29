@@ -288,309 +288,312 @@ voice = "af_heart"
 	}
 }
 
-func TestConfigValidate(t *testing.T) {
+func TestConfig(t *testing.T) {
 	t.Parallel()
-	t.Run("valid default", func(t *testing.T) {
+	t.Run("Validate", func(t *testing.T) {
 		t.Parallel()
-		cfg := DefaultConfig()
-		if err := cfg.Validate(); err != nil {
-			t.Fatal(err)
-		}
-	})
+		t.Run("valid default", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+		})
 
-	t.Run("rejects invalid issuer URL", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.TrustedIssuers = []TrustedIssuerConfig{{
-			Service:   "caic",
-			Issuer:    "not a url",
-			PublicKey: newTestPublicKey(t),
-		}}
-		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		if !strings.Contains(err.Error(), "trusted_issuers[0].issuer") {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
+		t.Run("rejects invalid issuer URL", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.TrustedIssuers = []TrustedIssuerConfig{{
+				Service:   "caic",
+				Issuer:    "not a url",
+				PublicKey: newTestPublicKey(t),
+			}}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "trusted_issuers[0].issuer") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 
-	t.Run("allows disabled webrtc port", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.Server.WebRTCUDPPort = -1
-		if err := cfg.Validate(); err != nil {
-			t.Fatal(err)
-		}
-	})
+		t.Run("allows disabled webrtc port", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.Server.WebRTCUDPPort = -1
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+		})
 
-	t.Run("embedded allows missing http", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.Server.HTTP = ""
-		if err := cfg.ValidateEmbedded(); err != nil {
-			t.Fatal(err)
-		}
-	})
+		t.Run("embedded allows missing http", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.Server.HTTP = ""
+			if err := cfg.ValidateEmbedded(); err != nil {
+				t.Fatal(err)
+			}
+		})
 
-	t.Run("rejects invalid webrtc port", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.Server.WebRTCUDPPort = -2
-		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		if !strings.Contains(err.Error(), "server.webrtc_udp_port") {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
+		t.Run("rejects invalid webrtc port", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.Server.WebRTCUDPPort = -2
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "server.webrtc_udp_port") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 
-	t.Run("rejects invalid issuer public key", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.TrustedIssuers = []TrustedIssuerConfig{{
-			Service:   "caic",
-			Issuer:    "https://caic.example.com",
-			PublicKey: "bogus",
-		}}
-		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		if !strings.Contains(err.Error(), "trusted_issuers[0].public_key") {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
+		t.Run("rejects invalid issuer public key", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.TrustedIssuers = []TrustedIssuerConfig{{
+				Service:   "caic",
+				Issuer:    "https://caic.example.com",
+				PublicKey: "bogus",
+			}}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "trusted_issuers[0].public_key") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 
-	t.Run("accepts oauth issuer with defaults", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.TrustedIssuers = []TrustedIssuerConfig{{
-			Service: "caic",
-			Issuer:  "https://caic.example.com",
-			OAuth:   true,
-		}}
-		if err := cfg.Validate(); err != nil {
-			t.Fatal(err)
-		}
-		if got := cfg.TrustedIssuers[0].OAuthAudience(); got != gomode.ScopedTokenAudience {
-			t.Errorf("OAuthAudience = %q, want %q", got, gomode.ScopedTokenAudience)
-		}
-		if got := cfg.TrustedIssuers[0].OAuthScope(); got != DefaultVoiceScope {
-			t.Errorf("OAuthScope = %q, want %q", got, DefaultVoiceScope)
-		}
-	})
+		t.Run("accepts oauth issuer with defaults", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.TrustedIssuers = []TrustedIssuerConfig{{
+				Service: "caic",
+				Issuer:  "https://caic.example.com",
+				OAuth:   true,
+			}}
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.TrustedIssuers[0].OAuthAudience(); got != gomode.ScopedTokenAudience {
+				t.Errorf("OAuthAudience = %q, want %q", got, gomode.ScopedTokenAudience)
+			}
+			if got := cfg.TrustedIssuers[0].OAuthScope(); got != DefaultVoiceScope {
+				t.Errorf("OAuthScope = %q, want %q", got, DefaultVoiceScope)
+			}
+		})
 
-	t.Run("rejects issuer with neither token form", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.TrustedIssuers = []TrustedIssuerConfig{{Service: "caic", Issuer: "https://caic.example.com"}}
-		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		if !strings.Contains(err.Error(), "trusted_issuers[0].public_key or trusted_issuers[0].oauth is required") {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
+		t.Run("rejects issuer with neither token form", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.TrustedIssuers = []TrustedIssuerConfig{{Service: "caic", Issuer: "https://caic.example.com"}}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "trusted_issuers[0].public_key or trusted_issuers[0].oauth is required") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 
-	t.Run("rejects issuer with two token forms", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.TrustedIssuers = []TrustedIssuerConfig{{
-			Service:   "caic",
-			Issuer:    "https://caic.example.com",
-			PublicKey: newTestPublicKey(t),
-			OAuth:     true,
-		}}
-		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		if !strings.Contains(err.Error(), "public_key and trusted_issuers[0].oauth are mutually exclusive") {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
+		t.Run("rejects issuer with two token forms", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.TrustedIssuers = []TrustedIssuerConfig{{
+				Service:   "caic",
+				Issuer:    "https://caic.example.com",
+				PublicKey: newTestPublicKey(t),
+				OAuth:     true,
+			}}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "public_key and trusted_issuers[0].oauth are mutually exclusive") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 
-	t.Run("rejects unknown backend", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.Backend = "made-up"
-		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		if !strings.Contains(err.Error(), `backend "made-up"`) {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
+		t.Run("rejects unknown backend", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.Backend = "made-up"
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), `backend "made-up"`) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 
-	t.Run("rejects empty backend", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.Backend = ""
-		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		if !strings.Contains(err.Error(), "backend is required") {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
+		t.Run("rejects empty backend", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.Backend = ""
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "backend is required") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 
-	t.Run("allows local stack backend", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.Backend = BackendLocalStack
-		if err := cfg.Validate(); err != nil {
-			t.Fatal(err)
-		}
-	})
+		t.Run("allows local stack backend", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.Backend = BackendLocalStack
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+		})
 
-	t.Run("rejects local stack asr remote without provider", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.LocalStack.ASR.Remote = "http://localhost:8090"
-		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		if !strings.Contains(err.Error(), "local_stack.asr.provider") {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
+		t.Run("rejects local stack asr remote without provider", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.LocalStack.ASR.Remote = "http://localhost:8090"
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "local_stack.asr.provider") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 
-	t.Run("allows local stack asr remote with explicit provider", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.LocalStack.ASR.Provider = "llamacpp"
-		cfg.LocalStack.ASR.Remote = "http://localhost:8090"
-		if err := cfg.Validate(); err != nil {
-			t.Fatal(err)
-		}
-	})
+		t.Run("allows local stack asr remote with explicit provider", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.LocalStack.ASR.Provider = "llamacpp"
+			cfg.LocalStack.ASR.Remote = "http://localhost:8090"
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+		})
 
-	t.Run("rejects invalid local stack asr remote", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.LocalStack.ASR.Provider = "llamacpp"
-		cfg.LocalStack.ASR.Remote = "not a url"
-		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		if !strings.Contains(err.Error(), "local_stack.asr.remote") {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
+		t.Run("rejects invalid local stack asr remote", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.LocalStack.ASR.Provider = "llamacpp"
+			cfg.LocalStack.ASR.Remote = "not a url"
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "local_stack.asr.remote") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 
-	t.Run("rejects unsupported local stack asr provider", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.LocalStack.ASR.Provider = "unknown"
-		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		if !strings.Contains(err.Error(), "local_stack.asr.provider") {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
+		t.Run("rejects unsupported local stack asr provider", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.LocalStack.ASR.Provider = "unknown"
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "local_stack.asr.provider") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 
-	t.Run("rejects local stack llm remote without provider", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.LocalStack.LLM.Remote = "http://localhost:8080"
-		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		if !strings.Contains(err.Error(), "local_stack.llm.provider") {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
+		t.Run("rejects local stack llm remote without provider", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.LocalStack.LLM.Remote = "http://localhost:8080"
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "local_stack.llm.provider") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 
-	t.Run("allows local stack llm remote with explicit provider", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.LocalStack.LLM.Provider = "llamacpp"
-		cfg.LocalStack.LLM.Remote = "http://localhost:8080"
-		if err := cfg.Validate(); err != nil {
-			t.Fatal(err)
-		}
-	})
+		t.Run("allows local stack llm remote with explicit provider", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.LocalStack.LLM.Provider = "llamacpp"
+			cfg.LocalStack.LLM.Remote = "http://localhost:8080"
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+		})
 
-	t.Run("rejects invalid local stack llm remote", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.LocalStack.LLM.Provider = "llamacpp"
-		cfg.LocalStack.LLM.Remote = "not a url"
-		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		if !strings.Contains(err.Error(), "local_stack.llm.remote") {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
+		t.Run("rejects invalid local stack llm remote", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.LocalStack.LLM.Provider = "llamacpp"
+			cfg.LocalStack.LLM.Remote = "not a url"
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "local_stack.llm.remote") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 
-	t.Run("rejects unsupported local stack llm provider", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.LocalStack.LLM.Provider = "unknown"
-		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		if !strings.Contains(err.Error(), "local_stack.llm.provider") {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
+		t.Run("rejects unsupported local stack llm provider", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.LocalStack.LLM.Provider = "unknown"
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "local_stack.llm.provider") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 
-	t.Run("allows local stack provider from the genai providers registry", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.LocalStack.LLM.Provider = "openaicompatible"
-		cfg.LocalStack.LLM.Remote = "http://localhost:8080/v1/chat/completions"
-		if err := cfg.Validate(); err != nil {
-			t.Fatal(err)
-		}
-	})
+		t.Run("allows local stack provider from the genai providers registry", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.LocalStack.LLM.Provider = "openaicompatible"
+			cfg.LocalStack.LLM.Remote = "http://localhost:8080/v1/chat/completions"
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+		})
 
-	t.Run("rejects incompatible LLM settings", func(t *testing.T) {
-		t.Parallel()
-		for _, tc := range []struct {
-			name string
-			llm  LocalStackLLMConfig
-			want string
-		}{
-			{"missing endpoint", LocalStackLLMConfig{Provider: "openaicompatible"}, "local_stack.llm.remote"},
-			{"key with managed llama", LocalStackLLMConfig{APIKeyName: "LLM_KEY"}, "local_stack.llm.api_key_name"},
-			{"path with llama", LocalStackLLMConfig{Provider: "llamacpp", Remote: "http://localhost:8080/v1/chat/completions"}, "must not contain a path"},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				t.Parallel()
-				cfg := DefaultConfig()
-				cfg.LocalStack.LLM = tc.llm
-				if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
-					t.Fatalf("Validate() = %v, want %s", err, tc.want)
-				}
-			})
-		}
-	})
+		t.Run("rejects incompatible LLM settings", func(t *testing.T) {
+			t.Parallel()
+			for _, tc := range []struct {
+				name string
+				llm  LocalStackLLMConfig
+				want string
+			}{
+				{"missing endpoint", LocalStackLLMConfig{Provider: "openaicompatible"}, "local_stack.llm.remote"},
+				{"key with managed llama", LocalStackLLMConfig{APIKeyName: "LLM_KEY"}, "local_stack.llm.api_key_name"},
+				{"path with llama", LocalStackLLMConfig{Provider: "llamacpp", Remote: "http://localhost:8080/v1/chat/completions"}, "must not contain a path"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					t.Parallel()
+					cfg := DefaultConfig()
+					cfg.LocalStack.LLM = tc.llm
+					if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+						t.Fatalf("Validate() = %v, want %s", err, tc.want)
+					}
+				})
+			}
+		})
 
-	t.Run("allows trusted public key issuer", func(t *testing.T) {
-		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.TrustedIssuers = []TrustedIssuerConfig{{
-			Service:   "caic",
-			Issuer:    "https://caic.example.com",
-			PublicKey: newTestPublicKey(t),
-		}}
-		if err := cfg.Validate(); err != nil {
-			t.Fatal(err)
-		}
+		t.Run("allows trusted public key issuer", func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			cfg.TrustedIssuers = []TrustedIssuerConfig{{
+				Service:   "caic",
+				Issuer:    "https://caic.example.com",
+				PublicKey: newTestPublicKey(t),
+			}}
+			if err := cfg.Validate(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	})
 }
 

@@ -3,59 +3,9 @@
 package voicertc
 
 import (
-	"context"
-	"strings"
 	"testing"
 	"time"
-
-	"github.com/pion/webrtc/v4"
 )
-
-func TestBridgeOpusDTX(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	t.Cleanup(cancel)
-	b, err := newBridgeWithBackend(ctx, &fakeBackendConnector{}, 0, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { b.CloseAll(ctx) })
-	for _, pt := range []webrtc.PayloadType{109, 111} {
-		m := &webrtc.MediaEngine{}
-		// An ordinary client offer omits usedtx and may use a payload number
-		// different from the gateway's registered codec number.
-		if err := m.RegisterCodec(webrtc.RTPCodecParameters{
-			RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2},
-			PayloadType:        pt,
-		}, webrtc.RTPCodecTypeAudio); err != nil {
-			t.Fatal(err)
-		}
-		pc, err := webrtc.NewAPI(webrtc.WithMediaEngine(m)).NewPeerConnection(webrtc.Configuration{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = pc.Close() })
-		if _, err := pc.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio); err != nil {
-			t.Fatal(err)
-		}
-		offer, err := pc.CreateOffer(nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := pc.SetLocalDescription(offer); err != nil {
-			t.Fatal(err)
-		}
-		answer, _, err := b.HandleOffer(ctx, offer.SDP)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(answer, "usedtx=1") {
-			t.Fatalf("answer for payload %d omitted uplink DTX", pt)
-		}
-		if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer}); err != nil {
-			t.Fatalf("client rejected answer for payload %d: %v", pt, err)
-		}
-	}
-}
 
 func TestMicAudioClock(t *testing.T) {
 	t.Run("continuous and DTX", func(t *testing.T) {

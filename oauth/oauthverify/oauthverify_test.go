@@ -181,23 +181,194 @@ func (ti *testIssuer) token(t *testing.T, key signingKey, audience, scope string
 	})
 }
 
-func TestVerify(t *testing.T) {
+func TestVerifier(t *testing.T) {
 	t.Parallel()
-	key := newECKey(t, "key-1")
-	ti := newTestIssuer(t, key)
-	v := New(nil)
-	token := ti.token(t, key, "voice-gateway", "voice.session", time.Now().Add(time.Minute))
+	t.Run("Verify", func(t *testing.T) {
+		t.Parallel()
+		t.Run("valid", func(t *testing.T) {
+			t.Parallel()
+			key := newECKey(t, "key-1")
+			ti := newTestIssuer(t, key)
+			v := New(nil)
+			token := ti.token(t, key, "voice-gateway", "voice.session", time.Now().Add(time.Minute))
 
-	claims, err := v.Verify(t.Context(), token, ti.issuer, "voice-gateway", "voice.session")
-	if err != nil {
-		t.Fatalf("Verify: %v", err)
-	}
-	if claims.Subject != "user-1" || !claims.HasScope("voice.session") || claims.Issuer != ti.issuer {
-		t.Fatalf("claims = %+v", claims)
-	}
+			claims, err := v.Verify(t.Context(), token, ti.issuer, "voice-gateway", "voice.session")
+			if err != nil {
+				t.Fatalf("Verify: %v", err)
+			}
+			if claims.Subject != "user-1" || !claims.HasScope("voice.session") || claims.Issuer != ti.issuer {
+				t.Fatalf("claims = %+v", claims)
+			}
+		})
+		t.Run("two allowed issuers", func(t *testing.T) {
+			t.Parallel()
+			keyA := newECKey(t, "key-a")
+			keyB := newECKey(t, "key-b")
+			tiA := newTestIssuer(t, keyA)
+			tiB := newTestIssuer(t, keyB)
+			v := New(nil)
+			for _, tc := range []struct {
+				ti    *testIssuer
+				key   signingKey
+				scope string
+			}{
+				{tiA, keyA, "voice.session"},
+				{tiB, keyB, "voice.session"},
+			} {
+				token := tc.ti.token(t, tc.key, "voice-gateway", tc.scope, time.Now().Add(time.Minute))
+				if _, err := v.Verify(t.Context(), token, tc.ti.issuer, "voice-gateway", tc.scope); err != nil {
+					t.Fatalf("issuer %s: %v", tc.ti.issuer, err)
+				}
+			}
+		})
+		t.Run("JWKS rotation", func(t *testing.T) {
+			t.Parallel()
+			oldKey := newECKey(t, "old")
+			ti := newTestIssuer(t, oldKey)
+			now := time.Now()
+			v := New(&Options{Now: func() time.Time { return now }})
+			oldToken := ti.token(t, oldKey, "voice-gateway", "voice.session", now.Add(time.Minute))
+			if _, err := v.Verify(t.Context(), oldToken, ti.issuer, "voice-gateway", "voice.session"); err != nil {
+				t.Fatalf("initial Verify: %v", err)
+			}
+
+			// Rotate: the issuer now publishes a new signing key and the token names it.
+			newKey := newECKey(t, "new")
+			ti.key = newKey
+			ti.extraKeys = []signingKey{oldKey}
+			// Advance past the refresh cooldown so the unknown kid triggers a refresh.
+			now = now.Add(2 * time.Minute)
+			newToken := ti.token(t, newKey, "voice-gateway", "voice.session", now.Add(time.Minute))
+			claims, err := v.Verify(t.Context(), newToken, ti.issuer, "voice-gateway", "voice.session")
+			if err != nil {
+				t.Fatalf("Verify after rotation: %v", err)
+			}
+			if claims.Subject != "user-1" {
+				t.Fatalf("claims = %+v", claims)
+			}
+			// The old token still verifies while its key is published.
+			if _, err := v.Verify(t.Context(), oldToken, ti.issuer, "voice-gateway", "voice.session"); err != nil {
+				t.Fatalf("Verify old token after rotation: %v", err)
+			}
+		})
+		t.Run("rejections", func(t *testing.T) {
+			t.Parallel()
+			key := newECKey(t, "key-1")
+			ti := newTestIssuer(t, key)
+			v := New(nil)
+
+			t.Run("expired", func(t *testing.T) {
+				t.Parallel()
+				token := ti.token(t, key, "voice-gateway", "voice.session", time.Now().Add(-2*time.Minute))
+				if _, err := v.Verify(t.Context(), token, ti.issuer, "voice-gateway", "voice.session"); err == nil {
+					t.Fatal("expired token verified")
+				}
+			})
+			t.Run("wrong audience", func(t *testing.T) {
+				t.Parallel()
+				token := ti.token(t, key, "other-service", "voice.session", time.Now().Add(time.Minute))
+				if _, err := v.Verify(t.Context(), token, ti.issuer, "voice-gateway", "voice.session"); err == nil {
+					t.Fatal("wrong-audience token verified")
+				}
+			})
+			t.Run("insufficient scope", func(t *testing.T) {
+				t.Parallel()
+				token := ti.token(t, key, "voice-gateway", "read", time.Now().Add(time.Minute))
+				if _, err := v.Verify(t.Context(), token, ti.issuer, "voice-gateway", "voice.session"); err == nil {
+					t.Fatal("insufficient-scope token verified")
+				}
+			})
+			t.Run("wrong issuer", func(t *testing.T) {
+				t.Parallel()
+				other := newTestIssuer(t, newECKey(t, "key-2"))
+				token := ti.token(t, key, "voice-gateway", "voice.session", time.Now().Add(time.Minute))
+				if _, err := v.Verify(t.Context(), token, other.issuer, "voice-gateway", "voice.session"); err == nil {
+					t.Fatal("token verified for the wrong issuer")
+				}
+			})
+			t.Run("tampered signature", func(t *testing.T) {
+				t.Parallel()
+				token := ti.token(t, key, "voice-gateway", "voice.session", time.Now().Add(time.Minute))
+				parts := strings.Split(token, ".")
+				parts[2] = base64.RawURLEncoding.EncodeToString([]byte("not-a-real-signature"))
+				if _, err := v.Verify(t.Context(), strings.Join(parts, "."), ti.issuer, "voice-gateway", "voice.session"); err == nil {
+					t.Fatal("tampered token verified")
+				}
+			})
+			t.Run("not a jwt", func(t *testing.T) {
+				t.Parallel()
+				if _, err := v.Verify(t.Context(), "opaque-scoped-token", ti.issuer, "voice-gateway", "voice.session"); err == nil {
+					t.Fatal("non-JWT token verified")
+				}
+			})
+		})
+		t.Run("metadata issuer mismatch", func(t *testing.T) {
+			t.Parallel()
+			key := newECKey(t, "key-1")
+			mux := http.NewServeMux()
+			mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]string{"issuer": "https://evil.example.com", "jwks_uri": ""})
+			})
+			server := httptest.NewServer(mux)
+			t.Cleanup(server.Close)
+			v := New(&Options{HTTPClient: server.Client()})
+			token := key.sign(t, &oauth.AccessTokenClaims{
+				Issuer: server.URL, Subject: "user-1", Audience: "voice-gateway", Scope: "voice.session",
+				IssuedAt: time.Now().Unix(), Expiry: time.Now().Add(time.Minute).Unix(),
+			})
+			if _, err := v.Verify(t.Context(), token, server.URL, "voice-gateway", "voice.session"); err == nil {
+				t.Fatal("metadata issuer mismatch accepted")
+			}
+		})
+		t.Run("caches metadata and keys", func(t *testing.T) {
+			t.Parallel()
+			key := newECKey(t, "key-1")
+			ti := newTestIssuer(t, key)
+			v := New(nil)
+			for range 3 {
+				token := ti.token(t, key, "voice-gateway", "voice.session", time.Now().Add(time.Minute))
+				if _, err := v.Verify(t.Context(), token, ti.issuer, "voice-gateway", "voice.session"); err != nil {
+					t.Fatalf("Verify: %v", err)
+				}
+			}
+			if ti.metaHits.Load() != 1 || ti.jwksHits.Load() != 1 {
+				t.Fatalf("metadata/jwks fetches = %d/%d, want 1/1", ti.metaHits.Load(), ti.jwksHits.Load())
+			}
+		})
+		t.Run("concurrent", func(t *testing.T) {
+			t.Parallel()
+			key := newECKey(t, "key-1")
+			ti := newTestIssuer(t, key)
+			v := New(nil)
+			var wg sync.WaitGroup
+			for range 20 {
+				wg.Go(func() {
+					token := ti.token(t, key, "voice-gateway", "voice.session", time.Now().Add(time.Minute))
+					if _, err := v.Verify(t.Context(), token, ti.issuer, "voice-gateway", "voice.session"); err != nil {
+						t.Errorf("Verify: %v", err)
+					}
+				})
+			}
+			wg.Wait()
+		})
+		t.Run("RSA", func(t *testing.T) {
+			t.Parallel()
+			priv, err := rsa.GenerateKey(rand.Reader, 2048)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key := signingKey{kid: "rsa-1", alg: "RS256", priv: priv}
+			ti := newTestIssuer(t, key)
+			v := New(nil)
+			token := ti.token(t, key, "voice-gateway", "voice.session", time.Now().Add(time.Minute))
+			if _, err := v.Verify(t.Context(), token, ti.issuer, "voice-gateway", "voice.session"); err != nil {
+				t.Fatalf("Verify RSA: %v", err)
+			}
+		})
+	})
 }
 
-func TestVerifyRejectsUnknownIssuerBeforeFetch(t *testing.T) {
+func TestIssuer(t *testing.T) {
 	t.Parallel()
 	key := newECKey(t, "key-1")
 	ti := newTestIssuer(t, key)
@@ -213,177 +384,5 @@ func TestVerifyRejectsUnknownIssuerBeforeFetch(t *testing.T) {
 	// The caller rejects an issuer that is not on the allowlist; no request is made.
 	if ti.metaHits.Load() != 0 || ti.jwksHits.Load() != 0 {
 		t.Fatalf("unexpected fetch before allowlist check")
-	}
-}
-
-func TestVerifyTwoAllowedIssuers(t *testing.T) {
-	t.Parallel()
-	keyA := newECKey(t, "key-a")
-	keyB := newECKey(t, "key-b")
-	tiA := newTestIssuer(t, keyA)
-	tiB := newTestIssuer(t, keyB)
-	v := New(nil)
-	for _, tc := range []struct {
-		ti    *testIssuer
-		key   signingKey
-		scope string
-	}{
-		{tiA, keyA, "voice.session"},
-		{tiB, keyB, "voice.session"},
-	} {
-		token := tc.ti.token(t, tc.key, "voice-gateway", tc.scope, time.Now().Add(time.Minute))
-		if _, err := v.Verify(t.Context(), token, tc.ti.issuer, "voice-gateway", tc.scope); err != nil {
-			t.Fatalf("issuer %s: %v", tc.ti.issuer, err)
-		}
-	}
-}
-
-func TestVerifyJWKSRotation(t *testing.T) {
-	t.Parallel()
-	oldKey := newECKey(t, "old")
-	ti := newTestIssuer(t, oldKey)
-	now := time.Now()
-	v := New(&Options{Now: func() time.Time { return now }})
-	oldToken := ti.token(t, oldKey, "voice-gateway", "voice.session", now.Add(time.Minute))
-	if _, err := v.Verify(t.Context(), oldToken, ti.issuer, "voice-gateway", "voice.session"); err != nil {
-		t.Fatalf("initial Verify: %v", err)
-	}
-
-	// Rotate: the issuer now publishes a new signing key and the token names it.
-	newKey := newECKey(t, "new")
-	ti.key = newKey
-	ti.extraKeys = []signingKey{oldKey}
-	// Advance past the refresh cooldown so the unknown kid triggers a refresh.
-	now = now.Add(2 * time.Minute)
-	newToken := ti.token(t, newKey, "voice-gateway", "voice.session", now.Add(time.Minute))
-	claims, err := v.Verify(t.Context(), newToken, ti.issuer, "voice-gateway", "voice.session")
-	if err != nil {
-		t.Fatalf("Verify after rotation: %v", err)
-	}
-	if claims.Subject != "user-1" {
-		t.Fatalf("claims = %+v", claims)
-	}
-	// The old token still verifies while its key is published.
-	if _, err := v.Verify(t.Context(), oldToken, ti.issuer, "voice-gateway", "voice.session"); err != nil {
-		t.Fatalf("Verify old token after rotation: %v", err)
-	}
-}
-
-func TestVerifyRejections(t *testing.T) {
-	t.Parallel()
-	key := newECKey(t, "key-1")
-	ti := newTestIssuer(t, key)
-	v := New(nil)
-
-	t.Run("expired", func(t *testing.T) {
-		t.Parallel()
-		token := ti.token(t, key, "voice-gateway", "voice.session", time.Now().Add(-2*time.Minute))
-		if _, err := v.Verify(t.Context(), token, ti.issuer, "voice-gateway", "voice.session"); err == nil {
-			t.Fatal("expired token verified")
-		}
-	})
-	t.Run("wrong audience", func(t *testing.T) {
-		t.Parallel()
-		token := ti.token(t, key, "other-service", "voice.session", time.Now().Add(time.Minute))
-		if _, err := v.Verify(t.Context(), token, ti.issuer, "voice-gateway", "voice.session"); err == nil {
-			t.Fatal("wrong-audience token verified")
-		}
-	})
-	t.Run("insufficient scope", func(t *testing.T) {
-		t.Parallel()
-		token := ti.token(t, key, "voice-gateway", "read", time.Now().Add(time.Minute))
-		if _, err := v.Verify(t.Context(), token, ti.issuer, "voice-gateway", "voice.session"); err == nil {
-			t.Fatal("insufficient-scope token verified")
-		}
-	})
-	t.Run("wrong issuer", func(t *testing.T) {
-		t.Parallel()
-		other := newTestIssuer(t, newECKey(t, "key-2"))
-		token := ti.token(t, key, "voice-gateway", "voice.session", time.Now().Add(time.Minute))
-		if _, err := v.Verify(t.Context(), token, other.issuer, "voice-gateway", "voice.session"); err == nil {
-			t.Fatal("token verified for the wrong issuer")
-		}
-	})
-	t.Run("tampered signature", func(t *testing.T) {
-		t.Parallel()
-		token := ti.token(t, key, "voice-gateway", "voice.session", time.Now().Add(time.Minute))
-		parts := strings.Split(token, ".")
-		parts[2] = base64.RawURLEncoding.EncodeToString([]byte("not-a-real-signature"))
-		if _, err := v.Verify(t.Context(), strings.Join(parts, "."), ti.issuer, "voice-gateway", "voice.session"); err == nil {
-			t.Fatal("tampered token verified")
-		}
-	})
-	t.Run("not a jwt", func(t *testing.T) {
-		t.Parallel()
-		if _, err := v.Verify(t.Context(), "opaque-scoped-token", ti.issuer, "voice-gateway", "voice.session"); err == nil {
-			t.Fatal("non-JWT token verified")
-		}
-	})
-}
-
-func TestVerifyMetadataIssuerMismatch(t *testing.T) {
-	t.Parallel()
-	key := newECKey(t, "key-1")
-	mux := http.NewServeMux()
-	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"issuer": "https://evil.example.com", "jwks_uri": ""})
-	})
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-	v := New(&Options{HTTPClient: server.Client()})
-	token := key.sign(t, &oauth.AccessTokenClaims{
-		Issuer: server.URL, Subject: "user-1", Audience: "voice-gateway", Scope: "voice.session",
-		IssuedAt: time.Now().Unix(), Expiry: time.Now().Add(time.Minute).Unix(),
-	})
-	if _, err := v.Verify(t.Context(), token, server.URL, "voice-gateway", "voice.session"); err == nil {
-		t.Fatal("metadata issuer mismatch accepted")
-	}
-}
-
-func TestVerifyCachesMetadataAndKeys(t *testing.T) {
-	t.Parallel()
-	key := newECKey(t, "key-1")
-	ti := newTestIssuer(t, key)
-	v := New(nil)
-	for range 3 {
-		token := ti.token(t, key, "voice-gateway", "voice.session", time.Now().Add(time.Minute))
-		if _, err := v.Verify(t.Context(), token, ti.issuer, "voice-gateway", "voice.session"); err != nil {
-			t.Fatalf("Verify: %v", err)
-		}
-	}
-	if ti.metaHits.Load() != 1 || ti.jwksHits.Load() != 1 {
-		t.Fatalf("metadata/jwks fetches = %d/%d, want 1/1", ti.metaHits.Load(), ti.jwksHits.Load())
-	}
-}
-
-func TestVerifyConcurrent(t *testing.T) {
-	t.Parallel()
-	key := newECKey(t, "key-1")
-	ti := newTestIssuer(t, key)
-	v := New(nil)
-	var wg sync.WaitGroup
-	for range 20 {
-		wg.Go(func() {
-			token := ti.token(t, key, "voice-gateway", "voice.session", time.Now().Add(time.Minute))
-			if _, err := v.Verify(t.Context(), token, ti.issuer, "voice-gateway", "voice.session"); err != nil {
-				t.Errorf("Verify: %v", err)
-			}
-		})
-	}
-	wg.Wait()
-}
-
-func TestVerifyRSA(t *testing.T) {
-	t.Parallel()
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	key := signingKey{kid: "rsa-1", alg: "RS256", priv: priv}
-	ti := newTestIssuer(t, key)
-	v := New(nil)
-	token := ti.token(t, key, "voice-gateway", "voice.session", time.Now().Add(time.Minute))
-	if _, err := v.Verify(t.Context(), token, ti.issuer, "voice-gateway", "voice.session"); err != nil {
-		t.Fatalf("Verify RSA: %v", err)
 	}
 }

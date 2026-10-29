@@ -100,6 +100,87 @@ func TestAuthorizationURL(t *testing.T) {
 
 func TestExchangeCode(t *testing.T) {
 	t.Parallel()
+	t.Run("timeout", func(t *testing.T) {
+		t.Parallel()
+		t.Run("hung provider is bounded by the request context", func(t *testing.T) {
+			t.Parallel()
+			// A server that never responds; the caller's short deadline (smaller
+			// than exchangeTimeout) must win and ExchangeCode must return promptly.
+			// done is closed before srv.Close (defer LIFO) so the blocked handler
+			// returns and Close does not wait on it.
+			done := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				<-done
+			}))
+			defer srv.Close()
+			defer close(done)
+
+			ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+			defer cancel()
+			start := time.Now()
+			_, err := ExchangeCode(ctx, oauth.ClientConfig{TokenURL: srv.URL}, "code", "")
+			if err == nil {
+				t.Fatal("ExchangeCode succeeded against a hung provider, want timeout error")
+			}
+			if elapsed := time.Since(start); elapsed > 5*time.Second {
+				t.Fatalf("ExchangeCode took %v, expected to be bounded near the context deadline", elapsed)
+			}
+		})
+	})
+	t.Run("form encoded fallback", func(t *testing.T) {
+		t.Parallel()
+		t.Run("valid", func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/x-www-form-urlencoded")
+				_, _ = w.Write([]byte("access_token=at-form&refresh_token=rt-form&expires_in=1800&token_type=Bearer"))
+			}))
+			t.Cleanup(srv.Close)
+
+			cfg := oauth.ClientConfig{ClientID: "c", ClientSecret: "s", TokenURL: srv.URL, RedirectURI: "https://app/cb"}
+			tok, err := ExchangeCode(t.Context(), cfg, "code-1", "")
+			if err != nil {
+				t.Fatalf("ExchangeCode: %v", err)
+			}
+			if tok.AccessToken != "at-form" {
+				t.Fatalf("AccessToken = %q, want at-form", tok.AccessToken)
+			}
+			if tok.RefreshToken != "rt-form" {
+				t.Fatalf("RefreshToken = %q, want rt-form", tok.RefreshToken)
+			}
+			if tok.TokenType != "Bearer" {
+				t.Fatalf("TokenType = %q, want Bearer", tok.TokenType)
+			}
+			if tok.Expiry.IsZero() {
+				t.Fatal("Expiry is zero")
+			}
+		})
+
+		t.Run("error form-encoded fallback returns form error", func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/x-www-form-urlencoded")
+				_, _ = w.Write([]byte("error=invalid_client&error_description=Client+not+found"))
+			}))
+			t.Cleanup(srv.Close)
+
+			cfg := oauth.ClientConfig{ClientID: "c", ClientSecret: "s", TokenURL: srv.URL, RedirectURI: "https://app/cb"}
+			_, err := ExchangeCode(t.Context(), cfg, "code-1", "")
+			if err == nil {
+				t.Fatal("ExchangeCode succeeded, want error")
+			}
+			rerr, ok := errors.AsType[*RetrieveError](err)
+			if !ok {
+				t.Fatalf("error is not *RetrieveError: %T %v", err, err)
+			}
+			if rerr.ErrorCode != "invalid_client" {
+				t.Fatalf("ErrorCode = %q, want invalid_client", rerr.ErrorCode)
+			}
+			if rerr.ErrorDescription != "Client not found" {
+				t.Fatalf("ErrorDescription = %q, want 'Client not found'", rerr.ErrorDescription)
+			}
+		})
+	})
 	t.Run("valid no pkce", func(t *testing.T) {
 		t.Parallel()
 		var gotVerifier string
@@ -170,34 +251,6 @@ func TestExchangeCode(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "400") {
 			t.Fatalf("error should mention status: %v", err)
-		}
-	})
-}
-
-func TestExchangeTimeout(t *testing.T) {
-	t.Parallel()
-	t.Run("hung provider is bounded by the request context", func(t *testing.T) {
-		t.Parallel()
-		// A server that never responds; the caller's short deadline (smaller
-		// than exchangeTimeout) must win and ExchangeCode must return promptly.
-		// done is closed before srv.Close (defer LIFO) so the blocked handler
-		// returns and Close does not wait on it.
-		done := make(chan struct{})
-		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-			<-done
-		}))
-		defer srv.Close()
-		defer close(done)
-
-		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
-		defer cancel()
-		start := time.Now()
-		_, err := ExchangeCode(ctx, oauth.ClientConfig{TokenURL: srv.URL}, "code", "")
-		if err == nil {
-			t.Fatal("ExchangeCode succeeded against a hung provider, want timeout error")
-		}
-		if elapsed := time.Since(start); elapsed > 5*time.Second {
-			t.Fatalf("ExchangeCode took %v, expected to be bounded near the context deadline", elapsed)
 		}
 	})
 }
@@ -277,63 +330,6 @@ func TestRetrieveError(t *testing.T) {
 		}
 		if rerr.ErrorCode != "" {
 			t.Fatalf("ErrorCode = %q, want empty (non-JSON body)", rerr.ErrorCode)
-		}
-	})
-}
-
-// TestExchangeCodeFormEncodedFallback verifies that a form-urlencoded token
-// response is parsed correctly when JSON parsing fails.
-func TestExchangeCodeFormEncodedFallback(t *testing.T) {
-	t.Parallel()
-	t.Run("valid", func(t *testing.T) {
-		t.Parallel()
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/x-www-form-urlencoded")
-			_, _ = w.Write([]byte("access_token=at-form&refresh_token=rt-form&expires_in=1800&token_type=Bearer"))
-		}))
-		t.Cleanup(srv.Close)
-
-		cfg := oauth.ClientConfig{ClientID: "c", ClientSecret: "s", TokenURL: srv.URL, RedirectURI: "https://app/cb"}
-		tok, err := ExchangeCode(t.Context(), cfg, "code-1", "")
-		if err != nil {
-			t.Fatalf("ExchangeCode: %v", err)
-		}
-		if tok.AccessToken != "at-form" {
-			t.Fatalf("AccessToken = %q, want at-form", tok.AccessToken)
-		}
-		if tok.RefreshToken != "rt-form" {
-			t.Fatalf("RefreshToken = %q, want rt-form", tok.RefreshToken)
-		}
-		if tok.TokenType != "Bearer" {
-			t.Fatalf("TokenType = %q, want Bearer", tok.TokenType)
-		}
-		if tok.Expiry.IsZero() {
-			t.Fatal("Expiry is zero")
-		}
-	})
-
-	t.Run("error form-encoded fallback returns form error", func(t *testing.T) {
-		t.Parallel()
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/x-www-form-urlencoded")
-			_, _ = w.Write([]byte("error=invalid_client&error_description=Client+not+found"))
-		}))
-		t.Cleanup(srv.Close)
-
-		cfg := oauth.ClientConfig{ClientID: "c", ClientSecret: "s", TokenURL: srv.URL, RedirectURI: "https://app/cb"}
-		_, err := ExchangeCode(t.Context(), cfg, "code-1", "")
-		if err == nil {
-			t.Fatal("ExchangeCode succeeded, want error")
-		}
-		rerr, ok := errors.AsType[*RetrieveError](err)
-		if !ok {
-			t.Fatalf("error is not *RetrieveError: %T %v", err, err)
-		}
-		if rerr.ErrorCode != "invalid_client" {
-			t.Fatalf("ErrorCode = %q, want invalid_client", rerr.ErrorCode)
-		}
-		if rerr.ErrorDescription != "Client not found" {
-			t.Fatalf("ErrorDescription = %q, want 'Client not found'", rerr.ErrorDescription)
 		}
 	})
 }
