@@ -165,6 +165,15 @@ func offerWithService(t *testing.T, handler http.Handler, service string) *httpt
 
 func TestOAuthOffer(t *testing.T) {
 	t.Parallel()
+	t.Run("valid", testOAuthOfferValid)
+	t.Run("RejectsUnknownIssuerBeforeFetch", testOAuthOfferRejectsUnknownIssuerBeforeFetch)
+	t.Run("JWKSRotation", testOAuthOfferJWKSRotation)
+	t.Run("Rejections", testOAuthOfferRejections)
+	t.Run("MixedWithScopedIssuer", testOAuthOfferMixedWithScopedIssuer)
+}
+
+func testOAuthOfferValid(t *testing.T) {
+	t.Parallel()
 	keyA := newOAuthTestKey(t, "key-a")
 	keyB := newOAuthTestKey(t, "key-b")
 	tiA := newOAuthTestIssuer(t, keyA)
@@ -188,7 +197,7 @@ func TestOAuthOffer(t *testing.T) {
 	}
 }
 
-func TestOAuthOfferRejectsUnknownIssuerBeforeFetch(t *testing.T) {
+func testOAuthOfferRejectsUnknownIssuerBeforeFetch(t *testing.T) {
 	t.Parallel()
 	key := newOAuthTestKey(t, "key-a")
 	ti := newOAuthTestIssuer(t, key)
@@ -211,7 +220,7 @@ func TestOAuthOfferRejectsUnknownIssuerBeforeFetch(t *testing.T) {
 	}
 }
 
-func TestOAuthOfferJWKSRotation(t *testing.T) {
+func testOAuthOfferJWKSRotation(t *testing.T) {
 	t.Parallel()
 	oldKey := newOAuthTestKey(t, "old")
 	ti := newOAuthTestIssuer(t, oldKey)
@@ -239,7 +248,7 @@ func TestOAuthOfferJWKSRotation(t *testing.T) {
 	}
 }
 
-func TestOAuthOfferRejections(t *testing.T) {
+func testOAuthOfferRejections(t *testing.T) {
 	t.Parallel()
 	key := newOAuthTestKey(t, "key-a")
 	ti := newOAuthTestIssuer(t, key)
@@ -270,7 +279,7 @@ func TestOAuthOfferRejections(t *testing.T) {
 	})
 }
 
-func TestOAuthOfferMixedWithScopedIssuer(t *testing.T) {
+func testOAuthOfferMixedWithScopedIssuer(t *testing.T) {
 	t.Parallel()
 	key := newOAuthTestKey(t, "key-a")
 	ti := newOAuthTestIssuer(t, key)

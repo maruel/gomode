@@ -221,7 +221,7 @@ model = "gemma-local"
 	})
 }
 
-func TestLocalStackAudioEngines(t *testing.T) {
+func testLocalStackAudioEngines(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "audio.toml")
 	content := `backend = "local-stack"
@@ -594,10 +594,14 @@ func TestConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+		t.Run("audio engines", testLocalStackAudioEngines)
+		t.Run("kitten TTS", testLocalStackKittenTTSConfiguration)
+		t.Run("local stack ASR", testValidateLocalStackASR)
 	})
+	t.Run("VoiceChoices", testChoiceConfig)
 }
 
-func TestLocalStackKittenTTSConfiguration(t *testing.T) {
+func testLocalStackKittenTTSConfiguration(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "kitten.toml")
 	content := `backend = "local-stack"
@@ -625,7 +629,7 @@ voice = "Luna"
 	}
 }
 
-func TestValidateWhistleASR(t *testing.T) {
+func testValidateLocalStackASR(t *testing.T) {
 	t.Parallel()
 	for _, cfg := range []LocalStackASRConfig{{Engine: LocalStackASRWhistle}, {Engine: LocalStackASRWhistle, Model: "/tmp/whistle.cact"}} {
 		if err := validateLocalStackASR(cfg); err != nil {
@@ -639,7 +643,7 @@ func TestValidateWhistleASR(t *testing.T) {
 	}
 }
 
-func TestChoiceConfig(t *testing.T) {
+func testChoiceConfig(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte(`default_choice_id = "remote"

@@ -30,15 +30,12 @@ func TestDPoPNonceManager(t *testing.T) {
 		}
 	})
 
-	t.Run("error RNG failure fails closed", func(t *testing.T) { //nolint:paralleltest // mutates package-global randRead; must run serially
-		// Override the entropy source to force a failure.
-		orig := randRead
-		t.Cleanup(func() { randRead = orig })
-		randRead = func([]byte) (int, error) {
+	t.Run("error RNG failure fails closed", func(t *testing.T) {
+		t.Parallel()
+		m := NewDPoPNonceManager(time.Minute)
+		m.randRead = func([]byte) (int, error) {
 			return 0, errors.New("rng failure")
 		}
-
-		m := NewDPoPNonceManager(time.Minute)
 		nonce, err := m.Issue()
 		if err == nil {
 			t.Fatal("Issue with failing RNG = nil error, want error")

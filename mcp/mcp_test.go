@@ -215,7 +215,7 @@ func TestHandler(t *testing.T) { //nolint:paralleltest // HandleMCP cases replac
 				select {
 				case msg := <-duplicate:
 					t.Fatalf("notification for unchanged content: method %q", msg.Method)
-				case <-time.After(300 * time.Millisecond):
+				case <-time.After(50 * time.Millisecond):
 				}
 			})
 
@@ -694,34 +694,46 @@ func TestContentBlock(t *testing.T) {
 	t.Run("Validate", func(t *testing.T) {
 		t.Parallel()
 
-		for _, tt := range []struct {
-			name    string
-			block   ContentBlock
-			wantErr bool
-		}{
-			{name: "text", block: ContentBlock{Type: ContentTypeText, Text: "hello"}},
-			{name: "image", block: ContentBlock{Type: ContentTypeImage, Data: "abc", MimeType: "image/png"}},
-			{name: "audio", block: ContentBlock{Type: ContentTypeAudio, Data: "abc", MimeType: "audio/wav"}},
-			{name: "resourceLink", block: ContentBlock{Type: ContentTypeResourceLink, Name: "log", URI: "file:///tmp/log"}},
-			{name: "embeddedResource", block: ContentBlock{Type: ContentTypeResource, Resource: ResourceContent{URI: "file:///tmp/log", Text: "hello"}}},
-			{name: "textMissingText", block: ContentBlock{Type: ContentTypeText}, wantErr: true},
-			{name: "textWithImageField", block: ContentBlock{Type: ContentTypeText, Text: "hello", Data: "abc"}, wantErr: true},
-			{name: "resourceLinkMissingURI", block: ContentBlock{Type: ContentTypeResourceLink, Name: "log"}, wantErr: true},
-			{name: "embeddedResourceInvalid", block: ContentBlock{Type: ContentTypeResource, Resource: ResourceContent{URI: "file:///tmp/log"}}, wantErr: true},
-		} {
-			t.Run(tt.name, func(t *testing.T) {
-				t.Parallel()
+		t.Run("valid", func(t *testing.T) {
+			t.Parallel()
+			for _, tt := range []struct {
+				name  string
+				block ContentBlock
+			}{
+				{name: "text", block: ContentBlock{Type: ContentTypeText, Text: "hello"}},
+				{name: "image", block: ContentBlock{Type: ContentTypeImage, Data: "abc", MimeType: "image/png"}},
+				{name: "audio", block: ContentBlock{Type: ContentTypeAudio, Data: "abc", MimeType: "audio/wav"}},
+				{name: "resourceLink", block: ContentBlock{Type: ContentTypeResourceLink, Name: "log", URI: "file:///tmp/log"}},
+				{name: "embeddedResource", block: ContentBlock{Type: ContentTypeResource, Resource: ResourceContent{URI: "file:///tmp/log", Text: "hello"}}},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					t.Parallel()
+					if err := tt.block.Validate(); err != nil {
+						t.Fatalf("Validate() error = %v, want nil", err)
+					}
+				})
+			}
+		})
 
-				block := tt.block
-				err := block.Validate()
-				if tt.wantErr && err == nil {
-					t.Fatalf("Validate() error = nil, want error")
-				}
-				if !tt.wantErr && err != nil {
-					t.Fatalf("Validate() error = %v, want nil", err)
-				}
-			})
-		}
+		t.Run("error", func(t *testing.T) {
+			t.Parallel()
+			for _, tt := range []struct {
+				name  string
+				block ContentBlock
+			}{
+				{name: "textMissingText", block: ContentBlock{Type: ContentTypeText}},
+				{name: "textWithImageField", block: ContentBlock{Type: ContentTypeText, Text: "hello", Data: "abc"}},
+				{name: "resourceLinkMissingURI", block: ContentBlock{Type: ContentTypeResourceLink, Name: "log"}},
+				{name: "embeddedResourceInvalid", block: ContentBlock{Type: ContentTypeResource, Resource: ResourceContent{URI: "file:///tmp/log"}}},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					t.Parallel()
+					if err := tt.block.Validate(); err == nil {
+						t.Fatal("Validate() error = nil, want error")
+					}
+				})
+			}
+		})
 	})
 }
 
@@ -730,30 +742,42 @@ func TestResourceContent(t *testing.T) {
 	t.Run("Validate", func(t *testing.T) {
 		t.Parallel()
 
-		for _, tt := range []struct {
-			name    string
-			content ResourceContent
-			wantErr bool
-		}{
-			{name: "text", content: ResourceContent{URI: "file:///tmp/log", Text: "hello"}},
-			{name: "blob", content: ResourceContent{URI: "file:///tmp/log", Blob: "aGVsbG8="}},
-			{name: "missingURI", content: ResourceContent{Text: "hello"}, wantErr: true},
-			{name: "missingTextOrBlob", content: ResourceContent{URI: "file:///tmp/log"}, wantErr: true},
-			{name: "bothTextAndBlob", content: ResourceContent{URI: "file:///tmp/log", Text: "hello", Blob: "aGVsbG8="}, wantErr: true},
-		} {
-			t.Run(tt.name, func(t *testing.T) {
-				t.Parallel()
+		t.Run("valid", func(t *testing.T) {
+			t.Parallel()
+			for _, tt := range []struct {
+				name    string
+				content ResourceContent
+			}{
+				{name: "text", content: ResourceContent{URI: "file:///tmp/log", Text: "hello"}},
+				{name: "blob", content: ResourceContent{URI: "file:///tmp/log", Blob: "aGVsbG8="}},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					t.Parallel()
+					if err := tt.content.Validate(); err != nil {
+						t.Fatalf("Validate() error = %v, want nil", err)
+					}
+				})
+			}
+		})
 
-				content := tt.content
-				err := content.Validate()
-				if tt.wantErr && err == nil {
-					t.Fatalf("Validate() error = nil, want error")
-				}
-				if !tt.wantErr && err != nil {
-					t.Fatalf("Validate() error = %v, want nil", err)
-				}
-			})
-		}
+		t.Run("error", func(t *testing.T) {
+			t.Parallel()
+			for _, tt := range []struct {
+				name    string
+				content ResourceContent
+			}{
+				{name: "missingURI", content: ResourceContent{Text: "hello"}},
+				{name: "missingTextOrBlob", content: ResourceContent{URI: "file:///tmp/log"}},
+				{name: "bothTextAndBlob", content: ResourceContent{URI: "file:///tmp/log", Text: "hello", Blob: "aGVsbG8="}},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					t.Parallel()
+					if err := tt.content.Validate(); err == nil {
+						t.Fatal("Validate() error = nil, want error")
+					}
+				})
+			}
+		})
 	})
 }
 

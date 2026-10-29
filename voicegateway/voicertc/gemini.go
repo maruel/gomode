@@ -33,6 +33,12 @@ var geminiVoices = []string{
 }
 
 const (
+	// Keep idle transports responsive without submitting audio to Gemini.
+	defaultGeminiPingInterval = 30 * time.Second
+	defaultGeminiPongTimeout  = 10 * time.Second
+)
+
+const (
 	defaultGeminiVoice = "Orus"
 
 	// geminiWSEndpoint is the Gemini Live BidiGenerateContent WebSocket URL.
@@ -43,10 +49,6 @@ const (
 
 	// wsReadLimit is the max WebSocket message size (16 MiB for audio chunks).
 	wsReadLimit = 16 * 1024 * 1024
-
-	// Keep idle transports responsive without submitting audio to Gemini.
-	geminiPingInterval = 30 * time.Second
-	geminiPongTimeout  = 10 * time.Second
 
 	// geminiResponseModalityAudio requests audio-only output. Native audio
 	// models support only AUDIO; text arrives as output transcription.
@@ -156,23 +158,27 @@ func (b *geminiBridgeBackend) connect(
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 	workers, workerCtx := errgroup.WithContext(sessionCtx)
 	sess := &geminiBridgeSession{
-		id:      sessionID,
-		model:   b.model,
-		sink:    sink,
-		ws:      wsConn,
-		workers: workers,
-		cancel:  sessionCancel,
+		id:                 sessionID,
+		model:              b.model,
+		sink:               sink,
+		ws:                 wsConn,
+		workers:            workers,
+		cancel:             sessionCancel,
+		geminiPingInterval: defaultGeminiPingInterval,
+		geminiPongTimeout:  defaultGeminiPongTimeout,
 	}
 	sess.workers.Go(func() error { sess.rxLoop(workerCtx); return nil })
 	return sess, nil
 }
 
 type geminiBridgeSession struct {
-	id      string
-	model   string
-	sink    backendSink
-	workers *errgroup.Group
-	cancel  context.CancelFunc
+	id                 string
+	model              string
+	sink               backendSink
+	workers            *errgroup.Group
+	cancel             context.CancelFunc
+	geminiPingInterval time.Duration
+	geminiPongTimeout  time.Duration
 
 	mu                sync.Mutex
 	ws                *websocket.Conn
@@ -252,7 +258,7 @@ func (s *geminiBridgeSession) rxLoop(ctx context.Context) {
 	readCtx, cancel := context.WithCancelCause(ctx)
 	workers, workerCtx := errgroup.WithContext(readCtx)
 	workers.Go(func() error {
-		err := geminiKeepAlive(workerCtx, wsConn)
+		err := s.geminiKeepAlive(workerCtx, wsConn)
 		cancel(err)
 		return err
 	})
@@ -303,15 +309,23 @@ func (s *geminiBridgeSession) rxLoop(ctx context.Context) {
 // rxLoop must keep reading to process pongs, even while audio is paused.
 // Its context cancels this worker on session shutdown or a read failure;
 // a failed ping in turn cancels the reader with its cause for error delivery.
-func geminiKeepAlive(ctx context.Context, ws *websocket.Conn) error {
-	t := time.NewTicker(geminiPingInterval)
+func (s *geminiBridgeSession) geminiKeepAlive(ctx context.Context, ws *websocket.Conn) error {
+	interval := s.geminiPingInterval
+	if interval <= 0 {
+		interval = defaultGeminiPingInterval
+	}
+	timeout := s.geminiPongTimeout
+	if timeout <= 0 {
+		timeout = defaultGeminiPongTimeout
+	}
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
-			pingCtx, cancel := context.WithTimeout(ctx, geminiPongTimeout)
+			pingCtx, cancel := context.WithTimeout(ctx, timeout)
 			err := ws.Ping(pingCtx)
 			cancel()
 			if ctx.Err() != nil {

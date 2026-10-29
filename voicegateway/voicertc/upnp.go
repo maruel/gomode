@@ -28,7 +28,7 @@ const (
 	upnpLeaseDuration      = 30 * time.Minute
 	upnpRefreshInterval    = upnpLeaseDuration / 2
 	upnpTimeout            = 5 * time.Second
-	upnpSSDPTimeout        = 2 * time.Second
+	defaultUPnPSSDPTimeout = 2 * time.Second
 )
 
 type upnpWANConnection interface {
@@ -66,7 +66,7 @@ type upnpMapping struct {
 	refreshErr error
 }
 
-func mapUPnPUDP(ctx context.Context, internalIP net.IP, port int) (*upnpMapping, error) {
+func mapUPnPUDP(ctx context.Context, internalIP net.IP, port int, ssdpTimeout time.Duration) (*upnpMapping, error) {
 	v4 := internalIP.To4()
 	if v4 == nil {
 		return nil, fmt.Errorf("UPnP requires an IPv4 internal address, got %s", internalIP)
@@ -78,7 +78,7 @@ func mapUPnPUDP(ctx context.Context, internalIP net.IP, port int) (*upnpMapping,
 	ctx, cancel := context.WithTimeout(ctx, upnpTimeout)
 	defer cancel()
 
-	clients, discoveryErr := discoverUPnPConnections(ctx, v4)
+	clients, discoveryErr := discoverUPnPConnections(ctx, v4, ssdpTimeout)
 	if len(clients) == 0 {
 		return nil, upnpDiscoveryError(discoveryErr)
 	}
@@ -134,8 +134,8 @@ func (m *upnpMapping) close(ctx context.Context) error {
 	return nil
 }
 
-func discoverUPnPConnections(ctx context.Context, hostIP net.IP) ([]upnpWANConnection, error) {
-	locations, err := discoverUPnPLocations(ctx, hostIP)
+func discoverUPnPConnections(ctx context.Context, hostIP net.IP, ssdpTimeout time.Duration) ([]upnpWANConnection, error) {
+	locations, err := discoverUPnPLocations(ctx, hostIP, ssdpTimeout)
 	clients := make([]upnpWANConnection, 0, len(locations))
 	for _, loc := range locations {
 		if routeErr := validateUPnPGatewayRoute(ctx, hostIP, loc); routeErr != nil {
@@ -210,7 +210,7 @@ func urlIPv4(loc *url.URL) (net.IP, error) {
 	return ip, nil
 }
 
-func discoverUPnPLocations(ctx context.Context, hostIP net.IP) ([]*url.URL, error) {
+func discoverUPnPLocations(ctx context.Context, hostIP net.IP, ssdpTimeout time.Duration) ([]*url.URL, error) {
 	client, err := httpu.NewHTTPUClientAddr(hostIP.String())
 	if err != nil {
 		return nil, fmt.Errorf("create SSDP client on %s: %w", hostIP, err)
@@ -220,7 +220,10 @@ func discoverUPnPLocations(ctx context.Context, hostIP net.IP) ([]*url.URL, erro
 			slog.WarnContext(ctx, "voicertc: close SSDP client", "err", err)
 		}
 	}()
-	searchCtx, cancel := context.WithTimeout(ctx, upnpSSDPTimeout)
+	if ssdpTimeout <= 0 {
+		ssdpTimeout = defaultUPnPSSDPTimeout
+	}
+	searchCtx, cancel := context.WithTimeout(ctx, ssdpTimeout)
 	defer cancel()
 	responses, err := ssdp.RawSearch(searchCtx, client, ssdp.SSDPAll, 3) //nolint:bodyclose // closed below by closeSSDPResponses.
 	if err != nil {

@@ -24,72 +24,79 @@ import (
 func TestAccessTokenSigningKeyLifecycle(t *testing.T) {
 	t.Parallel()
 
-	const (
-		issuer   = "https://caic.example.com"
-		audience = issuer + "/api/caic/v1/mcp"
-		clientID = "client-1"
-		grantID  = "grant-1"
-	)
-	now := time.Now().Truncate(time.Second)
-	ttl := time.Hour
-	path := t.TempDir() + "/oauth.json"
-	key1 := generateTestSigningKeyPEM(t)
-	key2 := generateTestSigningKeyPEM(t)
-	user := oauth.User{ID: "user-1", Username: "alice"}
+	t.Run("lifecycle", func(t *testing.T) {
+		t.Parallel()
 
-	state1, err := LoadStore(path)
-	if err != nil {
-		t.Fatalf("LoadStore first start: %v", err)
-	}
-	service1, err := configureAccessTokenService(state1, key1, "key-1", ttl, now)
-	if err != nil {
-		t.Fatalf("configure first signing key: %v", err)
-	}
-	token1, err := service1.IssueAccessToken(issuer, user, audience, "read", grantID, clientID)
-	if err != nil {
-		t.Fatalf("issue token with first key: %v", err)
-	}
+		const (
+			issuer   = "https://caic.example.com"
+			audience = issuer + "/api/caic/v1/mcp"
+			clientID = "client-1"
+			grantID  = "grant-1"
+		)
+		now := time.Now().Truncate(time.Second)
+		ttl := time.Hour
+		path := t.TempDir() + "/oauth.json"
+		key1 := generateTestSigningKeyPEM(t)
+		key2 := generateTestSigningKeyPEM(t)
+		user := oauth.User{ID: "user-1", Username: "alice"}
 
-	state2, err := LoadStore(path)
-	if err != nil {
-		t.Fatalf("LoadStore rotation restart: %v", err)
-	}
-	service2, err := configureAccessTokenService(state2, key2, "key-2", ttl, now.Add(time.Minute))
-	if err != nil {
-		t.Fatalf("configure rotated signing key: %v", err)
-	}
-	if got := jwkIDs(service2.JWK()); !slices.Equal(got, []string{"key-1", "key-2"}) {
-		t.Fatalf("rotated JWKS key IDs = %v", got)
-	}
-	claims, err := service2.VerifyAccessToken(token1, issuer, audience, now.Add(time.Minute), activeGrant(clientID), &tokenTestSession{user: user})
-	if err != nil {
-		t.Fatalf("verify pre-rotation token after restart: %v", err)
-	}
-	if claims.ClientID != clientID {
-		t.Fatalf("verified client ID = %q, want %q", claims.ClientID, clientID)
-	}
-	if _, err := configureAccessTokenService(state2, key1, "key-1", ttl, now.Add(2*time.Minute)); err == nil {
-		t.Fatal("reactivating a retired signing key succeeded")
-	}
+		state1, err := LoadStore(path)
+		if err != nil {
+			t.Fatalf("LoadStore first start: %v", err)
+		}
+		service1, err := configureAccessTokenService(state1, key1, "key-1", ttl, now)
+		if err != nil {
+			t.Fatalf("configure first signing key: %v", err)
+		}
+		token1, err := service1.IssueAccessToken(issuer, user, audience, "read", grantID, clientID)
+		if err != nil {
+			t.Fatalf("issue token with first key: %v", err)
+		}
 
-	retiredAt := now.Add(ttl + tokenClockSkew + 2*time.Minute)
-	state3, err := LoadStore(path)
-	if err != nil {
-		t.Fatalf("LoadStore retirement restart: %v", err)
-	}
-	service3, err := configureAccessTokenService(state3, key2, "key-2", ttl, retiredAt)
-	if err != nil {
-		t.Fatalf("configure after retirement: %v", err)
-	}
-	if got := jwkIDs(service3.JWK()); !slices.Equal(got, []string{"key-2"}) {
-		t.Fatalf("retired JWKS key IDs = %v", got)
-	}
-	if _, err := service3.VerifyAccessToken(token1, issuer, audience, retiredAt, activeGrant(clientID), &tokenTestSession{user: user}); err == nil || !strings.Contains(err.Error(), "unsupported token header") {
-		t.Fatalf("verify retired-key token error = %v", err)
-	}
+		state2, err := LoadStore(path)
+		if err != nil {
+			t.Fatalf("LoadStore rotation restart: %v", err)
+		}
+		service2, err := configureAccessTokenService(state2, key2, "key-2", ttl, now.Add(time.Minute))
+		if err != nil {
+			t.Fatalf("configure rotated signing key: %v", err)
+		}
+		if got := jwkIDs(service2.JWK()); !slices.Equal(got, []string{"key-1", "key-2"}) {
+			t.Fatalf("rotated JWKS key IDs = %v", got)
+		}
+		claims, err := service2.VerifyAccessToken(token1, issuer, audience, now.Add(time.Minute), activeGrant(clientID), &tokenTestSession{user: user})
+		if err != nil {
+			t.Fatalf("verify pre-rotation token after restart: %v", err)
+		}
+		if claims.ClientID != clientID {
+			t.Fatalf("verified client ID = %q, want %q", claims.ClientID, clientID)
+		}
+		if _, err := configureAccessTokenService(state2, key1, "key-1", ttl, now.Add(2*time.Minute)); err == nil {
+			t.Fatal("reactivating a retired signing key succeeded")
+		}
+
+		retiredAt := now.Add(ttl + tokenClockSkew + 2*time.Minute)
+		state3, err := LoadStore(path)
+		if err != nil {
+			t.Fatalf("LoadStore retirement restart: %v", err)
+		}
+		service3, err := configureAccessTokenService(state3, key2, "key-2", ttl, retiredAt)
+		if err != nil {
+			t.Fatalf("configure after retirement: %v", err)
+		}
+		if got := jwkIDs(service3.JWK()); !slices.Equal(got, []string{"key-2"}) {
+			t.Fatalf("retired JWKS key IDs = %v", got)
+		}
+		if _, err := service3.VerifyAccessToken(token1, issuer, audience, retiredAt, activeGrant(clientID), &tokenTestSession{user: user}); err == nil || !strings.Contains(err.Error(), "unsupported token header") {
+			t.Fatalf("verify retired-key token error = %v", err)
+		}
+	})
+
+	t.Run("RejectsUnsafeState", testAccessTokenSigningKeyLifecycleRejectsUnsafeState)
+	t.Run("RFC9068AccessTokenExternalVerification", testRFC9068AccessTokenExternalVerification)
 }
 
-func TestAccessTokenSigningKeyLifecycleRejectsUnsafeState(t *testing.T) {
+func testAccessTokenSigningKeyLifecycleRejectsUnsafeState(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
@@ -119,7 +126,7 @@ func TestAccessTokenSigningKeyLifecycleRejectsUnsafeState(t *testing.T) {
 	}
 }
 
-func TestRFC9068AccessTokenExternalVerification(t *testing.T) {
+func testRFC9068AccessTokenExternalVerification(t *testing.T) {
 	t.Parallel()
 
 	const (

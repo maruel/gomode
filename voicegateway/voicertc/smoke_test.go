@@ -294,7 +294,7 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 	}
 
 	startup := time.Now()
-	bridge, err := NewBridge(runtimeCtx, &cfg, "", cfg.Server.WebRTCUDPPort, t.TempDir())
+	bridge, err := newBridgeWithTimeout(runtimeCtx, &cfg, "", cfg.Server.WebRTCUDPPort, t.TempDir(), 5*time.Millisecond)
 	t.Logf("local stack startup: %s", smokeElapsed(startup))
 	if err != nil {
 		t.Fatal(err)

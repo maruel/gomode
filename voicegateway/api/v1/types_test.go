@@ -6,37 +6,45 @@ import (
 	"testing"
 )
 
-func TestRoutes(t *testing.T) {
+func TestRoute(t *testing.T) {
 	t.Parallel()
 
-	t.Run("diagnoseVoiceRTCDeclared", func(t *testing.T) {
+	t.Run("ReqName", func(t *testing.T) {
 		t.Parallel()
 		r := routeByName(t, "diagnoseVoiceRTC")
-		if r.Method != http.MethodPost {
-			t.Fatalf("method = %q, want POST", r.Method)
-		}
-		if r.Path != "/api/voicegateway/v1/voice/rtc/{sessionID}/diagnostics" {
-			t.Fatalf("path = %q, want voice RTC diagnostics path", r.Path)
-		}
 		if r.ReqName() != "VoiceRTCDiagnosticsReq" {
 			t.Fatalf("request = %q, want VoiceRTCDiagnosticsReq", r.ReqName())
 		}
+	})
+
+	t.Run("RespName", func(t *testing.T) {
+		t.Parallel()
+		r := routeByName(t, "diagnoseVoiceRTC")
 		if r.RespName() != "VoiceRTCDiagnosticsResp" {
 			t.Fatalf("response = %q, want VoiceRTCDiagnosticsResp", r.RespName())
 		}
+		rClose := routeByName(t, "closeVoiceRTC")
+		if rClose.RespName() != "StatusResp" {
+			t.Fatalf("response = %q, want StatusResp", rClose.RespName())
+		}
 	})
 
-	t.Run("closeVoiceRTCDeclared", func(t *testing.T) {
+	t.Run("declarations", func(t *testing.T) {
 		t.Parallel()
-		r := routeByName(t, "closeVoiceRTC")
-		if r.Method != http.MethodPost {
-			t.Fatalf("method = %q, want POST", r.Method)
+		rDiag := routeByName(t, "diagnoseVoiceRTC")
+		if rDiag.Method != http.MethodPost {
+			t.Fatalf("method = %q, want POST", rDiag.Method)
 		}
-		if r.Path != "/api/voicegateway/v1/voice/rtc/{sessionID}" {
-			t.Fatalf("path = %q, want voice RTC close path", r.Path)
+		if rDiag.Path != "/api/voicegateway/v1/voice/rtc/{sessionID}/diagnostics" {
+			t.Fatalf("path = %q, want voice RTC diagnostics path", rDiag.Path)
 		}
-		if r.RespName() != "StatusResp" {
-			t.Fatalf("response = %q, want StatusResp", r.RespName())
+
+		rClose := routeByName(t, "closeVoiceRTC")
+		if rClose.Method != http.MethodPost {
+			t.Fatalf("method = %q, want POST", rClose.Method)
+		}
+		if rClose.Path != "/api/voicegateway/v1/voice/rtc/{sessionID}" {
+			t.Fatalf("path = %q, want voice RTC close path", rClose.Path)
 		}
 	})
 }

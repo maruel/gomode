@@ -669,6 +669,7 @@ func TestAccessTokenService(t *testing.T) {
 			}
 		}
 	})
+	t.Run("IssueClientCredentialsAccessToken", testIssueClientCredentialsAccessToken)
 }
 
 // tokenTestSession is a minimal SessionManager for token tests.
@@ -718,7 +719,7 @@ func newTestAccessTokenService(t *testing.T, kid string) *AccessTokenService {
 	return svc
 }
 
-func TestIssueClientCredentialsAccessToken(t *testing.T) {
+func testIssueClientCredentialsAccessToken(t *testing.T) {
 	t.Parallel()
 
 	const (

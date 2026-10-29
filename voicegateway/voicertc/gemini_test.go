@@ -16,6 +16,8 @@ import (
 )
 
 func TestGeminiKeepAlive(t *testing.T) {
+	t.Parallel()
+
 	t.Run("valid", func(t *testing.T) {
 		t.Parallel()
 		pong := make(chan struct{}, 1)
@@ -27,7 +29,7 @@ func TestGeminiKeepAlive(t *testing.T) {
 		})
 		select {
 		case <-pong:
-		case <-time.After(45 * time.Second):
+		case <-time.After(5 * time.Second):
 			t.Fatal("idle session received no WebSocket pong")
 		}
 		// Cancel without sending audio or closing the socket first. The reader
@@ -49,7 +51,7 @@ func TestGeminiKeepAlive(t *testing.T) {
 		sink, _, done := newGeminiIdleSession(t, func(context.Context, []byte) bool { return false }, nil)
 		select {
 		case <-done:
-		case <-time.After(45 * time.Second):
+		case <-time.After(5 * time.Second):
 			t.Fatal("missing pong did not stop the reader")
 		}
 		sink.mu.Lock()
@@ -87,7 +89,14 @@ func newGeminiIdleSession(t *testing.T, onPing func(context.Context, []byte) boo
 	}
 	sink := &captureSink{}
 	workers, workerCtx := errgroup.WithContext(ctx)
-	s := &geminiBridgeSession{ws: conn, sink: sink, workers: workers, cancel: cancel}
+	s := &geminiBridgeSession{
+		ws:                 conn,
+		sink:               sink,
+		workers:            workers,
+		cancel:             cancel,
+		geminiPingInterval: 20 * time.Millisecond,
+		geminiPongTimeout:  20 * time.Millisecond,
+	}
 	t.Cleanup(func() { _ = s.close() })
 	done := make(chan struct{})
 	workers.Go(func() error {

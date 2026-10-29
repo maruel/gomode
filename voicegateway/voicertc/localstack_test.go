@@ -71,38 +71,6 @@ func TestEnergyVAD(t *testing.T) {
 	})
 }
 
-func TestLocalStackSessionLanguage(t *testing.T) {
-	t.Parallel()
-	backend := newLocalStackBackend(
-		func() vadSegmenter { return &energyVAD{} },
-		placeholderASR{}, &genaiLLMAdapter{provider: &fakeGenAIProvider{}}, placeholderTTS{},
-	)
-	sess := backend.newSession(t.Context(), "language", &captureSink{}, true)
-	t.Cleanup(func() { _ = sess.close() })
-	setup := mustJSON(t, voicev1.SessionSetup{
-		Kind:    voicev1.MessageKindSessionSetup,
-		Voice:   voicev1.VoiceConfig{Language: "fr-CA"},
-		Context: voicev1.Context{SystemInstruction: "Answer briefly."},
-	})
-	if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
-		t.Fatal(err)
-	}
-	conv, ok := sess.conv.(*genaiConversation)
-	if !ok {
-		t.Fatalf("conversation = %T, want *genaiConversation", sess.conv)
-	}
-	if !strings.Contains(conv.systemInstruction, "selected language: fr-CA") {
-		t.Fatalf("instruction = %q, want selected language", conv.systemInstruction)
-	}
-	invalid := mustJSON(t, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup, Voice: voicev1.VoiceConfig{Language: "en_US"}})
-	if err := sess.acceptClientMessage(t.Context(), invalid); err == nil {
-		t.Fatal("expected invalid language error")
-	}
-	if sess.conv != conv {
-		t.Fatal("invalid setup replaced the conversation")
-	}
-}
-
 func TestLocalStackSession(t *testing.T) {
 	t.Parallel()
 	t.Run("generation failure reaches client", func(t *testing.T) {
@@ -571,6 +539,58 @@ func TestLocalStackSession(t *testing.T) {
 			t.Fatal("barge-in must not cancel the whole session")
 		}
 	})
+
+	t.Run("language", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalStackBackend(
+			func() vadSegmenter { return &energyVAD{} },
+			placeholderASR{}, &genaiLLMAdapter{provider: &fakeGenAIProvider{}}, placeholderTTS{},
+		)
+		sess := backend.newSession(t.Context(), "language", &captureSink{}, true)
+		t.Cleanup(func() { _ = sess.close() })
+		setup := mustJSON(t, voicev1.SessionSetup{
+			Kind:    voicev1.MessageKindSessionSetup,
+			Voice:   voicev1.VoiceConfig{Language: "fr-CA"},
+			Context: voicev1.Context{SystemInstruction: "Answer briefly."},
+		})
+		if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
+			t.Fatal(err)
+		}
+		conv, ok := sess.conv.(*genaiConversation)
+		if !ok {
+			t.Fatalf("conversation = %T, want *genaiConversation", sess.conv)
+		}
+		if !strings.Contains(conv.systemInstruction, "selected language: fr-CA") {
+			t.Fatalf("instruction = %q, want selected language", conv.systemInstruction)
+		}
+		invalid := mustJSON(t, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup, Voice: voicev1.VoiceConfig{Language: "en_US"}})
+		if err := sess.acceptClientMessage(t.Context(), invalid); err == nil {
+			t.Fatal("expected invalid language error")
+		}
+		if sess.conv != conv {
+			t.Fatal("invalid setup replaced the conversation")
+		}
+	})
+
+	t.Run("closed session rejects turns", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalStackBackend(nil, nil, fixedConversationLLM{conv: &fakeConversation{}}, nil)
+		sess := backend.newSession(t.Context(), "closed", &captureSink{}, true)
+		setup, err := json.Marshal(voicev1.SessionSetup{
+			Kind:    voicev1.MessageKindSessionSetup,
+			Context: voicev1.Context{SystemInstruction: "be terse"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
+			t.Fatal(err)
+		}
+		if err := sess.close(); err != nil {
+			t.Fatal(err)
+		}
+		sess.startUserMessage(t.Context(), "after close")
+	})
 }
 
 func TestGenaiToolDefs(t *testing.T) {
@@ -794,38 +814,67 @@ func finishLLMStep(t *testing.T, step llmStep) (reply llmReply, deltas []string)
 
 func TestLocalStackModelsForConfig(t *testing.T) {
 	t.Parallel()
-	var startedModels []string
-	var servers []*fakeManagedLlamaServer
-	models, err := localStackModelsForConfigWithStarter(t.Context(), &voicegateway.LocalStackConfig{}, func(_ context.Context, model string) (managedLlamaServer, error) {
-		startedModels = append(startedModels, model)
-		srv := &fakeManagedLlamaServer{url: "http://127.0.0.1:12345"}
-		servers = append(servers, srv)
-		return srv, nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := models.asr.(*speechASRAdapter); !ok {
-		t.Fatalf("asr = %T, want speechASRAdapter", models.asr)
-	}
-	if _, ok := models.llm.(*genaiLLMAdapter); !ok {
-		t.Fatalf("llm = %T, want genaiLLMAdapter", models.llm)
-	}
-	wantModels := []string{defaultLocalStackASRModel, defaultLocalStackLLMModel}
-	if !slices.Equal(startedModels, wantModels) {
-		t.Errorf("started models = %v, want %v", startedModels, wantModels)
-	}
-	if models.runtime == nil {
-		t.Fatal("runtime = nil, want managed server closer")
-	}
-	if err := models.runtime.Close(); err != nil {
-		t.Fatal(err)
-	}
-	for i, srv := range servers {
-		if !srv.closed {
-			t.Errorf("managed server %d (%s) was not closed", i, startedModels[i])
+
+	t.Run("defaults", func(t *testing.T) {
+		t.Parallel()
+		var startedModels []string
+		var servers []*fakeManagedLlamaServer
+		models, err := localStackModelsForConfigWithStarter(t.Context(), &voicegateway.LocalStackConfig{}, func(_ context.Context, model string) (managedLlamaServer, error) {
+			startedModels = append(startedModels, model)
+			srv := &fakeManagedLlamaServer{url: "http://127.0.0.1:12345"}
+			servers = append(servers, srv)
+			return srv, nil
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
+		if _, ok := models.asr.(*speechASRAdapter); !ok {
+			t.Fatalf("asr = %T, want speechASRAdapter", models.asr)
+		}
+		if _, ok := models.llm.(*genaiLLMAdapter); !ok {
+			t.Fatalf("llm = %T, want genaiLLMAdapter", models.llm)
+		}
+		wantModels := []string{defaultLocalStackASRModel, defaultLocalStackLLMModel}
+		if !slices.Equal(startedModels, wantModels) {
+			t.Errorf("started models = %v, want %v", startedModels, wantModels)
+		}
+		if models.runtime == nil {
+			t.Fatal("runtime = nil, want managed server closer")
+		}
+		if err := models.runtime.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for i, srv := range servers {
+			if !srv.closed {
+				t.Errorf("managed server %d (%s) was not closed", i, startedModels[i])
+			}
+		}
+	})
+
+	t.Run("requires provider with remote", func(t *testing.T) {
+		t.Parallel()
+		start := func(context.Context, string) (managedLlamaServer, error) {
+			return &fakeManagedLlamaServer{url: "http://127.0.0.1:12345"}, nil
+		}
+
+		t.Run("asr", func(t *testing.T) {
+			t.Parallel()
+			cfg := &voicegateway.LocalStackConfig{ASR: voicegateway.LocalStackASRConfig{Remote: "http://127.0.0.1:12345"}}
+			_, err := localStackModelsForConfigWithStarter(t.Context(), cfg, start)
+			if err == nil || !strings.Contains(err.Error(), "local_stack.asr.provider") {
+				t.Fatalf("err = %v, want local_stack.asr.provider error", err)
+			}
+		})
+
+		t.Run("llm", func(t *testing.T) {
+			t.Parallel()
+			cfg := &voicegateway.LocalStackConfig{LLM: voicegateway.LocalStackLLMConfig{Remote: "http://127.0.0.1:12345"}}
+			_, err := localStackModelsForConfigWithStarter(t.Context(), cfg, start)
+			if err == nil || !strings.Contains(err.Error(), "local_stack.llm.provider") {
+				t.Fatalf("err = %v, want local_stack.llm.provider error", err)
+			}
+		})
+	})
 }
 
 func TestLocalStackTextOnly(t *testing.T) {
@@ -875,7 +924,7 @@ data: [DONE]
 		TextOnly: true,
 		LLM:      voicegateway.LocalStackLLMConfig{Provider: "openaicompatible", Remote: llmServer.URL + "/v1/chat/completions", Model: "test-model"},
 	}
-	bridge, err := NewBridge(t.Context(), &config, "", 0, t.TempDir())
+	bridge, err := newBridgeWithTimeout(t.Context(), &config, "", 0, t.TempDir(), 5*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1061,31 +1110,6 @@ func (p *cleanupGenAIProvider) Ping(context.Context) error { return p.pingErr }
 func (p *cleanupGenAIProvider) Close() error {
 	p.closed = true
 	return p.closeErr
-}
-
-func TestLocalStackModelsForConfigRequiresProviderWithRemote(t *testing.T) {
-	t.Parallel()
-	start := func(context.Context, string) (managedLlamaServer, error) {
-		return &fakeManagedLlamaServer{url: "http://127.0.0.1:12345"}, nil
-	}
-
-	t.Run("asr", func(t *testing.T) {
-		t.Parallel()
-		cfg := &voicegateway.LocalStackConfig{ASR: voicegateway.LocalStackASRConfig{Remote: "http://127.0.0.1:12345"}}
-		_, err := localStackModelsForConfigWithStarter(t.Context(), cfg, start)
-		if err == nil || !strings.Contains(err.Error(), "local_stack.asr.provider") {
-			t.Fatalf("err = %v, want local_stack.asr.provider error", err)
-		}
-	})
-
-	t.Run("llm", func(t *testing.T) {
-		t.Parallel()
-		cfg := &voicegateway.LocalStackConfig{LLM: voicegateway.LocalStackLLMConfig{Remote: "http://127.0.0.1:12345"}}
-		_, err := localStackModelsForConfigWithStarter(t.Context(), cfg, start)
-		if err == nil || !strings.Contains(err.Error(), "local_stack.llm.provider") {
-			t.Fatalf("err = %v, want local_stack.llm.provider error", err)
-		}
-	})
 }
 
 func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
@@ -1680,26 +1704,6 @@ func (s *fakeManagedLlamaServer) URL() string { return s.url }
 func (s *fakeManagedLlamaServer) Close() error {
 	s.closed = true
 	return nil
-}
-
-func TestLocalStackSessionClosedRejectsTurns(t *testing.T) {
-	t.Parallel()
-	backend := newLocalStackBackend(nil, nil, fixedConversationLLM{conv: &fakeConversation{}}, nil)
-	sess := backend.newSession(t.Context(), "closed", &captureSink{}, true)
-	setup, err := json.Marshal(voicev1.SessionSetup{
-		Kind:    voicev1.MessageKindSessionSetup,
-		Context: voicev1.Context{SystemInstruction: "be terse"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
-		t.Fatal(err)
-	}
-	if err := sess.close(); err != nil {
-		t.Fatal(err)
-	}
-	sess.startUserMessage(t.Context(), "after close")
 }
 
 type smokeLLM struct {

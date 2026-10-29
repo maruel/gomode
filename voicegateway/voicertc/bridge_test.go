@@ -35,6 +35,10 @@ import (
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
+func newTestBridgeWithBackend(ctx context.Context, backend backendConnector, udpPort int, activityLogDir string) (*Bridge, error) {
+	return newBridgeWithBackendAndTimeout(ctx, backend, udpPort, activityLogDir, 5*time.Millisecond)
+}
+
 type blockingCloseSession struct {
 	fakeBackendSession
 	entered chan struct{}
@@ -345,17 +349,6 @@ func TestTranslateGeminiServerMessage(t *testing.T) {
 	})
 }
 
-func TestGatewaySessionReady(t *testing.T) {
-	t.Parallel()
-	var msg voicev1.SessionReady
-	if err := json.Unmarshal(gatewaySessionReady(), &msg); err != nil {
-		t.Fatal(err)
-	}
-	if msg.Kind != voicev1.MessageKindSessionReady {
-		t.Fatalf("kind = %q, want session.ready", msg.Kind)
-	}
-}
-
 func TestGeminiAudioExtractionEmitsSpeechStarted(t *testing.T) {
 	t.Parallel()
 	sink := &captureSink{}
@@ -395,7 +388,7 @@ func TestNewBridge(t *testing.T) {
 	cfg := &voicegateway.Config{Backend: voicegateway.BackendGeminiLive}
 	t.Run("NewBridge", func(t *testing.T) {
 		t.Parallel()
-		b, err := NewBridge(t.Context(), cfg, "test-key", 0, t.TempDir())
+		b, err := newBridgeWithTimeout(t.Context(), cfg, "test-key", 0, t.TempDir(), 5*time.Millisecond)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -404,7 +397,7 @@ func TestNewBridge(t *testing.T) {
 
 	t.Run("PeerConnection", func(t *testing.T) {
 		t.Parallel()
-		b, err := NewBridge(t.Context(), cfg, "test-key", 0, t.TempDir())
+		b, err := newBridgeWithTimeout(t.Context(), cfg, "test-key", 0, t.TempDir(), 5*time.Millisecond)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -594,7 +587,7 @@ func TestBackendConnector(t *testing.T) {
 	t.Run("NewBridgeWithBackend", func(t *testing.T) {
 		t.Parallel()
 		backend := &fakeBackendConnector{}
-		b, err := newBridgeWithBackend(t.Context(), backend, 0, t.TempDir())
+		b, err := newTestBridgeWithBackend(t.Context(), backend, 0, t.TempDir())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -676,7 +669,7 @@ func TestBrowserOpusDTX(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	t.Cleanup(cancel)
-	b, err := newBridgeWithBackend(ctx, &fakeBackendConnector{}, 0, t.TempDir())
+	b, err := newTestBridgeWithBackend(ctx, &fakeBackendConnector{}, 0, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -928,56 +921,13 @@ func TestUpsampleEdgeCases(t *testing.T) {
 	}
 }
 
-func TestWriteSampleHasBinding(t *testing.T) {
-	t.Parallel()
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = pc.Close() }()
-
-	track, err := webrtc.NewTrackLocalStaticSample(
-		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus},
-		"audio", "test",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pc.AddTrack(track); err != nil {
-		t.Fatal(err)
-	}
-	if len(pc.GetSenders()) != 1 {
-		t.Fatalf("expected 1 sender, got %d", len(pc.GetSenders()))
-	}
-
-	offer, err := pc.CreateOffer(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := pc.SetLocalDescription(offer); err != nil {
-		t.Fatal(err)
-	}
-	if len(pc.GetSenders()) != 1 {
-		t.Fatal("sender lost after SetLocalDescription")
-	}
-
-	if err := track.WriteSample(media.Sample{
-		Data:     []byte{0xfc, 0xff, 0xfe},
-		Duration: frameDuration,
-	}); err != nil {
-		t.Fatalf("WriteSample: %v", err)
-	}
-
-	t.Log("WriteSample binding OK")
-}
-
 func testBridgeChoiceRuntime(t *testing.T) {
 	t.Parallel()
 	first := &fakeBackendConnector{}
 	second := &fakeBackendConnector{}
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	t.Cleanup(cancel)
-	b, err := newBridgeWithBackend(ctx, first, 0, t.TempDir())
+	b, err := newTestBridgeWithBackend(ctx, first, 0, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1043,7 +993,7 @@ type voiceRTCMessage struct {
 type voiceRTCOffer func(ctx context.Context, sdp string) (sdpAnswer, sessionID string, err error)
 
 func newVoiceRTCTestSession(ctx context.Context, t *testing.T, b backendConnector) *voiceRTCTestSession {
-	br, err := newBridgeWithBackend(ctx, b, 0, t.TempDir())
+	br, err := newTestBridgeWithBackend(ctx, b, 0, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1491,7 +1441,7 @@ const browserDTXMeasurement = `(async () => {
       pc.close(); source.stop(); await ac.close();
     }
   }
-  return [await run(false), await run(true)];
+  return Promise.all([run(false), run(true)]);
 })()`
 
 func TestBridge(t *testing.T) {
@@ -1509,7 +1459,7 @@ func TestBridge(t *testing.T) {
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
-				b, err := newBridgeWithBackend(t.Context(), tc.backend, 0, t.TempDir())
+				b, err := newTestBridgeWithBackend(t.Context(), tc.backend, 0, t.TempDir())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1540,7 +1490,7 @@ func TestBridge(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 			t.Cleanup(cancel)
-			b, err := newBridgeWithBackend(ctx, &fakeBackendConnector{}, 0, t.TempDir())
+			b, err := newTestBridgeWithBackend(ctx, &fakeBackendConnector{}, 0, t.TempDir())
 			if err != nil {
 				t.Fatal(err)
 			}

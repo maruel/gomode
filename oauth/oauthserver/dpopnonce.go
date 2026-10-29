@@ -16,9 +16,10 @@ const defaultDPoPNonceTTL = 5 * time.Minute
 //
 // Nonces are one-time-use with a configurable TTL.
 type DPoPNonceManager struct {
-	mu     sync.Mutex
-	nonces map[string]time.Time
-	ttl    time.Duration
+	mu       sync.Mutex
+	nonces   map[string]time.Time
+	ttl      time.Duration
+	randRead func([]byte) (int, error)
 }
 
 // NewDPoPNonceManager returns a DPoP nonce manager.
@@ -39,7 +40,7 @@ func NewDPoPNonceManager(ttl time.Duration) *DPoPNonceManager {
 // (HTTP 500 on the token path, or omit the DPoP-Nonce header on challenge
 // paths) and never emit a weak nonce.
 func (m *DPoPNonceManager) Issue() (string, error) {
-	nonce, err := newDPoPNonce()
+	nonce, err := m.newDPoPNonce()
 	if err != nil {
 		return "", err
 	}
@@ -88,13 +89,14 @@ func (m *DPoPNonceManager) pruneLocked() {
 	}
 }
 
-// randRead is the entropy source for nonce generation, overridable in tests.
-var randRead = rand.Read
-
 // newDPoPNonce generates a 128-bit random base64url nonce.
-func newDPoPNonce() (string, error) {
+func (m *DPoPNonceManager) newDPoPNonce() (string, error) {
+	randFn := m.randRead
+	if randFn == nil {
+		randFn = rand.Read
+	}
 	var raw [16]byte
-	if _, err := randRead(raw[:]); err != nil {
+	if _, err := randFn(raw[:]); err != nil {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(raw[:]), nil

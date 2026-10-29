@@ -188,7 +188,7 @@ func TestMapUPnPUDP(t *testing.T) {
 	t.Parallel()
 	t.Run("error", func(t *testing.T) {
 		t.Parallel()
-		_, err := mapUPnPUDP(t.Context(), net.ParseIP("192.168.1.20"), 0)
+		_, err := mapUPnPUDP(t.Context(), net.ParseIP("192.168.1.20"), 0, defaultUPnPSSDPTimeout)
 		if err == nil {
 			t.Fatal("expected error")
 		}
