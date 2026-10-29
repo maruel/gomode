@@ -3,7 +3,9 @@
 package voicertc
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,54 +15,94 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/coder/websocket"
+
+	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
-func TestGeminiKeepAlive(t *testing.T) {
+func TestGeminiBridgeSession(t *testing.T) {
 	t.Parallel()
 
-	t.Run("valid", func(t *testing.T) {
+	t.Run("geminiKeepAlive", func(t *testing.T) {
 		t.Parallel()
-		pong := make(chan struct{}, 1)
-		sink, cancel, done := newGeminiIdleSession(t, nil, func(context.Context, []byte) {
+
+		t.Run("valid", func(t *testing.T) {
+			t.Parallel()
+			pong := make(chan struct{}, 1)
+			sink, cancel, done := newGeminiIdleSession(t, nil, func(context.Context, []byte) {
+				select {
+				case pong <- struct{}{}:
+				default:
+				}
+			})
 			select {
-			case pong <- struct{}{}:
-			default:
+			case <-pong:
+			case <-time.After(5 * time.Second):
+				t.Fatal("idle session received no WebSocket pong")
+			}
+			// Cancel without sending audio or closing the socket first. The reader
+			// and its keepalive worker must terminate without a gateway error.
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("canceled idle session did not stop")
+			}
+			sink.mu.Lock()
+			defer sink.mu.Unlock()
+			if len(sink.msgs) != 0 || sink.canceled {
+				t.Fatalf("cancellation produced gateway events: %q", sink.msgs)
 			}
 		})
-		select {
-		case <-pong:
-		case <-time.After(5 * time.Second):
-			t.Fatal("idle session received no WebSocket pong")
-		}
-		// Cancel without sending audio or closing the socket first. The reader
-		// and its keepalive worker must terminate without a gateway error.
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatal("canceled idle session did not stop")
-		}
-		sink.mu.Lock()
-		defer sink.mu.Unlock()
-		if len(sink.msgs) != 0 || sink.canceled {
-			t.Fatalf("cancellation produced gateway events: %q", sink.msgs)
-		}
+		t.Run("error", func(t *testing.T) {
+			t.Parallel()
+			sink, _, done := newGeminiIdleSession(t, func(context.Context, []byte) bool { return false }, nil)
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("missing pong did not stop the reader")
+			}
+			sink.mu.Lock()
+			defer sink.mu.Unlock()
+			if len(sink.msgs) != 1 || !strings.Contains(string(sink.msgs[0]), "keepalive failed") {
+				t.Fatalf("want one keepalive error, got %q", sink.msgs)
+			}
+			if sink.canceled {
+				t.Fatal("session canceled before the client could handle its error")
+			}
+		})
 	})
-	t.Run("error", func(t *testing.T) {
+
+	t.Run("handleAudioExtraction", func(t *testing.T) {
 		t.Parallel()
-		sink, _, done := newGeminiIdleSession(t, func(context.Context, []byte) bool { return false }, nil)
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatal("missing pong did not stop the reader")
+		sink := &captureSink{}
+		sess := &geminiBridgeSession{id: "test", sink: sink}
+		msg := []byte(`{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":"AQIDBA=="}}]}}}`)
+
+		modified, ok := sess.handleAudioExtraction(t.Context(), msg)
+		if !ok {
+			t.Fatal("handleAudioExtraction did not report audio")
 		}
+		if bytes.Contains(modified, []byte("AQIDBA==")) {
+			t.Fatal("audio data was not stripped from provider message")
+		}
+
 		sink.mu.Lock()
-		defer sink.mu.Unlock()
-		if len(sink.msgs) != 1 || !strings.Contains(string(sink.msgs[0]), "keepalive failed") {
-			t.Fatalf("want one keepalive error, got %q", sink.msgs)
+		pcmLen := len(sink.pcm)
+		msgs := append([][]byte(nil), sink.msgs...)
+		sink.mu.Unlock()
+
+		if pcmLen != 4 {
+			t.Fatalf("pcm bytes = %d, want 4", pcmLen)
 		}
-		if sink.canceled {
-			t.Fatal("session canceled before the client could handle its error")
+		if len(msgs) != 1 {
+			t.Fatalf("messages = %d, want speech.started", len(msgs))
+		}
+		var started voicev1.SpeechStarted
+		if err := json.Unmarshal(msgs[0], &started); err != nil {
+			t.Fatal(err)
+		}
+		if started.Kind != voicev1.MessageKindSpeechStarted || started.Speaker != voicev1.SpeakerAssistant {
+			t.Fatalf("message = %+v, want assistant speech.started", started)
 		}
 	})
 }

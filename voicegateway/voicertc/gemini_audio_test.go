@@ -19,7 +19,7 @@ import (
 	"github.com/coder/websocket"
 )
 
-func TestGeminiBridgeSession(t *testing.T) {
+func TestGeminiAudioGate(t *testing.T) {
 	t.Run("silence suppression", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()

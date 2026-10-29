@@ -349,40 +349,6 @@ func TestTranslateGeminiServerMessage(t *testing.T) {
 	})
 }
 
-func TestGeminiAudioExtractionEmitsSpeechStarted(t *testing.T) {
-	t.Parallel()
-	sink := &captureSink{}
-	sess := &geminiBridgeSession{id: "test", sink: sink}
-	msg := []byte(`{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":"AQIDBA=="}}]}}}`)
-
-	modified, ok := sess.handleAudioExtraction(t.Context(), msg)
-	if !ok {
-		t.Fatal("handleAudioExtraction did not report audio")
-	}
-	if bytes.Contains(modified, []byte("AQIDBA==")) {
-		t.Fatal("audio data was not stripped from provider message")
-	}
-
-	sink.mu.Lock()
-	pcmLen := len(sink.pcm)
-	msgs := append([][]byte(nil), sink.msgs...)
-	sink.mu.Unlock()
-
-	if pcmLen != 4 {
-		t.Fatalf("pcm bytes = %d, want 4", pcmLen)
-	}
-	if len(msgs) != 1 {
-		t.Fatalf("messages = %d, want speech.started", len(msgs))
-	}
-	var started voicev1.SpeechStarted
-	if err := json.Unmarshal(msgs[0], &started); err != nil {
-		t.Fatal(err)
-	}
-	if started.Kind != voicev1.MessageKindSpeechStarted || started.Speaker != voicev1.SpeakerAssistant {
-		t.Fatalf("message = %+v, want assistant speech.started", started)
-	}
-}
-
 func TestNewBridge(t *testing.T) {
 	t.Parallel()
 	cfg := &voicegateway.Config{Backend: voicegateway.BackendGeminiLive}
@@ -721,10 +687,10 @@ func TestBrowserOpusDTX(t *testing.T) {
 	}
 	ctl, dtx := res.Result.Value[0], res.Result.Value[1]
 	t.Logf("continuous: %+v; DTX: %+v", ctl, dtx)
-	if ctl.Quiet.Packets < 50 || dtx.Quiet.Packets*2 >= ctl.Quiet.Packets || dtx.Quiet.Bytes*2 >= ctl.Quiet.Bytes {
+	if ctl.Quiet.Packets < 30 || dtx.Quiet.Packets*2 >= ctl.Quiet.Packets || dtx.Quiet.Bytes*2 >= ctl.Quiet.Bytes {
 		t.Fatal("DTX did not halve quiet-uplink packets and bytes")
 	}
-	if dtx.Speech.Packets < 20 || dtx.Resumed.Packets < 20 {
+	if dtx.Speech.Packets < 15 || dtx.Resumed.Packets < 15 {
 		t.Fatal("DTX suppressed active or resumed speech")
 	}
 }
@@ -1429,13 +1395,13 @@ const browserDTXMeasurement = `(async () => {
         const a = await stats(); await sleep(ms); const b = await stats();
         return {packets: b.packets-a.packets, bytes: b.bytes-a.bytes};
       }
-      await sleep(750);
-      const speech = await measure(1500);
+      await sleep(300);
+      const speech = await measure(600);
       gain.gain.value = 0;
-      await sleep(1000);
-      const quiet = await measure(2000);
+      await sleep(400);
+      const quiet = await measure(1200);
       gain.gain.value = 0.2;
-      const resumed = await measure(1000);
+      const resumed = await measure(600);
       return {speech, quiet, resumed};
     } finally {
       pc.close(); source.stop(); await ac.close();

@@ -807,7 +807,7 @@ func (placeholderTTS) synthesize(_ context.Context, text string) iter.Seq2[[]byt
 			return
 		}
 		const (
-			msPerChar = 50
+			msPerChar = 2
 			maxMS     = 4000
 			toneHz    = 220.0
 			amplitude = 3000.0

@@ -446,6 +446,21 @@ func TestHandler(t *testing.T) { //nolint:paralleltest // HandleMCP cases replac
 			}
 		})
 	})
+	t.Run("subscriptionResourcesHash", func(t *testing.T) {
+		registry := newSubscriptionTestRegistry()
+		h := &Handler{Registry: registry}
+		first := h.subscriptionResourcesHash(t.Context())
+		second := h.subscriptionResourcesHash(t.Context())
+		if first == "" || first != second {
+			t.Fatalf("subscription resource hashes = %q and %q", first, second)
+		}
+		registry.mu.Lock()
+		listCalls, seqCalls := registry.listCalls, registry.seqCalls
+		registry.mu.Unlock()
+		if listCalls != 0 || seqCalls != 2 {
+			t.Fatalf("catalog calls = list %d, sequence %d; want list 0, sequence 2", listCalls, seqCalls)
+		}
+	})
 }
 
 func (r *metadataRegistry) CallTool(_ context.Context, params *ToolsCallParams) (RawToolResult, error) {
@@ -503,24 +518,6 @@ func (r *subscriptionTestRegistry) Resources(context.Context) iter.Seq2[Resource
 	r.mu.Unlock()
 	return func(yield func(ResourceDescriptor, error) bool) {
 		yield(ResourceDescriptor{URI: "test://resource", Name: "resource", MimeType: "application/json"}, nil)
-	}
-}
-
-func TestSubscriptionResourcesHash(t *testing.T) {
-	t.Parallel()
-
-	registry := newSubscriptionTestRegistry()
-	h := &Handler{Registry: registry}
-	first := h.subscriptionResourcesHash(t.Context())
-	second := h.subscriptionResourcesHash(t.Context())
-	if first == "" || first != second {
-		t.Fatalf("subscription resource hashes = %q and %q", first, second)
-	}
-	registry.mu.Lock()
-	listCalls, seqCalls := registry.listCalls, registry.seqCalls
-	registry.mu.Unlock()
-	if listCalls != 0 || seqCalls != 2 {
-		t.Fatalf("catalog calls = list %d, sequence %d; want list 0, sequence 2", listCalls, seqCalls)
 	}
 }
 

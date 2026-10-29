@@ -222,146 +222,146 @@ func TestStore(t *testing.T) {
 			t.Fatal("active consent was pruned")
 		}
 	})
-}
 
-func TestStoreTransactions(t *testing.T) {
-	t.Parallel()
-
-	t.Run("failed atomic replacement rolls back every credential mutation", func(t *testing.T) {
+	t.Run("transact", func(t *testing.T) {
 		t.Parallel()
-		path := filepath.Join(t.TempDir(), "oauth.json")
-		now := time.Now().UTC()
-		store, err := LoadStore(path)
-		if err != nil {
-			t.Fatalf("LoadStore: %v", err)
-		}
-		store.Clients["client"] = Client{ID: "client"}
-		store.Codes["code-digest"] = v5.Code{ClientID: "client", ExpiresAt: now.Add(time.Hour)}
-		store.Grants["grant"] = v5.Grant{ID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
-		store.RefreshTokens["refresh-digest"] = v5.RefreshToken{GrantID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
-		if err := store.Save(); err != nil {
-			t.Fatalf("Save: %v", err)
-		}
-		store.io = failingRenameStoreIO{storeIO: osStoreIO{}}
-		err = store.transact(func(next *storeState) bool {
-			delete(next.Codes, "code-digest")
-			delete(next.Clients, "client")
-			delete(next.Grants, "grant")
-			refresh := next.RefreshTokens["refresh-digest"]
-			refresh.UsedAt = now
-			next.RefreshTokens["refresh-digest"] = refresh
-			return true
+
+		t.Run("failed atomic replacement rolls back every credential mutation", func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "oauth.json")
+			now := time.Now().UTC()
+			store, err := LoadStore(path)
+			if err != nil {
+				t.Fatalf("LoadStore: %v", err)
+			}
+			store.Clients["client"] = Client{ID: "client"}
+			store.Codes["code-digest"] = v5.Code{ClientID: "client", ExpiresAt: now.Add(time.Hour)}
+			store.Grants["grant"] = v5.Grant{ID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
+			store.RefreshTokens["refresh-digest"] = v5.RefreshToken{GrantID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
+			if err := store.Save(); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+			store.io = failingRenameStoreIO{storeIO: osStoreIO{}}
+			err = store.transact(func(next *storeState) bool {
+				delete(next.Codes, "code-digest")
+				delete(next.Clients, "client")
+				delete(next.Grants, "grant")
+				refresh := next.RefreshTokens["refresh-digest"]
+				refresh.UsedAt = now
+				next.RefreshTokens["refresh-digest"] = refresh
+				return true
+			})
+			if err == nil {
+				t.Fatal("transact succeeded, want replacement failure")
+			}
+			if _, ok := store.Codes["code-digest"]; !ok {
+				t.Fatal("authorization code was consumed in memory after failed transaction")
+			}
+			if !store.RefreshTokens["refresh-digest"].UsedAt.IsZero() {
+				t.Fatal("refresh token was rotated in memory after failed transaction")
+			}
+			if _, ok := store.Clients["client"]; !ok {
+				t.Fatal("client was deleted in memory after failed transaction")
+			}
+			reloaded, err := LoadStore(path)
+			if err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			if _, ok := reloaded.Codes["code-digest"]; !ok || !reloaded.RefreshTokens["refresh-digest"].UsedAt.IsZero() {
+				t.Fatalf("failed transaction changed restart state: %+v", reloaded)
+			}
+			if _, ok := reloaded.Clients["client"]; !ok {
+				t.Fatal("failed transaction deleted client after restart")
+			}
 		})
-		if err == nil {
-			t.Fatal("transact succeeded, want replacement failure")
-		}
-		if _, ok := store.Codes["code-digest"]; !ok {
-			t.Fatal("authorization code was consumed in memory after failed transaction")
-		}
-		if !store.RefreshTokens["refresh-digest"].UsedAt.IsZero() {
-			t.Fatal("refresh token was rotated in memory after failed transaction")
-		}
-		if _, ok := store.Clients["client"]; !ok {
-			t.Fatal("client was deleted in memory after failed transaction")
-		}
-		reloaded, err := LoadStore(path)
-		if err != nil {
-			t.Fatalf("reload: %v", err)
-		}
-		if _, ok := reloaded.Codes["code-digest"]; !ok || !reloaded.RefreshTokens["refresh-digest"].UsedAt.IsZero() {
-			t.Fatalf("failed transaction changed restart state: %+v", reloaded)
-		}
-		if _, ok := reloaded.Clients["client"]; !ok {
-			t.Fatal("failed transaction deleted client after restart")
-		}
-	})
 
-	t.Run("post-rename failures install committed state", func(t *testing.T) {
-		t.Parallel()
-		for _, fault := range []string{"open", "sync", "close"} {
-			t.Run(fault, func(t *testing.T) {
-				t.Parallel()
-				path := filepath.Join(t.TempDir(), "oauth.json")
-				store, err := LoadStore(path)
-				if err != nil {
-					t.Fatalf("LoadStore: %v", err)
-				}
-				store.io = postRenameStoreIO{storeIO: osStoreIO{}, fault: fault}
-				err = store.transact(func(next *storeState) bool {
-					next.Clients["committed"] = Client{ID: "committed"}
-					return true
+		t.Run("post-rename failures install committed state", func(t *testing.T) {
+			t.Parallel()
+			for _, fault := range []string{"open", "sync", "close"} {
+				t.Run(fault, func(t *testing.T) {
+					t.Parallel()
+					path := filepath.Join(t.TempDir(), "oauth.json")
+					store, err := LoadStore(path)
+					if err != nil {
+						t.Fatalf("LoadStore: %v", err)
+					}
+					store.io = postRenameStoreIO{storeIO: osStoreIO{}, fault: fault}
+					err = store.transact(func(next *storeState) bool {
+						next.Clients["committed"] = Client{ID: "committed"}
+						return true
+					})
+					if err == nil {
+						t.Fatal("transact succeeded, want post-rename durability error")
+					}
+					if _, ok := store.Clients["committed"]; !ok {
+						t.Fatal("committed state was not installed in memory")
+					}
+					reloaded, err := LoadStore(path)
+					if err != nil {
+						t.Fatalf("reload: %v", err)
+					}
+					if _, ok := reloaded.Clients["committed"]; !ok {
+						t.Fatal("committed state was not visible after restart")
+					}
 				})
-				if err == nil {
-					t.Fatal("transact succeeded, want post-rename durability error")
-				}
-				if _, ok := store.Clients["committed"]; !ok {
-					t.Fatal("committed state was not installed in memory")
-				}
-				reloaded, err := LoadStore(path)
-				if err != nil {
-					t.Fatalf("reload: %v", err)
-				}
-				if _, ok := reloaded.Clients["committed"]; !ok {
-					t.Fatal("committed state was not visible after restart")
-				}
-			})
-		}
-	})
+			}
+		})
 
-	t.Run("concurrent refresh redemption has one durable winner", func(t *testing.T) {
-		t.Parallel()
-		path := filepath.Join(t.TempDir(), "oauth.json")
-		store, err := LoadStore(path)
-		if err != nil {
-			t.Fatalf("LoadStore: %v", err)
-		}
-		now := time.Now().UTC()
-		store.Clients["client"] = Client{ID: "client", RedirectURIs: []string{"https://client.example/callback"}}
-		store.Grants["grant"] = v5.Grant{ID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
-		store.RefreshTokens[oauth.RefreshTokenKey("refresh-secret")] = v5.RefreshToken{GrantID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
-		if err := store.Save(); err != nil {
-			t.Fatalf("Save: %v", err)
-		}
-		server := &Server{state: store, refreshTokenTTL: time.Hour}
-		const attempts = 32
-		var wg sync.WaitGroup
-		winners := make(chan string, attempts)
-		for range attempts {
-			wg.Go(func() {
-				next, err := randomToken()
-				if err != nil {
-					winners <- "error: " + err.Error()
-					return
-				}
-				result, _, err := server.exchangeRefreshToken("refresh-secret", Client{ID: "client"}, "user", next, dpopBinding{})
-				if err != nil {
-					winners <- "error: " + err.Error()
-					return
-				}
-				if result == refreshExchangeRotated {
-					winners <- next
-				}
-			})
-		}
-		wg.Wait()
-		close(winners)
-		got := make([]string, 0, attempts)
-		for winner := range winners {
-			got = append(got, winner)
-		}
-		if len(got) != 1 || strings.HasPrefix(got[0], "error: ") {
-			t.Fatalf("winners = %v, want one successful rotation", got)
-		}
-		reloaded, err := LoadStore(path)
-		if err != nil {
-			t.Fatalf("reload: %v", err)
-		}
-		if reloaded.RefreshTokens[oauth.RefreshTokenKey("refresh-secret")].UsedAt.IsZero() {
-			t.Fatal("original refresh replay record was not durable")
-		}
-		if _, ok := reloaded.RefreshTokens[oauth.RefreshTokenKey(got[0])]; !ok {
-			t.Fatal("winning refresh token was not durable")
-		}
+		t.Run("concurrent refresh redemption has one durable winner", func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "oauth.json")
+			store, err := LoadStore(path)
+			if err != nil {
+				t.Fatalf("LoadStore: %v", err)
+			}
+			now := time.Now().UTC()
+			store.Clients["client"] = Client{ID: "client", RedirectURIs: []string{"https://client.example/callback"}}
+			store.Grants["grant"] = v5.Grant{ID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
+			store.RefreshTokens[oauth.RefreshTokenKey("refresh-secret")] = v5.RefreshToken{GrantID: "grant", UserID: "user", ClientID: "client", ExpiresAt: now.Add(time.Hour)}
+			if err := store.Save(); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+			server := &Server{state: store, refreshTokenTTL: time.Hour}
+			const attempts = 32
+			var wg sync.WaitGroup
+			winners := make(chan string, attempts)
+			for range attempts {
+				wg.Go(func() {
+					next, err := randomToken()
+					if err != nil {
+						winners <- "error: " + err.Error()
+						return
+					}
+					result, _, err := server.exchangeRefreshToken("refresh-secret", Client{ID: "client"}, "user", next, dpopBinding{})
+					if err != nil {
+						winners <- "error: " + err.Error()
+						return
+					}
+					if result == refreshExchangeRotated {
+						winners <- next
+					}
+				})
+			}
+			wg.Wait()
+			close(winners)
+			got := make([]string, 0, attempts)
+			for winner := range winners {
+				got = append(got, winner)
+			}
+			if len(got) != 1 || strings.HasPrefix(got[0], "error: ") {
+				t.Fatalf("winners = %v, want one successful rotation", got)
+			}
+			reloaded, err := LoadStore(path)
+			if err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			if reloaded.RefreshTokens[oauth.RefreshTokenKey("refresh-secret")].UsedAt.IsZero() {
+				t.Fatal("original refresh replay record was not durable")
+			}
+			if _, ok := reloaded.RefreshTokens[oauth.RefreshTokenKey(got[0])]; !ok {
+				t.Fatal("winning refresh token was not durable")
+			}
+		})
 	})
 }
 
