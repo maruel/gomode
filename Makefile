@@ -10,9 +10,6 @@ node_modules/.modules.yaml: package.json pnpm-lock.yaml
 	@pnpm install --frozen-lockfile --silent
 	@touch $@
 
-FRONTEND_TEST = pnpm exec node --test scripts/browser_integration.test.mjs scripts/css_module_types.test.mjs scripts/voice_preview.test.mjs && NODE_OPTIONS=--no-experimental-webstorage pnpm exec tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts
-FRONTEND_TEST_FILES = "web/src/**/*.test.ts" "web/src/**/*.test.tsx"
-
 help:
 	@echo 'Go Mode - standalone contracts and shell'
 	@echo ''
@@ -72,7 +69,11 @@ git-hooks:
 	@./scripts/install-git-hooks.sh
 
 test: android-sdk node_modules/.modules.yaml
-	@./scripts/run-concurrently.sh go,browser,android 'go test ./...' '$(FRONTEND_TEST) $(FRONTEND_TEST_FILES)' 'cd ./android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet'
+	@./scripts/run-concurrently.sh go,browser-scripts,browser,android \
+		'go test ./...' \
+		'pnpm exec node --test --test-reporter=./scripts/quiet-test-reporter.mjs scripts/browser_integration.test.mjs scripts/css_module_types.test.mjs scripts/voice_preview.test.mjs' \
+		'NODE_OPTIONS=--no-experimental-webstorage pnpm exec tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts "web/src/**/*.test.ts" "web/src/**/*.test.tsx"' \
+		'cd ./android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet'
 
 # The Opus codec is deliberately disabled in race builds, so skip the
 # tests that require it while running the rest of the voice gateway suite.
