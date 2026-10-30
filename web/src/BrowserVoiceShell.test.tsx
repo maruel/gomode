@@ -69,6 +69,38 @@ afterEach(() => {
   voiceSession.disconnect();
 });
 
+it("owns service notification reads with the connected runtime and rejects retired results", async () => {
+  const capabilities = vi.spyOn(mcpClient, "resourceCapabilities").mockResolvedValue({ subscribe: true });
+  const read = vi.spyOn(mcpClient, "readAdvertisedTextResource");
+  const subscribe = vi.spyOn(mcpClient, "subscribeResources");
+  const inject = vi.spyOn(voiceSession, "injectText").mockImplementation(() => {});
+  const close = vi.fn();
+  const pending = deferred<string | null>();
+  read.mockReturnValueOnce(pending.promise);
+  subscribe.mockReturnValue({ close });
+  try {
+    scope.setTools([]);
+    scope.setDataReady(true);
+    mount(() => scope);
+    await screen.findByTestId("voice-runtime");
+    expect(read).not.toHaveBeenCalled();
+    voiceSession.setState((state) => ({ ...state, connected: true }));
+    await waitFor(() => expect(read).toHaveBeenCalledWith("gomode://notifications", expect.any(AbortSignal)));
+    scope.setDataReady(false);
+    await waitFor(() => expect(screen.queryByTestId("voice-runtime")).toBeNull());
+    expect(read.mock.calls[0]![1]?.aborted).toBe(true);
+    pending.resolve(JSON.stringify([{ id: "old", title: "Retired alert", body: "Other account" }]));
+    await pending.promise;
+    expect(inject).not.toHaveBeenCalled();
+    expect(subscribe).not.toHaveBeenCalled();
+  } finally {
+    capabilities.mockRestore();
+    read.mockRestore();
+    subscribe.mockRestore();
+    inject.mockRestore();
+  }
+});
+
 it("does not discover or mount before explicit readiness, and unmounts/disconnects when revoked", async () => {
   const disconnect = vi.spyOn(voiceSession, "disconnect");
   mount(() => scope);

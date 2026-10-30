@@ -90,6 +90,29 @@ describe("configureMcpClient", () => {
     );
   });
 
+  it("distinguishes an unadvertised resource from a malformed advertised text snapshot", async () => {
+    configureMcpClient("/mcp", "host");
+    let advertised = false;
+    let contents: Array<{ uri: string; text?: string }> = [];
+    globalThis.fetch = async (_input, init) => {
+      const { method } = JSON.parse(String(init?.body)) as { method: string };
+      return Response.json({
+        result:
+          method === "resources/list"
+            ? { resources: advertised ? [{ uri: "gomode://notifications" }] : [] }
+            : { contents },
+      });
+    };
+    expect(await mcpClient.readAdvertisedTextResource("gomode://notifications")).toBeNull();
+    advertised = true;
+    for (const invalid of [[], [{ uri: "gomode://notifications" }], [{ uri: "other://resource", text: "[]" }]]) {
+      contents = invalid;
+      await expect(mcpClient.readAdvertisedTextResource("gomode://notifications")).rejects.toThrow(
+        "missing text content",
+      );
+    }
+  });
+
   it("accepts an absolute endpoint on the frontend origin", async () => {
     configureMcpClient(`${window.location.origin}/api/v1/gomode/mcp`, "host");
     let url = "";

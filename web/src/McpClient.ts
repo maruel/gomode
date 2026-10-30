@@ -1,7 +1,7 @@
 // MCP JSON-RPC client for server guidance, tools, and resources used by browser Go Mode.
 
 import { createApiClient as createMcpApiClient } from "../../sdk/mcp/ts/v1/api.gen";
-import type { RequestMeta } from "../../sdk/mcp/ts/v1/types.gen";
+import type { RequestMeta, ResourcesCapability, ServerDiscoverResult } from "../../sdk/mcp/ts/v1/types.gen";
 import { readMcpNotificationStream } from "./McpEvents";
 
 const MCP_PROTOCOL_VERSION = "2026-07-28";
@@ -71,7 +71,7 @@ const _subscriptions = new Set<McpResourceSubscription>();
 async function mcpRequest(
   method: string,
   params: JsonObject,
-  opts: McpToolCallOptions & { name?: string; paramHeaders?: Record<string, string> },
+  opts: McpToolCallOptions & { name?: string; paramHeaders?: Record<string, string>; signal?: AbortSignal },
 ): Promise<unknown> {
   const id = ++_idCounter;
   const headers: Record<string, string> = {
@@ -97,6 +97,7 @@ async function mcpRequest(
       method,
       params: { ...params, _meta: meta },
     }),
+    signal: opts.signal,
   });
   if (!resp.ok) throw new Error(`MCP ${method} returned HTTP ${resp.status}`);
   const rpc = (await resp.json()) as {
@@ -129,6 +130,11 @@ async function mcpServerInstructions(): Promise<string> {
   return api.serverInstructions();
 }
 
+async function mcpResourceCapabilities(signal?: AbortSignal): Promise<ResourcesCapability | null> {
+  const discovery = (await mcpRequest("server/discover", {}, { signal })) as ServerDiscoverResult;
+  return discovery.capabilities.resources ?? null;
+}
+
 async function mcpListTools(): Promise<McpToolDescriptor[]> {
   const tools: McpToolDescriptor[] = [];
   let cursor: string | undefined;
@@ -146,11 +152,11 @@ async function mcpListTools(): Promise<McpToolDescriptor[]> {
 }
 
 /** Read a text resource when its URI is advertised to this scoped client. */
-async function mcpReadAdvertisedTextResource(uri: string): Promise<string | null> {
+async function mcpReadAdvertisedTextResource(uri: string, signal?: AbortSignal): Promise<string | null> {
   let cursor: string | undefined;
   let advertised = false;
   do {
-    const page = (await mcpRequest("resources/list", cursor === undefined ? {} : { cursor }, {})) as {
+    const page = (await mcpRequest("resources/list", cursor === undefined ? {} : { cursor }, { signal })) as {
       resources: Array<{ uri: string }>;
       nextCursor?: string;
     };
@@ -159,10 +165,12 @@ async function mcpReadAdvertisedTextResource(uri: string): Promise<string | null
   } while (!advertised && cursor !== undefined && cursor !== "");
   if (!advertised) return null;
 
-  const result = (await mcpRequest("resources/read", { uri }, { name: uri })) as {
+  const result = (await mcpRequest("resources/read", { uri }, { name: uri, signal })) as {
     contents: Array<{ uri: string; text?: string }>;
   };
-  return result.contents.find((content) => content.uri === uri)?.text ?? null;
+  const text = result.contents.find((content) => content.uri === uri)?.text;
+  if (typeof text !== "string") throw new Error(`MCP resource ${uri} is missing text content`);
+  return text;
 }
 
 export interface McpToolResult {
@@ -355,6 +363,7 @@ function subscribeMcpResources(
 /** The MCP operations VoiceSession uses, as one object so tests can spy on it. */
 export const mcpClient = {
   serverInstructions: mcpServerInstructions,
+  resourceCapabilities: mcpResourceCapabilities,
   listTools: mcpListTools,
   readAdvertisedTextResource: mcpReadAdvertisedTextResource,
   callTool: mcpCallTool,

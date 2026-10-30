@@ -5,6 +5,7 @@ import { configureMcpClient, mcpClient } from "./McpClient";
 import { configureVoiceGateway, voiceSession } from "./VoiceSession";
 import VoiceOverlay, { defaultVoiceOverlayMessages } from "./VoiceOverlay";
 import { notifications } from "./notifications";
+import { monitorServiceNotifications } from "./ServiceNotifications";
 import type { BrowserVoiceRuntimeProps } from "./BrowserVoiceShell";
 
 export interface BrowserVoiceRuntime {
@@ -45,6 +46,11 @@ export default function BrowserVoiceRuntime(props: BrowserVoiceRuntimeProps) {
       );
       setActive(true);
     });
+  });
+  createEffect(() => {
+    if (!active() || !voiceSession.state.connected) return;
+    const monitor = monitorServiceNotifications((text) => voiceSession.injectText(text), props.onError);
+    onCleanup(() => monitor.close());
   });
   return (
     <Show when={active()}>

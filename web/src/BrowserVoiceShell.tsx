@@ -33,6 +33,7 @@ export interface BrowserVoiceRuntimeProps {
   authorize?: BrowserVoiceShellProps["authorize"];
   gatewayHeaders?: HeadersInit;
   messages?: BrowserVoiceShellProps["messages"];
+  onError: BrowserVoiceShellProps["onError"];
   children?: BrowserVoiceShellProps["children"];
 }
 
@@ -57,6 +58,7 @@ export default function BrowserVoiceShell(props: BrowserVoiceShellProps) {
       authorize: props.authorize,
       mcpEndpoint: props.mcpEndpoint,
       gatewayHeaders: new Headers(props.gatewayHeaders),
+      onError: props.onError,
     };
     const controller = new AbortController();
     let active = true;

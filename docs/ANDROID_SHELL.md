@@ -415,6 +415,12 @@ service while that service is visible in the foreground, preserving voice-mode
 suppression. Tapping an alert selects its saved service and opens the opaque
 host destination for both a new and an existing Activity.
 
+Browser voice also reads this resource while connected. Existing alerts form
+quiet context so the user can ask to hear their notifications. Resource changes
+provide new alerts for spoken delivery under the host's instructions; repeated
+occurrence IDs stay quiet. Withdrawals and expiry replace the current context.
+Ending voice or replacing the authenticated frontend scope stops monitoring.
+
 ## Voice Modes
 
 The shell offers two voice modes, selected in native Settings beside voice
