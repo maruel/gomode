@@ -696,9 +696,11 @@ func TestBrowserOpusDTX(t *testing.T) {
 }
 
 type fakeBackendConnector struct {
+	closed   bool
+	closeErr error
+
+	mu        sync.Mutex
 	connected bool
-	closed    bool
-	closeErr  error
 	session   *fakeBackendSession
 }
 
@@ -712,12 +714,36 @@ func (b *fakeBackendConnector) connect(
 	sessionID string,
 	sink backendSink,
 ) (backendSession, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.connected = true
 	b.session = &fakeBackendSession{
 		id:   sessionID,
 		sink: sink,
 	}
 	return b.session, nil
+}
+
+func TestBackend(t *testing.T) {
+	t.Run("connect", func(t *testing.T) {
+		t.Run("concurrent", func(t *testing.T) {
+			b := &fakeBackendConnector{}
+			const count = 32
+			sessions := make([]backendSession, count)
+			var wg sync.WaitGroup
+			for i := range sessions {
+				wg.Go(func() {
+					sessions[i], _ = b.connect(t.Context(), strconv.Itoa(i), nil)
+				})
+			}
+			wg.Wait()
+			for i, session := range sessions {
+				if got := session.(*fakeBackendSession).id; got != strconv.Itoa(i) {
+					t.Fatalf("connection %d received session %q", i, got)
+				}
+			}
+		})
+	})
 }
 
 type fakeBackendSession struct {
