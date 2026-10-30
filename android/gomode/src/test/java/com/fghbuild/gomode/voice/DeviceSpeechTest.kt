@@ -28,6 +28,49 @@ class DeviceSpeechTest {
         }
 
     @Test
+    fun `silent startup retries once and reports a second timeout`() {
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US")
+        val errors = mutableListOf<String>()
+        speech.startListening({}, {}, {}, errors::add)
+        shadowOf(Looper.getMainLooper()).idle()
+        try {
+            val first = checkNotNull(ShadowSpeechRecognizer.getLatestSpeechRecognizer())
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
+            assertTrue(shadowOf(first).isDestroyed)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(250))
+            val second = checkNotNull(ShadowSpeechRecognizer.getLatestSpeechRecognizer())
+            assertNotSame(first, second)
+            shadowOf(first).triggerOnResults(result("Stale"))
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
+            assertEquals(listOf("Speech recognition did not start."), errors)
+            assertTrue(shadowOf(second).isDestroyed)
+        } finally {
+            speech.close()
+            shadowOf(Looper.getMainLooper()).idle()
+        }
+    }
+
+    @Test
+    fun `ready and cancellation prevent startup recovery`() {
+        for (cancel in listOf(false, true)) {
+            val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US")
+            val errors = mutableListOf<String>()
+            speech.startListening({}, {}, {}, errors::add)
+            shadowOf(Looper.getMainLooper()).idle()
+            try {
+                val recognizer = checkNotNull(ShadowSpeechRecognizer.getLatestSpeechRecognizer())
+                if (cancel) speech.stopListening() else shadowOf(recognizer).triggerOnReadyForSpeech(Bundle())
+                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(21))
+                assertSame(recognizer, ShadowSpeechRecognizer.getLatestSpeechRecognizer())
+                assertTrue(errors.isEmpty())
+            } finally {
+                speech.close()
+                shadowOf(Looper.getMainLooper()).idle()
+            }
+        }
+    }
+
+    @Test
     fun `language failures describe recovery and update language readiness`() {
         for ((code, expected) in listOf(
             SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE to SpeechLanguageState.Missing,

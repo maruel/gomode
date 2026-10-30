@@ -38,6 +38,12 @@ class MicrophoneAudioSourceTest {
             // Capture before recognition starts, then stall a real descriptor consumer.
             for (number in 1..40) audio.append(frame(number), 640)
             val source = audio.openSource()
+            assertTrue("Recognizer audio must be a pipe", OsConstants.S_ISFIFO(Os.fstat(source.fileDescriptor).st_mode))
+            assertEquals(
+                "Recognizer reads must remain blocking",
+                0,
+                Os.fcntlInt(source.fileDescriptor, OsConstants.F_GETFL, 0) and OsConstants.O_NONBLOCK,
+            )
             val consumer = ParcelFileDescriptor.dup(source.fileDescriptor)
             try {
                 for (number in 41..100) audio.append(frame(number), 640)

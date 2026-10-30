@@ -28,6 +28,7 @@ private const val TAG = "GoModeDeviceSpeech"
 // latest hypothesis instead of waiting indefinitely on a provider callback.
 private const val FINAL_RESULT_GRACE_MS = 750L
 private const val RECOGNITION_RECOVERY_DELAY_MS = 250L
+private const val RECOGNITION_START_TIMEOUT_MS = 10_000L
 
 /** DeviceSpeech runs speech recognition and synthesis on the device. */
 internal interface DeviceSpeech {
@@ -85,10 +86,10 @@ internal class AndroidDeviceSpeech(
     private val microphone = MicrophoneAudioSource(captureScope)
     override val microphoneRms = microphone.rms
     private val main = Handler(Looper.getMainLooper())
-    private var recognizer: SpeechRecognizer? = null
     private var listening = false
     private var recognitionGeneration = 0
     private var finalizationTimeout: Runnable? = null
+    private var startupTimeout: Runnable? = null
     private var pendingRecovery: Runnable? = null
     private var engine: TextToSpeech? = null
     private var engineReady = false
@@ -174,8 +175,26 @@ internal class AndroidDeviceSpeech(
     ) {
         cancelListening()
         val generation = ++recognitionGeneration
-        val speechRecognizer =
-            recognizer ?: SpeechRecognizer.createOnDeviceSpeechRecognizer(context).also { recognizer = it }
+        val speechRecognizer = language.recognizer()
+
+        fun recover(message: String) {
+            cancelListening()
+            if (!allowRecovery) {
+                microphone.stop()
+                onError(message)
+                return
+            }
+            val recoveryGeneration = recognitionGeneration
+            val recovery =
+                Runnable {
+                    pendingRecovery = null
+                    if (recoveryGeneration == recognitionGeneration) {
+                        startListeningAttempt(onResult, onPartial, onIdle, onError, allowRecovery = false)
+                    }
+                }
+            pendingRecovery = recovery
+            main.postDelayed(recovery, RECOGNITION_RECOVERY_DELAY_MS)
+        }
         speechRecognizer.setRecognitionListener(
             object : RecognitionListener {
                 private var lastPartial = ""
@@ -184,9 +203,17 @@ internal class AndroidDeviceSpeech(
                     if (text.isNotBlank()) onResult(text) else onIdle()
                 }
 
-                override fun onReadyForSpeech(params: Bundle?) = Unit
+                override fun onReadyForSpeech(params: Bundle?) {
+                    if (generation == recognitionGeneration && listening) {
+                        cancelStartupTimeout()
+                    }
+                }
 
-                override fun onBeginningOfSpeech() = Unit
+                override fun onBeginningOfSpeech() {
+                    if (generation == recognitionGeneration && listening) {
+                        cancelStartupTimeout()
+                    }
+                }
 
                 // Supplied PCM owns metering, including gaps and recognizer restarts.
                 override fun onRmsChanged(rmsdB: Float) = Unit
@@ -195,6 +222,7 @@ internal class AndroidDeviceSpeech(
 
                 override fun onEndOfSpeech() {
                     if (generation != recognitionGeneration || !listening || finalizationTimeout != null) return
+                    cancelStartupTimeout()
                     val timeout =
                         Runnable {
                             if (generation == recognitionGeneration && listening) {
@@ -211,27 +239,11 @@ internal class AndroidDeviceSpeech(
                 override fun onError(error: Int) {
                     if (generation != recognitionGeneration || !listening) return
                     language.recognitionFailed(error)
-                    finishListening()
                     if (error == SpeechRecognizer.ERROR_SERVER_DISCONNECTED) {
-                        speechRecognizer.destroy()
-                        if (recognizer === speechRecognizer) recognizer = null
-                        if (!allowRecovery) {
-                            onError("Speech recognition service disconnected")
-                            return
-                        }
-                        // Route or input replacement can disconnect the platform
-                        // service. Rebind once without tearing down the LLM session.
-                        val recovery =
-                            Runnable {
-                                pendingRecovery = null
-                                if (generation == recognitionGeneration) {
-                                    startListeningAttempt(onResult, onPartial, onIdle, onError, allowRecovery = false)
-                                }
-                            }
-                        pendingRecovery = recovery
-                        main.postDelayed(recovery, RECOGNITION_RECOVERY_DELAY_MS)
+                        recover("Speech recognition service disconnected")
                         return
                     }
+                    finishListening()
                     // A recognizer may report no match after already supplying
                     // useful text. Preserve that utterance instead of erasing it.
                     if (error == SpeechRecognizer.ERROR_NO_MATCH ||
@@ -272,6 +284,7 @@ internal class AndroidDeviceSpeech(
 
                 override fun onPartialResults(partialResults: Bundle?) {
                     if (generation != recognitionGeneration || !listening) return
+                    cancelStartupTimeout()
                     val text =
                         partialResults
                             ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
@@ -299,6 +312,15 @@ internal class AndroidDeviceSpeech(
                         onError(message)
                     }
                 }
+            val timeout =
+                Runnable {
+                    if (generation == recognitionGeneration && listening) {
+                        Log.w(TAG, "Recognition $generation did not become ready")
+                        recover("Speech recognition did not start.")
+                    }
+                }
+            startupTimeout = timeout
+            main.postDelayed(timeout, RECOGNITION_START_TIMEOUT_MS)
             speechRecognizer.startListening(recognitionIntent(source))
         } catch (e: Exception) {
             cancelListening()
@@ -315,10 +337,16 @@ internal class AndroidDeviceSpeech(
     }
 
     private fun finishListening() {
+        cancelStartupTimeout()
         finalizationTimeout?.let(main::removeCallbacks)
         finalizationTimeout = null
         listening = false
         microphone.finishUtterance()
+    }
+
+    private fun cancelStartupTimeout() {
+        startupTimeout?.let(main::removeCallbacks)
+        startupTimeout = null
     }
 
     private fun cancelListening() {
@@ -327,12 +355,10 @@ internal class AndroidDeviceSpeech(
         recognitionGeneration++
         if (!listening) return
         finishListening()
-        val cancelled = recognizer
-        recognizer = null
-        cancelled?.cancel()
+        language.recognizer().cancel()
         // Retire the listener transport so callbacks from a canceled input
         // cannot be delivered to a replacement recognizer's listener.
-        cancelled?.destroy()
+        language.resetRecognizer()
     }
 
     private fun recognitionIntent(source: ParcelFileDescriptor): Intent =
@@ -423,12 +449,10 @@ internal class AndroidDeviceSpeech(
 
     override fun close() {
         main.post {
-            language.close()
             cancelListening()
+            language.close()
             microphone.stop()
             captureScope.cancel()
-            recognizer?.destroy()
-            recognizer = null
             queuedSpeech.clear()
             speechCallbacks.clear()
             microphone.assistantSpeaking = false

@@ -67,17 +67,27 @@ class SpeechLanguageTest {
     }
 
     @Test
-    fun `preflight uses selected language and disposes the recognizer`() =
+    fun `preflight uses the same recognizer for listening`() =
         runTest {
-            val language = AndroidSpeechLanguage(RuntimeEnvironment.getApplication(), "fr-CA")
-            val check = async { language.check() }
+            val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "fr-CA")
+            val check = async { speech.checkLanguage() }
             runCurrent()
             val recognizer = checkNotNull(ShadowSpeechRecognizer.getLatestSpeechRecognizer())
             shadowOf(recognizer).triggerSupportResult(
-                RecognitionSupport.Builder().addSupportedOnDeviceLanguage("fr-CA").build(),
+                RecognitionSupport.Builder().addInstalledOnDeviceLanguage("fr-CA").build(),
             )
             shadowOf(Looper.getMainLooper()).idle()
-            assertEquals(SpeechLanguageState.Missing, check.await())
+            assertEquals(SpeechLanguageState.Ready, check.await())
+            assertFalse(shadowOf(recognizer).isDestroyed)
+            speech.startListening({}, {}, {}, { error(it) })
+            shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(ShadowSpeechRecognizer.getLatestSpeechRecognizer() === recognizer)
+            assertEquals(
+                "fr-CA",
+                shadowOf(recognizer).lastRecognizerIntent.getStringExtra(RecognizerIntent.EXTRA_LANGUAGE),
+            )
+            speech.close()
+            shadowOf(Looper.getMainLooper()).idle()
             assertTrue(shadowOf(recognizer).isDestroyed)
         }
 
@@ -174,6 +184,8 @@ class SpeechLanguageTest {
                         )
                         shadowOf(Looper.getMainLooper()).idle()
                         assertEquals(SpeechLanguageState.Ready, check.await())
+                        assertFalse(shadowOf(recognizer).isDestroyed)
+                        language.close()
                         assertTrue(shadowOf(recognizer).isDestroyed)
                     }
 

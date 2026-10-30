@@ -362,7 +362,7 @@ class LocalLlmEngineTest {
                 runCatching {
                     engine.processTurn(UserTurnInput("Request"), { error("No speech") }, { error("No tool") })
                 }.exceptionOrNull()
-            assertEquals("Local model could not form a valid tool call. Try again.", failure?.message)
+            assertEquals("Local model could not form a valid tool call.", failure?.message)
             assertEquals(2, attempts)
             engine.closeAndJoin()
         }
@@ -440,7 +440,7 @@ class LocalLlmEngineTest {
                 runCatching {
                     engine.processTurn(UserTurnInput("Request"), deltas::add) { error("No tool") }
                 }.exceptionOrNull()
-            assertEquals("Local model could not form a valid tool call. Try again.", failure?.message)
+            assertEquals("Local model could not form a valid tool call.", failure?.message)
             assertEquals(1, attempts)
             assertEquals(listOf("Already spoken."), deltas)
             engine.closeAndJoin()

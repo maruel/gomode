@@ -50,7 +50,7 @@ private const val MAX_TOOL_ROUNDS = 8
 private const val MALFORMED_TOOL_PREFIX = "<!tool_call>"
 private const val NATIVE_TOOL_PARSE_ERROR =
     "Status Code: 3. Message: Failed to parse tool calls from code block:"
-private const val INVALID_TOOL_REPLY = "Local model could not form a valid tool call. Try again."
+private const val INVALID_TOOL_REPLY = "Local model could not form a valid tool call."
 private val toolJson = GsonBuilder().serializeNulls().create()
 
 private enum class TurnOutcome { CANCELLED, COMPLETED, FAILED, INVALIDATED }

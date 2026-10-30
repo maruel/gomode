@@ -21,10 +21,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.FileInputStream
 
-// Bionic's stable socket flag is omitted from the public Java OsConstants API.
-// https://android.googlesource.com/platform/bionic/+/master/libc/include/sys/socket.h
-private const val MSG_DONTWAIT = 0x40
 private const val RETAINED_AUDIO_BYTES = 16_000
 
 // The microphone never waits for recognition. A slow or restarting recognizer gets
@@ -145,18 +143,19 @@ internal class MicrophoneAudioSource(
     }
 }
 
-// Called serially by the microphone owner. The socket keeps a blocking read end
-// for SpeechRecognizer, while MSG_DONTWAIT lets us evict stale unread PCM without
-// racing its reader into a blocking read. The total app + kernel retention is 500 ms.
+// The recognizer gets a blocking pipe, while a separately opened nonblocking read
+// end evicts stale PCM without blocking if the recognizer consumes it first.
+// Total app and kernel retention is bounded to 500 ms.
 internal class RecognitionAudioBuffer : java.io.Closeable {
     private val pending = PcmBuffer(RETAINED_AUDIO_BYTES)
     private val scratch = ByteArray(RETAINED_AUDIO_BYTES + 2)
-    private var socket: Array<ParcelFileDescriptor>? = null
+    private var pipe: Array<ParcelFileDescriptor>? = null
+    private var evictionReader: FileInputStream? = null
 
     @Suppress("TooGenericExceptionCaught") // Descriptor setup must close both endpoints on failure.
     fun openSource(): ParcelFileDescriptor {
-        closeSocket()
-        val endpoints = ParcelFileDescriptor.createSocketPair()
+        closePipe()
+        val endpoints = ParcelFileDescriptor.createPipe()
         try {
             val writer = endpoints[1].fileDescriptor
             Os.fcntlInt(
@@ -164,7 +163,13 @@ internal class RecognitionAudioBuffer : java.io.Closeable {
                 OsConstants.F_SETFL,
                 Os.fcntlInt(writer, OsConstants.F_GETFL, 0) or OsConstants.O_NONBLOCK,
             )
-            socket = endpoints
+            // Opening /proc/self/fd creates a separate file description, so its
+            // O_NONBLOCK flag does not change the recognizer's blocking read end.
+            evictionReader =
+                FileInputStream(
+                    Os.open("/proc/self/fd/${endpoints[0].fd}", OsConstants.O_RDONLY or OsConstants.O_NONBLOCK, 0),
+                )
+            pipe = endpoints
             return endpoints[0]
         } catch (e: Exception) {
             try {
@@ -180,36 +185,33 @@ internal class RecognitionAudioBuffer : java.io.Closeable {
         frame: ByteArray,
         count: Int,
     ) {
-        val endpoints = socket
-        if (endpoints != null) discardStale(endpoints[0], pending.byteCount + count)
+        val endpoints = pipe
+        if (endpoints != null) discardStale(pending.byteCount + count)
         pending.append(frame, count)
         if (endpoints != null) {
             pending.drain { bytes, offset, length -> Os.write(endpoints[1].fileDescriptor, bytes, offset, length) }
         }
     }
 
-    private fun discardStale(
-        source: ParcelFileDescriptor,
-        appBytes: Int,
-    ) {
+    private fun discardStale(appBytes: Int) {
+        val reader = checkNotNull(evictionReader)
         while (true) {
-            val queued = receive(source, scratch.size, OsConstants.MSG_PEEK)
+            val queued = reader.available()
             val excess = queued + appBytes - RETAINED_AUDIO_BYTES
             if (excess <= 0 || queued == 0) return
             val count = minOf(queued, ((excess + 1) / 2) * 2)
-            val discarded = receive(source, count, 0)
+            val discarded = receive(reader, count)
             check(discarded % 2 == 0) { "Recognizer consumed an incomplete PCM sample" }
             if (discarded == 0) return
         }
     }
 
     private fun receive(
-        source: ParcelFileDescriptor,
+        reader: FileInputStream,
         count: Int,
-        flags: Int,
     ): Int =
         try {
-            Os.recvfrom(source.fileDescriptor, scratch, 0, count, flags or MSG_DONTWAIT, null)
+            Os.read(reader.fd, scratch, 0, count)
         } catch (e: ErrnoException) {
             if (e.errno == OsConstants.EAGAIN) 0 else throw e
         }
@@ -217,27 +219,32 @@ internal class RecognitionAudioBuffer : java.io.Closeable {
     fun finishUtterance() {
         // Retiring a recognizer more than once must preserve PCM already
         // captured for the next recognition request.
-        if (socket != null) {
-            closeSocket()
+        if (pipe != null) {
+            closePipe()
             pending.clear()
         }
     }
 
     override fun close() {
         try {
-            closeSocket()
+            closePipe()
         } finally {
             pending.clear()
         }
     }
 
-    private fun closeSocket() {
-        val endpoints = socket ?: return
-        socket = null
+    private fun closePipe() {
+        val endpoints = pipe ?: return
+        pipe = null
         try {
-            endpoints[0].close()
+            evictionReader?.close()
         } finally {
-            endpoints[1].close()
+            evictionReader = null
+            try {
+                endpoints[0].close()
+            } finally {
+                endpoints[1].close()
+            }
         }
     }
 }

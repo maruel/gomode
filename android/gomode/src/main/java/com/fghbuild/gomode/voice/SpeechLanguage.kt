@@ -50,11 +50,20 @@ internal class AndroidSpeechLanguage(
 ) {
     private val mutableState = MutableStateFlow<SpeechLanguageState>(SpeechLanguageState.Idle)
     val state = mutableState.asStateFlow()
-    private var pendingDownloadRecognizer: SpeechRecognizer? = null
+    private var recognizer: SpeechRecognizer? = null
+    private var pendingDownload = false
+
+    fun recognizer(): SpeechRecognizer =
+        recognizer ?: SpeechRecognizer.createOnDeviceSpeechRecognizer(context).also { recognizer = it }
+
+    fun resetRecognizer() {
+        recognizer?.destroy()
+        recognizer = null
+        pendingDownload = false
+    }
 
     fun close() {
-        pendingDownloadRecognizer?.destroy()
-        pendingDownloadRecognizer = null
+        resetRecognizer()
     }
 
     fun recognitionFailed(error: Int) {
@@ -115,7 +124,7 @@ internal class AndroidSpeechLanguage(
                     },
                 )
             }
-        if (pendingDownloadRecognizer === recognizer) pendingDownloadRecognizer = null
+        pendingDownload = false
         return result
     }
 
@@ -175,14 +184,9 @@ internal class AndroidSpeechLanguage(
         }
 
     @Suppress("TooGenericExceptionCaught") // Platform providers can throw rather than delivering their error callback.
-    private suspend fun withRecognizer(block: suspend (SpeechRecognizer) -> SpeechLanguageState): SpeechLanguageState {
-        var recognizer: SpeechRecognizer? = null
-        return try {
-            // Reuse a fire-and-forget download's binding so its queued request is
-            // delivered before the subsequent status query, even on a cold service.
-            val current = pendingDownloadRecognizer ?: SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-            recognizer = current
-            block(current)
+    private suspend fun withRecognizer(block: suspend (SpeechRecognizer) -> SpeechLanguageState): SpeechLanguageState =
+        try {
+            block(recognizer())
         } catch (e: CancellationException) {
             mutableState.value =
                 if (mutableState.value is SpeechLanguageState.Downloading) {
@@ -190,13 +194,12 @@ internal class AndroidSpeechLanguage(
                 } else {
                     SpeechLanguageState.Idle
                 }
+            if (!pendingDownload) resetRecognizer()
             throw e
         } catch (e: Exception) {
+            if (!pendingDownload) resetRecognizer()
             SpeechLanguageState.Failed("Speech language setup failed: ${e.message}")
-        } finally {
-            if (recognizer !== pendingDownloadRecognizer) recognizer?.destroy()
         }
-    }
 
     // A provider may support downloads without supporting their newer event listener.
     @Suppress("TooGenericExceptionCaught") // Listener exceptions cannot propagate to the suspended caller's boundary.
@@ -206,7 +209,7 @@ internal class AndroidSpeechLanguage(
             // This overload has no completion callback. Destroying immediately can
             // discard the request before the recognition service finishes binding.
             // The next check reuses it; closing the speech owner also releases it.
-            pendingDownloadRecognizer = recognizer
+            pendingDownload = true
             SpeechLanguageState.Pending
         } catch (e: RuntimeException) {
             SpeechLanguageState.Failed("The recognizer could not request $languageTag: ${e.message}")
