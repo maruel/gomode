@@ -404,9 +404,39 @@ exercise a prompt of more than 16K source tokens, in addition to the weather-too
 round trip and fresh-conversation check. The static graph computes attention
 across its full cache, so the CPU emulator recall test allows up to 60 minutes.
 Phone GPU memory use and latency require separate device measurements.
-Publishing requires a Hugging Face account: upload the accepted `.litertlm` file,
-source `LICENSE`, and
-`manifest.json`, then supply the immutable download URL and manifest values for
+Publish successive exports with [`upload_lfm_litert.py`](../scripts/upload_lfm_litert.py):
+
+```sh
+# Validate, sign in if needed, and publish. Repeat after each export.
+uv run --locked --script scripts/upload_lfm_litert.py
+```
+
+The uploader gets your username through HF's `whoami` API and defaults to
+`YOUR_USERNAME/LFM3-1.7B-LiteRT-INT8-64K`. Pass a repository name to change the
+name, or `OWNER/NAME` to target an organization or explicit account. It reuses
+cached credentials or `HF_TOKEN`; without credentials it starts HF's interactive
+login flow. First-time browser login requires your approval. Before uploading
+model data, it checks the current credentials' write access to the actual
+repository, including fine-grained token scope and organization permissions.
+Authentication or write-access failures stop the upload with instructions to
+replace the credentials; `HF_TOKEN`, when set, takes precedence over saved login.
+Both scripts default to `models/lfm3-1.7b-int8-64k-fp16`; use `--output-dir`
+to publish a different export directory. The uploader checks the bundle size,
+SHA-256 and conversion-input hashes, regenerates the model card from the manifest
+with `base_model: LiquidAI/LFM3-1.7B` and `base_model_relation: quantized`, and
+validates the generated card with HF before uploading. The card declares the
+custom LFM license using `license: other`, `license_name: lfm1.0` and a link to
+the bundled `LICENSE`. It uploads only the bundle, license, model card, manifest
+and conversion metadata.
+Intermediate files stay local. It runs no conversion or inference checks.
+The script creates a public repository if needed and publishes each iteration in
+one commit. An unchanged release reuses the captured revision. Existing unrelated
+remote files are retained, and remote ignore rules cannot exclude release files.
+It refuses private or gated repositories, guards commits with the captured parent,
+and verifies every published file at its immutable revision before printing pins.
+The model card is regenerated on every invocation.
+
+Supply the printed immutable download URL, revision, size and SHA-256 for
 [`ModelArtifact.kt`](../android/gomode/src/main/java/com/fghbuild/gomode/voice/ModelArtifact.kt).
 The repository must be public so the app can download without account credentials.
 Until that URL is configured, settings reports that the download is unavailable.
