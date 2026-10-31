@@ -61,6 +61,29 @@ class ModelDownloadWorkerTest {
     }
 
     @Test
+    fun `removal deletes only the selected model and its saved transfer metadata`() =
+        runTest {
+            val downloads = app.modelDownloads
+            downloads.directory.mkdirs()
+            val installed = File(downloads.directory, model.fileName).apply { writeBytes(bytes) }
+            val other = File(downloads.directory, LocalLlmModel.LFM_3_1_7B_32K.fileName).apply { writeBytes(bytes) }
+            downloads.partial(model).writeBytes(bytes.copyOfRange(0, 16))
+            downloads.releasePin(model).writeText("saved release")
+            File("${downloads.releasePin(model).path}.bak").writeText("backup")
+            val worker =
+                TestListenableWorkerBuilder<ModelDownloadWorker>(app)
+                    .setInputData(
+                        workDataOf(LocalModelDownloads.MODEL_KEY to model.name, LocalModelDownloads.REMOVE_KEY to true),
+                    ).build()
+            assertEquals(ListenableWorker.Result.success(), worker.doWork())
+            assertFalse(installed.exists())
+            assertFalse(downloads.partial(model).exists())
+            assertFalse(downloads.releasePin(model).exists())
+            assertFalse(File("${downloads.releasePin(model).path}.bak").exists())
+            assertArrayEquals(bytes, other.readBytes())
+        }
+
+    @Test
     fun `platform refusal to start a foreground service retries without modifying saved partial data`() =
         runTest {
             val partial = app.modelDownloads.partial(model)

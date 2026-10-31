@@ -1,18 +1,22 @@
-// Shows local-model installation, resumable progress, and explicit cancellation in native settings.
+// Shows local-model downloads, storage, confirmed deletion and load diagnostics in native settings.
 package com.fghbuild.gomode.ui.settings
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
@@ -20,6 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.R
@@ -35,13 +40,21 @@ internal fun ModelDownloadSetting(
 ) {
     val downloads = (LocalContext.current.applicationContext as GoModeApplication).modelDownloads
     val states by downloads.states.collectAsStateWithLifecycle()
+    val availableBytes by downloads.availableBytes.collectAsStateWithLifecycle()
+    LifecycleResumeEffect(model) {
+        downloads.refreshStorage()
+        onPauseOrDispose { }
+    }
     ModelDownloadControls(
         model,
         checkNotNull(states[model]),
         enabled,
         onDownload = { downloads.download(model) },
         onCancel = { downloads.cancel(model) },
+        onRemove = { downloads.remove(model) },
+        availableBytes = availableBytes,
     )
+    ModelLoadDiagnosticsSetting()
 }
 
 @Composable
@@ -51,11 +64,32 @@ internal fun ModelDownloadControls(
     enabled: Boolean,
     onDownload: () -> Unit,
     onCancel: () -> Unit,
+    onRemove: () -> Unit,
+    availableBytes: Long?,
 ) {
     val locale = LocalConfiguration.current.locales[0]
     val format = remember(locale) { ModelDownloadFormat(locale) }
     val size = (state as? ModelDownloadState.Downloading)?.totalBytes
     val sizeLabel = size?.let(format::bytes)
+    var confirmRemoval by remember(model) { mutableStateOf(false) }
+    if (confirmRemoval) {
+        AlertDialog(
+            onDismissRequest = { confirmRemoval = false },
+            title = { Text("Delete ${model.label}?") },
+            text = { Text("You’ll need to download it again to use it.") },
+            confirmButton = {
+                TextButton(
+                    enabled = enabled && state is ModelDownloadState.Ready,
+                    onClick = {
+                        confirmRemoval = false
+                        onRemove()
+                    },
+                    modifier = Modifier.testTag("gomode-model-delete-confirm"),
+                ) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { confirmRemoval = false }) { Text("Cancel") } },
+        )
+    }
     val partial =
         when (state) {
             is ModelDownloadState.Missing -> state.partialBytes
@@ -90,8 +124,13 @@ internal fun ModelDownloadControls(
                         "Cancelling download…"
                     }
 
-                    ModelDownloadState.Ready -> {
-                        "Installed on this device"
+                    is ModelDownloadState.Ready -> {
+                        state.removalError ?: "Installed · ${format.bytes(state.bytes)}" +
+                            if (state.removable) "" else " · developer-managed"
+                    }
+
+                    ModelDownloadState.Removing -> {
+                        "Deleting model…"
                     }
 
                     is ModelDownloadState.Missing -> {
@@ -121,13 +160,22 @@ internal fun ModelDownloadControls(
             Text(
                 status,
                 color =
-                    if (state is ModelDownloadState.Failed) {
+                    if (state is ModelDownloadState.Failed ||
+                        (state is ModelDownloadState.Ready && state.removalError != null)
+                    ) {
                         MaterialTheme.colorScheme.error
                     } else {
                         MaterialTheme.colorScheme.onSurface
                     },
                 modifier = Modifier.testTag("gomode-model-download-status"),
             )
+            availableBytes?.let {
+                Text(
+                    "${format.bytes(it)} available",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.testTag("gomode-model-storage"),
+                )
+            }
             if (state is ModelDownloadState.Downloading) {
                 if (size == null) {
                     LinearProgressIndicator(
@@ -142,6 +190,15 @@ internal fun ModelDownloadControls(
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
+            if (state is ModelDownloadState.Ready && state.removable) {
+                IconButton(
+                    onClick = { confirmRemoval = true },
+                    enabled = enabled,
+                    modifier = Modifier.testTag("gomode-model-delete"),
+                ) {
+                    Icon(painterResource(R.drawable.ic_delete), contentDescription = "Delete model")
+                }
+            }
             if (state is ModelDownloadState.Missing || state is ModelDownloadState.Failed) {
                 IconButton(
                     onClick = onDownload,

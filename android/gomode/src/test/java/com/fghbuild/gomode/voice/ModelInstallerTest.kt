@@ -47,6 +47,26 @@ class ModelInstallerTest {
     private fun response(data: ByteArray): MockResponse = MockResponse().setBody(Buffer().write(data))
 
     @Test
+    fun `insufficient storage reports needed and available space before transfer`() =
+        runTest {
+            withContext(Dispatchers.IO) {
+                MockWebServer().use { server ->
+                    val directory = temporary.newFolder()
+                    val huge =
+                        ModelArtifact("fixture.litertlm", server.url("/weights"), Long.MAX_VALUE / 2, "a".repeat(64))
+                    val failure = runCatching { installModel(huge, directory, client) {} }.exceptionOrNull()
+                    assertTrue(failure is ModelStorageException)
+                    val storage = failure as ModelStorageException
+                    assertTrue(storage.neededBytes > huge.size)
+                    assertTrue(storage.availableBytes >= 0)
+                    assertTrue(storage.availableBytes < storage.neededBytes)
+                    assertEquals(0, server.requestCount)
+                    assertFalse(File(directory, "fixture.litertlm.part").exists())
+                }
+            }
+        }
+
+    @Test
     fun `verified download publishes a complete file without service credentials`() =
         runTest {
             withContext(Dispatchers.IO) {

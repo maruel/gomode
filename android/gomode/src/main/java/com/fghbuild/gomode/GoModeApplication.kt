@@ -5,10 +5,12 @@ import android.app.Application
 import android.content.Context
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.work.Configuration
+import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.ui.web.ServiceShellOwner
 import com.fghbuild.gomode.voice.CarDialVoiceOwner
 import com.fghbuild.gomode.voice.LocalModelDownloads
+import com.fghbuild.gomode.voice.LocalModelLoadDiagnostics
 import com.fghbuild.gomode.voice.LocalModelOwner
 
 internal val Context.goModeSettingsDataStore by preferencesDataStore(name = "gomode_settings")
@@ -32,6 +34,19 @@ class GoModeApplication :
             }
         }
     internal val modelDownloads by modelDownloadsDelegate
+    private val modelLoadDiagnosticsDelegate = lazy { LocalModelLoadDiagnostics(this) }
+    internal val modelLoadDiagnostics by modelLoadDiagnosticsDelegate
+
+    override fun onCreate() {
+        super.onCreate()
+        // Recover the last load before settings can initiate another preparation.
+        modelLoadDiagnostics
+    }
+
+    internal suspend fun removeLocalModel(model: LocalLlmModel) {
+        localModelOwner.removeModel(model) { modelDownloads.removeFiles(model) }
+    }
+
     private val serviceShellOwnerDelegate = lazy { ServiceShellOwner(this, settingsRepository) }
     internal val serviceShellOwner by serviceShellOwnerDelegate
     private val carDialVoiceOwnerDelegate =
@@ -41,6 +56,7 @@ class GoModeApplication :
     internal val carDialVoiceOwner by carDialVoiceOwnerDelegate
 
     override fun onTerminate() {
+        if (modelLoadDiagnosticsDelegate.isInitialized()) modelLoadDiagnostics.close()
         if (carDialVoiceOwnerDelegate.isInitialized()) carDialVoiceOwner.close()
         if (serviceShellOwnerDelegate.isInitialized()) serviceShellOwner.close()
         if (modelDownloadsDelegate.isInitialized()) modelDownloads.close()

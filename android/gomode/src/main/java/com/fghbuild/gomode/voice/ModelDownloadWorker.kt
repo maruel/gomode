@@ -28,6 +28,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import java.io.IOException
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 class ModelDownloadWorker(
@@ -42,7 +43,19 @@ class ModelDownloadWorker(
             LocalLlmModel.entries.firstOrNull { it.name == inputData.getString(LocalModelDownloads.MODEL_KEY) }
                 ?: return Result.failure()
         return downloads.withModelAccess(model) {
-            if (inputData.getBoolean(LocalModelDownloads.DISCARD_KEY, false)) {
+            if (inputData.getBoolean(LocalModelDownloads.REMOVE_KEY, false)) {
+                try {
+                    (applicationContext as GoModeApplication).removeLocalModel(model)
+                    Result.success()
+                } catch (failure: CancellationException) {
+                    throw failure
+                } catch (
+                    @Suppress("TooGenericExceptionCaught") failure: Exception, // Report storage/native cleanup failure.
+                ) {
+                    Log.w("ModelDownloadWorker", "Unable to delete model", failure)
+                    failure("Unable to delete the model. Try again.")
+                }
+            } else if (inputData.getBoolean(LocalModelDownloads.DISCARD_KEY, false)) {
                 val file = downloads.partial(model)
                 if ((!file.exists() || file.delete()) &&
                     (!downloads.releasePin(model).exists() || downloads.releasePin(model).delete())
@@ -112,6 +125,12 @@ class ModelDownloadWorker(
             throw failure
         } catch (failure: ModelInstallException) {
             return failure(checkNotNull(failure.message))
+        } catch (failure: ModelStorageException) {
+            val format = ModelDownloadFormat(Locale.getDefault())
+            return failure(
+                "Not enough storage. ${format.bytes(failure.neededBytes)} needed; " +
+                    "${format.bytes(failure.availableBytes)} available. Free space and retry.",
+            )
         } catch (_: IOException) {
             return Result.retry()
         } catch (_: ForegroundServiceStartNotAllowedException) {

@@ -98,11 +98,51 @@ internal class LocalModelOwner(
         }
     }
 
+    suspend fun removeModel(
+        model: LocalLlmModel,
+        removeFiles: () -> Unit,
+    ) {
+        operations.withLock {
+            try {
+                if (allocated?.model == model) {
+                    synchronized(this) {
+                        if (selection?.model == model) {
+                            generation++
+                            mutableState.value = LocalModelState.AwaitingDownload
+                        }
+                        allocated?.invalidateTurns()
+                    }
+                    // Native work must drain before unlinking its mapped weights.
+                    allocated?.closeAndJoin()
+                    allocated = null
+                }
+                removeFiles()
+                synchronized(this) {
+                    if (selection?.model == model) mutableState.value = LocalModelState.AwaitingDownload
+                }
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (
+                @Suppress("TooGenericExceptionCaught") failure: Exception, // Preserve a failed native cleanup handle.
+            ) {
+                synchronized(this) {
+                    if (selection?.model == model) {
+                        mutableState.value = LocalModelState.Failed("Unable to unload or delete the model. Try again.")
+                    }
+                }
+                throw failure
+            }
+        }
+    }
+
     suspend fun acquire(): PreparedLocalModel {
         while (true) {
             val pending =
                 synchronized(this) {
                     check(!closed && selection?.isCurrent() == true) { "Local model service credentials are not ready" }
+                    if (mutableState.value == LocalModelState.AwaitingDownload) {
+                        throw LocalModelUnavailableException(checkNotNull(selection).model)
+                    }
                     if (mutableState.value is LocalModelState.Failed) schedule(reuseAllocated = true)
                     checkNotNull(preparation)
                 }
@@ -153,7 +193,7 @@ internal class LocalModelOwner(
                             allocated = null
                         }
                         if (selected == null || !selected.isCurrent() || !owns(request)) return@withLock null
-                        if (installation.value[selected.model] != ModelDownloadState.Ready) {
+                        if (installation.value[selected.model] !is ModelDownloadState.Ready) {
                             publish(request, LocalModelState.AwaitingDownload)
                             return@withLock null
                         }

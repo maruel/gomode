@@ -15,6 +15,13 @@ Downloads continue in the background and resume after interruptions.
 **Cancel download** discards partial data. Complete models remain installed
 when switching between variants. Each download resolves the current Hugging
 Face release once and retains that revision for resume and integrity verification.
+Settings shows installed size and available storage. **Delete model** unloads
+its weights and removes its app-owned files; it must be downloaded again to use it.
+
+Expand **Model load diagnostics** to compare recent load stages, durations and
+sampled memory. An interrupted load is matched to Android's process exit record
+on the next launch. The record format and sampling are owned by
+[`LocalModelLoadDiagnostics.kt`](../android/gomode/src/main/java/com/fghbuild/gomode/voice/LocalModelLoadDiagnostics.kt).
 
 Android owns speech recognition and synthesis. The **Remote LLM** engine sends
 text turns to the gateway; **Local LLM** runs the model on the phone.

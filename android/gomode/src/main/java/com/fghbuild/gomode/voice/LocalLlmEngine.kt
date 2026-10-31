@@ -6,6 +6,7 @@ import android.os.SystemClock
 import android.util.Log
 import com.caic.voicegateway.sdk.v1.MessageKind
 import com.caic.voicegateway.sdk.v1.ToolCall
+import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.google.ai.edge.litertlm.Backend
@@ -171,6 +172,7 @@ internal class LiteRtLmRunner(
     }
 
     private fun initialize(conversationConfig: ConversationConfig) {
+        val diagnostics = (context.applicationContext as GoModeApplication).modelLoadDiagnostics
         val backends = backendsFor(model)
         val failure =
             IllegalStateException(
@@ -180,6 +182,7 @@ internal class LiteRtLmRunner(
             )
         var initializedBackend: String? = null
         for (backend in backends) {
+            val attempt = diagnostics.begin(model, backend.name)
             var attemptEngine: Engine? = null
             try {
                 val config =
@@ -192,20 +195,34 @@ internal class LiteRtLmRunner(
                     )
                 val eng = Engine(config)
                 attemptEngine = eng
+                diagnostics.stage(attempt, ModelLoadStage.ENGINE_INITIALIZATION)
                 eng.initialize()
+                diagnostics.stage(attempt, ModelLoadStage.CONVERSATION_CREATION)
                 val conv = eng.createConversation(conversationConfig)
                 Log.i(TAG, "Initialized Google AI Edge LiteRT-LM from $existingPath on ${backend.name}")
                 engine = eng
                 conversation = conv
                 initializedBackend = backend.name
+                diagnostics.finish(attempt)
                 break
-            } catch (e: CancellationException) {
-                throw e
             } catch (
-                @Suppress("TooGenericExceptionCaught") e: Exception, // Try the remaining native backends.
+                @Suppress("TooGenericExceptionCaught") e: Throwable, // Record native Errors too, then rethrow them.
             ) {
-                failure.addSuppressed(e)
-                Log.w(TAG, "Failed initializing LiteRT-LM from $existingPath on ${backend.name}", e)
+                diagnostics.finish(attempt, e)
+                when (e) {
+                    is CancellationException -> {
+                        throw e
+                    }
+
+                    is Exception -> {
+                        failure.addSuppressed(e)
+                        Log.w(TAG, "Failed initializing LiteRT-LM from $existingPath on ${backend.name}", e)
+                    }
+
+                    else -> {
+                        throw e
+                    }
+                }
             } finally {
                 // Engine.close requires initialization; failed native creation has no Kotlin-owned handle.
                 if (engine !== attemptEngine && attemptEngine?.isInitialized() == true) {
@@ -303,7 +320,7 @@ internal class LocalLlmEngine(
     private val context: Context,
     private val runnerFactory: ((Context, ConversationConfig) -> EdgeLlmRunner)? = null,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val model: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
+    val model: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
 ) : OnDeviceVoiceEngine {
     override val engineType: OnDeviceEngine = OnDeviceEngine.LOCAL_LLM
 

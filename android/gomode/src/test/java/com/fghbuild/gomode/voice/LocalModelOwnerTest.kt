@@ -41,7 +41,7 @@ class LocalModelOwnerTest {
             var discoveries = 0
             var prefill = ""
             val owner =
-                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready(1, true)), dispatcher) {
                     LocalLlmEngine(app, { _, instruction ->
                         allocations++
                         prefill = instruction.prefillEvidence()
@@ -78,7 +78,7 @@ class LocalModelOwnerTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             val events = mutableListOf<String>()
             val owner =
-                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) { model ->
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready(1, true)), dispatcher) { model ->
                     events.add("allocate ${model.label}")
                     LocalLlmEngine(app, { _, _ ->
                         object : Runner() {
@@ -149,7 +149,7 @@ class LocalModelOwnerTest {
             assertEquals(LocalModelState.AwaitingDownload, owner.state.value)
             assertEquals(0, allocations)
             assertEquals(0, discoveries)
-            installation.value = mapOf(LocalLlmModel.GEMMA_4_E2B to ModelDownloadState.Ready)
+            installation.value = mapOf(LocalLlmModel.GEMMA_4_E2B to ModelDownloadState.Ready(1, true))
             owner.modelInstalled(LocalLlmModel.GEMMA_4_E2B)
             val prepared = async { owner.acquire() }
             testScheduler.runCurrent()
@@ -167,7 +167,7 @@ class LocalModelOwnerTest {
             var attempts = 0
             var installed = false
             val owner =
-                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready(1, true)), dispatcher) {
                     LocalLlmEngine(app, { _, _ ->
                         attempts++
                         if (!installed) throw LocalModelUnavailableException(LocalLlmModel.GEMMA_4_E2B)
@@ -202,7 +202,7 @@ class LocalModelOwnerTest {
             var attempts = 0
             var fail = true
             val owner =
-                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready(1, true)), dispatcher) {
                     LocalLlmEngine(app, { _, _ ->
                         attempts++
                         check(!fail) { "Download the model in Settings" }
@@ -233,7 +233,7 @@ class LocalModelOwnerTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             var brokenRuntime = true
             val owner =
-                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready(1, true)), dispatcher) {
                     LocalLlmEngine(app, { _, _ ->
                         if (brokenRuntime) throw UnsatisfiedLinkError("JNI runtime unavailable")
                         Runner()
@@ -258,7 +258,7 @@ class LocalModelOwnerTest {
             var allocations = 0
             var credentialsReady = true
             val owner =
-                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready(1, true)), dispatcher) {
                     allocations++
                     LocalLlmEngine(app, { _, _ -> Runner() }, dispatcher)
                 }
@@ -290,7 +290,7 @@ class LocalModelOwnerTest {
             val events = mutableListOf<String>()
             var number = 0
             val owner =
-                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready(1, true)), dispatcher) {
                     val id = ++number
                     events.add("allocate $id")
                     LocalLlmEngine(app, { _, _ ->
@@ -348,7 +348,7 @@ class LocalModelOwnerTest {
             var allocations = 0
             var disposed = false
             val owner =
-                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready(1, true)), dispatcher) {
                     allocations++
                     LocalLlmEngine(app, { _, _ ->
                         object : Runner() {
@@ -391,7 +391,7 @@ class LocalModelOwnerTest {
             var number = 0
             var ownerRef: LocalModelOwner? = null
             val owner =
-                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready(1, true)), dispatcher) {
                     val id = ++number
                     LocalLlmEngine(app, { _, _ ->
                         events.add("initialize $id")
@@ -421,7 +421,7 @@ class LocalModelOwnerTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             var allocations = 0
             val owner =
-                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready(1, true)), dispatcher) {
                     allocations++
                     LocalLlmEngine(app, { _, _ ->
                         object : Runner() {
@@ -452,7 +452,7 @@ class LocalModelOwnerTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             var allocations = 0
             val owner =
-                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready(1, true)), dispatcher) {
                     allocations++
                     LocalLlmEngine(app, { _, _ -> Runner() }, dispatcher)
                 }
@@ -476,7 +476,7 @@ class LocalModelOwnerTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             var allocations = 0
             val owner =
-                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready(1, true)), dispatcher) {
                     allocations++
                     LocalLlmEngine(app, { _, _ -> Runner() }, dispatcher)
                 }
@@ -495,6 +495,50 @@ class LocalModelOwnerTest {
             owner.clearSelection(newSelection)
             testScheduler.runCurrent()
             assertEquals(LocalModelState.Idle, owner.state.value)
+            owner.close()
+            testScheduler.runCurrent()
+        }
+
+    @Test
+    fun `model removal drains an active native turn and unloads before deleting weights`() =
+        runTest {
+            val dispatcher = StandardTestDispatcher(testScheduler)
+            val finishTurn = CompletableDeferred<Unit>()
+            val events = mutableListOf<String>()
+            val owner =
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready(1, true)), dispatcher) {
+                    LocalLlmEngine(app, { _, _ ->
+                        object : Runner() {
+                            override suspend fun generateStream(message: Message): Flow<Message> =
+                                flow {
+                                    events.add("turn started")
+                                    finishTurn.await()
+                                    events.add("turn drained")
+                                    emit(Message.model("Done"))
+                                }
+
+                            override fun close() {
+                                events.add("unloaded")
+                            }
+                        }
+                    }, dispatcher)
+                }
+            owner.select(LocalModelSelection("en-US", { setup() }, { true }))
+            val prepared = async { owner.acquire() }
+            testScheduler.runCurrent()
+            val engine = prepared.await().engine
+            val turn = launch { engine.processTurn(UserTurnInput("hello"), {}, { null }) }
+            testScheduler.runCurrent()
+            val removal = launch { owner.removeModel(LocalLlmModel.GEMMA_4_E2B) { events.add("deleted") } }
+            testScheduler.runCurrent()
+            assertEquals(listOf("turn started"), events)
+            assertFalse(removal.isCompleted)
+            assertFalse(turn.isCancelled)
+            finishTurn.complete(Unit)
+            testScheduler.runCurrent()
+            assertEquals(listOf("turn started", "turn drained", "unloaded", "deleted"), events)
+            assertFalse(engine.isModelLoaded)
+            assertEquals(LocalModelState.AwaitingDownload, owner.state.value)
             owner.close()
             testScheduler.runCurrent()
         }

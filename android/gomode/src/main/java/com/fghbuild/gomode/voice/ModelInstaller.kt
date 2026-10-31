@@ -33,11 +33,14 @@ internal class ModelInstallException(
     message: String,
 ) : IOException(message)
 
+internal class ModelStorageException(
+    val neededBytes: Long,
+    val availableBytes: Long,
+) : IOException("Insufficient model storage")
+
 private const val STORAGE_HEADROOM = 16L * 1024 * 1024
 private val contentRange = Regex("bytes (\\d+)-(\\d+)/(\\d+)")
 
-// Conservatively require currently free space; this portable installer does not evict Android caches.
-@Suppress("UsableSpace")
 internal suspend fun installModel(
     artifact: ModelArtifact,
     directory: File,
@@ -53,9 +56,7 @@ internal suspend fun installModel(
             check(partial.delete()) { "Unable to discard an invalid partial model" }
         }
         val offset = partial.length()
-        if (directory.usableSpace < artifact.size - offset + STORAGE_HEADROOM) {
-            throw ModelInstallException("Not enough storage. Free space for the model, then retry.")
-        }
+        requireModelStorage(directory, artifact.size - offset + STORAGE_HEADROOM)
         var digest = MessageDigest.getInstance("SHA-256")
         if (offset > 0) {
             onProgress(ModelTransferProgress(0, ModelTransferStage.CHECKING))
@@ -113,9 +114,7 @@ internal suspend fun installModel(
                                     val start = if (append) offset else 0L
                                     validateResponse(response, artifact, offset)
                                     if (!append) {
-                                        if (directory.usableSpace + offset < artifact.size + STORAGE_HEADROOM) {
-                                            throw ModelInstallException("Not enough storage. Free space, then retry.")
-                                        }
+                                        requireModelStorage(directory, artifact.size - offset + STORAGE_HEADROOM)
                                         digest = MessageDigest.getInstance("SHA-256")
                                     }
                                     val body = checkNotNull(response.body) { "The download server returned no data" }
@@ -173,6 +172,18 @@ internal suspend fun installModel(
             withContext(NonCancellable) { finished.await() }
         }
     }
+
+// Require actual free space without evicting other app caches. Resumes only need the remaining bytes.
+@Suppress("UsableSpace")
+private fun requireModelStorage(
+    directory: File,
+    needed: Long,
+) {
+    val available = directory.usableSpace
+    if (available < needed) {
+        throw ModelStorageException(needed, available)
+    }
+}
 
 private fun validateResponse(
     response: Response,

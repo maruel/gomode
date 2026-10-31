@@ -1,4 +1,4 @@
-// Observes durable model installation work and serializes file access across worker replacement.
+// Observes model downloads, storage and deletion, serializing file access across worker replacement.
 package com.fghbuild.gomode.voice
 
 import android.content.Context
@@ -32,7 +32,13 @@ import java.util.concurrent.TimeUnit
 internal sealed interface ModelDownloadState {
     data object Checking : ModelDownloadState
 
-    data object Ready : ModelDownloadState
+    data class Ready(
+        val bytes: Long,
+        val removable: Boolean,
+        val removalError: String? = null,
+    ) : ModelDownloadState
+
+    data object Removing : ModelDownloadState
 
     data object Cancelling : ModelDownloadState
 
@@ -69,6 +75,14 @@ internal class LocalModelDownloads(
             LocalLlmModel.entries.associateWith<LocalLlmModel, ModelDownloadState> { ModelDownloadState.Checking },
         )
     val states = mutableStates.asStateFlow()
+    private val mutableAvailableBytes = MutableStateFlow<Long?>(null)
+    val availableBytes = mutableAvailableBytes.asStateFlow()
+
+    // Read on IO when settings resume as other apps may have changed available storage.
+    @Suppress("UsableSpace") // This is actual free space, without evicting other app caches.
+    fun refreshStorage() {
+        scope.launch { mutableAvailableBytes.value = context.noBackupFilesDir.usableSpace }
+    }
 
     init {
         for (model in LocalLlmModel.entries) {
@@ -99,26 +113,42 @@ internal class LocalModelDownloads(
     @Synchronized
     fun cancel(model: LocalLlmModel): Job? =
         when (mutableStates.value[model]) {
-            ModelDownloadState.Ready, ModelDownloadState.Cancelling -> null
+            is ModelDownloadState.Ready, ModelDownloadState.Removing, ModelDownloadState.Cancelling -> null
             else -> enqueue(model, discard = true)
         }
+
+    @Synchronized
+    fun remove(model: LocalLlmModel): Job? {
+        val installed = mutableStates.value[model] as? ModelDownloadState.Ready ?: return null
+        return if (installed.removable) enqueue(model, discard = false, remove = true) else null
+    }
 
     private fun enqueue(
         model: LocalLlmModel,
         discard: Boolean,
+        remove: Boolean = false,
     ): Job {
         val request =
             OneTimeWorkRequestBuilder<ModelDownloadWorker>()
                 .setInputData(
-                    if (discard) {
+                    if (remove) {
+                        workDataOf(MODEL_KEY to model.name, REMOVE_KEY to true)
+                    } else if (discard) {
                         workDataOf(MODEL_KEY to model.name, DISCARD_KEY to true)
                     } else {
                         workDataOf(MODEL_KEY to model.name)
                     },
-                ).addTag(if (discard) DISCARD_TAG else DOWNLOAD_TAG)
-                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
+                ).addTag(
+                    if (remove) {
+                        REMOVE_TAG
+                    } else if (discard) {
+                        DISCARD_TAG
+                    } else {
+                        DOWNLOAD_TAG
+                    },
+                ).setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
                 .apply {
-                    if (!discard) {
+                    if (!discard && !remove) {
                         setConstraints(
                             Constraints
                                 .Builder()
@@ -131,7 +161,11 @@ internal class LocalModelDownloads(
         pending[model] = request.id
         publish(
             model,
-            if (discard) ModelDownloadState.Cancelling else ModelDownloadState.Queued(partial(model).length(), false),
+            when {
+                remove -> ModelDownloadState.Removing
+                discard -> ModelDownloadState.Cancelling
+                else -> ModelDownloadState.Queued(partial(model).length(), false)
+            },
         )
         // Submit before releasing the synchronized user-action boundary so a later Cancel cannot
         // reach WorkManager ahead of this request. Only awaiting persistence runs asynchronously.
@@ -165,8 +199,17 @@ internal class LocalModelDownloads(
         model: LocalLlmModel,
         work: WorkInfo?,
     ): ModelDownloadState {
-        // A published file wins a race between completion and cancellation; never discard an installed model.
-        if (isInstalled(model)) return ModelDownloadState.Ready
+        refreshStorage()
+        if (work != null && REMOVE_TAG in work.tags && !work.state.isFinished) return ModelDownloadState.Removing
+        val installed = installedFiles(model)
+        if (installed.isNotEmpty()) {
+            val removalError =
+                work
+                    ?.takeIf { REMOVE_TAG in it.tags && it.state == WorkInfo.State.FAILED }
+                    ?.outputData
+                    ?.getString(ERROR_KEY)
+            return ModelDownloadState.Ready(installed.first().length(), installed.all(::isAppOwned), removalError)
+        }
         val bytes = partial(model).length()
         if (work == null) return ModelDownloadState.Missing(bytes)
         return when (work.state) {
@@ -224,7 +267,21 @@ internal class LocalModelDownloads(
 
     internal val directory: File get() = File(context.noBackupFilesDir, "models")
 
-    internal fun isInstalled(model: LocalLlmModel): Boolean = selectedModelPaths(context, model).any { File(it).isFile }
+    internal fun isInstalled(model: LocalLlmModel): Boolean = installedFiles(model).isNotEmpty()
+
+    private fun installedFiles(model: LocalLlmModel): List<File> =
+        selectedModelPaths(context, model).map(::File).filter { it.isFile }
+
+    private fun isAppOwned(file: File): Boolean =
+        file.startsWith(context.noBackupFilesDir) || file.startsWith(context.filesDir)
+
+    internal fun removeFiles(model: LocalLlmModel) {
+        val files = installedFiles(model)
+        check(files.all(::isAppOwned)) { "Developer-installed models must be removed from their original location." }
+        for (file in files + listOf(partial(model), releasePin(model), File("${releasePin(model).path}.bak"))) {
+            check(!file.exists() || file.delete()) { "Unable to delete the model. Check storage and try again." }
+        }
+    }
 
     private fun publish(
         model: LocalLlmModel,
@@ -232,7 +289,7 @@ internal class LocalModelDownloads(
     ) {
         val previous = mutableStates.value[model]
         mutableStates.value = mutableStates.value + (model to state)
-        if (state == ModelDownloadState.Ready && previous != ModelDownloadState.Ready) onInstalled(model)
+        if (state is ModelDownloadState.Ready && previous !is ModelDownloadState.Ready) onInstalled(model)
     }
 
     override fun close() {
@@ -243,11 +300,13 @@ internal class LocalModelDownloads(
     companion object {
         const val MODEL_KEY = "model"
         const val DISCARD_KEY = "discard"
+        const val REMOVE_KEY = "remove"
         const val BYTES_KEY = "bytes"
         const val CHECKING_KEY = "checking"
         const val ERROR_KEY = "error"
         private const val DOWNLOAD_TAG = "model-download"
         private const val DISCARD_TAG = "model-discard"
+        private const val REMOVE_TAG = "model-remove"
 
         fun workName(model: LocalLlmModel): String = "gomode-model-${model.name}"
     }

@@ -1665,7 +1665,7 @@ class DeviceVoiceSessionTest {
             val owner =
                 LocalModelOwner(
                     RuntimeEnvironment.getApplication(),
-                    localModelInstallation(ModelDownloadState.Ready),
+                    localModelInstallation(ModelDownloadState.Ready(1, true)),
                     dispatcher,
                 ) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
@@ -1739,7 +1739,7 @@ class DeviceVoiceSessionTest {
             val owner =
                 LocalModelOwner(
                     RuntimeEnvironment.getApplication(),
-                    localModelInstallation(ModelDownloadState.Ready),
+                    localModelInstallation(ModelDownloadState.Ready(1, true)),
                     dispatcher,
                 ) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
@@ -1816,7 +1816,7 @@ class DeviceVoiceSessionTest {
             val owner =
                 LocalModelOwner(
                     RuntimeEnvironment.getApplication(),
-                    localModelInstallation(ModelDownloadState.Ready),
+                    localModelInstallation(ModelDownloadState.Ready(1, true)),
                     dispatcher,
                 ) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
@@ -1897,7 +1897,7 @@ class DeviceVoiceSessionTest {
             val owner =
                 LocalModelOwner(
                     RuntimeEnvironment.getApplication(),
-                    localModelInstallation(ModelDownloadState.Ready),
+                    localModelInstallation(ModelDownloadState.Ready(1, true)),
                     dispatcher,
                 ) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
@@ -1985,7 +1985,7 @@ class DeviceVoiceSessionTest {
             val owner =
                 LocalModelOwner(
                     RuntimeEnvironment.getApplication(),
-                    localModelInstallation(ModelDownloadState.Ready),
+                    localModelInstallation(ModelDownloadState.Ready(1, true)),
                     dispatcher,
                 ) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->

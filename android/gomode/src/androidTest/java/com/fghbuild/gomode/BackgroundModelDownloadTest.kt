@@ -31,7 +31,10 @@ import java.io.File
 import kotlin.time.Duration.Companion.minutes
 
 class BackgroundModelDownloadTest {
-    @get:Rule
+    @get:Rule(order = 0)
+    internal val systemUi = SystemUiRule()
+
+    @get:Rule(order = 1)
     val compose = createEmptyComposeRule()
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     private val app get() = instrumentation.targetContext.applicationContext as GoModeApplication
@@ -53,7 +56,7 @@ class BackgroundModelDownloadTest {
                 device.pressHome()
                 compose.waitUntil(60_000) {
                     bytes() > before ||
-                        downloads.states.value[model] == ModelDownloadState.Ready
+                        downloads.states.value[model] is ModelDownloadState.Ready
                 }
                 val posted =
                     app
@@ -100,7 +103,7 @@ class BackgroundModelDownloadTest {
         val beforeLaunch = maxOf(saved[1].toLong(), downloads.partial(model).length())
         launch().use {
             compose.waitUntil(120_000) {
-                bytes() > beforeLaunch || downloads.states.value[model] == ModelDownloadState.Ready
+                bytes() > beforeLaunch || downloads.states.value[model] is ModelDownloadState.Ready
             }
             val work =
                 WorkManager
@@ -116,7 +119,7 @@ class BackgroundModelDownloadTest {
             downloads.cancel(model)
             compose.waitUntil(30_000) {
                 downloads.states.value[model] is ModelDownloadState.Missing ||
-                    downloads.states.value[model] == ModelDownloadState.Ready
+                    downloads.states.value[model] is ModelDownloadState.Ready
             }
             if (downloads.states.value[model] is ModelDownloadState.Missing) {
                 assertFalse(

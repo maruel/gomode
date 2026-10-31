@@ -105,10 +105,10 @@ class PublicModelDownloadTest {
             compose.activityRule.scenario.recreate()
             compose.activityRule.scenario.onActivity(::mount)
             compose.waitUntil(15 * 60_000) {
-                downloads.states.value[model] == ModelDownloadState.Ready ||
+                downloads.states.value[model] is ModelDownloadState.Ready ||
                     downloads.states.value[model] is ModelDownloadState.Failed
             }
-            assertEquals(ModelDownloadState.Ready, downloads.states.value[model])
+            assertTrue(downloads.states.value[model] is ModelDownloadState.Ready)
             val artifact =
                 runBlocking {
                     resolveHuggingFaceRelease(model.releaseUrl(), downloads.releasePin(model), OkHttpClient())
