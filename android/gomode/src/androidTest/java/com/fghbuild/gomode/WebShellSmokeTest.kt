@@ -5,6 +5,9 @@ import android.app.Instrumentation.ActivityResult
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Rect
+import android.os.SystemClock
+import android.view.InputDevice
+import android.view.MotionEvent
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -25,6 +28,7 @@ import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import com.fghbuild.gomode.data.SettingsRepository
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -123,6 +127,105 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
 
         pressActivityBack()
         waitForDom("SPA back returned home") { "location.pathname === '/'" }
+    }
+
+    @StandaloneHostedFixture
+    @Test
+    fun pinchGestureZoomsTheHostedFrontend() {
+        openWebShell()
+        waitForHostedFrontend()
+        val webView = waitForWebView()
+        composeRule.runOnUiThread {
+            assertTrue("Hosted WebView does not support zoom", webView.settings.supportZoom())
+            assertTrue("Hosted WebView does not use built-in zoom controls", webView.settings.builtInZoomControls)
+            assertFalse("Hosted WebView shows zoom buttons", webView.settings.displayZoomControls)
+        }
+        val initialScale = js("window.visualViewport.scale").toDouble()
+        val location = webViewScreenLocation()
+        val (width, height) = composeRule.runOnUiThread { webView.width to webView.height }
+        pinchOpen(
+            centerX = location[0] + width / 2f,
+            centerY = location[1] + height / 3f,
+            fromHalfSpan = 40f,
+            toHalfSpan = 200f,
+        )
+        waitForDom("pinch zoom enlarges the hosted page") {
+            "window.visualViewport.scale > ${initialScale + 0.1}"
+        }
+    }
+
+    // WebView zooms on real two-finger touch, so inject trusted multi-pointer events.
+    private fun pinchOpen(
+        centerX: Float,
+        centerY: Float,
+        fromHalfSpan: Float,
+        toHalfSpan: Float,
+    ) {
+        val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
+        val downTime = SystemClock.uptimeMillis()
+        val properties =
+            arrayOf(
+                MotionEvent.PointerProperties().apply {
+                    id = 0
+                    toolType = MotionEvent.TOOL_TYPE_FINGER
+                },
+                MotionEvent.PointerProperties().apply {
+                    id = 1
+                    toolType = MotionEvent.TOOL_TYPE_FINGER
+                },
+            )
+
+        fun event(
+            action: Int,
+            pointerCount: Int,
+            halfSpan: Float,
+        ) {
+            val coords =
+                Array(2) { index ->
+                    MotionEvent.PointerCoords().apply {
+                        x = centerX + if (index == 0) -halfSpan else halfSpan
+                        y = centerY
+                        pressure = 1f
+                        size = 1f
+                    }
+                }
+            val motion =
+                MotionEvent.obtain(
+                    downTime,
+                    SystemClock.uptimeMillis(),
+                    action,
+                    pointerCount,
+                    properties,
+                    coords,
+                    0,
+                    0,
+                    1f,
+                    1f,
+                    0,
+                    0,
+                    InputDevice.SOURCE_TOUCHSCREEN,
+                    0,
+                )
+            automation.injectInputEvent(motion, true)
+            motion.recycle()
+        }
+
+        val secondPointerDown = 1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT
+        event(MotionEvent.ACTION_DOWN, 1, fromHalfSpan)
+        SystemClock.sleep(TOUCH_EVENT_INTERVAL_MS)
+        event(MotionEvent.ACTION_POINTER_DOWN or secondPointerDown, 2, fromHalfSpan)
+        repeat(PINCH_STEPS) { step ->
+            SystemClock.sleep(TOUCH_EVENT_INTERVAL_MS)
+            event(
+                MotionEvent.ACTION_MOVE,
+                2,
+                fromHalfSpan + ((toHalfSpan - fromHalfSpan) * (step + 1) / PINCH_STEPS),
+            )
+        }
+        SystemClock.sleep(TOUCH_EVENT_INTERVAL_MS)
+        event(MotionEvent.ACTION_POINTER_UP or secondPointerDown, 2, toHalfSpan)
+        SystemClock.sleep(TOUCH_EVENT_INTERVAL_MS)
+        event(MotionEvent.ACTION_UP, 1, toHalfSpan)
     }
 
     @StandaloneHostedFixture
@@ -376,6 +479,8 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
 
     companion object {
         private const val SPA_BACK_TEST_PATH = "/gomode-e2e-route"
+        private const val PINCH_STEPS = 24
+        private const val TOUCH_EVENT_INTERVAL_MS = 16L
         private const val JS_TIMEOUT_MS = 5_000L
         private const val EXTERNAL_LINK_URL = "https://example.com/gomode-external-link"
         private val EXTERNAL_LINK_TEST_PAGE =

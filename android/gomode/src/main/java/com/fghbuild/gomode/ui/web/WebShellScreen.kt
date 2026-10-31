@@ -207,6 +207,11 @@ internal class ServiceWebPage(
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = true
+            // Pinch zoom serves hosted reading at large text sizes. The legacy
+            // on-screen zoom buttons would cover the hosted interface.
+            settings.setSupportZoom(true)
+            settings.builtInZoomControls = true
+            settings.displayZoomControls = false
             settings.setSupportMultipleWindows(true)
             enableWebAuthentication()
             addJavascriptInterface(hostBridge, "goModeHost")
