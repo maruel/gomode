@@ -66,56 +66,35 @@ disposed scopes publish `[]`. Browser conversations capture the scope at
 connection start with `captureFrontendVoiceTools()`, so they cannot dispatch
 same-named tools of a replacement scope.
 
-Hosts using the bridge directly follow the same wire contract:
+The bridge-3 messages, their fields, and their order are defined beside the
+browser implementation in
+[`FrontendVoiceTools.ts`](../web/src/FrontendVoiceTools.ts); hosts that use the
+bridge directly follow that contract. The shell checks `frontendDocument`,
+`frontendRequest`, `scope`, and the origin before mutating auth, publishing
+declarations, or dispatching a tool. Document and identity tokens live only in
+memory.
 
-1. Capture `window.goModeFrontendDocument`, `gomodeAuth`, and
-   `gomodeFrontendReadiness` at mount. Android injects the immutable document
-   Promise at document start; await it before posting authentication.
-2. Add `frontendDocument` and a fresh `frontendRequest` to the `gomodeAuth`
-   message. Both are nonblank strings of at most 128 characters; native checks
-   them with the trusted main-frame, origin, and auth checks before mutating
-   auth.
-3. Access-granting auth receives a `gomodeAuth.onmessage` acknowledgement with
-   `frontendDocument`, `frontendRequest`, and `frontendToken`. Accept it only
-   for that document and request, and keep the token with its preparation
-   owner. Logout, `authChanging`, and signed-out messages receive no
-   acknowledgement; queue those revocations in order so a disposed owner cannot
-   post a late login.
-4. Send `{document, token, scope, ready, tools}` through
-   `gomodeFrontendReadiness.postMessage(JSON.stringify(...))`. `tools` is the
-   complete declaration array, including `[]`. Explicit false must include
-   `tools: []` and clears native declarations and pending calls. Declarations
-   alone never authorize startup.
-
-`scope` is a nonblank ephemeral registration identifier of at most 128
-characters. Replace it when tools change, required data becomes unusable, or the
-product scope changes. It stops an already queued dispatch from reaching a
-replacement registration.
+`scope` is an ephemeral registration identifier of at most 128 characters.
+Replace it when tools change, required data becomes unusable, or the product
+scope changes; it stops an already queued dispatch from reaching a replacement
+registration. Declarations alone never authorize startup.
 
 ### Frontend tool invocation
 
 Tools return a JSON object synchronously or through a Promise and receive
 `{signal, isCurrent}`. Pass the signal to cancellable requests and check
 `isCurrent()` after awaited work, immediately before committing navigation or
-other host actions; cancellation cannot undo a committed action.
+other host actions; cancellation cannot undo a committed action. The shared
+runner bounds invocation to five seconds, aborts retired work, and rejects
+thrown, rejected, or non-object results.
 
-The shared runner bounds invocation to five seconds, aborts retired work, and
-rejects thrown, rejected, or non-object results.
-
-Bridge version 3 dispatches
-`window.dispatchGoModeVoiceTool({document, token, scope, invocation, name, args})`
-and completes with
-`gomodeFrontendToolResult.postMessage(JSON.stringify({document, token, scope,
-invocation, result}))`. Native owns the invocation identifier and its deadline,
-then checks origin, main frame, page, identity, registration, and call
-authority before settling the request once. Native cancellation invokes
-`window.cancelGoModeVoiceTool({document, token, scope, invocation})`; both sides
-retire pending work on cancellation, expiry, call or transport replacement,
-preparation invalidation, and disposal. Late, duplicate, old-page, subframe, and
-foreign-origin completions cannot settle a new invocation.
-
+Native owns the invocation identifier and its deadline, then checks page,
+identity, registration, and call authority before settling the request once.
+Both sides retire pending work on cancellation, expiry, call or transport
+replacement, preparation invalidation, and disposal. Late, duplicate, old-page,
+subframe, and foreign-origin completions cannot settle a new invocation.
 Navigation, reload, renderer loss, identity changes, and disposal revoke native
-preparation. Document and identity tokens live only in memory.
+preparation.
 
 New car calls wait for the selected page, native authentication, MCP catalog
 readiness, and explicit frontend preparation, all inside the 60-second startup

@@ -72,8 +72,10 @@ capabilities only when the WebView shell needs them.
 replace running them. Run the applicable instrumented tests on an emulator after
 Android changes. If none is installed or running, use `make android-start-emulator`
 to provision and start the stock AVD. Lack of an emulator is not a reason to skip
-these tests. Run focused native classes through `connectedDebugAndroidTest`, and
-`make android-voice-e2e` when voice transport changes. `make android-e2e`
+these tests. Run focused native classes through `connectedDebugAndroidTest`, or
+through `uv run --locked python scripts/android_e2e.py --class <Class[#method]>`
+when they need the hosted fixture, and `make android-voice-e2e` when voice
+transport changes. `make android-e2e`
 starts or reuses an emulator, serves a generic hosted frontend fixture, and
 runs shell-owned instrumented behavior. New instrumented coverage should
 validate shell-owned behavior through a generic hosted frontend. Mark tests

@@ -1,4 +1,20 @@
 // Owns authenticated frontend preparation, replaceable product scopes, and scoped voice-tool dispatch.
+//
+// Bridge-3 wire contract, as enforced here:
+// 1. Capture window.goModeFrontendDocument, gomodeAuth, and
+//    gomodeFrontendReadiness at mount; await the document Promise before auth.
+// 2. Every gomodeAuth message carries frontendDocument and a fresh
+//    frontendRequest: nonblank strings of at most 128 characters.
+// 3. Access-granting auth receives {frontendDocument, frontendRequest,
+//    frontendToken} on gomodeAuth.onmessage. Revocations receive none and are
+//    queued in order, so a disposed owner cannot post a late login.
+// 4. gomodeFrontendReadiness receives {document, token, scope, ready, tools};
+//    tools is the complete declaration array, including [].
+// Native dispatch calls window.dispatchGoModeVoiceTool({document, token, scope,
+// invocation, name, args}) and cancelGoModeVoiceTool with the same fields;
+// completion posts {document, token, scope, invocation, result} to
+// gomodeFrontendToolResult. This module ignores another document, identity,
+// registration, or a duplicate invocation.
 
 import { createSignal, untrack, type Accessor } from "solid-js";
 import type { ToolDeclaration } from "../../sdk/voicegateway/ts/v1/types.gen";

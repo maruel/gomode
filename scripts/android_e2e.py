@@ -2,7 +2,8 @@
 """Run hosted Go Mode tests and share device-scoped instrumentation execution.
 
 With --voice, serve internal/cmd/android-voice-fixture instead and select tests
-marked @VoiceFixture.
+marked @VoiceFixture. With --class, run one class or method instead of the
+fixture suite.
 """
 
 import argparse
@@ -224,6 +225,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--voice", action="store_true", help="serve the voice gateway fixture")
     parser.add_argument("--car-dial", action="store_true", help="exercise system dialing and both voice transports")
+    parser.add_argument(
+        "--class",
+        dest="test_class",
+        metavar="CLASS[#METHOD]",
+        help="run one class or method instead of the fixture suite",
+    )
     args = parser.parse_args()
     server: http.server.ThreadingHTTPServer | None = None
     fixture: subprocess.Popen[bytes] | None = None
@@ -243,7 +250,12 @@ def main() -> int:
 
     try:
         serial = selected_device_serial(adb_path())
-        selection = [] if args.car_dial else [f"-Pandroid.testInstrumentationRunnerArguments.annotation={annotation}"]
+        if args.test_class:
+            selection = [f"-Pandroid.testInstrumentationRunnerArguments.class={args.test_class}"]
+        elif args.car_dial:
+            selection = []
+        else:
+            selection = [f"-Pandroid.testInstrumentationRunnerArguments.annotation={annotation}"]
         return run_instrumented_tests(port, selection, serial, car_dial=args.car_dial)
     finally:
         if fixture is not None:
