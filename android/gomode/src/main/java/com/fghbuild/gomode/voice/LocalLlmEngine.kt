@@ -124,7 +124,8 @@ internal fun formatModelName(raw: String): String =
 internal fun backendsFor(model: LocalLlmModel): List<Backend> =
     when (model) {
         LocalLlmModel.LFM_3_1_7B,
-        -> listOf(Backend.GPU(), Backend.CPU())
+        LocalLlmModel.LFM_3_1_7B_32K,
+        -> listOf(Backend.GPU())
 
         LocalLlmModel.GEMMA_4_E2B,
         LocalLlmModel.GEMMA_4_E4B,
@@ -222,7 +223,7 @@ internal class LiteRtLmRunner(
     }
 
     override fun replaceConversation(config: ConversationConfig) {
-        if (model == LocalLlmModel.LFM_3_1_7B) {
+        if (model.isLfm3) {
             // LiteRT-LM #3165: short-convolution state survives conversation deletion.
             close()
             initialize(config)
@@ -237,7 +238,7 @@ internal class LiteRtLmRunner(
 
     override suspend fun generateStream(message: Message): Flow<Message> {
         val conv = checkNotNull(conversation) { "Local model session is closed" }
-        return if (model == LocalLlmModel.LFM_3_1_7B) {
+        return if (model.isLfm3) {
             val outgoing =
                 if (message.role == com.google.ai.edge.litertlm.Role.TOOL) {
                     Message.tool(
@@ -576,7 +577,7 @@ internal class LocalLlmEngine(
                         }
                         calls.addAll(reply.toolCalls)
                         reply.channels.forEach { (name, text) -> channels[name] = channels[name].orEmpty() + text }
-                        if (model == LocalLlmModel.LFM_3_1_7B) return@collect
+                        if (model.isLfm3) return@collect
                         reply.contents.contents.filterIsInstance<Content.Text>().forEach { content ->
                             if (!malformed) {
                                 if (decided) {
@@ -612,7 +613,7 @@ internal class LocalLlmEngine(
                     return null
                 }
                 if (!malformed && !nativeParseFailure) {
-                    if (model == LocalLlmModel.LFM_3_1_7B) {
+                    if (model.isLfm3) {
                         val parsed = parseLfm3Reply(replayText.toString(), checkNotNull(toolValidator))
                         if (parsed.text.isNotEmpty()) onDelta(parsed.text)
                         if (parsed.thought.isNotEmpty()) {
@@ -717,9 +718,9 @@ internal class LocalLlmEngine(
                 ),
             // LFM3's grammar owns thought boundaries, including literal markers in arguments.
             // Null inherits metadata channels and would strip values before our parser sees them.
-            channels = if (model == LocalLlmModel.LFM_3_1_7B) emptyList() else null,
+            channels = if (model.isLfm3) emptyList() else null,
             tools =
-                if (model == LocalLlmModel.LFM_3_1_7B) {
+                if (model.isLfm3) {
                     emptyList()
                 } else {
                     context.tools.map { descriptor ->
@@ -739,7 +740,7 @@ internal class LocalLlmEngine(
                     }
                 },
             extraContext =
-                if (model == LocalLlmModel.LFM_3_1_7B) {
+                if (model.isLfm3) {
                     mapOf(
                         "tools" to
                             context.tools.map { descriptor ->
@@ -759,7 +760,7 @@ internal class LocalLlmEngine(
                     emptyMap()
                 },
             thinkingConfig =
-                if (model == LocalLlmModel.LFM_3_1_7B) {
+                if (model.isLfm3) {
                     com.google.ai.edge.litertlm
                         .ThinkingConfig(enableThinking = false)
                 } else {

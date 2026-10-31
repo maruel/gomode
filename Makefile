@@ -29,7 +29,7 @@ help:
 	@printf '  %-27s - %s\n' 'make screenshots-update' 'Capture and publish repeatable native Android scenes'
 	@printf '  %-27s - %s\n' 'make screenshots-check' 'Compare native Android captures with committed baselines'
 	@printf '  %-27s - %s\n' 'make screenshots-generate' 'Render native captures once without baseline checks'
-	@printf '  %-27s - %s\n' 'make android-export-lfm' 'Export LFM3 with 64K FP16 caches (slow, downloads source weights)'
+	@printf '  %-27s - %s\n' 'make android-export-lfm' 'Export missing 32K/64K LFM3 bundles (slow, downloads source weights)'
 	@printf '  %-27s - %s\n' 'make android-push' 'Build and install Go Mode on connected devices'
 	@printf '  %-27s - %s\n' 'make android-setup-emulator' 'Install emulator image and create the test AVD'
 	@printf '  %-27s - %s\n' 'make android-start-emulator' 'Start or reuse the Android emulator'

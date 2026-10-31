@@ -49,6 +49,7 @@ internal sealed interface ModelDownloadState {
 
     data class Downloading(
         val progress: ModelTransferProgress,
+        val totalBytes: Long? = null,
     ) : ModelDownloadState
 
     data class Failed(
@@ -114,7 +115,7 @@ internal class LocalModelDownloads(
                     if (discard) {
                         workDataOf(MODEL_KEY to model.name, DISCARD_KEY to true)
                     } else {
-                        modelDownloadData(model, checkNotNull(model.artifact()))
+                        model.artifact()?.let { modelDownloadData(model, it) } ?: workDataOf(MODEL_KEY to model.name)
                     },
                 ).addTag(if (discard) DISCARD_TAG else DOWNLOAD_TAG)
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
@@ -168,7 +169,7 @@ internal class LocalModelDownloads(
     ): ModelDownloadState {
         // A published file wins a race between completion and cancellation; never discard an installed model.
         if (isInstalled(model)) return ModelDownloadState.Ready
-        if (model.artifact() == null) return ModelDownloadState.Unavailable
+        if (model.artifact() == null && model.releaseUrl() == null) return ModelDownloadState.Unavailable
         val bytes = partial(model).length()
         if (work == null) return ModelDownloadState.Missing(bytes)
         return when (work.state) {
@@ -189,6 +190,7 @@ internal class LocalModelDownloads(
                                 ModelTransferStage.DOWNLOADING
                             },
                         ),
+                        work.progress.getLong(ModelDownloadWorker.SIZE_KEY, 0).takeIf { it > 0 },
                     )
                 }
             }
@@ -220,6 +222,8 @@ internal class LocalModelDownloads(
     ): T = checkNotNull(fileAccess[model]).withLock { operation() }
 
     internal fun partial(model: LocalLlmModel): File = File(directory, "${model.fileName}.part")
+
+    internal fun releasePin(model: LocalLlmModel): File = File(directory, "${model.fileName}.release.json")
 
     internal val directory: File get() = File(context.noBackupFilesDir, "models")
 

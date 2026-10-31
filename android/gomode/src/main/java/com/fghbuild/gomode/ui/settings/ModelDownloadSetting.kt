@@ -58,7 +58,7 @@ internal fun ModelDownloadControls(
 ) {
     val locale = LocalConfiguration.current.locales[0]
     val format = remember(locale) { ModelDownloadFormat(locale) }
-    val size = model.artifact()?.size
+    val size = (state as? ModelDownloadState.Downloading)?.totalBytes ?: model.artifact()?.size
     val sizeLabel = size?.let(format::bytes)
     val partial =
         when (state) {
@@ -110,9 +110,10 @@ internal fun ModelDownloadControls(
                 }
 
                 is ModelDownloadState.Downloading -> {
-                    val total = checkNotNull(size)
-                    val percent = format.percent(state.progress.bytes, total)
-                    if (state.progress.stage == ModelTransferStage.CHECKING) {
+                    val percent = size?.let { format.percent(state.progress.bytes, it) }
+                    if (size == null) {
+                        "Resolving model release…"
+                    } else if (state.progress.stage == ModelTransferStage.CHECKING) {
                         "Checking saved download · $percent"
                     } else {
                         val received = format.bytes(state.progress.bytes)
@@ -131,10 +132,14 @@ internal fun ModelDownloadControls(
             modifier = Modifier.testTag("gomode-model-download-status"),
         )
         if (state is ModelDownloadState.Downloading) {
-            LinearProgressIndicator(
-                progress = { (state.progress.bytes.toFloat() / checkNotNull(size)).coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxWidth().testTag("gomode-model-download-progress"),
-            )
+            if (size == null) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth().testTag("gomode-model-download-progress"))
+            } else {
+                LinearProgressIndicator(
+                    progress = { (state.progress.bytes.toFloat() / size).coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth().testTag("gomode-model-download-progress"),
+                )
+            }
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (state is ModelDownloadState.Missing || state is ModelDownloadState.Failed) {

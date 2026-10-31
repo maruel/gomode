@@ -43,6 +43,10 @@ internal fun LocalLlmModel.artifact(): ModelArtifact? {
             size = 1_787_468_976
             sha256 = "3f8f9c459057ee5c4d6ac44711274b77cb870d74f773d589639801faec28b291"
         }
+
+        LocalLlmModel.LFM_3_1_7B_32K -> {
+            return null
+        }
     }
     return ModelArtifact(
         fileName,
@@ -51,3 +55,10 @@ internal fun LocalLlmModel.artifact(): ModelArtifact? {
         sha256,
     )
 }
+
+internal fun LocalLlmModel.releaseUrl(): HttpUrl? =
+    if (this == LocalLlmModel.LFM_3_1_7B_32K) {
+        "https://huggingface.co/maruel/LFM3-1.7B-LiteRT-INT8-32K/resolve/main/$fileName".toHttpUrl()
+    } else {
+        null
+    }

@@ -116,8 +116,8 @@ class LocalLlmEngineTest {
         assertEquals(2588, engine.descriptor.modelSizeMb)
         assertEquals("Gemma 4 E2B", formatModelName("gemma-4-E2B-it"))
         assertEquals("Gemma 4 E4B", formatModelName("gemma-4-E4B-it.litertlm"))
-        assertEquals("LFM3 1.7B", formatModelName("LFM3-1.7B_int8_64k_fp16.litertlm"))
-        assertEquals("LFM3 1.7B", formatModelName("LFM3-1.7B"))
+        assertEquals("LFM3 1.7B · 64K", formatModelName("LFM3-1.7B_int8_64k_fp16.litertlm"))
+        assertEquals("LFM3 1.7B · 64K", formatModelName("LFM3-1.7B"))
         assertEquals("custom-model", formatModelName("custom-model.litertlm"))
         assertEquals("Qwen2-0.5B-Instruct", formatModelName("Qwen2-0.5B-Instruct"))
         engine.close()
@@ -138,7 +138,7 @@ class LocalLlmEngineTest {
         val engine = LocalLlmEngine(app, model = LocalLlmModel.GEMMA_4_E4B)
         assertEquals("Gemma 4 E4B", engine.modelName)
         val lfmEngine = LocalLlmEngine(app, model = LocalLlmModel.LFM_3_1_7B)
-        assertEquals("LFM3 1.7B", lfmEngine.modelName)
+        assertEquals("LFM3 1.7B · 64K", lfmEngine.modelName)
         engine.close()
         lfmEngine.close()
     }
@@ -1223,7 +1223,9 @@ class LocalLlmEngineTest {
     fun `lfm raw generation preserves literal thought markers and rejects malformed thoughts before speech`() =
         runTest {
             val literal = "abc<think>keep me</think>def"
-            for (malformed in listOf(false, true)) {
+            for ((model, malformed) in LocalLlmModel.entries.filter { it.isLfm3 }.flatMap { model ->
+                listOf(model to false, model to true)
+            }) {
                 val spoken = StringBuilder()
                 var dispatched = false
                 val engine =
@@ -1255,7 +1257,7 @@ class LocalLlmEngineTest {
                                 override fun close() = Unit
                             }
                         },
-                        model = LocalLlmModel.LFM_3_1_7B,
+                        model = model,
                     )
                 try {
                     engine.initialize(sessionContext)
@@ -1288,56 +1290,57 @@ class LocalLlmEngineTest {
         }
 
     @Test
-    fun `lfm model configures 64K context disciplined sampler and preserves native boundary values`() =
+    fun `lfm variants configure disciplined sampler and preserve native boundary values`() =
         runTest {
-            val configs = mutableListOf<ConversationConfig>()
-            val engine =
-                LocalLlmEngine(
-                    RuntimeEnvironment.getApplication(),
-                    { _, config ->
-                        configs.add(config)
-                        object : EdgeLlmRunner {
-                            override val isModelLoaded = true
-                            override val backendName = "GPU"
+            for (model in LocalLlmModel.entries.filter { it.isLfm3 }) {
+                val configs = mutableListOf<ConversationConfig>()
+                val engine =
+                    LocalLlmEngine(
+                        RuntimeEnvironment.getApplication(),
+                        { _, config ->
+                            configs.add(config)
+                            object : EdgeLlmRunner {
+                                override val isModelLoaded = true
+                                override val backendName = "GPU"
 
-                            override suspend fun generateStream(message: Message) = flowOf(Message.model("Ready."))
+                                override suspend fun generateStream(message: Message) = flowOf(Message.model("Ready."))
 
-                            override fun replaceConversation(config: ConversationConfig) {
-                                configs.add(config)
+                                override fun replaceConversation(config: ConversationConfig) {
+                                    configs.add(config)
+                                }
+
+                                override fun close() = Unit
                             }
-
-                            override fun close() = Unit
-                        }
-                    },
-                    model = LocalLlmModel.LFM_3_1_7B,
+                        },
+                        model = model,
+                    )
+                val schema =
+                    Json.parseToJsonElement(
+                        """{"type":"object","properties":{"service":{"type":"string","enum":["media"]},""" +
+                            """"id":{"type":"integer","enum":[9007199254740993]}},"required":["service"]}""",
+                    )
+                engine.initialize(
+                    sessionContext.copy(tools = listOf(sessionContext.tools.single().copy(inputSchema = schema))),
                 )
-            val schema =
-                Json.parseToJsonElement(
-                    """{"type":"object","properties":{"service":{"type":"string","enum":["media"]},""" +
-                        """"id":{"type":"integer","enum":[9007199254740993]}},"required":["service"]}""",
-                )
-            engine.initialize(
-                sessionContext.copy(tools = listOf(sessionContext.tools.single().copy(inputSchema = schema))),
-            )
-            val config = configs.single()
-            assertEquals(emptyList<com.google.ai.edge.litertlm.Channel>(), config.channels)
-            val declarations = config.extraContext["tools"] as List<*>
-            val declaration = declarations.single() as Map<*, *>
-            val function = declaration["function"] as Map<*, *>
-            assertEquals(JsonParser.parseString(schema.toString()), function["parameters"])
-            val numericEnum =
-                (function["parameters"] as com.google.gson.JsonObject)
-                    .getAsJsonObject("properties")
-                    .getAsJsonObject("id")
-                    .getAsJsonArray("enum")
-            assertEquals("9007199254740993", numericEnum.single().asString)
-            val sampler = checkNotNull(config.samplerConfig)
-            assertEquals(50, sampler.topK)
-            assertEquals(1.0, sampler.topP, 0.0)
-            assertEquals(0.1, sampler.temperature, 0.0)
-            assertEquals(65_536, LocalLlmModel.LFM_3_1_7B.maxNumTokens)
-            val backends = backendsFor(LocalLlmModel.LFM_3_1_7B)
-            assertEquals(listOf("GPU", "CPU"), backends.map { it.name })
-            engine.closeAndJoin()
+                val config = configs.single()
+                assertEquals(emptyList<com.google.ai.edge.litertlm.Channel>(), config.channels)
+                val declarations = config.extraContext["tools"] as List<*>
+                val declaration = declarations.single() as Map<*, *>
+                val function = declaration["function"] as Map<*, *>
+                assertEquals(JsonParser.parseString(schema.toString()), function["parameters"])
+                val numericEnum =
+                    (function["parameters"] as com.google.gson.JsonObject)
+                        .getAsJsonObject("properties")
+                        .getAsJsonObject("id")
+                        .getAsJsonArray("enum")
+                assertEquals("9007199254740993", numericEnum.single().asString)
+                val sampler = checkNotNull(config.samplerConfig)
+                assertEquals(50, sampler.topK)
+                assertEquals(1.0, sampler.topP, 0.0)
+                assertEquals(0.1, sampler.temperature, 0.0)
+                val backends = backendsFor(model)
+                assertEquals(listOf("GPU"), backends.map { it.name })
+                engine.closeAndJoin()
+            }
         }
 }

@@ -229,6 +229,13 @@ class VoiceSettingsTest {
         }
         val toggle = composeRule.onNodeWithTag("gomode-show-service-on-lock-screen")
         toggle.performScrollTo().assertIsOff()
+        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").performScrollTo().performClick()
+        composeRule.waitUntil {
+            repository.settings.value.localLlmModel == com.fghbuild.gomode.data.LocalLlmModel.LFM_3_1_7B_32K
+        }
+        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").assertIsSelected()
+        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B").assertTextContains("64K", substring = true)
+        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").assertTextContains("32K", substring = true)
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val device = UiDevice.getInstance(instrumentation)
         val directory = instrumentation.targetContext.getExternalFilesDir(null)
@@ -402,6 +409,13 @@ class VoiceSettingsTest {
             repository.settings.value.localLlmModel == com.fghbuild.gomode.data.LocalLlmModel.LFM_3_1_7B
         }
         composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B").assertIsSelected()
+        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").performScrollTo().performClick()
+        composeRule.waitUntil {
+            repository.settings.value.localLlmModel == com.fghbuild.gomode.data.LocalLlmModel.LFM_3_1_7B_32K
+        }
+        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").assertIsSelected()
+        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B").assertTextContains("64K", substring = true)
+        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").assertTextContains("32K", substring = true)
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val device = UiDevice.getInstance(instrumentation)
         val directory = instrumentation.targetContext.getExternalFilesDir(null)
@@ -412,6 +426,7 @@ class VoiceSettingsTest {
         composeRule.onNodeWithTag("gomode-model-GEMMA_4_E2B").performScrollTo().assertIsNotEnabled()
         composeRule.onNodeWithTag("gomode-model-GEMMA_4_E4B").performScrollTo().assertIsNotEnabled()
         composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B").performScrollTo().assertIsNotEnabled()
+        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").performScrollTo().assertIsNotEnabled()
     }
 
     private class MemoryPreferences : DataStore<Preferences> {

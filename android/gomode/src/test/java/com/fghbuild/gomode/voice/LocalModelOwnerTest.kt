@@ -104,14 +104,14 @@ class LocalModelOwnerTest {
             val third = async { owner.acquire() }
             testScheduler.runCurrent()
             assertFalse(second.await().engine.isModelLoaded)
-            assertEquals("LFM3 1.7B", third.await().engine.modelName)
+            assertEquals("LFM3 1.7B · 64K", third.await().engine.modelName)
             assertEquals(
                 listOf(
                     "allocate Gemma 4 E2B",
                     "close Gemma 4 E2B",
                     "allocate Gemma 4 E4B",
                     "close Gemma 4 E4B",
-                    "allocate LFM3 1.7B",
+                    "allocate LFM3 1.7B · 64K",
                 ),
                 events,
             )

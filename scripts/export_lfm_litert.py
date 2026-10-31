@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run --locked --script
-# Export LFM3 with a 64K FP16 cache, source-faithful tools, and validated LiteRT metadata.
+# Export LFM3 with a 32K or 64K FP16 cache, source-faithful tools, and validated LiteRT metadata.
 # /// script
 # requires-python = ">=3.12,<3.13"
 # dependencies = [
@@ -57,8 +57,6 @@ MODEL_ID = "LiquidAI/LFM3-1.7B"
 MODEL_REVISION = "40ebe0aa6662c9d40389c2f5d565b6a2c6aebacd"
 EXPORTER_REVISION = "f61d0b792013300ae7a1ca215d8c2f9de5ef4adf"
 EXTENSION_REVISION = "f3b7baad40ec0f6a4b413912a68497bf8c5d8aa3"
-CONTEXT_LENGTH = 65_536
-OUTPUT_NAME = "LFM3-1.7B_int8_64k_fp16.litertlm"
 TEMPLATE_PATH = pathlib.Path(__file__).with_name("lfm3_chat_template.jinja")
 SHORT_CONV_FORWARD = patch.Lfm3LiteRTShortConv.forward
 
@@ -113,7 +111,7 @@ def validate_template(template: str) -> None:
         raise ValueError("Later user turns changed the rendered prompt prefix")
 
 
-def prepare(output_dir: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+def prepare(output_dir: pathlib.Path, context_length: int) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
     snapshot = pathlib.Path(
         snapshot_download(
             MODEL_ID,
@@ -122,8 +120,8 @@ def prepare(output_dir: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, pathl
         )
     )
     config = json.loads((snapshot / "config.json").read_text(encoding="utf-8"))
-    if config["model_type"] != "lfm3" or config["max_position_embeddings"] < CONTEXT_LENGTH:
-        raise ValueError("Checkpoint does not support LFM3 at 64K context")
+    if config["model_type"] != "lfm3" or config["max_position_embeddings"] < context_length:
+        raise ValueError(f"Checkpoint does not support LFM3 at {context_length:,} tokens")
     if [config["layer_types"].count(kind) for kind in ("full_attention", "sliding_attention", "conv")] != [6, 5, 13]:
         raise ValueError("Unexpected LFM3 attention/convolution layout")
 
@@ -139,7 +137,7 @@ def prepare(output_dir: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, pathl
     metadata.start_token.token_ids.ids.append(config["bos_token_id"])
     metadata.stop_tokens.add().token_ids.ids.append(config["eos_token_id"])
     metadata.pad_token.token_ids.ids.append(config["pad_token_id"])
-    metadata.max_num_tokens = CONTEXT_LENGTH
+    metadata.max_num_tokens = context_length
     # LiteRT-LM has no LFM3 output parser. Its generic processor preserves the
     # model's trained XML-like format; Go Mode parses it at the runner boundary.
     metadata.llm_model_type.generic_model.SetInParent()
@@ -203,7 +201,7 @@ def fp16_export() -> Iterator[None]:
         transformers.AttentionInterface.register("lrt_transposed_attention", attention.transposed_attention)
 
 
-def validate_bundle(path: pathlib.Path) -> None:
+def validate_bundle(path: pathlib.Path, context_length: int) -> None:
     """Inspect metadata and every graph signature; changing a token limit is insufficient."""
     header = litertlm_peek.read_litertlm_header(str(path), sys.stdout)
     sections = header.SectionMetadata()
@@ -223,12 +221,12 @@ def validate_bundle(path: pathlib.Path) -> None:
                     raise ValueError("LLM metadata exceeds 1 MiB")
                 metadata = llm_metadata_pb2.LlmMetadata.FromString(data[section.BeginOffset() : section.EndOffset()])
                 if (
-                    metadata.max_num_tokens != CONTEXT_LENGTH
+                    metadata.max_num_tokens != context_length
                     or not metadata.llm_model_type.HasField("generic_model")
                     or not metadata.supports_function_calling
                     or not metadata.supports_thinking
                 ):
-                    raise ValueError("Bundle lost its 64K LFM3 tool/thinking metadata")
+                    raise ValueError(f"Bundle lost its {context_length:,}-token LFM3 tool/thinking metadata")
                 validate_template(metadata.jinja_prompt_template)
             elif section.DataType() == schema.AnySectionDataType.TFLiteModel:
                 model = tflite.Model.GetRootAs(data, section.BeginOffset())
@@ -276,8 +274,8 @@ def validate_bundle(path: pathlib.Path) -> None:
                                 raise ValueError(f"Cache {name} is not FP16")
                             if name.startswith(("k_", "v_")):
                                 shape = [tensor.Shape(i) for i in range(tensor.ShapeLength())]
-                                if CONTEXT_LENGTH not in shape:
-                                    raise ValueError(f"Cache {name} cannot hold 64K tokens: {shape}")
+                                if context_length not in shape:
+                                    raise ValueError(f"Cache {name} cannot hold {context_length:,} tokens: {shape}")
                             counts[name[0]] += 1
                     if counts != {"k": 11, "v": 11, "c": 13}:
                         raise ValueError(f"Unexpected cache inputs: {counts}")
@@ -286,7 +284,9 @@ def validate_bundle(path: pathlib.Path) -> None:
                         if entry.Name().decode().startswith("kv_cache_"):
                             if graph.Tensors(entry.TensorIndex()).Type() != tflite.TensorType.FLOAT16:
                                 raise ValueError("Cache output is not FP16")
-    print("Validated INT8 matrix weights, 65,536-token FP16 caches and structured tool metadata", flush=True)
+    print(
+        f"Validated INT8 matrix weights, {context_length:,}-token FP16 caches and structured tool metadata", flush=True
+    )
 
 
 def export_model(snapshot: pathlib.Path, output_dir: pathlib.Path, options: dict[str, object]) -> None:
@@ -308,12 +308,12 @@ def export_model(snapshot: pathlib.Path, output_dir: pathlib.Path, options: dict
         )
 
 
-def finalize_bundle(bundle: pathlib.Path, output_dir: pathlib.Path) -> None:
+def finalize_bundle(bundle: pathlib.Path, output_dir: pathlib.Path, context_length: int) -> None:
     """Validate a completed conversion and record its inputs and current workflow."""
-    target = output_dir / OUTPUT_NAME
+    target = output_dir / f"LFM3-1.7B_int8_{context_length // 1024}k_fp16.litertlm"
     if target.exists():
         raise ValueError(f"Refusing to overwrite {target}")
-    validate_bundle(bundle)
+    validate_bundle(bundle, context_length)
     write_json(
         output_dir / "manifest.json",
         {
@@ -324,7 +324,7 @@ def finalize_bundle(bundle: pathlib.Path, output_dir: pathlib.Path) -> None:
             "file": target.name,
             "sha256": sha256_file(bundle),
             "size_bytes": bundle.stat().st_size,
-            "context_length": CONTEXT_LENGTH,
+            "context_length": context_length,
             "cache_dtype": "float16",
             "weights": "Per-channel INT8 matrix weights; convolution and normalization constants FP32",
             "template_sha256": sha256_file(TEMPLATE_PATH),
@@ -346,30 +346,15 @@ def finalize_bundle(bundle: pathlib.Path, output_dir: pathlib.Path) -> None:
     print("Inference quality and device performance are not validated by this export.")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Export LFM3-1.7B to 64K INT8/FP16 LiteRT-LM.")
-    parser.add_argument(
-        "--output-dir",
-        type=pathlib.Path,
-        default=pathlib.Path("models/lfm3-1.7b-int8-64k-fp16"),
-        help="Directory for exported files (default: %(default)s).",
-    )
-    parser.add_argument(
-        "--prepare-only", action="store_true", help="Validate export inputs without downloading weights."
-    )
-    parser.add_argument("--validate-only", type=pathlib.Path, help="Inspect an existing export without converting it.")
-    args = parser.parse_args()
-    if args.validate_only is not None:
-        validate_bundle(args.validate_only.resolve())
-        return 0
-    output_dir = args.output_dir.resolve()
+def export_variant(output_dir: pathlib.Path, context_length: int, prepare_only: bool) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    target = output_dir / OUTPUT_NAME
+    target = output_dir / f"LFM3-1.7B_int8_{context_length // 1024}k_fp16.litertlm"
     if target.exists():
-        parser.error(f"Refusing to overwrite {target}")
-    snapshot, recipe_path, metadata_path = prepare(output_dir)
+        print(f"Skipping existing bundle: {target}", flush=True)
+        return
+    snapshot, recipe_path, metadata_path = prepare(output_dir, context_length)
     options = {
-        "cache_length": CONTEXT_LENGTH,
+        "cache_length": context_length,
         "experimental_use_fp16": True,
         "keep_temporary_files": True,
         "litert_lm_llm_metadata_override": str(metadata_path),
@@ -387,19 +372,52 @@ def main() -> int:
         output_dir / "environment.json",
         {distribution.metadata["Name"]: distribution.version for distribution in importlib.metadata.distributions()},
     )
-    print(f"Prepared pinned 64K INT8/FP16 LFM3 export inputs in {output_dir}", flush=True)
-    if args.prepare_only:
-        return 0
+    print(f"Prepared pinned {context_length:,}-token INT8/FP16 LFM3 export inputs in {output_dir}", flush=True)
+    if prepare_only:
+        return
     snapshot_download(MODEL_ID, revision=MODEL_REVISION, allow_patterns=["*.safetensors"])
     work = output_dir / "work"
     if work.exists():
-        parser.error(f"Export work already exists at {work}; inspect it before choosing a fresh output directory")
+        raise FileExistsError(
+            f"Export work already exists at {work}; inspect it before choosing a fresh output directory"
+        )
     export_model(snapshot, work, options)
     bundles = list(work.glob("*.litertlm"))
     if len(bundles) != 1:
         raise RuntimeError(f"Expected one exported bundle, found {bundles}")
     bundle = bundles[0]
-    finalize_bundle(bundle, output_dir)
+    finalize_bundle(bundle, output_dir, context_length)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Export missing 32K and 64K LFM3 INT8/FP16 LiteRT-LM bundles.")
+    parser.add_argument(
+        "--context-length",
+        type=int,
+        choices=(32_768, 65_536),
+        help="Export only this context size (default: both; --validate-only defaults to 65536).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=pathlib.Path,
+        help="Export directory for --context-length (default: models/lfm3-1.7b-int8-CONTEXTk-fp16).",
+    )
+    parser.add_argument(
+        "--prepare-only", action="store_true", help="Validate export inputs without downloading weights."
+    )
+    parser.add_argument("--validate-only", type=pathlib.Path, help="Inspect an existing export without converting it.")
+    args = parser.parse_args()
+    if args.validate_only is not None:
+        validate_bundle(args.validate_only.resolve(), args.context_length or 65_536)
+        return 0
+    if args.output_dir is not None and args.context_length is None:
+        parser.error("--output-dir requires --context-length to select a single variant")
+    contexts = (args.context_length,) if args.context_length is not None else (32_768, 65_536)
+    for context_length in contexts:
+        output_dir = (
+            args.output_dir or pathlib.Path(f"models/lfm3-1.7b-int8-{context_length // 1024}k-fp16")
+        ).resolve()
+        export_variant(output_dir, context_length, args.prepare_only)
     return 0
 
 

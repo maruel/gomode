@@ -110,4 +110,42 @@ class ModelDownloadSettingsTest {
             ),
         )
     }
+
+    @Test
+    fun unpublishedVariantResolvesBeforeShowingMeasuredDownloadProgress() {
+        var state by mutableStateOf<ModelDownloadState>(ModelDownloadState.Missing(0))
+        compose.setContent {
+            MaterialTheme {
+                Column(Modifier.statusBarsPadding().padding(24.dp)) {
+                    ModelDownloadControls(
+                        LocalLlmModel.LFM_3_1_7B_32K,
+                        state,
+                        enabled = true,
+                        onDownload = {
+                            state =
+                                ModelDownloadState.Downloading(ModelTransferProgress(0, ModelTransferStage.CHECKING))
+                        },
+                        onCancel = { state = ModelDownloadState.Missing(0) },
+                    )
+                }
+            }
+        }
+        compose.onNodeWithTag("gomode-model-download").performClick()
+        compose.onNodeWithTag("gomode-model-download-status").assertTextContains("Resolving model release…")
+        compose.onNodeWithTag("gomode-model-download-progress").assertExists()
+        capture("32k-resolving")
+        compose.runOnIdle {
+            state =
+                ModelDownloadState.Downloading(
+                    ModelTransferProgress(18_000_000, ModelTransferStage.DOWNLOADING),
+                    totalBytes = 1_800_000_000,
+                )
+        }
+        compose
+            .onNodeWithTag("gomode-model-download-status")
+            .assertTextContains("Downloading · 1.0% · 18.0 MB of 1.80 GB")
+        capture("32k-downloading")
+        compose.onNodeWithTag("gomode-model-download-cancel").performClick()
+        compose.onNodeWithTag("gomode-model-download-status").assertTextContains("Not downloaded")
+    }
 }

@@ -82,7 +82,7 @@ enum class LocalLlmModel(
         temperature = 1.0,
     ),
     LFM_3_1_7B(
-        label = "LFM3 1.7B",
+        label = "LFM3 1.7B · 64K",
         fileName = "LFM3-1.7B_int8_64k_fp16.litertlm",
         maxNumTokens = 65_536,
         topK = 50,
@@ -90,12 +90,23 @@ enum class LocalLlmModel(
         temperature = 0.1,
         alias = "LFM3-1.7B",
     ),
+    LFM_3_1_7B_32K(
+        label = "LFM3 1.7B · 32K",
+        fileName = "LFM3-1.7B_int8_32k_fp16.litertlm",
+        maxNumTokens = 32_768,
+        topK = 50,
+        topP = 1.0,
+        temperature = 0.1,
+    ),
     ;
+
+    val isLfm3: Boolean get() = this == LFM_3_1_7B || this == LFM_3_1_7B_32K
 
     fun matches(raw: String): Boolean {
         val clean = raw.removeSuffix(".litertlm")
         val fileStem = fileName.removeSuffix(".litertlm")
-        return clean.equals(label, ignoreCase = true) ||
+        return (this == LFM_3_1_7B && clean.equals("LFM3 1.7B", ignoreCase = true)) ||
+            clean.equals(label, ignoreCase = true) ||
             clean.equals(fileStem, ignoreCase = true) ||
             clean.equals(alias, ignoreCase = true)
     }

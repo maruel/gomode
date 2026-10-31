@@ -241,6 +241,10 @@ class SettingsRepositoryTest {
             restored.updateLocalLlmModel(LocalLlmModel.LFM_3_1_7B)
             val lfmRestored = SettingsRepository(store)
             lfmRestored.awaitSettings("LFM restored") { it.localLlmModel == LocalLlmModel.LFM_3_1_7B }
+            lfmRestored.updateLocalLlmModel(LocalLlmModel.LFM_3_1_7B_32K)
+            SettingsRepository(store).awaitSettings("32K selection restored") {
+                it.localLlmModel == LocalLlmModel.LFM_3_1_7B_32K
+            }
             for (saved in listOf("LFM_2_5_1_2B", "LFM_2_5_2_6B")) {
                 store.edit { it[stringPreferencesKey("LOCAL_LLM_MODEL")] = saved }
                 SettingsRepository(store).awaitSettings("removed LFM selection migrates") {
@@ -464,6 +468,9 @@ class SettingsRepositoryTest {
             LocalLlmModel.fromRawName("LFM3-1.7B_int8_64k_fp16"),
         )
         assertEquals(LocalLlmModel.LFM_3_1_7B, LocalLlmModel.fromRawName("LFM3-1.7B"))
+        assertEquals(LocalLlmModel.LFM_3_1_7B, LocalLlmModel.fromRawName("LFM3 1.7B · 64K"))
+        assertEquals(LocalLlmModel.LFM_3_1_7B_32K, LocalLlmModel.fromRawName("LFM3 1.7B · 32K"))
+        assertEquals(LocalLlmModel.LFM_3_1_7B_32K, LocalLlmModel.fromRawName("LFM3-1.7B_int8_32k_fp16.litertlm"))
         assertNull(LocalLlmModel.fromRawName("unknown-model"))
         assertNull(LocalLlmModel.fromRawName("lfm"))
         assertNull(LocalLlmModel.fromRawName("lfm2.5-1.2b"))

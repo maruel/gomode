@@ -138,8 +138,7 @@ def main() -> int:
     parser.add_argument(
         "repo_id",
         nargs="?",
-        default="LFM3-1.7B-LiteRT-INT8-64K",
-        help="Repository name under your HF account, or OWNER/NAME (default: %(default)s).",
+        help="Repository name or OWNER/NAME (default: LFM3-1.7B-LiteRT-INT8-CONTEXTK from manifest).",
     )
     parser.add_argument(
         "--output-dir",
@@ -148,9 +147,12 @@ def main() -> int:
         help="Export directory (default: %(default)s).",
     )
     args = parser.parse_args()
-    validate_repo_id(args.repo_id)
+    if args.repo_id is not None:
+        validate_repo_id(args.repo_id)
     output_dir = args.output_dir.resolve()
     manifest = prepare_release(output_dir)
+    if args.repo_id is None:
+        args.repo_id = f"LFM3-1.7B-LiteRT-INT8-{manifest.context_length // 1024}K"
     names = sorted((*RELEASE_FILES, manifest.file))
     destination = args.repo_id if "/" in args.repo_id else f"signed-in account / {args.repo_id}"
     print(f"Release for {destination}:\n" + "\n".join(f"  {name}" for name in names), flush=True)

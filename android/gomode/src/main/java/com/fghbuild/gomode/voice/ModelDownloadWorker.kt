@@ -46,8 +46,8 @@ class ModelDownloadWorker(
         return downloads.withModelAccess(model) {
             if (inputData.getBoolean(LocalModelDownloads.DISCARD_KEY, false)) {
                 val file = downloads.partial(model)
-                if (!file.exists() ||
-                    file.delete()
+                if ((!file.exists() || file.delete()) &&
+                    (!downloads.releasePin(model).exists() || downloads.releasePin(model).delete())
                 ) {
                     Result.success()
                 } else {
@@ -61,23 +61,33 @@ class ModelDownloadWorker(
 
     private suspend fun download(model: LocalLlmModel): Result {
         if (downloads.isInstalled(model)) return Result.success()
-        val artifact =
+        val requestedArtifact =
             try {
-                ModelArtifact(
-                    checkNotNull(inputData.getString(FILE_KEY)),
-                    checkNotNull(inputData.getString(URL_KEY)).toHttpUrl(),
-                    inputData.getLong(SIZE_KEY, 0),
-                    checkNotNull(inputData.getString(HASH_KEY)),
-                )
+                if (inputData.getString(URL_KEY) == null && model.releaseUrl() != null) {
+                    null
+                } else {
+                    ModelArtifact(
+                        checkNotNull(inputData.getString(FILE_KEY)),
+                        checkNotNull(inputData.getString(URL_KEY)).toHttpUrl(),
+                        inputData.getLong(SIZE_KEY, 0),
+                        checkNotNull(inputData.getString(HASH_KEY)),
+                    )
+                }
             } catch (_: IllegalArgumentException) {
                 return failure("The download request is no longer valid. Start the download again.")
             } catch (_: IllegalStateException) {
                 return failure("The download request is no longer valid. Start the download again.")
             }
-        if (artifact.fileName != model.fileName) return failure("This model has changed. Start the download again.")
         val client = OkHttpClient.Builder().readTimeout(60, TimeUnit.SECONDS).build()
         try {
-            setForeground(foregroundInfo(model, artifact.size, null))
+            setForeground(foregroundInfo(model, requestedArtifact?.size ?: 0, null))
+            val artifact =
+                requestedArtifact ?: resolveHuggingFaceRelease(
+                    checkNotNull(model.releaseUrl()),
+                    downloads.releasePin(model),
+                    client,
+                )
+            if (artifact.fileName != model.fileName) return failure("This model has changed. Start the download again.")
             coroutineScope {
                 val updates = Channel<ModelTransferProgress>(Channel.CONFLATED)
                 val reporter =
@@ -92,6 +102,7 @@ class ModelDownloadWorker(
                                 setProgress(
                                     workDataOf(
                                         LocalModelDownloads.BYTES_KEY to progress.bytes,
+                                        SIZE_KEY to artifact.size,
                                         LocalModelDownloads.CHECKING_KEY to
                                             (progress.stage == ModelTransferStage.CHECKING),
                                     ),
@@ -157,11 +168,11 @@ class ModelDownloadWorker(
         notifications.createNotificationChannel(
             NotificationChannel(CHANNEL, "Model downloads", NotificationManager.IMPORTANCE_LOW),
         )
-        val percent = ((progress?.bytes ?: 0) * 100 / size).toInt().coerceIn(0, 100)
+        val percent = if (size > 0) ((progress?.bytes ?: 0) * 100 / size).toInt().coerceIn(0, 100) else 0
         val percentLabel =
             ModelDownloadFormat(
                 applicationContext.resources.configuration.locales[0],
-            ).percent(progress?.bytes ?: 0, size)
+            ).percent(progress?.bytes ?: 0, size.coerceAtLeast(1))
         val text =
             when {
                 progress == null -> "Starting download…"

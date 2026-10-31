@@ -319,7 +319,7 @@ flowchart TD
 ### Download a local model
 
 In settings, choose **On-device voice → Local LLM**, then **Gemma 4 E2B**,
-**Gemma 4 E4B**, or **LFM3 1.7B** and tap **Download model** when available. The app shows the
+**Gemma 4 E4B**, **LFM3 1.7B · 32K**, or **LFM3 1.7B · 64K** and tap **Download model**. The app shows the
 model's size and measured download progress. End an active voice session before
 changing models or download controls.
 
@@ -333,7 +333,11 @@ Integrity failures discard corrupt partials and offer a clean retry. Voice
 preparation waits for installation rather than reporting a missing-model error.
 
 Gemma artifacts come directly from pinned public Hugging Face revisions.
-The custom LFM3 artifact must be published before its download is enabled. Go Mode streams to
+The 64K LFM3 artifact is pinned. For 32K, Android resolves the public release's
+immutable revision, size, and SHA-256 through Hugging Face file metadata and saves
+that pin before transferring data. Retries retain the same revision even if the
+repository changes; cancellation discards the pin and partial data. A missing
+release offers a retry after upload. Go Mode streams to
 private storage excluded from backups, verifies the exact size and SHA-256, then
 publishes the installed file. Installation automatically retries preparation of
 the selected local model. Complete models are retained, including models already
@@ -368,19 +372,27 @@ separate commercial license at $10M or more annual revenue.
 
 ## LFM3 1.7B
 
-Go Mode targets a custom **65,536-token** LFM3 export. The budget includes
+Go Mode offers custom **32,768-token** and **65,536-token** LFM3 exports. The budget includes
 instructions, tool definitions, conversation history, reasoning, and output.
 [`export_lfm_litert.py`](../scripts/export_lfm_litert.py) pins the source checkpoint,
 exporter, Python dependencies, quantization recipe, and in-tree model extension.
 The source [LFM3 checkpoint](https://huggingface.co/LiquidAI/LFM3-1.7B) supports
-256K; the exported graph's cache shapes determine the mobile limit.
+256K; the exported graph's cache shapes determine the mobile limit. LFM3 runs
+on the GPU without a CPU fallback.
 
 ```sh
 # Validate metadata, tool/history rendering, and export settings without weights.
 uv run --locked --script scripts/export_lfm_litert.py --prepare-only
 
-# Convert and quantize the source checkpoint; requires substantial host RAM/disk.
+# Export missing 32K and 64K bundles; requires substantial host RAM/disk.
 make android-export-lfm
+
+# Export a separate 32K variant, keeping the 64K export intact.
+uv run --locked --script scripts/export_lfm_litert.py --context-length 32768
+
+# Inspect a 32K export without converting it.
+uv run --locked --script scripts/export_lfm_litert.py --context-length 32768 --validate-only \
+  models/lfm3-1.7b-int8-32k-fp16/LFM3-1.7B_int8_32k_fp16.litertlm
 
 # Independently inspect INT8 weights and every signature's FP16 cache dimensions.
 uv run --locked --script scripts/export_lfm_litert.py --validate-only \
@@ -402,17 +414,21 @@ Place the named bundle under `/data/local/tmp/llm/` for device acceptance. Run
 Pass `-Pandroid.testInstrumentationRunnerArguments.gomodeLongContext=true` to
 exercise a prompt of more than 16K source tokens, in addition to the weather-tool
 round trip and fresh-conversation check. The static graph computes attention
-across its full cache, so the CPU emulator recall test allows up to 60 minutes.
-Phone GPU memory use and latency require separate device measurements.
+across its full cache; the recall test allows up to 60 minutes. Run model
+acceptance on a GPU-capable device and measure its memory use and latency.
 Publish successive exports with [`upload_lfm_litert.py`](../scripts/upload_lfm_litert.py):
 
 ```sh
 # Validate, sign in if needed, and publish. Repeat after each export.
 uv run --locked --script scripts/upload_lfm_litert.py
+
+# Upload 32K to your account's LFM3-1.7B-LiteRT-INT8-32K repository.
+uv run --locked --script scripts/upload_lfm_litert.py --output-dir models/lfm3-1.7b-int8-32k-fp16
 ```
 
 The uploader gets your username through HF's `whoami` API and defaults to
-`YOUR_USERNAME/LFM3-1.7B-LiteRT-INT8-64K`. Pass a repository name to change the
+`YOUR_USERNAME/LFM3-1.7B-LiteRT-INT8-32K` or `YOUR_USERNAME/LFM3-1.7B-LiteRT-INT8-64K`
+from the manifest's context length. Pass a repository name to change the
 name, or `OWNER/NAME` to target an organization or explicit account. It reuses
 cached credentials or `HF_TOKEN`; without credentials it starts HF's interactive
 login flow. First-time browser login requires your approval. Before uploading
@@ -420,8 +436,11 @@ model data, it checks the current credentials' write access to the actual
 repository, including fine-grained token scope and organization permissions.
 Authentication or write-access failures stop the upload with instructions to
 replace the credentials; `HF_TOKEN`, when set, takes precedence over saved login.
-Both scripts default to `models/lfm3-1.7b-int8-64k-fp16`; use `--output-dir`
-to publish a different export directory. The uploader checks the bundle size,
+The exporter builds both context sizes by default and skips existing bundles.
+`--context-length 32768` selects only 32K, with output directory
+`models/lfm3-1.7b-int8-32k-fp16`. A custom `--output-dir` requires
+`--context-length` to select one variant. The uploader defaults to the 64K directory;
+use `--output-dir` to publish the 32K export. The uploader checks the bundle size,
 SHA-256 and conversion-input hashes, regenerates the model card from the manifest
 with `base_model: LiquidAI/LFM3-1.7B` and `base_model_relation: quantized`, and
 validates the generated card with HF before uploading. The card declares the
@@ -438,7 +457,9 @@ The model card is regenerated on every invocation.
 
 The published [LFM3 INT8 64K bundle](https://huggingface.co/maruel/LFM3-1.7B-LiteRT-INT8-64K)
 is available through Android's **Settings → On-device voice → Local LLM** download controls.
-For a new export, update the printed immutable download URL, revision, size and SHA-256 in
+The 32K choice expects `maruel/LFM3-1.7B-LiteRT-INT8-32K` and
+`LFM3-1.7B_int8_32k_fp16.litertlm`; publishing there enables downloads without
+an app update. For a new 64K export, update the printed immutable URL, revision, size and SHA-256 in
 [`ModelArtifact.kt`](../android/gomode/src/main/java/com/fghbuild/gomode/voice/ModelArtifact.kt).
 The repository must be public so the app can download without account credentials.
 
