@@ -63,6 +63,7 @@ class ModelDownloadSettingsTest {
             }
         }
         compose.onNodeWithTag("gomode-model-download-status").assertTextContains("Not downloaded")
+        compose.onNodeWithTag("gomode-model-download").assertContentDescriptionEquals("Download model")
         capture("missing")
         compose.runOnIdle { enabled = false }
         compose.onNodeWithTag("gomode-model-download").assertIsNotEnabled()
@@ -83,7 +84,7 @@ class ModelDownloadSettingsTest {
             state =
                 ModelDownloadState.Failed("Connection interrupted. Resume the download.", 10_000_000)
         }
-        compose.onNodeWithTag("gomode-model-download").assertTextContains("Resume download")
+        compose.onNodeWithTag("gomode-model-download").assertContentDescriptionEquals("Resume download")
         compose
             .onNodeWithTag(
                 "gomode-model-download-status",

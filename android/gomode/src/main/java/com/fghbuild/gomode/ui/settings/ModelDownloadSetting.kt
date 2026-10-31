@@ -3,19 +3,17 @@ package com.fghbuild.gomode.ui.settings
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -47,7 +45,6 @@ internal fun ModelDownloadSetting(
     )
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ModelDownloadControls(
     model: LocalLlmModel,
@@ -66,101 +63,115 @@ internal fun ModelDownloadControls(
             is ModelDownloadState.Failed -> state.partialBytes
             else -> 0L
         }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        Text(
-            if (sizeLabel == null) model.label else "${model.label} · $sizeLabel download",
-            style = MaterialTheme.typography.bodyMedium,
-        )
-        val status =
-            when (state) {
-                ModelDownloadState.Checking -> {
-                    "Checking installed model…"
-                }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
+            Text(
+                if (sizeLabel == null) model.label else "${model.label} · $sizeLabel download",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            val status =
+                when (state) {
+                    ModelDownloadState.Checking -> {
+                        "Checking installed model…"
+                    }
 
-                ModelDownloadState.Unavailable -> {
-                    "Download not available yet"
-                }
+                    ModelDownloadState.Unavailable -> {
+                        "Download not available yet"
+                    }
 
-                is ModelDownloadState.Queued -> {
-                    if (state.retrying) {
-                        "Download interrupted · resuming automatically"
-                    } else {
-                        "Download queued · waiting to start"
+                    is ModelDownloadState.Queued -> {
+                        if (state.retrying) {
+                            "Download interrupted · resuming automatically"
+                        } else {
+                            "Download queued · waiting to start"
+                        }
+                    }
+
+                    ModelDownloadState.Cancelling -> {
+                        "Cancelling download…"
+                    }
+
+                    ModelDownloadState.Ready -> {
+                        "Installed on this device"
+                    }
+
+                    is ModelDownloadState.Missing -> {
+                        if (partial > 0) {
+                            "Interrupted download · ${format.bytes(partial)} saved"
+                        } else {
+                            "Not downloaded"
+                        }
+                    }
+
+                    is ModelDownloadState.Failed -> {
+                        state.message
+                    }
+
+                    is ModelDownloadState.Downloading -> {
+                        val percent = size?.let { format.percent(state.progress.bytes, it) }
+                        if (size == null) {
+                            "Resolving model release…"
+                        } else if (state.progress.stage == ModelTransferStage.CHECKING) {
+                            "Checking saved download · $percent"
+                        } else {
+                            val received = format.bytes(state.progress.bytes)
+                            "Downloading · $percent · $received of $sizeLabel"
+                        }
                     }
                 }
-
-                ModelDownloadState.Cancelling -> {
-                    "Cancelling download…"
-                }
-
-                ModelDownloadState.Ready -> {
-                    "Installed on this device"
-                }
-
-                is ModelDownloadState.Missing -> {
-                    if (partial > 0) {
-                        "Interrupted download · ${format.bytes(partial)} saved"
+            Text(
+                status,
+                color =
+                    if (state is ModelDownloadState.Failed) {
+                        MaterialTheme.colorScheme.error
                     } else {
-                        "Not downloaded"
-                    }
-                }
-
-                is ModelDownloadState.Failed -> {
-                    state.message
-                }
-
-                is ModelDownloadState.Downloading -> {
-                    val percent = size?.let { format.percent(state.progress.bytes, it) }
-                    if (size == null) {
-                        "Resolving model release…"
-                    } else if (state.progress.stage == ModelTransferStage.CHECKING) {
-                        "Checking saved download · $percent"
-                    } else {
-                        val received = format.bytes(state.progress.bytes)
-                        "Downloading · $percent · $received of $sizeLabel"
-                    }
-                }
-            }
-        Text(
-            status,
-            color =
-                if (state is ModelDownloadState.Failed) {
-                    MaterialTheme.colorScheme.error
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                modifier = Modifier.testTag("gomode-model-download-status"),
+            )
+            if (state is ModelDownloadState.Downloading) {
+                if (size == null) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth().testTag("gomode-model-download-progress"),
+                    )
                 } else {
-                    MaterialTheme.colorScheme.onSurface
-                },
-            modifier = Modifier.testTag("gomode-model-download-status"),
-        )
-        if (state is ModelDownloadState.Downloading) {
-            if (size == null) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth().testTag("gomode-model-download-progress"))
-            } else {
-                LinearProgressIndicator(
-                    progress = { (state.progress.bytes.toFloat() / size).coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth().testTag("gomode-model-download-progress"),
-                )
+                    LinearProgressIndicator(
+                        progress = { (state.progress.bytes.toFloat() / size).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().testTag("gomode-model-download-progress"),
+                    )
+                }
             }
         }
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             if (state is ModelDownloadState.Missing || state is ModelDownloadState.Failed) {
-                Button(onClick = onDownload, enabled = enabled, modifier = Modifier.testTag("gomode-model-download")) {
-                    Text(
-                        if (partial > 0) {
-                            "Resume download"
-                        } else if (state is ModelDownloadState.Failed) {
-                            "Retry download"
-                        } else {
-                            "Download model"
-                        },
+                IconButton(
+                    onClick = onDownload,
+                    enabled = enabled,
+                    modifier = Modifier.testTag("gomode-model-download"),
+                ) {
+                    Icon(
+                        painterResource(R.drawable.ic_download),
+                        contentDescription =
+                            if (partial > 0) {
+                                "Resume download"
+                            } else if (state is ModelDownloadState.Failed) {
+                                "Retry download"
+                            } else {
+                                "Download model"
+                            },
                     )
                 }
                 if (partial > 0) {
-                    TextButton(
+                    IconButton(
                         onClick = onCancel,
                         enabled = enabled,
                         modifier = Modifier.testTag("gomode-model-download-cancel"),
                     ) {
-                        Text("Discard download")
+                        Icon(painterResource(R.drawable.ic_cancel), contentDescription = "Discard download")
                     }
                 }
             }

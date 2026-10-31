@@ -133,79 +133,110 @@ def release_matches(api: HfApi, repo_id: str, revision: str, additions: list[Com
     return True
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Package and upload an LFM3 LiteRT export to Hugging Face.")
-    parser.add_argument(
-        "repo_id",
-        nargs="?",
-        help="Repository name or OWNER/NAME (default: LFM3-1.7B-LiteRT-INT8-CONTEXTK from manifest).",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=pathlib.Path,
-        default=pathlib.Path("models/lfm3-1.7b-int8-64k-fp16"),
-        help="Export directory (default: %(default)s).",
-    )
-    args = parser.parse_args()
-    if args.repo_id is not None:
-        validate_repo_id(args.repo_id)
-    output_dir = args.output_dir.resolve()
-    manifest = prepare_release(output_dir)
-    if args.repo_id is None:
-        args.repo_id = f"LFM3-1.7B-LiteRT-INT8-{manifest.context_length // 1024}K"
-    names = sorted((*RELEASE_FILES, manifest.file))
-    destination = args.repo_id if "/" in args.repo_id else f"signed-in account / {args.repo_id}"
-    print(f"Release for {destination}:\n" + "\n".join(f"  {name}" for name in names), flush=True)
-    print(f"Generated model card: {output_dir / 'README.md'}", flush=True)
-    # Reuse cached credentials or HF_TOKEN; login prompts only when credentials are missing.
-    login()
-    api = HfApi()
-    try:
-        identity = api.whoami()
-        if "/" not in args.repo_id:
-            args.repo_id = f"{identity['name']}/{args.repo_id}"
-            validate_repo_id(args.repo_id)
-        print(f"Checking write access to {args.repo_id}...", flush=True)
-        api.create_repo(args.repo_id, repo_type="model", private=False, exist_ok=True)
-        api.auth_check(args.repo_id, repo_type="model", write=True)
-    except HfHubHTTPError as error:
-        if error.response.status_code not in (401, 403):
-            raise
-        parser.exit(
-            1,
-            f"HF credentials cannot authenticate, create, or write to {args.repo_id}. "
-            "Use a write-enabled token scoped to this repository and an account with namespace access. "
-            "Reauthenticate with `hf auth login --force`; if HF_TOKEN is set, update or unset it.\n",
-        )
-    print(f"Write access confirmed; publishing to {args.repo_id}", flush=True)
-    info = api.model_info(args.repo_id)
+@dataclass
+class Release:
+    output_dir: pathlib.Path
+    manifest: ExportManifest
+    repo_id: str
+
+
+def publish_release(api: HfApi, release: Release) -> None:
+    print(f"Publishing to {release.repo_id}", flush=True)
+    names = sorted((*RELEASE_FILES, release.manifest.file))
+    info = api.model_info(release.repo_id)
     if info.private or info.gated:
         raise ValueError("The Android app requires a public, ungated model repository")
-    additions = [CommitOperationAdd(path_in_repo=name, path_or_fileobj=output_dir / name) for name in names]
-    bundle = next(op for op in additions if op.path_in_repo == manifest.file)
-    if bundle.upload_info.sha256.hex() != manifest.sha256:
+    additions = [CommitOperationAdd(path_in_repo=name, path_or_fileobj=release.output_dir / name) for name in names]
+    bundle = next(op for op in additions if op.path_in_repo == release.manifest.file)
+    if bundle.upload_info.sha256.hex() != release.manifest.sha256:
         raise ValueError("The bundle changed after manifest verification; retry with a stable export directory")
-    if release_matches(api, args.repo_id, info.sha, additions):
+    if release_matches(api, release.repo_id, info.sha, additions):
         # Avoid the SDK's no-op path, which returns latest HEAD rather than the captured revision.
         revision = info.sha
         print(f"Release already published at {revision}.")
     else:
         # Override remote ignore rules for this explicit release allowlist without changing .gitignore.
-        api.preupload_lfs_files(args.repo_id, additions, revision="main", free_memory=False, gitignore_content="")
+        api.preupload_lfs_files(release.repo_id, additions, revision="main", free_memory=False, gitignore_content="")
         commit = api.create_commit(
-            repo_id=args.repo_id,
+            repo_id=release.repo_id,
             repo_type="model",
             parent_commit=info.sha,
-            commit_message=f"Publish {manifest.file} ({manifest.sha256[:12]})",
+            commit_message=f"Publish {release.manifest.file} ({release.manifest.sha256[:12]})",
             operations=additions,
         )
         revision = commit.oid
         # Also covers a concurrent identical upload that makes the SDK return a no-op result.
-        if not release_matches(api, args.repo_id, revision, additions):
+        if not release_matches(api, release.repo_id, revision, additions):
             raise ValueError(f"Published release verification failed at {revision}; download pins were not emitted")
         print(f"Published: {commit.commit_url}")
-    print(f"Download URL: {hf_hub_url(args.repo_id, manifest.file, revision=revision)}")
-    print(f"Revision: {revision}\nSize: {manifest.size_bytes}\nSHA-256: {manifest.sha256}")
+    print(f"Download URL: {hf_hub_url(release.repo_id, release.manifest.file, revision=revision)}")
+    print(f"Revision: {revision}\nSize: {release.manifest.size_bytes}\nSHA-256: {release.manifest.sha256}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Package and upload available 32K and 64K LFM3 exports to Hugging Face."
+    )
+    parser.add_argument(
+        "repo_id",
+        nargs="?",
+        help="Repository name or OWNER/NAME for --output-dir (default: LFM3-1.7B-LiteRT-INT8-CONTEXTK).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=pathlib.Path,
+        help="Upload only this export directory (default: available 32K and 64K exports under models/).",
+    )
+    args = parser.parse_args()
+    if args.repo_id is not None:
+        validate_repo_id(args.repo_id)
+        if args.output_dir is None:
+            parser.error("a custom repository requires --output-dir to select one export")
+    if args.output_dir is not None:
+        output_dirs = [args.output_dir.resolve()]
+    else:
+        output_dirs = []
+        for context in (32, 64):
+            directory = pathlib.Path(f"models/lfm3-1.7b-int8-{context}k-fp16").resolve()
+            if (directory / f"LFM3-1.7B_int8_{context}k_fp16.litertlm").is_file():
+                output_dirs.append(directory)
+            else:
+                print(f"Skipping missing {context}K export: {directory}", flush=True)
+        if not output_dirs:
+            parser.error("no completed 32K or 64K exports found; run make android-export-lfm first")
+    # Validate every local release before authentication or any upload.
+    releases = []
+    for output_dir in output_dirs:
+        manifest = prepare_release(output_dir)
+        repo_id = args.repo_id or f"LFM3-1.7B-LiteRT-INT8-{manifest.context_length // 1024}K"
+        releases.append(Release(output_dir, manifest, repo_id))
+        print(f"Prepared release for {repo_id}: {output_dir}", flush=True)
+    # Reuse cached credentials or HF_TOKEN; login prompts only when credentials are missing.
+    login()
+    api = HfApi()
+    destination = "your HF account"
+    try:
+        identity = api.whoami()
+        # Check access to all destinations before uploading model data.
+        for release in releases:
+            if "/" not in release.repo_id:
+                release.repo_id = f"{identity['name']}/{release.repo_id}"
+            validate_repo_id(release.repo_id)
+            destination = release.repo_id
+            print(f"Checking write access to {destination}...", flush=True)
+            api.create_repo(destination, repo_type="model", private=False, exist_ok=True)
+            api.auth_check(destination, repo_type="model", write=True)
+    except HfHubHTTPError as error:
+        if error.response.status_code not in (401, 403):
+            raise
+        parser.exit(
+            1,
+            f"HF credentials cannot authenticate, create, or write to {destination}. "
+            "Use a write-enabled token scoped to this repository and an account with namespace access. "
+            "Reauthenticate with `hf auth login --force`; if HF_TOKEN is set, update or unset it.\n",
+        )
+    for release in releases:
+        publish_release(api, release)
     return 0
 
 

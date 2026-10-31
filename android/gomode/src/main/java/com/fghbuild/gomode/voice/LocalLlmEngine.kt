@@ -146,7 +146,7 @@ internal interface EdgeLlmRunner : AutoCloseable {
 }
 
 /**
- * LiteRT-LM production runner targeting Gemma and LFM models on Tensor G3.
+ * LiteRT-LM production runner for the selected model and its supported backends.
  */
 internal class LiteRtLmRunner(
     private val context: Context,
@@ -294,9 +294,10 @@ internal class LiteRtLmRunner(
 }
 
 /**
- * LocalLlmEngine runs compact conversational models and Gemma via LiteRT-LM on Google Pixel 8 Pro.
+ * LocalLlmEngine runs Gemma and LFM3 through LiteRT-LM with serialized native operations.
  *
- * Utilizes Tensor G3 TPU/GPU with 16 KB page-size aligned native libraries.
+ * LFM3 uses generic model metadata and [parseLfm3Reply] for its XML-like tool grammar.
+ * Buffer the complete reply before parsing so malformed control syntax cannot reach speech.
  */
 internal class LocalLlmEngine(
     private val context: Context,

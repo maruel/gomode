@@ -1,4 +1,4 @@
-// NeuDecide direct speech-to-action engine running ONNX inference on Google Pixel 8 Pro.
+// Matches recognized text to tools and optionally initializes a NeuDecide ONNX session.
 package com.fghbuild.gomode.voice
 
 import ai.onnxruntime.OrtEnvironment
@@ -20,11 +20,10 @@ import java.util.UUID
 private const val TAG = "NeuDecideEngine"
 
 /**
- * NeuDecideEngine implements direct speech-to-action inference using a 55.5M parameter
- * dual-encoder architecture (FastConformer audio encoder + Needle decoder).
+ * NeuDecideEngine matches recognized text against indexed tool names and descriptions.
  *
- * Latency is 46-82 ms on Google Pixel 8 Pro (Tensor G3 CPU). Uses ONNX Runtime when model
- * weights are deployed, or fast grammar matching as fallback.
+ * Model files can initialize an optional ONNX session. Turn processing uses keyword matching
+ * independently of that session; audio inference requires a separate model integration.
  */
 internal class NeuDecideEngine(
     private val context: Context,

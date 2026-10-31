@@ -1,4 +1,4 @@
-// Runs a voice session where the device transcribes and speaks and the gateway runs the text LLM.
+// Owns device speech and routes text turns to the selected local engine or voice gateway.
 package com.fghbuild.gomode.voice
 
 import android.content.Context
@@ -92,8 +92,9 @@ internal fun textSessionWebSocketURL(
 }
 
 /**
- * DeviceVoiceSession runs the on-device voice mode: [SpeechRecognizer] transcribes,
- * [TextToSpeech] speaks, and the gateway runs only the text LLM turn and tools.
+ * DeviceVoiceSession owns Android speech recognition, synthesis, and turn orchestration.
+ * [OnDeviceEngine.REMOTE_GATEWAY] sends recognized text to the gateway over WebSocket;
+ * [OnDeviceEngine.LOCAL_LLM] runs inference on the phone. Tool calls use the same session routing.
  *
  * Microphone capture and recognition stay active during generation and playback.
  * A nonblank recognition hypothesis cancels playback and the current reply.

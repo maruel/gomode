@@ -26,4 +26,4 @@ to a host through `/.well-known/gomode.json` and renders its web frontend.
 
 See [the server library guide](docs/SERVER_LIBRARY.md) to integrate a host.
 See [on-device models](docs/ON_DEVICE_VOICE_MODELS.md#lfm3-17b)
-for local-agent candidates and the LFM3 LiteRT runtime.
+for Android model downloads and the LFM3 export and upload workflow.

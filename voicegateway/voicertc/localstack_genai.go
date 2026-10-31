@@ -32,6 +32,9 @@ import (
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
+// localStackBackendForConfig builds gateway-side ASR, LLM, and TTS adapters.
+// Text-only clients own recognition and synthesis, so their configuration
+// initializes only the LLM and does not provision gateway speech models.
 func localStackBackendForConfig(ctx context.Context, cfg *voicegateway.LocalStackConfig) (*localStackBackend, error) {
 	models, err := localStackModelsForConfigWithStarter(ctx, cfg, startManagedLlamaServer)
 	if err != nil {

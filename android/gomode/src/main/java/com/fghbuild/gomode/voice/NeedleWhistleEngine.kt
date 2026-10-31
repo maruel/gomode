@@ -1,4 +1,4 @@
-// Whistle + Needle unified biased action engine running on Google Pixel 8 Pro.
+// Matches recognized text to tool names using heuristic confidence scores.
 package com.fghbuild.gomode.voice
 
 import android.content.Context
@@ -18,11 +18,10 @@ private const val TAG = "NeedleWhistleEngine"
 private const val CONFIDENCE_THRESHOLD = 0.70f
 
 /**
- * NeedleWhistleEngine implements Cactus Compute's unified Whistle ASR + Needle Action Model
- * running on Google Pixel 8 Pro (Tensor G3).
+ * NeedleWhistleEngine matches recognized text against tool names and their fragments.
  *
- * Emits verbatim audio_text transcripts across 7 languages, evaluates calibrated confidence
- * scores [0, 1], and triggers tool dispatches when confidence exceeds 0.70.
+ * Its confidence score is a lexical heuristic. Android supplies the transcript;
+ * native Whistle recognition and Needle model inference require separate integration.
  */
 internal class NeedleWhistleEngine(
     private val context: Context,

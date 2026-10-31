@@ -59,10 +59,12 @@ enum class OnDeviceEngine {
 enum class LocalLlmModel(
     val label: String,
     val fileName: String,
-    val maxNumTokens: Int = 10_240,
-    val topK: Int = 64,
-    val topP: Double = 0.95,
-    val temperature: Double = 1.0,
+    // Includes instructions, tool schemas, history, reasoning, and output.
+    // LFM3 must match its exported cache shape; a smaller runtime limit does not shrink the graph.
+    val maxNumTokens: Int,
+    val topK: Int,
+    val topP: Double,
+    val temperature: Double,
     val alias: String? = null,
 ) {
     GEMMA_4_E2B(
