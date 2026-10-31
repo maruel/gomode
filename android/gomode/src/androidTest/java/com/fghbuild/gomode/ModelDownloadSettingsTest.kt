@@ -10,6 +10,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -69,6 +70,8 @@ class ModelDownloadSettingsTest {
         compose.onNodeWithTag("gomode-model-download").performClick()
         assertEquals(1, starts)
         compose.onNodeWithTag("gomode-model-download-progress").assertExists()
+        compose.onNodeWithTag("gomode-model-download-status").assertTextContains("Downloading · 0.4%", substring = true)
+        compose.onNodeWithTag("gomode-model-download-cancel").assertContentDescriptionEquals("Cancel download")
         capture("downloading")
         compose.runOnIdle { enabled = false }
         compose.onNodeWithTag("gomode-model-download-cancel").assertIsNotEnabled()

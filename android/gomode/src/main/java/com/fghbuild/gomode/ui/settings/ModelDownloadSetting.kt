@@ -1,26 +1,32 @@
 // Shows local-model installation, resumable progress, and explicit cancellation in native settings.
 package com.fghbuild.gomode.ui.settings
 
-import android.text.format.Formatter
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fghbuild.gomode.GoModeApplication
+import com.fghbuild.gomode.R
 import com.fghbuild.gomode.data.LocalLlmModel
+import com.fghbuild.gomode.voice.ModelDownloadFormat
 import com.fghbuild.gomode.voice.ModelDownloadState
 import com.fghbuild.gomode.voice.ModelTransferStage
 import com.fghbuild.gomode.voice.artifact
@@ -50,9 +56,10 @@ internal fun ModelDownloadControls(
     onDownload: () -> Unit,
     onCancel: () -> Unit,
 ) {
-    val context = LocalContext.current
+    val locale = LocalConfiguration.current.locales[0]
+    val format = remember(locale) { ModelDownloadFormat(locale) }
     val size = model.artifact()?.size
-    val sizeLabel = size?.let { Formatter.formatShortFileSize(context, it) }
+    val sizeLabel = size?.let(format::bytes)
     val partial =
         when (state) {
             is ModelDownloadState.Missing -> state.partialBytes
@@ -92,7 +99,7 @@ internal fun ModelDownloadControls(
 
                 is ModelDownloadState.Missing -> {
                     if (partial > 0) {
-                        "Interrupted download · ${Formatter.formatShortFileSize(context, partial)} saved"
+                        "Interrupted download · ${format.bytes(partial)} saved"
                     } else {
                         "Not downloaded"
                     }
@@ -104,12 +111,12 @@ internal fun ModelDownloadControls(
 
                 is ModelDownloadState.Downloading -> {
                     val total = checkNotNull(size)
-                    val percent = (state.progress.bytes * 100 / total).coerceIn(0, 100)
+                    val percent = format.percent(state.progress.bytes, total)
                     if (state.progress.stage == ModelTransferStage.CHECKING) {
-                        "Checking saved download · $percent%"
+                        "Checking saved download · $percent"
                     } else {
-                        val received = Formatter.formatShortFileSize(context, state.progress.bytes)
-                        "Downloading · $percent% · $received of $sizeLabel"
+                        val received = format.bytes(state.progress.bytes)
+                        "Downloading · $percent · $received of $sizeLabel"
                     }
                 }
             }
@@ -127,12 +134,6 @@ internal fun ModelDownloadControls(
             LinearProgressIndicator(
                 progress = { (state.progress.bytes.toFloat() / checkNotNull(size)).coerceIn(0f, 1f) },
                 modifier = Modifier.fillMaxWidth().testTag("gomode-model-download-progress"),
-            )
-        }
-        if (state is ModelDownloadState.Downloading || state is ModelDownloadState.Queued) {
-            Text(
-                "You can leave Go Mode. The download continues in the background.",
-                style = MaterialTheme.typography.bodySmall,
             )
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -161,11 +162,13 @@ internal fun ModelDownloadControls(
             if (state is ModelDownloadState.Downloading || state is ModelDownloadState.Queued ||
                 state == ModelDownloadState.Cancelling
             ) {
-                TextButton(
+                IconButton(
                     onClick = onCancel,
                     enabled = enabled && state != ModelDownloadState.Cancelling,
                     modifier = Modifier.testTag("gomode-model-download-cancel"),
-                ) { Text("Cancel download") }
+                ) {
+                    Icon(painterResource(R.drawable.ic_cancel), contentDescription = "Cancel download")
+                }
             }
         }
     }

@@ -1,5 +1,5 @@
-The audio device and voice control icon assets used by
-web/src/VoiceOverlay.module.css are from Google Material Symbols
+The icon assets in web/src/VoiceOverlay.module.css and
+android/gomode/src/main/res/drawable/ic_cancel.xml are from Google Material Symbols
 (https://fonts.google.com/icons), distributed under the Apache License 2.0.
 
 Copyright Google LLC.

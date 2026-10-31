@@ -436,10 +436,11 @@ It refuses private or gated repositories, guards commits with the captured paren
 and verifies every published file at its immutable revision before printing pins.
 The model card is regenerated on every invocation.
 
-Supply the printed immutable download URL, revision, size and SHA-256 for
+The published [LFM3 INT8 64K bundle](https://huggingface.co/maruel/LFM3-1.7B-LiteRT-INT8-64K)
+is available through Android's **Settings → On-device voice → Local LLM** download controls.
+For a new export, update the printed immutable download URL, revision, size and SHA-256 in
 [`ModelArtifact.kt`](../android/gomode/src/main/java/com/fghbuild/gomode/voice/ModelArtifact.kt).
 The repository must be public so the app can download without account credentials.
-Until that URL is configured, settings reports that the download is unavailable.
 
 The adapted [source chat template](../scripts/lfm3_chat_template.jinja) formats tool
 definitions, structured calls and results, and reads LiteRT's `channels.thought`

@@ -158,11 +158,15 @@ class ModelDownloadWorker(
             NotificationChannel(CHANNEL, "Model downloads", NotificationManager.IMPORTANCE_LOW),
         )
         val percent = ((progress?.bytes ?: 0) * 100 / size).toInt().coerceIn(0, 100)
+        val percentLabel =
+            ModelDownloadFormat(
+                applicationContext.resources.configuration.locales[0],
+            ).percent(progress?.bytes ?: 0, size)
         val text =
             when {
                 progress == null -> "Starting download…"
-                progress.stage == ModelTransferStage.CHECKING -> "Checking saved download · $percent%"
-                else -> "Downloading · $percent%"
+                progress.stage == ModelTransferStage.CHECKING -> "Checking saved download · $percentLabel"
+                else -> "Downloading · $percentLabel"
             }
         val open =
             PendingIntent.getActivity(

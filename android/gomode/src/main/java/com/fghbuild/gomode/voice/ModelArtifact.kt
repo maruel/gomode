@@ -38,8 +38,10 @@ internal fun LocalLlmModel.artifact(): ModelArtifact? {
         }
 
         LocalLlmModel.LFM_3_1_7B -> {
-            // The custom 64K INT8 export needs a published artifact URL before downloads can be enabled.
-            return null
+            repository = "maruel/LFM3-1.7B-LiteRT-INT8-64K"
+            revision = "55e7fe3a0b68c7535b987b686bc7febc87ea975d"
+            size = 1_787_468_976
+            sha256 = "3f8f9c459057ee5c4d6ac44711274b77cb870d74f773d589639801faec28b291"
         }
     }
     return ModelArtifact(
