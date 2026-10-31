@@ -43,16 +43,6 @@ fun OnDeviceEngine.descriptor(): EngineDescriptor =
             )
         }
 
-        OnDeviceEngine.NEUDECIDE -> {
-            EngineDescriptor(
-                engine = this,
-                name = "NeuDecide",
-                description = "Direct speech-to-action ONNX model (FastConformer + Needle, 55.5M params)",
-                latencyBudgetMs = 85,
-                modelSizeMb = 43,
-            )
-        }
-
         OnDeviceEngine.REMOTE_GATEWAY -> {
             EngineDescriptor(
                 engine = this,
@@ -129,7 +119,6 @@ fun createOnDeviceEngine(
     when (engine) {
         OnDeviceEngine.LOCAL_LLM -> LocalLlmEngine(context, ioDispatcher = ioDispatcher)
         OnDeviceEngine.NEEDLE_WHISTLE -> NeedleWhistleEngine(context)
-        OnDeviceEngine.NEUDECIDE -> NeuDecideEngine(context)
         OnDeviceEngine.REMOTE_GATEWAY -> RemoteGatewayEngine()
     }
 

@@ -16,7 +16,6 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.work.CoroutineWorker
-import androidx.work.Data
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
@@ -27,7 +26,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
-import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -61,29 +59,12 @@ class ModelDownloadWorker(
 
     private suspend fun download(model: LocalLlmModel): Result {
         if (downloads.isInstalled(model)) return Result.success()
-        val requestedArtifact =
-            try {
-                if (inputData.getString(URL_KEY) == null && model.releaseUrl() != null) {
-                    null
-                } else {
-                    ModelArtifact(
-                        checkNotNull(inputData.getString(FILE_KEY)),
-                        checkNotNull(inputData.getString(URL_KEY)).toHttpUrl(),
-                        inputData.getLong(SIZE_KEY, 0),
-                        checkNotNull(inputData.getString(HASH_KEY)),
-                    )
-                }
-            } catch (_: IllegalArgumentException) {
-                return failure("The download request is no longer valid. Start the download again.")
-            } catch (_: IllegalStateException) {
-                return failure("The download request is no longer valid. Start the download again.")
-            }
         val client = OkHttpClient.Builder().readTimeout(60, TimeUnit.SECONDS).build()
         try {
-            setForeground(foregroundInfo(model, requestedArtifact?.size ?: 0, null))
+            setForeground(foregroundInfo(model, 0, null))
             val artifact =
-                requestedArtifact ?: resolveHuggingFaceRelease(
-                    checkNotNull(model.releaseUrl()),
+                resolveHuggingFaceRelease(
+                    model.releaseUrl(),
                     downloads.releasePin(model),
                     client,
                 )
@@ -219,10 +200,7 @@ class ModelDownloadWorker(
 
     companion object {
         private const val CHANNEL = "gomode-model-downloads"
-        internal const val FILE_KEY = "artifact_file"
-        internal const val HASH_KEY = "artifact_sha256"
         internal const val SIZE_KEY = "artifact_size"
-        internal const val URL_KEY = "artifact_url"
     }
 }
 
@@ -239,16 +217,3 @@ class ModelDownloadCancelReceiver : BroadcastReceiver() {
         if (request == null) pending.finish() else request.invokeOnCompletion { pending.finish() }
     }
 }
-
-// Persist the pinned artifact as part of the durable request, rather than resolving a mutable URL on restart.
-internal fun modelDownloadData(
-    model: LocalLlmModel,
-    artifact: ModelArtifact,
-): Data =
-    workDataOf(
-        LocalModelDownloads.MODEL_KEY to model.name,
-        ModelDownloadWorker.FILE_KEY to artifact.fileName,
-        ModelDownloadWorker.HASH_KEY to artifact.sha256,
-        ModelDownloadWorker.SIZE_KEY to artifact.size,
-        ModelDownloadWorker.URL_KEY to artifact.url.toString(),
-    )

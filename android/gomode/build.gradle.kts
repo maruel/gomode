@@ -140,7 +140,6 @@ dependencies {
     }
     implementation(libs.okhttp)
     implementation(libs.stream.webrtc)
-    implementation(libs.onnxruntime.android)
     // LiteRT's asynchronous JNI callbacks require its declared Kotlin/coroutine runtime ABI.
     implementation(libs.litertlm.android)
 

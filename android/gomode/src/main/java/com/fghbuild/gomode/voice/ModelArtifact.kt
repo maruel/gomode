@@ -1,4 +1,4 @@
-// Pins public local-model artifacts independently of download scheduling and HTTP transport.
+// Defines verified model artifacts and their public Hugging Face release URLs.
 package com.fghbuild.gomode.voice
 
 import com.fghbuild.gomode.data.LocalLlmModel
@@ -17,48 +17,13 @@ internal data class ModelArtifact(
     }
 }
 
-internal fun LocalLlmModel.artifact(): ModelArtifact? {
-    val repository: String
-    val revision: String
-    val size: Long
-    val sha256: String
-    when (this) {
-        LocalLlmModel.GEMMA_4_E2B -> {
-            repository = "litert-community/gemma-4-E2B-it-litert-lm"
-            revision = "1caa527c1e88b55f046fcd8d2b4265606680663d"
-            size = 2_588_147_712
-            sha256 = "181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c"
+internal fun LocalLlmModel.releaseUrl(): HttpUrl {
+    val repository =
+        when (this) {
+            LocalLlmModel.GEMMA_4_E2B -> "litert-community/gemma-4-E2B-it-litert-lm"
+            LocalLlmModel.GEMMA_4_E4B -> "litert-community/gemma-4-E4B-it-litert-lm"
+            LocalLlmModel.LFM_3_1_7B_32K -> "maruel/LFM3-1.7B-LiteRT-INT8-32K"
+            LocalLlmModel.LFM_3_1_7B_64K -> "maruel/LFM3-1.7B-LiteRT-INT8-64K"
         }
-
-        LocalLlmModel.GEMMA_4_E4B -> {
-            repository = "litert-community/gemma-4-E4B-it-litert-lm"
-            revision = "e6a3892a8c22cf87ff99583996149cf3cb32452b"
-            size = 3_659_530_240
-            sha256 = "0b2a8980ce155fd97673d8e820b4d29d9c7d99b8fa6806f425d969b145bd52e0"
-        }
-
-        LocalLlmModel.LFM_3_1_7B -> {
-            repository = "maruel/LFM3-1.7B-LiteRT-INT8-64K"
-            revision = "55e7fe3a0b68c7535b987b686bc7febc87ea975d"
-            size = 1_787_468_976
-            sha256 = "3f8f9c459057ee5c4d6ac44711274b77cb870d74f773d589639801faec28b291"
-        }
-
-        LocalLlmModel.LFM_3_1_7B_32K -> {
-            return null
-        }
-    }
-    return ModelArtifact(
-        fileName,
-        "https://huggingface.co/$repository/resolve/$revision/$fileName".toHttpUrl(),
-        size,
-        sha256,
-    )
+    return "https://huggingface.co/$repository/resolve/main/$fileName".toHttpUrl()
 }
-
-internal fun LocalLlmModel.releaseUrl(): HttpUrl? =
-    if (this == LocalLlmModel.LFM_3_1_7B_32K) {
-        "https://huggingface.co/maruel/LFM3-1.7B-LiteRT-INT8-32K/resolve/main/$fileName".toHttpUrl()
-    } else {
-        null
-    }

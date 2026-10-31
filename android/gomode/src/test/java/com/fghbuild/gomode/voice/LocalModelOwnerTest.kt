@@ -100,7 +100,7 @@ class LocalModelOwnerTest {
             owner.release(second.await())
             testScheduler.runCurrent()
             assertEquals(3, events.size)
-            owner.select(LocalModelSelection("en-US", { setup() }, { true }, LocalLlmModel.LFM_3_1_7B))
+            owner.select(LocalModelSelection("en-US", { setup() }, { true }, LocalLlmModel.LFM_3_1_7B_64K))
             val third = async { owner.acquire() }
             testScheduler.runCurrent()
             assertFalse(second.await().engine.isModelLoaded)

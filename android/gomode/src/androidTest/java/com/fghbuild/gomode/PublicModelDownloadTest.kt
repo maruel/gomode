@@ -21,12 +21,14 @@ import com.fghbuild.gomode.ui.settings.SettingsScreen
 import com.fghbuild.gomode.ui.settings.rememberSettingsEdits
 import com.fghbuild.gomode.ui.theme.GoModeTheme
 import com.fghbuild.gomode.voice.ModelDownloadState
-import com.fghbuild.gomode.voice.artifact
+import com.fghbuild.gomode.voice.releaseUrl
+import com.fghbuild.gomode.voice.resolveHuggingFaceRelease
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
+import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -45,7 +47,7 @@ class PublicModelDownloadTest {
         assumeTrue(InstrumentationRegistry.getArguments().getString("gomodeDownloadModel") == "true")
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val downloads = (context.applicationContext as GoModeApplication).modelDownloads
-        val model = LocalLlmModel.LFM_3_1_7B
+        val model = LocalLlmModel.LFM_3_1_7B_64K
         val destination = File(context.noBackupFilesDir, "models/${model.fileName}")
         assertFalse(
             "Start this acceptance with LFM3 absent; existing models are never removed by the test",
@@ -107,7 +109,11 @@ class PublicModelDownloadTest {
                     downloads.states.value[model] is ModelDownloadState.Failed
             }
             assertEquals(ModelDownloadState.Ready, downloads.states.value[model])
-            assertEquals(checkNotNull(model.artifact()).size, destination.length())
+            val artifact =
+                runBlocking {
+                    resolveHuggingFaceRelease(model.releaseUrl(), downloads.releasePin(model), OkHttpClient())
+                }
+            assertEquals(artifact.size, destination.length())
             assertFalse(File(destination.parentFile, "${model.fileName}.part").exists())
             compose
                 .onNodeWithTag(

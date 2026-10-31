@@ -43,9 +43,11 @@ class NativeVoiceToolsTest {
             assertEquals(listOf("hang_up", "list_servers", "switch_server"), nativeVoiceTools(device).map { it.name })
         }
         assertEquals(listOf("hang_up", "list_servers", "switch_server"), nativeVoiceTools(multiple).map { it.name })
-        for (engine in listOf(OnDeviceEngine.NEEDLE_WHISTLE, OnDeviceEngine.NEUDECIDE)) {
-            assertTrue(nativeVoiceTools(multiple.copy(voiceMode = VoiceMode.DEVICE, onDeviceEngine = engine)).isEmpty())
-        }
+        assertTrue(
+            nativeVoiceTools(
+                multiple.copy(voiceMode = VoiceMode.DEVICE, onDeviceEngine = OnDeviceEngine.NEEDLE_WHISTLE),
+            ).isEmpty(),
+        )
     }
 
     @Test

@@ -426,7 +426,6 @@ class VoiceSessionLifecycleTest {
                 repository.updateVoiceMode(VoiceMode.DEVICE)
                 for (engine in listOf(
                     OnDeviceEngine.LOCAL_LLM,
-                    OnDeviceEngine.NEUDECIDE,
                     OnDeviceEngine.NEEDLE_WHISTLE,
                 )) {
                     repository.updateOnDeviceEngine(engine)

@@ -128,7 +128,7 @@ class LocalLlmEngineTest {
         val app = RuntimeEnvironment.getApplication()
         val e2b = selectedModelPaths(app, LocalLlmModel.GEMMA_4_E2B)
         val e4b = selectedModelPaths(app, LocalLlmModel.GEMMA_4_E4B)
-        val lfm = selectedModelPaths(app, LocalLlmModel.LFM_3_1_7B)
+        val lfm = selectedModelPaths(app, LocalLlmModel.LFM_3_1_7B_64K)
         assertTrue(e2b.first().endsWith("models/gemma-4-E2B-it.litertlm"))
         assertTrue(e4b.first().endsWith("models/gemma-4-E4B-it.litertlm"))
         assertTrue(lfm.first().endsWith("models/LFM3-1.7B_int8_64k_fp16.litertlm"))
@@ -137,7 +137,7 @@ class LocalLlmEngineTest {
         assertFalse(lfm.any { it.contains("gemma") || it.contains("1.2B") })
         val engine = LocalLlmEngine(app, model = LocalLlmModel.GEMMA_4_E4B)
         assertEquals("Gemma 4 E4B", engine.modelName)
-        val lfmEngine = LocalLlmEngine(app, model = LocalLlmModel.LFM_3_1_7B)
+        val lfmEngine = LocalLlmEngine(app, model = LocalLlmModel.LFM_3_1_7B_64K)
         assertEquals("LFM3 1.7B · 64K", lfmEngine.modelName)
         engine.close()
         lfmEngine.close()
@@ -148,14 +148,14 @@ class LocalLlmEngineTest {
         for (metadata in listOf(null, "model", "model.litertlm", "gemma", "gemma-4-E2B-it")) {
             assertTrue(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, metadata))
             assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E4B, metadata))
-            assertFalse(acceptsLegacyModel(LocalLlmModel.LFM_3_1_7B, metadata))
+            assertFalse(acceptsLegacyModel(LocalLlmModel.LFM_3_1_7B_64K, metadata))
         }
         assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, "gemma-4-E4B-it"))
         assertTrue(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E4B, "gemma-4-E4B-it"))
         assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, "LFM2.5-1.2B-Instruct"))
         assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, "LFM3-1.7B"))
-        assertTrue(acceptsLegacyModel(LocalLlmModel.LFM_3_1_7B, "LFM3-1.7B"))
-        assertFalse(acceptsLegacyModel(LocalLlmModel.LFM_3_1_7B, "lfm"))
+        assertTrue(acceptsLegacyModel(LocalLlmModel.LFM_3_1_7B_64K, "LFM3-1.7B"))
+        assertFalse(acceptsLegacyModel(LocalLlmModel.LFM_3_1_7B_64K, "lfm"))
         assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, "Qwen2-0.5B-Instruct"))
     }
 

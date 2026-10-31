@@ -422,8 +422,8 @@ admits new context.
 
 The names `hang_up`, `list_servers`, and `switch_server` are reserved for native
 voice commands; hosted MCP and frontend tools must use other names. The
-experimental NeuDecide and Needle/Whistle keyword engines do not support the
-server tools' argument schemas and do not advertise these tools.
+experimental Needle/Whistle keyword engine does not support the server tools'
+argument schemas and does not advertise these tools.
 
 Car call control: [HFP_CALL_CONTROL.md](HFP_CALL_CONTROL.md).
 

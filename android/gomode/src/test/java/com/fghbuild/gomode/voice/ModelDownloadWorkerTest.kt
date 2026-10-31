@@ -1,4 +1,4 @@
-// Exercises durable worker network recovery, integrity publication, and cancellation cleanup ordering.
+// Exercises foreground worker platform refusal and cancellation cleanup ordering.
 package com.fghbuild.gomode.voice
 
 import android.app.ForegroundServiceStartNotAllowedException
@@ -15,10 +15,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
-import okhttp3.mockwebserver.MockResponse
-import okhttp3.mockwebserver.MockWebServer
-import okhttp3.mockwebserver.SocketPolicy
-import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -30,25 +26,21 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import java.io.File
-import java.security.MessageDigest
 
 @RunWith(RobolectricTestRunner::class)
 class ModelDownloadWorkerTest {
     private val app: GoModeApplication get() = RuntimeEnvironment.getApplication() as GoModeApplication
     private val model = LocalLlmModel.GEMMA_4_E2B
     private val bytes = ByteArray(256 * 1024) { (it % 251).toByte() }
-    private lateinit var server: MockWebServer
     private lateinit var workManager: ModelWorkManagerFixture
 
     @Before
     fun setup() {
         workManager = ModelWorkManagerFixture(app)
-        server = MockWebServer().apply { start() }
     }
 
     @After
     fun cleanup() {
-        server.shutdown()
         workManager.close()
     }
 
@@ -60,15 +52,7 @@ class ModelDownloadWorkerTest {
             if (discard) {
                 workDataOf(LocalModelDownloads.MODEL_KEY to model.name, LocalModelDownloads.DISCARD_KEY to true)
             } else {
-                modelDownloadData(
-                    model,
-                    ModelArtifact(
-                        model.fileName,
-                        server.url("/model"),
-                        bytes.size.toLong(),
-                        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) },
-                    ),
-                )
+                workDataOf(LocalModelDownloads.MODEL_KEY to model.name)
             }
         return TestListenableWorkerBuilder<ModelDownloadWorker>(app)
             .setInputData(data)
@@ -90,30 +74,6 @@ class ModelDownloadWorkerTest {
             assertEquals(ListenableWorker.Result.retry(), worker(foregroundUpdater = denied).doWork())
             assertArrayEquals(saved, partial.readBytes())
             assertFalse(File(app.modelDownloads.directory, model.fileName).exists())
-            assertEquals(0, server.requestCount)
-        }
-
-    @Test
-    fun `interrupted socket retries and a restarted worker verifies a resumed transfer`() =
-        runTest {
-            withContext(Dispatchers.IO) {
-                server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
-                assertEquals(ListenableWorker.Result.retry(), worker().doWork())
-                val partial = app.modelDownloads.partial(model)
-                partial.parentFile?.mkdirs()
-                partial.writeBytes(bytes.copyOfRange(0, 65_536))
-                server.enqueue(
-                    MockResponse()
-                        .setResponseCode(206)
-                        .addHeader("Content-Range", "bytes 65536-${bytes.lastIndex}/${bytes.size}")
-                        .setBody(Buffer().write(bytes, 65_536, bytes.size - 65_536)),
-                )
-                assertEquals(ListenableWorker.Result.success(), worker().doWork())
-                server.takeRequest()
-                assertEquals("bytes=65536-", server.takeRequest().getHeader("Range"))
-                assertArrayEquals(bytes, File(app.modelDownloads.directory, model.fileName).readBytes())
-                assertFalse(partial.exists())
-            }
         }
 
     @Test
@@ -149,17 +109,5 @@ class ModelDownloadWorkerTest {
             writing.cancelAndJoin()
             assertEquals(ListenableWorker.Result.success(), discarding.await())
             assertFalse(partial.exists())
-        }
-
-    @Test
-    fun `integrity failure never publishes a usable model`() =
-        runTest {
-            withContext(Dispatchers.IO) {
-                server.enqueue(MockResponse().setBody(Buffer().write(ByteArray(bytes.size))))
-                val result = worker().doWork()
-                assertTrue(result is ListenableWorker.Result.Failure)
-                assertFalse(File(app.modelDownloads.directory, model.fileName).exists())
-                assertFalse(app.modelDownloads.partial(model).exists())
-            }
         }
 }

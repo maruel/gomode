@@ -48,9 +48,6 @@ enum class OnDeviceEngine {
     /** NEEDLE_WHISTLE runs Whistle biased ASR with Needle engram action matching. */
     NEEDLE_WHISTLE,
 
-    /** NEUDECIDE runs direct ONNX speech-to-action inference for sub-100ms tool execution. */
-    NEUDECIDE,
-
     /** REMOTE_GATEWAY delegates turn execution to the voice gateway over WebSocket. */
     REMOTE_GATEWAY,
 }
@@ -83,7 +80,7 @@ enum class LocalLlmModel(
         topP = 0.95,
         temperature = 1.0,
     ),
-    LFM_3_1_7B(
+    LFM_3_1_7B_64K(
         label = "LFM3 1.7B · 64K",
         fileName = "LFM3-1.7B_int8_64k_fp16.litertlm",
         maxNumTokens = 65_536,
@@ -102,12 +99,12 @@ enum class LocalLlmModel(
     ),
     ;
 
-    val isLfm3: Boolean get() = this == LFM_3_1_7B || this == LFM_3_1_7B_32K
+    val isLfm3: Boolean get() = this == LFM_3_1_7B_64K || this == LFM_3_1_7B_32K
 
     fun matches(raw: String): Boolean {
         val clean = raw.removeSuffix(".litertlm")
         val fileStem = fileName.removeSuffix(".litertlm")
-        return (this == LFM_3_1_7B && clean.equals("LFM3 1.7B", ignoreCase = true)) ||
+        return (this == LFM_3_1_7B_64K && clean.equals("LFM3 1.7B", ignoreCase = true)) ||
             clean.equals(label, ignoreCase = true) ||
             clean.equals(fileStem, ignoreCase = true) ||
             clean.equals(alias, ignoreCase = true)
@@ -197,7 +194,7 @@ class SettingsRepository(
                     onDeviceEngine = decodeOnDeviceEngine(prefs[Keys.ON_DEVICE_VOICE_ENGINE]),
                     localLlmModel =
                         when (val saved = prefs[Keys.LOCAL_LLM_MODEL]) {
-                            "LFM_2_5_1_2B", "LFM_2_5_2_6B" -> LocalLlmModel.LFM_3_1_7B
+                            "LFM_2_5_1_2B", "LFM_2_5_2_6B", "LFM_3_1_7B" -> LocalLlmModel.LFM_3_1_7B_64K
                             else -> LocalLlmModel.entries.firstOrNull { it.name == saved }
                         }
                             ?: LocalLlmModel.GEMMA_4_E2B,

@@ -229,13 +229,6 @@ class VoiceSettingsTest {
         }
         val toggle = composeRule.onNodeWithTag("gomode-show-service-on-lock-screen")
         toggle.performScrollTo().assertIsOff()
-        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").performScrollTo().performClick()
-        composeRule.waitUntil {
-            repository.settings.value.localLlmModel == com.fghbuild.gomode.data.LocalLlmModel.LFM_3_1_7B_32K
-        }
-        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").assertIsSelected()
-        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B").assertTextContains("64K", substring = true)
-        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").assertTextContains("32K", substring = true)
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val device = UiDevice.getInstance(instrumentation)
         val directory = instrumentation.targetContext.getExternalFilesDir(null)
@@ -383,17 +376,17 @@ class VoiceSettingsTest {
             .assertIsSelected()
             .assertTextContains("Remote LLM")
 
-        // Select NeuDecide.
-        composeRule.onNodeWithTag("gomode-engine-neudecide").performScrollTo().performClick()
-        composeRule.waitUntil { repository.settings.value.onDeviceEngine == OnDeviceEngine.NEUDECIDE }
-        composeRule.onNodeWithTag("gomode-engine-neudecide").assertIsSelected()
+        // Select Whistle + Needle.
+        composeRule.onNodeWithTag("gomode-engine-needle-whistle").performScrollTo().performClick()
+        composeRule.waitUntil { repository.settings.value.onDeviceEngine == OnDeviceEngine.NEEDLE_WHISTLE }
+        composeRule.onNodeWithTag("gomode-engine-needle-whistle").assertIsSelected()
+        capture("voice-engine-picker")
 
         // Verify chips disable during an active voice session.
         composeRule.runOnIdle { active.value = true }
         composeRule.onNodeWithTag("gomode-engine-remote-gateway").performScrollTo().assertIsNotEnabled()
-        composeRule.onNodeWithTag("gomode-engine-neudecide").assertIsNotEnabled()
-        composeRule.onNodeWithTag("gomode-engine-local-llm").assertIsNotEnabled()
         composeRule.onNodeWithTag("gomode-engine-needle-whistle").assertIsNotEnabled()
+        composeRule.onNodeWithTag("gomode-engine-local-llm").assertIsNotEnabled()
 
         composeRule.runOnIdle { active.value = false }
         composeRule.onNodeWithTag("gomode-engine-local-llm").performScrollTo().performClick()
@@ -404,29 +397,33 @@ class VoiceSettingsTest {
         composeRule.waitUntil {
             repository.settings.value.localLlmModel == com.fghbuild.gomode.data.LocalLlmModel.GEMMA_4_E4B
         }
-        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B").performScrollTo().performClick()
+        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_64K").performScrollTo().performClick()
         composeRule.waitUntil {
-            repository.settings.value.localLlmModel == com.fghbuild.gomode.data.LocalLlmModel.LFM_3_1_7B
+            repository.settings.value.localLlmModel == com.fghbuild.gomode.data.LocalLlmModel.LFM_3_1_7B_64K
         }
-        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B").assertIsSelected()
+        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_64K").assertIsSelected()
         composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").performScrollTo().performClick()
         composeRule.waitUntil {
             repository.settings.value.localLlmModel == com.fghbuild.gomode.data.LocalLlmModel.LFM_3_1_7B_32K
         }
         composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").assertIsSelected()
-        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B").assertTextContains("64K", substring = true)
+        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_64K").assertTextContains("64K", substring = true)
         composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").assertTextContains("32K", substring = true)
+        capture("lfm3-model-picker")
+        composeRule.runOnIdle { active.value = true }
+        composeRule.onNodeWithTag("gomode-model-GEMMA_4_E2B").performScrollTo().assertIsNotEnabled()
+        composeRule.onNodeWithTag("gomode-model-GEMMA_4_E4B").performScrollTo().assertIsNotEnabled()
+        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_64K").performScrollTo().assertIsNotEnabled()
+        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").performScrollTo().assertIsNotEnabled()
+    }
+
+    private fun capture(name: String) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val device = UiDevice.getInstance(instrumentation)
         val directory = instrumentation.targetContext.getExternalFilesDir(null)
         composeRule.waitForIdle()
         device.waitForIdle()
-        assertTrue(device.takeScreenshot(File(directory, "lfm3-model-picker.png")))
-        composeRule.runOnIdle { active.value = true }
-        composeRule.onNodeWithTag("gomode-model-GEMMA_4_E2B").performScrollTo().assertIsNotEnabled()
-        composeRule.onNodeWithTag("gomode-model-GEMMA_4_E4B").performScrollTo().assertIsNotEnabled()
-        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B").performScrollTo().assertIsNotEnabled()
-        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").performScrollTo().assertIsNotEnabled()
+        assertTrue(device.takeScreenshot(File(directory, "$name.png")))
     }
 
     private class MemoryPreferences : DataStore<Preferences> {

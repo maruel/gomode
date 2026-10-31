@@ -123,7 +123,7 @@ internal fun formatModelName(raw: String): String =
 
 internal fun backendsFor(model: LocalLlmModel): List<Backend> =
     when (model) {
-        LocalLlmModel.LFM_3_1_7B,
+        LocalLlmModel.LFM_3_1_7B_64K,
         LocalLlmModel.LFM_3_1_7B_32K,
         -> listOf(Backend.GPU())
 

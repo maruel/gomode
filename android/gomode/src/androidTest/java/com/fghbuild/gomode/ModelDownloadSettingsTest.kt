@@ -52,6 +52,7 @@ class ModelDownloadSettingsTest {
                             state =
                                 ModelDownloadState.Downloading(
                                     ModelTransferProgress(10_000_000, ModelTransferStage.DOWNLOADING),
+                                    totalBytes = 2_588_147_712,
                                 )
                         },
                         onCancel = {
@@ -113,13 +114,14 @@ class ModelDownloadSettingsTest {
     }
 
     @Test
-    fun unpublishedVariantResolvesBeforeShowingMeasuredDownloadProgress() {
+    fun modelsResolveBeforeShowingMeasuredDownloadProgress() {
+        var model by mutableStateOf(LocalLlmModel.LFM_3_1_7B_32K)
         var state by mutableStateOf<ModelDownloadState>(ModelDownloadState.Missing(0))
         compose.setContent {
             MaterialTheme {
                 Column(Modifier.statusBarsPadding().padding(24.dp)) {
                     ModelDownloadControls(
-                        LocalLlmModel.LFM_3_1_7B_32K,
+                        model,
                         state,
                         enabled = true,
                         onDownload = {
@@ -131,22 +133,25 @@ class ModelDownloadSettingsTest {
                 }
             }
         }
-        compose.onNodeWithTag("gomode-model-download").performClick()
-        compose.onNodeWithTag("gomode-model-download-status").assertTextContains("Resolving model release…")
-        compose.onNodeWithTag("gomode-model-download-progress").assertExists()
-        capture("32k-resolving")
-        compose.runOnIdle {
-            state =
-                ModelDownloadState.Downloading(
-                    ModelTransferProgress(18_000_000, ModelTransferStage.DOWNLOADING),
-                    totalBytes = 1_800_000_000,
-                )
+        for (variant in LocalLlmModel.entries) {
+            compose.runOnIdle { model = variant }
+            compose.onNodeWithTag("gomode-model-download").performClick()
+            compose.onNodeWithTag("gomode-model-download-status").assertTextContains("Resolving model release…")
+            compose.onNodeWithTag("gomode-model-download-progress").assertExists()
+            capture("${variant.name}-resolving")
+            compose.runOnIdle {
+                state =
+                    ModelDownloadState.Downloading(
+                        ModelTransferProgress(18_000_000, ModelTransferStage.DOWNLOADING),
+                        totalBytes = 1_800_000_000,
+                    )
+            }
+            compose
+                .onNodeWithTag("gomode-model-download-status")
+                .assertTextContains("Downloading · 1.0% · 18.0 MB of 1.80 GB")
+            capture("${variant.name}-downloading")
+            compose.onNodeWithTag("gomode-model-download-cancel").performClick()
+            compose.onNodeWithTag("gomode-model-download-status").assertTextContains("Not downloaded")
         }
-        compose
-            .onNodeWithTag("gomode-model-download-status")
-            .assertTextContains("Downloading · 1.0% · 18.0 MB of 1.80 GB")
-        capture("32k-downloading")
-        compose.onNodeWithTag("gomode-model-download-cancel").performClick()
-        compose.onNodeWithTag("gomode-model-download-status").assertTextContains("Not downloaded")
     }
 }

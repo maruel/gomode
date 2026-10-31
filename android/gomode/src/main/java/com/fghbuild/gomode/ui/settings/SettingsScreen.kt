@@ -494,13 +494,6 @@ private fun OnDeviceEngineSetting(
                 modifier = Modifier.testTag("gomode-engine-remote-gateway"),
             )
             FilterChip(
-                selected = engine == OnDeviceEngine.NEUDECIDE,
-                onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.NEUDECIDE) } },
-                enabled = enabled,
-                label = { Text("NeuDecide") },
-                modifier = Modifier.testTag("gomode-engine-neudecide"),
-            )
-            FilterChip(
                 selected = engine == OnDeviceEngine.LOCAL_LLM,
                 onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM) } },
                 enabled = enabled,

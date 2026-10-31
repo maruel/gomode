@@ -13,7 +13,8 @@ Open **Settings → On-device voice → Local LLM**, select a model, and tap
 
 Downloads continue in the background and resume after interruptions.
 **Cancel download** discards partial data. Complete models remain installed
-when switching between variants.
+when switching between variants. Each download resolves the current Hugging
+Face release once and retains that revision for resume and integrity verification.
 
 Android owns speech recognition and synthesis. The **Remote LLM** engine sends
 text turns to the gateway; **Local LLM** runs the model on the phone.
@@ -55,8 +56,7 @@ Android expects these public repositories:
 - [maruel/LFM3-1.7B-LiteRT-INT8-64K](https://huggingface.co/maruel/LFM3-1.7B-LiteRT-INT8-64K)
 
 The uploader derives repository names from each manifest's context length.
-The 32K download resolves the published revision automatically. A new 64K
-release requires updating the pin in
+Both downloads resolve the published revision automatically from the URLs in
 [`ModelArtifact.kt`](../android/gomode/src/main/java/com/fghbuild/gomode/voice/ModelArtifact.kt).
 
 For gateway-side speech and LLM configuration, see

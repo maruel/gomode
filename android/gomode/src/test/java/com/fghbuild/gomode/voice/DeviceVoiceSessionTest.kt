@@ -783,7 +783,7 @@ class DeviceVoiceSessionTest {
                 server.start()
                 val speech = FakeSpeech()
                 val repo = SettingsRepository(InMemoryPreferencesDataStore())
-                selectEngine(repo, OnDeviceEngine.NEUDECIDE)
+                selectEngine(repo, OnDeviceEngine.NEEDLE_WHISTLE)
                 val session =
                     createSession(
                         speech = speech,
@@ -1208,7 +1208,7 @@ class DeviceVoiceSessionTest {
         runTest {
             val speech = FakeSpeech(completeSpeechImmediately = false)
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
-            selectEngine(repo, OnDeviceEngine.NEUDECIDE)
+            selectEngine(repo, OnDeviceEngine.NEEDLE_WHISTLE)
             val release = CompletableDeferred<Unit>()
             val turns = mutableListOf<String>()
             var staleToolRequested = false
@@ -1570,13 +1570,13 @@ class DeviceVoiceSessionTest {
     }
 
     @Test
-    fun `on-device voice session connects and runs turn with NeuDecide without network websocket`() =
+    fun `on-device voice session connects and runs turn with Whistle Needle without network websocket`() =
         runTest {
             val speech = FakeSpeech()
             var webSocketOpened = false
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
             repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
-            selectEngine(repo, OnDeviceEngine.NEUDECIDE)
+            selectEngine(repo, OnDeviceEngine.NEEDLE_WHISTLE)
 
             val session =
                 createSession(
@@ -1596,7 +1596,7 @@ class DeviceVoiceSessionTest {
 
             val onResult = requireNotNull(speech.resultCallback)
             onResult("Hello")
-            assertTrue(speech.spoken.any { it.contains("Pixel 8 Pro") })
+            assertTrue(speech.spoken.any { it.contains("Heard: \"Hello\"") })
             assertTrue("resumes listening after turn", speech.listening)
 
             session.disconnect()
@@ -2122,62 +2122,60 @@ class DeviceVoiceSessionTest {
     @Test
     fun `keyword startup adopts saved caller identity without beginning a shared conversation`() =
         runTest {
-            for (engineType in listOf(OnDeviceEngine.NEEDLE_WHISTLE, OnDeviceEngine.NEUDECIDE)) {
-                for (offline in listOf(false, true)) {
-                    val repo = SettingsRepository(InMemoryPreferencesDataStore())
-                    repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
-                    selectEngine(repo, engineType)
-                    val savedID = repo.addService("Saved caller", "https://saved.example")
-                    repo.settings.first { it.activeServiceId == savedID }
-                    val conversation = localConversation(repo)
-                    val calls = FakeVoiceCallController()
-                    var initialized = false
-                    val session =
-                        createSession(
-                            speech = FakeSpeech(),
-                            settingsRepo = repo,
-                            calls = calls,
-                            voiceConversation = conversation,
-                            setupProvider = {
-                                if (offline) throw VoiceSetupException("Offline")
-                                testSetup().copy(serverName = "Saved caller", serverID = savedID)
-                            },
-                            engineFactory = { selected ->
-                                object : OnDeviceVoiceEngine {
-                                    override val engineType = selected
+            for (offline in listOf(false, true)) {
+                val repo = SettingsRepository(InMemoryPreferencesDataStore())
+                repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
+                selectEngine(repo, OnDeviceEngine.NEEDLE_WHISTLE)
+                val savedID = repo.addService("Saved caller", "https://saved.example")
+                repo.settings.first { it.activeServiceId == savedID }
+                val conversation = localConversation(repo)
+                val calls = FakeVoiceCallController()
+                var initialized = false
+                val session =
+                    createSession(
+                        speech = FakeSpeech(),
+                        settingsRepo = repo,
+                        calls = calls,
+                        voiceConversation = conversation,
+                        setupProvider = {
+                            if (offline) throw VoiceSetupException("Offline")
+                            testSetup().copy(serverName = "Saved caller", serverID = savedID)
+                        },
+                        engineFactory = { selected ->
+                            object : OnDeviceVoiceEngine {
+                                override val engineType = selected
 
-                                    override suspend fun initialize(context: EngineSessionContext) {
-                                        assertEquals(engineType, selected)
-                                        assertEquals(savedID, calls.serverID)
-                                        assertEquals("Saved caller", calls.serverName)
-                                        initialized = true
-                                    }
-
-                                    override suspend fun processTurn(
-                                        input: UserTurnInput,
-                                        onDelta: (String) -> Unit,
-                                        onToolCall: suspend (
-                                            com.caic.voicegateway.sdk.v1.ToolCall,
-                                        ) -> kotlinx.serialization.json.JsonElement?,
-                                    ) = EngineTurnResult(assistantText = "")
-
-                                    override suspend fun injectContext(text: String) = Unit
-
-                                    override fun close() = Unit
+                                override suspend fun initialize(context: EngineSessionContext) {
+                                    assertEquals(OnDeviceEngine.NEEDLE_WHISTLE, selected)
+                                    assertEquals(savedID, calls.serverID)
+                                    assertEquals("Saved caller", calls.serverName)
+                                    initialized = true
                                 }
-                            },
-                        )
-                    try {
-                        session.connect()
-                        assertTrue(initialized)
-                        assertTrue(session.state.value.toString(), session.state.value.connected)
-                        assertNull(session.state.value.error)
-                        assertFalse(conversation.isCurrent())
-                        assertEquals(1, calls.activated)
-                    } finally {
-                        session.close()
-                        conversation.finish()
-                    }
+
+                                override suspend fun processTurn(
+                                    input: UserTurnInput,
+                                    onDelta: (String) -> Unit,
+                                    onToolCall: suspend (
+                                        com.caic.voicegateway.sdk.v1.ToolCall,
+                                    ) -> kotlinx.serialization.json.JsonElement?,
+                                ) = EngineTurnResult(assistantText = "")
+
+                                override suspend fun injectContext(text: String) = Unit
+
+                                override fun close() = Unit
+                            }
+                        },
+                    )
+                try {
+                    session.connect()
+                    assertTrue(initialized)
+                    assertTrue(session.state.value.toString(), session.state.value.connected)
+                    assertNull(session.state.value.error)
+                    assertFalse(conversation.isCurrent())
+                    assertEquals(1, calls.activated)
+                } finally {
+                    session.close()
+                    conversation.finish()
                 }
             }
         }
@@ -2188,7 +2186,7 @@ class DeviceVoiceSessionTest {
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
             repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
-            selectEngine(repo, OnDeviceEngine.NEUDECIDE)
+            selectEngine(repo, OnDeviceEngine.NEEDLE_WHISTLE)
 
             val session =
                 createSession(
@@ -2295,7 +2293,7 @@ class DeviceVoiceSessionTest {
             val earcon = RecordingThinkingEarcon()
             var finish = CompletableDeferred<Unit>()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
-            selectEngine(repo, OnDeviceEngine.NEUDECIDE)
+            selectEngine(repo, OnDeviceEngine.NEEDLE_WHISTLE)
             val session =
                 createSession(
                     speech,

@@ -238,18 +238,18 @@ class SettingsRepositoryTest {
             repo.awaitSettings("E4B selected") { it.localLlmModel == LocalLlmModel.GEMMA_4_E4B }
             val restored = SettingsRepository(store)
             restored.awaitSettings("E4B restored") { it.localLlmModel == LocalLlmModel.GEMMA_4_E4B }
-            restored.updateLocalLlmModel(LocalLlmModel.LFM_3_1_7B)
+            restored.updateLocalLlmModel(LocalLlmModel.LFM_3_1_7B_64K)
             val lfmRestored = SettingsRepository(store)
-            lfmRestored.awaitSettings("LFM restored") { it.localLlmModel == LocalLlmModel.LFM_3_1_7B }
+            lfmRestored.awaitSettings("LFM restored") { it.localLlmModel == LocalLlmModel.LFM_3_1_7B_64K }
             lfmRestored.updateLocalLlmModel(LocalLlmModel.LFM_3_1_7B_32K)
             SettingsRepository(store).awaitSettings("32K selection restored") {
                 it.localLlmModel == LocalLlmModel.LFM_3_1_7B_32K
             }
-            for (saved in listOf("LFM_2_5_1_2B", "LFM_2_5_2_6B")) {
+            for (saved in listOf("LFM_2_5_1_2B", "LFM_2_5_2_6B", "LFM_3_1_7B")) {
                 store.edit { it[stringPreferencesKey("LOCAL_LLM_MODEL")] = saved }
                 SettingsRepository(store).awaitSettings("removed LFM selection migrates") {
                     it.localLlmModel ==
-                        LocalLlmModel.LFM_3_1_7B
+                        LocalLlmModel.LFM_3_1_7B_64K
                 }
             }
             store.edit { it[stringPreferencesKey("LOCAL_LLM_MODEL")] = "unknown" }
@@ -421,26 +421,19 @@ class SettingsRepositoryTest {
             val initial = repo.awaitSettings("default engine")
             assertEquals(OnDeviceEngine.REMOTE_GATEWAY, initial.onDeviceEngine)
 
-            repo.updateOnDeviceEngine(OnDeviceEngine.NEUDECIDE)
-            val neudecide =
-                repo.awaitSettings("neudecide engine") {
-                    it.onDeviceEngine == OnDeviceEngine.NEUDECIDE
-                }
-            assertEquals(OnDeviceEngine.NEUDECIDE, neudecide.onDeviceEngine)
-
-            val reopened = SettingsRepository(store)
-            val reopenedState =
-                reopened.awaitSettings("reopened engine") {
-                    it.onDeviceEngine == OnDeviceEngine.NEUDECIDE
-                }
-            assertEquals(OnDeviceEngine.NEUDECIDE, reopenedState.onDeviceEngine)
-
             repo.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
             val localLlm =
                 repo.awaitSettings("local llm engine") {
                     it.onDeviceEngine == OnDeviceEngine.LOCAL_LLM
                 }
             assertEquals(OnDeviceEngine.LOCAL_LLM, localLlm.onDeviceEngine)
+
+            val reopened = SettingsRepository(store)
+            val reopenedState =
+                reopened.awaitSettings("reopened engine") {
+                    it.onDeviceEngine == OnDeviceEngine.LOCAL_LLM
+                }
+            assertEquals(OnDeviceEngine.LOCAL_LLM, reopenedState.onDeviceEngine)
 
             repo.updateOnDeviceEngine(OnDeviceEngine.NEEDLE_WHISTLE)
             val needle =
@@ -458,17 +451,17 @@ class SettingsRepositoryTest {
         assertEquals(LocalLlmModel.GEMMA_4_E4B, LocalLlmModel.fromRawName("Gemma 4 E4B"))
         assertEquals(LocalLlmModel.GEMMA_4_E4B, LocalLlmModel.fromRawName("gemma-4-E4B-it.litertlm"))
         assertEquals(LocalLlmModel.GEMMA_4_E4B, LocalLlmModel.fromRawName("gemma-4-E4B-it"))
-        assertEquals(LocalLlmModel.LFM_3_1_7B, LocalLlmModel.fromRawName("LFM3 1.7B"))
+        assertEquals(LocalLlmModel.LFM_3_1_7B_64K, LocalLlmModel.fromRawName("LFM3 1.7B"))
         assertEquals(
-            LocalLlmModel.LFM_3_1_7B,
+            LocalLlmModel.LFM_3_1_7B_64K,
             LocalLlmModel.fromRawName("LFM3-1.7B_int8_64k_fp16.litertlm"),
         )
         assertEquals(
-            LocalLlmModel.LFM_3_1_7B,
+            LocalLlmModel.LFM_3_1_7B_64K,
             LocalLlmModel.fromRawName("LFM3-1.7B_int8_64k_fp16"),
         )
-        assertEquals(LocalLlmModel.LFM_3_1_7B, LocalLlmModel.fromRawName("LFM3-1.7B"))
-        assertEquals(LocalLlmModel.LFM_3_1_7B, LocalLlmModel.fromRawName("LFM3 1.7B · 64K"))
+        assertEquals(LocalLlmModel.LFM_3_1_7B_64K, LocalLlmModel.fromRawName("LFM3-1.7B"))
+        assertEquals(LocalLlmModel.LFM_3_1_7B_64K, LocalLlmModel.fromRawName("LFM3 1.7B · 64K"))
         assertEquals(LocalLlmModel.LFM_3_1_7B_32K, LocalLlmModel.fromRawName("LFM3 1.7B · 32K"))
         assertEquals(LocalLlmModel.LFM_3_1_7B_32K, LocalLlmModel.fromRawName("LFM3-1.7B_int8_32k_fp16.litertlm"))
         assertNull(LocalLlmModel.fromRawName("unknown-model"))

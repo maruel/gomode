@@ -27,7 +27,6 @@ import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.voice.ModelDownloadFormat
 import com.fghbuild.gomode.voice.ModelDownloadState
 import com.fghbuild.gomode.voice.ModelTransferStage
-import com.fghbuild.gomode.voice.artifact
 
 @Composable
 internal fun ModelDownloadSetting(
@@ -55,7 +54,7 @@ internal fun ModelDownloadControls(
 ) {
     val locale = LocalConfiguration.current.locales[0]
     val format = remember(locale) { ModelDownloadFormat(locale) }
-    val size = (state as? ModelDownloadState.Downloading)?.totalBytes ?: model.artifact()?.size
+    val size = (state as? ModelDownloadState.Downloading)?.totalBytes
     val sizeLabel = size?.let(format::bytes)
     val partial =
         when (state) {
@@ -77,10 +76,6 @@ internal fun ModelDownloadControls(
                 when (state) {
                     ModelDownloadState.Checking -> {
                         "Checking installed model…"
-                    }
-
-                    ModelDownloadState.Unavailable -> {
-                        "Download not available yet"
                     }
 
                     is ModelDownloadState.Queued -> {

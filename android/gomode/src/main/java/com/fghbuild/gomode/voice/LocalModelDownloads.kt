@@ -32,8 +32,6 @@ import java.util.concurrent.TimeUnit
 internal sealed interface ModelDownloadState {
     data object Checking : ModelDownloadState
 
-    data object Unavailable : ModelDownloadState
-
     data object Ready : ModelDownloadState
 
     data object Cancelling : ModelDownloadState
@@ -101,7 +99,7 @@ internal class LocalModelDownloads(
     @Synchronized
     fun cancel(model: LocalLlmModel): Job? =
         when (mutableStates.value[model]) {
-            ModelDownloadState.Ready, ModelDownloadState.Cancelling, ModelDownloadState.Unavailable -> null
+            ModelDownloadState.Ready, ModelDownloadState.Cancelling -> null
             else -> enqueue(model, discard = true)
         }
 
@@ -115,7 +113,7 @@ internal class LocalModelDownloads(
                     if (discard) {
                         workDataOf(MODEL_KEY to model.name, DISCARD_KEY to true)
                     } else {
-                        model.artifact()?.let { modelDownloadData(model, it) } ?: workDataOf(MODEL_KEY to model.name)
+                        workDataOf(MODEL_KEY to model.name)
                     },
                 ).addTag(if (discard) DISCARD_TAG else DOWNLOAD_TAG)
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
@@ -169,7 +167,6 @@ internal class LocalModelDownloads(
     ): ModelDownloadState {
         // A published file wins a race between completion and cancellation; never discard an installed model.
         if (isInstalled(model)) return ModelDownloadState.Ready
-        if (model.artifact() == null && model.releaseUrl() == null) return ModelDownloadState.Unavailable
         val bytes = partial(model).length()
         if (work == null) return ModelDownloadState.Missing(bytes)
         return when (work.state) {

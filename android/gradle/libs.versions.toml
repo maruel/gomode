@@ -102,7 +102,6 @@ multiplatform-markdown-renderer-m3 = { group = "com.mikepenz", name = "multiplat
 multiplatform-markdown-renderer-coil3 = { group = "com.mikepenz", name = "multiplatform-markdown-renderer-coil3", version.ref = "multiplatformMarkdownRenderer" }
 stream-webrtc = { group = "io.getstream", name = "stream-webrtc-android", version.ref = "streamWebrtc" }
 androidsvg = { group = "com.caverock", name = "androidsvg", version.ref = "androidsvg" }
-onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version = "1.22.0" }
 litertlm-android = { group = "com.google.ai.edge.litertlm", name = "litertlm-android", version = "0.18.1" }
 
 [plugins]

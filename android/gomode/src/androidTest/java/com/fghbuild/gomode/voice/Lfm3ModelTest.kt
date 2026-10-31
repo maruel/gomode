@@ -28,7 +28,7 @@ class Lfm3ModelTest {
         runTest(timeout = 5.minutes) {
             withContext(Dispatchers.IO) {
                 val context = InstrumentationRegistry.getInstrumentation().targetContext
-                val model = LocalLlmModel.LFM_3_1_7B
+                val model = LocalLlmModel.LFM_3_1_7B_64K
                 assumeTrue("Install the custom 64K bundle", selectedModelPaths(context, model).any { File(it).isFile })
                 val literal = "abc<think>keep me</think>def"
                 val generated = StringBuilder()
@@ -114,7 +114,7 @@ class Lfm3ModelTest {
         runTest(timeout = 5.minutes) {
             withContext(Dispatchers.IO) {
                 val context = InstrumentationRegistry.getInstrumentation().targetContext
-                val model = LocalLlmModel.LFM_3_1_7B
+                val model = LocalLlmModel.LFM_3_1_7B_64K
                 assumeTrue(
                     "Install the custom 64K LFM3 bundle before this model acceptance test",
                     selectedModelPaths(context, model).any {
@@ -175,7 +175,7 @@ class Lfm3ModelTest {
             )
             withContext(Dispatchers.IO) {
                 val context = InstrumentationRegistry.getInstrumentation().targetContext
-                val model = LocalLlmModel.LFM_3_1_7B
+                val model = LocalLlmModel.LFM_3_1_7B_64K
                 assertTrue("Install the custom 64K bundle", selectedModelPaths(context, model).any { File(it).isFile })
                 val engine = LocalLlmEngine(context, model = model)
                 try {
