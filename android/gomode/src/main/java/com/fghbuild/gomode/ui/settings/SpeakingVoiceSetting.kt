@@ -1,7 +1,9 @@
 // Bounded gateway speaking-voice dropdown with explicit selection and persistence errors.
 package com.fghbuild.gomode.ui.settings
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -42,47 +44,54 @@ internal fun SpeakingVoiceSetting(
     var expanded by remember(choices.gatewayURL, choice.id, enabled) { mutableStateOf(false) }
     var saving by remember(choices.gatewayURL, choice.id) { mutableStateOf(false) }
     var saveError by remember(choices.gatewayURL, choice.id) { mutableStateOf<String?>(null) }
-    Text("Speaking voice", style = MaterialTheme.typography.titleMedium)
-    selection.exceptionOrNull()?.message?.let { Text(it, modifier = Modifier.testTag("gomode-speaking-voice-error")) }
-    Box {
-        OutlinedButton(
-            onClick = { expanded = true },
-            enabled = enabled && !saving && settings.loadState == SettingsLoadState.Ready,
-            modifier = Modifier.testTag("gomode-speaking-voice"),
-        ) {
-            Text(selection.getOrNull() ?: "Select a speaking voice")
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Speaking voice", style = MaterialTheme.typography.labelLarge)
+        selection.exceptionOrNull()?.message?.let {
+            Text(
+                it,
+                modifier = Modifier.testTag("gomode-speaking-voice-error"),
+            )
         }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-            modifier = Modifier.heightIn(max = 320.dp).testTag("gomode-speaking-voices"),
-        ) {
-            voices.forEach { name ->
-                DropdownMenuItem(
-                    text = { Text(name) },
-                    modifier = Modifier.testTag("gomode-speaking-voice-$name"),
-                    onClick = {
-                        expanded = false
-                        scope.launch {
-                            saving = true
-                            saveError = null
-                            try {
-                                repository.updateSpeakingVoice(choices.gatewayURL, choice.id, name)
-                            } catch (e: CancellationException) {
-                                throw e
-                            } catch (
-                                @Suppress("TooGenericExceptionCaught") e: Exception,
-                            ) {
-                                // Display failed persistence.
-                                saveError = "Unable to save speaking voice: ${e.message}"
-                            } finally {
-                                saving = false
+        Box {
+            OutlinedButton(
+                onClick = { expanded = true },
+                enabled = enabled && !saving && settings.loadState == SettingsLoadState.Ready,
+                modifier = Modifier.testTag("gomode-speaking-voice"),
+            ) {
+                Text(selection.getOrNull() ?: "Select a speaking voice")
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+                modifier = Modifier.heightIn(max = 320.dp).testTag("gomode-speaking-voices"),
+            ) {
+                voices.forEach { name ->
+                    DropdownMenuItem(
+                        text = { Text(name) },
+                        modifier = Modifier.testTag("gomode-speaking-voice-$name"),
+                        onClick = {
+                            expanded = false
+                            scope.launch {
+                                saving = true
+                                saveError = null
+                                try {
+                                    repository.updateSpeakingVoice(choices.gatewayURL, choice.id, name)
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (
+                                    @Suppress("TooGenericExceptionCaught") e: Exception,
+                                ) {
+                                    // Display failed persistence.
+                                    saveError = "Unable to save speaking voice: ${e.message}"
+                                } finally {
+                                    saving = false
+                                }
                             }
-                        }
-                    },
-                )
+                        },
+                    )
+                }
             }
         }
+        saveError?.let { Text(it, modifier = Modifier.testTag("gomode-speaking-voice-save-error")) }
     }
-    saveError?.let { Text(it, modifier = Modifier.testTag("gomode-speaking-voice-save-error")) }
 }

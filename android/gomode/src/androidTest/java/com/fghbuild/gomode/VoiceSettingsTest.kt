@@ -6,10 +6,16 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOff
@@ -22,6 +28,8 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
@@ -40,6 +48,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -48,6 +57,72 @@ import java.io.File
 class VoiceSettingsTest {
     @get:Rule
     val composeRule = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun serviceURLsUseTheFullWidthAndRetryStaysBesideStatusAtLargerTextSizes() {
+        val repository = SettingsRepository(MemoryPreferences())
+        val readyID: String
+        val loadingID: String
+        val longURL = "https://development.giraffe-cobra.example.net"
+        runBlocking {
+            readyID = repository.addService("Quick", "https://quick.example.net")
+            loadingID = repository.addService("Documents", longURL)
+            repository.switchService(readyID)
+            // Keep gateway discovery out of this controlled layout fixture.
+            repository.updateVoiceMode(VoiceMode.DEVICE)
+            repository.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+        }
+        val fontScale = mutableStateOf(1f)
+        val serviceError = mutableStateOf<String?>(null)
+        var retried: String? = null
+        val errorMessage = "The service could not be reached. Check your connection and retry."
+        composeRule.setContent {
+            val settings by repository.settings.collectAsState()
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale.value)) {
+                GoModeTheme {
+                    Box(Modifier.width(360.dp)) {
+                        SettingsScreen(
+                            settings = settings,
+                            settingsRepository = repository,
+                            voiceSessionActive = false,
+                            onDone = {},
+                            onOpenHalo = {},
+                            edits = rememberSettingsEdits(repository, settings),
+                            serviceReadiness = mapOf(readyID to "Ready", loadingID to "Loading page"),
+                            serviceErrors = serviceError.value?.let { mapOf(loadingID to it) } ?: emptyMap(),
+                            serviceRetryLabels = mapOf(loadingID to "Reload page"),
+                            onRetryService = { retried = it },
+                        )
+                    }
+                }
+            }
+        }
+        for (scale in listOf(1f, 1.5f)) {
+            composeRule.runOnIdle { fontScale.value = scale }
+            val retry = composeRule.onNodeWithTag("gomode-retry-$loadingID")
+            retry.performScrollTo().assertContentDescriptionEquals("Reload page")
+            val url = composeRule.onNodeWithText(longURL, useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            val screen = composeRule.onNodeWithTag("gomode-settings").fetchSemanticsNode().boundsInRoot
+            assertTrue("Service actions must not narrow the URL", url.width > screen.width * 0.8f)
+            val status =
+                composeRule
+                    .onNodeWithTag("gomode-readiness-$loadingID", useUnmergedTree = true)
+                    .fetchSemanticsNode()
+                    .boundsInRoot
+            val button = retry.fetchSemanticsNode().boundsInRoot
+            assertTrue("Reload must share the status row", button.top < status.bottom && status.top < button.bottom)
+            retry.performClick()
+            composeRule.runOnIdle { assertEquals(loadingID, retried) }
+        }
+        composeRule.runOnIdle { serviceError.value = errorMessage }
+        composeRule.onNodeWithTag("gomode-retry-$loadingID").performScrollTo().assertIsEnabled()
+        val error = composeRule.onNodeWithText(errorMessage).fetchSemanticsNode().boundsInRoot
+        val status = composeRule.onNodeWithTag("gomode-readiness-$loadingID").fetchSemanticsNode().boundsInRoot
+        val screen = composeRule.onNodeWithTag("gomode-settings").fetchSemanticsNode().boundsInRoot
+        assertTrue("Errors must wrap below status", error.top >= status.bottom)
+        assertTrue("Errors must stay within the screen", error.left >= screen.left && error.right <= screen.right)
+    }
 
     @Test
     fun thinkingMusicPreviewStopsForCollapseFocusLossVoiceAndSettingsExit() {
@@ -86,10 +161,13 @@ class VoiceSettingsTest {
                 .onNodeWithTag("gomode-thinking-music-preview")
                 .performScrollTo()
                 .assertIsEnabled()
-                .assertTextContains("Play")
+                .assertContentDescriptionEquals("Play thinking music")
                 .performClick()
             awaitMusic(true)
-            composeRule.onNodeWithTag("gomode-thinking-music-preview").assertTextContains("Stop")
+            composeRule
+                .onNodeWithTag(
+                    "gomode-thinking-music-preview",
+                ).assertContentDescriptionEquals("Stop thinking music")
         }
         composeRule.onNodeWithTag("gomode-credits").performScrollTo().performClick()
         play()
@@ -106,14 +184,20 @@ class VoiceSettingsTest {
         try {
             composeRule.runOnIdle { audio.requestAudioFocus(otherFocus) }
             awaitMusic(false)
-            composeRule.onNodeWithTag("gomode-thinking-music-preview").assertTextContains("Play")
+            composeRule
+                .onNodeWithTag(
+                    "gomode-thinking-music-preview",
+                ).assertContentDescriptionEquals("Play thinking music")
         } finally {
             audio.abandonAudioFocusRequest(otherFocus)
         }
         play()
         composeRule.runOnIdle { active.value = true }
         awaitMusic(false)
-        composeRule.onNodeWithTag("gomode-thinking-music-preview").assertIsNotEnabled().assertTextContains("Play")
+        composeRule
+            .onNodeWithTag("gomode-thinking-music-preview")
+            .assertIsNotEnabled()
+            .assertContentDescriptionEquals("Play thinking music")
         composeRule.runOnIdle { active.value = false }
         play()
         composeRule.activityRule.scenario.moveToState(Lifecycle.State.STARTED)
@@ -285,7 +369,7 @@ class VoiceSettingsTest {
         composeRule.waitUntil { repository.settings.value.voiceMode == VoiceMode.DEVICE }
 
         // Initial default engine is remote gateway.
-        composeRule.onNodeWithText("Model").assertExists()
+        composeRule.onNodeWithText("Engine").assertExists()
         composeRule
             .onNodeWithTag("gomode-engine-remote-gateway")
             .performScrollTo()

@@ -2,6 +2,7 @@
 package com.fghbuild.gomode.ui.settings
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material.icons.Icons
@@ -105,22 +106,24 @@ internal fun VoiceChoiceSetting(
             val compatible = state.choices.compatible(settings)
             // A missing saved model still needs an explicit replacement, even with only one candidate.
             if (compatible.size > 1 || (compatible.isNotEmpty() && selection.isFailure)) {
-                Text("LLM", style = MaterialTheme.typography.titleMedium)
-                ChoiceChips(state.choices, settings, selection.getOrNull()?.id, enabled && !saving) { choiceID ->
-                    scope.launch {
-                        saving = true
-                        saveError = null
-                        try {
-                            repository.updateVoiceChoice(state.choices.gatewayURL, choiceID)
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (
-                            @Suppress("TooGenericExceptionCaught") e: Exception,
-                        ) {
-                            // Display failed persistence.
-                            saveError = "Unable to save LLM: ${e.message}"
-                        } finally {
-                            saving = false
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("LLM", style = MaterialTheme.typography.labelLarge)
+                    ChoiceChips(state.choices, settings, selection.getOrNull()?.id, enabled && !saving) { choiceID ->
+                        scope.launch {
+                            saving = true
+                            saveError = null
+                            try {
+                                repository.updateVoiceChoice(state.choices.gatewayURL, choiceID)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (
+                                @Suppress("TooGenericExceptionCaught") e: Exception,
+                            ) {
+                                // Display failed persistence.
+                                saveError = "Unable to save LLM: ${e.message}"
+                            } finally {
+                                saving = false
+                            }
                         }
                     }
                 }

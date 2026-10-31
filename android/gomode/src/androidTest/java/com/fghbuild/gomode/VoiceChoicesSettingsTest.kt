@@ -195,7 +195,7 @@ class VoiceChoicesSettingsTest {
 
                 composeRule.onNodeWithTag("gomode-voice-mode-device").performScrollTo().performClick()
                 composeRule.waitUntil { repository.settings.value.voiceMode == VoiceMode.DEVICE }
-                composeRule.onNodeWithText("Model").assertExists()
+                composeRule.onNodeWithText("Engine").assertExists()
                 composeRule.onNodeWithTag("gomode-engine-remote-gateway").assertTextContains("Remote LLM")
                 composeRule.onNodeWithText("LLM").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-voice-choice-local").assertDoesNotExist()

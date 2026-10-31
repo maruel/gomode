@@ -14,7 +14,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
@@ -97,8 +96,7 @@ class LocalConversationTest {
                     composeRule.setContent { if (mounted.value) GoModeTheme { GoModeApp(shellOwner, owner) } }
                     assertTrue(started.await(30, TimeUnit.SECONDS))
                     for (id in listOf(ids.second, ids.first)) {
-                        composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
-                        composeRule.onNodeWithTag("gomode-service-$id").performScrollTo().performClick()
+                        composeRule.onNodeWithTag("gomode-next-app").performClick()
                         composeRule.waitUntil(30_000) { repository.settings.value.activeServiceId == id }
                     }
                     release.countDown()

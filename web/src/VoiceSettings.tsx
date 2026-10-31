@@ -309,8 +309,10 @@ function ThinkingMusicPreview(props: { active: boolean; visible: boolean; messag
         <span>{props.messages().thinkingMusic}</span>
         <button
           type="button"
+          class={`${controls.control} ${controls.outlined}`}
           disabled={props.active || !props.visible}
           aria-label={playing() ? props.messages().stopMusicLabel : props.messages().playMusicLabel}
+          title={playing() ? props.messages().stopMusicLabel : props.messages().playMusicLabel}
           onClick={() => {
             if (playing()) preview.setThinking(false);
             else {
@@ -320,7 +322,6 @@ function ThinkingMusicPreview(props: { active: boolean; visible: boolean; messag
           }}
         >
           <VoiceIcon name={playing() ? "stop" : "playArrow"} />
-          {playing() ? props.messages().stopMusic : props.messages().playMusic}
         </button>
       </div>
       <Show when={error()}>

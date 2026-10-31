@@ -108,30 +108,6 @@
   font-size: 0.85rem;
 }
 
-.preview button {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-height: 44px;
-  padding: 0.4rem 0.75rem;
-  font: inherit;
-  color: var(--color-text-secondary);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-medium);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-
-.preview button:disabled {
-  cursor: default;
-  opacity: 0.6;
-}
-
-.preview button:focus-visible {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
-}
-
 .credits .previewError {
   margin-bottom: 0.5rem;
   color: var(--color-danger);

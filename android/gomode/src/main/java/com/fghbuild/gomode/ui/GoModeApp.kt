@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
@@ -642,7 +641,9 @@ internal fun GoModeApp(
             (localModelState as? LocalModelState.Failed)?.let { failure ->
                 Column(Modifier.fillMaxWidth().padding(12.dp).testTag("gomode-local-model-error")) {
                     Text(failure.message)
-                    Button(onClick = localModelOwner::retry) { Text("Retry local model") }
+                    FilledTonalIconButton(onClick = localModelOwner::retry) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Retry local model")
+                    }
                 }
             }
             // Settings owns the full screen; elsewhere, keep failures visible even with the keyboard open.

@@ -7,12 +7,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
@@ -24,9 +22,9 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -34,9 +32,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedIconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -68,6 +67,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.OnDeviceEngine
+import com.fghbuild.gomode.data.ServiceInstance
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
@@ -143,53 +143,19 @@ internal fun SettingsScreen(
                         Icon(Icons.Default.Add, contentDescription = "Add new service")
                     }
                 }
-                settings.services.forEach { service ->
-                    ListItem(
-                        headlineContent = { Text(service.label.ifBlank { service.url }) },
-                        supportingContent = {
-                            Column {
-                                Text(service.url)
-                                serviceReadiness[service.id]?.let { readiness ->
-                                    Text(readiness, modifier = Modifier.testTag("gomode-readiness-${service.id}"))
-                                }
-                                serviceErrors[service.id]?.let { Text(it) }
-                                serviceRetryLabels[service.id]?.let { label ->
-                                    TextButton(
-                                        onClick = { onRetryService(service.id) },
-                                        modifier = Modifier.testTag("gomode-retry-${service.id}"),
-                                    ) { Text(label) }
-                                }
-                                if (service.id in servicesNeedingAttention) Text("Needs attention")
-                            }
-                        },
-                        trailingContent = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (service.id == settings.activeServiceId) {
-                                    Text("Active", style = MaterialTheme.typography.labelMedium)
-                                } else {
-                                    IconButton(
-                                        onClick = {
-                                            finish {
-                                                settingsRepository.switchService(service.id)
-                                                onDone()
-                                            }
-                                        },
-                                        modifier = Modifier.testTag("gomode-service-${service.id}"),
-                                    ) {
-                                        Icon(Icons.Default.SwapHoriz, contentDescription = "Use service")
-                                    }
-                                }
-                                IconButton(
-                                    onClick = {
-                                        finish { edits.editService(service) }
-                                    },
-                                    modifier = Modifier.testTag("gomode-edit-service-${service.id}"),
-                                ) {
-                                    Icon(Icons.Default.Edit, contentDescription = "Edit service")
-                                }
-                            }
-                        },
-                    )
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    settings.services.forEach { service ->
+                        ServiceSetting(
+                            service = service,
+                            selected = service.id == settings.activeServiceId,
+                            readiness = serviceReadiness[service.id],
+                            error = serviceErrors[service.id],
+                            retryLabel = serviceRetryLabels[service.id],
+                            needsAttention = service.id in servicesNeedingAttention,
+                            onRetry = { onRetryService(service.id) },
+                            onEdit = { finish { edits.editService(service) } },
+                        )
+                    }
                 }
             }
             edits.service?.let { draft ->
@@ -254,25 +220,32 @@ internal fun SettingsScreen(
             (settings.loadState as? SettingsLoadState.Failed)?.message?.let {
                 Text(it, modifier = Modifier.testTag("gomode-settings-error"))
             }
-            if (voiceSessionActive) Text("End the voice session before changing voice settings.")
-            VoiceModeSetting(settings.voiceMode, settingsRepository, enabled = !voiceSessionActive)
-            if (settings.voiceMode == VoiceMode.DEVICE) {
-                OnDeviceEngineSetting(settings.onDeviceEngine, settingsRepository, enabled = !voiceSessionActive)
-                if (settings.onDeviceEngine == OnDeviceEngine.LOCAL_LLM) {
-                    LocalLlmModelSetting(settings.localLlmModel, settingsRepository, enabled = !voiceSessionActive)
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Voice", style = MaterialTheme.typography.titleMedium)
+                if (voiceSessionActive) Text("End the voice session before changing voice settings.")
+                VoiceModeSetting(settings.voiceMode, settingsRepository, enabled = !voiceSessionActive)
+                if (settings.voiceMode == VoiceMode.DEVICE) {
+                    OnDeviceEngineSetting(settings.onDeviceEngine, settingsRepository, enabled = !voiceSessionActive)
+                    if (settings.onDeviceEngine == OnDeviceEngine.LOCAL_LLM) {
+                        LocalLlmModelSetting(settings.localLlmModel, settingsRepository, enabled = !voiceSessionActive)
+                    }
                 }
-            }
-            if (settings.activeServiceURL.isNotBlank() && usesGatewayVoice(settings)) {
-                VoiceChoiceSetting(
-                    settings,
-                    settingsRepository,
-                    !voiceSessionActive,
-                    bearerTokenFor,
-                    bearerToken,
-                    authEpoch,
+                if (settings.activeServiceURL.isNotBlank() && usesGatewayVoice(settings)) {
+                    VoiceChoiceSetting(
+                        settings,
+                        settingsRepository,
+                        !voiceSessionActive,
+                        bearerTokenFor,
+                        bearerToken,
+                        authEpoch,
+                    )
+                }
+                VoiceLanguageSetting(
+                    edits,
+                    enabled = !voiceSessionActive && settings.loadState == SettingsLoadState.Ready,
                 )
             }
-            VoiceLanguageSetting(edits, enabled = !voiceSessionActive && settings.loadState == SettingsLoadState.Ready)
+            HorizontalDivider()
             CarDialSetting(settings, enabled = !voiceSessionActive)
             ListItem(
                 modifier =
@@ -313,6 +286,70 @@ internal fun SettingsScreen(
             HorizontalDivider()
             CreditsSetting(voiceSessionActive)
         }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ServiceSetting(
+    service: ServiceInstance,
+    selected: Boolean,
+    readiness: String?,
+    error: String?,
+    retryLabel: String?,
+    needsAttention: Boolean,
+    onRetry: () -> Unit,
+    onEdit: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FlowRow(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                itemVerticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(service.label.ifBlank { service.url }, style = MaterialTheme.typography.titleSmall)
+                if (selected) {
+                    Surface(
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    ) {
+                        Text(
+                            "Active",
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
+                }
+            }
+            IconButton(onClick = onEdit, modifier = Modifier.testTag("gomode-edit-service-${service.id}")) {
+                Icon(Icons.Default.Edit, contentDescription = "Edit service")
+            }
+        }
+        Text(
+            service.url,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            readiness?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f, fill = false).testTag("gomode-readiness-${service.id}"),
+                )
+            }
+            retryLabel?.let {
+                IconButton(onClick = onRetry, modifier = Modifier.testTag("gomode-retry-${service.id}")) {
+                    Icon(Icons.Default.Refresh, contentDescription = it)
+                }
+            }
+        }
+        error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
+        if (needsAttention) Text("Needs attention", style = MaterialTheme.typography.bodyMedium)
     }
 }
 
@@ -364,14 +401,15 @@ private fun ThinkingMusicPreview(enabled: Boolean) {
     LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) { player.setThinking(false) }
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
         Text("Thinking music", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-        OutlinedButton(
+        OutlinedIconButton(
             onClick = { player.setThinking(!playing) },
             enabled = enabled,
             modifier = Modifier.testTag("gomode-thinking-music-preview"),
         ) {
-            Icon(if (playing) Icons.Default.Stop else Icons.Default.PlayArrow, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text(if (playing) "Stop" else "Play")
+            Icon(
+                if (playing) Icons.Default.Stop else Icons.Default.PlayArrow,
+                contentDescription = if (playing) "Stop thinking music" else "Play thinking music",
+            )
         }
     }
     if (failed) Text("Could not play thinking music.", color = MaterialTheme.colorScheme.error)
@@ -385,25 +423,27 @@ private fun VoiceModeSetting(
     enabled: Boolean,
 ) {
     val scope = rememberCoroutineScope()
-    Text("Voice mode", style = MaterialTheme.typography.titleMedium)
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        FilterChip(
-            selected = mode == VoiceMode.CLOUD,
-            onClick = { scope.launch { repository.updateVoiceMode(VoiceMode.CLOUD) } },
-            enabled = enabled,
-            label = { Text("Cloud voice") },
-            modifier = Modifier.testTag("gomode-voice-mode-cloud"),
-        )
-        FilterChip(
-            selected = mode == VoiceMode.DEVICE,
-            onClick = { scope.launch { repository.updateVoiceMode(VoiceMode.DEVICE) } },
-            enabled = enabled,
-            label = { Text("On-device voice") },
-            modifier = Modifier.testTag("gomode-voice-mode-device"),
-        )
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Mode", style = MaterialTheme.typography.labelLarge)
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            FilterChip(
+                selected = mode == VoiceMode.CLOUD,
+                onClick = { scope.launch { repository.updateVoiceMode(VoiceMode.CLOUD) } },
+                enabled = enabled,
+                label = { Text("Cloud voice") },
+                modifier = Modifier.testTag("gomode-voice-mode-cloud"),
+            )
+            FilterChip(
+                selected = mode == VoiceMode.DEVICE,
+                onClick = { scope.launch { repository.updateVoiceMode(VoiceMode.DEVICE) } },
+                enabled = enabled,
+                label = { Text("On-device voice") },
+                modifier = Modifier.testTag("gomode-voice-mode-device"),
+            )
+        }
     }
 }
 
@@ -415,16 +455,18 @@ private fun LocalLlmModelSetting(
     enabled: Boolean,
 ) {
     val scope = rememberCoroutineScope()
-    Text("Local model", style = MaterialTheme.typography.titleMedium)
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        LocalLlmModel.entries.forEach { choice ->
-            FilterChip(
-                selected = model == choice,
-                onClick = { scope.launch { repository.updateLocalLlmModel(choice) } },
-                enabled = enabled,
-                label = { Text(choice.label) },
-                modifier = Modifier.testTag("gomode-model-${choice.name}"),
-            )
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Model", style = MaterialTheme.typography.labelLarge)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            LocalLlmModel.entries.forEach { choice ->
+                FilterChip(
+                    selected = model == choice,
+                    onClick = { scope.launch { repository.updateLocalLlmModel(choice) } },
+                    enabled = enabled,
+                    label = { Text(choice.label) },
+                    modifier = Modifier.testTag("gomode-model-${choice.name}"),
+                )
+            }
         }
     }
 }
@@ -437,39 +479,41 @@ private fun OnDeviceEngineSetting(
     enabled: Boolean,
 ) {
     val scope = rememberCoroutineScope()
-    Text("Model", style = MaterialTheme.typography.titleMedium)
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        FilterChip(
-            selected = engine == OnDeviceEngine.REMOTE_GATEWAY,
-            onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.REMOTE_GATEWAY) } },
-            enabled = enabled,
-            label = { Text("Remote LLM") },
-            modifier = Modifier.testTag("gomode-engine-remote-gateway"),
-        )
-        FilterChip(
-            selected = engine == OnDeviceEngine.NEUDECIDE,
-            onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.NEUDECIDE) } },
-            enabled = enabled,
-            label = { Text("NeuDecide") },
-            modifier = Modifier.testTag("gomode-engine-neudecide"),
-        )
-        FilterChip(
-            selected = engine == OnDeviceEngine.LOCAL_LLM,
-            onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM) } },
-            enabled = enabled,
-            label = { Text("Gemma 4") },
-            modifier = Modifier.testTag("gomode-engine-local-llm"),
-        )
-        FilterChip(
-            selected = engine == OnDeviceEngine.NEEDLE_WHISTLE,
-            onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.NEEDLE_WHISTLE) } },
-            enabled = enabled,
-            label = { Text("Whistle + Needle") },
-            modifier = Modifier.testTag("gomode-engine-needle-whistle"),
-        )
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Engine", style = MaterialTheme.typography.labelLarge)
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            FilterChip(
+                selected = engine == OnDeviceEngine.REMOTE_GATEWAY,
+                onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.REMOTE_GATEWAY) } },
+                enabled = enabled,
+                label = { Text("Remote LLM") },
+                modifier = Modifier.testTag("gomode-engine-remote-gateway"),
+            )
+            FilterChip(
+                selected = engine == OnDeviceEngine.NEUDECIDE,
+                onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.NEUDECIDE) } },
+                enabled = enabled,
+                label = { Text("NeuDecide") },
+                modifier = Modifier.testTag("gomode-engine-neudecide"),
+            )
+            FilterChip(
+                selected = engine == OnDeviceEngine.LOCAL_LLM,
+                onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM) } },
+                enabled = enabled,
+                label = { Text("Gemma 4") },
+                modifier = Modifier.testTag("gomode-engine-local-llm"),
+            )
+            FilterChip(
+                selected = engine == OnDeviceEngine.NEEDLE_WHISTLE,
+                onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.NEEDLE_WHISTLE) } },
+                enabled = enabled,
+                label = { Text("Whistle + Needle") },
+                modifier = Modifier.testTag("gomode-engine-needle-whistle"),
+            )
+        }
     }
 }
 
@@ -478,15 +522,17 @@ private fun VoiceLanguageSetting(
     edits: SettingsEdits,
     enabled: Boolean,
 ) {
-    Text("Voice language", style = MaterialTheme.typography.titleMedium)
-    OutlinedTextField(
-        value = edits.language,
-        onValueChange = { edits.language = it },
-        modifier = Modifier.fillMaxWidth().testTag("gomode-voice-language"),
-        singleLine = true,
-        label = { Text("Language tag") },
-        supportingText = { Text("English (US): en-US. Sets device speech and assistant reply language.") },
-        isError = edits.normalizedLanguage == null,
-        enabled = enabled,
-    )
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Language", style = MaterialTheme.typography.labelLarge)
+        OutlinedTextField(
+            value = edits.language,
+            onValueChange = { edits.language = it },
+            modifier = Modifier.fillMaxWidth().testTag("gomode-voice-language"),
+            singleLine = true,
+            label = { Text("Language tag") },
+            supportingText = { Text("English (US): en-US. Sets device speech and assistant reply language.") },
+            isError = edits.normalizedLanguage == null,
+            enabled = enabled,
+        )
+    }
 }

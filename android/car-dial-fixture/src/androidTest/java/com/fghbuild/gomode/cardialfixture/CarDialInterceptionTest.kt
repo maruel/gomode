@@ -1389,9 +1389,9 @@ class CarDialInterceptionTest {
         val launch = shell("am start -W -f 0x10008000 -n $APP/.MainActivity")
         assertTrue(launch, launch.contains("Status: ok"))
         // A configured but unavailable fixture host exposes the native recovery Settings action.
-        val settings = device.wait(Until.findObject(By.text("Settings")), 5_000)
-        if (settings != null) clickNativeText("Settings", scroll = false)
-        scrollToText("Voice mode")
+        val settings = device.wait(Until.findObject(By.desc("Settings")), 5_000)
+        settings?.click()
+        assertTrue("Native settings did not open", device.wait(Until.hasObject(By.res("gomode-settings")), 5_000))
     }
 
     private fun scrollToText(text: String): androidx.test.uiautomator.UiObject2 {
