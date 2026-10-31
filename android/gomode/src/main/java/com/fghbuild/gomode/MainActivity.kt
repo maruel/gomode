@@ -64,6 +64,7 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private var notificationDestination by mutableStateOf<ServiceNotificationDestination?>(null)
+    private var modelDownloadRequested by mutableStateOf(false)
     private val carVoiceOwner get() = (application as GoModeApplication).carDialVoiceOwner
     private val callAttachment = Any()
     private var carRequest: String? = null
@@ -77,6 +78,9 @@ class MainActivity : ComponentActivity() {
         attachCarRequest(intent.getStringExtra(EXTRA_CAR_REQUEST) ?: savedInstanceState?.getString(EXTRA_CAR_REQUEST))
         if (savedInstanceState?.getBoolean("notificationHandled") != true) {
             notificationDestination = ServiceNotificationPublisher.destination(intent)
+        }
+        if (savedInstanceState?.getBoolean("modelDownloadHandled") != true) {
+            modelDownloadRequested = intent.getBooleanExtra(EXTRA_MODEL_DOWNLOAD, false)
         }
         val shellOwner = (application as GoModeApplication).serviceShellOwner
         setContent {
@@ -112,6 +116,8 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                             localModelOwner = (application as GoModeApplication).localModelOwner,
+                            modelDownloadRequested = modelDownloadRequested,
+                            onModelDownloadHandled = { modelDownloadRequested = false },
                         )
                     }
                 }
@@ -140,10 +146,12 @@ class MainActivity : ComponentActivity() {
         attachCarRequest(intent.getStringExtra(EXTRA_CAR_REQUEST))
         if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) startCarCall()
         notificationDestination = ServiceNotificationPublisher.destination(intent)
+        modelDownloadRequested = intent.getBooleanExtra(EXTRA_MODEL_DOWNLOAD, false)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean("notificationHandled", notificationDestination == null)
+        outState.putBoolean("modelDownloadHandled", !modelDownloadRequested)
         outState.putString(EXTRA_CAR_REQUEST, carRequest)
         super.onSaveInstanceState(outState)
     }
@@ -225,6 +233,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         internal const val EXTRA_CAR_REQUEST = "car_dial_request"
+        internal const val EXTRA_MODEL_DOWNLOAD = "model_download"
     }
 }
 

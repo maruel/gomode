@@ -127,6 +127,7 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.graphics.path)
     implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.work.runtime)
     implementation(libs.androidx.core.telecom)
     implementation(libs.androidx.webkit)
     implementation(libs.androidx.credentials)
@@ -143,6 +144,7 @@ dependencies {
     // LiteRT's asynchronous JNI callbacks require its declared Kotlin/coroutine runtime ABI.
     implementation(libs.litertlm.android)
 
+    testImplementation(libs.androidx.work.testing)
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)

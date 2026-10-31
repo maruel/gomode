@@ -75,7 +75,7 @@ class CarDialVoiceOwnerTest {
                 override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences =
                     writeMutex.withLock { transform(current.value).also { current.value = it } }
             }
-        model = LocalModelOwner(context)
+        model = LocalModelOwner(context, localModelInstallation(ModelDownloadState.Missing(0)))
         repository = SettingsRepository(preferences)
         pages = ServiceShellOwner(context, repository)
         owner = CarDialVoiceOwner(context, repository, model, pages)

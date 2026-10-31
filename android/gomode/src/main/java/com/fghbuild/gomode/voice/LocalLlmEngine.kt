@@ -1,4 +1,4 @@
-// Local conversational LLM engine running compact sub-300M / Gemma parameter models on Google Pixel 8 Pro.
+// Local Gemma and LFM3 conversations with validated tools and serialized native inference.
 package com.fghbuild.gomode.voice
 
 import android.content.Context
@@ -53,6 +53,10 @@ private const val NATIVE_TOOL_PARSE_ERROR =
 private const val INVALID_TOOL_REPLY = "Local model could not form a valid tool call."
 private val toolJson = GsonBuilder().serializeNulls().create()
 
+internal class LocalModelUnavailableException(
+    val model: LocalLlmModel,
+) : IllegalStateException("${model.label} is not ready yet. Check its download in Settings.")
+
 private enum class TurnOutcome { CANCELLED, COMPLETED, FAILED, INVALIDATED }
 
 private enum class RetryOutcome { CANCELLED, FAILED, INVALIDATED, RECOVERED }
@@ -88,6 +92,7 @@ internal fun selectedModelPaths(
     val legacyName = if (metadata.isFile) metadata.readText().trim() else null
     return buildList {
         explicitModelPath?.let(::add)
+        add(File(context.noBackupFilesDir, "models/${model.fileName}").absolutePath)
         add(File(context.filesDir, "models/${model.fileName}").absolutePath)
         add(File(deviceDir, model.fileName).absolutePath)
         // Old installs used one generic file. Never select a known different variant.
@@ -118,8 +123,7 @@ internal fun formatModelName(raw: String): String =
 
 internal fun backendsFor(model: LocalLlmModel): List<Backend> =
     when (model) {
-        LocalLlmModel.LFM_2_5_1_2B,
-        LocalLlmModel.LFM_2_5_2_6B,
+        LocalLlmModel.LFM_3_1_7B,
         -> listOf(Backend.GPU(), Backend.CPU())
 
         LocalLlmModel.GEMMA_4_E2B,
@@ -136,7 +140,7 @@ internal interface EdgeLlmRunner : AutoCloseable {
 
     suspend fun generateStream(message: Message): Flow<Message>
 
-    // Replace only the conversation/prefill; model weights stay owned by this runner.
+    // Reset conversation state; recurrent models also require fresh native engine state.
     fun replaceConversation(config: ConversationConfig)
 }
 
@@ -147,28 +151,30 @@ internal class LiteRtLmRunner(
     private val context: Context,
     conversationConfig: ConversationConfig,
     modelPath: String? = null,
-    model: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
+    private val model: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
 ) : EdgeLlmRunner {
     private var engine: Engine? = null
     private var conversation: Conversation? = null
-    override val backendName: String
+    override var backendName: String = ""
+        private set
+    private val existingPath: String
 
     override val isModelLoaded: Boolean
         get() = engine != null && conversation != null
 
     init {
         val candidatePaths = selectedModelPaths(context, model, modelPath)
-        val existingPath = candidatePaths.firstOrNull { File(it).isFile }
-        checkNotNull(existingPath) {
-            "${model.label} not found. Install weights with make android-push-model. " +
-                "Searched: ${candidatePaths.joinToString()}"
-        }
+        existingPath =
+            candidatePaths.firstOrNull { File(it).isFile } ?: throw LocalModelUnavailableException(model)
+        initialize(conversationConfig)
+    }
+
+    private fun initialize(conversationConfig: ConversationConfig) {
         val backends = backendsFor(model)
         val failure =
             IllegalStateException(
                 "Unable to load local model $existingPath on ${backends.joinToString { it.name }}. " +
-                    "Check that the weights are a compatible LiteRT-LM model; " +
-                    "reinstall with make android-push-model. " +
+                    "Retry preparation or choose another local model in Settings. " +
                     "See LiteRT-LM backend failures in logcat for details.",
             )
         var initializedBackend: String? = null
@@ -216,6 +222,12 @@ internal class LiteRtLmRunner(
     }
 
     override fun replaceConversation(config: ConversationConfig) {
+        if (model == LocalLlmModel.LFM_3_1_7B) {
+            // LiteRT-LM #3165: short-convolution state survives conversation deletion.
+            close()
+            initialize(config)
+            return
+        }
         val activeEngine = checkNotNull(engine) { "Local model engine is closed" }
         val oldConversation = conversation
         conversation = null
@@ -225,7 +237,34 @@ internal class LiteRtLmRunner(
 
     override suspend fun generateStream(message: Message): Flow<Message> {
         val conv = checkNotNull(conversation) { "Local model session is closed" }
-        return conv.sendMessageAsync(message)
+        return if (model == LocalLlmModel.LFM_3_1_7B) {
+            val outgoing =
+                if (message.role == com.google.ai.edge.litertlm.Role.TOOL) {
+                    Message.tool(
+                        Contents.of(
+                            message.contents.contents.map { content ->
+                                if (content is Content.ToolResponse) {
+                                    Content.Text(
+                                        toolJson.toJson(content.response),
+                                    )
+                                } else {
+                                    content
+                                }
+                            },
+                        ),
+                    )
+                } else {
+                    message
+                }
+            conv.sendMessageAsync(
+                outgoing,
+                repetitionPenaltyConfig =
+                    com.google.ai.edge.litertlm
+                        .RepetitionPenaltyConfig(repetitionPenalty = 1.1f),
+            )
+        } else {
+            conv.sendMessageAsync(message)
+        }
     }
 
     override fun close() {
@@ -537,6 +576,7 @@ internal class LocalLlmEngine(
                         }
                         calls.addAll(reply.toolCalls)
                         reply.channels.forEach { (name, text) -> channels[name] = channels[name].orEmpty() + text }
+                        if (model == LocalLlmModel.LFM_3_1_7B) return@collect
                         reply.contents.contents.filterIsInstance<Content.Text>().forEach { content ->
                             if (!malformed) {
                                 if (decided) {
@@ -572,6 +612,18 @@ internal class LocalLlmEngine(
                     return null
                 }
                 if (!malformed && !nativeParseFailure) {
+                    if (model == LocalLlmModel.LFM_3_1_7B) {
+                        val parsed = parseLfm3Reply(replayText.toString(), checkNotNull(toolValidator))
+                        if (parsed.text.isNotEmpty()) onDelta(parsed.text)
+                        if (parsed.thought.isNotEmpty()) {
+                            channels["thought"] = channels["thought"].orEmpty() + parsed.thought
+                        }
+                        return Message.model(
+                            Contents.of(parsed.text),
+                            parsed.calls,
+                            channels,
+                        )
+                    }
                     if (!decided && prefix.isNotEmpty()) onDelta(prefix.toString())
                     if (replayText.isNotEmpty()) contents.add(Content.Text(replayText.toString()))
                     retryOutcome = RetryOutcome.RECOVERED
@@ -663,21 +715,55 @@ internal class LocalLlmEngine(
                     temperature = model.temperature,
                     seed = samplerSeed,
                 ),
+            // LFM3's grammar owns thought boundaries, including literal markers in arguments.
+            // Null inherits metadata channels and would strip values before our parser sees them.
+            channels = if (model == LocalLlmModel.LFM_3_1_7B) emptyList() else null,
             tools =
-                context.tools.map { descriptor ->
-                    tool(
-                        object : OpenApiTool {
-                            override fun getToolDescriptionJsonString(): String =
-                                buildJsonObject {
-                                    put("name", descriptor.name)
-                                    descriptor.description?.let { put("description", it) }
-                                    descriptor.inputSchema?.let { put("parameters", it) }
-                                }.toString()
+                if (model == LocalLlmModel.LFM_3_1_7B) {
+                    emptyList()
+                } else {
+                    context.tools.map { descriptor ->
+                        tool(
+                            object : OpenApiTool {
+                                override fun getToolDescriptionJsonString(): String =
+                                    buildJsonObject {
+                                        put("name", descriptor.name)
+                                        descriptor.description?.let { put("description", it) }
+                                        descriptor.inputSchema?.let { put("parameters", it) }
+                                    }.toString()
 
-                            override fun execute(paramsJsonString: String): String =
-                                error("Local tools must be dispatched by the voice session")
-                        },
+                                override fun execute(paramsJsonString: String): String =
+                                    error("Local tools must be dispatched by the voice session")
+                            },
+                        )
+                    }
+                },
+            extraContext =
+                if (model == LocalLlmModel.LFM_3_1_7B) {
+                    mapOf(
+                        "tools" to
+                            context.tools.map { descriptor ->
+                                mapOf(
+                                    "type" to "function",
+                                    "function" to
+                                        mapOf(
+                                            "name" to descriptor.name,
+                                            "description" to descriptor.description.orEmpty(),
+                                            "parameters" to
+                                                JsonParser.parseString(descriptor.inputSchema.toString()),
+                                        ),
+                                )
+                            },
                     )
+                } else {
+                    emptyMap()
+                },
+            thinkingConfig =
+                if (model == LocalLlmModel.LFM_3_1_7B) {
+                    com.google.ai.edge.litertlm
+                        .ThinkingConfig(enableThinking = false)
+                } else {
+                    null
                 },
             automaticToolCalling = false,
             prefillPrefaceOnInit = true,

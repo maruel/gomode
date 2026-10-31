@@ -26,6 +26,8 @@ import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -110,14 +112,12 @@ class LocalLlmEngineTest {
     fun `descriptor and formatted model names identify installed models`() {
         val engine = engine()
         assertEquals(OnDeviceEngine.LOCAL_LLM, engine.descriptor.engine)
-        assertEquals("Gemma 4", engine.descriptor.name)
+        assertEquals("Local LLM", engine.descriptor.name)
         assertEquals(2588, engine.descriptor.modelSizeMb)
         assertEquals("Gemma 4 E2B", formatModelName("gemma-4-E2B-it"))
         assertEquals("Gemma 4 E4B", formatModelName("gemma-4-E4B-it.litertlm"))
-        assertEquals("LFM 2.5 1.2B", formatModelName("LFM2.5-1.2B-Instruct_int4_16k_fp16.litertlm"))
-        assertEquals("LFM 2.5 1.2B", formatModelName("LFM2.5-1.2B-Instruct"))
-        assertEquals("LFM 2.5 2.6B", formatModelName("LFM2.5-2.6B_int4_16k_fp16.litertlm"))
-        assertEquals("LFM 2.5 2.6B", formatModelName("LFM2.5-2.6B"))
+        assertEquals("LFM3 1.7B", formatModelName("LFM3-1.7B_int8_64k_fp16.litertlm"))
+        assertEquals("LFM3 1.7B", formatModelName("LFM3-1.7B"))
         assertEquals("custom-model", formatModelName("custom-model.litertlm"))
         assertEquals("Qwen2-0.5B-Instruct", formatModelName("Qwen2-0.5B-Instruct"))
         engine.close()
@@ -128,25 +128,18 @@ class LocalLlmEngineTest {
         val app = RuntimeEnvironment.getApplication()
         val e2b = selectedModelPaths(app, LocalLlmModel.GEMMA_4_E2B)
         val e4b = selectedModelPaths(app, LocalLlmModel.GEMMA_4_E4B)
-        val lfm12 = selectedModelPaths(app, LocalLlmModel.LFM_2_5_1_2B)
-        val lfm = selectedModelPaths(app, LocalLlmModel.LFM_2_5_2_6B)
+        val lfm = selectedModelPaths(app, LocalLlmModel.LFM_3_1_7B)
         assertTrue(e2b.first().endsWith("models/gemma-4-E2B-it.litertlm"))
         assertTrue(e4b.first().endsWith("models/gemma-4-E4B-it.litertlm"))
-        assertTrue(lfm12.first().endsWith("models/LFM2.5-1.2B-Instruct_int4_16k_fp16.litertlm"))
-        assertTrue(lfm.first().endsWith("models/LFM2.5-2.6B_int4_16k_fp16.litertlm"))
-        assertTrue(lfm12[1].endsWith("/data/local/tmp/llm/LFM2.5-1.2B-Instruct_int4_16k_fp16.litertlm"))
-        assertTrue(lfm[1].endsWith("/data/local/tmp/llm/LFM2.5-2.6B_int4_16k_fp16.litertlm"))
+        assertTrue(lfm.first().endsWith("models/LFM3-1.7B_int8_64k_fp16.litertlm"))
+        assertTrue(lfm[2].endsWith("/data/local/tmp/llm/LFM3-1.7B_int8_64k_fp16.litertlm"))
         assertFalse(e4b.any { it.contains("E2B") || it.endsWith("models/model.litertlm") })
-        assertFalse(lfm12.any { it.contains("gemma") || it.contains("2.6B") })
         assertFalse(lfm.any { it.contains("gemma") || it.contains("1.2B") })
         val engine = LocalLlmEngine(app, model = LocalLlmModel.GEMMA_4_E4B)
         assertEquals("Gemma 4 E4B", engine.modelName)
-        val lfm12Engine = LocalLlmEngine(app, model = LocalLlmModel.LFM_2_5_1_2B)
-        assertEquals("LFM 2.5 1.2B", lfm12Engine.modelName)
-        val lfmEngine = LocalLlmEngine(app, model = LocalLlmModel.LFM_2_5_2_6B)
-        assertEquals("LFM 2.5 2.6B", lfmEngine.modelName)
+        val lfmEngine = LocalLlmEngine(app, model = LocalLlmModel.LFM_3_1_7B)
+        assertEquals("LFM3 1.7B", lfmEngine.modelName)
         engine.close()
-        lfm12Engine.close()
         lfmEngine.close()
     }
 
@@ -155,17 +148,14 @@ class LocalLlmEngineTest {
         for (metadata in listOf(null, "model", "model.litertlm", "gemma", "gemma-4-E2B-it")) {
             assertTrue(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, metadata))
             assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E4B, metadata))
-            assertFalse(acceptsLegacyModel(LocalLlmModel.LFM_2_5_1_2B, metadata))
-            assertFalse(acceptsLegacyModel(LocalLlmModel.LFM_2_5_2_6B, metadata))
+            assertFalse(acceptsLegacyModel(LocalLlmModel.LFM_3_1_7B, metadata))
         }
         assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, "gemma-4-E4B-it"))
         assertTrue(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E4B, "gemma-4-E4B-it"))
         assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, "LFM2.5-1.2B-Instruct"))
-        assertTrue(acceptsLegacyModel(LocalLlmModel.LFM_2_5_1_2B, "LFM2.5-1.2B-Instruct"))
-        assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, "LFM2.5-2.6B"))
-        assertTrue(acceptsLegacyModel(LocalLlmModel.LFM_2_5_2_6B, "LFM2.5-2.6B"))
-        assertFalse(acceptsLegacyModel(LocalLlmModel.LFM_2_5_1_2B, "lfm"))
-        assertFalse(acceptsLegacyModel(LocalLlmModel.LFM_2_5_2_6B, "lfm"))
+        assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, "LFM3-1.7B"))
+        assertTrue(acceptsLegacyModel(LocalLlmModel.LFM_3_1_7B, "LFM3-1.7B"))
+        assertFalse(acceptsLegacyModel(LocalLlmModel.LFM_3_1_7B, "lfm"))
         assertFalse(acceptsLegacyModel(LocalLlmModel.GEMMA_4_E2B, "Qwen2-0.5B-Instruct"))
     }
 
@@ -1047,14 +1037,14 @@ class LocalLlmEngineTest {
         }
 
     @Test
-    fun `missing model reports installation guidance and native linkage errors are not masked`() =
+    fun `missing model has a typed readiness outcome and native linkage errors are not masked`() =
         runTest {
             val engine =
                 LocalLlmEngine(RuntimeEnvironment.getApplication(), { context, config ->
                     LiteRtLmRunner(context, config, "/nonexistent/path/model.litertlm")
                 })
             val failure = runCatching { engine.initialize(sessionContext) }.exceptionOrNull()
-            assertTrue(failure?.message.orEmpty().contains("make android-push-model"))
+            assertTrue(failure is LocalModelUnavailableException)
             assertFalse(engine.isModelLoaded)
             engine.closeAndJoin()
             val model = File.createTempFile("invalid-local-model", ".litertlm")
@@ -1230,7 +1220,75 @@ class LocalLlmEngineTest {
         }
 
     @Test
-    fun `lfm model configures 16K context disciplined sampler and excludes TPU backend`() =
+    fun `lfm raw generation preserves literal thought markers and rejects malformed thoughts before speech`() =
+        runTest {
+            val literal = "abc<think>keep me</think>def"
+            for (malformed in listOf(false, true)) {
+                val spoken = StringBuilder()
+                var dispatched = false
+                val engine =
+                    LocalLlmEngine(
+                        RuntimeEnvironment.getApplication(),
+                        { _, config ->
+                            // LiteRT documents [] as disabling extraction; null inherits metadata channels.
+                            assertEquals(emptyList<com.google.ai.edge.litertlm.Channel>(), config.channels)
+                            object : EdgeLlmRunner {
+                                override val isModelLoaded = true
+                                override val backendName = "test"
+
+                                override suspend fun generateStream(message: Message): Flow<Message> =
+                                    if (message.role == Role.TOOL) {
+                                        flowOf(Message.model("Saved."))
+                                    } else {
+                                        val raw =
+                                            if (malformed) {
+                                                "<think>outer<think>nested</think>unsafe"
+                                            } else {
+                                                "<tool_call><function=switch_service><parameter=service>" +
+                                                    literal + "</parameter></function></tool_call>"
+                                            }
+                                        flowOf(Message.model(raw.take(30)), Message.model(raw.drop(30)))
+                                    }
+
+                                override fun replaceConversation(config: ConversationConfig) = Unit
+
+                                override fun close() = Unit
+                            }
+                        },
+                        model = LocalLlmModel.LFM_3_1_7B,
+                    )
+                try {
+                    engine.initialize(sessionContext)
+                    val result =
+                        runCatching {
+                            engine.processTurn(UserTurnInput("Save it"), spoken::append) { call ->
+                                dispatched = true
+                                assertEquals(
+                                    literal,
+                                    call.args.jsonObject
+                                        .getValue("service")
+                                        .jsonPrimitive.content,
+                                )
+                                null
+                            }
+                        }
+                    if (malformed) {
+                        assertTrue(result.exceptionOrNull() is IllegalArgumentException)
+                        assertFalse(dispatched)
+                        assertEquals("", spoken.toString())
+                    } else {
+                        result.getOrThrow()
+                        assertTrue(dispatched)
+                        assertEquals("Saved.", spoken.toString())
+                    }
+                } finally {
+                    engine.closeAndJoin()
+                }
+            }
+        }
+
+    @Test
+    fun `lfm model configures 64K context disciplined sampler and preserves native boundary values`() =
         runTest {
             val configs = mutableListOf<ConversationConfig>()
             val engine =
@@ -1251,18 +1309,34 @@ class LocalLlmEngineTest {
                             override fun close() = Unit
                         }
                     },
-                    model = LocalLlmModel.LFM_2_5_2_6B,
+                    model = LocalLlmModel.LFM_3_1_7B,
                 )
-            engine.initialize(sessionContext)
+            val schema =
+                Json.parseToJsonElement(
+                    """{"type":"object","properties":{"service":{"type":"string","enum":["media"]},""" +
+                        """"id":{"type":"integer","enum":[9007199254740993]}},"required":["service"]}""",
+                )
+            engine.initialize(
+                sessionContext.copy(tools = listOf(sessionContext.tools.single().copy(inputSchema = schema))),
+            )
             val config = configs.single()
+            assertEquals(emptyList<com.google.ai.edge.litertlm.Channel>(), config.channels)
+            val declarations = config.extraContext["tools"] as List<*>
+            val declaration = declarations.single() as Map<*, *>
+            val function = declaration["function"] as Map<*, *>
+            assertEquals(JsonParser.parseString(schema.toString()), function["parameters"])
+            val numericEnum =
+                (function["parameters"] as com.google.gson.JsonObject)
+                    .getAsJsonObject("properties")
+                    .getAsJsonObject("id")
+                    .getAsJsonArray("enum")
+            assertEquals("9007199254740993", numericEnum.single().asString)
             val sampler = checkNotNull(config.samplerConfig)
             assertEquals(50, sampler.topK)
             assertEquals(1.0, sampler.topP, 0.0)
             assertEquals(0.1, sampler.temperature, 0.0)
-            assertEquals(16_384, LocalLlmModel.LFM_2_5_1_2B.maxNumTokens)
-            assertEquals(listOf("GPU", "CPU"), backendsFor(LocalLlmModel.LFM_2_5_1_2B).map { it.name })
-            assertEquals(16_384, LocalLlmModel.LFM_2_5_2_6B.maxNumTokens)
-            val backends = backendsFor(LocalLlmModel.LFM_2_5_2_6B)
+            assertEquals(65_536, LocalLlmModel.LFM_3_1_7B.maxNumTokens)
+            val backends = backendsFor(LocalLlmModel.LFM_3_1_7B)
             assertEquals(listOf("GPU", "CPU"), backends.map { it.name })
             engine.closeAndJoin()
         }

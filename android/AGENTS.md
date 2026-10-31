@@ -20,5 +20,5 @@ If no emulator is present, run `make android-start-emulator` to provision and st
 one. Missing emulator images, AVDs, or connected devices do not justify skipping
 instrumented test execution.
 Run `make android-push` to install and launch the app on a connected device.
-Run `make android-push-model` to download and sync Gemma 4 E2B and E4B
-weights to `/data/local/tmp/llm/` on the device.
+Use native **Settings → On-device voice → Local LLM** to download local model
+weights. Keep `/data/local/tmp/llm/` resolution for developer and model acceptance fixtures.

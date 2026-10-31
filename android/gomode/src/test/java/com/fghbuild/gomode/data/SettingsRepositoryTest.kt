@@ -238,12 +238,16 @@ class SettingsRepositoryTest {
             repo.awaitSettings("E4B selected") { it.localLlmModel == LocalLlmModel.GEMMA_4_E4B }
             val restored = SettingsRepository(store)
             restored.awaitSettings("E4B restored") { it.localLlmModel == LocalLlmModel.GEMMA_4_E4B }
-            restored.updateLocalLlmModel(LocalLlmModel.LFM_2_5_1_2B)
-            val lfm12Restored = SettingsRepository(store)
-            lfm12Restored.awaitSettings("LFM 1.2B restored") { it.localLlmModel == LocalLlmModel.LFM_2_5_1_2B }
-            lfm12Restored.updateLocalLlmModel(LocalLlmModel.LFM_2_5_2_6B)
+            restored.updateLocalLlmModel(LocalLlmModel.LFM_3_1_7B)
             val lfmRestored = SettingsRepository(store)
-            lfmRestored.awaitSettings("LFM restored") { it.localLlmModel == LocalLlmModel.LFM_2_5_2_6B }
+            lfmRestored.awaitSettings("LFM restored") { it.localLlmModel == LocalLlmModel.LFM_3_1_7B }
+            for (saved in listOf("LFM_2_5_1_2B", "LFM_2_5_2_6B")) {
+                store.edit { it[stringPreferencesKey("LOCAL_LLM_MODEL")] = saved }
+                SettingsRepository(store).awaitSettings("removed LFM selection migrates") {
+                    it.localLlmModel ==
+                        LocalLlmModel.LFM_3_1_7B
+                }
+            }
             store.edit { it[stringPreferencesKey("LOCAL_LLM_MODEL")] = "unknown" }
             assertEquals(
                 LocalLlmModel.GEMMA_4_E2B,
@@ -450,26 +454,16 @@ class SettingsRepositoryTest {
         assertEquals(LocalLlmModel.GEMMA_4_E4B, LocalLlmModel.fromRawName("Gemma 4 E4B"))
         assertEquals(LocalLlmModel.GEMMA_4_E4B, LocalLlmModel.fromRawName("gemma-4-E4B-it.litertlm"))
         assertEquals(LocalLlmModel.GEMMA_4_E4B, LocalLlmModel.fromRawName("gemma-4-E4B-it"))
-        assertEquals(LocalLlmModel.LFM_2_5_1_2B, LocalLlmModel.fromRawName("LFM 2.5 1.2B"))
+        assertEquals(LocalLlmModel.LFM_3_1_7B, LocalLlmModel.fromRawName("LFM3 1.7B"))
         assertEquals(
-            LocalLlmModel.LFM_2_5_1_2B,
-            LocalLlmModel.fromRawName("LFM2.5-1.2B-Instruct_int4_16k_fp16.litertlm"),
+            LocalLlmModel.LFM_3_1_7B,
+            LocalLlmModel.fromRawName("LFM3-1.7B_int8_64k_fp16.litertlm"),
         )
         assertEquals(
-            LocalLlmModel.LFM_2_5_1_2B,
-            LocalLlmModel.fromRawName("LFM2.5-1.2B-Instruct_int4_16k_fp16"),
+            LocalLlmModel.LFM_3_1_7B,
+            LocalLlmModel.fromRawName("LFM3-1.7B_int8_64k_fp16"),
         )
-        assertEquals(LocalLlmModel.LFM_2_5_1_2B, LocalLlmModel.fromRawName("LFM2.5-1.2B-Instruct"))
-        assertEquals(LocalLlmModel.LFM_2_5_2_6B, LocalLlmModel.fromRawName("LFM 2.5 2.6B"))
-        assertEquals(
-            LocalLlmModel.LFM_2_5_2_6B,
-            LocalLlmModel.fromRawName("LFM2.5-2.6B_int4_16k_fp16.litertlm"),
-        )
-        assertEquals(
-            LocalLlmModel.LFM_2_5_2_6B,
-            LocalLlmModel.fromRawName("LFM2.5-2.6B_int4_16k_fp16"),
-        )
-        assertEquals(LocalLlmModel.LFM_2_5_2_6B, LocalLlmModel.fromRawName("LFM2.5-2.6B"))
+        assertEquals(LocalLlmModel.LFM_3_1_7B, LocalLlmModel.fromRawName("LFM3-1.7B"))
         assertNull(LocalLlmModel.fromRawName("unknown-model"))
         assertNull(LocalLlmModel.fromRawName("lfm"))
         assertNull(LocalLlmModel.fromRawName("lfm2.5-1.2b"))

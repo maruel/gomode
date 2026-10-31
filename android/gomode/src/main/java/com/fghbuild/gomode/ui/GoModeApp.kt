@@ -207,6 +207,8 @@ internal fun GoModeApp(
     notificationDestination: ServiceNotificationDestination? = null,
     onNotificationHandled: (ServiceNotificationDestination) -> Unit = {},
     showWhenLocked: Boolean = false,
+    modelDownloadRequested: Boolean = false,
+    onModelDownloadHandled: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val keyguard = context.getSystemService(KeyguardManager::class.java)
@@ -236,6 +238,12 @@ internal fun GoModeApp(
     }
     LaunchedEffect(keyguardLocked) {
         if (keyguardLocked) activeNativeScreen = null
+    }
+    LaunchedEffect(modelDownloadRequested, keyguardLocked, carVoiceBusy) {
+        if (modelDownloadRequested && !keyguardLocked && !carVoiceBusy) {
+            activeNativeScreen = NativeScreen.Settings
+            onModelDownloadHandled()
+        }
     }
     val activeURL = settings.activeServiceURL
     val serviceKeys = settings.services.map { ServiceShellKey(it.id, it.url) }

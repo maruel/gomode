@@ -81,23 +81,14 @@ enum class LocalLlmModel(
         topP = 0.95,
         temperature = 1.0,
     ),
-    LFM_2_5_1_2B(
-        label = "LFM 2.5 1.2B",
-        fileName = "LFM2.5-1.2B-Instruct_int4_16k_fp16.litertlm",
-        maxNumTokens = 16_384,
+    LFM_3_1_7B(
+        label = "LFM3 1.7B",
+        fileName = "LFM3-1.7B_int8_64k_fp16.litertlm",
+        maxNumTokens = 65_536,
         topK = 50,
         topP = 1.0,
         temperature = 0.1,
-        alias = "LFM2.5-1.2B-Instruct",
-    ),
-    LFM_2_5_2_6B(
-        label = "LFM 2.5 2.6B",
-        fileName = "LFM2.5-2.6B_int4_16k_fp16.litertlm",
-        maxNumTokens = 16_384,
-        topK = 50,
-        topP = 1.0,
-        temperature = 0.1,
-        alias = "LFM2.5-2.6B",
+        alias = "LFM3-1.7B",
     ),
     ;
 
@@ -192,7 +183,10 @@ class SettingsRepository(
                     voiceLanguageTag = prefs[Keys.VOICE_LANGUAGE_TAG] ?: DEFAULT_VOICE_LANGUAGE_TAG,
                     onDeviceEngine = decodeOnDeviceEngine(prefs[Keys.ON_DEVICE_VOICE_ENGINE]),
                     localLlmModel =
-                        LocalLlmModel.entries.firstOrNull { it.name == prefs[Keys.LOCAL_LLM_MODEL] }
+                        when (val saved = prefs[Keys.LOCAL_LLM_MODEL]) {
+                            "LFM_2_5_1_2B", "LFM_2_5_2_6B" -> LocalLlmModel.LFM_3_1_7B
+                            else -> LocalLlmModel.entries.firstOrNull { it.name == saved }
+                        }
                             ?: LocalLlmModel.GEMMA_4_E2B,
                 )
             }.catch {

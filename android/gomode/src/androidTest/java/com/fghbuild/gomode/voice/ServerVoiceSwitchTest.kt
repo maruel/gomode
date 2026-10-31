@@ -86,7 +86,7 @@ class ServerVoiceSwitchTest {
                     repository.updateVoiceMode(mode)
                     repository.settings.first { it.activeServiceId == cookieID && it.voiceMode == mode }
                     val context = InstrumentationRegistry.getInstrumentation().targetContext
-                    val owner = LocalModelOwner(context)
+                    val owner = LocalModelOwner(context, localModelInstallation(ModelDownloadState.Missing(0)))
                     val shellOwner = ServiceShellOwner(context, repository)
                     val mounted = mutableStateOf(true)
                     try {
@@ -521,7 +521,7 @@ class ServerVoiceSwitchTest {
                 repository.updateVoiceMode(VoiceMode.CLOUD)
                 repository.settings.first { it.activeServiceId == sourceID && it.voiceMode == VoiceMode.CLOUD }
                 val context = InstrumentationRegistry.getInstrumentation().targetContext
-                val owner = LocalModelOwner(context)
+                val owner = LocalModelOwner(context, localModelInstallation(ModelDownloadState.Missing(0)))
                 val shellOwner = ServiceShellOwner(context, repository)
                 val mounted = mutableStateOf(true)
                 try {
@@ -582,7 +582,7 @@ class ServerVoiceSwitchTest {
                     val secondID = repository.addService("Second", secondServer.url("/").toString())
                     repository.addService("First", firstServer.url("/").toString())
                     val context = InstrumentationRegistry.getInstrumentation().targetContext
-                    val owner = LocalModelOwner(context)
+                    val owner = LocalModelOwner(context, localModelInstallation(ModelDownloadState.Missing(0)))
                     val shellOwner = ServiceShellOwner(context, repository)
                     val mounted = mutableStateOf(true)
                     try {

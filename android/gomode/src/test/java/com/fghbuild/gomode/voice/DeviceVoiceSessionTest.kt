@@ -1605,7 +1605,7 @@ class DeviceVoiceSessionTest {
         }
 
     @Test
-    fun `missing local LLM model reports initialization failure without starting speech`() =
+    fun `missing local LLM model waits for installation without starting speech`() =
         runTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             Dispatchers.setMain(dispatcher)
@@ -1615,7 +1615,12 @@ class DeviceVoiceSessionTest {
             selectEngine(repo, OnDeviceEngine.LOCAL_LLM)
 
             val conversation = localConversation(repo)
-            val owner = LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher)
+            val owner =
+                LocalModelOwner(
+                    RuntimeEnvironment.getApplication(),
+                    localModelInstallation(ModelDownloadState.Missing(0)),
+                    dispatcher,
+                )
             owner.select(LocalModelSelection("en-US", { localSetup(conversation) }, { true }))
             val session =
                 createSession(
@@ -1628,10 +1633,11 @@ class DeviceVoiceSessionTest {
             session.connect()
             testScheduler.runCurrent()
             assertFalse(session.state.value.connected)
+            assertEquals(LocalModelState.AwaitingDownload, owner.state.value)
             assertTrue(
                 session.state.value.error
                     .orEmpty()
-                    .contains("make android-push-model"),
+                    .contains("in Settings"),
             )
             assertTrue(speech.spoken.isEmpty())
             assertFalse(speech.listening)
@@ -1657,7 +1663,11 @@ class DeviceVoiceSessionTest {
             val calls = FakeVoiceCallController()
             val conversation = localConversation(repo)
             val owner =
-                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher) {
+                LocalModelOwner(
+                    RuntimeEnvironment.getApplication(),
+                    localModelInstallation(ModelDownloadState.Ready),
+                    dispatcher,
+                ) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
                         allocations++
                         object : EdgeLlmRunner {
@@ -1727,7 +1737,11 @@ class DeviceVoiceSessionTest {
             var allocations = 0
             val conversation = localConversation(repo)
             val owner =
-                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher) {
+                LocalModelOwner(
+                    RuntimeEnvironment.getApplication(),
+                    localModelInstallation(ModelDownloadState.Ready),
+                    dispatcher,
+                ) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
                         allocations++
                         object : EdgeLlmRunner {
@@ -1800,7 +1814,11 @@ class DeviceVoiceSessionTest {
             val events = mutableListOf<String>()
             val conversation = localConversation(repo)
             val owner =
-                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher) {
+                LocalModelOwner(
+                    RuntimeEnvironment.getApplication(),
+                    localModelInstallation(ModelDownloadState.Ready),
+                    dispatcher,
+                ) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
                         val id = ++allocations
                         events.add("allocate $id")
@@ -1877,7 +1895,11 @@ class DeviceVoiceSessionTest {
             var closes = 0
             val conversation = localConversation(repo)
             val owner =
-                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher) {
+                LocalModelOwner(
+                    RuntimeEnvironment.getApplication(),
+                    localModelInstallation(ModelDownloadState.Ready),
+                    dispatcher,
+                ) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
                         object : EdgeLlmRunner {
                             override val isModelLoaded = true
@@ -1961,7 +1983,11 @@ class DeviceVoiceSessionTest {
             var resets = 0
             val conversation = localConversation(repo)
             val owner =
-                LocalModelOwner(RuntimeEnvironment.getApplication(), dispatcher) {
+                LocalModelOwner(
+                    RuntimeEnvironment.getApplication(),
+                    localModelInstallation(ModelDownloadState.Ready),
+                    dispatcher,
+                ) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
                         object : EdgeLlmRunner {
                             override val isModelLoaded = true

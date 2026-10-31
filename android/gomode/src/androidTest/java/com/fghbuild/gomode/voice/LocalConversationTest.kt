@@ -82,7 +82,7 @@ class LocalConversationTest {
                 val release = CountDownLatch(1)
                 val configurations = CopyOnWriteArrayList<ConversationConfig>()
                 val owner =
-                    LocalModelOwner(context) {
+                    LocalModelOwner(context, localModelInstallation(ModelDownloadState.Ready)) {
                         LocalLlmEngine(context, { _, config ->
                             configurations += config
                             started.countDown()
@@ -127,7 +127,7 @@ class LocalConversationTest {
                 val configs = CopyOnWriteArrayList<ConversationConfig>()
                 val runner = ControlledRunner(configs, ids.first, ids.second)
                 val owner =
-                    LocalModelOwner(context) {
+                    LocalModelOwner(context, localModelInstallation(ModelDownloadState.Ready)) {
                         LocalLlmEngine(context, { _, config ->
                             configs += config
                             runner
@@ -253,7 +253,7 @@ class LocalConversationTest {
                 val runner = ControlledRunner(configs)
                 val speech = ControlledSpeech()
                 val owner =
-                    LocalModelOwner(context) {
+                    LocalModelOwner(context, localModelInstallation(ModelDownloadState.Ready)) {
                         LocalLlmEngine(context, { _, config ->
                             configs += config
                             started.countDown()

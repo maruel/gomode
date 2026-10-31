@@ -228,6 +228,7 @@ internal fun SettingsScreen(
                     OnDeviceEngineSetting(settings.onDeviceEngine, settingsRepository, enabled = !voiceSessionActive)
                     if (settings.onDeviceEngine == OnDeviceEngine.LOCAL_LLM) {
                         LocalLlmModelSetting(settings.localLlmModel, settingsRepository, enabled = !voiceSessionActive)
+                        ModelDownloadSetting(settings.localLlmModel, enabled = !voiceSessionActive)
                     }
                 }
                 if (settings.activeServiceURL.isNotBlank() && usesGatewayVoice(settings)) {
@@ -503,7 +504,7 @@ private fun OnDeviceEngineSetting(
                 selected = engine == OnDeviceEngine.LOCAL_LLM,
                 onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM) } },
                 enabled = enabled,
-                label = { Text("Gemma 4") },
+                label = { Text("Local LLM") },
                 modifier = Modifier.testTag("gomode-engine-local-llm"),
             )
             FilterChip(

@@ -26,8 +26,8 @@ fun OnDeviceEngine.descriptor(): EngineDescriptor =
         OnDeviceEngine.LOCAL_LLM -> {
             EngineDescriptor(
                 engine = this,
-                name = "Gemma 4",
-                description = "Gemma 4 on-device conversational model via LiteRT-LM",
+                name = "Local LLM",
+                description = "Gemma and LFM3 on-device conversations via LiteRT-LM",
                 latencyBudgetMs = 250,
                 modelSizeMb = 2588,
             )

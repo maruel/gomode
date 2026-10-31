@@ -1,6 +1,6 @@
 # Build and verification targets for the standalone Go Mode contracts and shell.
 .DEFAULT_GOAL := help
-.PHONY: help build fix verify test test-race android-check android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-push android-e2e screenshots-check screenshots-generate screenshots-update generate-sdks refresh-generated benchmark coverage test-smoke upgrade git-hooks export-lfm-litert
+.PHONY: help build fix verify test test-race android-check android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-push android-export-lfm android-e2e screenshots-check screenshots-generate screenshots-update generate-sdks refresh-generated benchmark coverage test-smoke upgrade git-hooks
 
 # Keep Java processes scoped to each build, including Gradle launched by Python helpers.
 # Compile Kotlin inside Gradle's single-use JVM so it cannot leave a compiler daemon.
@@ -29,13 +29,12 @@ help:
 	@printf '  %-27s - %s\n' 'make screenshots-update' 'Capture and publish repeatable native Android scenes'
 	@printf '  %-27s - %s\n' 'make screenshots-check' 'Compare native Android captures with committed baselines'
 	@printf '  %-27s - %s\n' 'make screenshots-generate' 'Render native captures once without baseline checks'
+	@printf '  %-27s - %s\n' 'make android-export-lfm' 'Export LFM3 with 64K FP16 caches (slow, downloads source weights)'
 	@printf '  %-27s - %s\n' 'make android-push' 'Build and install Go Mode on connected devices'
-	@printf '  %-27s - %s\n' 'make android-push-model' 'Push LiteRT-LM model weights to a connected device'
 	@printf '  %-27s - %s\n' 'make android-setup-emulator' 'Install emulator image and create the test AVD'
 	@printf '  %-27s - %s\n' 'make android-start-emulator' 'Start or reuse the Android emulator'
 	@printf '  %-27s - %s\n' 'make android-stop-emulator' 'Stop the Android emulator'
 	@printf '  %-27s - %s\n' 'make android-sdk' 'Install required Android SDK packages'
-	@printf '  %-27s - %s\n' 'make export-lfm-litert' 'Export LFM2.5 INT4 with a 16K FP16 cache (default: 1.2B)'
 	@printf '  %-27s - %s\n' 'make generate-sdks' 'Regenerate protocol SDKs after DTO or route changes'
 	@printf '  %-27s - %s\n' 'make refresh-generated' 'Regenerate SDKs and AGENTS file indexes'
 	@printf '  %-27s - %s\n' 'make upgrade' 'Upgrade Go and pnpm dependencies'
@@ -141,14 +140,6 @@ android-push: android-sdk
 	@cd ./android && ./gradlew :gomode:assembleDebug --quiet
 	@uv run --locked python scripts/android_push.py
 
-# Offline conversion tooling; does not install or enable the model in Android.
-export-lfm-litert:
-	@uv run --frozen --script scripts/export_lfm_litert.py
-
-# Pushes LiteRT-LM model weights to /data/local/tmp/llm/ on a connected device.
-android-push-model:
-	@uv run --locked python scripts/android_push_model.py
-
 # Slow: starts or reuses an emulator and runs shell behavior on a hosted fixture.
 android-e2e:
 	@uv run --locked python scripts/android_start_emulator.py --reuse-connected-device
@@ -164,3 +155,7 @@ android-voice-e2e: android-sdk
 screenshots-check screenshots-generate screenshots-update: android-sdk
 	@uv run --locked python scripts/android_start_emulator.py --auto-reuse
 	@uv run --locked python scripts/android_screenshots.py $(subst screenshots-,,$@)
+
+# Slow: streams the pinned source checkpoint through LiteRT conversion and quantization.
+android-export-lfm:
+	@uv run --locked --script scripts/export_lfm_litert.py

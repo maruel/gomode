@@ -316,24 +316,30 @@ flowchart TD
 | **Access Gate** | **Requires EAP account allowlist** | **None (Apache 2.0 / open weights)** | **None (Apache 2.0)** |
 | **Offline Reliability** | Fails (`UNAVAILABLE`) without EAP | 100% offline out-of-the-box | 100% offline out-of-the-box |
 
-### Select Gemma weights
+### Download a local model
 
-Install both variants:
+In settings, choose **On-device voice → Local LLM**, then **Gemma 4 E2B**,
+**Gemma 4 E4B**, or **LFM3 1.7B** and tap **Download model** when available. The app shows the
+model's size and measured download progress. End an active voice session before
+changing models or download controls.
 
-```sh
-make android-push-model
-```
+Downloads continue in the background with a progress notification. Android
+reschedules interrupted transfers automatically, including after process death.
+The app shows queued or retrying status while waiting for a connection or a
+background execution slot. **Cancel download** discards partial data; ordinary
+interruptions retain it for automatic resume. Invalid ranges fail without
+appending data; a server that ignores Range safely restarts from the beginning.
+Integrity failures discard corrupt partials and offer a clean retry. Voice
+preparation waits for installation rather than reporting a missing-model error.
 
-The command downloads missing weights into `models/` and syncs both files to
-the device. It also pushes the default `make export-lfm-litert` output when it
-exists. Repeated runs skip unchanged files.
+Gemma artifacts come directly from pinned public Hugging Face revisions.
+The custom LFM3 artifact must be published before its download is enabled. Go Mode streams to
+private storage excluded from backups, verifies the exact size and SHA-256, then
+publishes the installed file. Installation automatically retries preparation of
+the selected local model. Complete models are retained, including models already
+in use. The artifact pins live in [`ModelArtifact.kt`](../android/gomode/src/main/java/com/fghbuild/gomode/voice/ModelArtifact.kt).
 
-In settings, select **On-device voice → Gemma 4**, then **Gemma 4 E2B**,
-**Gemma 4 E4B**, **LFM 2.5 1.2B**, or **LFM 2.5 2.6B**. End an active voice session before changing the model.
-The app saves the choice and prepares that model at startup. Missing weights
-produce an installation error; the app does not substitute the other variant.
-Both named files can stay installed. Existing generic E2B installations remain
-readable; install named files to avoid ambiguous legacy weights.
+Developer fixtures can still place named files under `/data/local/tmp/llm/`.
 
 ## Mobile Agent Alternatives
 
@@ -360,121 +366,74 @@ with llama.cpp Q4_0, 1K prefill, and 100 decoded tokens. That is not a Tensor G3
 measurement. The [LFM license](https://www.liquid.ai/lfm-license) requires a
 separate commercial license at $10M or more annual revenue.
 
-## LFM2.5 16K INT4/FP16 Export
+## LFM3 1.7B
 
-[`scripts/export_lfm_litert.py`](../scripts/export_lfm_litert.py) re-exports the
-original checkpoint (supporting `1.2b` by default, or `2.6b` via `--variant`).
-It does not convert a GGUF or resize an existing 4K bundle.
-The target uses INT4 blockwise-32 min/max fully connected weights, INT8 embedding
-lookup weights, floating-point convolutions, and a 16,384-token FP16 cache.
-FP16 cache storage and the `fp32_fp16` activation preference do not mean every
-graph operation executes in FP16. Conversion keeps the source weights and
-float computations FP32. The Android GPU delegate decides how to lower them.
-
-### Prepare and export
-
-Use a Linux conversion host with `uv`, network access, sufficient RAM, and disk
-space for the original checkpoint and intermediate graphs. The 1.2B variant requires
-substantially less memory (~5 GB RAM during export) than the 2.6B variant (~32–64 GB).
-These are capacity estimates, not measured full-conversion peaks. The generated
-`work/` directory retains intermediate files for diagnosis. Python 3.12,
-the exporter revision, and dependencies are isolated by the script's uv lock.
-
-Prepare the recipe, template, metadata, and environment record without fetching
-weights:
+Go Mode targets a custom **65,536-token** LFM3 export. The budget includes
+instructions, tool definitions, conversation history, reasoning, and output.
+[`export_lfm_litert.py`](../scripts/export_lfm_litert.py) pins the source checkpoint,
+exporter, Python dependencies, quantization recipe, and in-tree model extension.
+The source [LFM3 checkpoint](https://huggingface.co/LiquidAI/LFM3-1.7B) supports
+256K; the exported graph's cache shapes determine the mobile limit.
 
 ```sh
-uv run --frozen --script scripts/export_lfm_litert.py \
-  --variant 1.2b --prepare-only --output-dir /tmp/lfm-export-inputs
+# Validate metadata, tool/history rendering, and export settings without weights.
+uv run --locked --script scripts/export_lfm_litert.py --prepare-only
+
+# Convert and quantize the source checkpoint; requires substantial host RAM/disk.
+make android-export-lfm
+
+# Independently inspect INT8 weights and every signature's FP16 cache dimensions.
+uv run --locked --script scripts/export_lfm_litert.py --validate-only \
+  models/lfm3-1.7b-int8-64k-fp16/LFM3-1.7B_int8_64k_fp16.litertlm
 ```
 
-Run the full conversion (defaults to 1.2B):
+Converter V2 keeps model parameters and sample caches on the meta device and
+streams checkpoint weights during serialization. The graph uses FP16 recurrent
+and KV state, and per-channel INT8 matrix weights. Convolution and normalization
+constants remain FP32. The INT8 bundle occupies approximately 1.79 GB on disk.
+A successful conversion writes the candidate bundle, `manifest.json` (size,
+SHA-256 and provenance), `environment.json`, export inputs and the source license.
+Graph validation checks weight types, cache dimensions, metadata, and prompt
+rendering. It does not establish inference quality or device performance. The INT8
+candidate has structural validation only; model inference checks were waived.
 
-```sh
-make export-lfm-litert
-```
+Place the named bundle under `/data/local/tmp/llm/` for device acceptance. Run
+`com.fghbuild.gomode.voice.Lfm3ModelTest` through `connectedDebugAndroidTest`.
+Pass `-Pandroid.testInstrumentationRunnerArguments.gomodeLongContext=true` to
+exercise a prompt of more than 16K source tokens, in addition to the weather-tool
+round trip and fresh-conversation check. The static graph computes attention
+across its full cache, so the CPU emulator recall test allows up to 60 minutes.
+Phone GPU memory use and latency require separate device measurements.
+Publishing requires a Hugging Face account: upload the accepted `.litertlm` file,
+source `LICENSE`, and
+`manifest.json`, then supply the immutable download URL and manifest values for
+[`ModelArtifact.kt`](../android/gomode/src/main/java/com/fghbuild/gomode/voice/ModelArtifact.kt).
+The repository must be public so the app can download without account credentials.
+Until that URL is configured, settings reports that the download is unavailable.
 
-Or choose a specific variant and output directory:
+The adapted [source chat template](../scripts/lfm3_chat_template.jinja) formats tool
+definitions, structured calls and results, and reads LiteRT's `channels.thought`
+field. The [LFM Open License](../scripts/lfm3_chat_template.LICENSE) applies to this
+adapted template. It preserves reasoning across turns so later prompts retain the prefix
+that LiteRT has already cached. This also preserves current-turn reasoning during
+a tool round trip. Normal voice generation disables thinking; model-emitted
+thoughts still remain private and available to conversation replay.
 
-```sh
-uv run --frozen --script scripts/export_lfm_litert.py --variant 1.2b --output-dir /path/to/export
-uv run --frozen --script scripts/export_lfm_litert.py --variant 2.6b --output-dir /path/to/export
-```
+LiteRT-LM 0.18.1 has no native LFM3 output parser or parser plugin. LFM3's trained
+format uses `<function=name>` and `<parameter=name>` headers with unescaped
+values, so it is XML-like rather than well-formed XML. Go Mode uses an explicit
+grammar parser and resolves scalar types through the same compiled full JSON
+Schemas that gate tool dispatch. Literal strings, nested JSON, exact numbers and
+thought markers in parameter values are preserved. Unknown or invalid calls go
+through ordinary validation; malformed structure fails before speech or dispatch.
+The whole generation is buffered to prevent control syntax from reaching speech.
+LFM3 disables native channel extraction so literal thought markers in argument
+values reach this parser unchanged; native history retains the raw generation.
 
-The script refuses to overwrite a published bundle. It publishes
-`LFM2.5-1.2B-Instruct_int4_16k_fp16.litertlm` (or `LFM2.5-2.6B_int4_16k_fp16.litertlm`)
-only after checking the LFM model type, context limit, tool-aware template,
-capability flags, presence of executor metadata, INT4 weights, INT8 embeddings,
-and FP16 cache inputs and outputs across prefill/decode signatures. `manifest.json`
-records source revisions, the bundle checksum, and pending native validation.
-The LFM license is copied alongside the output.
-
-The conversion-only adapters align FP16 attention-cache reads with the query
-compute dtype and cast short-convolution state around float computation. Without
-these casts, tracing fails on attention dtype mismatch or MLIR rejects a
-mixed-dtype convolution-state concatenate. Blockwise scales round through BF16
-and FP16. Tiny nonzero blocks and all-zero weights, including the padding-token
-row, can acquire zero scales. The tooling replaces zero scales with the smallest
-positive FP16 subnormal, approximately `5.96e-8`, before quantizing weights.
-Weight codes and serialized scales then agree. Zero weights remain exact;
-tiny nonzero weights round to this scale's grid and can become zero. Other
-scales remain unchanged. Preserved FP16 subnormal scales retain upstream
-rounding and can clip a block's largest weights. A reduced-width 30-layer export
-exercises tiny nonzero short-convolution projection weights; CPU/XNNPACK accepts this floor. GPU
-acceptance and full-model quality remain unverified.
-
-### Existing 4K bundle and runtime support
-
-The [community bundle](https://huggingface.co/litert-community/LFM2.5-2.6B),
-inspected at revision `b25501d2e9c6fd4e87cab606dc022f0fdf3d3970`, contains a
-1.67 GB INT4 file. Its recipe uses OCTAV, not this tooling's min/max recipe.
-Its metadata selects `generic_model`, caps context at 4,096, and omits the
-function-calling capability flag. Its template renders tools but drops
-structured assistant calls and native tool-result content parts. A local Jinja
-probe reproduces both omissions. It is not an agent-ready drop-in bundle.
-
-[LiteRT-LM v0.18.0's LFM processor](https://github.com/google-ai-edge/LiteRT-LM/blob/v0.18.0/runtime/conversation/model_data_processor/lfm2_data_processor.cc)
-already parses Python-like calls between `<|tool_call_start|>` and
-`<|tool_call_end|>`. The export template preserves calls and results and starts
-assistant generation with `<think>`. Reasoning uses the separate `thought`
-channel. The LFM processor rejects constrained decoding; parsing does not
-provide grammar-enforced schema correctness.
-
-The community [LFM2.5-2.6B card](https://huggingface.co/litert-community/LFM2.5-2.6B)
-reports Pixel 8a Tensor G3 GPU decode at 11.0–11.2 tokens/s and first-token latency
-at 3.04–3.06 s for a 261-token prompt. CPU decode is 7.4–10.2 tokens/s.
-The companion [LFM2.5-1.2B-Instruct card](https://huggingface.co/litert-community/LFM2.5-1.2B-Instruct)
-reports Pixel 8a Tensor G3 GPU prefill at 188–193 tokens/s, decode at 21.0–21.2 tokens/s,
-and TTFT at 1.41–1.44 s, compared to 38–54 tokens/s prefill and 15.2–24.3 tokens/s decode
-on CPU. Both cards benchmark GPU (OpenCL) and CPU (XNNPACK); neither card supports
-the Tensor TPU (`Backend.GOOGLE_TENSOR()`). Both community targets cap context at
-4,096 tokens.
-
-### Context and validation limits
-
-The [original checkpoint](https://huggingface.co/LiquidAI/LFM2.5-2.6B/blob/main/config.json)
-supports 131,072 positions. Its eight attention layers use eight KV heads with
-64 dimensions per head. Raw KV storage is 256 MiB at 16K FP16, or 512 MiB at
-32K FP16. FP32 doubles those sizes. Weights, convolution state, scratch buffers,
-and backend allocations add to them.
-
-A larger fixed cache requires a graph re-export, not a metadata-only change.
-Multiple-capacity or dynamic-cache exports are alternatives, but their LFM
-Android compatibility is not established. Tool pruning, retrieval, and history
-compaction reduce occupied context; they do not enlarge it. Reasoning shares
-the total budget with instructions, schemas, service facts, history, and output.
-
-`make android-push-model` copies the export to `/data/local/tmp/llm/`.
-In settings, selecting **LFM 2.5 2.6B** applies 16K context (`maxNumTokens = 16_384`),
-LFM sampler defaults (topK = 50, topP = 1.0, temperature = 0.1), and GPU/CPU backend
-selection (`GOOGLE_TENSOR` compatibility is not established for this artifact). The engine
-separates thought-channel text from spoken replies.
-
-Preparation and a reduced-width 30-layer LFM export exercise the tooling.
-The full 2.6B conversion, LiteRT-LM native tool-result continuation, long-context
-quality, and Pixel 8 Pro GPU behavior remain acceptance checks. Measure first
-correct action latency, multi-step completion, memory, and sustained thermal
-behavior, not just first-token latency or decode throughput.
+Sampling uses top-k 50, temperature 0.1 and repetition penalty 1.1. Go Mode
+recreates the native engine for new LFM3 conversations and replay because short
+convolution state survives conversation replacement in LiteRT-LM 0.18.1
+([upstream issue](https://github.com/google-ai-edge/LiteRT-LM/issues/3165)).
 
 ## Empirical Findings on Physical Pixel 8 Pro
 
@@ -503,11 +462,3 @@ Testing on a Google Pixel 8 Pro running production Android build `CP3A.261005.00
      - `androidx.graphics:graphics-path:1.1.0` (`libandroidx.graphics.path.so`)
      - `com.google.mlkit:genai-prompt:1.0.0-beta4` (pure Java/Kotlin IPC; zero native binaries)
    - The application build file configures `ndk.abiFilters = setOf("arm64-v8a", "x86_64")` to exclude legacy unaligned 32-bit libraries.
-
-4. **Physical Memory Exhaustion with 16K LFM on GPU (`dumpsys activity exit-info`)**:
-   - Initializing `LFM2.5-2.6B_int4_16k_fp16.litertlm` with `maxNumTokens = 16_384` on `Backend.GPU()` drove resident memory to **12 GB RSS**, exhausting the physical RAM of the Pixel 8 Pro.
-   - The memory spike triggered low-memory kills of sandboxed WebView processes (`LOW_MEMORY`) and system-level termination of `com.fghbuild.gomode` (`reason=13 (OTHER KILLS BY SYSTEM)`, `subreason=26 (UNDELIVERED BROADCAST)`). Memory contention stalled the main thread looper during system broadcast dispatch.
-   - Verified requirements for stable on-device LFM execution on Tensor G3:
-     - **Context Window Ceiling:** Community LFM models enforce a 4,096 token maximum (and 1,024 on iOS Metal). Pre-allocating 16K static KV cache and intermediate activation buffers on mobile GPU exceeds device memory limits.
-     - **GPU Conv-State Lowering:** Exporting short-convolution state shifts without operations rejected by mobile OpenCL delegates (such as `GATHER_ND` and `INT64`) requires `litert-torch >= 0.9.3` with valid-token masking and one-hot matmul state selection (the `_int4_gpu` recipe).
-     - **TPU Incompatibility:** Google Tensor TPU (`Backend.GOOGLE_TENSOR()`) lacks microkernels for dynamic 1D causal convolution state shifting and rejects LFM graphs. LFM execution requires `Backend.GPU()` (OpenCL) or `Backend.CPU()` (XNNPACK).

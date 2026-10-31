@@ -13,6 +13,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -34,6 +35,8 @@ internal data class PreparedLocalModel(
 internal sealed interface LocalModelState {
     data object Idle : LocalModelState
 
+    data object AwaitingDownload : LocalModelState
+
     data object Preparing : LocalModelState
 
     data object Ready : LocalModelState
@@ -45,6 +48,7 @@ internal sealed interface LocalModelState {
 
 internal class LocalModelOwner(
     context: Context,
+    private val installation: StateFlow<Map<LocalLlmModel, ModelDownloadState>>,
     ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val engineFactory: (LocalLlmModel) -> LocalLlmEngine = { model ->
         LocalLlmEngine(context, ioDispatcher = ioDispatcher, model = model)
@@ -86,6 +90,14 @@ internal class LocalModelOwner(
         }
     }
 
+    @Synchronized
+    fun modelInstalled(model: LocalLlmModel) {
+        if (!closed && selection?.model == model && mutableState.value != LocalModelState.Ready) {
+            // Queue after an in-flight missing-file failure as well as an already-published failure.
+            schedule(reuseAllocated = true)
+        }
+    }
+
     suspend fun acquire(): PreparedLocalModel {
         while (true) {
             val pending =
@@ -94,7 +106,13 @@ internal class LocalModelOwner(
                     if (mutableState.value is LocalModelState.Failed) schedule(reuseAllocated = true)
                     checkNotNull(preparation)
                 }
-            val prepared = checkNotNull(pending.await()) { "Local model selection changed" }
+            val prepared =
+                pending.await() ?: synchronized(this) {
+                    if (pending === preparation && mutableState.value == LocalModelState.AwaitingDownload) {
+                        throw LocalModelUnavailableException(checkNotNull(selection).model)
+                    }
+                    error("Local model selection changed")
+                }
             synchronized(this) {
                 requireCurrent(prepared.generation)
                 if (prepared.lifetime.isCurrent) return prepared
@@ -135,6 +153,10 @@ internal class LocalModelOwner(
                             allocated = null
                         }
                         if (selected == null || !selected.isCurrent() || !owns(request)) return@withLock null
+                        if (installation.value[selected.model] != ModelDownloadState.Ready) {
+                            publish(request, LocalModelState.AwaitingDownload)
+                            return@withLock null
+                        }
                         val authorized = selected.prepareSetup()
                         val setup = authorized.setup
                         if (!selected.isCurrent() || !owns(request)) return@withLock null
@@ -171,6 +193,11 @@ internal class LocalModelOwner(
                         }
                         publish(request, LocalModelState.Ready)
                         PreparedLocalModel(request, engine, setup, authorized.lifetime)
+                    } catch (_: LocalModelUnavailableException) {
+                        allocated?.closeAndJoin()
+                        allocated = null
+                        publish(request, LocalModelState.AwaitingDownload)
+                        null
                     } catch (e: CancellationException) {
                         throw e
                     } catch (
@@ -186,7 +213,10 @@ internal class LocalModelOwner(
                         ) {
                             if (cleanupFailure !== e) e.addSuppressed(cleanupFailure)
                         }
-                        publish(request, LocalModelState.Failed("Local model preparation failed: ${e.message}"))
+                        publish(
+                            request,
+                            LocalModelState.Failed(e.message ?: "Unable to prepare the local model. Try again."),
+                        )
                         throw e
                     }
                 }

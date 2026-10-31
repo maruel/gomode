@@ -9,6 +9,7 @@ import com.google.ai.edge.litertlm.Message
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
@@ -40,7 +41,7 @@ class LocalModelOwnerTest {
             var discoveries = 0
             var prefill = ""
             val owner =
-                LocalModelOwner(app, dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
                     LocalLlmEngine(app, { _, instruction ->
                         allocations++
                         prefill = instruction.prefillEvidence()
@@ -77,7 +78,7 @@ class LocalModelOwnerTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             val events = mutableListOf<String>()
             val owner =
-                LocalModelOwner(app, dispatcher) { model ->
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) { model ->
                     events.add("allocate ${model.label}")
                     LocalLlmEngine(app, { _, _ ->
                         object : Runner() {
@@ -99,44 +100,97 @@ class LocalModelOwnerTest {
             owner.release(second.await())
             testScheduler.runCurrent()
             assertEquals(3, events.size)
-            owner.select(LocalModelSelection("en-US", { setup() }, { true }, LocalLlmModel.LFM_2_5_2_6B))
+            owner.select(LocalModelSelection("en-US", { setup() }, { true }, LocalLlmModel.LFM_3_1_7B))
             val third = async { owner.acquire() }
             testScheduler.runCurrent()
             assertFalse(second.await().engine.isModelLoaded)
-            assertEquals("LFM 2.5 2.6B", third.await().engine.modelName)
+            assertEquals("LFM3 1.7B", third.await().engine.modelName)
             assertEquals(
                 listOf(
                     "allocate Gemma 4 E2B",
                     "close Gemma 4 E2B",
                     "allocate Gemma 4 E4B",
                     "close Gemma 4 E4B",
-                    "allocate LFM 2.5 2.6B",
+                    "allocate LFM3 1.7B",
                 ),
                 events,
             )
             owner.release(third.await())
             testScheduler.runCurrent()
             assertEquals(5, events.size)
-            owner.select(LocalModelSelection("en-US", { setup() }, { true }, LocalLlmModel.LFM_2_5_1_2B))
-            val fourth = async { owner.acquire() }
+            owner.close()
             testScheduler.runCurrent()
-            assertFalse(third.await().engine.isModelLoaded)
-            assertEquals("LFM 2.5 1.2B", fourth.await().engine.modelName)
-            assertEquals(
-                listOf(
-                    "allocate Gemma 4 E2B",
-                    "close Gemma 4 E2B",
-                    "allocate Gemma 4 E4B",
-                    "close Gemma 4 E4B",
-                    "allocate LFM 2.5 2.6B",
-                    "close LFM 2.5 2.6B",
-                    "allocate LFM 2.5 1.2B",
-                ),
-                events,
+        }
+
+    @Test
+    fun `active installation waits before service discovery and prepares automatically when installed`() =
+        runTest {
+            val dispatcher = StandardTestDispatcher(testScheduler)
+            val installation =
+                MutableStateFlow<Map<LocalLlmModel, ModelDownloadState>>(
+                    mapOf(LocalLlmModel.GEMMA_4_E2B to ModelDownloadState.Queued(1_000_000, false)),
+                )
+            var allocations = 0
+            var discoveries = 0
+            val owner =
+                LocalModelOwner(app, installation, dispatcher) {
+                    LocalLlmEngine(app, { _, _ ->
+                        allocations++
+                        Runner()
+                    }, dispatcher)
+                }
+            owner.select(
+                LocalModelSelection("en-US", {
+                    discoveries++
+                    setup()
+                }, { true }),
             )
-            owner.release(fourth.await())
             testScheduler.runCurrent()
-            assertEquals(7, events.size)
+            assertEquals(LocalModelState.AwaitingDownload, owner.state.value)
+            assertEquals(0, allocations)
+            assertEquals(0, discoveries)
+            installation.value = mapOf(LocalLlmModel.GEMMA_4_E2B to ModelDownloadState.Ready)
+            owner.modelInstalled(LocalLlmModel.GEMMA_4_E2B)
+            val prepared = async { owner.acquire() }
+            testScheduler.runCurrent()
+            assertTrue(prepared.await().engine.isModelLoaded)
+            assertEquals(1, allocations)
+            assertEquals(1, discoveries)
+            owner.close()
+            testScheduler.runCurrent()
+        }
+
+    @Test
+    fun `missing model waits for installation without a preparation failure or repeated allocation`() =
+        runTest {
+            val dispatcher = StandardTestDispatcher(testScheduler)
+            var attempts = 0
+            var installed = false
+            val owner =
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
+                    LocalLlmEngine(app, { _, _ ->
+                        attempts++
+                        if (!installed) throw LocalModelUnavailableException(LocalLlmModel.GEMMA_4_E2B)
+                        Runner()
+                    }, dispatcher)
+                }
+            owner.select(LocalModelSelection("en-US", { setup() }, { true }))
+            testScheduler.runCurrent()
+            assertEquals(LocalModelState.AwaitingDownload, owner.state.value)
+            assertTrue(runCatching { owner.acquire() }.exceptionOrNull() is LocalModelUnavailableException)
+            owner.retry()
+            testScheduler.runCurrent()
+            assertEquals(1, attempts)
+            owner.modelInstalled(LocalLlmModel.GEMMA_4_E4B)
+            testScheduler.runCurrent()
+            assertEquals(LocalModelState.AwaitingDownload, owner.state.value)
+            installed = true
+            owner.modelInstalled(LocalLlmModel.GEMMA_4_E2B)
+            val prepared = async { owner.acquire() }
+            testScheduler.runCurrent()
+            assertTrue(prepared.await().engine.isModelLoaded)
+            assertEquals(LocalModelState.Ready, owner.state.value)
+            assertEquals(2, attempts)
             owner.close()
             testScheduler.runCurrent()
         }
@@ -148,19 +202,22 @@ class LocalModelOwnerTest {
             var attempts = 0
             var fail = true
             val owner =
-                LocalModelOwner(app, dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
                     LocalLlmEngine(app, { _, _ ->
                         attempts++
-                        check(!fail) { "Install weights with make android-push-model" }
+                        check(!fail) { "Download the model in Settings" }
                         Runner()
                     }, dispatcher)
                 }
             owner.select(LocalModelSelection("en-US", { setup() }, { true }))
             testScheduler.runCurrent()
-            assertTrue((owner.state.value as LocalModelState.Failed).message.contains("make android-push-model"))
+            assertTrue((owner.state.value as LocalModelState.Failed).message.contains("in Settings"))
             assertEquals(1, attempts)
             fail = false
-            owner.retry()
+            owner.modelInstalled(LocalLlmModel.GEMMA_4_E4B)
+            testScheduler.runCurrent()
+            assertEquals(1, attempts)
+            owner.modelInstalled(LocalLlmModel.GEMMA_4_E2B)
             owner.retry()
             val prepared = async { owner.acquire() }
             testScheduler.runCurrent()
@@ -176,7 +233,7 @@ class LocalModelOwnerTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             var brokenRuntime = true
             val owner =
-                LocalModelOwner(app, dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
                     LocalLlmEngine(app, { _, _ ->
                         if (brokenRuntime) throw UnsatisfiedLinkError("JNI runtime unavailable")
                         Runner()
@@ -201,7 +258,7 @@ class LocalModelOwnerTest {
             var allocations = 0
             var credentialsReady = true
             val owner =
-                LocalModelOwner(app, dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
                     allocations++
                     LocalLlmEngine(app, { _, _ -> Runner() }, dispatcher)
                 }
@@ -233,7 +290,7 @@ class LocalModelOwnerTest {
             val events = mutableListOf<String>()
             var number = 0
             val owner =
-                LocalModelOwner(app, dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
                     val id = ++number
                     events.add("allocate $id")
                     LocalLlmEngine(app, { _, _ ->
@@ -291,7 +348,7 @@ class LocalModelOwnerTest {
             var allocations = 0
             var disposed = false
             val owner =
-                LocalModelOwner(app, dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
                     allocations++
                     LocalLlmEngine(app, { _, _ ->
                         object : Runner() {
@@ -334,7 +391,7 @@ class LocalModelOwnerTest {
             var number = 0
             var ownerRef: LocalModelOwner? = null
             val owner =
-                LocalModelOwner(app, dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
                     val id = ++number
                     LocalLlmEngine(app, { _, _ ->
                         events.add("initialize $id")
@@ -364,7 +421,7 @@ class LocalModelOwnerTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             var allocations = 0
             val owner =
-                LocalModelOwner(app, dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
                     allocations++
                     LocalLlmEngine(app, { _, _ ->
                         object : Runner() {
@@ -395,7 +452,7 @@ class LocalModelOwnerTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             var allocations = 0
             val owner =
-                LocalModelOwner(app, dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
                     allocations++
                     LocalLlmEngine(app, { _, _ -> Runner() }, dispatcher)
                 }
@@ -419,7 +476,7 @@ class LocalModelOwnerTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             var allocations = 0
             val owner =
-                LocalModelOwner(app, dispatcher) {
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready), dispatcher) {
                     allocations++
                     LocalLlmEngine(app, { _, _ -> Runner() }, dispatcher)
                 }
