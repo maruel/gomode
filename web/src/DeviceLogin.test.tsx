@@ -495,6 +495,45 @@ describe("device login", () => {
     expect(screen.getByRole("textbox", { name: "Device code" })).toHaveValue("");
     expect(screen.getByRole("textbox", { name: "Device code" })).toHaveFocus();
   });
+  it("treats an unauthorized approval as a changed identity without an identity probe", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        Response.json({
+          user_code: code.user_code,
+          ip: "192.0.2.0/24",
+          user_agent: "Car",
+          created_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 600000).toISOString(),
+          csrf_token: "csrf",
+        }),
+      )
+      .mockResolvedValueOnce(Response.json({ error: "login_required" }, { status: 401 }));
+    globalThis.fetch = fetch;
+    const authenticationRequired = vi.fn();
+    render(() => <DeviceLoginApproval endpoints={endpoints} onAuthenticationRequired={authenticationRequired} />);
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    fireEvent.input(input, { target: { value: code.user_code } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Approve sign-in" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Approve sign-in" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Your account or request changed."));
+    expect(authenticationRequired).not.toHaveBeenCalled();
+    expect(input).toHaveValue("");
+    expect(input).toHaveFocus();
+  });
+  it("asks for sign-in when a lookup is unauthorized", async () => {
+    globalThis.fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(Response.json({ error: "login_required" }, { status: 401 }));
+    const authenticationRequired = vi.fn();
+    render(() => <DeviceLoginApproval endpoints={endpoints} onAuthenticationRequired={authenticationRequired} />);
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    fireEvent.input(input, { target: { value: code.user_code } });
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Sign in again to check this code."));
+    expect(authenticationRequired).toHaveBeenCalledTimes(1);
+    expect(input).toHaveValue(code.user_code);
+    expect(screen.queryByRole("button")).toBeNull();
+  });
   it("ignores a rejected verification after its lookup was aborted", async () => {
     let resolveFirst = (_valid: boolean) => {};
     const verify = vi

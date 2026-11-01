@@ -91,7 +91,14 @@ function errorCode(value: unknown): string | null {
     ? value.error
     : null;
 }
+// A rejected approval is a changed approving identity, whatever its body says,
+// and the host must re-probe identity before reporting it. Every other operation
+// treats 401 as a login request.
+function approvalRejected(result: Result): boolean {
+  return result.status === 401;
+}
 function failure(result: Result, operation: "start" | "poll" | "lookup" | "approve"): DeviceLoginFailure {
+  if (operation === "approve" && approvalRejected(result)) return { kind: "changed", retryAfter: result.retryAfter };
   let kind: DeviceLoginFailureKind;
   switch (errorCode(result.data)) {
     case "expired_token":
@@ -123,9 +130,7 @@ function failure(result: Result, operation: "start" | "poll" | "lookup" | "appro
         result.status === 429
           ? "throttled"
           : result.status === 401
-            ? operation === "approve"
-              ? "changed"
-              : "login"
+            ? "login"
             : operation === "poll" || operation === "approve"
               ? "delivery"
               : "rejected";
@@ -611,9 +616,8 @@ export function DeviceLoginApproval(props: {
         setProblem(null);
         setState("approved");
       } else {
-        const issue: DeviceLoginFailure =
-          result.status === 401 ? { kind: "changed", retryAfter: null } : failure(result, "approve");
-        if (result.status !== 401 || !props.verifyApprover || (await verify(c.signal))) reject(issue);
+        const issue = failure(result, "approve");
+        if (!approvalRejected(result) || !props.verifyApprover || (await verify(c.signal))) reject(issue);
       }
       setDetails(null);
     } catch {
