@@ -452,7 +452,84 @@ describe("device login", () => {
     fireEvent.click(screen.getByRole("button", { name: "Approve sign-in" }));
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Your account or request changed."));
     expect(fetch).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("textbox", { name: "Device code" })).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "Device code" })).toHaveFocus();
     expect(screen.queryByRole("button", { name: "Approve sign-in" })).toBeNull();
+  });
+  it("treats a rejected approval as a changed identity", async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        Response.json({
+          user_code: code.user_code,
+          ip: "192.0.2.0/24",
+          user_agent: "Car",
+          created_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 600000).toISOString(),
+          csrf_token: "csrf",
+        }),
+      )
+      .mockResolvedValueOnce(Response.json({ error: "login_required" }, { status: 401 }));
+    globalThis.fetch = fetch;
+    const verify = vi
+      .fn<() => Promise<boolean>>()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    const authenticationRequired = vi.fn();
+    render(() => (
+      <DeviceLoginApproval
+        endpoints={endpoints}
+        verifyApprover={verify}
+        onAuthenticationRequired={authenticationRequired}
+      />
+    ));
+    fireEvent.input(screen.getByRole("textbox", { name: "Device code" }), { target: { value: code.user_code } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Approve sign-in" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Approve sign-in" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Your account or request changed."));
+    expect(verify).toHaveBeenCalledTimes(3);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[1]?.[0]).toBe(endpoints.approve);
+    expect(authenticationRequired).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "Device code" })).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "Device code" })).toHaveFocus();
+  });
+  it("ignores a rejected verification after its lookup was aborted", async () => {
+    let resolveFirst = (_valid: boolean) => {};
+    const verify = vi
+      .fn<() => Promise<boolean>>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(true);
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      Response.json({
+        user_code: code.user_code,
+        ip: "192.0.2.0/24",
+        user_agent: "Car",
+        created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 600000).toISOString(),
+        csrf_token: "csrf",
+      }),
+    );
+    globalThis.fetch = fetch;
+    render(() => <DeviceLoginApproval endpoints={endpoints} verifyApprover={verify} />);
+    const input = screen.getByRole("textbox", { name: "Device code" });
+    fireEvent.input(input, { target: { value: code.user_code } });
+    await waitFor(() => expect(verify).toHaveBeenCalledTimes(1));
+    const replacement = "WXYZ-WXYZ-WXYZ";
+    fireEvent.input(input, { target: { value: replacement } });
+    await waitFor(() => expect(verify).toHaveBeenCalledTimes(2));
+    resolveFirst(false);
+    await flush();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Approve sign-in" })).toBeInTheDocument());
+    expect(screen.queryByRole("status")).toHaveTextContent("");
+    expect(input).toHaveValue(replacement);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
   it("ignores a late identity verification after unmount", async () => {
     let resolve = (_value: boolean) => {};

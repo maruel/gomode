@@ -123,7 +123,9 @@ function failure(result: Result, operation: "start" | "poll" | "lookup" | "appro
         result.status === 429
           ? "throttled"
           : result.status === 401
-            ? "login"
+            ? operation === "approve"
+              ? "changed"
+              : "login"
             : operation === "poll" || operation === "approve"
               ? "delivery"
               : "rejected";
@@ -464,7 +466,15 @@ export function DeviceLoginApproval(props: {
   });
   const reject = (issue: DeviceLoginFailure) => {
     if (c.signal.aborted) return;
-    restoreInput = details() !== null;
+    if (issue.kind === "changed") {
+      pendingLookup?.abort();
+      pendingLookup = null;
+      setChecking(false);
+      setCode("");
+      restoreInput = true;
+    } else {
+      restoreInput = details() !== null;
+    }
     setDetails(null);
     setProblem(issue);
     if (issue.kind === "login") props.onAuthenticationRequired?.();
@@ -600,7 +610,11 @@ export function DeviceLoginApproval(props: {
           throw new Error("invalid_response");
         setProblem(null);
         setState("approved");
-      } else reject(failure(result, "approve"));
+      } else {
+        const issue: DeviceLoginFailure =
+          result.status === 401 ? { kind: "changed", retryAfter: null } : failure(result, "approve");
+        if (result.status !== 401 || !props.verifyApprover || (await verify(c.signal))) reject(issue);
+      }
       setDetails(null);
     } catch {
       if (!c.signal.aborted) reject({ kind: sent ? "delivery" : "network", retryAfter: null });
