@@ -74,8 +74,9 @@ test: android-sdk node_modules/.modules.yaml
 		'NODE_OPTIONS=--no-experimental-webstorage pnpm exec tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts "web/src/**/*.test.ts" "web/src/**/*.test.tsx"' \
 		'cd ./android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet'
 
-# The Opus codec is deliberately disabled in race builds, so skip the
-# tests that require it while running the rest of the voice gateway suite.
+# The Opus encoder is deliberately disabled in race builds, so skip the tests
+# that require it while running the rest of the voice gateway suite. It is the
+# only codec direction that is disabled; opusDecoder runs under -race.
 test-race:
 	@go test -race -skip 'TestBrowserOpusDTX|TestVoiceRTCLocalStackPlaceholders|TestEncodeDecodeRoundtrip' ./voicegateway/voicertc
 

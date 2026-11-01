@@ -19,6 +19,7 @@ require (
 	github.com/pion/rtcp v1.2.17
 	github.com/pion/transport/v4 v4.1.1
 	github.com/pion/webrtc/v4 v4.2.20
+	github.com/tphakala/go-opus v1.3.0
 	golang.org/x/sync v0.23.0
 	golang.org/x/text v0.42.0
 )
@@ -223,6 +224,7 @@ require (
 	github.com/timonwong/loggercheck v0.12.0 // indirect
 	github.com/tomarrell/wrapcheck/v2 v2.12.0 // indirect
 	github.com/tommy-muehle/go-mnd/v2 v2.5.1 // indirect
+	github.com/tphakala/simd v1.14.0 // indirect
 	github.com/ultraware/funlen v0.2.0 // indirect
 	github.com/ultraware/whitespace v0.2.0 // indirect
 	github.com/uudashr/gocognit v1.2.1 // indirect
@@ -246,7 +248,7 @@ require (
 	golang.org/x/image v0.43.0 // indirect
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/net v0.59.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 	golang.org/x/tools v0.50.0 // indirect
