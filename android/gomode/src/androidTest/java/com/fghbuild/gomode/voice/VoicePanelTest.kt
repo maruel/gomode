@@ -2,6 +2,7 @@
 package com.fghbuild.gomode.voice
 
 import android.media.AudioDeviceInfo
+import android.os.SystemClock
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
@@ -65,6 +66,7 @@ import org.junit.Rule
 import org.junit.Test
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 
 class VoicePanelTest {
     @get:Rule
@@ -86,7 +88,7 @@ class VoicePanelTest {
                         onSelectMicrophoneMode = {},
                         onSelectDevice = {},
                         onOpenSettings = {},
-                        serviceStatusText = null,
+                        serviceReconnect = null,
                         onCycleApp = {},
                         canCycleApps = false,
                         modifier = Modifier.width(280.dp),
@@ -128,6 +130,85 @@ class VoicePanelTest {
     }
 
     @Test
+    fun serviceReconnectSpinnerSitsBesideTheMicrophoneControl() {
+        val reconnect =
+            mutableStateOf<ServiceReconnectDetail?>(
+                ServiceReconnectDetail("Tasks", "MCP subscription stream ended"),
+            )
+        composeRule.setContent {
+            GoModeTheme {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                    VoicePanel(
+                        voiceState = VoiceState(),
+                        voiceEnabled = true,
+                        onConnect = {},
+                        onDisconnect = {},
+                        onSelectMicrophoneMode = {},
+                        onSelectDevice = {},
+                        onOpenSettings = {},
+                        serviceReconnect = reconnect.value,
+                        onCycleApp = {},
+                        canCycleApps = false,
+                        modifier = Modifier.width(280.dp),
+                    )
+                }
+            }
+        }
+        val spinner =
+            composeRule
+                .onNodeWithTag("gomode-service-status")
+                .assertIsDisplayed()
+                .fetchSemanticsNode()
+                .boundsInRoot
+        val microphone = composeRule.onNodeWithTag("gomode-voice-connect").fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "Reconnect feedback must not add a row to the panel",
+            abs(spinner.center.y - microphone.center.y) < 1f,
+        )
+        assertTrue(
+            "Reconnect feedback must sit beside the microphone control",
+            spinner.right <= microphone.left,
+        )
+        capture("service-reconnecting")
+        composeRule.runOnIdle { reconnect.value = null }
+        composeRule.onNodeWithTag("gomode-service-status").assertDoesNotExist()
+    }
+
+    @Test
+    fun serviceReconnectDetailsStayUntilDismissed() {
+        composeRule.setContent {
+            GoModeTheme {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                    VoicePanel(
+                        voiceState = VoiceState(),
+                        voiceEnabled = true,
+                        onConnect = {},
+                        onDisconnect = {},
+                        onSelectMicrophoneMode = {},
+                        onSelectDevice = {},
+                        onOpenSettings = {},
+                        serviceReconnect = ServiceReconnectDetail("Tasks", "MCP subscription stream ended"),
+                        onCycleApp = {},
+                        canCycleApps = false,
+                        modifier = Modifier.width(280.dp),
+                    )
+                }
+            }
+        }
+        composeRule.onNodeWithTag("gomode-service-status").performClick()
+        composeRule.onNodeWithText("Service updates are reconnecting").assertIsDisplayed()
+        composeRule.onNodeWithText("Loading service items and notifications from Tasks.").assertIsDisplayed()
+        composeRule.onNodeWithText("Last error: MCP subscription stream ended").assertIsDisplayed()
+        composeRule.onNodeWithText("Retries automatically. No action needed.").assertIsDisplayed()
+        capture("service-reconnecting-details")
+        // Rich tooltips can auto-dismiss after 1500 ms. These details must outlast that window.
+        SystemClock.sleep(2_000)
+        composeRule.onNodeWithText("Last error: MCP subscription stream ended").assertIsDisplayed()
+        UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressBack()
+        composeRule.onNodeWithText("Last error: MCP subscription stream ended").assertDoesNotExist()
+    }
+
+    @Test
     fun settingsGlyphAlignsWithActivityAndTranscriptWhileKeepingItsTouchTarget() {
         composeRule.setContent {
             GoModeTheme {
@@ -147,7 +228,7 @@ class VoicePanelTest {
                         {},
                         {},
                         {},
-                        null,
+                        serviceReconnect = null,
                         {},
                         false,
                     )
@@ -190,7 +271,7 @@ class VoicePanelTest {
                         onSelectMicrophoneMode = {},
                         onSelectDevice = {},
                         onOpenSettings = { settingsOpened++ },
-                        serviceStatusText = null,
+                        serviceReconnect = null,
                         onCycleApp = {},
                         canCycleApps = false,
                         modifier = Modifier.width(280.dp),
@@ -229,7 +310,7 @@ class VoicePanelTest {
                         { state.value = state.value.copy(microphoneMode = it) },
                         {},
                         {},
-                        null,
+                        serviceReconnect = null,
                         onCycleApp = {},
                         canCycleApps = false,
                     )
@@ -297,7 +378,7 @@ class VoicePanelTest {
                                 { state.value = state.value.copy(microphoneMode = it) },
                                 {},
                                 { settings++ },
-                                null,
+                                serviceReconnect = null,
                                 onCycleApp = { switches++ },
                                 canCycleApps = true,
                             )
@@ -417,7 +498,7 @@ class VoicePanelTest {
                         onSelectMicrophoneMode = { state.value = state.value.copy(microphoneMode = it) },
                         onSelectDevice = { state.value = state.value.copy(selectedDeviceId = it) },
                         onOpenSettings = {},
-                        serviceStatusText = null,
+                        serviceReconnect = null,
                         onCycleApp = {},
                         canCycleApps = true,
                     )
@@ -498,7 +579,7 @@ class VoicePanelTest {
                     {},
                     { state.value = state.value.copy(selectedDeviceId = it) },
                     {},
-                    null,
+                    serviceReconnect = null,
                     {},
                     true,
                 )
@@ -539,7 +620,7 @@ class VoicePanelTest {
                     {},
                     {},
                     {},
-                    null,
+                    serviceReconnect = null,
                     onCycleApp = {},
                     canCycleApps = false,
                 )
@@ -573,7 +654,7 @@ class VoicePanelTest {
                             {},
                             {},
                             {},
-                            null,
+                            serviceReconnect = null,
                             onCycleApp = {},
                             canCycleApps = false,
                         )
@@ -610,7 +691,7 @@ class VoicePanelTest {
                     onSelectMicrophoneMode = {},
                     onSelectDevice = {},
                     onOpenSettings = {},
-                    serviceStatusText = null,
+                    serviceReconnect = null,
                     onCycleApp = { cycles++ },
                     canCycleApps = canCycle.value,
                 )
@@ -644,7 +725,18 @@ class VoicePanelTest {
         val state = mutableStateOf(VoiceState(connected = true, turnState = TurnState.Thinking))
         composeRule.setContent {
             MaterialTheme {
-                VoicePanel(state.value, true, {}, {}, {}, {}, {}, null, {}, false)
+                VoicePanel(
+                    state.value,
+                    true,
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    serviceReconnect = null,
+                    onCycleApp = {},
+                    canCycleApps = false,
+                )
             }
         }
         composeRule.onNodeWithText("Thinking…").assertIsDisplayed()
@@ -685,7 +777,7 @@ class VoicePanelTest {
                     onSelectMicrophoneMode = {},
                     onSelectDevice = { selected = it },
                     onOpenSettings = {},
-                    serviceStatusText = null,
+                    serviceReconnect = null,
                     onCycleApp = {},
                     canCycleApps = false,
                 )
@@ -794,7 +886,7 @@ class VoicePanelTest {
                     onSelectMicrophoneMode = {},
                     onSelectDevice = {},
                     onOpenSettings = {},
-                    serviceStatusText = null,
+                    serviceReconnect = null,
                     onCycleApp = {},
                     canCycleApps = false,
                 )
@@ -839,7 +931,18 @@ class VoicePanelTest {
             )
         composeRule.setContent {
             MaterialTheme {
-                VoicePanel(state.value, true, {}, {}, {}, {}, {}, null, {}, false)
+                VoicePanel(
+                    state.value,
+                    true,
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    serviceReconnect = null,
+                    onCycleApp = {},
+                    canCycleApps = false,
+                )
             }
         }
         composeRule.onNodeWithContentDescription("Hide transcript").performClick()
@@ -866,7 +969,18 @@ class VoicePanelTest {
             )
         composeRule.setContent {
             MaterialTheme {
-                VoicePanel(state.value, true, {}, {}, {}, {}, {}, null, {}, false)
+                VoicePanel(
+                    state.value,
+                    true,
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    serviceReconnect = null,
+                    onCycleApp = {},
+                    canCycleApps = false,
+                )
             }
         }
         composeRule.onNodeWithTag("gomode-voice-transcript-end").assertIsDisplayed()
@@ -916,7 +1030,7 @@ class VoicePanelTest {
                     onSelectMicrophoneMode = {},
                     onSelectDevice = {},
                     onOpenSettings = {},
-                    serviceStatusText = null,
+                    serviceReconnect = null,
                     onCycleApp = {},
                     canCycleApps = false,
                 )

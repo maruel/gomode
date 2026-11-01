@@ -102,6 +102,7 @@ import com.fghbuild.gomode.voice.LocalModelOwner
 import com.fghbuild.gomode.voice.LocalModelSelection
 import com.fghbuild.gomode.voice.LocalModelState
 import com.fghbuild.gomode.voice.MicrophonePermissionRecovery
+import com.fghbuild.gomode.voice.ServiceReconnectDetail
 import com.fghbuild.gomode.voice.SpeechLanguageRecovery
 import com.fghbuild.gomode.voice.TelecomCallController
 import com.fghbuild.gomode.voice.VoiceConversation
@@ -769,7 +770,13 @@ internal fun GoModeApp(
                         }
                     },
                     canCycleApps = settings.services.size > 1,
-                    serviceStatusText = serviceMonitorState.error?.let { "Service updates are reconnecting." },
+                    serviceReconnect =
+                        serviceMonitorState.error?.let {
+                            ServiceReconnectDetail(
+                                serviceLabel = catalogState[activeKey]?.label,
+                                reason = it,
+                            )
+                        },
                     modifier = Modifier.fillMaxWidth(),
                 )
             }

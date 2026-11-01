@@ -48,20 +48,27 @@ import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedIconToggleButton
+import androidx.compose.material3.RichTooltip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -93,6 +100,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.caic.voicegateway.sdk.v1.TurnState
+import kotlinx.coroutines.launch
 
 private const val PULSE_MIN_ALPHA = 0.5f
 private const val PULSE_MAX_ALPHA = 1.0f
@@ -108,6 +116,15 @@ data class MicrophonePermissionRecovery(
     val onOpenSettings: () -> Unit,
 )
 
+/**
+ * Why service feeds restarted: the failing service, if it has a name, and the transport error that
+ * ended the last monitoring attempt. The monitor retries on its own, so this is explanatory only.
+ */
+data class ServiceReconnectDetail(
+    val serviceLabel: String?,
+    val reason: String,
+)
+
 @Composable
 fun VoicePanel(
     voiceState: VoiceState,
@@ -117,7 +134,7 @@ fun VoicePanel(
     onSelectMicrophoneMode: (MicrophoneMode) -> Unit,
     onSelectDevice: (Int) -> Unit,
     onOpenSettings: () -> Unit,
-    serviceStatusText: String?,
+    serviceReconnect: ServiceReconnectDetail?,
     onCycleApp: () -> Unit,
     canCycleApps: Boolean,
     modifier: Modifier = Modifier,
@@ -141,6 +158,7 @@ fun VoicePanel(
                 onSelectMicrophoneMode,
                 onSelectDevice,
                 appControls,
+                serviceReconnect,
             )
             microphoneRecovery?.let { recovery ->
                 Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("gomode-microphone-recovery")) {
@@ -191,24 +209,50 @@ fun VoicePanel(
                     ActivePanel(voiceState)
                 }
             }
-            ServiceStatusLabel(serviceStatusText)
         }
     }
 }
 
+// Service updates resume on their own. The spinner reports the retry, and a tap reveals which
+// service feed restarted and the error that ended it without asking for an action.
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ServiceStatusLabel(text: String?) {
-    if (text == null) return
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.error,
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
-                .testTag("gomode-service-status"),
-    )
+private fun ServiceReconnectIndicator(detail: ServiceReconnectDetail) {
+    val scope = rememberCoroutineScope()
+    val tooltip = rememberTooltipState(isPersistent = true)
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberRichTooltipPositionProvider(),
+        tooltip = {
+            RichTooltip(
+                title = { Text("Service updates are reconnecting") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            detail.serviceLabel?.let { "Loading service items and notifications from $it." }
+                                ?: "Loading service items and notifications.",
+                        )
+                        Text("Last error: ${detail.reason}")
+                        Text("Retries automatically. No action needed.")
+                    }
+                },
+            )
+        },
+        state = tooltip,
+    ) {
+        IconButton(
+            onClick = { scope.launch { if (tooltip.isVisible) tooltip.dismiss() else tooltip.show() } },
+            modifier = Modifier.testTag("gomode-service-status"),
+        ) {
+            CircularProgressIndicator(
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                strokeWidth = 2.dp,
+                modifier =
+                    Modifier
+                        .size(18.dp)
+                        .semantics { contentDescription = "Service updates are reconnecting, details" },
+            )
+        }
+    }
 }
 
 @Composable
@@ -253,6 +297,7 @@ private fun VoiceToolbar(
     onSelectMicrophoneMode: (MicrophoneMode) -> Unit,
     onSelectDevice: (Int) -> Unit,
     appControls: @Composable () -> Unit,
+    serviceReconnect: ServiceReconnectDetail?,
 ) {
     val active = voiceState.connected || voiceState.connectStatus != null
     Row(
@@ -284,6 +329,7 @@ private fun VoiceToolbar(
             }
         }
         if (voiceState.connected) MicLevelIndicator(micLevel = voiceState.micLevel)
+        if (serviceReconnect != null) ServiceReconnectIndicator(serviceReconnect)
         IconButton(
             onClick = if (active) onDisconnect else onConnect,
             enabled = active || voiceEnabled,
