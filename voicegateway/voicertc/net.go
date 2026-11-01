@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/pion/transport/v4"
+	"github.com/pion/transport/v5"
 )
 
 // ipv4Net implements transport.Net using only IPv4 via Go's stdlib net
