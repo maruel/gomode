@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsDisplayed
@@ -154,12 +155,17 @@ class VoicePanelTest {
                 }
             }
         }
-        val spinner =
+        val indicator =
             composeRule
                 .onNodeWithTag("gomode-service-status")
                 .assertIsDisplayed()
-                .fetchSemanticsNode()
-                .boundsInRoot
+                .assert(
+                    SemanticsMatcher.expectValue(
+                        SemanticsProperties.StateDescription,
+                        "Reason: MCP subscription stream ended",
+                    ),
+                )
+        val spinner = indicator.fetchSemanticsNode().boundsInRoot
         val microphone = composeRule.onNodeWithTag("gomode-voice-connect").fetchSemanticsNode().boundsInRoot
         assertTrue(
             "Reconnect feedback must not add a row to the panel",
@@ -198,14 +204,14 @@ class VoicePanelTest {
         composeRule.onNodeWithTag("gomode-service-status").performClick()
         composeRule.onNodeWithText("Service updates are reconnecting").assertIsDisplayed()
         composeRule.onNodeWithText("Loading service items and notifications from Tasks.").assertIsDisplayed()
-        composeRule.onNodeWithText("Last error: MCP subscription stream ended").assertIsDisplayed()
+        composeRule.onNodeWithText("Reason: MCP subscription stream ended").assertIsDisplayed()
         composeRule.onNodeWithText("Retries automatically. No action needed.").assertIsDisplayed()
         capture("service-reconnecting-details")
         // Rich tooltips can auto-dismiss after 1500 ms. These details must outlast that window.
         SystemClock.sleep(2_000)
-        composeRule.onNodeWithText("Last error: MCP subscription stream ended").assertIsDisplayed()
+        composeRule.onNodeWithText("Reason: MCP subscription stream ended").assertIsDisplayed()
         UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).pressBack()
-        composeRule.onNodeWithText("Last error: MCP subscription stream ended").assertDoesNotExist()
+        composeRule.onNodeWithText("Reason: MCP subscription stream ended").assertDoesNotExist()
     }
 
     @Test
@@ -322,7 +328,7 @@ class VoicePanelTest {
 
         fun assertState(expected: String) {
             microphone.assert(
-                androidx.compose.ui.test.SemanticsMatcher
+                SemanticsMatcher
                     .expectValue(SemanticsProperties.StateDescription, expected),
             )
         }

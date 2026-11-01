@@ -54,7 +54,9 @@ data class ServiceMonitorState(
     val snapshot: ServiceMonitoringSnapshot? = null,
     val notifications: List<ServiceNotification> = emptyList(),
     val activeNotifications: List<ServiceNotification>? = null,
-    val error: String? = null,
+    // Why the monitor will retry, cleared by the next successful attempt. A planned stream end and
+    // a transport failure both land here because neither is a permanent service failure.
+    val retryReason: String? = null,
 )
 
 class ServiceMonitor(
@@ -99,27 +101,36 @@ class ServiceMonitor(
         var retryDelayMs = INITIAL_RETRY_DELAY_MS
         while (true) {
             try {
-                when (monitorOnce(client)) {
+                when (val result = monitorOnce(client)) {
                     MonitorRunResult.Disabled,
                     MonitorRunResult.Static,
                     -> {
                         return
                     }
 
-                    MonitorRunResult.Retry -> {
-                        _state.value = ServiceMonitorState(error = "MCP subscription stream ended")
-                        delay(retryDelayMs)
-                        retryDelayMs = nextRetryDelay(retryDelayMs)
+                    is MonitorRunResult.Retry -> {
+                        _state.value = ServiceMonitorState(retryReason = "MCP subscription stream ended")
+                        retryDelayMs = awaitRetry(retryDelayMs, delivered = result.delivered)
                     }
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                _state.value = ServiceMonitorState(error = e.message ?: "Service monitoring failed")
-                delay(retryDelayMs)
-                retryDelayMs = nextRetryDelay(retryDelayMs)
+                _state.value = ServiceMonitorState(retryReason = e.message ?: "Service monitoring failed")
+                retryDelayMs = awaitRetry(retryDelayMs, delivered = false)
             }
         }
+    }
+
+    // Only a stream that delivered updates restarts the backoff. A server that accepts and closes
+    // streams immediately keeps escalating, so a flapping endpoint cannot spin at the base delay.
+    private suspend fun awaitRetry(
+        previousDelayMs: Long,
+        delivered: Boolean,
+    ): Long {
+        val delayMs = if (delivered) INITIAL_RETRY_DELAY_MS else previousDelayMs
+        delay(delayMs)
+        return nextRetryDelay(delayMs)
     }
 
     private suspend fun monitorOnce(client: ServiceResourceClient): MonitorRunResult {
@@ -127,7 +138,9 @@ class ServiceMonitor(
         val resourcesCapability = client.serverDiscover().capabilities.resources
         val notifications = subscriptionFilter(plan, resourcesCapability) ?: return MonitorRunResult.Static
         val initial = InitialStateWindow()
+        var delivered = false
         client.listenSubscriptions(notifications).collect { notification ->
+            delivered = true
             val initialState = notification.initialStatePayload()
             when {
                 initialState != null -> {
@@ -151,7 +164,7 @@ class ServiceMonitor(
                 }
             }
         }
-        return MonitorRunResult.Retry
+        return MonitorRunResult.Retry(delivered)
     }
 
     private suspend fun refreshPlan(
@@ -360,10 +373,14 @@ private fun JSONRPCNotification.invalidatesResource(plan: ServiceMonitoringPlan)
 private fun JSONRPCNotification.invalidatesResourceList(plan: ServiceMonitoringPlan): Boolean =
     method == NotificationMethod.ResourcesListChanged && plan.resourcesListChanged
 
-private enum class MonitorRunResult {
-    Disabled,
-    Static,
-    Retry,
+private sealed interface MonitorRunResult {
+    data object Disabled : MonitorRunResult
+
+    data object Static : MonitorRunResult
+
+    data class Retry(
+        val delivered: Boolean,
+    ) : MonitorRunResult
 }
 
 private val mcpJson = Json { ignoreUnknownKeys = true }

@@ -412,9 +412,13 @@ internal class ServiceCatalog(
                             monitor.state.collect { value ->
                                 if (value.activeNotifications != null) alertsRevoked = false
                                 monitoring = if (alertsRevoked) value.copy(activeNotifications = emptyList()) else value
-                                error = value.error
+                                error = value.retryReason
                                 status =
-                                    if (value.error == null) ServiceReadiness.READY else ServiceReadiness.RECONNECTING
+                                    if (value.retryReason == null) {
+                                        ServiceReadiness.READY
+                                    } else {
+                                        ServiceReadiness.RECONNECTING
+                                    }
                                 publish()
                                 value.notifications.forEach { notification ->
                                     mutableNotifications.emit(

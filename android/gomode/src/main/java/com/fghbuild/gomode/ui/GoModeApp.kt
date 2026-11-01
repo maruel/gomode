@@ -771,7 +771,7 @@ internal fun GoModeApp(
                     },
                     canCycleApps = settings.services.size > 1,
                     serviceReconnect =
-                        serviceMonitorState.error?.let {
+                        serviceMonitorState.retryReason?.let {
                             ServiceReconnectDetail(
                                 serviceLabel = catalogState[activeKey]?.label,
                                 reason = it,

@@ -77,7 +77,7 @@ class ServiceMonitorTest {
                     ?.single()
                     ?.title,
             )
-            assertNull(monitor.state.value.error)
+            assertNull(monitor.state.value.retryReason)
             assertEquals(1, client.listCalls)
             assertEquals(listOf(GOMODE_ITEMS_RESOURCE_URI), client.readURIs)
             assertTrue(client.subscriptionFilters.isEmpty())
@@ -208,7 +208,7 @@ class ServiceMonitorTest {
             client.emit(resourceUpdated(GOMODE_NOTIFICATIONS_RESOURCE_URI))
             runCurrent()
             assertTrue(monitor.observedNotificationIDs.isEmpty())
-            assertNotNull(monitor.state.value.error)
+            assertNotNull(monitor.state.value.retryReason)
             assertNull(monitor.state.value.activeNotifications)
             monitor.stop()
         }
@@ -547,14 +547,14 @@ class ServiceMonitorTest {
 
             monitor.start("https://service.test", serviceSettings())
             runCurrent()
-            assertEquals("HTTP 401", monitor.state.value.error)
+            assertEquals("HTTP 401", monitor.state.value.retryReason)
             assertNull(monitor.state.value.snapshot)
 
             advanceTimeBy(1000)
             runCurrent()
 
             assertEquals(2, client.listCalls)
-            assertNull(monitor.state.value.error)
+            assertNull(monitor.state.value.retryReason)
             assertEquals(
                 "Build feature",
                 monitor.state.value.snapshot
@@ -583,7 +583,7 @@ class ServiceMonitorTest {
             monitor.start("https://service.test", serviceSettings())
             runCurrent()
 
-            assertEquals("MCP subscription stream ended", monitor.state.value.error)
+            assertEquals("MCP subscription stream ended", monitor.state.value.retryReason)
             assertNull(monitor.state.value.snapshot)
             assertEquals(1, client.readURIs.size)
 
@@ -591,8 +591,41 @@ class ServiceMonitorTest {
             runCurrent()
 
             assertEquals(2, client.readURIs.size)
-            assertEquals("MCP subscription stream ended", monitor.state.value.error)
+            assertEquals("MCP subscription stream ended", monitor.state.value.retryReason)
             assertNull(monitor.state.value.snapshot)
+            monitor.stop()
+        }
+
+    @Test
+    fun `a delivered subscription restarts the retry backoff`() =
+        runTest {
+            val client =
+                FakeServiceResourceClient().apply {
+                    listFailuresRemaining = 2
+                    enqueueReadResult("""{"items":[]}""")
+                    enqueueReadResult("""{"items":[]}""")
+                }
+            val monitor = ServiceMonitor(this) { _, _ -> client }
+
+            monitor.start("https://service.test", serviceSettings())
+            runCurrent()
+            advanceTimeBy(1000)
+            runCurrent()
+            assertEquals(2, client.listCalls)
+
+            client.deliverThenClose = listOf(initialState("gomode://items", """{"items":[]}"""))
+            advanceTimeBy(2000)
+            runCurrent()
+            assertEquals(3, client.listCalls)
+            assertEquals("MCP subscription stream ended", monitor.state.value.retryReason)
+
+            // Two failures escalated the delay to 4000 ms; the delivered stream resets it to 1000.
+            advanceTimeBy(999)
+            runCurrent()
+            assertEquals(3, client.listCalls)
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals(4, client.listCalls)
             monitor.stop()
         }
 
@@ -642,10 +675,10 @@ class ServiceMonitorTest {
                 monitor.start(server.url("/").toString(), serviceSettings(endpoint = "/mcp"))
                 val state =
                     withTimeout(3000) {
-                        monitor.state.filter { it.snapshot != null || it.error != null }.first()
+                        monitor.state.filter { it.snapshot != null || it.retryReason != null }.first()
                     }
 
-                assertNull(state.error)
+                assertNull(state.retryReason)
                 assertNotNull(state.snapshot)
                 assertEquals(
                     "Build feature",
@@ -668,6 +701,9 @@ class ServiceMonitorTest {
         val readURIs = mutableListOf<String>()
         val subscriptionFilters = mutableListOf<SubscriptionFilter>()
         var closeSubscriptionsImmediately = false
+
+        // Notifications the next subscription delivers before it closes, then cleared.
+        var deliverThenClose: List<JSONRPCNotification> = emptyList()
         var listCalls = 0
         var listFailuresRemaining = 0
         var subscriptionCancelled = false
@@ -721,6 +757,11 @@ class ServiceMonitorTest {
 
         override fun listenSubscriptions(notifications: SubscriptionFilter): Flow<JSONRPCNotification> {
             subscriptionFilters += notifications
+            if (deliverThenClose.isNotEmpty()) {
+                val delivered = deliverThenClose
+                deliverThenClose = emptyList()
+                return flow { delivered.forEach { emit(it) } }
+            }
             if (closeSubscriptionsImmediately) return flow {}
             return callbackFlow {
                 val eventsJob =

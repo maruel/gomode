@@ -34,6 +34,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Close
@@ -47,7 +48,6 @@ import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Usb
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -105,6 +105,8 @@ import kotlinx.coroutines.launch
 private const val PULSE_MIN_ALPHA = 0.5f
 private const val PULSE_MAX_ALPHA = 1.0f
 private const val PULSE_DURATION_MS = 1000
+private const val SERVICE_RECONNECT_REASON_LIMIT = 200
+private val WHITESPACE = Regex("\\s+")
 private const val BAR_COUNT = 3
 private const val BAR_MIN_HEIGHT = 4f
 private const val BAR_MAX_HEIGHT = 20f
@@ -214,12 +216,13 @@ fun VoicePanel(
 }
 
 // Service updates resume on their own. The spinner reports the retry, and a tap reveals which
-// service feed restarted and the error that ended it without asking for an action.
+// service feed restarted and the reason it ended without asking for an action.
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ServiceReconnectIndicator(detail: ServiceReconnectDetail) {
     val scope = rememberCoroutineScope()
     val tooltip = rememberTooltipState(isPersistent = true)
+    val reason = serviceReconnectReasonText(detail.reason)
     TooltipBox(
         positionProvider = TooltipDefaults.rememberRichTooltipPositionProvider(),
         tooltip = {
@@ -231,7 +234,7 @@ private fun ServiceReconnectIndicator(detail: ServiceReconnectDetail) {
                             detail.serviceLabel?.let { "Loading service items and notifications from $it." }
                                 ?: "Loading service items and notifications.",
                         )
-                        Text("Last error: ${detail.reason}")
+                        Text("Reason: $reason")
                         Text("Retries automatically. No action needed.")
                     }
                 },
@@ -241,18 +244,30 @@ private fun ServiceReconnectIndicator(detail: ServiceReconnectDetail) {
     ) {
         IconButton(
             onClick = { scope.launch { if (tooltip.isVisible) tooltip.dismiss() else tooltip.show() } },
-            modifier = Modifier.testTag("gomode-service-status"),
+            modifier =
+                Modifier
+                    .testTag("gomode-service-status")
+                    .semantics {
+                        contentDescription = "Service updates are reconnecting"
+                        // TalkBack states the cause on focus; the tooltip only repeats it.
+                        stateDescription = "Reason: $reason"
+                    },
         ) {
             CircularProgressIndicator(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 strokeWidth = 2.dp,
-                modifier =
-                    Modifier
-                        .size(18.dp)
-                        .semantics { contentDescription = "Service updates are reconnecting, details" },
+                modifier = Modifier.size(18.dp),
             )
         }
     }
+}
+
+// Transport and deserialization messages can be long and can quote response payloads, so the
+// reason is collapsed to one line and bounded before it reaches the panel or the accessibility tree.
+internal fun serviceReconnectReasonText(reason: String): String {
+    val collapsed = reason.replace(WHITESPACE, " ").trim()
+    if (collapsed.length <= SERVICE_RECONNECT_REASON_LIMIT) return collapsed
+    return collapsed.take(SERVICE_RECONNECT_REASON_LIMIT).trimEnd() + "…"
 }
 
 @Composable
@@ -617,7 +632,7 @@ internal fun audioDeviceIcon(type: Int): ImageVector =
         AudioDeviceInfo.TYPE_USB_DEVICE,
         -> Icons.Default.Usb
 
-        else -> Icons.Default.VolumeUp
+        else -> Icons.AutoMirrored.Filled.VolumeUp
     }
 
 @Composable

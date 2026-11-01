@@ -4,6 +4,8 @@ package com.fghbuild.gomode.voice
 import android.media.AudioDeviceInfo
 import com.caic.voicegateway.sdk.v1.TurnState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VoiceOverlayTest {
@@ -17,7 +19,7 @@ class VoiceOverlayTest {
         assertEquals("Filled.PhoneInTalk", audioDeviceIcon(AudioDeviceInfo.TYPE_BUILTIN_EARPIECE).name)
         assertEquals("Filled.Speaker", audioDeviceIcon(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER).name)
         assertEquals("Filled.Usb", audioDeviceIcon(AudioDeviceInfo.TYPE_USB_DEVICE).name)
-        assertEquals("Filled.VolumeUp", audioDeviceIcon(AudioDeviceInfo.TYPE_UNKNOWN).name)
+        assertEquals("AutoMirrored.Filled.VolumeUp", audioDeviceIcon(AudioDeviceInfo.TYPE_UNKNOWN).name)
     }
 
     @Test
@@ -46,5 +48,18 @@ class VoiceOverlayTest {
                 muted.copy(microphoneMode = MicrophoneMode.LISTENING, turnState = TurnState.Other("future")),
             ),
         )
+    }
+
+    @Test
+    fun serviceReconnectReasonCollapsesLinesAndBoundsTransportMessages() {
+        assertEquals("HTTP 401", serviceReconnectReasonText("HTTP 401"))
+        assertEquals(
+            "Unexpected JSON token at offset 12 in {\"items\"}",
+            serviceReconnectReasonText("Unexpected JSON token\n  at offset 12\n in {\"items\"}"),
+        )
+        val bounded = serviceReconnectReasonText("failed\n".repeat(80))
+        assertEquals(201, bounded.length)
+        assertTrue(bounded.endsWith("…"))
+        assertFalse("Reasons must stay one line", bounded.contains('\n'))
     }
 }
