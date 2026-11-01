@@ -999,6 +999,10 @@ func (s *session) startAudioOutput(ctx context.Context) error {
 func (s *session) audioSendLoop(ctx context.Context, enc *opusEncoder) {
 	ticker := time.NewTicker(frameDuration)
 	defer ticker.Stop()
+	// The tick owns these buffers; the samples reach the packetizer, which
+	// copies them, before the next tick overwrites them.
+	frame := make([]byte, backendOutputFrameBytes)
+	pcm48 := make([]int16, backendOutputFrameBytes)
 	for {
 		select {
 		case <-ctx.Done():
@@ -1009,7 +1013,6 @@ func (s *session) audioSendLoop(ctx context.Context, enc *opusEncoder) {
 				s.audioMu.Unlock()
 				continue
 			}
-			frame := make([]byte, backendOutputFrameBytes)
 			copy(frame, s.audioBuf[:backendOutputFrameBytes])
 			s.audioBuf = s.audioBuf[backendOutputFrameBytes:]
 			queuedAt := s.audioBufStartedAt
@@ -1027,7 +1030,7 @@ func (s *session) audioSendLoop(ctx context.Context, enc *opusEncoder) {
 				slog.InfoContext(ctx, "voicertc: assistant first rtp", "session", s.id, "latency", time.Since(queuedAt), "buffered", buffered)
 			}
 
-			pcm48 := upsample24to48(frame)
+			pcm48 = upsample24to48(frame, pcm48)
 			opusPkt, err := enc.Encode(pcm48)
 			if err != nil {
 				slog.DebugContext(ctx, "voicertc: opus encode failed", "session", s.id, "err", err)
@@ -1209,11 +1212,12 @@ func assistantPCMDuration(bytes int) time.Duration {
 	return time.Duration(bytes/2) * time.Second / time.Duration(backendOutputSampleRate)
 }
 
-// upsample24to48 converts PCM from 24kHz S16LE to 48kHz using linear
-// interpolation (factor 2).
-func upsample24to48(pcmBytes []byte) []int16 {
+// upsample24to48 converts PCM from 24kHz S16LE to 48kHz into dst using linear
+// interpolation (factor 2) and returns the written samples. dst must hold
+// len(pcmBytes) samples.
+func upsample24to48(pcmBytes []byte, dst []int16) []int16 {
 	samples24 := len(pcmBytes) / 2
-	pcm48 := make([]int16, samples24*2)
+	pcm48 := dst[:samples24*2]
 	for i := range samples24 {
 		s0 := int16(binary.LittleEndian.Uint16(pcmBytes[i*2:])) //nolint:gosec // PCM uint16→int16 reinterpret
 		pcm48[i*2] = s0

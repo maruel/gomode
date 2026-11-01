@@ -3,6 +3,7 @@
 package voicertc
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/tphakala/go-opus/opus"
@@ -32,6 +33,11 @@ func newDecoder() (*opusDecoder, error) {
 // The returned slice is owned by the decoder and is overwritten by the next
 // call.
 func (d *opusDecoder) Decode(pkt []byte) ([]int16, error) {
+	// go-opus decodes an empty packet to zero samples instead of failing, which
+	// would advance the microphone audio clock without any audio.
+	if len(pkt) == 0 {
+		return nil, errors.New("opus: empty packet")
+	}
 	n, err := d.dec.Decode(pkt, d.pcm)
 	if err != nil {
 		return nil, err

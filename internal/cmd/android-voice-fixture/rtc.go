@@ -22,6 +22,7 @@ import (
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
+	"github.com/tphakala/go-opus/opus"
 )
 
 type fixtureStats struct {
@@ -284,7 +285,7 @@ func (p *mediaPeer) handleMessages(dc *webrtc.DataChannel) {
 }
 
 func (p *mediaPeer) receiveMic(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
-	decoder, err := gopus.NewDecoder(48000, 1)
+	decoder, err := opus.NewDecoder(48000, 1)
 	if err != nil {
 		p.fixture.log.Error("create mic decoder", "err", err)
 		return

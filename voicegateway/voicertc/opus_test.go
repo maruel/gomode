@@ -38,5 +38,15 @@ func TestOpusDecoder(t *testing.T) {
 				t.Fatal("Decode returned a nil error for a truncated packet")
 			}
 		})
+
+		t.Run("empty packet is an error", func(t *testing.T) {
+			d, err := newDecoder()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := d.Decode(nil); err == nil {
+				t.Fatal("Decode returned a nil error for an empty packet")
+			}
+		})
 	})
 }

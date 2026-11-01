@@ -29,6 +29,10 @@ func newEncoder() (*opusEncoder, error) {
 }
 
 // Encode encodes PCM 48kHz mono samples into an Opus packet.
+//
+// Every call allocates its output. Reusing one buffer would save 4KB against
+// the tens of KB that gopus allocates per frame, and would invalidate every
+// earlier result.
 func (e *opusEncoder) Encode(pcm []int16) ([]byte, error) {
 	data := make([]byte, maxOpusPacketSize)
 	n, err := e.enc.Encode(pcm, data)

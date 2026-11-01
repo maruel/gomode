@@ -784,7 +784,7 @@ func TestEncodeDecodeRoundtrip(t *testing.T) {
 	}
 
 	// 24kHz → 48kHz upsampling.
-	pcm48 := upsample24to48(pcm24Bytes)
+	pcm48 := upsample24to48(pcm24Bytes, make([]int16, len(pcm24Bytes)))
 	if len(pcm48) != samples24*2 {
 		t.Fatalf("upsample: got %d samples, want %d", len(pcm48), samples24*2)
 	}
@@ -884,16 +884,17 @@ func percentDiff(a, b int) int {
 
 func TestUpsampleEdgeCases(t *testing.T) {
 	t.Parallel()
-	if g := upsample24to48(nil); len(g) != 0 {
+	scratch := make([]int16, 8)
+	if g := upsample24to48(nil, scratch); len(g) != 0 {
 		t.Errorf("nil: got %d", len(g))
 	}
-	if g := upsample24to48([]byte{}); len(g) != 0 {
+	if g := upsample24to48([]byte{}, scratch); len(g) != 0 {
 		t.Errorf("empty: got %d", len(g))
 	}
 
 	single := make([]byte, 2)
 	binary.LittleEndian.PutUint16(single, 0x3039) // 12345
-	g := upsample24to48(single)
+	g := upsample24to48(single, scratch)
 	if len(g) != 2 {
 		t.Fatalf("single: got %d, want 2", len(g))
 	}
@@ -904,7 +905,7 @@ func TestUpsampleEdgeCases(t *testing.T) {
 	two := make([]byte, 4)
 	binary.LittleEndian.PutUint16(two[0:], 0)
 	binary.LittleEndian.PutUint16(two[2:], 1000)
-	g = upsample24to48(two)
+	g = upsample24to48(two, scratch)
 	if len(g) != 4 {
 		t.Fatalf("two: got %d, want 4", len(g))
 	}

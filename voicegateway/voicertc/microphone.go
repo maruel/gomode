@@ -76,6 +76,8 @@ func (s *session) audioRxLoop(ctx context.Context, track *webrtc.TrackRemote) {
 	}
 	var clock micAudioClock
 	silence := make([]byte, micSampleRate*2/50)
+	// pcmBytes holds the S16LE form of one decoded packet.
+	pcmBytes := make([]byte, maxFrameSamples*2)
 	for ctx.Err() == nil {
 		if err := track.SetReadDeadline(clock.deadline); err != nil {
 			s.sendError("Microphone deadline failed: " + err.Error())
@@ -119,7 +121,7 @@ func (s *session) audioRxLoop(ctx context.Context, track *webrtc.TrackRemote) {
 		if len(pcm) == 0 {
 			continue
 		}
-		data := make([]byte, len(pcm)*2)
+		data := pcmBytes[:len(pcm)*2]
 		for i, sample := range pcm {
 			binary.LittleEndian.PutUint16(data[i*2:], uint16(sample)) //nolint:gosec // PCM int16→uint16 reinterpret.
 		}
