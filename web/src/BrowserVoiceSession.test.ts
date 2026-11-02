@@ -105,7 +105,7 @@ it("explains a text gateway connection failure and releases the session", async 
 
 async function readySocket(): Promise<FakeWebSocket> {
   await session.connect();
-  const socket = FakeWebSocket.instances[0];
+  const socket = FakeWebSocket.instances.at(-1);
   if (!socket) throw new Error("text socket was not created");
   socket.open();
   socket.message({ kind: "session.ready" });
@@ -118,6 +118,28 @@ function finishTurn(socket: FakeWebSocket, text: string): void {
 }
 
 describe("browser voice sessions", () => {
+  it("speaks readable formatting while retaining the raw assistant transcript", async () => {
+    const socket = await readySocket();
+    const raw = "## Result\n- **Read** [the guide](https://example.com/a.b) and `snake_case`";
+    for (const text of raw) socket.message({ kind: "assistant.text.delta", text });
+    socket.message({ kind: "turn.status", state: "idle" });
+    expect(fakeSynthesis.spoken.map((entry) => entry.text)).toEqual(["Result\nRead the guide and snake_case"]);
+    expect(session.state.transcript.at(-1)?.text).toBe(raw);
+    fakeSynthesis.complete();
+    finishTurn(socket, "1");
+    expect(fakeSynthesis.spoken.at(-1)?.text).toBe("1");
+    fakeSynthesis.complete();
+    socket.message({ kind: "assistant.text.delta", text: "[unfinished](https://" });
+    socket.message({ kind: "interrupted", source: "user" });
+    finishTurn(socket, "**Fresh**");
+    expect(fakeSynthesis.spoken.at(-1)?.text).toBe("Fresh");
+    fakeSynthesis.complete();
+    socket.message({ kind: "assistant.text.delta", text: "```kotlin" });
+    session.disconnect();
+    finishTurn(await readySocket(), "New reply");
+    expect(fakeSynthesis.spoken.at(-1)?.text).toBe("New reply");
+  });
+
   it("meters quiet speech and silence, resets for mute and replies, and releases capture", async () => {
     const poll = microphoneFrames();
     const socket = await readySocket();

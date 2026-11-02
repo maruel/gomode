@@ -207,6 +207,7 @@ internal class DeviceVoiceSession(
     private var remoteTurnActive = false
     private val pendingNotifications = ArrayList<String>()
     private val segmenter = SentenceSegmenter()
+    private val speechTextFilter = SpeechTextFilter()
 
     private val audioStateJob =
         scope.launch {
@@ -258,6 +259,7 @@ internal class DeviceVoiceSession(
         pendingCancellations = 0
         remoteTurnActive = false
         segmenter.clear()
+        speechTextFilter.clear()
         otherSetup = null
         if (!preserveTranscript) {
             this.conversationID = conversationID ?: UUID.randomUUID().toString()
@@ -539,6 +541,7 @@ internal class DeviceVoiceSession(
                         if (!pendingGatewayTools.containsKey(attempt)) awaitingModelTurn = false
                         flushPendingNotifications()
                         finalizeAssistantReply()
+                        segmenter.push(speechTextFilter.finish()).forEach(::speak)
                         speak(segmenter.flush())
                         remoteTurnActive = false
                         turnIdle = true
@@ -566,6 +569,7 @@ internal class DeviceVoiceSession(
                     }
                     finalizeAssistantReply()
                     segmenter.clear()
+                    speechTextFilter.clear()
                     stopPlayback()
                     turnIdle = !remoteTurnActive
                     flushAfterRemoteInterruption()
@@ -603,7 +607,7 @@ internal class DeviceVoiceSession(
         _state.update {
             it.copy(transcript = it.transcript.appendChunk(TranscriptSpeaker.ASSISTANT, delta))
         }
-        segmenter.push(delta).forEach(::speak)
+        segmenter.push(speechTextFilter.push(delta)).forEach(::speak)
     }
 
     private fun speak(fragment: String) {
@@ -726,6 +730,7 @@ internal class DeviceVoiceSession(
         interruptReply()
         turnIdle = false
         segmenter.clear()
+        speechTextFilter.clear()
         _state.update {
             it.copy(
                 listening = false,
@@ -772,6 +777,7 @@ internal class DeviceVoiceSession(
         localTurnGeneration.incrementAndGet()
         finalizeAssistantReply()
         segmenter.clear()
+        speechTextFilter.clear()
         _state.update { it.copy(turnState = TurnState.Idle, activeTool = null) }
         if (!activeReply) return
         stopPlayback()
@@ -829,6 +835,7 @@ internal class DeviceVoiceSession(
                         awaitingModelTurn = false
                         thinkingEarcon.setThinking(false)
                         finalizeAssistantReply()
+                        segmenter.push(speechTextFilter.finish()).forEach(::speak)
                         speak(segmenter.flush())
                         turnIdle = true
                         _state.update { it.copy(turnState = TurnState.Idle) }
@@ -1093,6 +1100,7 @@ internal class DeviceVoiceSession(
         pendingCancellations = 0
         remoteTurnActive = false
         segmenter.clear()
+        speechTextFilter.clear()
         voiceModeChime.disconnected { }
         callController.endLocal()
         foreground.stop()
@@ -1313,19 +1321,29 @@ internal class DeviceVoiceSession(
 internal class SentenceSegmenter {
     private val pending = StringBuilder()
 
+    // Numeric periods need one character of lookahead, including across delta boundaries.
+    // Long prose/code without punctuation is emitted in at most 240-character fragments.
     fun push(delta: String): List<String> {
-        pending.append(delta)
         val fragments = mutableListOf<String>()
-        var start = 0
-        for (index in 0 until pending.length) {
-            val c = pending[index]
-            if (c == '.' || c == '!' || c == '?' || c == '\n') {
-                val fragment = pending.substring(start, index + 1).trim()
+        for (c in delta) {
+            if (pending.length >= 2 && pending.last() == '.' && pending[pending.length - 2].isDigit() &&
+                !c.isDigit()
+            ) {
+                fragments.add(flush())
+            }
+            val numericPeriod = c == '.' && pending.lastOrNull()?.isDigit() == true
+            pending.append(c)
+            if ((c == '.' && !numericPeriod) || c == '!' || c == '?' || c == '\n') {
+                val fragment = flush()
                 if (fragment.isNotEmpty()) fragments.add(fragment)
-                start = index + 1
+            } else if (pending.length >= 240) {
+                val space = pending.indexOfLast { it.isWhitespace() }
+                val end = if (space > 0) space + 1 else pending.length
+                val fragment = pending.substring(0, end).trim()
+                if (fragment.isNotEmpty()) fragments.add(fragment)
+                pending.delete(0, end)
             }
         }
-        if (start > 0) pending.delete(0, start)
         return fragments
     }
 

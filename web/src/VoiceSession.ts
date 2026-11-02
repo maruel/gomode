@@ -1,5 +1,6 @@
 // Browser voice sessions via WebRTC and speech, dispatching MCP and frontend tools.
 
+import { SpeechTextFilter } from "./SpeechTextFilter";
 import { MicrophoneLevel } from "./MicrophoneLevel";
 import { MicrophoneInput } from "./MicrophoneInput";
 import { createSignal, untrack } from "solid-js";
@@ -545,6 +546,7 @@ export class VoiceSession {
   private _textSocket: WebSocket | null = null;
   private _browserSpeech: BrowserSpeech | null = null;
   private _browserReply = "";
+  private _speechTextFilter = new SpeechTextFilter();
   private _browserTurnIdle = false;
   private _rtcSessionID: string | null = null;
   private _rtcGatewaySnapshot: GatewaySnapshot | null = null;
@@ -1562,7 +1564,7 @@ export class VoiceSession {
     this._update((s) => {
       s.transcript = s.transcript.map((entry) => ({ ...entry, final: true }));
     });
-    const text = this._browserReply;
+    const text = this._browserReply + this._speechTextFilter.finish();
     this._browserReply = "";
     if (text !== "" && this._browserSpeech !== null) {
       this._update((s) => {
@@ -1678,6 +1680,7 @@ export class VoiceSession {
     this._textSocket = null;
     this._browserSpeech = null;
     this._browserReply = "";
+    this._speechTextFilter.clear();
     this._browserTurnIdle = false;
     speech?.close();
     socket?.close(1000);
@@ -1949,7 +1952,7 @@ export class VoiceSession {
       this._browserSpeech?.stopListening();
       this._browserTurnIdle = false;
       this._speakerActive = true;
-      this._browserReply += delta.text;
+      this._browserReply += this._speechTextFilter.push(delta.text);
       this._update((s) => {
         s.transcript = appendChunk(s.transcript, "assistant", delta.text);
       });
@@ -1979,6 +1982,7 @@ export class VoiceSession {
       if (this.state.mode === "browser") {
         this._browserTurnIdle = true;
         this._browserReply = "";
+        this._speechTextFilter.clear();
         this._update((s) => {
           s.activeTool = null;
           s.turnState = TurnStateIdle;

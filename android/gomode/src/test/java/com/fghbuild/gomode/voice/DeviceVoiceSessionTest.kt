@@ -42,6 +42,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -83,6 +84,66 @@ class DeviceVoiceSessionTest {
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+    }
+
+    @Test
+    fun `speech omits formatting but transcript retains raw streamed text`() {
+        val speech = FakeSpeech()
+        val socket = FakeWebSocket()
+        var listener: WebSocketListener? = null
+        val session =
+            createSession(speech) { _, captured ->
+                listener = captured
+                socket
+            }
+        try {
+            session.connect()
+            val backend = requireNotNull(listener)
+            backend.onOpen(socket, upgradeResponse())
+            backend.onMessage(socket, """{"kind":"session.ready"}""")
+            val raw = "## Result\n- **Read** [the guide](https://example.com/a.b) and `snake_case`"
+
+            fun delta(text: String) {
+                backend.onMessage(
+                    socket,
+                    Json.encodeToString(
+                        com.caic.voicegateway.sdk.v1.AssistantTextDelta(
+                            kind = com.caic.voicegateway.sdk.v1.MessageKind.AssistantTextDelta,
+                            text = text,
+                        ),
+                    ),
+                )
+            }
+            raw.forEach { delta(it.toString()) }
+            assertEquals(listOf("Result"), speech.spoken)
+            backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+            assertEquals(listOf("Result", "Read the guide and snake_case"), speech.spoken)
+            assertEquals(
+                raw,
+                session.state.value.transcript
+                    .last()
+                    .text,
+            )
+            delta("1")
+            backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+            assertEquals("1", speech.spoken.last())
+            delta("[unfinished](https://")
+            backend.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
+            delta("**Fresh**")
+            backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+            assertEquals("Fresh", speech.spoken.last())
+            delta("```kotlin")
+            session.disconnect()
+            session.connect()
+            val replacement = requireNotNull(listener)
+            replacement.onOpen(socket, upgradeResponse())
+            replacement.onMessage(socket, """{"kind":"session.ready"}""")
+            replacement.onMessage(socket, """{"kind":"assistant.text.delta","text":"New reply"}""")
+            replacement.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+            assertEquals("New reply", speech.spoken.last())
+        } finally {
+            session.close()
+        }
     }
 
     @Test
@@ -1558,6 +1619,18 @@ class DeviceVoiceSessionTest {
         assertEquals("local", handshake.url.queryParameter("choiceID"))
         assertEquals("Bearer scoped", handshake.header("Authorization"))
         session.close()
+    }
+
+    @Test
+    fun `sentence segmenter preserves split decimals and bounds unpunctuated speech`() {
+        val segmenter = SentenceSegmenter()
+        assertTrue(segmenter.push("Value 1.").isEmpty())
+        assertTrue(segmenter.push("25").isEmpty())
+        assertEquals(listOf("Value 1.25!"), segmenter.push("!"))
+        val fragments = segmenter.push("word ".repeat(1000))
+        assertTrue(fragments.isNotEmpty())
+        assertTrue(fragments.all { it.length <= 240 })
+        assertEquals("word".repeat(1000), (fragments + segmenter.flush()).joinToString("").replace(" ", ""))
     }
 
     @Test

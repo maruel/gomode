@@ -1,0 +1,117 @@
+[
+  {
+    "name": "plain",
+    "input": "Hello, snake_case v1.25 costs $3.50!",
+    "expected": "Hello, snake_case v1.25 costs $3.50!"
+  },
+  {
+    "name": "headings-lists",
+    "input": "## Summary\n- **First** item\n2. _Second_ item\n+ Third\n* Fourth",
+    "expected": "Summary\nFirst item\nSecond item\nThird\nFourth"
+  },
+  {
+    "name": "inline",
+    "input": "Use `some_value * 2` and **bold** or __strong__ and *soft*.",
+    "expected": "Use some_value * 2 and bold or strong and soft."
+  },
+  {
+    "name": "links",
+    "input": "Read [the guide](https://example.com/a.b?q=1.2) now.",
+    "expected": "Read the guide now."
+  },
+  {
+    "name": "nested-destination",
+    "input": "[Label](https://example.com/a_(b)) done.",
+    "expected": "Label done."
+  },
+  {
+    "name": "code",
+    "input": "Before\n```kotlin\nval snake_case = \"**literal**\"\n```\nAfter",
+    "expected": "Before\n\nval snake_case = \"**literal**\"\n\nAfter"
+  },
+  {
+    "name": "tilde-fence",
+    "input": "~~~js\n[raw](url) + 1.2\n~~~",
+    "expected": "\n[raw](url) + 1.2\n"
+  },
+  {
+    "name": "double-ticks",
+    "input": "Try ``a_b * c``.",
+    "expected": "Try a_b * c."
+  },
+  {
+    "name": "identifiers",
+    "input": "read_file and café_value and snake__case",
+    "expected": "read_file and café_value and snake__case"
+  },
+  {
+    "name": "ordinary-punctuation",
+    "input": "C# is #1; 1.25 + 2 = 3.25 (really)! A - B.",
+    "expected": "C# is #1; 1.25 + 2 = 3.25 (really)! A - B."
+  },
+  {
+    "name": "ordered-parenthesis",
+    "input": "1) One\n10. Ten\n1.25 is a decimal",
+    "expected": "One\nTen\n1.25 is a decimal"
+  },
+  {
+    "name": "prefix-at-end",
+    "input": "123",
+    "expected": "123"
+  },
+  {
+    "name": "hash-at-end",
+    "input": "#",
+    "expected": "#"
+  },
+  {
+    "name": "end-label",
+    "input": "See [label]",
+    "expected": "See label"
+  },
+  {
+    "name": "unfinished-destination",
+    "input": "Read [label](https://hidden",
+    "expected": "Read label"
+  },
+  {
+    "name": "malformed-destination-newline",
+    "input": "[label](hidden\nNext sentence.",
+    "expected": "label\nNext sentence."
+  },
+  {
+    "name": "fence-label-at-end",
+    "input": "```typescript",
+    "expected": ""
+  },
+  {
+    "name": "format-only",
+    "input": "**__``",
+    "expected": ""
+  },
+  {
+    "name": "adjacent-boundaries",
+    "input": "**Hello** [there](url)!\n- Next",
+    "expected": "Hello there!\nNext"
+  },
+  {
+    "name": "crlf",
+    "input": "## Header\r\n- Item\r\n",
+    "expected": "Header\r\nItem\r\n"
+  },
+  {
+    "name": "unmatched-inline-code-newline",
+    "input": "It's `x\n## Next\n- [a](b)",
+    "expected": "It's x\nNext\na"
+  },
+  {
+    "name": "unmatched-inline-code-carriage-return",
+    "input": "It's `x\r## Next\r- [a](b)",
+    "expected": "It's x\rNext\ra"
+  },
+  {
+    "name": "unmatched-inline-code-before-fence",
+    "input": "It's `x\n```kotlin\nval value = \"**literal**\"\n```\n## Done",
+    "expected": "It's x\n\nval value = \"**literal**\"\n\nDone"
+  }
+]
