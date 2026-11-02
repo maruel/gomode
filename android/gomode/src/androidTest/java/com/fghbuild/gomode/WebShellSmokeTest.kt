@@ -284,31 +284,35 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         addService("Second")
         waitForSettingsButton()
         val observer = SettingsRepository(composeRule.activity.goModeSettingsDataStore)
-        composeRule.waitUntil { observer.settings.value.services.size == 2 }
+        composeRule.waitUntil(
+            conditionDescription = "second service is saved",
+            timeoutMillis = GOMODE_DEFAULT_TIMEOUT_MS,
+        ) { observer.settings.value.services.size == 2 }
         val activeServiceId = observer.settings.value.activeServiceId
         val first =
             observer.settings.value.services
                 .first()
         composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
         composeRule.onNodeWithTag("gomode-edit-service-${first.id}").performClick()
-        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+        composeRule.waitUntil(
+            conditionDescription = "service editor shows the saved label",
+            timeoutMillis = GOMODE_DEFAULT_TIMEOUT_MS,
+        ) {
             composeRule
                 .onNodeWithTag("gomode-service-label")
                 .fetchSemanticsNode()
                 .config[SemanticsProperties.EditableText]
                 .text == first.label
         }
-        composeRule.onNodeWithTag("gomode-service-label").performClick()
-        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { isImeVisible() }
+        // Freeze the autosave debounce so the edit is still pending when the screen
+        // closes. Typing through semantics keeps the soft keyboard out of the test:
+        // its appearance and dismissal are device state, not app state.
         composeRule.mainClock.autoAdvance = false
         try {
             composeRule.onNodeWithTag("gomode-service-label").performTextReplacement("Pending name")
             composeRule.mainClock.advanceTimeByFrame()
-            val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
-            device.pressBack()
-            device.waitForIdle()
-            composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { !isImeVisible() }
             assertEquals(
+                "the edit stays pending until the screen closes",
                 first.label,
                 observer.settings.value.services
                     .first()
@@ -326,13 +330,21 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         } finally {
             composeRule.mainClock.autoAdvance = true
         }
-        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+        composeRule.waitUntil(
+            conditionDescription = "back flushes the pending service edit",
+            timeoutMillis = GOMODE_DEFAULT_TIMEOUT_MS,
+        ) {
             observer.settings.value.services
                 .first()
                 .label == "Pending name" && observer.settings.value.activeServiceId == activeServiceId
         }
         waitForSettingsButton()
-        composeRule.waitUntil { composeRule.onAllNodesWithTag("gomode-settings").fetchSemanticsNodes().isEmpty() }
+        composeRule.waitUntil(
+            conditionDescription = "back closes the settings screen",
+            timeoutMillis = GOMODE_DEFAULT_TIMEOUT_MS,
+        ) {
+            composeRule.onAllNodesWithTag("gomode-settings").fetchSemanticsNodes().isEmpty()
+        }
     }
 
     @StandaloneHostedFixture
