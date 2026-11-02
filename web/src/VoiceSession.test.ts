@@ -8,6 +8,7 @@ import {
   buildRecoveryContext,
   formatVoiceRTCDiagnostics,
   MAX_RECOVERY_CONTEXT_CHARS,
+  previousErrors,
   summarizeSDPCandidates,
   VoiceSession,
   configureVoiceGateway,
@@ -1473,6 +1474,43 @@ describe("VoiceSession", () => {
       session.disconnect();
       vi.useRealTimers();
     }
+  });
+
+  it("retains a failure through a reconnect and bounds the record", async () => {
+    const session = new VoiceSession();
+    for (let index = 0; index <= 5; index++) {
+      await session.connect();
+      FakePeerConnection.dataChannels.at(-1)?.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({ kind: MessageKindError, message: `failure ${index}` }),
+        }),
+      );
+      await vi.waitFor(() => expect(session.state.error).toBe(`failure ${index}`));
+    }
+    expect(session.state.errorHistory).toHaveLength(5);
+    expect(session.state.errorHistory[0]?.message).toBe("failure 5");
+    expect(session.state.errorHistory.at(-1)?.message).toBe("failure 1");
+    await session.connect();
+    expect(session.state.error).toBeNull();
+    expect(session.state.errorHistory).toHaveLength(5);
+    expect(previousErrors(session.state)).toEqual(session.state.errorHistory);
+    session.disconnect();
+  });
+
+  it("lists failures before the displayed one", async () => {
+    const session = new VoiceSession();
+    session.setState((state) => ({
+      ...state,
+      error: "Voice turn failed (llm): out of memory",
+      errorHistory: [
+        { at: 2, message: "Voice turn failed (llm): out of memory" },
+        { at: 1, message: "Voice connection failed" },
+      ],
+    }));
+    expect(previousErrors(session.state).map((entry) => entry.message)).toEqual(["Voice connection failed"]);
+    expect(session.state.errorHistory).toHaveLength(2);
+    const empty = new VoiceSession();
+    expect(previousErrors(empty.state)).toEqual([]);
   });
 
   it("preserves outstanding tools and transport after a recoverable gateway error", async () => {

@@ -345,12 +345,12 @@ func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID strin
 			sess.setDataChannelState(dc.ReadyState().String())
 			if err := sess.startAudioOutput(sessionCtx); err != nil {
 				slog.WarnContext(sessionCtx, "voicertc: encoder init failed", "session", sess.id, "err", err)
-				sess.sendError("Voice audio unavailable: codec failed to initialise")
+				sess.sendGatewayError(sessionCtx, "Voice audio unavailable: codec failed to initialise")
 			}
 			backendSession, err := connector.connect(sessionCtx, sess.id, sess)
 			if err != nil {
 				slog.ErrorContext(sessionCtx, "voicertc: backend connect failed", "session", sess.id, "err", err)
-				sess.sendError("Failed to connect voice backend: " + err.Error())
+				sess.sendGatewayError(sessionCtx, "Failed to connect voice backend: "+err.Error())
 				cancel()
 				return
 			}
@@ -385,7 +385,7 @@ func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID strin
 			}
 			if err := sess.activityLog.record(activitydata.SourceClient, msg.Data); err != nil {
 				slog.ErrorContext(sessionCtx, "voicertc: activity log write failed", "session", sess.id, "err", err)
-				sess.sendError("Failed to record voice activity: " + err.Error())
+				sess.sendGatewayError(sessionCtx, "Failed to record voice activity: "+err.Error())
 				return
 			}
 			err := backendSession.acceptClientMessage(sessionCtx, msg.Data)
@@ -395,7 +395,7 @@ func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID strin
 					return
 				}
 				slog.WarnContext(sessionCtx, "voicertc: gateway client message failed", "session", sess.id, "err", err)
-				sess.sendError(err.Error())
+				sess.sendGatewayError(sessionCtx, err.Error())
 				return
 			}
 		})
@@ -947,10 +947,16 @@ func (s *session) backendReady(ctx context.Context) {
 	}
 }
 
-func (s *session) sendGatewayMessage(_ context.Context, data []byte) error {
+func (s *session) sendGatewayMessage(ctx context.Context, data []byte) error {
 	if err := s.activityLog.record(activitydata.SourceGateway, data); err != nil {
+		s.reportUnrecordedError(ctx, fmt.Sprintf("Failed to record voice activity: %v", err))
 		return err
 	}
+	return s.deliverGatewayMessage(data)
+}
+
+// deliverGatewayMessage writes one message to the client without recording it.
+func (s *session) deliverGatewayMessage(data []byte) error {
 	s.mu.Lock()
 	dc := s.dc
 	s.mu.Unlock()
@@ -958,10 +964,6 @@ func (s *session) sendGatewayMessage(_ context.Context, data []byte) error {
 		return nil
 	}
 	return dc.SendText(string(data))
-}
-
-func (s *session) sendGatewayError(_ context.Context, message string) {
-	s.sendError(message)
 }
 
 func (s *session) addAssistantPCM(pcmBytes []byte) {
@@ -1071,8 +1073,10 @@ func (s *session) audioSendLoop(ctx context.Context, enc *opusEncoder) {
 						msg = &voicev1.SpeechEnded{Kind: kind, Speaker: voicev1.SpeakerAssistant}
 					}
 					if err := s.sendGatewayMessage(ctx, mustGatewayServerMessage(msg)); err != nil {
+						// A record failure is already reported and cancelled there;
+						// a delivery failure means the client is gone.
 						s.audioMu.Unlock()
-						s.sendError("Playback event delivery failed: " + err.Error())
+						slog.WarnContext(ctx, "voicertc: playback event delivery failed", "session", s.id, "err", err)
 						s.cancel()
 						return
 					}
@@ -1117,21 +1121,46 @@ func (s *session) audioSendLoop(ctx context.Context, enc *opusEncoder) {
 	}
 }
 
-// sendError delivers a normalized error message to the client via the data channel.
-func (s *session) sendError(msg string) {
+// sendGatewayError delivers a fatal error to the client, which ends the session.
+func (s *session) sendGatewayError(ctx context.Context, message string) {
+	s.reportError(ctx, message, false)
+}
+
+// sendTurnError reports a failed turn and leaves the session usable.
+func (s *session) sendTurnError(ctx context.Context, message string) {
+	s.reportError(ctx, message, true)
+}
+
+// reportError records an error for diagnostics and delivers it to the client.
+// Delivery does not depend on the activity log; a log write failure ends the
+// session through sendGatewayMessage, because the activity record can no longer
+// describe the call.
+func (s *session) reportError(ctx context.Context, message string, recoverable bool) {
 	s.mu.Lock()
-	s.lastError = msg
-	dc := s.dc
+	s.lastError = message
 	s.mu.Unlock()
-	if dc == nil {
-		return
-	}
 	data := mustGatewayServerMessage(&voicev1.Error{
 		Kind:        voicev1.MessageKindError,
-		Message:     msg,
-		Recoverable: false,
+		Message:     message,
+		Recoverable: recoverable,
 	})
-	_ = dc.SendText(string(data))
+	if err := s.sendGatewayMessage(ctx, data); err != nil {
+		slog.WarnContext(ctx, "voicertc: report gateway error failed", "session", s.id, "err", err)
+	}
+}
+
+// reportUnrecordedError delivers a fatal error and ends the session.
+func (s *session) reportUnrecordedError(ctx context.Context, message string) {
+	s.mu.Lock()
+	s.lastError = message
+	s.mu.Unlock()
+	if err := s.deliverGatewayMessage(mustGatewayServerMessage(&voicev1.Error{
+		Kind:    voicev1.MessageKindError,
+		Message: message,
+	})); err != nil {
+		slog.WarnContext(ctx, "voicertc: deliver gateway error failed", "session", s.id, "err", err)
+	}
+	s.cancel()
 }
 
 func buildVoiceRTCDiagnostics(sessionID string, server *voicev1.VoiceRTCServerDiagnostics, client *voicev1.VoiceRTCClientDiagnostics) voicev1.VoiceRTCDiagnosticsResp {

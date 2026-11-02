@@ -142,6 +142,7 @@ internal class DeviceVoiceSession(
     private var pendingUserUtterance: String? = null
     private var listeningGeneration = 0L
     private val voiceModeChime = VoiceModeChime(voiceChimePlayer)
+    private val errorLog = (appContext.applicationContext as GoModeApplication).voiceErrors
 
     private val _state = MutableStateFlow(VoiceState())
     override val state: StateFlow<VoiceState> = _state.asStateFlow()
@@ -585,7 +586,13 @@ internal class DeviceVoiceSession(
 
                 MessageKind.Error -> {
                     val msg = json.decodeFromString(Error.serializer(), text)
-                    setError(msg.message)
+                    if (msg.recoverable) {
+                        Log.w(TAG, "Recoverable gateway error: ${msg.message}")
+                        recordFailure(msg.message)
+                        _state.update { it.withGatewayError(msg.message) }
+                    } else {
+                        setError(msg.message)
+                    }
                 }
 
                 else -> {
@@ -847,7 +854,7 @@ internal class DeviceVoiceSession(
                     @Suppress("TooGenericExceptionCaught") e: Exception,
                 ) {
                     if (currentTurn()) {
-                        setError("Voice turn failed: ${e.message}")
+                        setError("Voice turn failed: ${describeFailure(e)}")
                     }
                 } finally {
                     if (ownsAttempt(attempt)) {
@@ -1116,6 +1123,7 @@ internal class DeviceVoiceSession(
     }
 
     override fun setError(message: String) {
+        recordFailure(message)
         voiceConversation?.finish()
         thinkingEarcon.setThinking(false)
         invalidateAttempt()
@@ -1143,6 +1151,25 @@ internal class DeviceVoiceSession(
                 errorId = it.errorId + 1,
                 transcript = it.transcript.withoutUserDraft(),
             )
+        }
+    }
+
+    /** Retains a failure next to the engine and phase that produced it. */
+    private fun recordFailure(message: String) {
+        errorLog.record(
+            engine = engineLabel(),
+            phase = state.value.failurePhase(),
+            message = message,
+        )
+    }
+
+    /** Names the configured engine even when a failure precedes engine construction. */
+    private fun engineLabel(): String {
+        engine?.modelName?.let { return it }
+        val settings = settingsRepository.settings.value
+        return when (settings.onDeviceEngine) {
+            OnDeviceEngine.LOCAL_LLM -> settings.localLlmModel.label
+            OnDeviceEngine.NEEDLE_WHISTLE, OnDeviceEngine.REMOTE_GATEWAY -> settings.onDeviceEngine.descriptor().name
         }
     }
 

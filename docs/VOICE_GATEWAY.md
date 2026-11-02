@@ -261,6 +261,11 @@ fetch a fresh token before diagnostics.
 Only backends that observe their own stages send it; clients treat its absence
 as `idle`. Clients show an active tool first, then speech, then the turn state.
 
+An `error` message either ends the session or, with `recoverable`, reports a
+failed turn and leaves the session usable. A local-stack turn failure names its
+stage and carries a whitespace-normalized provider cause bounded to 200 runes;
+the gateway log keeps the unmodified error.
+
 The client builds `session.setup.tools` from active SKILL.md frontmatter: MCP
 servers and their tool allowlists. The gateway receives only provider-neutral
 declarations and results; it fetches no skill file and calls no service MCP

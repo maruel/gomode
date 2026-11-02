@@ -91,7 +91,7 @@ func (s *session) audioRxLoop(ctx context.Context, track *webrtc.TrackRemote) {
 	dec, err := newDecoder(rate)
 	if err != nil {
 		slog.ErrorContext(ctx, "voicertc: decoder init failed", "session", s.id, "err", err)
-		s.sendError("Microphone unavailable: voice codec failed to initialise")
+		s.sendGatewayError(ctx, "Microphone unavailable: voice codec failed to initialise")
 		return
 	}
 	clock := micAudioClock{rate: rate}
@@ -100,7 +100,7 @@ func (s *session) audioRxLoop(ctx context.Context, track *webrtc.TrackRemote) {
 	pcmBytes := make([]byte, maxFrameSamples*2)
 	for ctx.Err() == nil {
 		if err := track.SetReadDeadline(clock.deadline); err != nil {
-			s.sendError("Microphone deadline failed: " + err.Error())
+			s.sendGatewayError(ctx, "Microphone deadline failed: "+err.Error())
 			return
 		}
 		pkt, _, readErr := track.ReadRTP()
@@ -115,7 +115,7 @@ func (s *session) audioRxLoop(ctx context.Context, track *webrtc.TrackRemote) {
 		if readErr != nil {
 			if e, ok := errors.AsType[net.Error](readErr); !ok || !e.Timeout() {
 				slog.WarnContext(ctx, "voicertc: audio read failed", "session", s.id, "err", readErr)
-				s.sendError("Microphone lost: " + readErr.Error())
+				s.sendGatewayError(ctx, "Microphone lost: "+readErr.Error())
 				return
 			}
 			gap = clock.idle(time.Now())

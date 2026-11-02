@@ -334,6 +334,22 @@ function voiceChannelOpen(channel: VoiceChannel): boolean {
 
 export type MicrophoneMode = "listening" | "muteOnce" | "muted";
 
+/** VoiceErrorEntry is one retained failure with the moment it happened. */
+export interface VoiceErrorEntry {
+  at: number;
+  message: string;
+}
+
+/** Count of retained failures the overlay keeps reviewable. */
+export const MAX_VOICE_ERRORS = 5;
+
+/** Failures before the one the panel shows, newest first. */
+export function previousErrors(state: VoiceState): VoiceErrorEntry[] {
+  const [newest, ...rest] = state.errorHistory;
+  if (newest === undefined) return [];
+  return state.error !== null && newest.message === state.error ? rest : state.errorHistory;
+}
+
 export function microphoneMuted(state: Pick<VoiceState, "microphoneMode" | "speaking">): boolean {
   return state.microphoneMode === "muted" || (state.microphoneMode === "muteOnce" && state.speaking);
 }
@@ -360,6 +376,8 @@ export interface VoiceState {
   micLevel: number;
   micLevelError: string | null;
   error: string | null;
+  /** Retained failures, newest first; the panel shows the newest one. */
+  errorHistory: VoiceErrorEntry[];
   /** Browser permission, null when the browser cannot report it yet. */
   microphoneAccess: PermissionState | null;
   microphoneAccessPending: boolean;
@@ -609,6 +627,7 @@ export class VoiceSession {
       micLevel: 0,
       micLevelError: null,
       error: null,
+      errorHistory: [],
       audioInputs: [],
       audioDevicesError: null,
       audioInputError: null,
@@ -1790,7 +1809,15 @@ export class VoiceSession {
     };
   }
 
+  /** Retains a failure for the overlay's error history. */
+  private _recordError(message: string): void {
+    this._update((s) => {
+      s.errorHistory = [{ at: Date.now(), message }, ...s.errorHistory].slice(0, MAX_VOICE_ERRORS);
+    });
+  }
+
   private _setError(message: string): void {
+    this._recordError(message);
     this._frontendInvocationLifetime.abort();
     this._leaveVoiceMode();
     this._connectionAttempt++;
@@ -2027,6 +2054,7 @@ export class VoiceSession {
       if (msg.recoverable) {
         // Keep the connection and outstanding tool deliveries alive. Diagnostics
         // use the same transcript presentation as tool errors, not fatal state.
+        this._recordError(msg.message);
         this._update((s) => {
           s.transcript = [...s.transcript, { speaker: "assistant", text: `[Voice] ${msg.message}`, final: true }];
         });

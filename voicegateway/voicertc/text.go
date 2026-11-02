@@ -101,8 +101,25 @@ func (s *textSink) backendReady(ctx context.Context) {
 
 func (s *textSink) sendGatewayMessage(ctx context.Context, data []byte) error {
 	if err := s.log.record(activitydata.SourceGateway, data); err != nil {
+		s.reportUnrecordedError(ctx, fmt.Sprintf("Failed to record voice activity: %v", err))
 		return err
 	}
+	return s.deliverGatewayMessage(ctx, data)
+}
+
+// reportUnrecordedError delivers a fatal error and ends the session.
+func (s *textSink) reportUnrecordedError(ctx context.Context, message string) {
+	if err := s.deliverGatewayMessage(context.WithoutCancel(ctx), mustGatewayServerMessage(&voicev1.Error{
+		Kind:    voicev1.MessageKindError,
+		Message: message,
+	})); err != nil {
+		slog.WarnContext(ctx, "voicertc: deliver text gateway error failed", "err", err)
+	}
+	s.cancel()
+}
+
+// deliverGatewayMessage writes one message to the client without recording it.
+func (s *textSink) deliverGatewayMessage(ctx context.Context, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	writeCtx, cancel := context.WithTimeout(ctx, textWriteTimeout)
@@ -113,13 +130,29 @@ func (s *textSink) sendGatewayMessage(ctx context.Context, data []byte) error {
 	return nil
 }
 
-// sendGatewayError delivers message even when ctx is already canceled.
+// sendGatewayError delivers a fatal error even when ctx is already canceled.
 func (s *textSink) sendGatewayError(ctx context.Context, message string) {
-	_ = s.sendGatewayMessage(context.WithoutCancel(ctx), mustGatewayServerMessage(&voicev1.Error{
+	s.reportError(ctx, message, false)
+}
+
+// sendTurnError reports a failed turn and leaves the session usable.
+func (s *textSink) sendTurnError(ctx context.Context, message string) {
+	s.reportError(ctx, message, true)
+}
+
+// reportError delivers an error even when ctx is canceled. Delivery does not
+// depend on the activity log; a log write failure ends the session through
+// sendGatewayMessage, because the activity record can no longer describe the
+// call.
+func (s *textSink) reportError(ctx context.Context, message string, recoverable bool) {
+	sendCtx := context.WithoutCancel(ctx)
+	if err := s.sendGatewayMessage(sendCtx, mustGatewayServerMessage(&voicev1.Error{
 		Kind:        voicev1.MessageKindError,
 		Message:     message,
-		Recoverable: false,
-	}))
+		Recoverable: recoverable,
+	})); err != nil {
+		slog.WarnContext(sendCtx, "voicertc: report text gateway error failed", "err", err)
+	}
 }
 
 func (s *textSink) cancelSession() {

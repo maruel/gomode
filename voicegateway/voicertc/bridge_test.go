@@ -1383,8 +1383,8 @@ func TestBridge(t *testing.T) {
 			if err := json.Unmarshal(data, &msg); err != nil {
 				t.Fatal(err)
 			}
-			if msg.Message != "Voice turn failed (llm)" || msg.Recoverable {
-				t.Fatalf("error = %+v", msg)
+			if !strings.Contains(msg.Message, "Voice turn failed (llm): ") || !strings.Contains(msg.Message, "insufficient tool messages") || !msg.Recoverable {
+				t.Fatalf("error = %+v, want a recoverable error naming the provider cause", msg)
 			}
 			expectTurnStatus(t, ctx, conn, voicev1.TurnStateIdle)
 		})

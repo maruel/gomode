@@ -13,8 +13,10 @@ import (
 	"log/slog"
 	"math"
 	"slices"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"golang.org/x/sync/errgroup"
 
@@ -672,9 +674,10 @@ func (s *localStackSession) isSpeaking() bool {
 	return s.speaking
 }
 
-// warnTurn reports genuine turn failures to the client. Provider details stay
-// in server logs. Serialize the cancellation check and delivery with turn
-// replacement, so a superseded turn cannot disconnect a newer client turn.
+// warnTurn reports genuine turn failures to the client and keeps the session
+// usable. The server log keeps the unmodified provider error. Serialize the
+// cancellation check and delivery with turn replacement, so a superseded turn
+// cannot disconnect a newer client turn.
 func (s *localStackSession) warnTurn(ctx context.Context, stage string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -682,7 +685,30 @@ func (s *localStackSession) warnTurn(ctx context.Context, stage string, err erro
 		return
 	}
 	slog.WarnContext(s.baseCtx, "voicertc: local stack turn failed", "session", s.id, "stage", stage, "err", err) //nolint:contextcheck // turn goroutines run on the session lifetime context
-	s.sink.sendGatewayError(s.baseCtx, fmt.Sprintf("Voice turn failed (%s)", stage))                              //nolint:contextcheck // turn goroutines run on the session lifetime context
+	message := fmt.Sprintf("Voice turn failed (%s)", stage)
+	if detail := turnErrorDetail(err); detail != "" {
+		message += ": " + detail
+	}
+	s.sink.sendTurnError(s.baseCtx, message) //nolint:contextcheck // turn goroutines run on the session lifetime context
+}
+
+// turnErrorDetailMaxRunes bounds the provider detail sent to the client.
+const turnErrorDetailMaxRunes = 200
+
+// turnErrorDetail summarizes a provider error for the client. It normalizes
+// whitespace, drops control characters, and truncates the result.
+func turnErrorDetail(err error) string {
+	text := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, err.Error())
+	text = strings.Join(strings.Fields(text), " ")
+	if runes := []rune(text); len(runes) > turnErrorDetailMaxRunes {
+		text = strings.TrimSpace(string(runes[:turnErrorDetailMaxRunes-1])) + "…"
+	}
+	return text
 }
 
 // sleepCtx sleeps for d, returning false if ctx is cancelled first.

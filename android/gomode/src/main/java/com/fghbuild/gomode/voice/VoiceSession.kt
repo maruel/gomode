@@ -36,6 +36,8 @@ import com.caic.voicegateway.sdk.v1.VoiceRTCICEConnectionState
 import com.caic.voicegateway.sdk.v1.VoiceRTCICEGatheringState
 import com.caic.voicegateway.sdk.v1.VoiceRTCOfferReq
 import com.caic.voicegateway.sdk.v1.VoiceRTCSignalingState
+import com.fghbuild.gomode.GoModeApplication
+import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.service.VoiceTokenClient
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
@@ -200,6 +202,7 @@ internal class VoiceSession(
     private var awaitingGatewayTurn = false
     private val recoveryPolicy = VoiceRecoveryPolicy(MAX_RECONNECT_ATTEMPTS)
     private val voiceModeChime = VoiceModeChime(voiceChimePlayer)
+    private val errorLog = (appContext.applicationContext as GoModeApplication).voiceErrors
     private var disconnectAudioAttempt: Long? = null
     private var recoveryContext = ""
 
@@ -245,6 +248,7 @@ internal class VoiceSession(
         }
 
     override fun setError(message: String) {
+        recordFailure(message)
         voiceConversation.finish()
         val attempt = invalidateAttempt()
         awaitingGatewayTurn = false
@@ -276,6 +280,15 @@ internal class VoiceSession(
                 errorId = it.errorId + 1,
             )
         }
+    }
+
+    /** Retains a failure next to the engine and phase that produced it. */
+    private fun recordFailure(message: String) {
+        errorLog.record(
+            engine = OnDeviceEngine.REMOTE_GATEWAY.descriptor().name,
+            phase = state.value.failurePhase(),
+            message = message,
+        )
     }
 
     private fun setStatus(status: String) {
@@ -1164,7 +1177,13 @@ internal class VoiceSession(
 
                 MessageKind.Error -> {
                     val msg = json.decodeFromString(Error.serializer(), text)
-                    setError(msg.message)
+                    if (msg.recoverable) {
+                        Log.w(TAG, "Recoverable gateway error: ${msg.message}")
+                        recordFailure(msg.message)
+                        _state.update { it.withGatewayError(msg.message) }
+                    } else {
+                        setError(msg.message)
+                    }
                 }
 
                 else -> {
@@ -1489,6 +1508,12 @@ data class TranscriptEntry(
     val text: String,
     val final: Boolean = false,
 )
+
+/** Appends a gateway-reported turn failure without ending the call. */
+internal fun VoiceState.withGatewayError(message: String): VoiceState =
+    copy(
+        transcript = transcript + TranscriptEntry(TranscriptSpeaker.ASSISTANT, "[Voice] $message", final = true),
+    )
 
 data class AudioDevice(
     val id: Int,

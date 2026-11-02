@@ -12,6 +12,7 @@ import com.fghbuild.gomode.voice.CarDialVoiceOwner
 import com.fghbuild.gomode.voice.LocalModelDownloads
 import com.fghbuild.gomode.voice.LocalModelLoadDiagnostics
 import com.fghbuild.gomode.voice.LocalModelOwner
+import com.fghbuild.gomode.voice.VoiceErrorLog
 
 internal val Context.goModeSettingsDataStore by preferencesDataStore(name = "gomode_settings")
 
@@ -36,6 +37,8 @@ class GoModeApplication :
     internal val modelDownloads by modelDownloadsDelegate
     private val modelLoadDiagnosticsDelegate = lazy { LocalModelLoadDiagnostics(this) }
     internal val modelLoadDiagnostics by modelLoadDiagnosticsDelegate
+    private val voiceErrorsDelegate = lazy { VoiceErrorLog(this) }
+    internal val voiceErrors by voiceErrorsDelegate
 
     override fun onCreate() {
         super.onCreate()
@@ -57,6 +60,7 @@ class GoModeApplication :
 
     override fun onTerminate() {
         if (modelLoadDiagnosticsDelegate.isInitialized()) modelLoadDiagnostics.close()
+        if (voiceErrorsDelegate.isInitialized()) voiceErrors.close()
         if (carDialVoiceOwnerDelegate.isInitialized()) carDialVoiceOwner.close()
         if (serviceShellOwnerDelegate.isInitialized()) serviceShellOwner.close()
         if (modelDownloadsDelegate.isInitialized()) modelDownloads.close()

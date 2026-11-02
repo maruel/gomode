@@ -35,6 +35,7 @@ func TestActivityLog(t *testing.T) {
 		{activitydata.SourceGateway, `{"kind":"transcript.delta","speaker":"user","text":"hello"}`},
 		{activitydata.SourceGateway, `{"kind":"tool.call","id":"call-1","name":"tasks_list","args":{}}`},
 		{activitydata.SourceClient, `{"kind":"tool.result","id":"call-1","name":"tasks_list","result":{"tasks":[]}}`},
+		{activitydata.SourceGateway, `{"kind":"error","message":"Voice turn failed (llm): upstream refused the request","recoverable":true}`},
 		{activitydata.SourceGateway, `{"kind":"speech.ended","speaker":"assistant"}`},
 	} {
 		if err := log.record(event.source, []byte(event.message)); err != nil {
@@ -80,8 +81,8 @@ func TestActivityLog(t *testing.T) {
 		}
 		records = append(records, record)
 	}
-	if len(records) != 4 {
-		t.Fatalf("records = %d, want 4", len(records))
+	if len(records) != 5 {
+		t.Fatalf("records = %d, want 5", len(records))
 	}
 	if records[0].Source != activitydata.SourceClient || records[0].Kind != string(voicev1.MessageKindSessionSetup) || !bytes.Contains(records[0].Message, []byte("Initial context")) {
 		t.Fatalf("first record = %+v, want initial context", records[0])
@@ -94,5 +95,8 @@ func TestActivityLog(t *testing.T) {
 	}
 	if records[2].Kind != string(voicev1.MessageKindToolCall) || records[3].Kind != string(voicev1.MessageKindToolResult) || records[3].Source != activitydata.SourceClient {
 		t.Fatalf("tool records = %+v, want call then client result", records[2:])
+	}
+	if records[4].Kind != string(voicev1.MessageKindError) || !bytes.Contains(records[4].Message, []byte("upstream refused")) {
+		t.Fatalf("error record = %+v, want the failure persisted", records[4])
 	}
 }

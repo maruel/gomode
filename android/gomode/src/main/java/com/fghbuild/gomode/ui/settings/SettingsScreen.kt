@@ -245,6 +245,7 @@ internal fun SettingsScreen(
                     edits,
                     enabled = !voiceSessionActive && settings.loadState == SettingsLoadState.Ready,
                 )
+                VoiceErrorDiagnosticsSetting()
             }
             HorizontalDivider()
             CarDialSetting(settings, enabled = !voiceSessionActive)

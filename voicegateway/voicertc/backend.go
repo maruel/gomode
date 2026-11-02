@@ -23,7 +23,10 @@ type backendSession interface {
 type backendSink interface {
 	backendReady(ctx context.Context)
 	sendGatewayMessage(ctx context.Context, data []byte) error
+	// sendGatewayError reports a fatal gateway failure that ends the session.
 	sendGatewayError(ctx context.Context, message string)
+	// sendTurnError reports a failed turn and leaves the session usable.
+	sendTurnError(ctx context.Context, message string)
 	cancelSession()
 	addAssistantPCM(pcm []byte)
 	clearAssistantAudio()

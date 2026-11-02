@@ -32,6 +32,7 @@ beforeEach(() => {
     connectStatus: null,
     connectPhase: null,
     error: null,
+    errorHistory: [],
     microphoneAccess: null,
     microphoneAccessPending: false,
     audioPlaybackError: null,
@@ -83,6 +84,41 @@ describe("VoiceOverlay status", () => {
     } finally {
       enable.mockRestore();
     }
+  });
+
+  it("keeps previous failures reviewable after a reconnect", () => {
+    voiceSession.setState((s) => ({
+      ...s,
+      connected: true,
+      error: null,
+      errorHistory: [{ at: 1_760_000_000_000, message: "Voice turn failed (llm): out of memory" }],
+    }));
+    render(() => <VoiceOverlay />);
+    const summary = screen.getByText("Previous errors (1)");
+    const details = summary.closest("details");
+    expect(details?.open).toBe(false);
+    fireEvent.click(summary);
+    expect(details?.open).toBe(true);
+    const message = screen.getByText("Voice turn failed (llm): out of memory");
+    const entry = message.closest("li");
+    expect(entry?.querySelector("time")?.getAttribute("datetime")).toBe(new Date(1_760_000_000_000).toISOString());
+  });
+
+  it("does not repeat the failure the panel already shows", () => {
+    voiceSession.setState((s) => ({
+      ...s,
+      error: "Voice gateway unreachable.",
+      errorHistory: [{ at: 1_760_000_000_000, message: "Voice gateway unreachable." }],
+    }));
+    render(() => <VoiceOverlay />);
+    expect(screen.getByText("Voice gateway unreachable.")).toBeInTheDocument();
+    expect(screen.queryByText("Previous errors (1)")).toBeNull();
+  });
+
+  it("shows no error history without a retained failure", () => {
+    voiceSession.setState((s) => ({ ...s, error: null, errorHistory: [] }));
+    render(() => <VoiceOverlay />);
+    expect(screen.queryByText(/Previous errors/)).toBeNull();
   });
 
   it("retains keyboard focus after an access request is denied and prevents duplicate requests", async () => {

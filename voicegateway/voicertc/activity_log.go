@@ -39,14 +39,15 @@ func (l *activityLog) record(source activitydata.Source, data []byte) error {
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return fmt.Errorf("decode voice activity message: %w", err)
 	}
-	// Persist only transcript and tool activity.
+	// Persist only transcript, tool, and error activity.
 	switch envelope.Kind {
 	case voicev1.MessageKindSessionSetup,
 		voicev1.MessageKindUserMessage,
 		voicev1.MessageKindTranscriptDelta,
 		voicev1.MessageKindAssistantTextDelta,
 		voicev1.MessageKindToolCall,
-		voicev1.MessageKindToolResult:
+		voicev1.MessageKindToolResult,
+		voicev1.MessageKindError:
 	default:
 		return nil
 	}

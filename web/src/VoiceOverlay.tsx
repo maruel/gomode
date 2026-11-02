@@ -3,7 +3,7 @@
 import { createEffect, createSignal, createUniqueId, For, Show, on, onCleanup, onMount, type Accessor } from "solid-js";
 
 import { TurnStateThinking, TurnStateTranscribing } from "../../sdk/voicegateway/ts/v1/types.gen";
-import { bluetoothAudioDeviceLabel, microphoneMuted, voiceSession } from "./VoiceSession";
+import { bluetoothAudioDeviceLabel, microphoneMuted, previousErrors, voiceSession } from "./VoiceSession";
 import type { MicrophoneMode, VoiceState, TranscriptEntry } from "./VoiceSession";
 import { notifications } from "./notifications";
 import VoiceSettings, { defaultVoiceSettingsMessages, type VoiceSettingsMessages } from "./VoiceSettings";
@@ -60,6 +60,7 @@ export interface VoiceOverlayMessages extends Partial<VoiceSettingsMessages> {
   microphoneMuteNextReplyHelp?: string;
   microphoneMutedHelp?: string;
   muted: string;
+  previousErrors?: string;
   reconnecting: string;
   signaling: string;
   speaker: string;
@@ -113,6 +114,7 @@ export const defaultVoiceOverlayMessages: VoiceOverlayMessages = {
   microphoneMuteNextReplyHelp: "Mutes during the next reply, then returns to Listening.",
   microphoneMutedHelp: "Stays muted until you unmute.",
   muted: "Muted",
+  previousErrors: "Previous errors",
   reconnecting: "Reconnecting…",
   signaling: "Signaling…",
   speaker: "Speaker",
@@ -153,6 +155,11 @@ function localizedStatus(
   }
 }
 
+/** Short local time for a retained failure. */
+function formatErrorTime(at: number): string {
+  return new Date(at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
 function safeErrorDetail(error: string): string {
   return (
     error
@@ -173,6 +180,7 @@ export default function VoiceOverlay(props: {
   nextServer?: { name: string; onSelect: () => void };
 }) {
   const session = voiceSession;
+  const priorErrors = () => previousErrors(session.state);
   let disposed = false;
   let startAttempt = 0;
   const canStart = () => !disposed && (props.canStart?.() ?? true);
@@ -487,6 +495,21 @@ export default function VoiceOverlay(props: {
           </Show>
           <Show when={session.state.mode === "cloud"}>
             <AudioErrors state={session.state} />
+          </Show>
+          <Show when={!settingsOpen() && priorErrors().length > 0}>
+            <details class={styles.errorHistory}>
+              <summary>{`${messages().previousErrors ?? defaultVoiceOverlayMessages.previousErrors} (${priorErrors().length})`}</summary>
+              <ul class={styles.errorList}>
+                <For each={priorErrors()}>
+                  {(entry) => (
+                    <li>
+                      <time dateTime={new Date(entry.at).toISOString()}>{formatErrorTime(entry.at)}</time>
+                      <span>{safeErrorDetail(entry.message)}</span>
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </details>
           </Show>
           <Show when={!settingsOpen() && settingsError() !== session.state.error && settingsError()}>
             {(error) => (

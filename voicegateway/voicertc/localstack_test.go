@@ -85,7 +85,7 @@ func TestLocalStackSession(t *testing.T) {
 				}
 				sink := &captureSink{}
 				s := &localStackSession{id: "llm-error", sink: sink, baseCtx: t.Context()}
-				step := newLLMStep(nil, llmReply{}, errors.New("http 400: private provider detail"))
+				step := newLLMStep(nil, llmReply{}, errors.New("http 400: upstream refused the request"))
 				s.handleTextStep(ctx, &fakeConversation{}, step)
 				if cancelled {
 					if got := sink.kinds(); len(got) != 0 {
@@ -100,8 +100,8 @@ func TestLocalStackSession(t *testing.T) {
 				if err := json.Unmarshal(sink.msgs[0], &msg); err != nil {
 					t.Fatal(err)
 				}
-				if msg.Message != "Voice turn failed (llm)" {
-					t.Fatalf("error message = %q", msg.Message)
+				if msg.Message != "Voice turn failed (llm): http 400: upstream refused the request" || !msg.Recoverable {
+					t.Fatalf("error = %+v, want a recoverable error naming the cause", msg)
 				}
 			})
 		}
@@ -591,6 +591,49 @@ func TestLocalStackSession(t *testing.T) {
 		}
 		sess.startUserMessage(t.Context(), "after close")
 	})
+}
+
+func TestTurnErrorDetail(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "keeps the provider text",
+			in:   `Post "https://llm.example/v1/chat?key=abc123": dial tcp: refused`,
+			want: `Post "https://llm.example/v1/chat?key=abc123": dial tcp: refused`,
+		},
+		{
+			name: "keeps text without a URL",
+			in:   "http 400: insufficient tool messages",
+			want: "http 400: insufficient tool messages",
+		},
+		{
+			name: "normalizes whitespace and control characters",
+			in:   "first\n\tsecond\x00  third\x1b",
+			want: "first second third",
+		},
+		{
+			name: "bounds length",
+			in:   strings.Repeat("é", 210),
+			want: strings.Repeat("é", 199) + "…",
+		},
+		{
+			name: "empty error",
+			in:   "",
+			want: "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if got := turnErrorDetail(errors.New(c.in)); got != c.want {
+				t.Fatalf("turnErrorDetail() = %q, want %q", got, c.want)
+			}
+		})
+	}
 }
 
 func TestGenaiToolDefs(t *testing.T) {
@@ -1265,8 +1308,16 @@ func (c *captureSink) sendGatewayMessage(_ context.Context, data []byte) error {
 }
 
 func (c *captureSink) sendGatewayError(ctx context.Context, message string) {
+	c.reportError(ctx, message, false)
+}
+
+func (c *captureSink) sendTurnError(ctx context.Context, message string) {
+	c.reportError(ctx, message, true)
+}
+
+func (c *captureSink) reportError(ctx context.Context, message string, recoverable bool) {
 	_ = c.sendGatewayMessage(ctx, mustGatewayServerMessage(&voicev1.Error{
-		Kind: voicev1.MessageKindError, Message: message,
+		Kind: voicev1.MessageKindError, Message: message, Recoverable: recoverable,
 	}))
 }
 

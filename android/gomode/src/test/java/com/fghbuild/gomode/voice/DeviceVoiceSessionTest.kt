@@ -9,6 +9,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import com.fghbuild.gomode.GoModeApplication
+import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
@@ -1029,33 +1030,98 @@ class DeviceVoiceSessionTest {
         )
 
     @Test
-    fun `gateway error remains visible after idle and socket closure`() {
-        val speech = FakeSpeech()
-        val socket = FakeWebSocket()
-        var listener: WebSocketListener? = null
-        val session =
-            createSession(speech) { _, captured ->
-                listener = captured
-                socket
-            }
-        session.connect()
-        val connected = requireNotNull(listener)
-        connected.onOpen(socket, upgradeResponse())
-        connected.onMessage(socket, """{"kind":"session.ready"}""")
-        connected.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
-        connected.onMessage(socket, """{"kind":"error","message":"Voice turn failed (llm)","recoverable":false}""")
-        connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
-        connected.onClosed(socket, 1000, "")
+    fun `gateway error remains visible after idle and socket closure`() =
+        runTest {
+            val speech = FakeSpeech()
+            val socket = FakeWebSocket()
+            var listener: WebSocketListener? = null
+            val session =
+                createSession(speech) { _, captured ->
+                    listener = captured
+                    socket
+                }
+            session.connect()
+            val connected = requireNotNull(listener)
+            connected.onOpen(socket, upgradeResponse())
+            connected.onMessage(socket, """{"kind":"session.ready"}""")
+            connected.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
+            connected.onMessage(socket, """{"kind":"error","message":"Voice turn failed (llm)","recoverable":false}""")
+            connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+            connected.onClosed(socket, 1000, "")
 
-        assertEquals("Voice turn failed (llm)", session.state.value.error)
-        assertEquals(1L, session.state.value.errorId)
-        assertFalse(session.state.value.connected)
-        assertFalse(speech.listening)
-        assertTrue(socket.closed)
-        session.disconnect()
-        assertEquals(null, session.state.value.error)
-        session.close()
-    }
+            assertEquals("Voice turn failed (llm)", session.state.value.error)
+            assertEquals(1L, session.state.value.errorId)
+            assertFalse(session.state.value.connected)
+            assertFalse(speech.listening)
+            assertTrue(socket.closed)
+            val recorded = awaitRecordedError("Voice turn failed (llm)")
+            assertEquals(VoiceErrorPhase.CALL, recorded.phase)
+            session.disconnect()
+            assertEquals(null, session.state.value.error)
+            assertEquals("Voice turn failed (llm)", recorded.message)
+            session.close()
+        }
+
+    @Test
+    fun `recoverable turn failure stays in the transcript and keeps the call`() =
+        runTest {
+            val speech = FakeSpeech()
+            val socket = FakeWebSocket()
+            var listener: WebSocketListener? = null
+            val session =
+                createSession(speech) { _, captured ->
+                    listener = captured
+                    socket
+                }
+            session.connect()
+            val connected = requireNotNull(listener)
+            connected.onOpen(socket, upgradeResponse())
+            connected.onMessage(socket, """{"kind":"session.ready"}""")
+            connected.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
+            connected.onMessage(
+                socket,
+                """{"kind":"error","message":"Voice turn failed (llm): out of memory","recoverable":true}""",
+            )
+            connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+
+            assertEquals(null, session.state.value.error)
+            assertTrue(session.state.value.connected)
+            assertFalse(socket.closed)
+            assertEquals(
+                listOf(
+                    TranscriptEntry(
+                        TranscriptSpeaker.ASSISTANT,
+                        "[Voice] Voice turn failed (llm): out of memory",
+                        final = true,
+                    ),
+                ),
+                session.state.value.transcript,
+            )
+            val recorded = awaitRecordedError("Voice turn failed (llm): out of memory")
+            assertEquals("Remote LLM", recorded.engine)
+            session.close()
+        }
+
+    @Test
+    fun `a failure before engine construction names the configured local model`() =
+        runTest {
+            val repository = SettingsRepository(InMemoryPreferencesDataStore())
+            selectEngine(repository, OnDeviceEngine.LOCAL_LLM)
+            repository.updateLocalLlmModel(LocalLlmModel.GEMMA_4_E4B)
+            repository.settings.first { it.localLlmModel == LocalLlmModel.GEMMA_4_E4B }
+            val session =
+                createSession(
+                    FakeSpeech(),
+                    settingsRepo = repository,
+                    voiceConversation = localConversation(repository),
+                )
+            session.setError("Voice turn failed: IllegalStateException")
+
+            val recorded = awaitRecordedError("Voice turn failed: IllegalStateException")
+            assertEquals("Gemma 4 E4B", recorded.engine)
+            assertEquals(VoiceErrorPhase.IDLE, recorded.phase)
+            session.close()
+        }
 
     @Test
     fun `partial recognition replaces draft and final recognition submits one message`() {
@@ -2301,6 +2367,13 @@ class DeviceVoiceSessionTest {
             com.fghbuild.gomode.service
                 .ServiceCatalog(kotlinx.coroutines.CoroutineScope(Dispatchers.Main)),
         ) { emptyMap() }
+
+    /** Waits for the asynchronous record to publish the failure. */
+    private suspend fun awaitRecordedError(message: String): VoiceErrorRecord =
+        (RuntimeEnvironment.getApplication() as GoModeApplication)
+            .voiceErrors.history
+            .first { entries -> entries.any { it.message == message } }
+            .first { it.message == message }
 
     private fun createSession(
         speech: DeviceSpeech,

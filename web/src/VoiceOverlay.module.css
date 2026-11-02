@@ -201,6 +201,35 @@
   padding-top: 0.5rem;
 }
 
+.errorHistory {
+  padding-top: 0.25rem;
+  color: var(--color-text-muted);
+}
+
+.errorHistory > summary {
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.errorList {
+  display: grid;
+  gap: 0.375rem;
+  padding: 0.25rem 0 0 1rem;
+  margin: 0;
+  list-style: none;
+}
+
+.errorList li {
+  display: grid;
+  gap: 0.125rem;
+  overflow-wrap: anywhere;
+}
+
+.errorList time {
+  color: var(--color-text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
 @keyframes pulse {
   from {
     opacity: 0.5;

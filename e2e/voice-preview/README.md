@@ -9,6 +9,11 @@ truncation. Connection errors keep the same toolbar and normal start action, wit
 buttons. The transcript reopen button stays at the right of the activity row when
 hidden. The X sits at the top right of the expanded transcript content.
 
+Each client retains the five newest failures. A collapsed list below the error
+panel shows them with their time, so a failure stays readable after the error
+line clears or a reconnect succeeds. Android discloses the same record, with its
+engine and session phase, in voice settings.
+
 X hides the transcript without clearing it. A Material subtitles icon shows it
 again. Hidden transcripts keep receiving text but show no drafts. Keyboard focus
 follows the toggle between these locations. Accessible names are “Hide transcript”

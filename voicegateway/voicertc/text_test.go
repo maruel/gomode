@@ -193,6 +193,71 @@ func (textlessBackend) connect(context.Context, string, backendSink) (backendSes
 	return nil, errors.New("backend does not connect")
 }
 
+func TestTextSinkEscalatesLogFailure(t *testing.T) {
+	t.Parallel()
+	log, err := openActivityLog(t.TempDir(), "closed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.close(); err != nil {
+		t.Fatal(err)
+	}
+	accepted := make(chan *websocket.Conn, 1)
+	release := make(chan struct{})
+	handlerDone := make(chan struct{})
+	var handlerErr error
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(handlerDone)
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			handlerErr = err
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		accepted <- conn
+		<-release
+	}))
+	t.Cleanup(httpServer.Close)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	t.Cleanup(cancel)
+	client, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(httpServer.URL, "http"), nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := <-accepted
+	sessionCtx, sessionCancel := context.WithCancel(t.Context())
+	sink := &textSink{conn: conn, log: log, cancel: sessionCancel}
+	t.Cleanup(func() {
+		sessionCancel()
+		_ = client.CloseNow()
+		close(release)
+		<-handlerDone
+		if handlerErr != nil {
+			t.Error(handlerErr)
+		}
+	})
+
+	sink.sendTurnError(sessionCtx, "Voice turn failed (llm): out of memory")
+
+	_, data, err := client.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msg voicev1.Error
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(msg.Message, "Failed to record voice activity: ") || msg.Recoverable {
+		t.Fatalf("error = %+v, want a fatal activity-log failure", msg)
+	}
+	if sessionCtx.Err() == nil {
+		t.Fatal("log failure left the session running")
+	}
+}
+
 func dialTextSession(t *testing.T, bridge *Bridge) *websocket.Conn {
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := bridge.ServeTextSession(r.Context(), w, r); err != nil {

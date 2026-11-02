@@ -13,6 +13,8 @@ declare const classes: {
   readonly "deviceHint": string;
   readonly "deviceRow": string;
   readonly "deviceSelect": string;
+  readonly "errorHistory": string;
+  readonly "errorList": string;
   readonly "errorPanel": string;
   readonly "micBar": string;
   readonly "micBars": string;
