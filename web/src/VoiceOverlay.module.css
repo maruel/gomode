@@ -28,14 +28,14 @@
   max-width: 1200px;
   max-height: 100dvh;
   /* Keep the settings hit target and its focus outline inside the viewport. */
-  padding: 0 max(1rem, calc(var(--toolbar-icon-inset) + 4px)) 0.5rem;
+  padding: 0 max(1rem, calc(var(--toolbar-icon-inset) + 4px)) 0.25rem;
   margin: 0 auto;
   overflow-y: auto;
 }
 
 @media (width <= 768px) {
   .panelInner {
-    padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+    padding-bottom: calc(0.25rem + env(safe-area-inset-bottom, 0px));
   }
 }
 
@@ -53,8 +53,9 @@
   align-items: center;
   justify-content: space-between;
   min-width: 0;
-  padding: 0.25rem;
-  margin: 0 -0.25rem 0.5rem;
+  /* Top inset keeps the 44px control focus outline clear of the panel edge. */
+  padding: 0.25rem 0.25rem 0;
+  margin: 0 -0.25rem 0.25rem;
   /* Align the glyph with text while preserving the centered 44px target. */
   margin-inline-start: calc(-0.25rem - var(--toolbar-icon-inset));
 }
