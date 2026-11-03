@@ -39,6 +39,7 @@ export default tseslint.config(
     },
   },
   { files: ["web/tests/**/*.{ts,tsx}"], languageOptions: { globals: { ...globals.node } } },
+  { files: ["e2e/voice-preview/*.js"], languageOptions: { globals: { ...globals.browser } } },
   { files: ["scripts/*.mjs"], languageOptions: { globals: { ...globals.node } } },
   { ignores: ["**/*.module.css.d.ts", "sdk/**", "android/**", "node_modules/**"] },
   prettier,

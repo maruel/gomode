@@ -120,10 +120,19 @@ the standalone hosted-shell fixture and the production app.
 Web shows instructions for browser site permissions and an Enable microphone
 action. A grant updates the notice without connecting; temporary permission
 streams are released. The [web reference](../screenshots/voice/web-microphone-denied.webp)
-uses the controlled preview at 320 × 740 with Chrome's microphone permission
-overridden to denied, including a real click on Enable microphone. This verifies
-permission recovery UI, not gateway transport. Blocked cloud voice playback has
-an independent Enable sound action that preserves the connection.
+uses the controlled preview at 320 × 740 with the microphone permission reported
+denied, including a real click on Enable microphone. This verifies permission
+recovery UI, not gateway transport. Blocked cloud voice playback has an
+independent Enable sound action that preserves the connection.
+
+Capture the denial with `e2e/voice-preview/microphone-denied.js`. Two Chrome
+mechanisms do not work: CDP `Browser.setPermission` sets the state, but
+agent-browser reapplies its own permissions before every command, so the state is
+back to `prompt` at the next step; `--deny-permission-prompts` rejects
+`getUserMedia` while `navigator.permissions.query({ name: "microphone" })` keeps
+reporting `prompt`, which never shows the notice. The init script answers both
+Web APIs the overlay reads, so the notice appears on hosts without a capture
+device and a click on Enable microphone exercises the real rejection path.
 
 ## Refresh web references
 
@@ -153,6 +162,23 @@ agent-browser --session voice-reference click '[aria-label="End voice session"]'
 agent-browser --session voice-reference screenshot /tmp/gomode-voice-desktop-idle.png
 agent-browser --session voice-reference close
 ```
+
+Refresh the microphone-denied reference at 320 × 740 with the same preview:
+
+```bash
+agent-browser --session voice-denied --init-script e2e/voice-preview/microphone-denied.js open http://127.0.0.1:4179/
+agent-browser --session voice-denied set viewport 320 740
+agent-browser --session voice-denied reload
+agent-browser --session voice-denied click '[aria-label="End voice session"]'
+agent-browser --session voice-denied click '[role="status"] button'
+agent-browser --session voice-denied wait 600
+agent-browser --session voice-denied screenshot /tmp/gomode-voice-web-microphone-denied.png
+agent-browser --session voice-denied close
+```
+
+The second click is the real Enable microphone action. It leaves the notice with
+its Enable microphone label and no error line. The wait settles the toolbar
+button transition; without it repeated captures differ by a few pixels.
 
 Wait for the complete conversation before each capture. Reload at the target
 viewport so the initial transcript position matches the reference. Stop the
@@ -193,4 +219,5 @@ ffmpeg -v error -y -i /tmp/gomode-voice-desktop-hidden.png -c:v libwebp -lossles
 ffmpeg -v error -y -i /tmp/gomode-voice-android-idle.png -c:v libwebp -lossless 1 -threads 1 e2e/screenshots/voice/android-idle.webp
 ffmpeg -v error -y -i /tmp/gomode-voice-mobile-idle.png -c:v libwebp -lossless 1 -threads 1 e2e/screenshots/voice/web-mobile-idle.webp
 ffmpeg -v error -y -i /tmp/gomode-voice-desktop-idle.png -c:v libwebp -lossless 1 -threads 1 e2e/screenshots/voice/web-desktop-idle.webp
+ffmpeg -v error -y -i /tmp/gomode-voice-web-microphone-denied.png -c:v libwebp -lossless 1 -threads 1 e2e/screenshots/voice/web-microphone-denied.webp
 ```

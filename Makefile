@@ -43,7 +43,7 @@ fix: android-sdk node_modules/.modules.yaml
 	@pnpm exec node scripts/css_module_types.mjs --source-path web/src --write
 	@go tool golangci-lint fmt
 	@go tool golangci-lint run --show-stats=false --fix ./...
-	@pnpm exec eslint web/src web/tests e2e/voice-preview/*.tsx scripts/*.mjs --fix
+	@pnpm exec eslint web/src web/tests e2e/voice-preview/*.tsx e2e/voice-preview/*.js scripts/*.mjs --fix
 	@pnpm exec prettier --write --log-level warn web/src web/tests e2e/voice-preview scripts/*.mjs eslint.config.js package.json .github/workflows
 	@uv run --locked ruff check --quiet --fix scripts
 	@uv run --locked ruff format scripts >/dev/null
@@ -57,7 +57,7 @@ verify: android-sdk node_modules/.modules.yaml
 		'go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12' \
 		'go test -run=^$$ ./... && go test -race -run=^$$ ./voicegateway/voicertc && go tool golangci-lint run ./... && go mod tidy -diff && go build ./...' \
 		'pnpm exec prettier --check --log-level warn web/src web/tests e2e/voice-preview scripts/*.mjs eslint.config.js package.json .github/workflows' \
-		'pnpm exec eslint --max-warnings 0 web/src web/tests e2e/voice-preview/*.tsx scripts/*.mjs' \
+		'pnpm exec eslint --max-warnings 0 web/src web/tests e2e/voice-preview/*.tsx e2e/voice-preview/*.js scripts/*.mjs' \
 		'pnpm exec node scripts/css_module_types.mjs --source-path web/src && pnpm exec tsc --noEmit -p web/tsconfig.json' \
 		'uv run --locked ruff check --quiet scripts && uv run --locked ruff format --check --quiet scripts && uv run --locked python scripts/generate_thinking_score.py --check' \
 		'files=$$(git ls-files "*.sh" "scripts/hooks/*"); [ -z "$$files" ] || go tool shfmt -d $$files' \
