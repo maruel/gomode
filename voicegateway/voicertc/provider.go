@@ -610,6 +610,24 @@ func (t *gatewayRealtimeTools) finishSend(ids []string, names map[string]string,
 	}
 	for _, id := range ids {
 		delete(t.sending, id)
+	}
+	if err != nil {
+		// Restore the batch so a retry sends every result again. Providers reject
+		// individual results from a parallel batch.
+		for _, id := range ids {
+			if _, cancelled := t.cancelled[id]; !cancelled {
+				t.active[id] = names[id]
+			}
+		}
+		if batch, ok := t.batches[batchID]; ok {
+			batch.remaining = len(batch.order)
+			for _, id := range batch.order {
+				delete(t.pending, id)
+			}
+		}
+		return err
+	}
+	for _, id := range ids {
 		if batchID != "" {
 			delete(t.pending, id)
 			delete(t.batchByCall, id)
@@ -617,14 +635,6 @@ func (t *gatewayRealtimeTools) finishSend(ids []string, names map[string]string,
 	}
 	if batchID != "" {
 		delete(t.batches, batchID)
-	}
-	if err != nil {
-		for _, id := range ids {
-			if _, cancelled := t.cancelled[id]; !cancelled {
-				t.active[id] = names[id]
-			}
-		}
-		return err
 	}
 	return nil
 }

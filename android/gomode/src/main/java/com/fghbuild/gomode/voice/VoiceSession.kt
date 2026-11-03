@@ -90,6 +90,11 @@ private const val MAX_RECONNECT_ATTEMPTS = 3
 internal const val MAX_RECOVERY_CONTEXT_CHARS = 8_000
 private val sdpWhitespaceRegex = Regex("\\s+")
 
+private val emptyObjectSchema = JsonObject(mapOf("type" to JsonPrimitive("object")))
+
+private fun normalizedToolSchema(schema: JsonElement?): JsonObject =
+    (schema as? JsonObject)?.takeUnless { it.isEmpty() } ?: emptyObjectSchema
+
 /** Combines prepared service/native tools with the current hosted frontend declarations. */
 internal fun voiceToolDeclarations(
     tools: List<ToolDescriptor>,
@@ -99,13 +104,13 @@ internal fun voiceToolDeclarations(
         require(tools.none { tool -> frontendTools.any { it.name == tool.name } }) {
             "Voice tool conflicts with a frontend voice tool."
         }
-        addAll(frontendTools)
+        addAll(frontendTools.map { it.copy(parameters = normalizedToolSchema(it.parameters)) })
         tools.forEach { tool ->
             add(
                 ToolDeclaration(
                     name = tool.name,
                     description = tool.description.orEmpty(),
-                    parameters = tool.inputSchema as? JsonObject ?: JsonObject(emptyMap()),
+                    parameters = normalizedToolSchema(tool.inputSchema),
                 ),
             )
         }

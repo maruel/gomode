@@ -390,7 +390,10 @@ export interface ToolDeclaration {
   name: string;
   /** Description explains when and how the assistant should use the tool. */
   description: string;
-  /** Parameters is a JSON Schema object describing the tool arguments. */
+  /**
+   * Parameters is a JSON Schema object describing the tool arguments. When
+   * present, it must declare "type": "object".
+   */
   parameters: any /* json.RawMessage */;
 }
 

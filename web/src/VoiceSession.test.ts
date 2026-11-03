@@ -1210,6 +1210,7 @@ describe("VoiceSession", () => {
       [],
     );
     expect(tools.map((tool) => tool.name)).toEqual(["hang_up", "items_list"]);
+    expect(tools[0]?.parameters).toEqual({ type: "object", properties: {} });
 
     expect(() =>
       voiceToolDeclarations(
@@ -1278,6 +1279,11 @@ describe("VoiceSession", () => {
     } finally {
       session.disconnect();
     }
+  });
+
+  it("normalizes empty frontend tool schemas", () => {
+    const tools = voiceToolDeclarations([], [{ name: "select_item", description: "Select", parameters: {} }]);
+    expect(tools.find((tool) => tool.name === "select_item")?.parameters).toEqual({ type: "object", properties: {} });
   });
 
   it("executes frontend tools locally and returns errors through the gateway", async () => {

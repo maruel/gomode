@@ -790,7 +790,10 @@ data class ToolDeclaration(
     val name: String,
     /** Description explains when and how the assistant should use the tool. */
     val description: String,
-    /** Parameters is a JSON Schema object describing the tool arguments. */
+    /**
+     * Parameters is a JSON Schema object describing the tool arguments. When
+     * present, it must declare "type": "object".
+     */
     val parameters: JsonElement,
 )
 

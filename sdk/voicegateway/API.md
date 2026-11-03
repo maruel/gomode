@@ -381,7 +381,8 @@ ToolDeclaration is a provider-neutral service tool declaration.
 |-------|------|-------------|----------|
 | `name` | `string` | Name is the tool name the assistant uses in tool.call messages. | yes |
 | `description` | `string` | Description explains when and how the assistant should use the tool. | yes |
-| `parameters` | `JSONValue` | Parameters is a JSON Schema object describing the tool arguments. | yes |
+| `parameters` | `JSONValue` | Parameters is a JSON Schema object describing the tool arguments. When
+present, it must declare "type": "object". | yes |
 
 ### Context
 

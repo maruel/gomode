@@ -84,16 +84,14 @@ func genaiToolDefs(tools []voicev1.ToolDeclaration) ([]genai.ToolDef, error) {
 			} else if schemaObject == nil {
 				errs = append(errs, fmt.Errorf("tool %q parameters must be an object schema", tools[i].Name))
 			} else {
-				// Android clients send {} for no-argument commands. Function
-				// calling providers require an explicit object parameter type.
-				// TODO: Remove this special case.
-				if rawType, ok := schemaObject["type"]; ok {
+				rawType, ok := schemaObject["type"]
+				if !ok {
+					errs = append(errs, fmt.Errorf("tool %q parameters must have type object", tools[i].Name))
+				} else {
 					var typ string
 					if err := json.Unmarshal(rawType, &typ); err != nil || typ != "object" {
 						errs = append(errs, fmt.Errorf("tool %q parameters must have type object", tools[i].Name))
 					}
-				} else {
-					schemaObject["type"] = json.RawMessage(`"object"`)
 				}
 				data, err := json.Marshal(schemaObject)
 				if err != nil {

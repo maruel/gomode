@@ -280,6 +280,18 @@ async function refreshedServiceToken(
  * Voice-local tool declarations, kept outside the service MCP tool set.
  * Keep this list and its dispatcher in sync with android/gomode/src/main/java/com/fghbuild/gomode/voice/VoiceSession.kt.
  */
+function normalizeToolParameters(parameters: unknown): Record<string, unknown> {
+  if (
+    parameters !== null &&
+    typeof parameters === "object" &&
+    !Array.isArray(parameters) &&
+    Object.keys(parameters).length > 0
+  ) {
+    return parameters as Record<string, unknown>;
+  }
+  return { type: "object", properties: {} };
+}
+
 export function voiceToolDeclarations(
   mcpTools: McpToolDescriptor[],
   frontendTools: SessionSetup["tools"],
@@ -293,7 +305,7 @@ export function voiceToolDeclarations(
     }
   }
   return [
-    ...frontendTools,
+    ...frontendTools.map((tool) => ({ ...tool, parameters: normalizeToolParameters(tool.parameters) })),
     {
       name: HANG_UP_TOOL_NAME,
       description:
@@ -303,7 +315,7 @@ export function voiceToolDeclarations(
     ...mcpTools.map((tool) => ({
       name: tool.name,
       description: tool.description,
-      parameters: tool.inputSchema,
+      parameters: normalizeToolParameters(tool.inputSchema),
     })),
   ];
 }

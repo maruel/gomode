@@ -527,7 +527,8 @@ public struct ToolDeclaration: Codable {
     public let name: String
     /// Description explains when and how the assistant should use the tool.
     public let description: String
-    /// Parameters is a JSON Schema object describing the tool arguments.
+    /// Parameters is a JSON Schema object describing the tool arguments. When
+    /// present, it must declare "type": "object".
     public let parameters: JSONValue
 }
 

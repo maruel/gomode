@@ -146,7 +146,8 @@ type ToolDeclaration struct {
 	Name string `json:"name"`
 	// Description explains when and how the assistant should use the tool.
 	Description string `json:"description"`
-	// Parameters is a JSON Schema object describing the tool arguments.
+	// Parameters is a JSON Schema object describing the tool arguments. When
+	// present, it must declare "type": "object".
 	Parameters json.RawMessage `json:"parameters"`
 }
 

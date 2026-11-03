@@ -22,7 +22,7 @@ private val nativeTools =
             description =
                 "End the current voice conversation immediately when the user asks to hang up, " +
                     "end the call, or stop voice mode.",
-            inputSchema = JsonObject(emptyMap()),
+            inputSchema = buildJsonObject { put("type", "object") },
         ),
         ToolDescriptor(
             name = "list_servers",

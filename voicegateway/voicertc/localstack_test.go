@@ -123,7 +123,7 @@ func TestLocalStackSession(t *testing.T) {
 		setup := mustJSON(t, voicev1.SessionSetup{
 			Kind:  voicev1.MessageKindSessionSetup,
 			Voice: voicev1.VoiceConfig{Name: "local", Language: "en"},
-			Tools: []voicev1.ToolDeclaration{{Name: "tasks_list", Description: "List tasks", Parameters: json.RawMessage(`{}`)}},
+			Tools: []voicev1.ToolDeclaration{{Name: "tasks_list", Description: "List tasks", Parameters: json.RawMessage(`{"type":"object"}`)}},
 		})
 		if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
 			t.Fatal(err)
@@ -184,7 +184,7 @@ func TestLocalStackSession(t *testing.T) {
 		t.Cleanup(func() { _ = sess.close() })
 		setup := mustJSON(t, voicev1.SessionSetup{
 			Kind:  voicev1.MessageKindSessionSetup,
-			Tools: []voicev1.ToolDeclaration{{Name: "tasks_list", Description: "List tasks", Parameters: json.RawMessage(`{}`)}},
+			Tools: []voicev1.ToolDeclaration{{Name: "tasks_list", Description: "List tasks", Parameters: json.RawMessage(`{"type":"object"}`)}},
 		})
 		if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
 			t.Fatal(err)
@@ -193,7 +193,7 @@ func TestLocalStackSession(t *testing.T) {
 		mustAcceptMic(t, sess, silencePCM(vadSilenceHangoverMS+vadFrameMS))
 		waitForKind(t, sink, voicev1.MessageKindToolCall)
 		call := decodeToolCall(t, sink)
-		result := mustJSON(t, voicev1.ToolResult{Kind: voicev1.MessageKindToolResult, ID: call.ID, Name: call.Name, Result: json.RawMessage(`{}`)})
+		result := mustJSON(t, voicev1.ToolResult{Kind: voicev1.MessageKindToolResult, ID: call.ID, Name: call.Name, Result: json.RawMessage(`{"type":"object"}`)})
 		if err := sess.acceptClientMessage(t.Context(), result); err != nil {
 			t.Fatal(err)
 		}
@@ -321,7 +321,7 @@ func TestLocalStackSession(t *testing.T) {
 				reply: llmReply{toolCalls: []llmToolCall{{
 					id:   "call-1",
 					name: "tasks_list",
-					args: json.RawMessage(`{}`),
+					args: json.RawMessage(`{"type":"object"}`),
 				}}},
 			},
 		}
@@ -339,7 +339,7 @@ func TestLocalStackSession(t *testing.T) {
 
 		setup := mustJSON(t, voicev1.SessionSetup{
 			Kind:  voicev1.MessageKindSessionSetup,
-			Tools: []voicev1.ToolDeclaration{{Name: "tasks_list", Parameters: json.RawMessage(`{}`)}},
+			Tools: []voicev1.ToolDeclaration{{Name: "tasks_list", Parameters: json.RawMessage(`{"type":"object"}`)}},
 		})
 		if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
 			t.Fatal(err)
@@ -369,13 +369,13 @@ func TestLocalStackSession(t *testing.T) {
 				reply: llmReply{toolCalls: []llmToolCall{{
 					id:   "call-1",
 					name: "tasks_list",
-					args: json.RawMessage(`{}`),
+					args: json.RawMessage(`{"type":"object"}`),
 				}}},
 			},
 			toolResultSteps: []fakeLLMStep{
 				{
 					deltas: []string{"Checking details. "},
-					reply:  llmReply{toolCalls: []llmToolCall{{id: "call-2", name: "tasks_get", args: json.RawMessage(`{}`)}}},
+					reply:  llmReply{toolCalls: []llmToolCall{{id: "call-2", name: "tasks_get", args: json.RawMessage(`{"type":"object"}`)}}},
 				},
 				{deltas: []string{"Done. Next"}, reply: llmReply{text: "Done. Next"}},
 			},
@@ -395,8 +395,8 @@ func TestLocalStackSession(t *testing.T) {
 		setup := mustJSON(t, voicev1.SessionSetup{
 			Kind: voicev1.MessageKindSessionSetup,
 			Tools: []voicev1.ToolDeclaration{
-				{Name: "tasks_list", Parameters: json.RawMessage(`{}`)},
-				{Name: "tasks_get", Parameters: json.RawMessage(`{}`)},
+				{Name: "tasks_list", Parameters: json.RawMessage(`{"type":"object"}`)},
+				{Name: "tasks_get", Parameters: json.RawMessage(`{"type":"object"}`)},
 			},
 		})
 		if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
@@ -638,9 +638,9 @@ func TestTurnErrorDetail(t *testing.T) {
 
 func TestGenaiToolDefs(t *testing.T) {
 	t.Parallel()
-	t.Run("Android hang up empty schema", func(t *testing.T) {
+	t.Run("missing parameters default to object", func(t *testing.T) {
 		t.Parallel()
-		tools, err := genaiToolDefs([]voicev1.ToolDeclaration{{Name: "hang_up", Description: "End the call", Parameters: json.RawMessage(`{}`)}})
+		tools, err := genaiToolDefs([]voicev1.ToolDeclaration{{Name: "hang_up", Description: "End the call"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -686,11 +686,11 @@ func TestGenaiToolDefs(t *testing.T) {
 		}
 	})
 
-	t.Run("implicit object preserves constraints", func(t *testing.T) {
+	t.Run("object schema preserves constraints", func(t *testing.T) {
 		t.Parallel()
 		tools, err := genaiToolDefs([]voicev1.ToolDeclaration{{
 			Name: "tasks_list", Description: "List tasks",
-			Parameters: json.RawMessage(`{"properties":{"limit":{"type":"integer","minimum":1}},"required":["limit"],"additionalProperties":false}`),
+			Parameters: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1}},"required":["limit"],"additionalProperties":false}`),
 		}})
 		if err != nil {
 			t.Fatal(err)
@@ -714,7 +714,7 @@ func TestGenaiToolDefs(t *testing.T) {
 
 	t.Run("invalid parameter schema", func(t *testing.T) {
 		t.Parallel()
-		for _, raw := range []string{`null`, `[]`, `true`, `{"type":null}`, `{"type":"string"}`, `{"type":1}`, `{"type":`} {
+		for _, raw := range []string{`null`, `[]`, `true`, `{}`, `{"type":null}`, `{"type":"string"}`, `{"type":1}`, `{"properties":{"limit":{"type":"integer"}}}`, `{"type":`} {
 			t.Run(raw, func(t *testing.T) {
 				t.Parallel()
 				_, err := genaiToolDefs([]voicev1.ToolDeclaration{{Name: "hang_up", Description: "End the call", Parameters: json.RawMessage(raw)}})

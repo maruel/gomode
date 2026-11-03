@@ -66,6 +66,13 @@ class VoiceSessionTest {
 
         assertEquals(listOf("hang_up", "tasks_list"), tools.map { it.name })
         assertTrue(tools.first().description.contains("End the current voice conversation"))
+        assertTrue(
+            tools.all {
+                it.parameters.jsonObject["type"]
+                    ?.jsonPrimitive
+                    ?.content == "object"
+            },
+        )
     }
 
     @Test
