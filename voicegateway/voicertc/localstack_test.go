@@ -924,7 +924,7 @@ data: [DONE]
 		TextOnly: true,
 		LLM:      voicegateway.LocalStackLLMConfig{Provider: "openaicompatible", Remote: llmServer.URL + "/v1/chat/completions", Model: "test-model"},
 	}
-	bridge, err := newBridgeWithTimeout(t.Context(), &config, "", 0, t.TempDir(), 5*time.Millisecond)
+	bridge, err := newBridgeWithTimeout(t.Context(), &config, ProviderKeys{}, 0, t.TempDir(), 5*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -260,6 +260,10 @@ func (s *localStackSession) acceptClientMessage(ctx context.Context, data []byte
 	}
 }
 
+func (s *localStackSession) inputSampleRate() int {
+	return micSampleRate
+}
+
 func (s *localStackSession) acceptMicPCM(ctx context.Context, pcm []byte) error {
 	utterance, speechActive := s.vad.push(pcm)
 	if speechActive && s.isSpeaking() {

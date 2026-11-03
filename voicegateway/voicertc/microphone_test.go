@@ -65,11 +65,11 @@ func TestMicAudioClock(t *testing.T) {
 	})
 	t.Run("turn endings during sparse packets", func(t *testing.T) {
 		var c micAudioClock
-		var g geminiAudioGate
+		var g serverAudioGate
 		var v energyVAD
 		now := time.Now()
 		for i := range 10 {
-			pcm := geminiTestPCM(20, 2000)
+			pcm := testPCM(20, 2000)
 			c.receive(uint16(i), uint32(i*960), 320, now.Add(time.Duration(i)*20*time.Millisecond)) //nolint:gosec // Bounded fixture indices.
 			v.push(pcm)
 			for range g.push(pcm) {

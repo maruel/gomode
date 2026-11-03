@@ -34,7 +34,7 @@ const (
 	// sessionLifetime caps a session at 30 minutes. Activity does not extend it.
 	sessionLifetime = 30 * time.Minute
 
-	// micSampleRate is the decoded microphone PCM rate.
+	// micSampleRate is the default and local-stack decoded microphone PCM rate.
 	micSampleRate = 16000
 
 	// backendOutputSampleRate is the assistant PCM rate consumed by the RTP encoder.
@@ -91,17 +91,22 @@ type Bridge struct {
 	textDone   chan struct{}
 }
 
+// ProviderKeys holds credentials used by provider-backed choices.
+type ProviderKeys struct {
+	Gemini string
+	OpenAI string
+}
+
 // NewBridge creates a Bridge that multiplexes WebRTC traffic through a single
 // UDP port and eagerly verifies its UPnP publication.
 //
-// Configured choices share the UDP listener. geminiAPIKey is only consumed by
-// Gemini Live choices. Backend initialization is atomic: a failure closes all
-// backends already initialized.
-func NewBridge(ctx context.Context, cfg *voicegateway.Config, geminiAPIKey string, udpPort int, activityLogDir string) (*Bridge, error) {
-	return newBridgeWithTimeout(ctx, cfg, geminiAPIKey, udpPort, activityLogDir, defaultUPnPSSDPTimeout)
+// Configured choices share the UDP listener. Backend initialization is atomic:
+// a failure closes all backends already initialized.
+func NewBridge(ctx context.Context, cfg *voicegateway.Config, keys ProviderKeys, udpPort int, activityLogDir string) (*Bridge, error) {
+	return newBridgeWithTimeout(ctx, cfg, keys, udpPort, activityLogDir, defaultUPnPSSDPTimeout)
 }
 
-func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, geminiAPIKey string, udpPort int, activityLogDir string, upnpSSDPTimeout time.Duration) (*Bridge, error) {
+func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, keys ProviderKeys, udpPort int, activityLogDir string, upnpSSDPTimeout time.Duration) (*Bridge, error) {
 	if activityLogDir == "" {
 		return nil, errors.New("voice activity log directory is required")
 	}
@@ -120,7 +125,7 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, geminiA
 	}
 	for i := range configs {
 		ch := &configs[i]
-		backend, err := backendForConfig(ctx, &voicegateway.Config{Backend: ch.Backend, Model: ch.Model, LocalStack: ch.LocalStack}, geminiAPIKey)
+		backend, err := backendForConfig(ctx, &voicegateway.Config{Backend: ch.Backend, Model: ch.Model, LocalStack: ch.LocalStack, Realtime: ch.Realtime}, keys)
 		if err != nil {
 			return nil, errors.Join(fmt.Errorf("initialize choice %q: %w", ch.ID, err), cleanup())
 		}
@@ -194,9 +199,9 @@ func defaultBackendChoices(backend backendConnector) voicev1.VoiceChoicesResp {
 
 func backendChoice(backend backendConnector, id, label string) voicev1.VoiceChoice {
 	ch := voicev1.VoiceChoice{ID: id, Label: label, Transports: backendTransports(backend)}
-	if _, ok := backend.(*geminiBridgeBackend); ok {
-		ch.Voices = append([]string(nil), geminiVoices...)
-		ch.DefaultVoice = defaultGeminiVoice
+	if provider, ok := backend.(*realtimeBridgeBackend); ok {
+		ch.Voices = append([]string(nil), provider.voices()...)
+		ch.DefaultVoice = provider.defaultVoice()
 	}
 	return ch
 }
@@ -749,17 +754,28 @@ type udpCandidate struct {
 }
 
 // backendForConfig constructs one configured backend.
-func backendForConfig(ctx context.Context, cfg *voicegateway.Config, geminiAPIKey string) (backendConnector, error) {
+func backendForConfig(ctx context.Context, cfg *voicegateway.Config, keys ProviderKeys) (backendConnector, error) {
 	switch cfg.Backend {
 	case voicegateway.BackendGeminiLive:
-		if geminiAPIKey == "" {
+		if keys.Gemini == "" {
 			return nil, errors.New("GEMINI_API_KEY not configured")
 		}
 		model := cfg.Model
 		if model == "" {
 			model = voicegateway.DefaultGeminiModel
 		}
-		return &geminiBridgeBackend{apiKey: geminiAPIKey, model: model}, nil
+		return &realtimeBridgeBackend{kind: realtimeBackendGemini, apiKey: keys.Gemini, model: model}, nil
+	case voicegateway.BackendOpenAIRealtime:
+		if keys.OpenAI == "" {
+			return nil, errors.New("OPENAI_API_KEY not configured")
+		}
+		model := cfg.Model
+		if model == "" {
+			model = voicegateway.DefaultOpenAIRealtimeModel
+		}
+		return &realtimeBridgeBackend{kind: realtimeBackendOpenAI, apiKey: keys.OpenAI, model: model}, nil
+	case voicegateway.BackendLlamaRealtime:
+		return newLlamaRealtimeBackend(ctx, cfg.Model, cfg.Realtime)
 	case voicegateway.BackendLocalStack:
 		return localStackBackendForConfig(ctx, &cfg.LocalStack)
 	default:
@@ -806,6 +822,7 @@ type session struct {
 	audioBuf            []byte // pending backend PCM bytes, drained by audioSendLoop
 	audioBufStartedAt   time.Time
 	audioFirstRTPLogged bool
+	audioSpeech         *assistantSpeechPlayback
 }
 
 func (s *session) waitCleanup(ctx context.Context) bool {
@@ -967,7 +984,43 @@ func (s *session) clearAssistantAudio() {
 	s.audioBuf = nil
 	s.audioBufStartedAt = time.Time{}
 	s.audioFirstRTPLogged = false
+	if s.audioSpeech != nil {
+		*s.audioSpeech = assistantSpeechPlayback{}
+	}
 	s.audioMu.Unlock()
+}
+
+// addAssistantSpeechPCM opts a stream into paced playback notifications. Legacy
+// backends retain their existing addAssistantPCM and speech event policy.
+func (s *session) addAssistantSpeechPCM(pcm []byte) {
+	if len(pcm) == 0 {
+		return
+	}
+	s.audioMu.Lock()
+	if s.audioSpeech == nil {
+		s.audioSpeech = &assistantSpeechPlayback{}
+	}
+	s.audioSpeech.append(len(pcm))
+	if len(s.audioBuf) == 0 {
+		s.audioBufStartedAt = time.Now()
+		s.audioFirstRTPLogged = false
+	}
+	s.audioBuf = append(s.audioBuf, pcm...)
+	s.audioMu.Unlock()
+}
+
+func (s *session) finishAssistantSpeech() {
+	s.audioMu.Lock()
+	if s.audioSpeech != nil {
+		s.audioBuf = append(s.audioBuf, make([]byte, s.audioSpeech.finish())...)
+	}
+	s.audioMu.Unlock()
+}
+
+func (s *session) assistantAudioPending() bool {
+	s.audioMu.Lock()
+	defer s.audioMu.Unlock()
+	return s.audioSpeech != nil && s.audioSpeech.pending()
 }
 
 func (s *session) startAudioOutput(ctx context.Context) error {
@@ -1009,6 +1062,22 @@ func (s *session) audioSendLoop(ctx context.Context, enc *opusEncoder) {
 			return
 		case <-ticker.C:
 			s.audioMu.Lock()
+			if s.audioSpeech != nil {
+				for _, kind := range s.audioSpeech.tick(len(s.audioBuf) >= backendOutputFrameBytes) {
+					var msg any
+					if kind == voicev1.MessageKindSpeechStarted {
+						msg = &voicev1.SpeechStarted{Kind: kind, Speaker: voicev1.SpeakerAssistant}
+					} else {
+						msg = &voicev1.SpeechEnded{Kind: kind, Speaker: voicev1.SpeakerAssistant}
+					}
+					if err := s.sendGatewayMessage(ctx, mustGatewayServerMessage(msg)); err != nil {
+						s.audioMu.Unlock()
+						s.sendError("Playback event delivery failed: " + err.Error())
+						s.cancel()
+						return
+					}
+				}
+			}
 			if len(s.audioBuf) < backendOutputFrameBytes {
 				s.audioMu.Unlock()
 				continue
@@ -1242,7 +1311,9 @@ func (s *session) close() {
 	s.pc = nil
 	s.mu.Unlock()
 	if backendSession != nil {
-		_ = backendSession.close()
+		if err := backendSession.close(); err != nil {
+			slog.Warn("voicertc: close backend session", "session", s.id, "err", err)
+		}
 	}
 	if pc != nil {
 		_ = pc.Close()

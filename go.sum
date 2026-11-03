@@ -445,8 +445,8 @@ github.com/maratori/testpackage v1.1.2 h1:ffDSh+AgqluCLMXhM19f/cpvQAKygKAJXFl9aU
 github.com/maratori/testpackage v1.1.2/go.mod h1:8F24GdVDFW5Ew43Et02jamrVMNXLUNaOynhDssITGfc=
 github.com/maruel/apisdkgen v0.2.0 h1:RWqxHX4rRivZyG1EdVigSwjcaB8wa7Z8qnNnFPpIkXg=
 github.com/maruel/apisdkgen v0.2.0/go.mod h1:PDekGWyiIvU3oOqTUnuJF7ZmOPiUHIYe7CqsIybxmic=
-github.com/maruel/genai v0.10.2 h1:MjgHd0lX1UiQgKDHTER6ZeinGQQ+wSwjlQHXbOFY7aU=
-github.com/maruel/genai v0.10.2/go.mod h1:SdPjQFSU81PxF8jB+kvN40X05ZO+XFGABoFWNxx3k6k=
+github.com/maruel/genai v0.10.3-0.20261103001438-e484895ec827 h1:Vv+wpjErG8WRFuTLLrqFRoItZB6K5My120SrSGIaDe8=
+github.com/maruel/genai v0.10.3-0.20261103001438-e484895ec827/go.mod h1:d3Nfr4LA3vhZcPZih4O9PbvUrgIX/5hy2uMLgoH/48Y=
 github.com/maruel/genaipy v0.1.2 h1:LCjKM72hIHTyL9Nt8Fb7DYv7/UJNjGjCjG5fHntO59w=
 github.com/maruel/genaipy v0.1.2/go.mod h1:VERlWtNMq1oCuG7CzRZJSQ0EUVYGkgMGdU+Z2WQzvpI=
 github.com/maruel/gopus v0.1.0 h1:sMFMWII8AmJdKIYvl+BHO3Ysx25/HzvxmkD5YU3/0x8=
@@ -660,6 +660,8 @@ github.com/tomarrell/wrapcheck/v2 v2.12.0 h1:H/qQ1aNWz/eeIhxKAFvkfIA+N7YDvq6TWVF
 github.com/tomarrell/wrapcheck/v2 v2.12.0/go.mod h1:AQhQuZd0p7b6rfW+vUwHm5OMCGgp63moQ9Qr/0BpIWo=
 github.com/tommy-muehle/go-mnd/v2 v2.5.1 h1:NowYhSdyE/1zwK9QCLeRb6USWdoif80Ie+v+yU8u1Zw=
 github.com/tommy-muehle/go-mnd/v2 v2.5.1/go.mod h1:WsUAkMJMYww6l/ufffCD3m+P7LEvr8TnZn9lwVDlgzw=
+github.com/tphakala/go-flac v1.4.0 h1:P+ZFIohr67hYN3ayLQaGAlhroIRXJRSG9fFZIVo/wLU=
+github.com/tphakala/go-flac v1.4.0/go.mod h1:85Qszl3Z+lnrtXuVZIdF4KhjKef0W6YyJlhPsmBUhMM=
 github.com/tphakala/go-opus v1.3.0 h1:0lpjV0HMAhStV7/oKkZRaQgdzNT5pdFDiWhBqteobxE=
 github.com/tphakala/go-opus v1.3.0/go.mod h1:BjrAk2Jf16arkoj6aeIeE/Nnsnq3IRJgzY+kNn3jlH4=
 github.com/tphakala/simd v1.14.0 h1:f1ZBojSE3udWggptQpGyTynVfVdCZxd/KTTfaiDeoCA=

@@ -289,6 +289,17 @@ voice = "af_heart"
 }
 
 func TestConfig(t *testing.T) {
+	t.Run("VoiceChoices realtime propagation", func(t *testing.T) {
+		c := Config{Backend: BackendLlamaRealtime, Realtime: RealtimeConfig{Remote: "http://localhost:8080"}}
+		choices, _ := c.VoiceChoices()
+		if len(choices) != 1 || choices[0].Realtime != c.Realtime {
+			t.Fatalf("lost realtime settings: %+v", choices)
+		}
+		if err := c.ValidateEmbedded(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
 	t.Parallel()
 	t.Run("Validate", func(t *testing.T) {
 		t.Parallel()

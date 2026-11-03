@@ -1,21 +1,34 @@
 # Voice RTC Bridge
 
+`provider.go` bridges named provider backends to gateway sessions. Gemini Live
+and OpenAI Realtime share session setup, ordered sends, playback and DTO
+translation; provider-specific options stay behind `realtimeBridgeBackend`.
+
 ## Gemini Live Protocol
 
-Keep Gemini Live wire types and message translation behavior in sync with
-the upstream source in
-[`googleapis/go-genai/live.go`](https://github.com/googleapis/go-genai/blob/main/live.go).
-Use or create a local checkout of `https://github.com/googleapis/go-genai`
-at maintenance time; do not assume it already exists at a fixed path.
+The gateway uses `github.com/maruel/genai/providers/gemini` through the shared
+`RealtimeSession` contract. genai owns authentication, WebSocket setup,
+keepalive, provider wire DTOs, PCM encoding and provider event decoding. Keep
+those responsibilities out of this package; gateway code owns language and
+voice selection, quiet microphone gating, playback and gateway DTO translation.
 
-Before changing Gemini setup, realtime input, tool call, or tool response
-payloads, compare this package's Gemini-specific types and translations against
-that checkout's `live.go`, `types.go`, and `live_converters.go`.
+Connection is deferred until `session.setup`; only accepted provider setup may
+signal gateway readiness. Host tool execution can outlive provider cancellation:
+retain bounded exact ID/name cancellation history, consume known late results,
+and handle genai's typed cancellation result for the receive/delivery race.
+Do not suppress unknown-ID, wrong-name or transport errors. Passive context uses non-generating incomplete client
+content through genai. Input is mono PCM16LE at the provider input rate; output is 24 kHz.
+
+Before changing model-specific options, inspect the genai provider and its
+pinned official `googleapis/go-genai` source checkout (`live.go`, `types.go`,
+`live_converters.go`). The migration was verified with genai's source reference
+`9cf04deac32f2418781170b3cd41c09abf060564`. Protocol tests belong in genai;
+gateway tests exercise policy and DTO behavior through the provider client.
 
 ## Model upgrades
 
 The Gemini Live model comes from the top-level `model` config key
-(`voicegateway.DefaultGeminiModel` when unset) and the adapter qualifies bare
+(`voicegateway.DefaultGeminiModel` when unset) and the provider qualifies bare
 IDs with the `models/` prefix. A model bump is a setup-shape change, not just a
 string change, so verify each rule below against primary sources and record
 what was consulted.
@@ -44,7 +57,7 @@ Setup-shape rules for `gemini-3.8-live`:
   `NON_BLOCKING`, but the gateway's tool round trip is synchronous and its
   protocol carries no `willContinue` or scheduling state.
 - Pin `turnCoverage` to `TURN_INCLUDES_ONLY_ACTIVITY`. Gemini 3.8 Live otherwise
-  includes all video since the last turn, and this adapter sends no video.
+  includes all video since the last turn, and the gateway sends no video.
 - Keep the response modality at `AUDIO`; text reaches clients through output
   audio transcription.
 
@@ -63,3 +76,36 @@ New capabilities that this adapter does not use yet, recorded for future work:
 
 Keep the model example in `contrib/config.toml` in step with the
 default.
+
+## OpenAI Realtime Protocol
+
+The `openai-realtime` backend uses `providers/openairesponses` through the shared
+`RealtimeSession` contract. It uses server VAD, output transcription, and
+`gpt-realtime-2.1-mini` by default. Set `model = "gpt-realtime-2.1"` for the
+larger model. OpenAI reports 24 kHz input; the bridge decodes
+Opus at that negotiated rate, so `acceptMicPCM` receives native PCM with no
+resampling. Input transcription stays disabled because it needs a separate
+transcription model. It advertises no voice catalog because the OpenAI voice
+set is not pinned; an empty voice leaves the provider default.
+Sends share the same ordered gateway queue as Gemini. Tool results are batched
+per provider response; the provider starts the continuation. Verify setup
+options against `providers/openaibase` when changing transcription or turn
+detection.
+
+## Native llama.cpp realtime
+
+`realtime.go` owns manual turn scheduling and host tool batches over genai's
+llama.cpp realtime client. genai owns all provider wire messages, setup
+validation and managed b11960 downloads/processes. Keep the native audio choice
+separate from `localstack.go`'s whole-utterance ASR/LLM/TTS pipeline.
+The common RTP owner schedules native speech boundaries against queued PCM;
+generation completion must not end playback or introduce a backend clock.
+Generated user text must follow any captured active microphone turn.
+
+`realtime_audio.go` streams confirmed speech with bounded preroll. Preserve new
+microphone input across cancellation and tool waits; only a full correlated
+host result batch releases the latter. Bound every pending queue and surface
+its exhaustion as a visible error followed by shutdown. Never fabricate tool
+results, silently discard microphone data, clear history, or equate generation
+cancellation with completed tool side effects. Tests use event notifications
+and barriers rather than scheduler delays.

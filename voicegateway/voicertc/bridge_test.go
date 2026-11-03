@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -138,223 +139,12 @@ func TestApplySessionLanguage(t *testing.T) {
 	})
 }
 
-func TestTranslateGatewayClientMessage(t *testing.T) {
-	t.Parallel()
-	t.Run("setup", func(t *testing.T) {
-		t.Parallel()
-		got, err := translateGatewayClientMessage([]byte(`{"kind":"session.setup","voice":{"name":"Kore","language":"en"},"tools":[{"name":"tasks_list","description":"List tasks","parameters":{"type":"object","properties":{}}}],"context":{"systemInstruction":"system prompt","text":"Current service items:\n- Task #1: Build (running)"}}`), "gemini-3.8-live")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var msg geminiSetupMessage
-		if err := json.Unmarshal(got, &msg); err != nil {
-			t.Fatal(err)
-		}
-		if msg.Setup.Model != "models/gemini-3.8-live" {
-			t.Errorf("model = %q, want models/gemini-3.8-live", msg.Setup.Model)
-		}
-		if voice := msg.Setup.GenerationConfig.SpeechConfig.VoiceConfig.PrebuiltVoiceConfig.VoiceName; voice != "Kore" {
-			t.Errorf("voice = %q, want Kore", voice)
-		}
-		if strings.Contains(string(got), "thinkingConfig") {
-			t.Errorf("setup = %s, want no thinkingConfig", got)
-		}
-		if modalities := msg.Setup.GenerationConfig.ResponseModalities; len(modalities) != 1 || modalities[0] != geminiResponseModalityAudio {
-			t.Errorf("responseModalities = %v, want [%s]", modalities, geminiResponseModalityAudio)
-		}
-		if coverage := msg.Setup.RealtimeInputConfig.TurnCoverage; coverage != geminiTurnCoverageOnlyActivity {
-			t.Errorf("turnCoverage = %q, want %q", coverage, geminiTurnCoverageOnlyActivity)
-		}
-		if len(msg.Setup.SystemInstruction.Parts) != 2 || msg.Setup.SystemInstruction.Parts[0].Text != "system prompt\nSpeak in the selected language: en." ||
-			msg.Setup.SystemInstruction.Parts[1].Text != "Current service items:\n- Task #1: Build (running)" {
-			t.Errorf("system instruction = %#v, want system prompt", msg.Setup.SystemInstruction)
-		}
-		if hints := msg.Setup.InputAudioTranscription.LanguageCodes; len(hints) != 1 || hints[0] != "en" {
-			t.Errorf("input language hints = %v, want [en]", hints)
-		}
-		if msg.Setup.GenerationConfig.SpeechConfig.LanguageCode != "" {
-			t.Error("native audio must not receive speechConfig.languageCode")
-		}
-		if len(msg.Setup.Tools) != 1 || len(msg.Setup.Tools[0].FunctionDeclarations) != 1 {
-			t.Fatalf("tools = %#v, want one declaration", msg.Setup.Tools)
-		}
-		decl := msg.Setup.Tools[0].FunctionDeclarations[0]
-		if decl.Name != "tasks_list" {
-			t.Errorf("declaration name = %q, want tasks_list", decl.Name)
-		}
-		if string(decl.ParametersJsonSchema) != `{"type":"object","properties":{}}` {
-			t.Errorf("parametersJsonSchema = %s, want empty object schema", decl.ParametersJsonSchema)
-		}
-		if decl.Behavior != geminiBehaviorBlocking {
-			t.Errorf("behavior = %q, want %q", decl.Behavior, geminiBehaviorBlocking)
-		}
-	})
-
-	t.Run("context update", func(t *testing.T) {
-		t.Parallel()
-		got, err := translateGatewayClientMessage([]byte(`{"kind":"context.update","context":{"text":"status update"}}`), voicegateway.DefaultGeminiModel)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var msg geminiRealtimeText
-		if err := json.Unmarshal(got, &msg); err != nil {
-			t.Fatal(err)
-		}
-		if msg.RealtimeInput.Text != "status update" {
-			t.Fatalf("realtimeInput.text = %q, want status update", msg.RealtimeInput.Text)
-		}
-	})
-
-	t.Run("user message", func(t *testing.T) {
-		t.Parallel()
-		got, err := translateGatewayClientMessage([]byte(`{"kind":"user.message","text":"Say exactly one word: Ready"}`), voicegateway.DefaultGeminiModel)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var msg geminiClientContentMessage
-		if err := json.Unmarshal(got, &msg); err != nil {
-			t.Fatal(err)
-		}
-		if !msg.ClientContent.TurnComplete {
-			t.Fatal("turnComplete = false, want true")
-		}
-	})
-
-	t.Run("tool result", func(t *testing.T) {
-		t.Parallel()
-		got, err := translateGatewayClientMessage([]byte(`{"kind":"tool.result","id":"call-1","name":"tasks_list","result":{"ok":true}}`), voicegateway.DefaultGeminiModel)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var msg geminiToolResponseMessage
-		if err := json.Unmarshal(got, &msg); err != nil {
-			t.Fatal(err)
-		}
-		if len(msg.ToolResponse.FunctionResponses) != 1 || msg.ToolResponse.FunctionResponses[0].ID != "call-1" {
-			t.Fatalf("tool response = %#v, want call-1", msg.ToolResponse)
-		}
-	})
-
-	t.Run("rejects malformed setup", func(t *testing.T) {
-		t.Parallel()
-		_, err := translateGatewayClientMessage([]byte(`{"kind":"session.setup","voice":{"name":"Kore","language":"en"},"tools":[],"context":{}}`), voicegateway.DefaultGeminiModel)
-		if err == nil {
-			t.Fatal("expected error")
-		}
-	})
-
-	t.Run("rejects provider message", func(t *testing.T) {
-		t.Parallel()
-		_, err := translateGatewayClientMessage([]byte(`{"setup":{"model":"provider"}}`), voicegateway.DefaultGeminiModel)
-		if err == nil {
-			t.Fatal("expected error")
-		}
-	})
-}
-
-func TestBuildGeminiClientContentText(t *testing.T) {
-	t.Parallel()
-	got, err := buildGeminiClientContentText("Say exactly one word: Ready")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var msg geminiClientContentMessage
-	if err := json.Unmarshal(got, &msg); err != nil {
-		t.Fatal(err)
-	}
-	if !msg.ClientContent.TurnComplete {
-		t.Fatal("turnComplete = false, want true")
-	}
-	if len(msg.ClientContent.Turns) != 1 {
-		t.Fatalf("turns = %d, want one turn", len(msg.ClientContent.Turns))
-	}
-	turn := msg.ClientContent.Turns[0]
-	if turn.Role != "user" {
-		t.Fatalf("role = %q, want user", turn.Role)
-	}
-	if len(turn.Parts) != 1 || turn.Parts[0].Text != "Say exactly one word: Ready" {
-		t.Fatalf("parts = %#v, want user message", turn.Parts)
-	}
-}
-
-func TestTranslateGeminiServerMessage(t *testing.T) {
-	t.Parallel()
-	t.Run("setup complete emits no client message", func(t *testing.T) {
-		t.Parallel()
-		// session.ready is emitted by the gateway core, not the provider
-		// translation. SetupComplete only triggers backendReady.
-		got, err := translateGeminiServerMessage([]byte(`{"setupComplete":{}}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(got) != 0 {
-			t.Fatalf("messages = %d, want 0", len(got))
-		}
-	})
-
-	t.Run("transcript", func(t *testing.T) {
-		t.Parallel()
-		got, err := translateGeminiServerMessage([]byte(`{
-			"serverContent":{
-				"inputTranscription":{"text":"hello"},
-				"outputTranscription":{"text":"Ready"},
-				"turnComplete":true
-			}
-		}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		kinds := make([]voicev1.MessageKind, 0, len(got))
-		for _, raw := range got {
-			var msg voicev1.MessageEnvelope
-			if err := json.Unmarshal(raw, &msg); err != nil {
-				t.Fatal(err)
-			}
-			kinds = append(kinds, msg.Kind)
-		}
-		want := []voicev1.MessageKind{
-			voicev1.MessageKindTranscriptDelta,
-			voicev1.MessageKindTranscriptDelta,
-			voicev1.MessageKindAssistantTextDelta,
-			voicev1.MessageKindSpeechEnded,
-		}
-		if len(kinds) != len(want) {
-			t.Fatalf("kinds = %v, want %v", kinds, want)
-		}
-		for i, kind := range want {
-			if kinds[i] != kind {
-				t.Fatalf("kinds = %v, want %v", kinds, want)
-			}
-		}
-	})
-
-	t.Run("tool call", func(t *testing.T) {
-		t.Parallel()
-		got, err := translateGeminiServerMessage([]byte(`{
-			"toolCall":{"functionCalls":[{"id":"call-1","name":"tasks_list","args":{}}]}
-		}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(got) != 1 {
-			t.Fatalf("messages = %d, want 1", len(got))
-		}
-		var msg voicev1.ToolCall
-		if err := json.Unmarshal(got[0], &msg); err != nil {
-			t.Fatal(err)
-		}
-		if msg.Kind != voicev1.MessageKindToolCall || msg.ID != "call-1" || msg.Name != "tasks_list" {
-			t.Fatalf("message = %+v, want tool.call", msg)
-		}
-	})
-}
-
 func TestNewBridge(t *testing.T) {
 	t.Parallel()
 	cfg := &voicegateway.Config{Backend: voicegateway.BackendGeminiLive}
 	t.Run("NewBridge", func(t *testing.T) {
 		t.Parallel()
-		b, err := newBridgeWithTimeout(t.Context(), cfg, "test-key", 0, t.TempDir(), 5*time.Millisecond)
+		b, err := newBridgeWithTimeout(t.Context(), cfg, ProviderKeys{Gemini: "test-key"}, 0, t.TempDir(), 5*time.Millisecond)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -363,7 +153,7 @@ func TestNewBridge(t *testing.T) {
 
 	t.Run("PeerConnection", func(t *testing.T) {
 		t.Parallel()
-		b, err := newBridgeWithTimeout(t.Context(), cfg, "test-key", 0, t.TempDir(), 5*time.Millisecond)
+		b, err := newBridgeWithTimeout(t.Context(), cfg, ProviderKeys{Gemini: "test-key"}, 0, t.TempDir(), 5*time.Millisecond)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -408,17 +198,51 @@ func TestBackendForConfigGeminiModel(t *testing.T) {
 			backend, err := backendForConfig(t.Context(), &voicegateway.Config{
 				Backend: voicegateway.BackendGeminiLive,
 				Model:   tc.model,
-			}, "test-key")
+			}, ProviderKeys{Gemini: "test-key"})
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = backend.Close() })
-			gemini, ok := backend.(*geminiBridgeBackend)
+			gemini, ok := backend.(*realtimeBridgeBackend)
 			if !ok {
-				t.Fatalf("backend = %T, want *geminiBridgeBackend", backend)
+				t.Fatalf("backend = %T, want *realtimeBridgeBackend", backend)
 			}
 			if gemini.model != tc.want {
 				t.Errorf("model = %q, want %q", gemini.model, tc.want)
+			}
+		})
+	}
+}
+
+func TestBackendForConfigOpenAI(t *testing.T) {
+	t.Parallel()
+	t.Run("missing key", func(t *testing.T) {
+		t.Parallel()
+		if _, err := backendForConfig(t.Context(), &voicegateway.Config{Backend: voicegateway.BackendOpenAIRealtime}, ProviderKeys{}); err == nil {
+			t.Fatal("accepted a missing OPENAI_API_KEY")
+		}
+	})
+	for _, tc := range []struct {
+		name  string
+		model string
+		want  string
+	}{
+		{name: "default model", want: voicegateway.DefaultOpenAIRealtimeModel},
+		{name: "full model", model: "gpt-realtime-2.1", want: "gpt-realtime-2.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			backend, err := backendForConfig(t.Context(), &voicegateway.Config{Backend: voicegateway.BackendOpenAIRealtime, Model: tc.model}, ProviderKeys{OpenAI: "test-key"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = backend.Close() })
+			provider, ok := backend.(*realtimeBridgeBackend)
+			if !ok {
+				t.Fatalf("backend = %T, want *realtimeBridgeBackend", backend)
+			}
+			if provider.kind != realtimeBackendOpenAI || provider.model != tc.want {
+				t.Fatalf("provider = %+v", provider)
 			}
 		})
 	}
@@ -747,14 +571,19 @@ func TestBackend(t *testing.T) {
 }
 
 type fakeBackendSession struct {
-	id     string
-	sink   backendSink
-	closed bool
+	id       string
+	sink     backendSink
+	closed   bool
+	closeErr error
 }
 
 func (s *fakeBackendSession) acceptClientMessage(ctx context.Context, _ []byte) error {
 	s.sink.backendReady(ctx)
 	return nil
+}
+
+func (s *fakeBackendSession) inputSampleRate() int {
+	return micSampleRate
 }
 
 func (s *fakeBackendSession) acceptMicPCM(_ context.Context, pcm []byte) error {
@@ -764,7 +593,7 @@ func (s *fakeBackendSession) acceptMicPCM(_ context.Context, pcm []byte) error {
 
 func (s *fakeBackendSession) close() error {
 	s.closed = true
-	return nil
+	return s.closeErr
 }
 
 func TestEncodeDecodeRoundtrip(t *testing.T) {
@@ -948,21 +777,6 @@ func testBridgeChoiceRuntime(t *testing.T) {
 	diagnostics := b.DiagnoseVoiceRTC(ctx, two.sessionID, &voicev1.VoiceRTCClientDiagnostics{})
 	if !diagnostics.Server.SessionFound {
 		t.Fatal("closing first choice closed second session")
-	}
-}
-
-func TestBuildGeminiSetup(t *testing.T) {
-	t.Parallel()
-	data, err := buildGeminiSetup(&voicev1.SessionSetup{Context: voicev1.Context{SystemInstruction: "test"}}, voicegateway.DefaultGeminiModel)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var msg geminiSetupMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatal(err)
-	}
-	if voice := msg.Setup.GenerationConfig.SpeechConfig.VoiceConfig.PrebuiltVoiceConfig.VoiceName; voice != "Orus" {
-		t.Fatalf("default voice = %q, want Orus", voice)
 	}
 }
 
@@ -1446,7 +1260,7 @@ func TestBridge(t *testing.T) {
 			backend backendConnector
 			voices  bool
 		}{
-			{name: "Gemini audio", backend: &geminiBridgeBackend{apiKey: "test", model: voicegateway.DefaultGeminiModel}, voices: true},
+			{name: "Gemini audio", backend: &realtimeBridgeBackend{apiKey: "test", model: voicegateway.DefaultGeminiModel}, voices: true},
 			{name: "local audio", backend: newLocalStackBackend(nil, fixedASR{text: "test"}, &smokeLLM{text: "test"}, placeholderTTS{})},
 			{name: "local text", backend: newLocalStackBackend(nil, nil, &smokeLLM{text: "test"}, nil)},
 		} {
@@ -2004,6 +1818,106 @@ func TestBridge(t *testing.T) {
 		b.CloseAll(t.Context())
 		if b.HasSession("second") || closed["first"] != 1 || closed["second"] != 1 {
 			t.Fatalf("closed callbacks = %v, want one per session", closed)
+		}
+	})
+}
+
+func TestSession(t *testing.T) {
+	t.Run("close", func(t *testing.T) {
+		var logs bytes.Buffer
+		prior := slog.Default()
+		slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+		t.Cleanup(func() { slog.SetDefault(prior) })
+		backend := &fakeBackendSession{closeErr: errors.New("realtime transport cleanup failed")}
+		s := &session{id: "cleanup", backend: backend}
+		s.close()
+		var record map[string]any
+		if err := json.Unmarshal(logs.Bytes(), &record); err != nil {
+			t.Fatal(err)
+		}
+		if record["err"] != "realtime transport cleanup failed" || record["session"] != "cleanup" {
+			t.Fatalf("close failure was dropped: %v", record)
+		}
+	})
+	t.Run("audioSendLoop", func(t *testing.T) {
+		enc, err := newEncoder()
+		if err != nil {
+			if strings.Contains(err.Error(), "disabled in race builds") {
+				t.Skip("Opus encoder is deliberately disabled in race builds")
+			}
+			t.Fatal(err)
+		}
+		log, err := openActivityLog(t.TempDir(), "paced-playback")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := log.close(); err != nil {
+				t.Error(err)
+			}
+		})
+		track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 1}, "audio", "playback")
+		if err != nil {
+			t.Fatal(err)
+		}
+		synctest.Test(t, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			s := &session{audioTrack: track, activityLog: log, cancel: cancel}
+			var workers sync.WaitGroup
+			workers.Go(func() { s.audioSendLoop(ctx, enc) })
+			t.Cleanup(func() { cancel(); workers.Wait() })
+			synctest.Wait()
+			s.addAssistantSpeechPCM(make([]byte, 2*backendOutputFrameBytes+2))
+			s.finishAssistantSpeech()
+			for range 3 {
+				time.Sleep(frameDuration)
+				synctest.Wait()
+			}
+			s.audioMu.Lock()
+			buffered := len(s.audioBuf)
+			boundaries := len(s.audioSpeech.boundaries)
+			s.audioMu.Unlock()
+			if buffered != 0 || boundaries != 1 || !s.assistantAudioPending() {
+				t.Fatalf("last RTP frame still playing: buffer=%d boundaries=%d pending=%v", buffered, boundaries, s.assistantAudioPending())
+			}
+			time.Sleep(frameDuration)
+			synctest.Wait()
+			if s.assistantAudioPending() {
+				t.Fatal("playback did not complete after final frame")
+			}
+			s.audioMu.Lock()
+			boundaries = len(s.audioSpeech.boundaries)
+			s.audioMu.Unlock()
+			if boundaries != 0 {
+				t.Fatal("playback completion event was not emitted")
+			}
+		})
+	})
+
+	t.Run("clearAssistantAudio", func(t *testing.T) {
+		s := &session{}
+		s.addAssistantSpeechPCM(make([]byte, 2*backendOutputFrameBytes))
+		s.finishAssistantSpeech()
+		if !s.assistantAudioPending() {
+			t.Fatal("queued output not pending")
+		}
+		s.audioMu.Lock()
+		s.audioSpeech.tick(true)
+		s.audioMu.Unlock()
+		s.clearAssistantAudio()
+		if s.assistantAudioPending() {
+			t.Fatal("cleared output retained")
+		}
+		s.audioMu.Lock()
+		events := s.audioSpeech.tick(false)
+		s.audioMu.Unlock()
+		if len(events) != 0 {
+			t.Fatalf("cleared stream emitted completion: %v", events)
+		}
+		legacy := &session{}
+		legacy.addAssistantPCM([]byte{1, 0})
+		if legacy.audioSpeech != nil {
+			t.Fatal("legacy backend opted into new speech policy")
 		}
 	})
 }

@@ -78,3 +78,28 @@ text_only = true
 # engine = "kittentts"
 # model = "KittenML/kitten-tts-2"
 # voice = "Luna"
+
+# OpenAI Realtime, full duplex audio through the Responses API.
+# [[choices]]
+# id = "openai-realtime"
+# label = "OpenAI Realtime"
+# backend = "openai-realtime"
+# model = "gpt-realtime-2.1-mini" # or "gpt-realtime-2.1"
+
+# Native audio-to-audio LFM3, independent of the ASR/LLM/TTS stack.
+# The managed runtime downloads the GGUF weights and mmproj from HuggingFace.
+# [[choices]]
+# id = "lfm-audio"
+# label = "Local audio"
+# backend = "llamacpp-realtime"
+# model = "LiquidAI/LFM3-Audio-2B-GGUF/LFM3-Audio-2B-Q4_K_M.gguf"
+# [choices.realtime]
+# threads = 8
+# slots = 1
+# context_size = 8192
+# max_output_tokens = 512
+# setup_timeout_seconds = 15
+# pending_audio_seconds = 5
+# Alternatively, connect to an existing b11960 audio server. Remove model,
+# threads, context_size and cache_dir when specifying remote.
+# remote = "http://127.0.0.1:8080"

@@ -295,10 +295,10 @@ func startManagedLlamaServer(ctx context.Context, model string) (managedLlamaSer
 	}
 	// Gateway sessions share each managed server and queue concurrent turns
 	// through one slot. Bound the context to limit KV cache allocation.
-	args := []string{"-hf", model, "--ctx-size", "32768", "--parallel", "1", "--no-warmup", "--no-log-timestamps"}
+	args := []string{"-hf", model, "--no-warmup", "--no-log-timestamps"}
 	slog.InfoContext(ctx, "voicertc: starting managed llama.cpp", "model", model, "version", version, "hostPort", hostPort)
 	logger := slog.NewLogLogger(slog.Default().Handler(), slog.LevelInfo)
-	srv, err := llamacppsrv.New(ctx, exe, "", logger.Writer(), hostPort, 0, args)
+	srv, err := llamacppsrv.New(ctx, exe, &llamacppsrv.Config{HostPort: hostPort, Slots: 1, ContextSize: 32768, Args: args, LogOutput: logger.Writer()})
 	if err != nil {
 		return nil, fmt.Errorf("start managed llama.cpp: %w", err)
 	}
@@ -556,50 +556,4 @@ func (c *genaiConversation) userText(text string) string {
 		return text
 	}
 	return "Current context:\n" + c.contextText + "\n\nUser said:\n" + text
-}
-
-func genaiToolDefs(tools []voicev1.ToolDeclaration) ([]genai.ToolDef, error) {
-	if len(tools) == 0 {
-		return nil, nil
-	}
-	out := make([]genai.ToolDef, len(tools))
-	var errs []error
-	for i := range tools {
-		schema := genai.JSONSchema(`{"type":"object"}`)
-		if len(tools[i].Parameters) != 0 {
-			var schemaObject map[string]json.RawMessage
-			if err := json.Unmarshal(tools[i].Parameters, &schemaObject); err != nil {
-				errs = append(errs, fmt.Errorf("tool %q parameters: %w", tools[i].Name, err))
-			} else if schemaObject == nil {
-				errs = append(errs, fmt.Errorf("tool %q parameters must be an object schema", tools[i].Name))
-			} else {
-				// Android clients send {} for no-argument commands. Function
-				// calling providers require an explicit object parameter type.
-				// TODO: Remove this special case.
-				if rawType, ok := schemaObject["type"]; ok {
-					var typ string
-					if err := json.Unmarshal(rawType, &typ); err != nil || typ != "object" {
-						errs = append(errs, fmt.Errorf("tool %q parameters must have type object", tools[i].Name))
-					}
-				} else {
-					schemaObject["type"] = json.RawMessage(`"object"`)
-				}
-				data, err := json.Marshal(schemaObject)
-				if err != nil {
-					errs = append(errs, fmt.Errorf("tool %q parameters: %w", tools[i].Name, err))
-				} else {
-					schema = data
-				}
-			}
-		}
-		out[i] = genai.ToolDef{
-			Name:                tools[i].Name,
-			Description:         tools[i].Description,
-			InputSchemaOverride: schema,
-		}
-		if err := out[i].Validate(); err != nil {
-			errs = append(errs, fmt.Errorf("tool %q: %w", tools[i].Name, err))
-		}
-	}
-	return out, errors.Join(errs...)
 }

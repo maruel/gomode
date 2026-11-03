@@ -86,6 +86,7 @@ install -m 600 contrib/voice-gateway.env.example ~/.config/systemd/user/voice-ga
 ```
 
 - Gemini Live reads `GEMINI_API_KEY`.
+- OpenAI Realtime reads `OPENAI_API_KEY`.
 - The native `deepseek` LLM provider reads `DEEPSEEK_API_KEY`; leave
   `api_key_name` unset for this provider.
 - An `openaicompatible` LLM endpoint reads the variable named by its
@@ -164,10 +165,11 @@ from reaching Google. Muting input whenever the assistant speaks would also
 prevent user interruptions.
 
 The gateway therefore gates quiet PCM in the
-[Gemini adapter](../voicegateway/voicertc/gemini_audio.go). The source owns its
-threshold, frame duration, prefix, and trailing silence settings. Gemini
-continues to classify speech and handle turn endings and interruptions.
-Filtering happens before base64 encoding and upstream WebSocket writes and
+[realtime adapter](../voicegateway/voicertc/server_audio.go). The source owns
+its threshold, frame duration, prefix, and trailing silence settings. The
+provider continues to classify speech and handle turn endings and
+interruptions.
+Filtering happens before genai performs PCM encoding and upstream WebSocket writes and
 applies equally to browser and native WebRTC clients. Client-to-gateway Opus
 uses the DTX preference described above. Text sessions send no microphone PCM
 to Gemini.
@@ -179,12 +181,28 @@ recorded speech/noise evaluation before replacing the gate. The WebRTC receiver
 advances its audio-duration tail with bounded reconstructed silence during
 packet gaps and microphone shutdown after audio has started.
 
-Protocol shapes were compared with `live.go`, `types.go`, and
-`live_converters.go` in
-[googleapis/go-genai at f1d0c6ce6e75](https://github.com/googleapis/go-genai/tree/f1d0c6ce6e75ad0ef9fcc8bc7c15d73b56c28a79).
-The WebSocket regression covers quiet idle input, quiet speech onset, short
-pauses, long silence, exact prefix/tail audio, repeated resumption, split PCM
-samples, and upstream write failure. It does not contact a paid Gemini model.
+The gateway delegates provider setup, authenticated WebSocket transport,
+keepalive, PCM encoding and typed events to genai's Gemini Live realtime client.
+The quiet-gate regression uses that real client against a local WebSocket peer;
+it covers idle suppression, quiet onset, exact prefix/tail audio, split samples,
+resumption and upstream failure without contacting a paid model.
+
+`session.setup` supplies instructions, tools, voice and language before genai
+opens the connection. Gateway readiness follows provider setup acceptance.
+Context updates append passive context without requesting a response; user text
+completes a user turn. Tools preserve their IDs and JSON arguments/results.
+Missing descriptions use the tool name. Host tools may finish after Gemini
+cancels their calls; only matching cancelled results are consumed without
+forwarding or terminating the voice session. Unknown IDs and mismatched names
+still fail correlation. Cancelled IDs cannot be reused. Cancellation history
+retains at most 1024 calls and 64 KiB of ID/name metadata without eviction;
+exhausting either bound requires starting a new voice session. The gateway retains the default Orus
+voice and requests input-language transcription hints plus both transcripts.
+
+The gateway protocol carries transcript deltas. Final snapshots append only a
+new suffix, avoiding duplicate output. A correction that changes already emitted
+text is consumed without replacing displayed text or ending the voice session;
+expressing such corrections requires a future protocol extension.
 
 To validate financial impact, replay identical representative recordings in
 separate continuous-input and gated sessions with the same model, setup,
@@ -281,6 +299,7 @@ to match the authorized service origin when an Origin header is present.
 
 The browser overlay's settings icon expands the bottom panel. Settings save
 Cloud voice or Browser speech and a BCP 47 language tag, initially `en-US`.
+Use the official hyphenated form, such as `fr-CA`.
 An active session locks both settings. Hosts can also import `VoiceSettings`
 from `@maruel/gomode/web/VoiceSettings` for their own settings page.
 
@@ -308,14 +327,26 @@ so clients can save selections. Each choice has its own model configuration:
   `voicegateway.DefaultGeminiModel`; bare IDs get the `models/` prefix. Supply
   `GEMINI_API_KEY`. Setup rules:
   [`voicegateway/voicertc/AGENTS.md`](../voicegateway/voicertc/AGENTS.md).
+- `openai-realtime`: full duplex WebRTC audio through the OpenAI Responses
+  realtime endpoint. Its `model` defaults to
+  `voicegateway.DefaultOpenAIRealtimeModel`, which is
+  `gpt-realtime-2.1-mini`. Set `model = "gpt-realtime-2.1"` for the larger
+  model. Supply `OPENAI_API_KEY`. It uses server turn detection and output
+  transcription. It does not request a separate
+  input transcription model. The gateway decodes microphone Opus at OpenAI's
+  negotiated 24 kHz input rate; it does not resample. It advertises no voice
+  catalog because the OpenAI voice set is not pinned.
+- `llamacpp-realtime`: native audio-to-audio inference on a managed or remote
+  llama.cpp server; see [Native local realtime audio](#native-local-realtime-audio).
 - `local-stack`: half-duplex ASR, LLM, and TTS:
   [VOICE_LOCAL_STACK.md](VOICE_LOCAL_STACK.md). Its LLM can run locally or use
   a remote provider. It also supports text sessions with client speech. Set
   `[choices.local_stack] text_only = true` to serve only text sessions without
   initializing ASR or TTS. Such choices appear only in client-speech modes.
 
-See [contrib/config.toml](../contrib/config.toml) for Gemini Live, remote LLM,
-and local LLM offered simultaneously, with client speech for the LLM choices.
+See [contrib/config.toml](../contrib/config.toml) for Gemini Live, OpenAI
+Realtime, remote LLM, and local LLM offered simultaneously, with client speech
+for the LLM choices.
 All configured backends initialize before
 serving; a failed initialization stops startup and closes initialized backends.
 A configuration with top-level `backend`, `model`, and `local_stack` exposes
@@ -338,3 +369,69 @@ An omitted choice selects the gateway default. A browser ticket binds its
 selected choice; the redemption URL cannot override it. Each session retains
 its backend throughout its lifetime, and session close/diagnostics keep the
 same service identity authorization as the offer.
+
+## Native local realtime audio
+
+A `llamacpp-realtime` choice runs LiquidAI LFM3-Audio-2B through genai's native
+llama.cpp realtime session. Microphone PCM streams at 16 kHz while the user is
+speaking; the same model produces assistant text, 24 kHz speech and host tool
+calls. It does not start separate ASR or TTS services. The existing `local-stack`
+choice remains available for independent speech models.
+
+Set `model` to a Hugging Face reference: `LiquidAI/LFM3-Audio-2B-GGUF` selects
+the repository default quant, while
+`LiquidAI/LFM3-Audio-2B-GGUF/LFM3-Audio-2B-Q4_K_M.gguf` selects one file, as
+shown in `contrib/config.toml`. The last validated model revision was
+`02355c1a141e464a064f2ab2c276638dbcb7f38a`; `-hf` follows the repository default
+branch, so updates can change the weights. Managed startup downloads the pinned
+llama.cpp b11960 runtime for Linux or macOS, then lets llama.cpp download the
+GGUF weights and the matching mmproj sidecar. llama.cpp caches weights under
+`LLAMA_CACHE`, or its platform default (`~/.cache/llama.cpp` on Linux). The
+gateway stores runtime files under the user's cache directory,
+`gomode/llama-realtime`; optional `cache_dir` must be absolute and controls
+only the runtime.
+
+Alternatively set only `remote = "http://127.0.0.1:8080"` plus session/admission
+settings to use an operator-managed b11960 server configured with `--model` and the
+matching `--mmproj`, `--jinja`, `--parallel` and `--ctx-size`. The declared `slots`
+(default 1, maximum 16) must not exceed that server's available capacity. Each
+connected gateway session reserves one local admission slot, including while
+idle; excess sessions fail immediately. The setup handshake has a deadline
+(default 15 seconds, maximum 120), so another application's runtime reservation
+cannot leave gateway setup waiting forever. `context_size` configures managed servers only and cannot accompany `remote`.
+It defaults to 8192 tokens per slot; the runtime allocates the total for all slots.
+
+Conversation is English, including English BCP 47 variants such as `en-US` and
+`en-AU`. Voice selection is unsupported and the voice name must be empty; the
+choice advertises no voice catalog. There is no independent microphone
+transcription. Generated assistant text reaches the usual assistant transcript
+and text events. The model determines speech quality and inference speed;
+macOS runtime support does not imply realtime speed on every machine.
+
+Turn detection uses 20 ms frames, a 500-unit mean absolute PCM threshold,
+100 ms sustained onset, at most 200 ms preroll and 200 ms quiet tail. Confirmed
+speech streams before its end; the quiet tail commits the turn and requests a
+response. Completed user text follows any active captured microphone turn,
+including its partial frame. Speech start/end events follow the common paced
+RTP playback owner; generation completion advances scheduling independently.
+Barge-in cancels generation, clears queued playback and preserves the
+new microphone input until the prior response completes. Cancellation cannot
+remove already generated conversation history or roll back prefills.
+
+Host tools retain their real correlation and side effects during interruption.
+The gateway collects the entire tool-result batch before resuming or sending
+new microphone input. A bounded queue retains microphone/context while waiting
+for results or a cancelled response to finish: `pending_audio_seconds` defaults
+to 5 and accepts 1 through 30. Its byte budget is that duration of PCM16 at
+16 kHz; text and control records also consume the budget. Overflow reports a
+visible gateway error and stops the session. Tool results have a separate
+1 MiB total result-payload limit per batch. The runtime has no rolling history truncation; context
+exhaustion requires reconnecting, and a runtime output/context limit may appear
+as a completed response. Use `max_output_tokens` to limit individual responses.
+
+The opt-in `TestSmokeLlamaRealtimeGateway` test (build tag `smoke`) exercises the
+production managed backend with a spoken `set_volume(30)` request, a real
+correlated result and PCM speech continuation. Build-tag `smoke` is the only
+gate. It uses `LiquidAI/LFM3-Audio-2B-GGUF/LFM3-Audio-2B-Q4_K_M.gguf` and
+generates the spoken input with Qwen3-TTS at run time. The upload is deliberately
+unpaced and measures correctness and throughput, not realtime capture latency.

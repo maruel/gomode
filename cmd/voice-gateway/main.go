@@ -68,16 +68,16 @@ func mainImpl(args []string) (err error) {
 	}
 	defer func() { err = errors.Join(err, watcher.Close()) }()
 
-	geminiAPIKey := os.Getenv("GEMINI_API_KEY")
+	keys := voicertc.ProviderKeys{Gemini: os.Getenv("GEMINI_API_KEY"), OpenAI: os.Getenv("OPENAI_API_KEY")}
 	var bridge *voicertc.Bridge
-	if len(cfg.Choices) == 0 && cfg.Backend == voicegateway.BackendGeminiLive && geminiAPIKey == "" {
+	if len(cfg.Choices) == 0 && cfg.Backend == voicegateway.BackendGeminiLive && keys.Gemini == "" {
 		log.WarnContext(ctx, "voice media disabled", "reason", "GEMINI_API_KEY is not configured")
 	} else {
 		cacheDir, err := os.UserCacheDir()
 		if err != nil {
 			return fmt.Errorf("get user cache dir: %w", err)
 		}
-		bridge, err = voicertc.NewBridge(ctx, &cfg, geminiAPIKey, cfg.Server.WebRTCUDPPort, filepath.Join(cacheDir, "voice-gateway"))
+		bridge, err = voicertc.NewBridge(ctx, &cfg, keys, cfg.Server.WebRTCUDPPort, filepath.Join(cacheDir, "voice-gateway"))
 		if err != nil {
 			if ctx.Err() != nil {
 				return context.Cause(ctx)

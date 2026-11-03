@@ -7,7 +7,7 @@ import "testing"
 func TestOpusDecoder(t *testing.T) {
 	t.Run("Decode", func(t *testing.T) {
 		t.Run("dtx packet decodes one quiet frame", func(t *testing.T) {
-			d, err := newDecoder()
+			d, err := newDecoder(micSampleRate)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -28,8 +28,22 @@ func TestOpusDecoder(t *testing.T) {
 			}
 		})
 
+		t.Run("decodes at the negotiated rate", func(t *testing.T) {
+			d, err := newDecoder(24000)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pcm, err := d.Decode([]byte{0xF8})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(pcm) != 24000/50 {
+				t.Fatalf("samples = %d, want %d", len(pcm), 24000/50)
+			}
+		})
+
 		t.Run("truncated packet is an error", func(t *testing.T) {
-			d, err := newDecoder()
+			d, err := newDecoder(micSampleRate)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -40,7 +54,7 @@ func TestOpusDecoder(t *testing.T) {
 		})
 
 		t.Run("empty packet is an error", func(t *testing.T) {
-			d, err := newDecoder()
+			d, err := newDecoder(micSampleRate)
 			if err != nil {
 				t.Fatal(err)
 			}

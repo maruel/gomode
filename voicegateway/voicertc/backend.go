@@ -15,6 +15,8 @@ type backendConnector interface {
 type backendSession interface {
 	acceptClientMessage(ctx context.Context, data []byte) error
 	acceptMicPCM(ctx context.Context, pcm []byte) error
+	// inputSampleRate is the native mono PCM16LE rate accepted by acceptMicPCM.
+	inputSampleRate() int
 	close() error
 }
 

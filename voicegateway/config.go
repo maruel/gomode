@@ -25,12 +25,18 @@ const (
 	BackendGeminiLive = "gemini-live"
 	// BackendLocalStack is the local ASR/LLM/TTS model stack.
 	BackendLocalStack = "local-stack"
+	// BackendLlamaRealtime streams native audio through llama.cpp.
+	BackendLlamaRealtime = "llamacpp-realtime"
+	// BackendOpenAIRealtime bridges WebRTC voice sessions to OpenAI Realtime.
+	BackendOpenAIRealtime = "openai-realtime"
 )
 
 // knownBackends is the set of backend IDs the gateway recognizes in config.
 var knownBackends = []string{
 	BackendGeminiLive,
+	BackendLlamaRealtime,
 	BackendLocalStack,
+	BackendOpenAIRealtime,
 }
 
 // DefaultGeminiModel is the Gemini Live model used when config.model is empty.
@@ -38,6 +44,10 @@ var knownBackends = []string{
 // Model IDs are bare, without the models/ resource-name prefix; the Gemini
 // adapter qualifies them for the wire.
 const DefaultGeminiModel = "gemini-3.8-live"
+
+// DefaultOpenAIRealtimeModel is the OpenAI Realtime model used when config.model
+// is empty for an openai-realtime choice.
+const DefaultOpenAIRealtimeModel = "gpt-realtime-2.1-mini"
 
 // Config is the static voice gateway configuration.
 //
@@ -50,6 +60,7 @@ type Config struct {
 	Model           string                `toml:"model"`
 	Backend         string                `toml:"backend"`
 	LocalStack      LocalStackConfig      `toml:"local_stack"`
+	Realtime        RealtimeConfig        `toml:"realtime"`
 	TrustedIssuers  []TrustedIssuerConfig `toml:"trusted_issuers"`
 }
 
@@ -61,13 +72,14 @@ type ChoiceConfig struct {
 	Backend    string           `toml:"backend"`
 	Model      string           `toml:"model"`
 	LocalStack LocalStackConfig `toml:"local_stack"`
+	Realtime   RealtimeConfig   `toml:"realtime"`
 }
 
 // VoiceChoices returns the configured choices and default ID. A single-backend
 // configuration exposes the stable ID "default".
 func (c *Config) VoiceChoices() ([]ChoiceConfig, string) {
 	if len(c.Choices) == 0 {
-		return []ChoiceConfig{{ID: "default", Label: "Default", Backend: c.Backend, Model: c.Model, LocalStack: c.LocalStack}}, "default"
+		return []ChoiceConfig{{ID: "default", Label: "Default", Backend: c.Backend, Model: c.Model, LocalStack: c.LocalStack, Realtime: c.Realtime}}, "default"
 	}
 	id := c.DefaultChoiceID
 	if id == "" {
@@ -157,6 +169,11 @@ func (c *Config) validate(requireHTTP bool) error {
 			errs = append(errs, errors.New("backend is required"))
 		} else if !slices.Contains(knownBackends, ch.Backend) {
 			errs = append(errs, fmt.Errorf("backend %q is not a known backend", ch.Backend))
+		}
+		if ch.Backend == BackendLlamaRealtime {
+			if err := ch.Realtime.validate(ch.Model); err != nil {
+				errs = append(errs, fmt.Errorf("choice %q: %w", ch.ID, err))
+			}
 		}
 		if err := ch.LocalStack.validate(); err != nil {
 			errs = append(errs, fmt.Errorf("choice %q: %w", ch.ID, err))
