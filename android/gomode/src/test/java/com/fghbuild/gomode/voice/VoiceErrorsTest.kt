@@ -39,18 +39,18 @@ class VoiceErrorsTest {
         runTest {
             val context = context()
             VoiceErrorLog(context).use { errors ->
-                errors.record("Gemma 4 E4B", VoiceErrorPhase.CALL, "Voice turn failed (llm): out of memory")
-                errors.record("Remote LLM", VoiceErrorPhase.CONNECTING, "Voice connection failed")
+                errors.record("Gemma 4 E4B", VoiceErrorPhase.CALL, "llm: out of memory")
+                errors.record("Remote LLM", VoiceErrorPhase.CONNECTING, "connection: closed")
                 errors.history.first { it.size == 2 }
                 assertEquals(
-                    listOf("Voice connection failed", "Voice turn failed (llm): out of memory"),
+                    listOf("connection: closed", "llm: out of memory"),
                     stored(context).map { it.message },
                 )
             }
             VoiceErrorLog(context).use { restored ->
                 val history = restored.history.first { it.isNotEmpty() }
                 assertEquals(
-                    listOf("Voice connection failed", "Voice turn failed (llm): out of memory"),
+                    listOf("connection: closed", "llm: out of memory"),
                     history.map { it.message },
                 )
                 assertEquals(VoiceErrorPhase.CONNECTING, history[0].phase)

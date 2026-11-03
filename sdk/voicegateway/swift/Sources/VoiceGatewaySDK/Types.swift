@@ -480,8 +480,6 @@ public struct VoiceRTCServerDiagnostics: Codable {
     public let backendConnected: Bool?
     /// SessionReadySent reports whether the gateway sent session.ready to the client.
     public let sessionReadySent: Bool?
-    /// LastError is the last gateway error sent to the client, if any.
-    public let lastError: String?
 }
 
 /// VoiceRTCDiagnosticsResp reports structured WebRTC connectivity diagnostics.

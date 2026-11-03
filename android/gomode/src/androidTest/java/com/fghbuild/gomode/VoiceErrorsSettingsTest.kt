@@ -45,9 +45,9 @@ class VoiceErrorsSettingsTest {
                     errors.record(
                         "Gemma 4 E4B",
                         VoiceErrorPhase.CALL,
-                        "Voice turn failed (llm): out of memory",
+                        "llm: out of memory",
                     )
-                    errors.record("Remote LLM", VoiceErrorPhase.CONNECTING, "Voice gateway unreachable")
+                    errors.record("Remote LLM", VoiceErrorPhase.CONNECTING, "connection: closed")
                     history = errors.history.first { it.size == 2 }
                 }
             }
@@ -65,7 +65,7 @@ class VoiceErrorsSettingsTest {
                 .onNodeWithTag("gomode-voice-error-details")
                 .assertTextContains("Remote LLM · While connecting", substring = true)
                 .assertTextContains("Gemma 4 E4B · During a call", substring = true)
-                .assertTextContains("Voice turn failed (llm): out of memory", substring = true)
+                .assertTextContains("llm: out of memory", substring = true)
             capture("voice-errors")
             compose.onNodeWithTag("gomode-voice-errors").performClick()
             compose.onNodeWithTag("gomode-voice-error-details").assertDoesNotExist()

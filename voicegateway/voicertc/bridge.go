@@ -362,12 +362,12 @@ func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID strin
 			sess.setDataChannelState(dc.ReadyState().String())
 			if err := sess.startAudioOutput(sessionCtx); err != nil {
 				slog.WarnContext(sessionCtx, "voicertc: encoder init failed", "session", sess.id, "err", err)
-				sess.sendGatewayError(sessionCtx, "Voice audio unavailable: codec failed to initialise")
+				sess.sendGatewayError(sessionCtx, "audio: codec failed to initialise")
 			}
 			backendSession, err := connector.connect(sessionCtx, sess.id, sess)
 			if err != nil {
 				slog.ErrorContext(sessionCtx, "voicertc: backend connect failed", "session", sess.id, "err", err)
-				sess.sendGatewayError(sessionCtx, "Failed to connect voice backend: "+err.Error())
+				sess.sendGatewayError(sessionCtx, "backend: "+err.Error())
 				cancel()
 				return
 			}
@@ -402,7 +402,7 @@ func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID strin
 			}
 			if err := sess.activityLog.record(activitydata.SourceClient, msg.Data); err != nil {
 				slog.ErrorContext(sessionCtx, "voicertc: activity log write failed", "session", sess.id, "err", err)
-				sess.sendGatewayError(sessionCtx, "Failed to record voice activity: "+err.Error())
+				sess.sendGatewayError(sessionCtx, "activity log: "+err.Error())
 				return
 			}
 			err := backendSession.acceptClientMessage(sessionCtx, msg.Data)
@@ -412,7 +412,7 @@ func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID strin
 					return
 				}
 				slog.WarnContext(sessionCtx, "voicertc: gateway client message failed", "session", sess.id, "err", err)
-				sess.sendGatewayError(sessionCtx, err.Error())
+				sess.sendGatewayError(sessionCtx, "session: "+err.Error())
 				return
 			}
 		})
@@ -829,7 +829,6 @@ type session struct {
 	audioTrackReceived   bool
 	backendConnected     bool
 	sessionReadySent     bool
-	lastError            string
 	workers              sync.WaitGroup
 	workerActive         int
 	workersDone          chan struct{}
@@ -935,7 +934,6 @@ func (s *session) diagnostics(endpoints []voicev1.VoiceRTCUDPEndpoint, mappingEr
 		AudioTrackReceived: s.audioTrackReceived,
 		BackendConnected:   s.backendConnected,
 		SessionReadySent:   s.sessionReadySent,
-		LastError:          s.lastError,
 	}
 }
 
@@ -966,7 +964,7 @@ func (s *session) backendReady(ctx context.Context) {
 
 func (s *session) sendGatewayMessage(ctx context.Context, data []byte) error {
 	if err := s.activityLog.record(activitydata.SourceGateway, data); err != nil {
-		s.reportUnrecordedError(ctx, fmt.Sprintf("Failed to record voice activity: %v", err))
+		s.reportUnrecordedError(ctx, fmt.Sprintf("activity log: %v", err))
 		return err
 	}
 	return s.deliverGatewayMessage(data)
@@ -1153,9 +1151,6 @@ func (s *session) sendTurnError(ctx context.Context, message string) {
 // session through sendGatewayMessage, because the activity record can no longer
 // describe the call.
 func (s *session) reportError(ctx context.Context, message string, recoverable bool) {
-	s.mu.Lock()
-	s.lastError = message
-	s.mu.Unlock()
 	data := mustGatewayServerMessage(&voicev1.Error{
 		Kind:        voicev1.MessageKindError,
 		Message:     message,
@@ -1168,9 +1163,6 @@ func (s *session) reportError(ctx context.Context, message string, recoverable b
 
 // reportUnrecordedError delivers a fatal error and ends the session.
 func (s *session) reportUnrecordedError(ctx context.Context, message string) {
-	s.mu.Lock()
-	s.lastError = message
-	s.mu.Unlock()
 	if err := s.deliverGatewayMessage(mustGatewayServerMessage(&voicev1.Error{
 		Kind:    voicev1.MessageKindError,
 		Message: message,
@@ -1280,7 +1272,7 @@ func classifyVoiceRTCConnectivity(server *voicev1.VoiceRTCServerDiagnostics, cli
 	if !server.SessionFound {
 		return voicev1.VoiceRTCConnectivityIssueServerSessionMissing,
 			voicev1.VoiceRTCConnectivitySideServer,
-			"server no longer has this voice RTC session"
+			"session missing"
 	}
 	serverICE := strings.ToLower(string(server.ICEConnectionState))
 	clientICE := strings.ToLower(string(client.ICEConnectionState))
@@ -1288,36 +1280,36 @@ func classifyVoiceRTCConnectivity(server *voicev1.VoiceRTCServerDiagnostics, cli
 	if serverICE == "failed" || serverICE == "disconnected" || serverICE == "closed" {
 		return voicev1.VoiceRTCConnectivityIssueServerICEFailed,
 			voicev1.VoiceRTCConnectivitySideNetwork,
-			"server ICE failed; UDP packets are not flowing reliably between client and server"
+			"server ICE failed; UDP is not flowing"
 	}
 	if !server.DataChannelOpened {
 		if clientICE == "failed" || clientICE == "disconnected" || clientICE == "closed" || clientConn == "failed" || clientConn == "closed" {
 			return voicev1.VoiceRTCConnectivityIssueUDPUnreachable,
 				voicev1.VoiceRTCConnectivitySideNetwork,
-				"client could not establish ICE with server UDP candidates " + formatUDPServerCandidates(server)
+				"no ICE with UDP candidates " + formatUDPServerCandidates(server)
 		}
 		if clientICE == "connected" || clientICE == "completed" || clientConn == "connected" {
 			return voicev1.VoiceRTCConnectivityIssueDataChannelNotOpen,
 				voicev1.VoiceRTCConnectivitySideClient,
-				"client ICE connected, but the voice data channel did not open"
+				"ICE connected, data channel closed"
 		}
 		return voicev1.VoiceRTCConnectivityIssueUDPUnreachable,
 			voicev1.VoiceRTCConnectivitySideNetwork,
-			"server is waiting for a WebRTC data channel on UDP candidates " + formatUDPServerCandidates(server)
+			"no data channel on UDP candidates " + formatUDPServerCandidates(server)
 	}
 	if !server.BackendConnected {
 		return voicev1.VoiceRTCConnectivityIssueVoiceBackendConnecting,
 			voicev1.VoiceRTCConnectivitySideServer,
-			"WebRTC connected, but the server voice backend has not connected yet"
+			"backend not connected"
 	}
 	if !server.SessionReadySent {
 		return voicev1.VoiceRTCConnectivityIssueVoiceBackendConnecting,
 			voicev1.VoiceRTCConnectivitySideServer,
-			"server voice backend connected but has not reported session readiness"
+			"backend connected, no session.ready"
 	}
 	return voicev1.VoiceRTCConnectivityIssueSessionReadyNotDelivered,
 		voicev1.VoiceRTCConnectivitySideClient,
-		"server sent session.ready; the client did not receive or process it before timeout"
+		"session.ready not received"
 }
 
 func assistantPCMDuration(bytes int) time.Duration {

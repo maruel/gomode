@@ -240,7 +240,7 @@ func TestTextSinkEscalatesLogFailure(t *testing.T) {
 		}
 	})
 
-	sink.sendTurnError(sessionCtx, "Voice turn failed (llm): out of memory")
+	sink.sendTurnError(sessionCtx, "llm: out of memory")
 
 	_, data, err := client.Read(ctx)
 	if err != nil {
@@ -250,7 +250,7 @@ func TestTextSinkEscalatesLogFailure(t *testing.T) {
 	if err := json.Unmarshal(data, &msg); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(msg.Message, "Failed to record voice activity: ") || msg.Recoverable {
+	if !strings.HasPrefix(msg.Message, "activity log: ") || msg.Recoverable {
 		t.Fatalf("error = %+v, want a fatal activity-log failure", msg)
 	}
 	if sessionCtx.Err() == nil {

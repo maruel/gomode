@@ -357,7 +357,7 @@ internal class DeviceVoiceSession(
                 ) {
                     if (ownsAttempt(attempt)) {
                         timing?.finishFailure(e)
-                        setError("Voice connection failed: ${e.message}")
+                        setError("connection: ${describeFailure(e)}")
                     }
                 }
             }
@@ -463,7 +463,7 @@ internal class DeviceVoiceSession(
                             val message =
                                 response?.let { gatewayHTTPError(it.code, it.request.url.encodedPath) }
                                     ?: if (t is java.io.IOException) gatewayNetworkError(t).message else t.message
-                            setError(message ?: "Voice connection failed. Retry to reconnect.")
+                            setError(message ?: "Voice connection failed")
                         }
                     }
                 }
@@ -854,7 +854,7 @@ internal class DeviceVoiceSession(
                     @Suppress("TooGenericExceptionCaught") e: Exception,
                 ) {
                     if (currentTurn()) {
-                        setError("Voice turn failed: ${describeFailure(e)}")
+                        setError("llm: ${describeFailure(e)}")
                     }
                 } finally {
                     if (ownsAttempt(attempt)) {

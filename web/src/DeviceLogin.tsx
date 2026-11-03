@@ -337,7 +337,7 @@ export const defaultDeviceLoginRecoveryMessages: DeviceLoginRecoveryMessages = {
   login: "Sign in again to check this code.",
   ineligible: "This account cannot approve device sign-in.",
   disabled: "Device sign-in is unavailable.",
-  network: "Could not create a code. Check your connection and try again.",
+  network: "Could not create a code. Check your connection.",
 };
 
 type RecoveryMessages = Partial<DeviceLoginRecoveryMessages> | Accessor<Partial<DeviceLoginRecoveryMessages>>;

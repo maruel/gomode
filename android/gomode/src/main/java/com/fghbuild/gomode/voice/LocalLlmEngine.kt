@@ -177,7 +177,7 @@ internal class LiteRtLmRunner(
         val failure =
             IllegalStateException(
                 "Unable to load local model $existingPath on ${backends.joinToString { it.name }}. " +
-                    "Retry preparation or choose another local model in Settings. " +
+                    "Choose another local model in Settings. " +
                     "See LiteRT-LM backend failures in logcat for details.",
             )
         var initializedBackend: String? = null

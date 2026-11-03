@@ -749,8 +749,6 @@ data class VoiceRTCServerDiagnostics(
     val backendConnected: Boolean? = null,
     /** SessionReadySent reports whether the gateway sent session.ready to the client. */
     val sessionReadySent: Boolean? = null,
-    /** LastError is the last gateway error sent to the client, if any. */
-    val lastError: String? = null,
 )
 
 /** VoiceRTCDiagnosticsResp reports structured WebRTC connectivity diagnostics. */

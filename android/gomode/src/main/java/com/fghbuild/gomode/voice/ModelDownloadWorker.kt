@@ -53,7 +53,7 @@ class ModelDownloadWorker(
                     @Suppress("TooGenericExceptionCaught") failure: Exception, // Report storage/native cleanup failure.
                 ) {
                     Log.w("ModelDownloadWorker", "Unable to delete model", failure)
-                    failure("Unable to delete the model. Try again.")
+                    failure("Unable to delete the model.")
                 }
             } else if (inputData.getBoolean(LocalModelDownloads.DISCARD_KEY, false)) {
                 val file = downloads.partial(model)
@@ -62,7 +62,7 @@ class ModelDownloadWorker(
                 ) {
                     Result.success()
                 } else {
-                    failure("Unable to discard the download. Check storage and try again.")
+                    failure("Unable to discard the download. Check storage.")
                 }
             } else {
                 download(model)
@@ -129,7 +129,7 @@ class ModelDownloadWorker(
             val format = ModelDownloadFormat(Locale.getDefault())
             return failure(
                 "Not enough storage. ${format.bytes(failure.neededBytes)} needed; " +
-                    "${format.bytes(failure.availableBytes)} available. Free space and retry.",
+                    "${format.bytes(failure.availableBytes)} available.",
             )
         } catch (_: IOException) {
             return Result.retry()
@@ -142,7 +142,7 @@ class ModelDownloadWorker(
             @Suppress("TooGenericExceptionCaught") failure: Exception,
         ) {
             Log.w("ModelDownloadWorker", "Unable to install model", failure)
-            return failure("Unable to complete the download. Check storage and try again.")
+            return failure("Unable to complete the download. Check storage.")
         } finally {
             client.dispatcher.executorService.shutdown()
             client.connectionPool.evictAll()

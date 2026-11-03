@@ -49,6 +49,20 @@ func (s *barrierSink) backendReady(ctx context.Context) {
 	_ = s.sendGatewayMessage(ctx, gatewaySessionReady())
 }
 
+func (s *barrierSink) sendGatewayError(ctx context.Context, message string) {
+	s.reportError(ctx, message, false)
+}
+
+func (s *barrierSink) sendTurnError(ctx context.Context, message string) {
+	s.reportError(ctx, message, true)
+}
+
+func (s *barrierSink) reportError(ctx context.Context, message string, recoverable bool) {
+	_ = s.sendGatewayMessage(ctx, mustGatewayServerMessage(&voicev1.Error{
+		Kind: voicev1.MessageKindError, Message: message, Recoverable: recoverable,
+	}))
+}
+
 func (s *barrierSink) sendGatewayMessage(ctx context.Context, data []byte) error {
 	if err := s.captureSink.sendGatewayMessage(ctx, data); err != nil {
 		return err

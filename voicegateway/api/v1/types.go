@@ -204,8 +204,6 @@ type VoiceRTCServerDiagnostics struct {
 	BackendConnected bool `json:"backendConnected,omitempty"`
 	// SessionReadySent reports whether the gateway sent session.ready to the client.
 	SessionReadySent bool `json:"sessionReadySent,omitempty"`
-	// LastError is the last gateway error sent to the client, if any.
-	LastError string `json:"lastError,omitempty"`
 }
 
 // VoiceRTCDiagnosticsReq is the request body for POST /api/voicegateway/v1/voice/rtc/{sessionID}/diagnostics.

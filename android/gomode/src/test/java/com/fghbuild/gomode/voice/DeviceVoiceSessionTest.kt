@@ -1066,20 +1066,20 @@ class DeviceVoiceSessionTest {
             connected.onOpen(socket, upgradeResponse())
             connected.onMessage(socket, """{"kind":"session.ready"}""")
             connected.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
-            connected.onMessage(socket, """{"kind":"error","message":"Voice turn failed (llm)","recoverable":false}""")
+            connected.onMessage(socket, """{"kind":"error","message":"llm: out of memory","recoverable":false}""")
             connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
             connected.onClosed(socket, 1000, "")
 
-            assertEquals("Voice turn failed (llm)", session.state.value.error)
+            assertEquals("llm: out of memory", session.state.value.error)
             assertEquals(1L, session.state.value.errorId)
             assertFalse(session.state.value.connected)
             assertFalse(speech.listening)
             assertTrue(socket.closed)
-            val recorded = awaitRecordedError("Voice turn failed (llm)")
+            val recorded = awaitRecordedError("llm: out of memory")
             assertEquals(VoiceErrorPhase.CALL, recorded.phase)
             session.disconnect()
             assertEquals(null, session.state.value.error)
-            assertEquals("Voice turn failed (llm)", recorded.message)
+            assertEquals("llm: out of memory", recorded.message)
             session.close()
         }
 
@@ -1101,7 +1101,7 @@ class DeviceVoiceSessionTest {
             connected.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
             connected.onMessage(
                 socket,
-                """{"kind":"error","message":"Voice turn failed (llm): out of memory","recoverable":true}""",
+                """{"kind":"error","message":"llm: out of memory","recoverable":true}""",
             )
             connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
 
@@ -1112,13 +1112,13 @@ class DeviceVoiceSessionTest {
                 listOf(
                     TranscriptEntry(
                         TranscriptSpeaker.ASSISTANT,
-                        "[Voice] Voice turn failed (llm): out of memory",
+                        "[Voice] llm: out of memory",
                         final = true,
                     ),
                 ),
                 session.state.value.transcript,
             )
-            val recorded = awaitRecordedError("Voice turn failed (llm): out of memory")
+            val recorded = awaitRecordedError("llm: out of memory")
             assertEquals("Remote LLM", recorded.engine)
             session.close()
         }
@@ -1136,9 +1136,9 @@ class DeviceVoiceSessionTest {
                     settingsRepo = repository,
                     voiceConversation = localConversation(repository),
                 )
-            session.setError("Voice turn failed: IllegalStateException")
+            session.setError("llm: IllegalStateException")
 
-            val recorded = awaitRecordedError("Voice turn failed: IllegalStateException")
+            val recorded = awaitRecordedError("llm: IllegalStateException")
             assertEquals("Gemma 4 E4B", recorded.engine)
             assertEquals(VoiceErrorPhase.IDLE, recorded.phase)
             session.close()

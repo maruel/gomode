@@ -451,6 +451,49 @@ func TestLlamaRealtimeSession(t *testing.T) {
 				}
 				sink.waitForKind(t, voicev1.MessageKindError, 1)
 			})
+			t.Run("pending client message overflow ends the session once", func(t *testing.T) {
+				s, _, sink := newRealtimePolicySession(t, false)
+				s.mu.Lock()
+				s.tools = []genai.ToolCall{{ID: "pending", Name: "slow"}}
+				s.mu.Unlock()
+				if err := s.acceptMicPCM(t.Context(), testPCM(600, 2000)); err != nil {
+					t.Fatal(err)
+				}
+				// The queue is charged but not yet full; a client turn overflows it.
+				for {
+					err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"context.update","context":{"text":"padding"}}`))
+					if errors.Is(err, errSessionClosed) {
+						break
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if !sink.wasCanceled() {
+					t.Fatal("overflow did not stop the session")
+				}
+				var errors int
+				for _, data := range sink.msgs {
+					var env voicev1.MessageEnvelope
+					if err := json.Unmarshal(data, &env); err != nil {
+						t.Fatal(err)
+					}
+					if env.Kind != voicev1.MessageKindError {
+						continue
+					}
+					errors++
+					var msg voicev1.Error
+					if err := json.Unmarshal(data, &msg); err != nil {
+						t.Fatal(err)
+					}
+					if msg.Message != "session: input queue exceeded its limit" || msg.Recoverable {
+						t.Fatalf("error = %+v, want one fatal scoped queue error", msg)
+					}
+				}
+				if errors != 1 {
+					t.Fatalf("error frames = %d, want 1", errors)
+				}
+			})
 			t.Run("correlation", func(t *testing.T) {
 				s, _, _ := newRealtimePolicySession(t, false)
 				s.mu.Lock()

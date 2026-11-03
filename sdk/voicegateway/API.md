@@ -328,7 +328,6 @@ VoiceRTCServerDiagnostics reports server-observed WebRTC state for diagnosis.
 | `audioTrackReceived` | `boolean` | AudioTrackReceived reports whether the gateway received the client's microphone track. |  |
 | `backendConnected` | `boolean` | BackendConnected reports whether the gateway connected to the configured voice backend. |  |
 | `sessionReadySent` | `boolean` | SessionReadySent reports whether the gateway sent session.ready to the client. |  |
-| `lastError` | `string` | LastError is the last gateway error sent to the client, if any. |  |
 
 ### VoiceRTCDiagnosticsResp
 

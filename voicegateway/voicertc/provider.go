@@ -47,6 +47,18 @@ type realtimeBridgeBackend struct {
 
 func (b *realtimeBridgeBackend) Close() error { return nil }
 
+// errorScope names the provider in a client-facing error message.
+func (b *realtimeBridgeBackend) errorScope() string {
+	switch b.kind {
+	case realtimeBackendGemini:
+		return "gemini"
+	case realtimeBackendOpenAI:
+		return "openai"
+	default:
+		return "provider"
+	}
+}
+
 func (b *realtimeBridgeBackend) providerName() string {
 	switch b.kind {
 	case realtimeBackendGemini:
@@ -329,17 +341,18 @@ func (s *realtimeBridgeSession) close() error {
 }
 
 func (s *realtimeBridgeSession) rxLoop(rt genai.RealtimeSession) {
+	scope := s.backend.errorScope()
 	for event, err := range rt.Receive(s.ctx) {
 		if err != nil {
 			if s.ctx.Err() == nil {
-				slog.WarnContext(s.ctx, "voicertc: Gemini receive failed", "session", s.id, "err", err)
-				s.sink.sendGatewayError(s.ctx, "Connection to Gemini lost: "+err.Error())
+				slog.WarnContext(s.ctx, "voicertc: provider receive failed", "session", s.id, "provider", scope, "err", err)
+				s.sink.sendGatewayError(s.ctx, scope+": "+err.Error())
 			}
 			return
 		}
 		if err := s.handleEvent(&event); err != nil {
-			slog.WarnContext(s.ctx, "voicertc: Gemini gateway delivery failed", "session", s.id, "err", err)
-			s.sink.sendGatewayError(s.ctx, err.Error())
+			slog.WarnContext(s.ctx, "voicertc: gateway delivery failed", "session", s.id, "provider", scope, "err", err)
+			s.sink.sendGatewayError(s.ctx, "session: "+err.Error())
 			s.sink.cancelSession()
 			return
 		}
@@ -396,8 +409,14 @@ func (s *realtimeBridgeSession) handleEvent(event *genai.RealtimeEvent) error {
 		s.assistantSpeaking = false
 		out = append(out, mustGatewayServerMessage(&voicev1.SpeechEnded{Kind: voicev1.MessageKindSpeechEnded, Speaker: voicev1.SpeakerAssistant}))
 	case genai.RealtimeEventError:
+		// genai reserves Error events for recoverable provider errors; terminal
+		// failures arrive through Receive.
 		if event.Error != nil {
-			s.sink.sendGatewayError(s.ctx, event.Error.Error())
+			detail := event.Error.Message
+			if detail == "" {
+				detail = event.Error.Error()
+			}
+			s.sink.sendTurnError(s.ctx, s.backend.errorScope()+": "+detail)
 		}
 	default:
 		// Usage, generation completion and resumption observations have no gateway

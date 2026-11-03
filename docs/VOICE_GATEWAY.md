@@ -269,9 +269,11 @@ setting. Reasoning is not persisted in the activity log and is not replayed as
 recovery context.
 
 An `error` message either ends the session or, with `recoverable`, reports a
-failed turn and leaves the session usable. A local-stack turn failure names its
-stage and carries a whitespace-normalized provider cause bounded to 200 runes;
-the gateway log keeps the unmodified error.
+failed turn and leaves the session usable. Messages read `<scope>: <cause>` with
+a lowercase scope such as `llm`, `asr`, `tts`, `tool`, `microphone`, `audio`,
+`activity log`, `session`, `backend`, or a provider name. A local-stack turn
+failure normalizes its provider cause to one line bounded to 200 runes; the
+gateway log keeps the unmodified error.
 
 The client builds `session.setup.tools` from active SKILL.md frontmatter: MCP
 servers and their tool allowlists. The gateway receives only provider-neutral

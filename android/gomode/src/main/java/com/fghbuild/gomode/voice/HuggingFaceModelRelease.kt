@@ -89,7 +89,7 @@ internal suspend fun resolveHuggingFaceRelease(
                                     response.use {
                                         if (it.code == 404) {
                                             throw ModelInstallException(
-                                                "This model has not been published yet. Try again after upload.",
+                                                "This model has not been published yet.",
                                             )
                                         }
                                         if (it.code >= 500) throw IOException("Hugging Face returned HTTP ${it.code}")

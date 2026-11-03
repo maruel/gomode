@@ -127,7 +127,7 @@ internal class LocalModelOwner(
             ) {
                 synchronized(this) {
                     if (selection?.model == model) {
-                        mutableState.value = LocalModelState.Failed("Unable to unload or delete the model. Try again.")
+                        mutableState.value = LocalModelState.Failed("Unable to unload or delete the model.")
                     }
                 }
                 throw failure
@@ -255,7 +255,7 @@ internal class LocalModelOwner(
                         }
                         publish(
                             request,
-                            LocalModelState.Failed(e.message ?: "Unable to prepare the local model. Try again."),
+                            LocalModelState.Failed(e.message ?: "Unable to prepare the local model."),
                         )
                         throw e
                     }

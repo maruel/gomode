@@ -72,7 +72,7 @@ func serveTextSession(ctx context.Context, w http.ResponseWriter, r *http.Reques
 		}
 		if err := log.record(activitydata.SourceClient, data); err != nil {
 			slog.ErrorContext(sessionCtx, "voicertc: activity log write failed", "session", sessionID, "err", err)
-			sink.sendGatewayError(sessionCtx, "Failed to record voice activity: "+err.Error())
+			sink.sendGatewayError(sessionCtx, "activity log: "+err.Error())
 			return nil
 		}
 		if err := sess.acceptClientMessage(sessionCtx, data); err != nil {
@@ -80,7 +80,7 @@ func serveTextSession(ctx context.Context, w http.ResponseWriter, r *http.Reques
 				return nil
 			}
 			slog.WarnContext(sessionCtx, "voicertc: text session message", "err", err)
-			sink.sendGatewayError(sessionCtx, err.Error())
+			sink.sendGatewayError(sessionCtx, "session: "+err.Error())
 			return nil
 		}
 	}
@@ -101,7 +101,7 @@ func (s *textSink) backendReady(ctx context.Context) {
 
 func (s *textSink) sendGatewayMessage(ctx context.Context, data []byte) error {
 	if err := s.log.record(activitydata.SourceGateway, data); err != nil {
-		s.reportUnrecordedError(ctx, fmt.Sprintf("Failed to record voice activity: %v", err))
+		s.reportUnrecordedError(ctx, fmt.Sprintf("activity log: %v", err))
 		return err
 	}
 	return s.deliverGatewayMessage(ctx, data)

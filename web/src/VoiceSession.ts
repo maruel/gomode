@@ -2402,8 +2402,10 @@ export function summarizeSDPCandidates(sdp: string): string {
 
 export function formatVoiceRTCDiagnostics(diagnostics: VoiceRTCDiagnosticsResp): string {
   const side = diagnostics.side === "none" ? "unknown" : diagnostics.side;
-  const mappingError = diagnostics.server.udpMappingError ? ` UDP mapping: ${diagnostics.server.udpMappingError}` : "";
-  return `Voice connection failed (${side}: ${diagnostics.issue}) — ${diagnostics.message}${mappingError}`;
+  const mappingError = diagnostics.server.udpMappingError
+    ? ` — UDP mapping: ${diagnostics.server.udpMappingError}`
+    : "";
+  return `${side}: ${diagnostics.issue} — ${diagnostics.message}${mappingError}`;
 }
 
 /** Build a bounded recovery-only context without replaying unfinished transcript deltas. */

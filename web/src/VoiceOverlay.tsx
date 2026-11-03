@@ -101,7 +101,7 @@ export const defaultVoiceOverlayMessages: VoiceOverlayMessages = {
   microphone: "Microphone",
   audioDevices: "Audio devices",
   microphoneAccessOff:
-    "Microphone access is off. Allow access in your browser’s site permissions or device privacy settings, then try again.",
+    "Microphone access is off. Allow access in your browser’s site permissions or device privacy settings.",
   enableMicrophone: "Enable microphone",
   requestingMicrophone: "Requesting access…",
   enableSound: "Enable sound",
@@ -160,18 +160,6 @@ function localizedStatus(
 /** Short local time for a retained failure. */
 function formatErrorTime(at: number): string {
   return new Date(at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-}
-
-function safeErrorDetail(error: string): string {
-  return (
-    error
-      .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
-      .replace(/([?&](?:access_token|token|api_key|password)=)[^&#\s]+/gi, "$1[redacted]")
-      // eslint-disable-next-line no-control-regex -- Control characters are deliberately removed from errors.
-      .replace(/[\u0000-\u001f\u007f]+/g, " ")
-      .trim()
-      .slice(0, 500)
-  );
 }
 
 export default function VoiceOverlay(props: {
@@ -469,7 +457,7 @@ export default function VoiceOverlay(props: {
           >
             {(err) => (
               <div role="alert" class={`${styles.errorPanel} ${styles.statusError}`}>
-                {safeErrorDetail(err) || messages().connectionFailed}
+                {err || messages().connectionFailed}
               </div>
             )}
           </Show>
@@ -506,7 +494,7 @@ export default function VoiceOverlay(props: {
                   {(entry) => (
                     <li>
                       <time dateTime={new Date(entry.at).toISOString()}>{formatErrorTime(entry.at)}</time>
-                      <span>{safeErrorDetail(entry.message)}</span>
+                      <span>{entry.message}</span>
                     </li>
                   )}
                 </For>

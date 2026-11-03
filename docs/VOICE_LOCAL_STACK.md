@@ -48,9 +48,9 @@ flowchart LR
   results report recoverable errors without advancing the conversation.
 - Each user utterance or tool result starts generation with chronological
   history, even while other tools remain pending. Provider errors surface
-  directly as a recoverable `error` with the failing stage and a bounded
-  provider cause; the session stays usable and the gateway does not switch
-  models or rewrite history. Server logs keep the unmodified error.
+  directly as a recoverable `error` shaped `<stage>: <cause>`, bounded to one
+  line; the session stays usable and the gateway does not switch models or
+  rewrite history. Server logs keep the unmodified error.
 - The bridge drains assistant PCM at realtime from an unbounded buffer, so TTS
   can queue audio ahead of playback.
 - Logs report TTS first audio per fragment, buffer depth, and first assistant

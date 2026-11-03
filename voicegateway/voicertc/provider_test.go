@@ -4,6 +4,7 @@ package voicertc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -199,6 +200,11 @@ func (s *realtimeEventSink) sendGatewayError(ctx context.Context, message string
 	s.signal()
 }
 
+func (s *realtimeEventSink) sendTurnError(ctx context.Context, message string) {
+	s.captureSink.sendTurnError(ctx, message)
+	s.signal()
+}
+
 func (s *realtimeEventSink) cancelSession() {
 	s.captureSink.cancelSession()
 	s.signal()
@@ -263,6 +269,32 @@ func (s *realtimeEventSink) waitForKind(t *testing.T, kind voicev1.MessageKind, 
 		case <-ctx.Done():
 			t.Fatalf("waiting for %d %s events; got %v", count, kind, s.kinds())
 		}
+	}
+}
+
+func TestRealtimeBridgeSessionReportsProviderErrorsAsRecoverable(t *testing.T) {
+	t.Parallel()
+	sink := &captureSink{}
+	s := &realtimeBridgeSession{
+		ctx:     t.Context(),
+		sink:    sink,
+		backend: &realtimeBridgeBackend{kind: realtimeBackendOpenAI},
+	}
+	if err := s.handleEvent(&genai.RealtimeEvent{
+		Kind:  genai.RealtimeEventError,
+		Error: &genai.RealtimeError{Code: "invalid_request", Message: "unsupported modality"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var msg voicev1.Error
+	if err := json.Unmarshal(sink.msgs[0], &msg); err != nil {
+		t.Fatal(err)
+	}
+	if msg.Message != "openai: unsupported modality" || !msg.Recoverable {
+		t.Fatalf("error = %+v, want a recoverable provider error", msg)
+	}
+	if sink.wasCanceled() {
+		t.Fatal("recoverable provider error ended the session")
 	}
 }
 

@@ -349,7 +349,7 @@ func (s *localStackSession) startUserMessage(ctx context.Context, text string) {
 	step, err := conv.user(turnCtx, text)
 	if err != nil {
 		cancel()
-		s.emit(&voicev1.Error{Kind: voicev1.MessageKindError, Message: err.Error(), Recoverable: true})
+		s.reportTurnError("llm", err)
 		return
 	}
 	s.startAdmittedStep(turnCtx, conv, step, cancel, true)
@@ -657,7 +657,7 @@ func (s *localStackSession) deliverToolResult(ctx context.Context, r toolResultM
 	}
 	if !ok || call.name != r.name {
 		s.mu.Unlock()
-		s.emit(&voicev1.Error{Kind: voicev1.MessageKindError, Message: "Unknown, duplicate or mismatched tool result", Recoverable: true})
+		s.sink.sendTurnError(s.baseCtx, "tool: unknown, duplicate or mismatched result") //nolint:contextcheck // turn goroutines run on the session lifetime context
 		return
 	}
 	s.mu.Unlock()
@@ -665,7 +665,7 @@ func (s *localStackSession) deliverToolResult(ctx context.Context, r toolResultM
 	step, err := call.conv.toolResult(turnCtx, r.id, r.name, r.result)
 	if err != nil {
 		cancel()
-		s.emit(&voicev1.Error{Kind: voicev1.MessageKindError, Message: err.Error(), Recoverable: true})
+		s.reportTurnError("llm", err)
 		return
 	}
 	s.mu.Lock()
@@ -705,7 +705,12 @@ func (s *localStackSession) warnTurn(ctx context.Context, stage string, err erro
 		return
 	}
 	slog.WarnContext(s.baseCtx, "voicertc: local stack turn failed", "session", s.id, "stage", stage, "err", err) //nolint:contextcheck // turn goroutines run on the session lifetime context
-	message := fmt.Sprintf("Voice turn failed (%s)", stage)
+	s.reportTurnError(stage, err)
+}
+
+// reportTurnError sends a normalized, recoverable error for scope.
+func (s *localStackSession) reportTurnError(scope string, err error) {
+	message := scope
 	if detail := turnErrorDetail(err); detail != "" {
 		message += ": " + detail
 	}

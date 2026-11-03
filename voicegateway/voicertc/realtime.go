@@ -221,7 +221,17 @@ func (s *llamaRealtimeSession) expireSetup() {
 	s.mu.Unlock()
 }
 
-func (s *llamaRealtimeSession) acceptClientMessage(ctx context.Context, data []byte) error {
+func (s *llamaRealtimeSession) acceptClientMessage(ctx context.Context, data []byte) (err error) {
+	// A full queue poisons the turn, so report it once and end the session here;
+	// the bridge treats errSessionClosed as already reported.
+	defer func() {
+		if errors.Is(err, errRealtimeQueueFull) && s.ctx.Err() == nil {
+			s.sink.sendGatewayError(s.ctx, "session: "+err.Error())
+			s.sink.cancelSession()
+			s.cancel()
+			err = errSessionClosed
+		}
+	}()
 	var env voicev1.MessageEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
 		return err
@@ -302,7 +312,7 @@ func (s *llamaRealtimeSession) acceptMicPCM(ctx context.Context, pcm []byte) (er
 	// visible failure and shutdown so a poisoned provider cannot leave voice idle.
 	defer func() {
 		if err != nil && s.ctx.Err() == nil {
-			s.sink.sendGatewayError(s.ctx, "llama.cpp microphone: "+err.Error())
+			s.sink.sendGatewayError(s.ctx, "microphone: "+err.Error())
 			s.sink.cancelSession()
 			s.cancel()
 		}
@@ -337,16 +347,16 @@ func (s *llamaRealtimeSession) acceptMicPCM(ctx context.Context, pcm []byte) (er
 	return nil
 }
 
+// errRealtimeQueueFull reports a poisoned pending-input queue.
+var errRealtimeQueueFull = errors.New("input queue exceeded its limit")
+
 func (s *llamaRealtimeSession) enqueueLocked(input genai.RealtimeInputContent) error {
 	size := len(input.Audio) + len(input.Text)
 	// Charge control records as well, bounding allocations even without audio.
 	size = max(size, 64)
 	if s.pendingBytes+size > s.backend.cfg.PendingAudioSeconds*micSampleRate*2 {
-		err := errors.New("realtime pending microphone/context queue exceeded its configured limit")
-		s.sink.sendGatewayError(s.ctx, err.Error())
-		s.sink.cancelSession()
-		s.cancel()
-		return err
+		// The caller owns the scope of the failure; report it there once.
+		return errRealtimeQueueFull
 	}
 	input.Audio = append([]byte(nil), input.Audio...)
 	s.pending = append(s.pending, realtimePendingInput{input: input, bytes: size})
@@ -452,7 +462,7 @@ func (s *llamaRealtimeSession) receive() {
 		}
 		if err != nil {
 			if s.ctx.Err() == nil {
-				s.sink.sendGatewayError(s.ctx, "llama.cpp realtime: "+err.Error())
+				s.sink.sendGatewayError(s.ctx, "llama.cpp: "+err.Error())
 				s.sink.cancelSession()
 				s.cancel()
 			}

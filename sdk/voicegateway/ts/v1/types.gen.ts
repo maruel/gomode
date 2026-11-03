@@ -346,8 +346,6 @@ export interface VoiceRTCServerDiagnostics {
   backendConnected?: boolean;
   /** SessionReadySent reports whether the gateway sent session.ready to the client. */
   sessionReadySent?: boolean;
-  /** LastError is the last gateway error sent to the client, if any. */
-  lastError?: string;
 }
 
 /** VoiceRTCDiagnosticsResp reports structured WebRTC connectivity diagnostics. */

@@ -100,7 +100,7 @@ func TestLocalStackSession(t *testing.T) {
 				if err := json.Unmarshal(sink.msgs[0], &msg); err != nil {
 					t.Fatal(err)
 				}
-				if msg.Message != "Voice turn failed (llm): http 400: upstream refused the request" || !msg.Recoverable {
+				if msg.Message != "llm: http 400: upstream refused the request" || !msg.Recoverable {
 					t.Fatalf("error = %+v, want a recoverable error naming the cause", msg)
 				}
 			})
@@ -654,6 +654,75 @@ func TestLocalStackReasoning(t *testing.T) {
 		}
 		if got := sink.assistantText(); got != answer {
 			t.Fatalf("spoken text = %q, want %q", got, answer)
+		}
+	})
+}
+
+// failingConversation fails admission before any generation step exists.
+type failingConversation struct {
+	fakeConversation
+	userErr       error
+	toolResultErr error
+}
+
+func (c *failingConversation) user(context.Context, string) (llmStep, error) {
+	return llmStep{}, c.userErr
+}
+
+func (c *failingConversation) toolResult(context.Context, string, string, json.RawMessage) (llmStep, error) {
+	return llmStep{}, c.toolResultErr
+}
+
+func TestLocalStackSessionScopedErrors(t *testing.T) {
+	t.Parallel()
+	errorOf := func(t *testing.T, sink *captureSink) voicev1.Error {
+		if got := sink.kinds(); !slices.Equal(got, []voicev1.MessageKind{voicev1.MessageKindError}) {
+			t.Fatalf("messages = %v, want one error", got)
+		}
+		var msg voicev1.Error
+		if err := json.Unmarshal(sink.msgs[0], &msg); err != nil {
+			t.Fatal(err)
+		}
+		if !msg.Recoverable {
+			t.Fatalf("error = %+v, want recoverable", msg)
+		}
+		return msg
+	}
+
+	t.Run("conversation admission", func(t *testing.T) {
+		t.Parallel()
+		sink := &captureSink{}
+		s := &localStackSession{id: "admission", sink: sink, baseCtx: t.Context(), conv: &failingConversation{
+			userErr: errors.New("http 400: bad request\nwith detail"),
+		}}
+		s.startUserMessage(t.Context(), "hello")
+		if got := errorOf(t, sink).Message; got != "llm: http 400: bad request with detail" {
+			t.Fatalf("message = %q", got)
+		}
+	})
+
+	t.Run("tool result admission", func(t *testing.T) {
+		t.Parallel()
+		sink := &captureSink{}
+		s := &localStackSession{
+			id:          "tool-admission",
+			sink:        sink,
+			baseCtx:     t.Context(),
+			outstanding: map[string]sessionToolCall{"call-1": {name: "lookup", conv: &failingConversation{toolResultErr: errors.New("http 500")}}},
+		}
+		s.deliverToolResult(t.Context(), toolResultMsg{id: "call-1", name: "lookup"})
+		if got := errorOf(t, sink).Message; got != "llm: http 500" {
+			t.Fatalf("message = %q", got)
+		}
+	})
+
+	t.Run("tool result mismatch", func(t *testing.T) {
+		t.Parallel()
+		sink := &captureSink{}
+		s := &localStackSession{id: "tool-mismatch", sink: sink, baseCtx: t.Context()}
+		s.deliverToolResult(t.Context(), toolResultMsg{id: "call-1", name: "lookup"})
+		if got := errorOf(t, sink).Message; got != "tool: unknown, duplicate or mismatched result" {
+			t.Fatalf("message = %q", got)
 		}
 	})
 }

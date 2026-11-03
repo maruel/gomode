@@ -185,7 +185,7 @@ internal class LocalModelDownloads(
                         publish(
                             model,
                             ModelDownloadState.Failed(
-                                "Unable to schedule the download. Try again.",
+                                "Unable to schedule the download.",
                                 partial(model).length(),
                             ),
                         )
@@ -245,7 +245,7 @@ internal class LocalModelDownloads(
 
             WorkInfo.State.FAILED -> {
                 ModelDownloadState.Failed(
-                    work.outputData.getString(ERROR_KEY) ?: "Download interrupted. Try again.",
+                    work.outputData.getString(ERROR_KEY) ?: "Download interrupted.",
                     bytes,
                 )
             }
@@ -279,7 +279,7 @@ internal class LocalModelDownloads(
         val files = installedFiles(model)
         check(files.all(::isAppOwned)) { "Developer-installed models must be removed from their original location." }
         for (file in files + listOf(partial(model), releasePin(model), File("${releasePin(model).path}.bak"))) {
-            check(!file.exists() || file.delete()) { "Unable to delete the model. Check storage and try again." }
+            check(!file.exists() || file.delete()) { "Unable to delete the model. Check storage." }
         }
     }
 

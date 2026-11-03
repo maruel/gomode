@@ -67,7 +67,7 @@ func TestClassifyVoiceRTCConnectivity(t *testing.T) {
 			server:     voicev1.VoiceRTCServerDiagnostics{SessionFound: false},
 			wantIssue:  voicev1.VoiceRTCConnectivityIssueServerSessionMissing,
 			wantSide:   voicev1.VoiceRTCConnectivitySideServer,
-			wantReason: "server no longer has this voice RTC session",
+			wantReason: "session missing",
 		},
 		{
 			name:       "udp unreachable",
@@ -75,14 +75,14 @@ func TestClassifyVoiceRTCConnectivity(t *testing.T) {
 			client:     voicev1.VoiceRTCClientDiagnostics{ICEConnectionState: "failed"},
 			wantIssue:  voicev1.VoiceRTCConnectivityIssueUDPUnreachable,
 			wantSide:   voicev1.VoiceRTCConnectivitySideNetwork,
-			wantReason: "client could not establish ICE with server UDP candidates 192.0.2.10:3478",
+			wantReason: "no ICE with UDP candidates 192.0.2.10:3478",
 		},
 		{
 			name:       "backend connecting",
 			server:     voicev1.VoiceRTCServerDiagnostics{SessionFound: true, DataChannelOpened: true},
 			wantIssue:  voicev1.VoiceRTCConnectivityIssueVoiceBackendConnecting,
 			wantSide:   voicev1.VoiceRTCConnectivitySideServer,
-			wantReason: "WebRTC connected, but the server voice backend has not connected yet",
+			wantReason: "backend not connected",
 		},
 		{
 			name: "ready not delivered",
@@ -94,7 +94,7 @@ func TestClassifyVoiceRTCConnectivity(t *testing.T) {
 			},
 			wantIssue:  voicev1.VoiceRTCConnectivityIssueSessionReadyNotDelivered,
 			wantSide:   voicev1.VoiceRTCConnectivitySideClient,
-			wantReason: "server sent session.ready; the client did not receive or process it before timeout",
+			wantReason: "session.ready not received",
 		},
 	}
 	for _, tc := range cases {
@@ -1383,7 +1383,7 @@ func TestBridge(t *testing.T) {
 			if err := json.Unmarshal(data, &msg); err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(msg.Message, "Voice turn failed (llm): ") || !strings.Contains(msg.Message, "insufficient tool messages") || !msg.Recoverable {
+			if !strings.HasPrefix(msg.Message, "llm: ") || !strings.Contains(msg.Message, "insufficient tool messages") || !msg.Recoverable {
 				t.Fatalf("error = %+v, want a recoverable error naming the provider cause", msg)
 			}
 			expectTurnStatus(t, ctx, conn, voicev1.TurnStateIdle)

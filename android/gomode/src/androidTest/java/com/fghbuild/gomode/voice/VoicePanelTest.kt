@@ -1063,7 +1063,7 @@ class VoicePanelTest {
         composeRule.setContent {
             MaterialTheme {
                 VoicePanel(
-                    voiceState = VoiceState(error = "Voice turn failed (llm)"),
+                    voiceState = VoiceState(error = "llm: out of memory"),
                     voiceEnabled = false,
                     onConnect = {},
                     onDisconnect = {},
@@ -1077,7 +1077,7 @@ class VoicePanelTest {
             }
         }
 
-        composeRule.onNodeWithText("Voice turn failed (llm)").assertIsDisplayed()
+        composeRule.onNodeWithText("llm: out of memory").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Voice unavailable").assertIsNotEnabled()
     }
 

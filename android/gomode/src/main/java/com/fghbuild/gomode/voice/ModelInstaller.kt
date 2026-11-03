@@ -134,7 +134,7 @@ internal suspend fun installModel(
                                                 if (count < 0) break
                                                 if (received + count > artifact.size) {
                                                     throw ModelInstallException(
-                                                        "The download server returned too much data. Retry the download.",
+                                                        "The download server returned too much data.",
                                                     )
                                                 }
                                                 output.write(buffer, 0, count)
@@ -191,10 +191,10 @@ private fun validateResponse(
     offset: Long,
 ) {
     if (response.code != 200 && response.code != 206) {
-        throw ModelInstallException("Download failed (HTTP ${response.code}). Check your connection and retry.")
+        throw ModelInstallException("Download failed (HTTP ${response.code}). Check your connection.")
     }
     if (response.header("Content-Encoding").let { it != null && it != "identity" }) {
-        throw ModelInstallException("The download server returned an unsupported encoding. Retry the download.")
+        throw ModelInstallException("The download server returned an unsupported encoding.")
     }
     val expected =
         if (response.code == 206) {
@@ -204,7 +204,7 @@ private fun validateResponse(
                 range.groupValues[3].toLongOrNull() != artifact.size
             ) {
                 throw ModelInstallException(
-                    "The download server returned an invalid range. Retry or discard the download.",
+                    "The download server returned an invalid range.",
                 )
             }
             artifact.size - offset
@@ -213,7 +213,7 @@ private fun validateResponse(
         }
     val length = response.body?.contentLength() ?: -1
     if (length >= 0 && length != expected) {
-        throw ModelInstallException("The download server returned an incorrect file size. Retry the download.")
+        throw ModelInstallException("The download server returned an incorrect file size.")
     }
 }
 
@@ -228,6 +228,6 @@ private fun verifyModel(
     val actual = digest.digest().joinToString("") { "%02x".format(it) }
     if (actual != artifact.sha256) {
         check(partial.delete()) { "Unable to discard a corrupt download" }
-        throw ModelInstallException("The downloaded file failed its integrity check. Retry the download.")
+        throw ModelInstallException("The downloaded file failed its integrity check.")
     }
 }

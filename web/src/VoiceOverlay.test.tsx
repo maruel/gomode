@@ -796,7 +796,7 @@ describe("VoiceOverlay connection", () => {
     expect(screen.getByRole("button", { name: "Connecter la voix" })).toBeInTheDocument();
   });
 
-  it("localizes reconnect status while keeping the actionable error visible and redacted", () => {
+  it("localizes reconnect status while keeping the server error verbatim", () => {
     const messages: VoiceOverlayMessages = {
       ...defaultVoiceOverlayMessages,
       connectionFailed: "Connexion vocale échouée",
@@ -819,8 +819,7 @@ describe("VoiceOverlay connection", () => {
       error: "HTTP 401 Bearer secret-token",
     }));
     expect(screen.queryByText("Connexion vocale échouée")).toBeNull();
-    expect(screen.getByText("HTTP 401 Bearer [redacted]")).toBeInTheDocument();
-    expect(screen.queryByText(/secret-token/)).toBeNull();
+    expect(screen.getByText("HTTP 401 Bearer secret-token")).toBeInTheDocument();
   });
 
   it("keeps detailed transport errors for the default English overlay", () => {
@@ -830,7 +829,7 @@ describe("VoiceOverlay connection", () => {
       error: "Backend-specific failure Bearer secret-token",
     }));
     render(() => <VoiceOverlay />);
-    expect(screen.getByText("Backend-specific failure Bearer [redacted]")).toBeInTheDocument();
+    expect(screen.getByText("Backend-specific failure Bearer secret-token")).toBeInTheDocument();
   });
 
   it("updates a plain reactive messages prop when the host language changes", () => {

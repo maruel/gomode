@@ -1517,9 +1517,9 @@ internal fun formatVoiceRTCDiagnostics(diagnostics: VoiceRTCDiagnosticsResp): St
     val mappingError =
         diagnostics.server.udpMappingError
             ?.takeIf { it.isNotBlank() }
-            ?.let { " UDP mapping: $it" }
+            ?.let { " — UDP mapping: $it" }
             .orEmpty()
-    return "Voice connection failed ($side: ${diagnostics.issue.value}) — ${diagnostics.message}$mappingError"
+    return "$side: ${diagnostics.issue.value} — ${diagnostics.message}$mappingError"
 }
 
 enum class TranscriptSpeaker { USER, ASSISTANT }
