@@ -2,7 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { it } from "node:test";
-import { deepEqual, equal } from "node:assert/strict";
+import { equal } from "node:assert/strict";
 import { SpeechTextFilter } from "./SpeechTextFilter";
 
 const cases = JSON.parse(
@@ -40,9 +40,40 @@ it("SpeechTextFilter streams long lines and labels without waiting for completio
 
 it("SpeechTextFilter clears every partial parser state at interruption", () => {
   const filter = new SpeechTextFilter();
-  for (const partial of ["#", "1.", "_", "`", "```kotlin", "[label]", "[label](hidden", "``code"]) {
+  for (const partial of [
+    "#",
+    "1.",
+    "_",
+    "`",
+    "```kotlin",
+    "[label]",
+    "[label](hidden",
+    "``code",
+    "\\",
+    "*unfinished",
+    "*a `",
+  ]) {
     filter.push(partial);
     filter.clear();
-    deepEqual([filter.push("**New**"), filter.finish()], ["New", ""]);
+    equal(filter.push("**New**") + filter.finish(), "New");
+  }
+});
+
+it("SpeechTextFilter bounds unmatched emphasis and resumes output before completion", () => {
+  for (const marker of ["*", "_", "**", "__", "***", "___"]) {
+    const filter = new SpeechTextFilter();
+    equal(filter.push(marker + "a".repeat(252)), "");
+    equal(filter.push("bbb"), marker + "a".repeat(252) + "bbb");
+    for (let i = 0; i < 1000; i++) equal(filter.push("word "), "word ");
+    equal(filter.finish(), "");
+  }
+});
+
+it("SpeechTextFilter releases proven emphasis as soon as its closing boundary arrives", () => {
+  for (const marker of ["*", "_", "**", "__", "***", "___"]) {
+    const filter = new SpeechTextFilter();
+    equal(filter.push("Before " + marker + "ready" + marker), "Before ");
+    equal(filter.push(" now"), "ready now");
+    equal(filter.finish(), "");
   }
 });

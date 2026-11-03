@@ -102,7 +102,9 @@ class DeviceVoiceSessionTest {
             val backend = requireNotNull(listener)
             backend.onOpen(socket, upgradeResponse())
             backend.onMessage(socket, """{"kind":"session.ready"}""")
-            val raw = "## Result\n- **Read** [the guide](https://example.com/a.b) and `snake_case`"
+            val raw =
+                "## Result\n- **Read** [the guide](https://example.com/a.b) and `snake_case`; " +
+                    "2 * 3 = 6, _private \\*literal\\* **open"
 
             fun delta(text: String) {
                 backend.onMessage(
@@ -118,9 +120,27 @@ class DeviceVoiceSessionTest {
             raw.forEach { delta(it.toString()) }
             assertEquals(listOf("Result"), speech.spoken)
             backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
-            assertEquals(listOf("Result", "Read the guide and snake_case"), speech.spoken)
+            assertEquals(
+                listOf("Result", "Read the guide and snake_case; 2 * 3 = 6, _private *literal* **open"),
+                speech.spoken,
+            )
             assertEquals(
                 raw,
+                session.state.value.transcript
+                    .last()
+                    .text,
+            )
+            val boundaries =
+                "*`a`*`b` and **[Step 1]**(optional); [glob *.ts](https://example.com/docs/*.ts); " +
+                    "[_private](url) for _emphasis_; **int *a** and **int *b**"
+            boundaries.forEach { delta(it.toString()) }
+            backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+            assertEquals(
+                listOf("ab and Step 1(optional); glob *.", "ts; _private for emphasis; int *a and int *b"),
+                speech.spoken.takeLast(2),
+            )
+            assertEquals(
+                boundaries,
                 session.state.value.transcript
                     .last()
                     .text,

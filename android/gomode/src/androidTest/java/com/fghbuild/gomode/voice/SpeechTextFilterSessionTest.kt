@@ -89,14 +89,35 @@ class SpeechTextFilterSessionTest {
             try {
                 val backend = connect()
                 withContext(Dispatchers.Main) {
-                    val raw = "## Result\n- **Read** [the guide](https://example.com/a.b) and `snake_case` 1.25"
+                    val raw =
+                        "## Result\n- **Read** [the guide](https://example.com/a.b) and `snake_case` 1.25; " +
+                            "2 * 3 = 6, _private \\*literal\\* **open"
                     raw.forEach { delta(backend, it.toString()) }
                     assertEquals(listOf("Result"), speech.spoken)
                     backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
                     yield()
-                    assertEquals(listOf("Result", "Read the guide and snake_case 1.25"), speech.spoken)
+                    assertEquals(
+                        listOf("Result", "Read the guide and snake_case 1.25; 2 * 3 = 6, _private *literal* **open"),
+                        speech.spoken,
+                    )
                     assertEquals(
                         raw,
+                        session.state.value.transcript
+                            .last()
+                            .text,
+                    )
+                    val boundaries =
+                        "*`a`*`b` and **[Step 1]**(optional); [glob *.ts](https://example.com/docs/*.ts); " +
+                            "[_private](url) for _emphasis_; **int *a** and **int *b**"
+                    boundaries.forEach { delta(backend, it.toString()) }
+                    backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+                    yield()
+                    assertEquals(
+                        listOf("ab and Step 1(optional); glob *.", "ts; _private for emphasis; int *a and int *b"),
+                        speech.spoken.takeLast(2),
+                    )
+                    assertEquals(
+                        boundaries,
                         session.state.value.transcript
                             .last()
                             .text,

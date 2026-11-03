@@ -5,10 +5,15 @@ package com.fghbuild.gomode.voice
 // code (without language labels), and inline link labels. Code content is literal.
 // Inline code is line-local: newline or CR ends even an unmatched backtick span.
 // Bracketed labels lose brackets even without a destination. No reference links,
-// HTML, escapes, or indented code parsing. Only prefix heading/list markers are
-// recognized. Outside code, asterisks and boundary underscores are formatting
-// even when unpaired; word-internal underscore runs up to 8 characters are literal.
-// Lookahead is at most 12 characters; labels/code/lines are never buffered.
+// HTML or indented code parsing. Only prefix heading/list markers are recognized.
+// ASCII punctuation escapes are literal outside code. Emphasis uses 1–3 matching
+// asterisks/underscores, non-word outer boundaries and non-space inner boundaries.
+// A pair cannot cross an enclosing label boundary or close within a nested label.
+// Only proven pairs are removed; emitted speech is never retracted. Ambiguity is
+// line-local and bounded: both delimiters plus closing lookahead must
+// fit in 256 UTF-16 units; otherwise preserve the opening run literally. Thus long
+// emphasis stays literal, intraword operators/identifiers survive, and _name_ is
+// emphasis (escape it or use code for a literal). No whole reply/line is buffered.
 // An unfinished destination is omitted through newline/end; nesting is capped at 32.
 // Keep equivalent to web/src/SpeechTextFilter.ts and testdata/speech-text/golden.json.
 internal class SpeechTextFilter {
@@ -44,6 +49,61 @@ internal class SpeechTextFilter {
         label = false
         destinationDepth = 0
         previous = ""
+    }
+
+    // null waits for bounded lookahead; zero preserves a literal run.
+    private fun emphasisEnd(
+        count: Int,
+        final: Boolean,
+    ): Int? {
+        val marker = pending[0]
+        if (count > 3 || WORD.matches(previous) || previous == marker.toString()) return 0
+        if (pending.getOrNull(count)?.isWhitespace() == true) return 0
+        var code = false
+        var label = false
+        var destination = 0
+        var i = count
+        while (i < pending.length) {
+            val c = pending[i]
+            if (c == '\n' || c == '\r') return 0
+            if (destination > 0) {
+                if (c == '(') destination = minOf(32, destination + 1)
+                if (c == ')') destination--
+            } else if (c == '\\' && !code &&
+                ASCII_PUNCTUATION.matches(pending.getOrNull(i + 1)?.toString().orEmpty())
+            ) {
+                i++
+            } else if (c == '`') {
+                val ticks = checkNotNull(TICKS.find(pending.drop(i))).value
+                i += ticks.length - 1
+                code = !code
+            } else if (!code && c == '[') {
+                label = true
+            } else if (!code && c == ']') {
+                if (label) {
+                    label = false
+                    if (pending.getOrNull(i + 1) == '(') {
+                        destination = 1
+                        i++
+                    }
+                } else if (this.label) {
+                    return 0
+                }
+            } else if (!code && !label && c == marker) {
+                var end = i
+                while (pending.getOrNull(end) == marker) end++
+                val run = end - i
+                if (run in count..3 && !pending[i - 1].isWhitespace()) {
+                    if (end == pending.length && !final) break
+                    if (end < EMPHASIS_LOOKAHEAD && !WORD.matches(pending.getOrNull(end)?.toString().orEmpty())) {
+                        return end - count
+                    }
+                }
+                i = end - 1
+            }
+            i++
+        }
+        return if (final || pending.length >= EMPHASIS_LOOKAHEAD) 0 else null
     }
 
     private fun drain(final: Boolean): String =
@@ -106,19 +166,32 @@ internal class SpeechTextFilter {
                             spoken = c.toString()
                         }
 
-                        c == '_' -> {
-                            val underscores = checkNotNull(UNDERSCORES.find(pending)).value
-                            if (!final && underscores.length == pending.length && underscores.length < 9) break
-                            count = underscores.length
-                            if (WORD.matches(previous) &&
-                                WORD.matches(pending.getOrNull(count)?.toString().orEmpty())
-                            ) {
-                                spoken = underscores
+                        c == '\\' -> {
+                            if (!final && pending.length == 1) break
+                            if (ASCII_PUNCTUATION.matches(pending.getOrNull(1)?.toString().orEmpty())) {
+                                count = 2
+                                spoken = pending[1].toString()
+                            } else {
+                                spoken = c.toString()
                             }
                         }
 
-                        c == '*' -> {
-                            // Emphasis delimiters do not contribute spoken characters.
+                        c == '_' || c == '*' -> {
+                            val markers = checkNotNull(EMPHASIS.find(pending)).value
+                            count = markers.length
+                            if (!final && count == pending.length && count < 4) break
+                            val end = emphasisEnd(count, final) ?: break
+                            if (end > 0) {
+                                // Finish the bounded inner slice before parsing adjacent raw tokens.
+                                // The closing delimiter also ends any inner unmatched emphasis candidate.
+                                val remaining = pending.drop(end + count)
+                                pending = pending.substring(count, end)
+                                append(drain(true))
+                                pending = remaining
+                                previous = ""
+                                continue
+                            }
+                            spoken = markers
                         }
 
                         c == '[' -> {
@@ -151,7 +224,9 @@ internal class SpeechTextFilter {
         val MARKER = Regex("^(?:#{1,6}|[-+*]|\\d{1,9}[.)])[ \\t]")
         val MARKER_PREFIX = Regex("^(?:#{1,6}|[-+*]|\\d{1,9}[.)]?)$")
         val TICKS = Regex("^`{1,3}")
-        val UNDERSCORES = Regex("^_{1,9}")
-        val WORD = Regex("^[\\p{L}\\p{N}]$")
+        const val EMPHASIS_LOOKAHEAD = 256
+        val EMPHASIS = Regex("^(?:\\*{1,4}|_{1,4})")
+        val WORD = Regex("^[\\p{L}\\p{N}\\p{M}\\uD800-\\uDFFF]$")
+        val ASCII_PUNCTUATION = Regex("^[\\x21-\\x2f\\x3a-\\x40\\x5b-\\x60\\x7b-\\x7e]$")
     }
 }

@@ -45,10 +45,14 @@ export function browserSpeechAvoidsChimes(): boolean {
 
 interface SpeechCallbacks {
   listening(value: boolean): void;
+  speaking(value: boolean): void;
   interim(text: string): void;
   final(text: string): void;
   error(message: string, permissionDenied?: boolean): void;
 }
+
+const MAX_SPEECH_FRAGMENTS = 64;
+const MAX_SPEECH_CHARS = 16384;
 
 export class BrowserSpeech {
   private recognition: BrowserRecognition | null = null;
@@ -58,6 +62,10 @@ export class BrowserSpeech {
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private startupTimer: ReturnType<typeof setTimeout> | null = null;
   private utterance: SpeechSynthesisUtterance | null = null;
+  // Includes active speech, not just pending fragments. Fail visibly rather
+  // than let a fast generation build an unbounded synthesis backlog.
+  private speechQueue: string[] = [];
+  private speechChars = 0;
   private boundaryTimer: ReturnType<typeof setTimeout> | null = null;
   private activityTimer: ReturnType<typeof setTimeout> | null = null;
   private abortTimer: ReturnType<typeof setTimeout> | null = null;
@@ -91,27 +99,60 @@ export class BrowserSpeech {
     }
   }
 
-  speak(text: string, onDone: () => void): void {
+  speak(text: string): void {
+    if (this.disposed || text === "") return;
+    if (
+      this.speechQueue.length + (this.utterance === null ? 0 : 1) >= MAX_SPEECH_FRAGMENTS ||
+      this.speechChars + text.length > MAX_SPEECH_CHARS
+    )
+      throw new Error("Browser speech queue is full. Retry with a shorter reply.");
+    this.speechQueue.push(text);
+    this.speechChars += text.length;
+    if (this.utterance === null) this.startSpeaking();
+  }
+
+  stopSpeaking(): void {
+    const active = this.utterance !== null;
+    // Revoke playback identity before cancel(), which may dispatch callbacks.
+    this.utterance = null;
+    this.speechQueue = [];
+    this.speechChars = 0;
+    if (active) window.speechSynthesis.cancel();
+  }
+
+  private startSpeaking(): void {
+    const text = this.speechQueue.shift();
+    if (text === undefined) {
+      this.callbacks.speaking(false);
+      return;
+    }
     this.stopListening();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = this.languageTag;
-    const voices = window.speechSynthesis.getVoices();
-    const language = this.languageTag.toLowerCase();
-    const exact = voices.filter((candidate) => candidate.lang.toLowerCase() === language);
-    const voice = exact.find((candidate) => candidate.localService) ?? exact[0];
-    if (voice) utterance.voice = voice;
-    this.utterance = utterance;
-    utterance.onend = () => {
-      if (this.utterance !== utterance || this.disposed) return;
-      this.utterance = null;
-      onDone();
-    };
-    utterance.onerror = (event) => {
-      if (this.utterance !== utterance || this.disposed) return;
-      this.utterance = null;
-      this.callbacks.error(`Browser speech synthesis failed: ${event.error}`);
-    };
-    window.speechSynthesis.speak(utterance);
+    try {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = this.languageTag;
+      const voices = window.speechSynthesis.getVoices();
+      const language = this.languageTag.toLowerCase();
+      const exact = voices.filter((candidate) => candidate.lang.toLowerCase() === language);
+      const voice = exact.find((candidate) => candidate.localService) ?? exact[0];
+      if (voice) utterance.voice = voice;
+      this.utterance = utterance;
+      utterance.onend = () => {
+        if (this.utterance !== utterance || this.disposed) return;
+        this.utterance = null;
+        this.speechChars -= text.length;
+        this.startSpeaking();
+      };
+      utterance.onerror = (event) => {
+        if (this.utterance !== utterance || this.disposed) return;
+        this.stopSpeaking();
+        this.callbacks.error(`Browser speech synthesis failed: ${event.error}`);
+      };
+      this.callbacks.speaking(true);
+      window.speechSynthesis.speak(utterance);
+    } catch (error) {
+      this.stopSpeaking();
+      this.callbacks.error(`Browser speech synthesis failed: ${String(error)}`);
+    }
   }
 
   close(): void {
@@ -126,10 +167,7 @@ export class BrowserSpeech {
       this.recognition.onresult = null;
       this.recognition = null;
     }
-    if (this.utterance !== null) {
-      this.utterance = null;
-      window.speechSynthesis.cancel();
-    }
+    this.stopSpeaking();
   }
 
   private startRecognition(): void {

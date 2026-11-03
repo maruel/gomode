@@ -87,7 +87,7 @@
   {
     "name": "format-only",
     "input": "**__``",
-    "expected": ""
+    "expected": "**__"
   },
   {
     "name": "adjacent-boundaries",
@@ -113,5 +113,160 @@
     "name": "unmatched-inline-code-before-fence",
     "input": "It's `x\n```kotlin\nval value = \"**literal**\"\n```\n## Done",
     "expected": "It's x\n\nval value = \"**literal**\"\n\nDone"
+  },
+  {
+    "name": "mathematical-operators",
+    "input": "2 * 3 = 6; x*y*z; a_b_c; 2 ** 3; * + _ = ?",
+    "expected": "2 * 3 = 6; x*y*z; a_b_c; 2 ** 3; * + _ = ?"
+  },
+  {
+    "name": "unpaired-literals",
+    "input": "A *star and _under\ntrailing* trailing_; **open and __open",
+    "expected": "A *star and _under\ntrailing* trailing_; **open and __open"
+  },
+  {
+    "name": "identifier-boundaries",
+    "input": "_private\ntrailing_ snake___case café_value a*b*c __prefix\nsuffix__",
+    "expected": "_private\ntrailing_ snake___case café_value a*b*c __prefix\nsuffix__"
+  },
+  {
+    "name": "supported-emphasis",
+    "input": "*soft words* _soft words_ **strong words** __strong words__ ***both*** ___both___",
+    "expected": "soft words soft words strong words strong words both both"
+  },
+  {
+    "name": "nested-emphasis",
+    "input": "**bold and *soft***; *soft and **bold***; __outer _inner_ end__",
+    "expected": "bold and soft; soft and bold; outer inner end"
+  },
+  {
+    "name": "literal-marker-runs",
+    "input": "Runs **** and _____; a__________b; a****b; ** **; _ _",
+    "expected": "Runs **** and _____; a__________b; a****b; ** **; _ _"
+  },
+  {
+    "name": "escaped-literals",
+    "input": "Use \\*literal\\* and \\_private\\_ and \\[label\\]\\(url\\), \\\\ and C:\\temp\\file",
+    "expected": "Use *literal* and _private_ and [label](url), \\ and C:\\temp\\file"
+  },
+  {
+    "name": "escaped-line-prefixes",
+    "input": "\\# Heading\n\\* literal\n\\- literal",
+    "expected": "# Heading\n* literal\n- literal"
+  },
+  {
+    "name": "emphasis-code-links",
+    "input": "**Use `a*b` and [a_b](url)**; *a `*` b*; **a \\* b**",
+    "expected": "Use a*b and a_b; a * b; a * b"
+  },
+  {
+    "name": "unmatched-emphasis-newline",
+    "input": "*unfinished\n## Next\r_unfinished\r- **Done**",
+    "expected": "*unfinished\nNext\r_unfinished\rDone"
+  },
+  {
+    "name": "emphasis-window-match",
+    "input": "*aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*!",
+    "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!"
+  },
+  {
+    "name": "emphasis-window-fallback",
+    "input": "*aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*!",
+    "expected": "*aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa*!"
+  },
+  {
+    "name": "unmatched-long-emphasis",
+    "input": "*word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word \n**Next**",
+    "expected": "*word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word \nNext"
+  },
+  {
+    "name": "ambiguous-paired-identifiers",
+    "input": "_name_ __init__",
+    "expected": "name init"
+  },
+  {
+    "name": "code-escapes-are-literal",
+    "input": "`\\*a_b\\*`\n```literal\\_label\n\\*a_b\\*\n```",
+    "expected": "\\*a_b\\*\n\n\\*a_b\\*\n"
+  },
+  {
+    "name": "escaped-backtick-and-unpaired-escape",
+    "input": "Escaped \\`code\\` and final \\",
+    "expected": "Escaped `code` and final \\"
+  },
+  {
+    "name": "emphasis-around-link-destinations",
+    "input": "**[label](https://host/**/x)** and *[label](url/*/x)*",
+    "expected": "label and label"
+  },
+  {
+    "name": "unicode-identifier-operators",
+    "input": "𝑥*y*𝑧; café_value; á*b*c",
+    "expected": "𝑥*y*𝑧; café_value; á*b*c"
+  },
+  {
+    "name": "emphasis-inline-code-token-boundaries",
+    "input": "*`a`*`b` and [the guide](https://example.com)",
+    "expected": "ab and the guide"
+  },
+  {
+    "name": "emphasis-adjacent-literal-code-link",
+    "input": "*`a`*`[x](https://example.com)`",
+    "expected": "a[x](https://example.com)"
+  },
+  {
+    "name": "emphasis-label-parenthesis-boundary",
+    "input": "**[Step 1]**(optional) Next",
+    "expected": "Step 1(optional) Next"
+  },
+  {
+    "name": "emphasis-label-unfinished-parenthesis",
+    "input": "**[Step 1]**(unclosed remark",
+    "expected": "Step 1(unclosed remark"
+  },
+  {
+    "name": "emphasis-inner-literal-operators",
+    "input": "Compare **int *a** and **int *b**.",
+    "expected": "Compare int *a and int *b."
+  },
+  {
+    "name": "emphasis-adjacent-mixed-markers",
+    "input": "_a*_*b*",
+    "expected": "a*b"
+  },
+  {
+    "name": "link-label-glob-operator",
+    "input": "Read [glob *.ts](https://example.com/docs/*.ts) now.",
+    "expected": "Read glob *.ts now."
+  },
+  {
+    "name": "link-label-identifier-before-emphasis",
+    "input": "Calls [_private](https://example.com/a.py) for _emphasis_.",
+    "expected": "Calls _private for emphasis."
+  },
+  {
+    "name": "unmatched-markers-in-separate-labels",
+    "input": "Calls [_private](https://example.com/a.py) and [trailing_](https://example.com/b.py).",
+    "expected": "Calls _private and trailing_."
+  },
+  {
+    "name": "outer-marker-cannot-close-in-label",
+    "input": "Use _alpha and [beta_](https://example.com) now.",
+    "expected": "Use _alpha and beta_ now."
+  },
+  {
+    "name": "link-label-pointer-operator",
+    "input": "Use [*ptr](https://example.com/*) now.",
+    "expected": "Use *ptr now."
+  },
+  {
+    "name": "emphasis-within-and-around-link-label",
+    "input": "Use [**bold** and _soft_](url) and **[whole _label_](url)**.",
+    "expected": "Use bold and soft and whole label."
+  },
+  {
+    "name": "escaped-label-boundary-in-emphasis",
+    "input": "Read [*a\\]b*](url) and *a \\[b* now.",
+    "expected": "Read a]b and a [b now."
   }
 ]

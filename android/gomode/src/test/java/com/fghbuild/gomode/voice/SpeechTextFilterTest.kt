@@ -48,10 +48,43 @@ class SpeechTextFilterTest {
     @Test
     fun `clear discards every partial parser state`() {
         val filter = SpeechTextFilter()
-        for (partial in listOf("#", "1.", "_", "`", "```kotlin", "[label]", "[label](hidden", "``code")) {
+        for (partial in listOf(
+            "#",
+            "1.",
+            "_",
+            "`",
+            "```kotlin",
+            "[label]",
+            "[label](hidden",
+            "``code",
+            "\\",
+            "*unfinished",
+            "*a `",
+        )) {
             filter.push(partial)
             filter.clear()
             assertEquals("New", filter.push("**New**") + filter.finish())
+        }
+    }
+
+    @Test
+    fun `unmatched emphasis has bounded buffering and resumes before completion`() {
+        for (marker in listOf("*", "_", "**", "__", "***", "___")) {
+            val filter = SpeechTextFilter()
+            assertEquals("", filter.push(marker + "a".repeat(252)))
+            assertEquals(marker + "a".repeat(252) + "bbb", filter.push("bbb"))
+            repeat(1000) { assertEquals("word ", filter.push("word ")) }
+            assertEquals("", filter.finish())
+        }
+    }
+
+    @Test
+    fun `proven emphasis streams as soon as its closing boundary arrives`() {
+        for (marker in listOf("*", "_", "**", "__", "***", "___")) {
+            val filter = SpeechTextFilter()
+            assertEquals("Before ", filter.push("Before " + marker + "ready" + marker))
+            assertEquals("ready now", filter.push(" now"))
+            assertEquals("", filter.finish())
         }
     }
 }

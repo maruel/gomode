@@ -1,6 +1,7 @@
 // Browser voice sessions via WebRTC and speech, dispatching MCP and frontend tools.
 
 import { SpeechTextFilter } from "./SpeechTextFilter";
+import { SentenceSegmenter } from "./SentenceSegmenter";
 import { MicrophoneLevel } from "./MicrophoneLevel";
 import { MicrophoneInput } from "./MicrophoneInput";
 import { createSignal, untrack } from "solid-js";
@@ -575,7 +576,7 @@ export class VoiceSession {
   private _dc: RTCDataChannel | null = null;
   private _textSocket: WebSocket | null = null;
   private _browserSpeech: BrowserSpeech | null = null;
-  private _browserReply = "";
+  private readonly _sentenceSegmenter = new SentenceSegmenter();
   private _speechTextFilter = new SpeechTextFilter();
   private _browserTurnIdle = false;
   private _rtcSessionID: string | null = null;
@@ -1525,6 +1526,13 @@ export class VoiceSession {
               s.listening = value;
             });
         },
+        speaking: (value) => {
+          if (!this._ownsChannel(attempt, socket)) return;
+          this._update((s) => {
+            s.speaking = value;
+          });
+          if (!value) this._drainBrowserTurn();
+        },
         interim: (text) => {
           if (this._ownsChannel(attempt, socket)) this._browserUserText(text, false);
         },
@@ -1589,33 +1597,33 @@ export class VoiceSession {
     }
   }
 
-  private _finishBrowserTurn(attempt: number, channel: VoiceChannel): void {
-    this._browserTurnIdle = true;
-    if (this.state.speaking) return;
+  private readonly _speakBrowserFragment = (text: string): void => {
+    const speech = this._browserSpeech;
+    speech?.speak(text);
+    // Synchronous platform failures tear down the owner via its error callback.
+    // Stop segmentation too; it must not retain a tail after that teardown.
+    if (speech !== this._browserSpeech) throw new Error("Browser speech playback stopped");
+  };
+
+  private _finishBrowserTurn(): void {
+    // Generation owns transcript boundaries, independently of queued playback.
     this._update((s) => {
       s.transcript = s.transcript.map((entry) => ({ ...entry, final: true }));
     });
-    const text = this._browserReply + this._speechTextFilter.finish();
-    this._browserReply = "";
-    if (text !== "" && this._browserSpeech !== null) {
-      this._update((s) => {
-        s.speaking = true;
-      });
-      this._browserSpeech.speak(text, () => {
-        if (!this._ownsChannel(attempt, channel)) return;
-        this._update((s) => {
-          s.speaking = false;
-        });
-        if (this._browserTurnIdle) this._finishBrowserTurn(attempt, channel);
-      });
-    } else {
-      this._speakerActive = false;
-      this._update((s) => {
-        if (s.microphoneMode === "muteOnce") s.microphoneMode = "listening";
-      });
-      this._flushPendingNotifications();
-      this._startBrowserListening();
-    }
+    this._sentenceSegmenter.push(this._speechTextFilter.finish(), this._speakBrowserFragment);
+    this._sentenceSegmenter.finish(this._speakBrowserFragment);
+    this._browserTurnIdle = true;
+    this._drainBrowserTurn();
+  }
+
+  private _drainBrowserTurn(): void {
+    if (!this.state.connected || !this._browserTurnIdle || this.state.speaking) return;
+    this._speakerActive = false;
+    this._update((s) => {
+      if (s.microphoneMode === "muteOnce") s.microphoneMode = "listening";
+    });
+    this._flushPendingNotifications();
+    this._startBrowserListening();
   }
 
   disconnect(): void {
@@ -1710,7 +1718,7 @@ export class VoiceSession {
     const speech = this._browserSpeech;
     this._textSocket = null;
     this._browserSpeech = null;
-    this._browserReply = "";
+    this._sentenceSegmenter.clear();
     this._speechTextFilter.clear();
     this._browserTurnIdle = false;
     speech?.close();
@@ -1991,10 +1999,10 @@ export class VoiceSession {
       this._browserSpeech?.stopListening();
       this._browserTurnIdle = false;
       this._speakerActive = true;
-      this._browserReply += this._speechTextFilter.push(delta.text);
       this._update((s) => {
         s.transcript = appendChunk(s.transcript, "assistant", delta.text);
       });
+      this._sentenceSegmenter.push(this._speechTextFilter.push(delta.text), this._speakBrowserFragment);
       return;
     }
 
@@ -2020,14 +2028,15 @@ export class VoiceSession {
     if (env.kind === MessageKindInterrupted) {
       if (this.state.mode === "browser") {
         this._browserTurnIdle = true;
-        this._browserReply = "";
+        this._sentenceSegmenter.clear();
         this._speechTextFilter.clear();
+        this._browserSpeech?.stopSpeaking();
         this._update((s) => {
+          s.speaking = false;
           s.activeTool = null;
           s.turnState = TurnStateIdle;
         });
-        // Local synthesis owns speech completion; keep capture gated until it finishes.
-        if (!this.state.speaking) this._finishBrowserTurn(attempt, channel);
+        this._finishBrowserTurn();
         return;
       }
       this._speakerActive = false;
@@ -2047,9 +2056,10 @@ export class VoiceSession {
         s.turnState = msg.state;
       });
       if (this.state.mode === "browser") {
-        if (msg.state === TurnStateIdle) this._finishBrowserTurn(attempt, channel);
+        if (msg.state === TurnStateIdle) this._finishBrowserTurn();
         else {
           this._browserTurnIdle = false;
+          this._speakerActive = true;
           this._browserSpeech?.stopListening();
         }
       }

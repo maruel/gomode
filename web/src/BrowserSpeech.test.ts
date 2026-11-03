@@ -7,7 +7,7 @@ import { BrowserSpeech, browserSpeechAvailable, browserSpeechAvoidsChimes } from
 
 let restore: () => void;
 let speech: BrowserSpeech;
-const callbacks = { listening: vi.fn(), interim: vi.fn(), final: vi.fn(), error: vi.fn() };
+const callbacks = { listening: vi.fn(), speaking: vi.fn(), interim: vi.fn(), final: vi.fn(), error: vi.fn() };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -158,12 +158,11 @@ describe("BrowserSpeech", () => {
   });
 
   it("speaks in the selected language and ignores completion after disposal", () => {
-    const done = vi.fn();
-    speech.speak("Hello.", done);
+    speech.speak("Hello.");
     expect(fakeSynthesis.spoken[0]?.lang).toBe("en-US");
     speech.close();
     fakeSynthesis.complete();
-    expect(done).not.toHaveBeenCalled();
+    expect(callbacks.speaking).not.toHaveBeenCalledWith(false);
     expect(fakeSynthesis.cancel).toHaveBeenCalledOnce();
   });
 
