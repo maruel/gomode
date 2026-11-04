@@ -33,6 +33,7 @@ func TestActivityLog(t *testing.T) {
 	}{
 		{activitydata.SourceClient, `{"kind":"session.setup","context":{"systemInstruction":"Initial context","text":"Current task"},"extension":{"future":[true,null,42]}}`},
 		{activitydata.SourceGateway, `{"kind":"transcript.delta","speaker":"user","text":"hello"}`},
+		{activitydata.SourceGateway, `{"kind":"reasoning.delta","text":"weigh both dates"}`},
 		{activitydata.SourceGateway, `{"kind":"tool.call","id":"call-1","name":"tasks_list","args":{}}`},
 		{activitydata.SourceClient, `{"kind":"tool.result","id":"call-1","name":"tasks_list","result":{"tasks":[]}}`},
 		{activitydata.SourceGateway, `{"kind":"error","message":"Voice turn failed (llm): upstream refused the request","recoverable":true}`},

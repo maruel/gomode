@@ -569,6 +569,57 @@ class VoiceSessionLifecycleTest {
         }
 
     @Test
+    fun reasoningReachesTheTranscriptOnlyWhenEnabled() =
+        runBlocking {
+            val settings = SettingsRepository(InMemoryPreferencesDataStore())
+            val id = settings.addService("Home", "https://home.example")
+            settings.settings.first { it.activeServiceId == id }
+            val session = createCloudSession(settings)
+            val channel = RecordingDataChannel()
+            attachAuthorizedChannel(session, channel)
+            try {
+                invokeHandleServerMessage(
+                    session,
+                    """{"kind":"reasoning.delta","text":"Weigh both dates. "}""",
+                    channel,
+                )
+                assertTrue(
+                    "Reasoning is hidden by default",
+                    session.state.value.transcript
+                        .isEmpty(),
+                )
+
+                settings.updateShowReasoning(true)
+                settings.settings.first { it.showReasoning }
+                invokeHandleServerMessage(
+                    session,
+                    """{"kind":"reasoning.delta","text":"Weigh both dates. "}""",
+                    channel,
+                )
+                invokeHandleServerMessage(session, """{"kind":"reasoning.delta","text":"Compare them."}""", channel)
+                invokeHandleServerMessage(
+                    session,
+                    """{"kind":"transcript.delta","speaker":"assistant","text":"The first date is earlier."}""",
+                    channel,
+                )
+                assertEquals(
+                    listOf(
+                        TranscriptEntry(
+                            TranscriptSpeaker.ASSISTANT,
+                            "Weigh both dates. Compare them.",
+                            kind = TranscriptKind.REASONING,
+                        ),
+                        TranscriptEntry(TranscriptSpeaker.ASSISTANT, "The first date is earlier."),
+                    ),
+                    session.state.value.transcript,
+                )
+                assertTrue("Reasoning is never sent back to the gateway", channel.sent.isEmpty())
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
     fun nativeServerToolsRejectNonObjectArgumentsOnTheDataChannel() =
         runBlocking {
             val settings = SettingsRepository(InMemoryPreferencesDataStore())

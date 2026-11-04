@@ -39,6 +39,7 @@ export type MessageKind =
   | "session.ready"
   | "transcript.delta"
   | "assistant.text.delta"
+  | "reasoning.delta"
   | "speech.started"
   | "speech.ended"
   | "tool.call"
@@ -57,6 +58,7 @@ export const MessageKindSessionClose = "session.close";
 export const MessageKindSessionReady = "session.ready";
 export const MessageKindTranscriptDelta = "transcript.delta";
 export const MessageKindAssistantTextDelta = "assistant.text.delta";
+export const MessageKindReasoningDelta = "reasoning.delta";
 export const MessageKindSpeechStarted = "speech.started";
 export const MessageKindSpeechEnded = "speech.ended";
 export const MessageKindToolCall = "tool.call";
@@ -482,6 +484,19 @@ export interface AssistantTextDelta {
   /** Kind is "assistant.text.delta". */
   kind: MessageKind;
   /** Text is an incremental assistant text fragment. */
+  text: string;
+}
+
+/**
+ * ReasoningDelta is a gateway message that streams provider reasoning text.
+ *
+ * Reasoning is not speech and not a transcript statement. A client decides
+ * whether to display it.
+ */
+export interface ReasoningDelta {
+  /** Kind is "reasoning.delta". */
+  kind: MessageKind;
+  /** Text is an incremental reasoning fragment. */
   text: string;
 }
 

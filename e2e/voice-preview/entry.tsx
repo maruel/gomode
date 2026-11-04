@@ -25,7 +25,7 @@ voiceSession.setState((state) => ({
   activeTool: scene.tool,
   transcript: scene.transcript.map((entry): TranscriptEntry => {
     if (entry.speaker !== "user" && entry.speaker !== "assistant") throw new Error("Invalid fixture speaker");
-    return { ...entry, speaker: entry.speaker };
+    return { kind: "transcript", speaker: entry.speaker, text: entry.text, final: entry.final };
   }),
 }));
 const root = document.getElementById("voice-root");

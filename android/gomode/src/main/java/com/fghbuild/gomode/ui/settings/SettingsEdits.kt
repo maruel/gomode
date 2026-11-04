@@ -130,6 +130,12 @@ internal class SettingsEdits(
             }
         }
 
+    suspend fun setShowReasoning(enabled: Boolean): Boolean =
+        persist {
+            repository.updateShowReasoning(enabled)
+            true
+        }
+
     suspend fun setShowServiceOnLockScreen(enabled: Boolean): Boolean =
         persist {
             repository.updateShowServiceOnLockScreen(enabled)

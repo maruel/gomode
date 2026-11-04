@@ -105,6 +105,21 @@ describe("VoiceSettings", () => {
     expect(screen.getByRole("radio", { name: "Cloud voice" })).toBeDisabled();
   });
 
+  it("shows assistant reasoning only after the operator enables it", async () => {
+    const user = userEvent.setup();
+    render(() => <VoiceSettings />);
+    const toggle = screen.getByRole("checkbox", { name: "Show assistant reasoning" });
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    expect(toggle).toBeChecked();
+    expect(voiceSession.state.showReasoning).toBe(true);
+    expect(localStorage.getItem("gomode.voiceReasoning")).toBe("on");
+    voiceSession.setState((s) => ({ ...s, connected: true, connectStatus: null }));
+    expect(toggle).toBeEnabled();
+    await user.click(toggle);
+    expect(voiceSession.state.showReasoning).toBe(false);
+  });
+
   it("follows another settings view's saved language without overwriting a draft", async () => {
     const user = userEvent.setup();
     render(() => (
@@ -201,6 +216,25 @@ describe("VoiceSettings", () => {
       vi.advanceTimersByTime(1000);
       expect(screen.getByRole("alert")).toHaveTextContent("Storage unavailable");
       expect(voiceSession.state.languageTag).toBe("en-US");
+    } finally {
+      save.mockRestore();
+    }
+  });
+
+  it("restores the reasoning checkbox when saving the preference fails", async () => {
+    const save = vi.spyOn(window.Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    try {
+      const user = userEvent.setup();
+      render(() => <VoiceSettings />);
+      const toggle = screen.getByRole("checkbox", { name: "Show assistant reasoning" });
+      await user.click(toggle);
+      expect(toggle).not.toBeChecked();
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Could not save the reasoning preference: Storage unavailable",
+      );
+      expect(voiceSession.state.showReasoning).toBe(false);
     } finally {
       save.mockRestore();
     }

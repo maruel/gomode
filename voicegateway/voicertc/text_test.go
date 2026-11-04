@@ -153,7 +153,7 @@ func (c *blockingFirstConversation) user(ctx context.Context, _ string) (llmStep
 	if call == 1 {
 		c.startOnce.Do(func() { close(c.started) })
 		return llmStep{
-			text: func(yield func(string) bool) {
+			stream: func(func(llmFragment) bool) {
 				<-ctx.Done()
 			},
 			finish: func() (llmReply, error) {

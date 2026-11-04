@@ -635,6 +635,14 @@ internal fun audioDeviceIcon(type: Int): ImageVector =
         else -> Icons.AutoMirrored.Filled.VolumeUp
     }
 
+/** Transcript heading for one entry; reasoning is labelled separately from spoken text. */
+internal fun transcriptLabel(entry: TranscriptEntry): String =
+    when {
+        entry.kind == TranscriptKind.REASONING -> "Reasoning"
+        entry.speaker == TranscriptSpeaker.USER -> "You"
+        else -> "Assistant"
+    }
+
 @Composable
 internal fun TranscriptLog(
     entries: List<TranscriptEntry>,
@@ -675,24 +683,28 @@ internal fun TranscriptLog(
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             itemsIndexed(entries) { _, entry ->
-                val isUser = entry.speaker == TranscriptSpeaker.USER
-                val label = if (isUser) "You" else "Assistant"
+                val reasoning = entry.kind == TranscriptKind.REASONING
                 val labelColor =
-                    if (isUser) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.secondary
+                    when {
+                        reasoning -> MaterialTheme.colorScheme.onSurfaceVariant
+                        entry.speaker == TranscriptSpeaker.USER -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.secondary
                     }
                 Text(
                     text =
                         buildAnnotatedString {
                             withStyle(SpanStyle(color = labelColor, fontWeight = FontWeight.SemiBold)) {
-                                append("$label: ")
+                                append("${transcriptLabel(entry)}: ")
                             }
                             append(entry.text)
                         },
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color =
+                        if (reasoning) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
                     modifier = Modifier.fillMaxWidth(),
                 )
             }

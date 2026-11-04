@@ -20,12 +20,14 @@ import {
   type ToolCall,
   type TranscriptDelta,
   type AssistantTextDelta,
+  type ReasoningDelta,
   type TurnState,
   type TurnStatus,
   type VoiceRTCClientDiagnostics,
   type VoiceRTCDiagnosticsResp,
   MessageKindContextUpdate,
   MessageKindAssistantTextDelta,
+  MessageKindReasoningDelta,
   MessageKindUserMessage,
   MessageKindError,
   MessageKindInterrupted,
@@ -325,7 +327,11 @@ export function voiceToolDeclarations(
 
 export type TranscriptSpeaker = "user" | "assistant";
 
+/** What a transcript entry carries: a statement or provider reasoning. */
+export type TranscriptKind = "transcript" | "reasoning";
+
 export interface TranscriptEntry {
+  kind: TranscriptKind;
   speaker: TranscriptSpeaker;
   text: string;
   final: boolean;
@@ -386,6 +392,8 @@ export interface VoiceState {
   /** Gateway work before assistant output; idle when the gateway does not report any. */
   turnState: TurnState;
   transcript: TranscriptEntry[];
+  /** Shows provider reasoning in the transcript. Off by default. */
+  showReasoning: boolean;
   micLevel: number;
   micLevelError: string | null;
   error: string | null;
@@ -439,6 +447,15 @@ function savedVoiceLanguage(): string {
   } catch (err) {
     console.warn("Could not load voice language; using en-US", err);
     return DEFAULT_VOICE_LANGUAGE;
+  }
+}
+
+function savedReasoning(): boolean {
+  try {
+    return localStorage.getItem("gomode.voiceReasoning") === "on";
+  } catch (error) {
+    console.warn("Could not load the reasoning display preference; hiding reasoning", error);
+    return false;
   }
 }
 
@@ -637,6 +654,7 @@ export class VoiceSession {
       activeTool: null,
       turnState: TurnStateIdle,
       transcript: [],
+      showReasoning: savedReasoning(),
       micLevel: 0,
       micLevelError: null,
       error: null,
@@ -856,6 +874,12 @@ export class VoiceSession {
     const normalized = normalizeVoiceLanguage(tag);
     localStorage.setItem("gomode.voiceLanguage", normalized);
     this.setState((s) => ({ ...s, languageTag: normalized }));
+  }
+
+  /** Show or hide provider reasoning in the transcript. Applies to an active session. */
+  setShowReasoning(show: boolean): void {
+    localStorage.setItem("gomode.voiceReasoning", show ? "on" : "off");
+    this.setState((s) => ({ ...s, showReasoning: show }));
   }
 
   /** Enumerate available audio devices and auto-select defaults. Call before connect(). */
@@ -1585,7 +1609,7 @@ export class VoiceSession {
     this._update((s) => {
       const last = s.transcript.at(-1);
       const entries = last?.speaker === "user" && !last.final ? s.transcript.slice(0, -1) : s.transcript;
-      s.transcript = text === "" ? entries : [...entries, { speaker: "user", text, final }];
+      s.transcript = text === "" ? entries : [...entries, { kind: "transcript", speaker: "user", text, final }];
     });
   }
 
@@ -2000,9 +2024,20 @@ export class VoiceSession {
       this._browserTurnIdle = false;
       this._speakerActive = true;
       this._update((s) => {
-        s.transcript = appendChunk(s.transcript, "assistant", delta.text);
+        s.transcript = appendChunk(s.transcript, "assistant", delta.text, "transcript");
       });
       this._sentenceSegmenter.push(this._speechTextFilter.push(delta.text), this._speakBrowserFragment);
+      return;
+    }
+
+    if (env.kind === MessageKindReasoningDelta) {
+      // Reasoning is display-only: it is never spoken or replayed as context.
+      if (!this.state.showReasoning) return;
+      const delta = JSON.parse(text) as ReasoningDelta;
+      if (!delta.text) return;
+      this._update((s) => {
+        s.transcript = appendChunk(s.transcript, "assistant", delta.text, "reasoning");
+      });
       return;
     }
 
@@ -2078,7 +2113,10 @@ export class VoiceSession {
         // use the same transcript presentation as tool errors, not fatal state.
         this._recordError(msg.message);
         this._update((s) => {
-          s.transcript = [...s.transcript, { speaker: "assistant", text: `[Voice] ${msg.message}`, final: true }];
+          s.transcript = [
+            ...s.transcript,
+            { kind: "transcript", speaker: "assistant", text: `[Voice] ${msg.message}`, final: true },
+          ];
         });
         return;
       }
@@ -2090,7 +2128,7 @@ export class VoiceSession {
     if (msg.speaker !== "user" && msg.speaker !== "assistant") return;
     if (!msg.text) return;
     this._update((s) => {
-      s.transcript = appendChunk(s.transcript, msg.speaker, msg.text ?? "");
+      s.transcript = appendChunk(s.transcript, msg.speaker, msg.text ?? "", "transcript");
     });
   }
 
@@ -2136,6 +2174,7 @@ export class VoiceSession {
           s.transcript = [
             ...s.transcript,
             {
+              kind: "transcript",
               speaker: "assistant" as TranscriptSpeaker,
               text: `[${msg.name}] ${errMsg}`,
               final: true,
@@ -2155,6 +2194,7 @@ export class VoiceSession {
         s.transcript = [
           ...s.transcript,
           {
+            kind: "transcript",
             speaker: "assistant" as TranscriptSpeaker,
             text: `[${msg.name}] ${errMsg}`,
             final: true,
@@ -2319,7 +2359,7 @@ export function buildRecoveryContext(transcript: TranscriptEntry[]): string {
   const lines: string[] = [];
   let lineChars = 0;
   for (const entry of [...transcript].reverse()) {
-    if (!entry.final || entry.text.trim() === "") continue;
+    if (entry.kind !== "transcript" || !entry.final || entry.text.trim() === "") continue;
     const line = `${entry.speaker}: ${entry.text.trim()}`;
     if (lineChars + line.length + (lines.length === 0 ? 0 : 1) > availableTranscriptChars) break;
     lines.unshift(line);
@@ -2380,12 +2420,17 @@ function gatewayToolResult(id: string, name: string, result: Record<string, unkn
 
 // Transcript helpers
 
-function appendChunk(transcript: TranscriptEntry[], speaker: TranscriptSpeaker, text: string): TranscriptEntry[] {
+function appendChunk(
+  transcript: TranscriptEntry[],
+  speaker: TranscriptSpeaker,
+  text: string,
+  kind: TranscriptKind,
+): TranscriptEntry[] {
   const last = transcript[transcript.length - 1];
-  if (last && last.speaker === speaker && !last.final) {
-    return [...transcript.slice(0, -1), { speaker, text: last.text + text, final: false }];
+  if (last && last.speaker === speaker && last.kind === kind && !last.final) {
+    return [...transcript.slice(0, -1), { kind, speaker, text: last.text + text, final: false }];
   }
-  return [...transcript, { speaker, text, final: false }];
+  return [...transcript, { kind, speaker, text, final: false }];
 }
 
 // Singleton — lives at module level so the WebRTC connection survives component remounts.

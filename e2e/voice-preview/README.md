@@ -22,6 +22,11 @@ There is no separate transcript header or collapse chevron. The X glyph follows
 the platform's small label typography. Its touch target stays 48 dp on Android
 and 44 CSS px on web.
 
+When the operator enables Show assistant reasoning, the transcript lists
+provider reasoning as its own muted entry labelled Reasoning, ahead of the
+answer. Reasoning is never spoken or replayed as recovery context, the setting
+is off by default, and changing it applies to an active session.
+
 The transcript fits short conversations and scrolls for long ones. Android caps
 it at 220 dp. Web caps it at the smaller of 14 rem and 28% of viewport height.
 Mobile uses the available width. Desktop bounds the panel content to 1200 px.

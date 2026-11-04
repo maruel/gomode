@@ -18,6 +18,7 @@ import com.caic.voicegateway.sdk.v1.ContextUpdate
 import com.caic.voicegateway.sdk.v1.Error
 import com.caic.voicegateway.sdk.v1.MessageEnvelope
 import com.caic.voicegateway.sdk.v1.MessageKind
+import com.caic.voicegateway.sdk.v1.ReasoningDelta
 import com.caic.voicegateway.sdk.v1.SessionSetup
 import com.caic.voicegateway.sdk.v1.Speaker
 import com.caic.voicegateway.sdk.v1.ToolCall
@@ -1137,6 +1138,10 @@ internal class VoiceSession(
                     handleTranscriptDelta(json.decodeFromString(TranscriptDelta.serializer(), text))
                 }
 
+                MessageKind.ReasoningDelta -> {
+                    handleReasoningDelta(json.decodeFromString(ReasoningDelta.serializer(), text))
+                }
+
                 MessageKind.SpeechStarted -> {
                     speakerActive = true
                     _state.update { it.copy(speaking = true) }
@@ -1201,6 +1206,17 @@ internal class VoiceSession(
             if (ownsAttempt(attempt) && dataChannel === originChannel) {
                 setError(e.message ?: "Failed to process server message")
             }
+        }
+    }
+
+    private fun handleReasoningDelta(msg: ReasoningDelta) {
+        // Reasoning is display-only: it is never spoken or replayed as context.
+        if (!settingsRepository.settings.value.showReasoning) return
+        val chunk = msg.text ?: return
+        _state.update {
+            it.copy(
+                transcript = it.transcript.appendChunk(TranscriptSpeaker.ASSISTANT, chunk, TranscriptKind.REASONING),
+            )
         }
     }
 
@@ -1508,10 +1524,13 @@ internal fun formatVoiceRTCDiagnostics(diagnostics: VoiceRTCDiagnosticsResp): St
 
 enum class TranscriptSpeaker { USER, ASSISTANT }
 
+enum class TranscriptKind { TRANSCRIPT, REASONING }
+
 data class TranscriptEntry(
     val speaker: TranscriptSpeaker,
     val text: String,
     val final: Boolean = false,
+    val kind: TranscriptKind = TranscriptKind.TRANSCRIPT,
 )
 
 /** Appends a gateway-reported turn failure without ending the call. */
@@ -1664,11 +1683,12 @@ private fun combineSystemInstructions(hostInstruction: String): String {
 internal fun List<TranscriptEntry>.appendChunk(
     speaker: TranscriptSpeaker,
     text: String,
+    kind: TranscriptKind = TranscriptKind.TRANSCRIPT,
 ): List<TranscriptEntry> =
-    if (isNotEmpty() && last().speaker == speaker && !last().final) {
-        dropLast(1) + TranscriptEntry(speaker, last().text + text)
+    if (isNotEmpty() && last().speaker == speaker && last().kind == kind && !last().final) {
+        dropLast(1) + TranscriptEntry(speaker, last().text + text, kind = kind)
     } else {
-        this + TranscriptEntry(speaker, text)
+        this + TranscriptEntry(speaker, text, kind = kind)
     }
 
 internal class VoiceMcpAuthChangedException : IllegalStateException("Hosted service authentication changed")

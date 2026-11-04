@@ -222,7 +222,7 @@ internal fun SettingsScreen(
             }
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Voice", style = MaterialTheme.typography.titleMedium)
-                if (voiceSessionActive) Text("End the voice session before changing voice settings.")
+                if (voiceSessionActive) Text("End the voice session to change voice mode, voice choice, or language.")
                 VoiceModeSetting(settings.voiceMode, settingsRepository, enabled = !voiceSessionActive)
                 if (settings.voiceMode == VoiceMode.DEVICE) {
                     OnDeviceEngineSetting(settings.onDeviceEngine, settingsRepository, enabled = !voiceSessionActive)
@@ -244,6 +244,23 @@ internal fun SettingsScreen(
                 VoiceLanguageSetting(
                     edits,
                     enabled = !voiceSessionActive && settings.loadState == SettingsLoadState.Ready,
+                )
+                ListItem(
+                    modifier =
+                        Modifier.testTag("gomode-show-reasoning").toggleable(
+                            value = settings.showReasoning,
+                            enabled = settings.loadState == SettingsLoadState.Ready,
+                            role = Role.Switch,
+                            onValueChange = { value -> scope.launch { edits.setShowReasoning(value) } },
+                        ),
+                    headlineContent = { Text("Show assistant reasoning") },
+                    trailingContent = {
+                        Switch(
+                            checked = settings.showReasoning,
+                            onCheckedChange = null,
+                            enabled = settings.loadState == SettingsLoadState.Ready,
+                        )
+                    },
                 )
                 VoiceErrorDiagnosticsSetting()
             }

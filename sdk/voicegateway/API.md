@@ -71,6 +71,7 @@ MessageKind identifies a voice gateway WebRTC data-channel message.
 | `session.ready` | MessageKindSessionReady reports that the gateway session is ready. |
 | `transcript.delta` | MessageKindTranscriptDelta streams transcript text. |
 | `assistant.text.delta` | MessageKindAssistantTextDelta streams assistant text. |
+| `reasoning.delta` | MessageKindReasoningDelta streams provider reasoning text. |
 | `speech.started` | MessageKindSpeechStarted reports that speech output started. |
 | `speech.ended` | MessageKindSpeechEnded reports that speech output ended. |
 | `tool.call` | MessageKindToolCall asks the client to execute a tool. |
@@ -477,6 +478,18 @@ AssistantTextDelta is a gateway message that streams assistant text.
 |-------|------|-------------|----------|
 | `kind` | `MessageKind` | Kind is "assistant.text.delta". | yes |
 | `text` | `string` | Text is an incremental assistant text fragment. | yes |
+
+### ReasoningDelta
+
+ReasoningDelta is a gateway message that streams provider reasoning text.
+
+Reasoning is not speech and not a transcript statement. A client decides
+whether to display it.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `kind` | `MessageKind` | Kind is "reasoning.delta". | yes |
+| `text` | `string` | Text is an incremental reasoning fragment. | yes |
 
 ### SpeechStarted
 

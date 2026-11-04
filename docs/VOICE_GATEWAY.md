@@ -254,12 +254,19 @@ fetch a fresh token before diagnostics.
 | Direction | Kinds |
 |---|---|
 | client → gateway | `session.setup`, `context.update`, `user.message`, `tool.result`, `turn.cancel`, `session.close` |
-| gateway → client | `session.ready`, `transcript.delta`, `assistant.text.delta`, `speech.started`, `speech.ended`, `tool.call`, `turn.status`, `interrupted`, `error` |
+| gateway → client | `session.ready`, `transcript.delta`, `assistant.text.delta`, `reasoning.delta`, `speech.started`, `speech.ended`, `tool.call`, `turn.status`, `interrupted`, `error` |
 
 `turn.status` reports gateway work before assistant output: `transcribing`,
 `thinking`, then `idle` when the turn ends, including a turn with no reply.
 Only backends that observe their own stages send it; clients treat its absence
 as `idle`. Clients show an active tool first, then speech, then the turn state.
+
+`reasoning.delta` carries provider reasoning text. The gateway forwards it when
+a backend emits it, including Gemini thought parts and local-stack reasoning
+fragments. It is neither speech nor a transcript statement: the gateway never
+speaks it, and each client shows it only after its operator enables the display
+setting. Reasoning is not persisted in the activity log and is not replayed as
+recovery context.
 
 An `error` message either ends the session or, with `recoverable`, reports a
 failed turn and leaves the session usable. A local-stack turn failure names its

@@ -37,7 +37,9 @@ declare const classes: {
   readonly "transcriptBody": string;
   readonly "transcriptContent": string;
   readonly "transcriptEntry": string;
+  readonly "transcriptEntryReasoning": string;
   readonly "transcriptLabelAssistant": string;
+  readonly "transcriptLabelReasoning": string;
   readonly "transcriptLabelUser": string;
   readonly "transcriptList": string;
   readonly "transcriptPlaceholder": string;

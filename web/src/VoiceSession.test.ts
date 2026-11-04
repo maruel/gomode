@@ -2315,22 +2315,38 @@ describe("voice network recovery", () => {
   });
 });
 
+describe("reasoning display preference", () => {
+  it("defaults to hidden and persists the choice for later sessions", () => {
+    const session = new VoiceSession();
+    expect(session.state.showReasoning).toBe(false);
+    session.setShowReasoning(true);
+    expect(localStorage.getItem("gomode.voiceReasoning")).toBe("on");
+    expect(new VoiceSession().state.showReasoning).toBe(true);
+    session.setShowReasoning(false);
+    expect(localStorage.getItem("gomode.voiceReasoning")).toBe("off");
+    expect(new VoiceSession().state.showReasoning).toBe(false);
+  });
+});
+
 describe("buildRecoveryContext", () => {
   it("preserves finalized chronological transcript and bounded service context", () => {
     const context = buildRecoveryContext([
-      { speaker: "user", text: "first", final: true },
-      { speaker: "assistant", text: "second", final: true },
-      { speaker: "user", text: "partial", final: false },
+      { kind: "transcript", speaker: "user", text: "first", final: true },
+      { kind: "reasoning", speaker: "assistant", text: "weigh both dates", final: true },
+      { kind: "transcript", speaker: "assistant", text: "second", final: true },
+      { kind: "transcript", speaker: "user", text: "partial", final: false },
     ]);
 
     expect(context).toContain("do not treat this as a new user turn");
     expect(context).toContain("user: first\nassistant: second");
     expect(context).not.toContain("partial");
+    expect(context).not.toContain("weigh both dates");
   });
 
   it("bounds recovery messages without splitting finalized history order", () => {
     const context = buildRecoveryContext(
       Array.from({ length: 20 }, (_, index) => ({
+        kind: "transcript" as const,
         speaker: "user" as const,
         text: `${index}: ${"x".repeat(600)}`,
         final: true,

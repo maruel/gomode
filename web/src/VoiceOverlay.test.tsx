@@ -174,7 +174,7 @@ describe("VoiceOverlay status", () => {
     voiceSession.setState((state) => ({
       ...state,
       connected: true,
-      transcript: [{ speaker: "assistant", text: "Review the launch brief.", final: true }],
+      transcript: [{ kind: "transcript", speaker: "assistant", text: "Review the launch brief.", final: true }],
     }));
     render(() => <VoiceOverlay />);
     const user = userEvent.setup();
@@ -192,7 +192,10 @@ describe("VoiceOverlay status", () => {
     expect(show.querySelector('[data-icon="subtitles"]')).not.toBeNull();
     voiceSession.setState((state) => ({
       ...state,
-      transcript: [...state.transcript, { speaker: "user", text: "Find the latest revision", final: false }],
+      transcript: [
+        ...state.transcript,
+        { kind: "transcript", speaker: "user", text: "Find the latest revision", final: false },
+      ],
     }));
     expect(screen.queryByText("Find the latest revision")).toBeNull();
     await user.click(show);
@@ -201,12 +204,28 @@ describe("VoiceOverlay status", () => {
     expect(screen.getByRole("button", { name: "Hide transcript" })).toHaveFocus();
   });
 
+  it("labels reasoning separately from assistant statements", () => {
+    voiceSession.setState((state) => ({
+      ...state,
+      connected: true,
+      transcript: [
+        { kind: "reasoning", speaker: "assistant", text: "Weigh both dates.", final: true },
+        { kind: "transcript", speaker: "assistant", text: "The first date is earlier.", final: true },
+      ],
+    }));
+    render(() => <VoiceOverlay />);
+    const reasoning = screen.getByText("Weigh both dates.");
+    const statement = screen.getByText("The first date is earlier.");
+    expect(reasoning.textContent).toBe("Reasoning:Weigh both dates.");
+    expect(statement.textContent).toBe("Assistant:The first date is earlier.");
+  });
+
   it("restores the transcript from the activity row when no audio picker is available", async () => {
     voiceSession.setState((state) => ({
       ...state,
       connected: true,
       mode: "browser",
-      transcript: [{ speaker: "assistant", text: "Ready to help.", final: true }],
+      transcript: [{ kind: "transcript", speaker: "assistant", text: "Ready to help.", final: true }],
     }));
     render(() => <VoiceOverlay />);
     const user = userEvent.setup();
@@ -227,7 +246,7 @@ describe("VoiceOverlay status", () => {
     voiceSession.setState((state) => ({
       ...state,
       connected: true,
-      transcript: [{ speaker: "user", text: "Find the launch brief", final: true }],
+      transcript: [{ kind: "transcript", speaker: "user", text: "Find the launch brief", final: true }],
     }));
     render(() => <VoiceOverlay nextServer={available() ? { name: next(), onSelect: select } : undefined} />);
     const controls = screen.getByRole("group", { name: "Voice controls" });
@@ -533,7 +552,9 @@ describe("VoiceOverlay settings", () => {
     voiceSession.setState((s) => ({ ...s, connectStatus: "Connecting…", connectPhase: "setup" }));
     expect(screen.getByRole("radio", { name: "Cloud voice" })).toBeDisabled();
     expect(screen.getByRole("textbox", { name: "Voice language (e.g. en-US)" })).toBeDisabled();
-    expect(screen.getByText("End the voice session before changing voice settings.")).toBeInTheDocument();
+    expect(
+      screen.getByText("End the voice session to change voice mode, voice choice, or language."),
+    ).toBeInTheDocument();
   });
 
   it("allows correcting the language after a failed connection", async () => {

@@ -6,9 +6,11 @@ import { expect } from "../tests/expect";
 import {
   type ContextUpdate,
   type UserMessage,
+  type ReasoningDelta,
   type SessionSetup,
   type ToolResult,
   MessageKindContextUpdate,
+  MessageKindReasoningDelta,
   MessageKindUserMessage,
   MessageKindSessionSetup,
   MessageKindToolResult,
@@ -61,5 +63,14 @@ describe("voice gateway generated protocol DTOs", () => {
     };
 
     expect(JSON.stringify(msg)).toBe('{"kind":"tool.result","id":"call-1","name":"tasks_list","result":{"ok":true}}');
+  });
+
+  it("serializes reasoning deltas exactly", () => {
+    const msg: ReasoningDelta = {
+      kind: MessageKindReasoningDelta,
+      text: "Compare the two dates. ",
+    };
+
+    expect(JSON.stringify(msg)).toBe('{"kind":"reasoning.delta","text":"Compare the two dates. "}');
   });
 });

@@ -255,6 +255,49 @@ class VoiceSettingsTest {
     }
 
     @Test
+    fun reasoningTogglePersistsAndStaysAvailableDuringCalls() {
+        val active = mutableStateOf(false)
+        val store = MemoryPreferences()
+        val repository = SettingsRepository(store)
+        composeRule.runOnUiThread { composeRule.activity.enableEdgeToEdge() }
+        composeRule.setContent {
+            val settings by repository.settings.collectAsState()
+            GoModeTheme {
+                SettingsScreen(
+                    settings = settings,
+                    settingsRepository = repository,
+                    edits = rememberSettingsEdits(repository, settings),
+                    voiceSessionActive = active.value,
+                    onDone = {},
+                    onOpenHalo = {},
+                )
+            }
+        }
+        val toggle = composeRule.onNodeWithTag("gomode-show-reasoning")
+        toggle.performScrollTo().assertIsOff()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val device = UiDevice.getInstance(instrumentation)
+        val directory = instrumentation.targetContext.getExternalFilesDir(null)
+        composeRule.waitForIdle()
+        device.waitForIdle()
+        assertTrue(device.takeScreenshot(File(directory, "reasoning-setting-off.png")))
+        toggle.performClick()
+        composeRule.waitUntil { repository.settings.value.showReasoning }
+        toggle.performScrollTo().assertIsOn()
+        composeRule.waitForIdle()
+        device.waitForIdle()
+        assertTrue(device.takeScreenshot(File(directory, "reasoning-setting-on.png")))
+        val reopened = SettingsRepository(store)
+        composeRule.waitUntil { reopened.settings.value.showReasoning }
+        composeRule.runOnIdle { active.value = true }
+        // Display-only: it stays available while a call runs.
+        toggle.performScrollTo().assertIsEnabled()
+        composeRule.waitForIdle()
+        device.waitForIdle()
+        assertTrue(device.takeScreenshot(File(directory, "reasoning-setting-active-call.png")))
+    }
+
+    @Test
     fun voiceModeChipsSaveSelectionAndDisableDuringAnActiveSession() {
         val active = mutableStateOf(false)
         val store = MemoryPreferences()

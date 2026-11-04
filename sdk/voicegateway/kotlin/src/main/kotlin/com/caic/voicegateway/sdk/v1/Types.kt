@@ -127,6 +127,10 @@ sealed interface MessageKind {
         override val value = "assistant.text.delta"
     }
     @Serializable
+    data object ReasoningDelta : MessageKind {
+        override val value = "reasoning.delta"
+    }
+    @Serializable
     data object SpeechStarted : MessageKind {
         override val value = "speech.started"
     }
@@ -169,6 +173,7 @@ object MessageKindSerializer : KSerializer<MessageKind> {
             "session.ready" -> MessageKind.SessionReady
             "transcript.delta" -> MessageKind.TranscriptDelta
             "assistant.text.delta" -> MessageKind.AssistantTextDelta
+            "reasoning.delta" -> MessageKind.ReasoningDelta
             "speech.started" -> MessageKind.SpeechStarted
             "speech.ended" -> MessageKind.SpeechEnded
             "tool.call" -> MessageKind.ToolCall
@@ -892,6 +897,20 @@ data class AssistantTextDelta(
     /** Kind is "assistant.text.delta". */
     val kind: MessageKind,
     /** Text is an incremental assistant text fragment. */
+    val text: String,
+)
+
+/**
+ * ReasoningDelta is a gateway message that streams provider reasoning text.
+ *
+ * Reasoning is not speech and not a transcript statement. A client decides
+ * whether to display it.
+ */
+@Serializable
+data class ReasoningDelta(
+    /** Kind is "reasoning.delta". */
+    val kind: MessageKind,
+    /** Text is an incremental reasoning fragment. */
     val text: String,
 )
 

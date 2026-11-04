@@ -472,10 +472,10 @@ func (c *genaiConversation) startGenerationLocked(ctx context.Context) llmStep {
 	var res genai.Result
 	var err error
 	return llmStep{
-		text: func(yield func(string) bool) {
-			fragments, done := c.provider.GenStream(ctx, snapshot, opts...)
-			for fragment := range fragments {
-				if fragment.Text != "" && !yield(fragment.Text) {
+		stream: func(yield func(llmFragment) bool) {
+			replies, done := c.provider.GenStream(ctx, snapshot, opts...)
+			for reply := range replies {
+				if (reply.Text != "" || reply.Reasoning != "") && !yield(llmFragment{text: reply.Text, reasoning: reply.Reasoning}) {
 					break
 				}
 			}

@@ -30,6 +30,7 @@ export interface VoiceSettingsMessages {
   playMusicLabel: string;
   stopMusicLabel: string;
   musicPlaybackError: string;
+  showReasoning: string;
   voiceLanguage: string;
   voiceMode: string;
 }
@@ -41,7 +42,7 @@ export const defaultVoiceSettingsMessages: VoiceSettingsMessages = {
   browserSpeechUnavailable: "Browser speech is unavailable in this browser. Use Cloud voice.",
   cloudVoice: "Cloud voice",
   cloudVoiceDescription: "The voice gateway receives your microphone audio and sends back spoken replies.",
-  endSessionToChange: "End the voice session before changing voice settings.",
+  endSessionToChange: "End the voice session to change voice mode, voice choice, or language.",
   voiceChoice: "Voice choice",
   speakingVoice: "Speaking voice",
   speakingVoiceUnavailable: "Choose an available speaking voice",
@@ -57,6 +58,7 @@ export const defaultVoiceSettingsMessages: VoiceSettingsMessages = {
   playMusicLabel: "Play thinking music",
   stopMusicLabel: "Stop thinking music",
   musicPlaybackError: "Could not play thinking music.",
+  showReasoning: "Show assistant reasoning",
   voiceLanguage: "Voice language (e.g. en-US)",
   voiceMode: "Voice mode",
 };
@@ -88,6 +90,7 @@ export default function VoiceSettings(props: {
   const [modeError, setModeError] = createSignal<string | null>(null);
   const [choiceError, setChoiceError] = createSignal<string | null>(null);
   const [voiceSaveError, setVoiceSaveError] = createSignal<string | null>(null);
+  const [reasoningError, setReasoningError] = createSignal<string | null>(null);
   createEffect(
     on(
       () => [voiceSession.gatewayIdentity(), voiceSession.state.choiceID, voiceSession.state.mode],
@@ -99,6 +102,7 @@ export default function VoiceSettings(props: {
   const error = () =>
     languageError() ??
     modeError() ??
+    reasoningError() ??
     choiceError() ??
     voiceSaveError() ??
     voiceSession.state.choicesError ??
@@ -274,6 +278,25 @@ export default function VoiceSettings(props: {
           spellcheck={false}
           autocapitalize="none"
         />
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={voiceSession.state.showReasoning}
+          onChange={(event) => {
+            const next = event.currentTarget.checked;
+            try {
+              voiceSession.setShowReasoning(next);
+              setReasoningError(null);
+            } catch (err) {
+              event.currentTarget.checked = !next;
+              setReasoningError(
+                `Could not save the reasoning preference: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }}
+        />
+        {messages().showReasoning}
       </label>
       <p id={errorId} role="alert" class={styles.error}>
         {error()}

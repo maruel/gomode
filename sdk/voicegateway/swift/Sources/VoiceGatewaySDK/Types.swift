@@ -95,6 +95,7 @@ public struct MessageKind: Codable, Equatable, Hashable {
     public static let SessionReady = MessageKind("session.ready")
     public static let TranscriptDelta = MessageKind("transcript.delta")
     public static let AssistantTextDelta = MessageKind("assistant.text.delta")
+    public static let ReasoningDelta = MessageKind("reasoning.delta")
     public static let SpeechStarted = MessageKind("speech.started")
     public static let SpeechEnded = MessageKind("speech.ended")
     public static let ToolCall = MessageKind("tool.call")
@@ -617,6 +618,17 @@ public struct AssistantTextDelta: Codable {
     /// Kind is "assistant.text.delta".
     public let kind: MessageKind
     /// Text is an incremental assistant text fragment.
+    public let text: String
+}
+
+/// ReasoningDelta is a gateway message that streams provider reasoning text.
+///
+/// Reasoning is not speech and not a transcript statement. A client decides
+/// whether to display it.
+public struct ReasoningDelta: Codable {
+    /// Kind is "reasoning.delta".
+    public let kind: MessageKind
+    /// Text is an incremental reasoning fragment.
     public let text: String
 }
 

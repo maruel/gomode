@@ -61,6 +61,7 @@ export interface VoiceOverlayMessages extends Partial<VoiceSettingsMessages> {
   microphoneMutedHelp?: string;
   muted: string;
   previousErrors?: string;
+  reasoning: string;
   reconnecting: string;
   signaling: string;
   speaker: string;
@@ -115,6 +116,7 @@ export const defaultVoiceOverlayMessages: VoiceOverlayMessages = {
   microphoneMutedHelp: "Stays muted until you unmute.",
   muted: "Muted",
   previousErrors: "Previous errors",
+  reasoning: "Reasoning:",
   reconnecting: "Reconnecting…",
   signaling: "Signaling…",
   speaker: "Speaker",
@@ -855,6 +857,16 @@ function MicLevelBars(barProps: { micLevel: number }) {
 
 // Transcript log
 
+function transcriptLabel(entry: TranscriptEntry, messages: VoiceOverlayMessages): string {
+  if (entry.kind === "reasoning") return messages.reasoning;
+  return entry.speaker === "user" ? messages.you : messages.assistant;
+}
+
+function transcriptLabelClass(entry: TranscriptEntry): string {
+  if (entry.kind === "reasoning") return styles.transcriptLabelReasoning;
+  return entry.speaker === "user" ? styles.transcriptLabelUser : styles.transcriptLabelAssistant;
+}
+
 function TranscriptLog(props: {
   id: string;
   expanded: boolean;
@@ -881,10 +893,14 @@ function TranscriptLog(props: {
           <div class={styles.transcriptList} ref={listRef}>
             <For each={props.transcript}>
               {(entry) => (
-                <div class={styles.transcriptEntry}>
-                  <span class={entry.speaker === "user" ? styles.transcriptLabelUser : styles.transcriptLabelAssistant}>
-                    {entry.speaker === "user" ? props.messages().you : props.messages().assistant}
-                  </span>
+                <div
+                  class={
+                    entry.kind === "reasoning"
+                      ? `${styles.transcriptEntry} ${styles.transcriptEntryReasoning}`
+                      : styles.transcriptEntry
+                  }
+                >
+                  <span class={transcriptLabelClass(entry)}>{transcriptLabel(entry, props.messages())}</span>
                   {entry.text}
                 </div>
               )}

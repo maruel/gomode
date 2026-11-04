@@ -47,6 +47,26 @@ class SettingsRepositoryTest {
         }
 
     @Test
+    fun `reasoning display requires a persisted opt in`() =
+        runBlocking {
+            val store = InMemoryPreferencesDataStore()
+            val repository = SettingsRepository(store)
+            assertFalse(
+                repository
+                    .awaitSettings("default reasoning display") {
+                        it.loadState == SettingsLoadState.Ready
+                    }.showReasoning,
+            )
+            repository.updateShowReasoning(true)
+            assertTrue(
+                SettingsRepository(store)
+                    .awaitSettings("restored reasoning display") {
+                        it.loadState == SettingsLoadState.Ready
+                    }.showReasoning,
+            )
+        }
+
+    @Test
     fun `existing services receive persisted slots that survive reorder and rename`() =
         runBlocking {
             val store = InMemoryPreferencesDataStore()

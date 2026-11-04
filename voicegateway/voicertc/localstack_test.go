@@ -593,6 +593,71 @@ func TestLocalStackSession(t *testing.T) {
 	})
 }
 
+func TestLocalStackReasoning(t *testing.T) {
+	t.Parallel()
+	const reasoning = "Weigh both dates. Compare them. "
+	const answer = "The first date is earlier."
+	setup := mustJSON(t, voicev1.SessionSetup{
+		Kind:    voicev1.MessageKindSessionSetup,
+		Context: voicev1.Context{SystemInstruction: "Answer briefly."},
+	})
+
+	t.Run("client speech", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalStackBackend(nil, nil, fixedConversationLLM{conv: reasoningConversation{}}, nil)
+		sink := &captureSink{}
+		sess := backend.newSession(t.Context(), "reasoning text", sink, true)
+		t.Cleanup(func() { _ = sess.close() })
+		if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
+			t.Fatal(err)
+		}
+		sess.startUserMessage(t.Context(), "Which date is earlier?")
+		waitForKind(t, sink, voicev1.MessageKindAssistantTextDelta)
+		kinds := sink.kinds()
+		firstReasoning, firstText := slices.Index(kinds, voicev1.MessageKindReasoningDelta), slices.Index(kinds, voicev1.MessageKindAssistantTextDelta)
+		if firstReasoning < 0 || firstReasoning > firstText {
+			t.Fatalf("kinds = %v, want reasoning before assistant text", kinds)
+		}
+		if got := sink.reasoningText(); got != reasoning {
+			t.Fatalf("reasoning = %q, want %q", got, reasoning)
+		}
+		if got := sink.assistantText(); got != answer {
+			t.Fatalf("assistant text = %q, want %q", got, answer)
+		}
+	})
+
+	t.Run("spoken turn", func(t *testing.T) {
+		t.Parallel()
+		backend := newLocalStackBackend(
+			func() vadSegmenter { return &energyVAD{} },
+			placeholderASR{}, fixedConversationLLM{conv: reasoningConversation{}}, placeholderTTS{},
+		)
+		sink := &captureSink{}
+		sess, err := backend.connect(t.Context(), "reasoning voice", sink)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = sess.close() })
+		if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
+			t.Fatal(err)
+		}
+		mustAcceptMic(t, sess, loudPCM(200))
+		mustAcceptMic(t, sess, silencePCM(vadSilenceHangoverMS+vadFrameMS))
+		waitForKind(t, sink, voicev1.MessageKindSpeechEnded)
+		kinds := sink.kinds()
+		firstReasoning, firstSpeech := slices.Index(kinds, voicev1.MessageKindReasoningDelta), slices.Index(kinds, voicev1.MessageKindSpeechStarted)
+		if firstReasoning < 0 || firstReasoning > firstSpeech {
+			t.Fatalf("kinds = %v, want reasoning before speech", kinds)
+		}
+		if got := sink.reasoningText(); got != reasoning {
+			t.Fatalf("reasoning = %q, want %q", got, reasoning)
+		}
+		if got := sink.assistantText(); got != answer {
+			t.Fatalf("spoken text = %q, want %q", got, answer)
+		}
+	})
+}
+
 func TestTurnErrorDetail(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -826,7 +891,7 @@ func TestGenaiConversation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for range step.text {
+		for range step.stream {
 		}
 		if _, err := step.finish(); !errors.Is(err, context.Canceled) {
 			t.Fatalf("cancelled finish error = %v, want context.Canceled", err)
@@ -847,12 +912,23 @@ func TestGenaiConversation(t *testing.T) {
 }
 
 func finishLLMStep(t *testing.T, step llmStep) (reply llmReply, deltas []string) {
-	deltas = slices.Collect(step.text)
+	deltas = collectLLMText(step)
 	reply, err := step.finish()
 	if err != nil {
 		t.Fatal(err)
 	}
 	return reply, deltas
+}
+
+// collectLLMText drains a step and returns its assistant text fragments.
+func collectLLMText(step llmStep) []string {
+	var text []string
+	for fragment := range step.stream {
+		if fragment.text != "" {
+			text = append(text, fragment.text)
+		}
+	}
+	return text
 }
 
 func TestLocalStackModelsForConfig(t *testing.T) {
@@ -1243,7 +1319,7 @@ func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			text := slices.Collect(step.text)
+			text := collectLLMText(step)
 			reply, err := step.finish()
 			if redirect {
 				if err == nil || !strings.Contains(err.Error(), "different endpoint") {
@@ -1261,7 +1337,7 @@ func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			text = slices.Collect(step.text)
+			text = collectLLMText(step)
 			reply, err = step.finish()
 			if err != nil {
 				t.Fatal(err)
@@ -1368,6 +1444,19 @@ func (c *captureSink) kinds() []voicev1.MessageKind {
 		}
 	}
 	return kinds
+}
+
+func (c *captureSink) reasoningText() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out strings.Builder
+	for _, m := range c.msgs {
+		var msg voicev1.ReasoningDelta
+		if json.Unmarshal(m, &msg) == nil && msg.Kind == voicev1.MessageKindReasoningDelta {
+			out.WriteString(msg.Text)
+		}
+	}
+	return out.String()
 }
 
 func (c *captureSink) assistantText() string {
@@ -1505,7 +1594,7 @@ func (l *blockingLLM) newConversation(string, []voicev1.ToolDeclaration) llmConv
 
 func (l *blockingLLM) user(ctx context.Context, _ string) (llmStep, error) {
 	return llmStep{
-		text: func(func(string) bool) { <-ctx.Done() },
+		stream: func(func(llmFragment) bool) { <-ctx.Done() },
 		finish: func() (llmReply, error) {
 			l.finished <- struct{}{}
 			return llmReply{}, ctx.Err()
@@ -1572,6 +1661,31 @@ func (t *recordingTTS) textsSnapshot() []string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return append([]string(nil), t.texts...)
+}
+
+// reasoningConversation reasons before every answer.
+type reasoningConversation struct{}
+
+func (reasoningConversation) user(context.Context, string) (llmStep, error) {
+	return reasoningStep(), nil
+}
+
+func (reasoningConversation) toolResult(context.Context, string, string, json.RawMessage) (llmStep, error) {
+	return reasoningStep(), nil
+}
+
+func (reasoningConversation) addContext(string) {}
+
+func reasoningStep() llmStep {
+	const answer = "The first date is earlier."
+	return llmStep{
+		stream: slices.Values([]llmFragment{
+			{reasoning: "Weigh both dates. "},
+			{reasoning: "Compare them. "},
+			{text: answer},
+		}),
+		finish: func() (llmReply, error) { return llmReply{text: answer}, nil },
+	}
 }
 
 type fixedConversationLLM struct{ conv llmConversation }

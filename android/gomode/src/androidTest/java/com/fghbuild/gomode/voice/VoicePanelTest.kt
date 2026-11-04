@@ -24,6 +24,7 @@ import androidx.compose.ui.input.InputModeManager
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ExperimentalTestApi
@@ -72,6 +73,39 @@ import kotlin.math.abs
 class VoicePanelTest {
     @get:Rule
     val composeRule = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun transcriptLabelsReasoningSeparatelyFromSpokenText() {
+        composeRule.setContent {
+            GoModeTheme {
+                TranscriptLog(
+                    entries =
+                        listOf(
+                            TranscriptEntry(
+                                TranscriptSpeaker.ASSISTANT,
+                                "Weigh both dates.",
+                                kind = TranscriptKind.REASONING,
+                            ),
+                            TranscriptEntry(TranscriptSpeaker.ASSISTANT, "The first date is earlier."),
+                            TranscriptEntry(TranscriptSpeaker.USER, "Which date is earlier?"),
+                        ),
+                    modifier = Modifier.testTag("gomode-voice-transcript"),
+                )
+            }
+        }
+        composeRule.onNodeWithText("Reasoning: Weigh both dates.").assertIsDisplayed()
+        composeRule.onNodeWithText("Assistant: The first date is earlier.").assertIsDisplayed()
+        composeRule.onNodeWithText("You: Which date is earlier?").assertIsDisplayed()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val device = UiDevice.getInstance(instrumentation)
+        composeRule.waitForIdle()
+        device.waitForIdle()
+        assertTrue(
+            device.takeScreenshot(
+                File(instrumentation.targetContext.getExternalFilesDir(null), "transcript-reasoning.png"),
+            ),
+        )
+    }
 
     @Test
     fun speechLanguageDownloadHasProgressAndDoesNotStartVoice() {

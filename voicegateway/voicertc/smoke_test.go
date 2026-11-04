@@ -146,8 +146,8 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 			t.Fatal(err)
 		}
 		var text strings.Builder
-		for delta := range step.text {
-			text.WriteString(delta)
+		for fragment := range step.stream {
+			text.WriteString(fragment.text)
 		}
 		reply, err := step.finish()
 		t.Logf("Gemma first text reply latency: %s", smokeElapsed(firstReply))

@@ -26,6 +26,8 @@ const (
 	MessageKindTranscriptDelta MessageKind = "transcript.delta"
 	// MessageKindAssistantTextDelta streams assistant text.
 	MessageKindAssistantTextDelta MessageKind = "assistant.text.delta"
+	// MessageKindReasoningDelta streams provider reasoning text.
+	MessageKindReasoningDelta MessageKind = "reasoning.delta"
 	// MessageKindSpeechStarted reports that speech output started.
 	MessageKindSpeechStarted MessageKind = "speech.started"
 	// MessageKindSpeechEnded reports that speech output ended.
@@ -198,6 +200,17 @@ type AssistantTextDelta struct {
 	// Kind is "assistant.text.delta".
 	Kind MessageKind `json:"kind"`
 	// Text is an incremental assistant text fragment.
+	Text string `json:"text"`
+}
+
+// ReasoningDelta is a gateway message that streams provider reasoning text.
+//
+// Reasoning is not speech and not a transcript statement. A client decides
+// whether to display it.
+type ReasoningDelta struct {
+	// Kind is "reasoning.delta".
+	Kind MessageKind `json:"kind"`
+	// Text is an incremental reasoning fragment.
 	Text string `json:"text"`
 }
 

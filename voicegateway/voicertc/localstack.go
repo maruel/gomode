@@ -62,18 +62,29 @@ type llmReply struct {
 	toolCalls []llmToolCall
 }
 
+// llmFragment is one streamed LLM output fragment. Reasoning and text arrive in
+// generated order; a fragment sets at most one of them.
+type llmFragment struct {
+	text      string
+	reasoning string
+}
+
 // llmStep is one streamed LLM generation.
 //
-// Callers must drain text (including provider completion), then call finish
+// Callers must drain stream (including provider completion), then call finish
 // exactly once. finish is a nonblocking history commit, serialized with events.
 type llmStep struct {
-	text   iter.Seq[string]
+	stream iter.Seq[llmFragment]
 	finish func() (llmReply, error)
 }
 
 func newLLMStep(text []string, reply llmReply, err error) llmStep {
+	fragments := make([]llmFragment, len(text))
+	for i := range text {
+		fragments[i] = llmFragment{text: text[i]}
+	}
 	return llmStep{
-		text: slices.Values(text),
+		stream: slices.Values(fragments),
 		finish: func() (llmReply, error) {
 			return reply, err
 		},
@@ -420,10 +431,16 @@ func (s *localStackSession) startAdmittedStep(ctx context.Context, conv llmConve
 // synthesis.
 func (s *localStackSession) handleTextStep(ctx context.Context, conv llmConversation, step llmStep) {
 	streamed := false
-	for delta := range step.text {
-		if delta != "" && ctx.Err() == nil {
+	for fragment := range step.stream {
+		if ctx.Err() != nil {
+			continue
+		}
+		if fragment.reasoning != "" {
+			s.emit(&voicev1.ReasoningDelta{Kind: voicev1.MessageKindReasoningDelta, Text: fragment.reasoning})
+		}
+		if fragment.text != "" {
 			streamed = true
-			s.emit(&voicev1.AssistantTextDelta{Kind: voicev1.MessageKindAssistantTextDelta, Text: delta})
+			s.emit(&voicev1.AssistantTextDelta{Kind: voicev1.MessageKindAssistantTextDelta, Text: fragment.text})
 		}
 	}
 	reply, err := s.finishStep(ctx, conv, step)
@@ -479,8 +496,11 @@ func (s *localStackSession) forwardLLMText(ctx context.Context, conv llmConversa
 		}
 		streamed = true
 	}
-	for delta := range step.text {
-		for _, fragment := range fragmenter.push(delta) {
+	for output := range step.stream {
+		if output.reasoning != "" && ctx.Err() == nil {
+			s.emit(&voicev1.ReasoningDelta{Kind: voicev1.MessageKindReasoningDelta, Text: output.reasoning})
+		}
+		for _, fragment := range fragmenter.push(output.text) {
 			sendFragment(fragment)
 		}
 	}

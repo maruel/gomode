@@ -355,6 +355,10 @@ func (s *realtimeBridgeSession) handleEvent(event *genai.RealtimeEvent) error {
 			s.assistantSpeaking = true
 			out = append(out, mustGatewayServerMessage(&voicev1.SpeechStarted{Kind: voicev1.MessageKindSpeechStarted, Speaker: voicev1.SpeakerAssistant}))
 		}
+	case genai.RealtimeEventContentReasoning:
+		if event.Content.Reasoning != "" {
+			out = append(out, mustGatewayServerMessage(&voicev1.ReasoningDelta{Kind: voicev1.MessageKindReasoningDelta, Text: event.Content.Reasoning}))
+		}
 	case genai.RealtimeEventTranscriptInput, genai.RealtimeEventTranscriptOutput:
 		speaker := voicev1.SpeakerUser
 		transcript := &s.inputTranscript

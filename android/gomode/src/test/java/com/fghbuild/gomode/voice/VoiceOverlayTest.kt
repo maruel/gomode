@@ -51,6 +51,18 @@ class VoiceOverlayTest {
     }
 
     @Test
+    fun transcriptLabelsSeparateReasoningFromSpokenText() {
+        assertEquals(
+            "Reasoning",
+            transcriptLabel(
+                TranscriptEntry(TranscriptSpeaker.ASSISTANT, "weigh both dates", kind = TranscriptKind.REASONING),
+            ),
+        )
+        assertEquals("You", transcriptLabel(TranscriptEntry(TranscriptSpeaker.USER, "which date is earlier?")))
+        assertEquals("Assistant", transcriptLabel(TranscriptEntry(TranscriptSpeaker.ASSISTANT, "the first one")))
+    }
+
+    @Test
     fun serviceReconnectReasonCollapsesLinesAndBoundsTransportMessages() {
         assertEquals("HTTP 401", serviceReconnectReasonText("HTTP 401"))
         assertEquals(

@@ -360,6 +360,35 @@ func assertWireResults(t *testing.T, messages []chronologicalWireMessage, want [
 	}
 }
 
+func TestGenaiConversationReasoning(t *testing.T) {
+	t.Parallel()
+	p := &fakeGenAIProvider{firstReplies: []genai.Reply{
+		{Reasoning: "Weigh both dates. "},
+		{Reasoning: "Compare them. "},
+		{Text: "The first date is earlier."},
+	}}
+	conv := (&genaiLLMAdapter{provider: p}).newConversation("Answer briefly.", nil)
+	step, err := conv.user(t.Context(), "Which date is earlier?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fragments []llmFragment
+	for fragment := range step.stream {
+		fragments = append(fragments, fragment)
+	}
+	if reply, err := step.finish(); err != nil || reply.text != "The first date is earlier." {
+		t.Fatalf("reply = %+v, err = %v", reply, err)
+	}
+	want := []llmFragment{
+		{reasoning: "Weigh both dates. "},
+		{reasoning: "Compare them. "},
+		{text: "The first date is earlier."},
+	}
+	if !slices.Equal(fragments, want) {
+		t.Fatalf("fragments = %v, want %v", fragments, want)
+	}
+}
+
 func TestGenaiConversationConsecutiveResults(t *testing.T) {
 	t.Parallel()
 	p := &fakeGenAIProvider{firstReplies: []genai.Reply{
@@ -385,7 +414,7 @@ func TestGenaiConversationConsecutiveResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Drain the request, then supersede it before its history commit.
-	for range partial.text {
+	for range partial.stream {
 	}
 	final, err := conv.toolResult(t.Context(), "A", "task_status", json.RawMessage(`{"state":"running-amber"}`))
 	if err != nil {

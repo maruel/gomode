@@ -294,13 +294,13 @@ func TestGeminiBridgeSession(t *testing.T) {
 	t.Run("handleEvent", func(t *testing.T) {
 		sink := &realtimeEventSink{events: make(chan struct{}, 1)}
 		s := &realtimeBridgeSession{ctx: t.Context(), sink: sink}
-		events := []genai.RealtimeEvent{{Kind: genai.RealtimeEventContentAudio, Content: genai.RealtimeContent{Audio: []byte{1, 0}}}, {Kind: genai.RealtimeEventContentAudio, Content: genai.RealtimeContent{Audio: []byte{2, 0}}}, {Kind: genai.RealtimeEventTranscriptOutput, Content: genai.RealtimeContent{Text: "hello"}}, {Kind: genai.RealtimeEventTranscriptOutput, Content: genai.RealtimeContent{Text: "hello world", Final: true}}, {Kind: genai.RealtimeEventGenerationDone}, {Kind: genai.RealtimeEventTranscriptInput, Content: genai.RealtimeContent{Text: "user", Final: true}}, {Kind: genai.RealtimeEventTranscriptOutput, Content: genai.RealtimeContent{Text: "again"}}, {Kind: genai.RealtimeEventTranscriptOutput, Content: genai.RealtimeContent{Text: "correction", Final: true}}}
+		events := []genai.RealtimeEvent{{Kind: genai.RealtimeEventContentAudio, Content: genai.RealtimeContent{Audio: []byte{1, 0}}}, {Kind: genai.RealtimeEventContentReasoning, Content: genai.RealtimeContent{Reasoning: "weigh the request"}}, {Kind: genai.RealtimeEventContentAudio, Content: genai.RealtimeContent{Audio: []byte{2, 0}}}, {Kind: genai.RealtimeEventTranscriptOutput, Content: genai.RealtimeContent{Text: "hello"}}, {Kind: genai.RealtimeEventTranscriptOutput, Content: genai.RealtimeContent{Text: "hello world", Final: true}}, {Kind: genai.RealtimeEventGenerationDone}, {Kind: genai.RealtimeEventTranscriptInput, Content: genai.RealtimeContent{Text: "user", Final: true}}, {Kind: genai.RealtimeEventTranscriptOutput, Content: genai.RealtimeContent{Text: "again"}}, {Kind: genai.RealtimeEventTranscriptOutput, Content: genai.RealtimeContent{Text: "correction", Final: true}}}
 		for i := range events {
 			if err := s.handleEvent(&events[i]); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if sink.assistantText() != "hello worldagain" || slices.Contains(sink.kinds(), voicev1.MessageKindSpeechEnded) {
+		if sink.reasoningText() != "weigh the request" || sink.assistantText() != "hello worldagain" || slices.Contains(sink.kinds(), voicev1.MessageKindSpeechEnded) {
 			t.Fatalf("transcript/completion: %q %v", sink.assistantText(), sink.kinds())
 		}
 		if err := s.handleEvent(&genai.RealtimeEvent{Kind: genai.RealtimeEventInterrupted}); err != nil {
@@ -314,7 +314,7 @@ func TestGeminiBridgeSession(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		want := []voicev1.MessageKind{voicev1.MessageKindSpeechStarted, voicev1.MessageKindTranscriptDelta, voicev1.MessageKindAssistantTextDelta, voicev1.MessageKindTranscriptDelta, voicev1.MessageKindAssistantTextDelta, voicev1.MessageKindTranscriptDelta, voicev1.MessageKindTranscriptDelta, voicev1.MessageKindAssistantTextDelta, voicev1.MessageKindInterrupted, voicev1.MessageKindInterrupted, voicev1.MessageKindSpeechEnded}
+		want := []voicev1.MessageKind{voicev1.MessageKindSpeechStarted, voicev1.MessageKindReasoningDelta, voicev1.MessageKindTranscriptDelta, voicev1.MessageKindAssistantTextDelta, voicev1.MessageKindTranscriptDelta, voicev1.MessageKindAssistantTextDelta, voicev1.MessageKindTranscriptDelta, voicev1.MessageKindTranscriptDelta, voicev1.MessageKindAssistantTextDelta, voicev1.MessageKindInterrupted, voicev1.MessageKindInterrupted, voicev1.MessageKindSpeechEnded}
 		if !slices.Equal(sink.kinds(), want) {
 			t.Fatalf("gateway ordering: %v", sink.kinds())
 		}

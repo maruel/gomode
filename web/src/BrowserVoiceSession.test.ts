@@ -117,6 +117,36 @@ function finishTurn(socket: FakeWebSocket, text: string): void {
   socket.message({ kind: "turn.status", state: "idle" });
 }
 
+describe("provider reasoning", () => {
+  it("drops reasoning while the display setting is off", async () => {
+    const socket = await readySocket();
+    expect(session.state.showReasoning).toBe(false);
+    socket.message({ kind: "reasoning.delta", text: "Weigh both dates." });
+    expect(session.state.transcript).toHaveLength(0);
+    finishTurn(socket, "The first date is earlier.");
+    expect(session.state.transcript).toEqual([
+      { kind: "transcript", speaker: "assistant", text: "The first date is earlier.", final: true },
+    ]);
+  });
+
+  it("merges reasoning into its own entry without speaking it", async () => {
+    const socket = await readySocket();
+    session.setShowReasoning(true);
+    socket.message({ kind: "reasoning.delta", text: "Weigh both dates. " });
+    socket.message({ kind: "reasoning.delta", text: "Compare them." });
+    expect(session.state.transcript).toEqual([
+      { kind: "reasoning", speaker: "assistant", text: "Weigh both dates. Compare them.", final: false },
+    ]);
+    expect(fakeSynthesis.spoken).toHaveLength(0);
+    finishTurn(socket, "The first date is earlier.");
+    expect(session.state.transcript).toEqual([
+      { kind: "reasoning", speaker: "assistant", text: "Weigh both dates. Compare them.", final: true },
+      { kind: "transcript", speaker: "assistant", text: "The first date is earlier.", final: true },
+    ]);
+    expect(fakeSynthesis.spoken.map((entry) => entry.text)).toEqual(["The first date is earlier."]);
+  });
+});
+
 describe("browser voice sessions", () => {
   it("streams ordered sentences before idle, preserves decimals and finalizes text before playback drains", async () => {
     const socket = await readySocket();
@@ -132,7 +162,12 @@ describe("browser voice sessions", () => {
     for (const text of chunks.slice(2)) socket.message({ kind: "assistant.text.delta", text });
     expect(fakeSynthesis.spoken).toHaveLength(1);
     socket.message({ kind: "turn.status", state: "idle" });
-    expect(session.state.transcript.at(-1)).toEqual({ speaker: "assistant", text: chunks.join(""), final: true });
+    expect(session.state.transcript.at(-1)).toEqual({
+      kind: "transcript",
+      speaker: "assistant",
+      text: chunks.join(""),
+      final: true,
+    });
     expect(session.state.listening).toBe(false);
     fakeSynthesis.complete();
     expect(fakeSynthesis.spoken.at(-1)?.text).toBe('"Next?"');
@@ -575,7 +610,7 @@ describe("browser voice sessions", () => {
     recognition?.end();
     socket.message({ kind: "transcript.delta", speaker: "user", text: "I need help" });
     expect(session.state.transcript.filter((entry) => entry.speaker === "user")).toEqual([
-      { speaker: "user", text: "I need help", final: true },
+      { kind: "transcript", speaker: "user", text: "I need help", final: true },
     ]);
     expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toEqual({ kind: "user.message", text: "I need help" });
     expect(session.state.listening).toBe(false);
