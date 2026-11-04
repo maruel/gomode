@@ -75,12 +75,11 @@ func mainImpl(args []string) (err error) {
 	}
 	defer func() { err = errors.Join(err, watcher.Close()) }()
 
-	keys := voicertc.ProviderKeys{Gemini: os.Getenv("GEMINI_API_KEY"), OpenAI: os.Getenv("OPENAI_API_KEY")}
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {
 		return fmt.Errorf("get user cache dir: %w", err)
 	}
-	bridge, err := voicertc.NewBridge(ctx, &cfg, keys, cfg.Server.WebRTCUDPPort, filepath.Join(cacheDir, "voice-gateway"))
+	bridge, err := voicertc.NewBridge(ctx, &cfg, filepath.Join(cacheDir, "voice-gateway"))
 	if err != nil {
 		if ctx.Err() != nil {
 			return context.Cause(ctx)

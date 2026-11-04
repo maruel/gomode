@@ -3,6 +3,7 @@
 package voicegateway
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/maruel/genai"
+	"github.com/maruel/genai/providers"
 )
 
 func TestLoadConfig(t *testing.T) {
@@ -414,6 +420,50 @@ voice = "af_heart"
 }
 
 func TestConfig(t *testing.T) {
+	t.Run("Available", func(t *testing.T) {
+		for _, tc := range []struct {
+			name          string
+			callerTimeout time.Duration
+		}{
+			{name: "stalled provider"},
+			{name: "earlier caller deadline", callerTimeout: time.Second},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					stalled := &availabilityProbe{wait: true}
+					healthy := &availabilityProbe{}
+					providers.All["gomode-stalled"] = providers.Config{Factory: func(context.Context, ...genai.ProviderOption) (genai.Provider, error) { return stalled, nil }}
+					providers.All["gomode-healthy"] = providers.Config{Factory: func(context.Context, ...genai.ProviderOption) (genai.Provider, error) { return healthy, nil }}
+					t.Cleanup(func() { delete(providers.All, "gomode-stalled") })
+					t.Cleanup(func() { delete(providers.All, "gomode-healthy") })
+					cfg := Config{Chat: []ChatConfig{
+						{Label: "Stalled", ModelConfig: ModelConfig{Provider: "gomode-stalled", Model: "model"}},
+						{Label: "Healthy", ModelConfig: ModelConfig{Provider: "gomode-healthy", Model: "model"}},
+					}}
+					if err := cfg.ValidateEmbedded(); err != nil {
+						t.Fatal(err)
+					}
+					ctx := t.Context()
+					if tc.callerTimeout != 0 {
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithTimeout(ctx, tc.callerTimeout)
+						t.Cleanup(cancel)
+					}
+					started := time.Now()
+					got := cfg.Available(ctx)
+					if len(got.Chat) != 1 || got.Chat[0].Label != "Healthy" {
+						t.Fatalf("available choices = %+v", got.Chat)
+					}
+					if !stalled.closed || !healthy.closed {
+						t.Fatal("probe providers were not closed")
+					}
+					if elapsed := time.Since(started); elapsed > time.Minute || (tc.callerTimeout != 0 && elapsed != tc.callerTimeout) {
+						t.Fatalf("probe duration = %s", elapsed)
+					}
+				})
+			})
+		}
+	})
 	t.Run("explicit models", func(t *testing.T) {
 		for _, tc := range []struct {
 			name  string
@@ -1005,4 +1055,24 @@ func testLocalStackConfig() LocalStackConfig {
 		LLM:   ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"},
 		TTS:   LocalStackTTSConfig{Engine: LocalStackTTSKittenTTS, Voice: "Jasper", Model: "KittenML/kitten-tts-2"},
 	}
+}
+
+// availabilityProbe models a provider that waits for its caller's deadline.
+type availabilityProbe struct {
+	genai.Provider
+	wait   bool
+	closed bool
+}
+
+func (p *availabilityProbe) Ping(ctx context.Context) error {
+	if !p.wait {
+		return nil
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (p *availabilityProbe) Close() error {
+	p.closed = true
+	return nil
 }

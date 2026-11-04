@@ -100,22 +100,17 @@ type Bridge struct {
 	textDone   chan struct{}
 }
 
-// ProviderKeys holds credentials used by provider-backed choices.
-type ProviderKeys struct {
-	Gemini string
-	OpenAI string
-}
-
 // NewBridge creates a Bridge that multiplexes WebRTC traffic through a single
 // UDP port and eagerly verifies its UPnP publication.
 //
-// Configured choices share the UDP listener. Backend initialization is atomic:
+// Credentials use each provider's native environment variables. Configured
+// choices share the UDP listener selected by cfg.Server.WebRTCUDPPort. Backend initialization is atomic:
 // a failure closes all backends already initialized.
-func NewBridge(ctx context.Context, cfg *voicegateway.Config, keys ProviderKeys, udpPort int, activityLogDir string) (*Bridge, error) {
-	return newBridgeWithTimeout(ctx, cfg, keys, udpPort, activityLogDir, defaultUPnPSSDPTimeout)
+func NewBridge(ctx context.Context, cfg *voicegateway.Config, activityLogDir string) (*Bridge, error) {
+	return newBridgeWithTimeout(ctx, cfg, activityLogDir, defaultUPnPSSDPTimeout)
 }
 
-func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, keys ProviderKeys, udpPort int, activityLogDir string, upnpSSDPTimeout time.Duration) (*Bridge, error) {
+func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, activityLogDir string, upnpSSDPTimeout time.Duration) (*Bridge, error) {
 	if activityLogDir == "" {
 		return nil, errors.New("voice activity log directory is required")
 	}
@@ -138,7 +133,7 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, keys Pr
 		if err != nil {
 			return nil, errors.Join(err, cleanup())
 		}
-		backend, err := backendForConfig(ctx, ch, keys)
+		backend, err := backendForConfig(ctx, ch)
 		if err != nil {
 			return nil, errors.Join(fmt.Errorf("initialize choice %q: %w", id, err), cleanup())
 		}
@@ -149,7 +144,7 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, keys Pr
 		}
 	}
 	advertised.Defaults = voicev1.DefaultChoices(advertised.Choices, nil)
-	b, err := newBridgeWithBackendAndTimeout(ctx, backends[defaultID], udpPort, activityLogDir, upnpSSDPTimeout)
+	b, err := newBridgeWithBackendAndTimeout(ctx, backends[defaultID], cfg.Server.WebRTCUDPPort, activityLogDir, upnpSSDPTimeout)
 	if err != nil {
 		return nil, errors.Join(err, cleanup())
 	}
@@ -778,7 +773,7 @@ type udpCandidate struct {
 }
 
 // backendForConfig constructs one typed pipeline backend.
-func backendForConfig(ctx context.Context, cfg voicegateway.Choice, keys ProviderKeys) (backendConnector, error) {
+func backendForConfig(ctx context.Context, cfg voicegateway.Choice) (backendConnector, error) {
 	switch c := cfg.(type) {
 	case *voicegateway.LocalStackConfig:
 		return localStackBackendForConfig(ctx, c)
@@ -797,12 +792,6 @@ func backendForConfig(ctx context.Context, cfg voicegateway.Choice, keys Provide
 			return nil, fmt.Errorf("unsupported provider %q", resolved.Provider)
 		}
 		key := os.Getenv(entry.APIKeyEnvVar)
-		if resolved.Provider == "gemini" {
-			key = keys.Gemini
-		}
-		if resolved.Provider == "openai" || resolved.Provider == "openairesponses" {
-			key = keys.OpenAI
-		}
 		if entry.APIKeyEnvVar != "" && key == "" {
 			return nil, fmt.Errorf("%s not configured", entry.APIKeyEnvVar)
 		}

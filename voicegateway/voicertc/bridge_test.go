@@ -140,11 +140,13 @@ func TestApplySessionLanguage(t *testing.T) {
 }
 
 func TestNewBridge(t *testing.T) {
-	t.Parallel()
+	t.Setenv("GEMINI_API_KEY", "test-key")
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Run("configured choices", testBridgeConfiguredChoices)
 	cfg := &voicegateway.Config{Realtime: []voicegateway.RealtimeConfig{{Label: "Gemini", ModelConfig: voicegateway.ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}}}}
 	t.Run("NewBridge", func(t *testing.T) {
 		t.Parallel()
-		b, err := newBridgeWithTimeout(t.Context(), cfg, ProviderKeys{Gemini: "test-key"}, 0, t.TempDir(), 5*time.Millisecond)
+		b, err := newBridgeWithTimeout(t.Context(), cfg, t.TempDir(), 5*time.Millisecond)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -153,7 +155,7 @@ func TestNewBridge(t *testing.T) {
 
 	t.Run("PeerConnection", func(t *testing.T) {
 		t.Parallel()
-		b, err := newBridgeWithTimeout(t.Context(), cfg, ProviderKeys{Gemini: "test-key"}, 0, t.TempDir(), 5*time.Millisecond)
+		b, err := newBridgeWithTimeout(t.Context(), cfg, t.TempDir(), 5*time.Millisecond)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -183,7 +185,7 @@ func TestNewBridge(t *testing.T) {
 }
 
 func TestBackendForConfigGeminiModel(t *testing.T) {
-	t.Parallel()
+	t.Setenv("GEMINI_API_KEY", "test-key")
 	cases := []struct {
 		name  string
 		model string
@@ -194,7 +196,7 @@ func TestBackendForConfigGeminiModel(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			backend, err := backendForConfig(t.Context(), &voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "gemini", Model: tc.model}}, ProviderKeys{Gemini: "test-key"})
+			backend, err := backendForConfig(t.Context(), &voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "gemini", Model: tc.model}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -202,6 +204,9 @@ func TestBackendForConfigGeminiModel(t *testing.T) {
 			gemini, ok := backend.(*realtimeBridgeBackend)
 			if !ok {
 				t.Fatalf("backend = %T, want *realtimeBridgeBackend", backend)
+			}
+			if gemini.apiKey != "test-key" {
+				t.Fatal("Gemini did not use its native environment credential")
 			}
 			if gemini.model != tc.want {
 				t.Errorf("model = %q, want %q", gemini.model, tc.want)
@@ -211,10 +216,10 @@ func TestBackendForConfigGeminiModel(t *testing.T) {
 }
 
 func TestBackendForConfigOpenAI(t *testing.T) {
-	t.Parallel()
 	t.Run("missing key", func(t *testing.T) {
-		t.Parallel()
-		if _, err := backendForConfig(t.Context(), &voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openai", Model: "gpt-realtime-2.1-mini"}}, ProviderKeys{}); err == nil {
+		t.Setenv("OPENAI_API_KEY", "")
+
+		if _, err := backendForConfig(t.Context(), &voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openai", Model: "gpt-realtime-2.1-mini"}}); err == nil {
 			t.Fatal("accepted a missing OPENAI_API_KEY")
 		}
 	})
@@ -227,8 +232,9 @@ func TestBackendForConfigOpenAI(t *testing.T) {
 		{name: "full model", model: "gpt-realtime-2.1", want: "gpt-realtime-2.1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			backend, err := backendForConfig(t.Context(), &voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openai", Model: tc.model}}, ProviderKeys{OpenAI: "test-key"})
+			t.Setenv("OPENAI_API_KEY", "test-key")
+
+			backend, err := backendForConfig(t.Context(), &voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openai", Model: tc.model}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -236,6 +242,9 @@ func TestBackendForConfigOpenAI(t *testing.T) {
 			provider, ok := backend.(*realtimeBridgeBackend)
 			if !ok {
 				t.Fatalf("backend = %T, want *realtimeBridgeBackend", backend)
+			}
+			if provider.apiKey != "test-key" {
+				t.Fatal("OpenAI did not use its native environment credential")
 			}
 			if provider.provider != "openai" || provider.model != tc.want {
 				t.Fatalf("provider = %+v", provider)
@@ -1279,7 +1288,6 @@ const browserDTXMeasurement = `(async () => {
 
 func TestBridge(t *testing.T) {
 	t.Parallel()
-	t.Run("configured choices", testBridgeConfiguredChoices)
 	t.Run("VoiceChoices", func(t *testing.T) {
 		t.Parallel()
 		for _, tc := range []struct {
@@ -1972,7 +1980,7 @@ func TestBackendForConfigChat(t *testing.T) {
 	if err := cfg.ValidateEmbedded(); err != nil {
 		t.Fatal(err)
 	}
-	backend, err := backendForConfig(t.Context(), &cfg.Chat[0], ProviderKeys{})
+	backend, err := backendForConfig(t.Context(), &cfg.Chat[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2008,7 +2016,7 @@ func testBridgeConfiguredChoices(t *testing.T) {
 		},
 		Chat: []voicegateway.ChatConfig{{Label: "Chat", ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "https://example.com/v1/chat/completions", Model: "model-a"}}},
 	}
-	bridge, err := newBridgeWithTimeout(t.Context(), &cfg, ProviderKeys{Gemini: "test-key", OpenAI: "test-key"}, 0, t.TempDir(), 5*time.Millisecond)
+	bridge, err := newBridgeWithTimeout(t.Context(), &cfg, t.TempDir(), 5*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}

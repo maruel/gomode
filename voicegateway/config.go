@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers"
@@ -68,9 +69,12 @@ func (c *Config) Choices() iter.Seq2[string, Choice] {
 // endpoint is probed once, and probe clients are closed before returning. Missing
 // providers and custom credentials produce warnings. Managed runtimes and explicit
 // local endpoints remain selectable without probing their default servers.
-// The caller owns the probe timeout and must validate the result if no choices
-// would prevent startup. Availability does not guarantee access to a model.
+// Probes share a one-minute deadline, shortened by earlier caller cancellation.
+// Validate the result if no choices would prevent startup. Availability does not
+// guarantee access to a model.
 func (c *Config) Available(ctx context.Context) Config {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
 	configured := make(map[string]providers.Config)
 	add := func(c *ModelConfig) {
 		if c.usesDefaultProviderEndpoint() {
