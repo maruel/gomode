@@ -634,7 +634,7 @@ func TestLlamaRealtimeSession(t *testing.T) {
 				}
 			}))
 			t.Cleanup(srv.Close)
-			b, err := newLlamaRealtimeBackend(t.Context(), "", voicegateway.RealtimeConfig{Remote: srv.URL})
+			b, err := newLlamaRealtimeBackend(t.Context(), voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", Remote: srv.URL}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -731,7 +731,7 @@ func TestLlamaRealtimeSession(t *testing.T) {
 							close(closed)
 						}))
 						t.Cleanup(srv.Close)
-						b, err := newLlamaRealtimeBackend(t.Context(), "", voicegateway.RealtimeConfig{Remote: srv.URL})
+						b, err := newLlamaRealtimeBackend(t.Context(), voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", Remote: srv.URL}})
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -788,7 +788,7 @@ func TestLlamaRealtimeSession(t *testing.T) {
 					_, _, _ = ws.Read(r.Context())
 				}))
 				t.Cleanup(srv.Close)
-				b, err := newLlamaRealtimeBackend(t.Context(), "", voicegateway.RealtimeConfig{Remote: srv.URL, SetupTimeoutSeconds: 1})
+				b, err := newLlamaRealtimeBackend(t.Context(), voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", Remote: srv.URL}, SetupTimeoutSeconds: 1})
 				if err != nil {
 					t.Fatal(err)
 				}

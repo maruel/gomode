@@ -27,14 +27,12 @@ gateway tests exercise policy and DTO behavior through the provider client.
 
 ## Model upgrades
 
-The Gemini Live model comes from the top-level `model` config key
-(`voicegateway.DefaultGeminiModel` when unset) and the provider qualifies bare
-IDs with the `models/` prefix. A model bump is a setup-shape change, not just a
+The Gemini Live model is required in the `model` key on its `[[realtime]]` entry.
+The provider qualifies bare IDs with the `models/` prefix. A model bump is a setup-shape change, not just a
 string change, so verify each rule below against primary sources and record
 what was consulted.
 
-Current default: `gemini-3.8-live`, upgraded from
-`gemini-3.1-flash-live-preview`.
+The contributed config selects `gemini-3.8-live`.
 
 Sources for the 3.8 upgrade, checked September 2026:
 
@@ -74,15 +72,14 @@ New capabilities that this adapter does not use yet, recorded for future work:
   session is idle.
 - `interimInputTranscription`, low-latency text while the user is speaking.
 
-Keep the model example in `contrib/config.toml` in step with the
-default.
+Keep the configured model examples in `contrib/config.toml` covered by the
+provider setup rules above.
 
 ## OpenAI Realtime Protocol
 
 The `openai-realtime` backend uses `providers/openairesponses` through the shared
-`RealtimeSession` contract. It uses server VAD, output transcription, and
-`gpt-realtime-2.1-mini` by default. Set `model = "gpt-realtime-2.1"` for the
-larger model. OpenAI reports 24 kHz input; the bridge decodes
+`RealtimeSession` contract. It uses server VAD and output transcription.
+The config selects `gpt-realtime-2.1-mini` or `gpt-realtime-2.1` explicitly. OpenAI reports 24 kHz input; the bridge decodes
 Opus at that negotiated rate, so `acceptMicPCM` receives native PCM with no
 resampling. Input transcription stays disabled because it needs a separate
 transcription model. It advertises no voice catalog because the OpenAI voice

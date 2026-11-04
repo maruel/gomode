@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -454,9 +455,13 @@ type choiceBridge struct {
 	fakeMediaBridge
 	rtcChoice  string
 	textChoice string
+	choices    *voicev1.VoiceChoicesResp
 }
 
 func (b *choiceBridge) VoiceChoices() voicev1.VoiceChoicesResp {
+	if b.choices != nil {
+		return *b.choices
+	}
 	return voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{
 		{ID: "live", Label: "Live", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}, Voices: []string{"Kore", "Orus"}, DefaultVoice: "Orus"},
 		{ID: "remote", Label: "Remote", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText, voicev1.VoiceTransportWebRTC}},
@@ -480,6 +485,31 @@ func (b *choiceBridge) ServeTextChoice(_ context.Context, w http.ResponseWriter,
 
 func TestVoiceChoices(t *testing.T) {
 	t.Parallel()
+	t.Run("preserves pipeline order", func(t *testing.T) {
+		t.Parallel()
+		catalog := voicev1.VoiceChoicesResp{
+			Choices: []voicev1.VoiceChoice{
+				{ID: "live", Label: "Realtime", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}, Voices: []string{"Kore"}, DefaultVoice: "Kore"},
+				{ID: "chat", Label: "Chat", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText}},
+				{ID: "stack", Label: "Local stack", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText, voicev1.VoiceTransportWebRTC}},
+			},
+			Defaults: []voicev1.VoiceChoiceDefault{
+				{Transport: voicev1.VoiceTransportText, ID: "chat"},
+				{Transport: voicev1.VoiceTransportWebRTC, ID: "live"},
+			},
+		}
+		b := &choiceBridge{choices: &catalog}
+		h := NewEmbeddedHandler(func() MediaBridge { return b }, b)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v1/voice/choices", http.NoBody))
+		var got voicev1.VoiceChoicesResp
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if w.Code != http.StatusOK || !reflect.DeepEqual(got, catalog) {
+			t.Fatalf("catalog: %d %+v, want %+v", w.Code, got, catalog)
+		}
+	})
 	b := &choiceBridge{}
 	cfg, service := testServiceAuth(t)
 	h, err := NewHandler(&cfg, b, b)

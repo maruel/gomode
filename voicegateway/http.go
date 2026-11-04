@@ -184,8 +184,14 @@ func (h *handler) voiceChoices() voicev1.VoiceChoicesResp {
 		if slices.Contains(ch.Transports, voicev1.VoiceTransportWebRTC) {
 			ch.Transports = []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}
 			ch.Voices = slices.Clone(ch.Voices)
-			choices.Choices = append(choices.Choices, ch)
+		} else {
+			// Retain the catalog position for text-only choices until the text
+			// server supplies its capabilities below.
+			ch.Transports = nil
+			ch.Voices = nil
+			ch.DefaultVoice = ""
 		}
+		choices.Choices = append(choices.Choices, ch)
 	}
 	for _, ch := range text.Choices {
 		if !slices.Contains(ch.Transports, voicev1.VoiceTransportText) {
@@ -198,6 +204,7 @@ func (h *handler) voiceChoices() voicev1.VoiceChoicesResp {
 			choices.Choices[i].Transports = append([]voicev1.VoiceTransport{voicev1.VoiceTransportText}, choices.Choices[i].Transports...)
 		}
 	}
+	choices.Choices = slices.DeleteFunc(choices.Choices, func(ch voicev1.VoiceChoice) bool { return len(ch.Transports) == 0 })
 	choices.Defaults = voicev1.DefaultChoices(choices.Choices, slices.Concat(media.Defaults, text.Defaults))
 	return choices
 }

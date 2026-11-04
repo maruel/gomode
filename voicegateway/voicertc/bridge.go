@@ -122,13 +122,10 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, keys Pr
 	if err := cfg.ValidateEmbedded(); err != nil {
 		return nil, err
 	}
-	configs := cfg.VoiceChoices()
-	defaultID, err := configs[0].ID()
-	if err != nil {
-		return nil, err
-	}
-	backends := make(map[string]backendConnector, len(configs))
-	advertised := voicev1.VoiceChoicesResp{Choices: make([]voicev1.VoiceChoice, 0, len(configs))}
+	count := len(cfg.Realtime) + len(cfg.Chat) + len(cfg.LocalStack)
+	backends := make(map[string]backendConnector, count)
+	advertised := voicev1.VoiceChoicesResp{Choices: make([]voicev1.VoiceChoice, 0, count)}
+	var defaultID string
 	cleanup := func() error {
 		errs := make([]error, 0, len(backends))
 		for _, backend := range backends {
@@ -136,8 +133,7 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, keys Pr
 		}
 		return errors.Join(errs...)
 	}
-	for i := range configs {
-		ch := &configs[i]
+	for label, ch := range cfg.Choices() {
 		id, err := ch.ID()
 		if err != nil {
 			return nil, errors.Join(err, cleanup())
@@ -147,7 +143,10 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, keys Pr
 			return nil, errors.Join(fmt.Errorf("initialize choice %q: %w", id, err), cleanup())
 		}
 		backends[id] = backend
-		advertised.Choices = append(advertised.Choices, backendChoice(backend, id, ch.Label))
+		advertised.Choices = append(advertised.Choices, backendChoice(backend, id, label))
+		if defaultID == "" {
+			defaultID = id
+		}
 	}
 	advertised.Defaults = voicev1.DefaultChoices(advertised.Choices, nil)
 	b, err := newBridgeWithBackendAndTimeout(ctx, backends[defaultID], udpPort, activityLogDir, upnpSSDPTimeout)
@@ -778,41 +777,40 @@ type udpCandidate struct {
 	port int
 }
 
-// backendForConfig constructs one configured backend.
-func backendForConfig(ctx context.Context, cfg *voicegateway.ChoiceConfig, keys ProviderKeys) (backendConnector, error) {
-	resolved := cfg.WithDefaults()
-	cfg = &resolved
-	switch cfg.Type {
-	case voicegateway.ChoiceLocalStack:
-		return localStackBackendForConfig(ctx, &cfg.LocalStack)
-	case voicegateway.ChoiceChat:
+// backendForConfig constructs one typed pipeline backend.
+func backendForConfig(ctx context.Context, cfg voicegateway.Choice, keys ProviderKeys) (backendConnector, error) {
+	switch c := cfg.(type) {
+	case *voicegateway.LocalStackConfig:
+		resolved := c.WithDefaults()
+		return localStackBackendForConfig(ctx, &resolved)
+	case *voicegateway.ChatConfig:
+		resolved := c.WithDefaults()
 		return localStackBackendForConfig(ctx, &voicegateway.LocalStackConfig{
 			TextOnly: true,
-			LLM:      voicegateway.LocalStackLLMConfig{Provider: cfg.Provider, Remote: cfg.Remote, Model: cfg.Model, APIKeyName: cfg.APIKeyName, LlamaCPPServer: cfg.LlamaCPPServer},
+			LLM:      resolved.ModelConfig,
 		})
-	case voicegateway.ChoiceRealtime:
-		if cfg.Provider == "llamacpp" {
-			rt := cfg.Realtime
-			rt.Remote = cfg.Remote
-			return newLlamaRealtimeBackend(ctx, cfg.Model, rt)
+	case *voicegateway.RealtimeConfig:
+		resolved := c.WithDefaults()
+		if resolved.Provider == "llamacpp" {
+			return newLlamaRealtimeBackend(ctx, resolved)
 		}
-		entry, ok := providers.All[cfg.Provider]
+		entry, ok := providers.All[resolved.Provider]
 		if !ok || entry.Factory == nil {
-			return nil, fmt.Errorf("unsupported provider %q", cfg.Provider)
+			return nil, fmt.Errorf("unsupported provider %q", resolved.Provider)
 		}
 		key := os.Getenv(entry.APIKeyEnvVar)
-		if cfg.Provider == "gemini" {
+		if resolved.Provider == "gemini" {
 			key = keys.Gemini
 		}
-		if cfg.Provider == "openai" || cfg.Provider == "openairesponses" {
+		if resolved.Provider == "openairesponses" {
 			key = keys.OpenAI
 		}
 		if entry.APIKeyEnvVar != "" && key == "" {
 			return nil, fmt.Errorf("%s not configured", entry.APIKeyEnvVar)
 		}
-		return &realtimeBridgeBackend{provider: cfg.Provider, remote: cfg.Remote, apiKey: key, model: cfg.Model}, nil
+		return &realtimeBridgeBackend{provider: resolved.Provider, remote: resolved.Remote, apiKey: key, model: resolved.Model}, nil
 	default:
-		return nil, fmt.Errorf("unsupported choice type %q", cfg.Type)
+		return nil, fmt.Errorf("unsupported pipeline configuration %T", cfg)
 	}
 }
 

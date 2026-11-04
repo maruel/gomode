@@ -1,4 +1,4 @@
-// Configuration for native llama.cpp realtime audio sessions.
+// Realtime audio pipeline configuration and native llama.cpp runtime bounds.
 
 package voicegateway
 
@@ -9,10 +9,12 @@ import (
 	"strings"
 )
 
-// RealtimeConfig selects an existing endpoint or a managed llama.cpp audio runtime.
-// Endpoint capacity is an operator-declared reservation limit, not discovery.
+// RealtimeConfig configures a native audio pipeline. For llama.cpp, endpoint
+// capacity is an operator-declared reservation limit, not discovery.
 type RealtimeConfig struct {
-	Remote              string `toml:"-" json:"-"`
+	Label string `toml:"label" json:"-"`
+	ModelConfig
+
 	CacheDir            string `toml:"cache_dir" json:"cache_dir"`
 	Threads             int    `toml:"threads" json:"threads"`
 	Slots               int    `toml:"slots" json:"slots"`
@@ -20,6 +22,19 @@ type RealtimeConfig struct {
 	MaxOutputTokens     int64  `toml:"max_output_tokens" json:"max_output_tokens"`
 	SetupTimeoutSeconds int    `toml:"setup_timeout_seconds" json:"setup_timeout_seconds"`
 	PendingAudioSeconds int    `toml:"pending_audio_seconds" json:"pending_audio_seconds"`
+}
+
+// ID returns the fingerprint of the effective realtime settings.
+func (c *RealtimeConfig) ID() (string, error) {
+	v := c.WithDefaults()
+	if v.Provider == "llamacpp" && v.Remote == "" {
+		cache, err := v.CacheDirectory()
+		if err != nil {
+			return "", err
+		}
+		v.CacheDir = cache
+	}
+	return choiceID("realtime", v)
 }
 
 // CacheDirectory returns the configured managed runtime cache or its platform default.
@@ -34,8 +49,14 @@ func (c *RealtimeConfig) CacheDirectory() (string, error) {
 	return filepath.Join(base, "gomode", "llama-realtime"), nil
 }
 
-// WithDefaults returns explicit resource and setup bounds.
+// WithDefaults resolves provider aliases, model spelling, and llama.cpp resource
+// bounds. Cloud providers do not use the llama.cpp runtime settings.
 func (c RealtimeConfig) WithDefaults() RealtimeConfig {
+	c.ModelConfig = c.ModelConfig.WithDefaults()
+	if c.Provider != "llamacpp" {
+		c = RealtimeConfig{Label: c.Label, ModelConfig: c.ModelConfig}
+		return c
+	}
 	if c.Slots == 0 {
 		c.Slots = 1
 	}
@@ -59,15 +80,20 @@ func validRealtimeModel(model string) bool {
 	return len(parts) < 3 || (parts[2] != "" && !strings.Contains(parts[2], "/"))
 }
 
-func (c *RealtimeConfig) validate(model string) error {
+func (c *RealtimeConfig) validate() error {
+	if c.Provider == "" {
+		return errors.New("realtime.provider is required")
+	}
+	if c.Provider != "llamacpp" {
+		return c.ModelConfig.validate("realtime")
+	}
 	v := c.WithDefaults()
-	var errs []error
+	errs := []error{c.ModelConfig.validate("realtime")}
 	if c.Remote != "" {
-		errs = append(errs, validateBaseURL("realtime.remote", c.Remote))
 		if c.Threads != 0 || c.CacheDir != "" || c.ContextSize != 0 {
 			errs = append(errs, errors.New("realtime.remote cannot be combined with managed runtime settings"))
 		}
-	} else if !validRealtimeModel(model) {
+	} else if !validRealtimeModel(c.Model) {
 		errs = append(errs, errors.New("realtime model must be a HuggingFace Author/Repo or Author/Repo/Filename"))
 	}
 	if v.Slots < 1 || v.Slots > 16 {

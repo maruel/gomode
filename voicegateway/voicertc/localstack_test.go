@@ -1003,11 +1003,11 @@ func collectLLMText(step llmStep) []string {
 func TestLocalStackModelsForConfig(t *testing.T) {
 	t.Parallel()
 
-	t.Run("defaults", func(t *testing.T) {
+	t.Run("configured models", func(t *testing.T) {
 		t.Parallel()
 		var startedModels []string
 		var servers []*fakeManagedLlamaServer
-		models, err := localStackModelsForConfigWithStarter(t.Context(), &voicegateway.LocalStackConfig{}, func(_ context.Context, model string) (managedLlamaServer, error) {
+		models, err := localStackModelsForConfigWithStarter(t.Context(), &voicegateway.LocalStackConfig{ASR: voicegateway.LocalStackASRConfig{Model: "owner/asr"}, LLM: voicegateway.ModelConfig{Model: "owner/chat"}}, func(_ context.Context, model string) (managedLlamaServer, error) {
 			startedModels = append(startedModels, model)
 			srv := &fakeManagedLlamaServer{url: "http://127.0.0.1:12345"}
 			servers = append(servers, srv)
@@ -1022,7 +1022,7 @@ func TestLocalStackModelsForConfig(t *testing.T) {
 		if _, ok := models.llm.(*genaiLLMAdapter); !ok {
 			t.Fatalf("llm = %T, want genaiLLMAdapter", models.llm)
 		}
-		wantModels := []string{voicegateway.DefaultLocalStackASRModel, voicegateway.DefaultLocalStackLLMModel}
+		wantModels := []string{"owner/asr", "owner/chat"}
 		if !slices.Equal(startedModels, wantModels) {
 			t.Errorf("started models = %v, want %v", startedModels, wantModels)
 		}
@@ -1056,7 +1056,7 @@ func TestLocalStackModelsForConfig(t *testing.T) {
 
 		t.Run("llm", func(t *testing.T) {
 			t.Parallel()
-			cfg := &voicegateway.LocalStackConfig{LLM: voicegateway.LocalStackLLMConfig{Remote: "http://127.0.0.1:12345"}}
+			cfg := &voicegateway.LocalStackConfig{LLM: voicegateway.ModelConfig{Remote: "http://127.0.0.1:12345"}}
 			_, err := localStackModelsForConfigWithStarter(t.Context(), cfg, start)
 			if err == nil || !strings.Contains(err.Error(), "local_stack.llm.provider") {
 				t.Fatalf("err = %v, want local_stack.llm.provider error", err)
@@ -1067,7 +1067,7 @@ func TestLocalStackModelsForConfig(t *testing.T) {
 
 func TestLocalStackTextOnly(t *testing.T) {
 	t.Parallel()
-	cfg := &voicegateway.LocalStackConfig{TextOnly: true}
+	cfg := &voicegateway.LocalStackConfig{TextOnly: true, LLM: voicegateway.ModelConfig{Model: "owner/chat"}}
 	var started []string
 	server := &fakeManagedLlamaServer{url: "http://127.0.0.1:12345"}
 	models, err := localStackModelsForConfigWithStarter(t.Context(), cfg, func(_ context.Context, model string) (managedLlamaServer, error) {
@@ -1077,7 +1077,7 @@ func TestLocalStackTextOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(started) != 1 || started[0] != voicegateway.DefaultLocalStackLLMModel {
+	if len(started) != 1 || started[0] != "owner/chat" {
 		t.Fatalf("started models = %v, want only the LLM", started)
 	}
 	if models.asr != nil {
@@ -1107,11 +1107,12 @@ data: [DONE]
 	}))
 	t.Cleanup(llmServer.Close)
 	config := voicegateway.DefaultConfig()
-	config.Type = voicegateway.ChoiceLocalStack
-	config.LocalStack = voicegateway.LocalStackConfig{
+	config.Realtime = nil
+	config.LocalStack = []voicegateway.LocalStackConfig{{
+		Label:    "Local",
 		TextOnly: true,
-		LLM:      voicegateway.LocalStackLLMConfig{Provider: "openaicompatible", Remote: llmServer.URL + "/v1/chat/completions", Model: "test-model"},
-	}
+		LLM:      voicegateway.ModelConfig{Provider: "openaicompatible", Remote: llmServer.URL + "/v1/chat/completions", Model: "test-model"},
+	}}
 	bridge, err := newBridgeWithTimeout(t.Context(), &config, ProviderKeys{}, 0, t.TempDir(), 5*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
@@ -1174,7 +1175,7 @@ func TestLocalStackProviderCleanup(t *testing.T) { //nolint:paralleltest // The 
 			}}
 			cfg := &voicegateway.LocalStackConfig{
 				ASR: voicegateway.LocalStackASRConfig{Provider: name},
-				LLM: voicegateway.LocalStackLLMConfig{Provider: tc.llmProvider},
+				LLM: voicegateway.ModelConfig{Provider: tc.llmProvider},
 			}
 			models, err := localStackModelsForConfigWithStarter(t.Context(), cfg, nil)
 			if tc.name == "shutdown" {
@@ -1369,7 +1370,7 @@ func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
 			t.Cleanup(srv.Close)
 			cfg := &voicegateway.LocalStackConfig{
 				ASR: voicegateway.LocalStackASRConfig{Engine: voicegateway.LocalStackASROpenAIAudio, Remote: srv.URL, Model: "asr"},
-				LLM: voicegateway.LocalStackLLMConfig{Provider: "openaicompatible", Remote: srv.URL + "/v1/chat/completions", Model: "qwen3-8-27b", APIKeyName: envName},
+				LLM: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: srv.URL + "/v1/chat/completions", Model: "qwen3-8-27b", APIKeyName: envName},
 			}
 			models, err := localStackModelsForConfigWithStarter(t.Context(), cfg, func(context.Context, string) (managedLlamaServer, error) {
 				t.Fatal("remote LLM must not start a managed model")
@@ -1418,7 +1419,7 @@ func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
 	}
 	t.Run("missing key fails before starting models", func(t *testing.T) {
 		t.Setenv(envName, "")
-		cfg := &voicegateway.LocalStackConfig{LLM: voicegateway.LocalStackLLMConfig{Provider: "openaicompatible", Remote: "https://example.com/v1/chat/completions", APIKeyName: envName}}
+		cfg := &voicegateway.LocalStackConfig{LLM: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "https://example.com/v1/chat/completions", APIKeyName: envName}}
 		_, err := localStackModelsForConfigWithStarter(t.Context(), cfg, func(context.Context, string) (managedLlamaServer, error) {
 			t.Fatal("missing key must fail before starting a managed model")
 			return nil, errors.New("unexpected managed model startup")

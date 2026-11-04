@@ -83,14 +83,7 @@ func (b *realtimeBridgeBackend) newProvider(ctx context.Context) (genai.Provider
 	if !ok || entry.Factory == nil {
 		return nil, fmt.Errorf("unsupported provider %q", b.provider)
 	}
-	opts := []genai.ProviderOption{genai.ProviderOptionAPIKey(b.apiKey)}
-	if b.model != "" {
-		model := b.model
-		if b.provider == "gemini" {
-			model = strings.TrimPrefix(model, "models/")
-		}
-		opts = append(opts, genai.ProviderOptionModel(model))
-	}
+	opts := []genai.ProviderOption{genai.ProviderOptionAPIKey(b.apiKey), genai.ProviderOptionModel(b.model)}
 	if b.remote != "" {
 		opts = append(opts, genai.ProviderOptionRemote(b.remote))
 	}

@@ -18,7 +18,6 @@ import (
 	"github.com/coder/websocket"
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers/gemini"
-	"github.com/maruel/gomode/voicegateway"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
@@ -55,7 +54,7 @@ func newGeminiGateway(t *testing.T, script func(context.Context, *websocket.Conn
 	}))
 	t.Cleanup(srv.Close)
 	sink := &realtimeEventSink{events: make(chan struct{}, 1)}
-	backend := &realtimeBridgeBackend{provider: "gemini", apiKey: "test-key", model: voicegateway.DefaultGeminiModel}
+	backend := &realtimeBridgeBackend{provider: "gemini", apiKey: "test-key", model: "gemini-3.8-live"}
 	session, err := backend.connect(t.Context(), "gateway-fixture", sink)
 	if err != nil {
 		t.Fatal(err)

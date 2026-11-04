@@ -70,7 +70,7 @@ control to the Go gateway is the likely integration.
 ## Conversation
 
 `resolveLocalStackEndpoint` accepts any provider registered in genai's
-`providers.All` plus an optional remote URL and model; the default is a managed
+`providers.All` with an explicit model and optional remote URL; local stages can use a managed
 llama.cpp server. Tool calls are preserved and assistant text streams into
 sentence fragments for synthesis. Provider-specific options are added only for
 the provider that defines them, so a remote provider is a configuration change

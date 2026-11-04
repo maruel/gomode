@@ -3,9 +3,12 @@
 package voicegateway
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -22,27 +25,45 @@ func TestLoadConfig(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	t.Run("flat choices", func(t *testing.T) {
+	t.Run("pipeline sections", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config.toml")
-		if err := os.WriteFile(path, []byte(`[[choices]]
- label = "LFM3"
- type = "realtime"
- provider = "llamacpp"
- llamacppsrv = true
- model = "LiquidAI/LFM3-Audio-2B-GGUF"
- [[choices]]
+		// Interleave sections to prove that pipeline precedence is independent
+		// of file position, while entries within each pipeline keep their order.
+		if err := os.WriteFile(path, []byte(`[[chat]]
  label = "Remote"
- type = "chat"
  provider = "openaicompatible"
  remote = "https://llm.example/v1/chat/completions"
  model = "custom"
  api_key_name = "REMOTE_KEY"
- [[choices]]
+ [[local_stack]]
  label = "Local"
- type = "local-stack"
- [choices.local_stack.llm]
+ text_only = true
+ [local_stack.llm]
  provider = "llamacpp"
  llamacppsrv = true
+ model = "chat-model"
+ [[realtime]]
+ label = "LFM3"
+ provider = "llamacpp"
+ llamacppsrv = true
+ model = "LiquidAI/LFM3-Audio-2B-GGUF"
+ context_size = 65536
+ threads = 4
+ slots = 2
+ max_output_tokens = 256
+ setup_timeout_seconds = 20
+ pending_audio_seconds = 6
+ cache_dir = "/tmp/gomode-test-runtime"
+ [[chat]]
+ label = "DeepSeek"
+ provider = "deepseek"
+ model = "deepseek-flash"
+ [[realtime]]
+ label = "Remote audio"
+ provider = "llamacpp"
+ remote = "http://localhost:8080"
+ model = "audio-model"
+ slots = 3
  `), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -53,9 +74,29 @@ func TestLoadConfig(t *testing.T) {
 		if err := cfg.Validate(); err != nil {
 			t.Fatal(err)
 		}
-		choices := cfg.VoiceChoices()
-		if !choices[0].LlamaCPPServer || choices[1].APIKeyName != "REMOTE_KEY" || !choices[2].LocalStack.LLM.LlamaCPPServer {
-			t.Fatalf("lost provider settings: %+v", choices)
+		want := Config{
+			Server: ServerConfig{HTTP: ":3479"},
+			Realtime: []RealtimeConfig{
+				{Label: "LFM3", ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "LiquidAI/LFM3-Audio-2B-GGUF"},
+					ContextSize: 65536, Threads: 4, Slots: 2, MaxOutputTokens: 256,
+					SetupTimeoutSeconds: 20, PendingAudioSeconds: 6, CacheDir: "/tmp/gomode-test-runtime"},
+				{Label: "Remote audio", ModelConfig: ModelConfig{Provider: "llamacpp", Remote: "http://localhost:8080", Model: "audio-model"}, Slots: 3},
+			},
+			Chat: []ChatConfig{
+				{Label: "Remote", ModelConfig: ModelConfig{Provider: "openaicompatible", Remote: "https://llm.example/v1/chat/completions", Model: "custom", APIKeyName: "REMOTE_KEY"}},
+				{Label: "DeepSeek", ModelConfig: ModelConfig{Provider: "deepseek", Model: "deepseek-flash"}},
+			},
+			LocalStack: []LocalStackConfig{{Label: "Local", TextOnly: true, LLM: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "chat-model"}}},
+		}
+		if !reflect.DeepEqual(cfg, want) {
+			t.Fatalf("config = %+v, want %+v", cfg, want)
+		}
+		var labels []string
+		for label := range cfg.Choices() {
+			labels = append(labels, label)
+		}
+		if !slices.Equal(labels, []string{"LFM3", "Remote audio", "Remote", "DeepSeek", "Local"}) {
+			t.Fatalf("choice order = %v", labels)
 		}
 	})
 
@@ -63,9 +104,11 @@ func TestLoadConfig(t *testing.T) {
 	t.Run("text only", func(t *testing.T) {
 		t.Parallel()
 		path := filepath.Join(t.TempDir(), "config.toml")
-		if err := os.WriteFile(path, []byte(`type = "local-stack"
-[local_stack]
+		if err := os.WriteFile(path, []byte(`[[local_stack]]
+label = "Local"
 text_only = true
+[local_stack.llm]
+model = "chat-model"
 `), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -80,7 +123,7 @@ text_only = true
 			{TextOnly: true, ASR: LocalStackASRConfig{Engine: LocalStackASRWhistle}},
 			{TextOnly: true, TTS: LocalStackTTSConfig{Voice: "Jasper"}},
 		} {
-			cfg.LocalStack = speech
+			cfg.LocalStack[0] = speech
 			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "text_only") {
 				t.Fatalf("speech settings with text_only: %v", err)
 			}
@@ -89,7 +132,9 @@ text_only = true
 	t.Run("RunInfra LLM", func(t *testing.T) {
 		t.Parallel()
 		path := filepath.Join(t.TempDir(), "config.toml")
-		if err := os.WriteFile(path, []byte(`type = "local-stack"
+		if err := os.WriteFile(path, []byte(`[[local_stack]]
+label = "Local"
+text_only = true
 [local_stack.llm]
 provider = "openaicompatible"
 remote = "https://api.runinfra.ai/v1/chat/completions"
@@ -105,24 +150,29 @@ api_key_name = "RUNINFRA_GATEWAY_KEY"
 		if err := cfg.Validate(); err != nil {
 			t.Fatal(err)
 		}
-		if cfg.LocalStack.LLM.APIKeyName != "RUNINFRA_GATEWAY_KEY" {
-			t.Fatalf("APIKeyName = %q", cfg.LocalStack.LLM.APIKeyName)
+		if cfg.LocalStack[0].LLM.APIKeyName != "RUNINFRA_GATEWAY_KEY" {
+			t.Fatalf("APIKeyName = %q", cfg.LocalStack[0].LLM.APIKeyName)
 		}
 	})
-	t.Run("missing file returns defaults", func(t *testing.T) {
-		t.Parallel()
-		cfg, err := LoadConfig(filepath.Join(t.TempDir(), "config.toml"))
-		if err != nil {
-			t.Fatal(err)
+	t.Run("file required", func(t *testing.T) {
+		_, err := LoadConfig(filepath.Join(t.TempDir(), "config.toml"))
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("missing file: %v", err)
 		}
-		if cfg.Server.HTTP != ":3479" {
-			t.Errorf("Server.HTTP = %q, want :3479", cfg.Server.HTTP)
-		}
-		if cfg.Server.WebRTCUDPPort != 0 {
-			t.Errorf("Server.WebRTCUDPPort = %d, want 0", cfg.Server.WebRTCUDPPort)
-		}
-		if cfg.Model != "" {
-			t.Errorf("Model = %q, want provider default", cfg.Model)
+	})
+	t.Run("pipeline required", func(t *testing.T) {
+		for _, content := range []string{"", "[server]\nhttp = \":3479\"\n"} {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "at least one") {
+				t.Fatalf("empty pipeline validation: %v", err)
+			}
 		}
 	})
 
@@ -132,6 +182,9 @@ api_key_name = "RUNINFRA_GATEWAY_KEY"
 		dir := t.TempDir()
 		path := filepath.Join(dir, "config.toml")
 		content := fmt.Sprintf(`
+[[realtime]]
+label = "Gemini"
+provider = "gemini"
 model = "gemini-live-test"
 
 [server]
@@ -156,8 +209,8 @@ public_key = %q
 		if cfg.Server.HTTP != ":4444" {
 			t.Errorf("Server.HTTP = %q, want :4444", cfg.Server.HTTP)
 		}
-		if cfg.Model != "gemini-live-test" {
-			t.Errorf("Model = %q, want gemini-live-test", cfg.Model)
+		if cfg.Realtime[0].Model != "gemini-live-test" {
+			t.Errorf("Model = %q, want gemini-live-test", cfg.Realtime[0].Model)
 		}
 		if len(cfg.TrustedIssuers) != 1 || cfg.TrustedIssuers[0].Service != "caic" {
 			t.Errorf("TrustedIssuers = %+v, want one caic issuer", cfg.TrustedIssuers)
@@ -168,7 +221,8 @@ public_key = %q
 		t.Parallel()
 		path := filepath.Join(t.TempDir(), "config.toml")
 		content := `
-type = "local-stack"
+[[local_stack]]
+label = "Local"
 
 [local_stack.asr]
 provider = "llamacpp"
@@ -179,6 +233,8 @@ model = "asr-local"
 provider = "llamacpp"
 remote = "http://localhost:8080"
 model = "gemma-local"
+[local_stack.tts]
+model = "KittenML/kitten-tts-2"
 `
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
@@ -190,37 +246,23 @@ model = "gemma-local"
 		if err := cfg.Validate(); err != nil {
 			t.Fatal(err)
 		}
-		if cfg.Type != ChoiceLocalStack {
-			t.Errorf("Type = %q, want %q", cfg.Type, ChoiceLocalStack)
+		if cfg.LocalStack[0].ASR.Provider != "llamacpp" {
+			t.Errorf("LocalStack.ASR.Provider = %q, want llamacpp", cfg.LocalStack[0].ASR.Provider)
 		}
-		if cfg.LocalStack.ASR.Provider != "llamacpp" {
-			t.Errorf("LocalStack.ASR.Provider = %q, want llamacpp", cfg.LocalStack.ASR.Provider)
+		if cfg.LocalStack[0].ASR.Remote != "http://localhost:8090" {
+			t.Errorf("LocalStack.ASR.Remote = %q, want http://localhost:8090", cfg.LocalStack[0].ASR.Remote)
 		}
-		if cfg.LocalStack.ASR.Remote != "http://localhost:8090" {
-			t.Errorf("LocalStack.ASR.Remote = %q, want http://localhost:8090", cfg.LocalStack.ASR.Remote)
+		if cfg.LocalStack[0].ASR.Model != "asr-local" {
+			t.Errorf("LocalStack.ASR.Model = %q, want asr-local", cfg.LocalStack[0].ASR.Model)
 		}
-		if cfg.LocalStack.ASR.Model != "asr-local" {
-			t.Errorf("LocalStack.ASR.Model = %q, want asr-local", cfg.LocalStack.ASR.Model)
+		if cfg.LocalStack[0].LLM.Provider != "llamacpp" {
+			t.Errorf("LocalStack.LLM.Provider = %q, want llamacpp", cfg.LocalStack[0].LLM.Provider)
 		}
-		if cfg.LocalStack.LLM.Provider != "llamacpp" {
-			t.Errorf("LocalStack.LLM.Provider = %q, want llamacpp", cfg.LocalStack.LLM.Provider)
+		if cfg.LocalStack[0].LLM.Remote != "http://localhost:8080" {
+			t.Errorf("LocalStack.LLM.Remote = %q, want http://localhost:8080", cfg.LocalStack[0].LLM.Remote)
 		}
-		if cfg.LocalStack.LLM.Remote != "http://localhost:8080" {
-			t.Errorf("LocalStack.LLM.Remote = %q, want http://localhost:8080", cfg.LocalStack.LLM.Remote)
-		}
-		if cfg.LocalStack.LLM.Model != "gemma-local" {
-			t.Errorf("LocalStack.LLM.Model = %q, want gemma-local", cfg.LocalStack.LLM.Model)
-		}
-	})
-
-	t.Run("missing file defaults to gemini live", func(t *testing.T) {
-		t.Parallel()
-		cfg, err := LoadConfig(filepath.Join(t.TempDir(), "config.toml"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if cfg.Provider != "gemini" {
-			t.Errorf("Provider = %q, want %q", cfg.Provider, "gemini")
+		if cfg.LocalStack[0].LLM.Model != "gemma-local" {
+			t.Errorf("LocalStack.LLM.Model = %q, want gemma-local", cfg.LocalStack[0].LLM.Model)
 		}
 	})
 
@@ -238,6 +280,22 @@ model = "gemma-local"
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
+	t.Run("pipeline settings error", func(t *testing.T) {
+		t.Parallel()
+		for _, content := range []string{
+			"[[chat]]\nlabel = \"Chat\"\nprovider = \"deepseek\"\nslots = 2\n",
+			"[[realtime]]\nlabel = \"Audio\"\nprovider = \"gemini\"\ntext_only = true\n",
+			"[[local_stack]]\nlabel = \"Stack\"\nprovider = \"llamacpp\"\n",
+		} {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "missing in the target struct") {
+				t.Fatalf("pipeline-inappropriate setting: %v", err)
+			}
+		}
+	})
 
 	t.Run("removed local stack options are rejected", func(t *testing.T) {
 		t.Parallel()
@@ -251,7 +309,7 @@ model = "gemma-local"
 			t.Run(option, func(t *testing.T) {
 				t.Parallel()
 				path := filepath.Join(t.TempDir(), "config.toml")
-				content := fmt.Sprintf("[local_stack.llm]\n%s\n", option)
+				content := fmt.Sprintf("[[local_stack]]\nlabel = \"Local\"\n[local_stack.llm]\n%s\n", option)
 				if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 					t.Fatal(err)
 				}
@@ -270,7 +328,10 @@ model = "gemma-local"
 func testLocalStackAudioEngines(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "audio.toml")
-	content := `type = "local-stack"
+	content := `[[local_stack]]
+label = "Local"
+[local_stack.llm]
+model = "chat-model"
 [local_stack.asr]
 engine = "openai-audio"
 remote = "http://127.0.0.1:8000"
@@ -291,25 +352,26 @@ voice = "af_heart"
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.LocalStack.TTS.Model != "mlx-community/Kokoro-82M-bf16" {
-		t.Fatalf("TTS model = %q", cfg.LocalStack.TTS.Model)
+	if cfg.LocalStack[0].TTS.Model != "mlx-community/Kokoro-82M-bf16" {
+		t.Fatalf("TTS model = %q", cfg.LocalStack[0].TTS.Model)
 	}
 	for _, tc := range []struct {
 		name string
 		edit func(*Config)
 		want string
 	}{
-		{"ASR remote", func(c *Config) { c.LocalStack.ASR.Remote = "" }, "local_stack.asr.remote"},
-		{"ASR model", func(c *Config) { c.LocalStack.ASR.Model = "" }, "local_stack.asr.model"},
-		{"ASR engine", func(c *Config) { c.LocalStack.ASR.Engine = "unknown" }, "local_stack.asr.engine"},
-		{"ASR provider", func(c *Config) { c.LocalStack.ASR.Provider = "llamacpp" }, "local_stack.asr.provider"},
-		{"TTS voice", func(c *Config) { c.LocalStack.TTS.Voice = "" }, "local_stack.tts"},
-		{"TTS URL", func(c *Config) { c.LocalStack.TTS.Remote = "bad" }, "local_stack.tts.remote"},
-		{"TTS engine", func(c *Config) { c.LocalStack.TTS.Engine = "unknown" }, "local_stack.tts.engine"},
+		{"ASR remote", func(c *Config) { c.LocalStack[0].ASR.Remote = "" }, "local_stack.asr.remote"},
+		{"ASR model", func(c *Config) { c.LocalStack[0].ASR.Model = "" }, "local_stack.asr.model"},
+		{"ASR engine", func(c *Config) { c.LocalStack[0].ASR.Engine = "unknown" }, "local_stack.asr.engine"},
+		{"ASR provider", func(c *Config) { c.LocalStack[0].ASR.Provider = "llamacpp" }, "local_stack.asr.provider"},
+		{"TTS voice", func(c *Config) { c.LocalStack[0].TTS.Voice = "" }, "local_stack.tts"},
+		{"TTS URL", func(c *Config) { c.LocalStack[0].TTS.Remote = "bad" }, "local_stack.tts.remote"},
+		{"TTS engine", func(c *Config) { c.LocalStack[0].TTS.Engine = "unknown" }, "local_stack.tts.engine"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			bad := cfg
+			bad.LocalStack = slices.Clone(cfg.LocalStack)
 			tc.edit(&bad)
 			if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want %s", err, tc.want)
@@ -317,41 +379,58 @@ voice = "af_heart"
 		})
 	}
 	whisper := cfg
-	whisper.LocalStack.ASR.Engine = LocalStackASRWhisperCPP
-	whisper.LocalStack.ASR.Model = ""
+	whisper.LocalStack = slices.Clone(cfg.LocalStack)
+	whisper.LocalStack[0].ASR.Engine = LocalStackASRWhisperCPP
+	whisper.LocalStack[0].ASR.Model = ""
 	if err := whisper.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	whisper.LocalStack.ASR.Model = "ignored"
+	whisper.LocalStack[0].ASR.Model = "ignored"
 	if err := whisper.Validate(); err == nil || !strings.Contains(err.Error(), "local_stack.asr.model") {
 		t.Fatalf("whisper model error = %v", err)
 	}
 	genai := cfg
-	genai.LocalStack.ASR.Engine = LocalStackASRGenAI
-	genai.LocalStack.ASR.Provider = "unknown"
+	genai.LocalStack = slices.Clone(cfg.LocalStack)
+	genai.LocalStack[0].ASR.Engine = LocalStackASRGenAI
+	genai.LocalStack[0].ASR.Provider = "unknown"
 	if err := genai.Validate(); err == nil || !strings.Contains(err.Error(), "local_stack.asr.provider") {
 		t.Fatalf("genai provider error = %v", err)
 	}
 }
 
 func TestConfig(t *testing.T) {
-	t.Run("VoiceChoices realtime propagation", func(t *testing.T) {
-		c := Config{Type: ChoiceRealtime, Provider: "llamacpp", Remote: "http://localhost:8080", Realtime: RealtimeConfig{Slots: 2}}
-		choices := c.VoiceChoices()
-		if len(choices) != 1 || choices[0].Realtime != c.Realtime {
-			t.Fatalf("lost realtime settings: %+v", choices)
-		}
-		if err := c.ValidateEmbedded(); err != nil {
-			t.Fatal(err)
+	t.Run("explicit models", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			cfg   Config
+			field string
+		}{
+			{"Gemini", Config{Realtime: []RealtimeConfig{{Label: "Live", ModelConfig: ModelConfig{Provider: "gemini"}}}}, "realtime.model"},
+			{"Gemini prefix only", Config{Realtime: []RealtimeConfig{{Label: "Live", ModelConfig: ModelConfig{Provider: "gemini", Model: "models/"}}}}, "realtime.model"},
+			{"Gemini repeated prefix only", Config{Realtime: []RealtimeConfig{{Label: "Live", ModelConfig: ModelConfig{Provider: "gemini", Model: "models/models/"}}}}, "realtime.model"},
+			{"OpenAI", Config{Realtime: []RealtimeConfig{{Label: "Live", ModelConfig: ModelConfig{Provider: "openai"}}}}, "realtime.model"},
+			{"remote realtime", Config{Realtime: []RealtimeConfig{{Label: "Local", ModelConfig: ModelConfig{Provider: "llamacpp", Remote: "http://localhost:8080"}}}}, "realtime.model"},
+			{"chat", Config{Chat: []ChatConfig{{Label: "Chat", ModelConfig: ModelConfig{Provider: "deepseek", Model: "   "}}}}, "chat.model"},
+			{"Gemini chat prefix only", Config{Chat: []ChatConfig{{Label: "Chat", ModelConfig: ModelConfig{Provider: "gemini", Model: "models/"}}}}, "chat.model"},
+			{"local LLM", Config{LocalStack: []LocalStackConfig{{Label: "Stack", TextOnly: true}}}, "local_stack.llm.model"},
+			{"Gemini LLM prefix only", Config{LocalStack: []LocalStackConfig{{Label: "Stack", TextOnly: true, LLM: ModelConfig{Provider: "gemini", Model: "models/"}}}}, "local_stack.llm.model"},
+			{"local ASR", Config{LocalStack: []LocalStackConfig{{Label: "Stack", LLM: ModelConfig{Provider: "deepseek", Model: "deepseek-flash"}, TTS: LocalStackTTSConfig{Model: "KittenML/kitten-tts-2"}}}}, "local_stack.asr.model"},
+			{"Gemini ASR prefix only", Config{LocalStack: []LocalStackConfig{{Label: "Stack", LLM: ModelConfig{Provider: "deepseek", Model: "deepseek-flash"}, ASR: LocalStackASRConfig{Provider: "gemini", Model: "models/"}, TTS: LocalStackTTSConfig{Model: "KittenML/kitten-tts-2"}}}}, "local_stack.asr.model"},
+			{"local TTS", Config{LocalStack: []LocalStackConfig{{Label: "Stack", LLM: ModelConfig{Provider: "deepseek", Model: "deepseek-flash"}, ASR: LocalStackASRConfig{Model: "asr-model"}}}}, "local_stack.tts.model"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if err := tc.cfg.ValidateEmbedded(); err == nil || !strings.Contains(err.Error(), tc.field+" is required") {
+					t.Fatalf("validation = %v, want %s is required", err, tc.field)
+				}
+			})
 		}
 	})
-
 	t.Parallel()
 	t.Run("Validate", func(t *testing.T) {
 		t.Parallel()
-		t.Run("valid default", func(t *testing.T) {
+		t.Run("valid configured backend", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
+			cfg := testGatewayConfig()
 			if err := cfg.Validate(); err != nil {
 				t.Fatal(err)
 			}
@@ -359,7 +438,7 @@ func TestConfig(t *testing.T) {
 
 		t.Run("rejects invalid issuer URL", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
+			cfg := testGatewayConfig()
 			cfg.TrustedIssuers = []TrustedIssuerConfig{{
 				Service:   "caic",
 				Issuer:    "not a url",
@@ -376,7 +455,7 @@ func TestConfig(t *testing.T) {
 
 		t.Run("allows disabled webrtc port", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
+			cfg := testGatewayConfig()
 			cfg.Server.WebRTCUDPPort = -1
 			if err := cfg.Validate(); err != nil {
 				t.Fatal(err)
@@ -385,7 +464,7 @@ func TestConfig(t *testing.T) {
 
 		t.Run("embedded allows missing http", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
+			cfg := testGatewayConfig()
 			cfg.Server.HTTP = ""
 			if err := cfg.ValidateEmbedded(); err != nil {
 				t.Fatal(err)
@@ -394,7 +473,7 @@ func TestConfig(t *testing.T) {
 
 		t.Run("rejects invalid webrtc port", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
+			cfg := testGatewayConfig()
 			cfg.Server.WebRTCUDPPort = -2
 			err := cfg.Validate()
 			if err == nil {
@@ -407,7 +486,7 @@ func TestConfig(t *testing.T) {
 
 		t.Run("rejects invalid issuer public key", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
+			cfg := testGatewayConfig()
 			cfg.TrustedIssuers = []TrustedIssuerConfig{{
 				Service:   "caic",
 				Issuer:    "https://caic.example.com",
@@ -424,7 +503,7 @@ func TestConfig(t *testing.T) {
 
 		t.Run("accepts oauth issuer with defaults", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
+			cfg := testGatewayConfig()
 			cfg.TrustedIssuers = []TrustedIssuerConfig{{
 				Service: "caic",
 				Issuer:  "https://caic.example.com",
@@ -443,7 +522,7 @@ func TestConfig(t *testing.T) {
 
 		t.Run("rejects issuer with neither token form", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
+			cfg := testGatewayConfig()
 			cfg.TrustedIssuers = []TrustedIssuerConfig{{Service: "caic", Issuer: "https://caic.example.com"}}
 			err := cfg.Validate()
 			if err == nil {
@@ -456,7 +535,7 @@ func TestConfig(t *testing.T) {
 
 		t.Run("rejects issuer with two token forms", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
+			cfg := testGatewayConfig()
 			cfg.TrustedIssuers = []TrustedIssuerConfig{{
 				Service:   "caic",
 				Issuer:    "https://caic.example.com",
@@ -474,8 +553,8 @@ func TestConfig(t *testing.T) {
 
 		t.Run("rejects unknown provider", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
-			cfg.Provider = "made-up"
+			cfg := testGatewayConfig()
+			cfg.Realtime[0].Provider = "made-up"
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatal("expected error")
@@ -487,8 +566,8 @@ func TestConfig(t *testing.T) {
 
 		t.Run("rejects empty provider", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
-			cfg.Provider = ""
+			cfg := testGatewayConfig()
+			cfg.Realtime[0].Provider = ""
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatal("expected error")
@@ -500,8 +579,9 @@ func TestConfig(t *testing.T) {
 
 		t.Run("allows local stack provider", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
-			cfg.Type = ChoiceLocalStack
+			cfg := testGatewayConfig()
+			cfg.Realtime = nil
+			cfg.LocalStack = []LocalStackConfig{testLocalStackConfig()}
 			if err := cfg.Validate(); err != nil {
 				t.Fatal(err)
 			}
@@ -509,8 +589,9 @@ func TestConfig(t *testing.T) {
 
 		t.Run("rejects local stack asr remote without provider", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
-			cfg.LocalStack.ASR.Remote = "http://localhost:8090"
+			cfg := testGatewayConfig()
+			cfg.LocalStack = []LocalStackConfig{testLocalStackConfig()}
+			cfg.LocalStack[0].ASR.Remote = "http://localhost:8090"
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatal("expected error")
@@ -522,9 +603,10 @@ func TestConfig(t *testing.T) {
 
 		t.Run("allows local stack asr remote with explicit provider", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
-			cfg.LocalStack.ASR.Provider = "llamacpp"
-			cfg.LocalStack.ASR.Remote = "http://localhost:8090"
+			cfg := testGatewayConfig()
+			cfg.LocalStack = []LocalStackConfig{testLocalStackConfig()}
+			cfg.LocalStack[0].ASR.Provider = "llamacpp"
+			cfg.LocalStack[0].ASR.Remote = "http://localhost:8090"
 			if err := cfg.Validate(); err != nil {
 				t.Fatal(err)
 			}
@@ -532,9 +614,10 @@ func TestConfig(t *testing.T) {
 
 		t.Run("rejects invalid local stack asr remote", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
-			cfg.LocalStack.ASR.Provider = "llamacpp"
-			cfg.LocalStack.ASR.Remote = "not a url"
+			cfg := testGatewayConfig()
+			cfg.LocalStack = []LocalStackConfig{testLocalStackConfig()}
+			cfg.LocalStack[0].ASR.Provider = "llamacpp"
+			cfg.LocalStack[0].ASR.Remote = "not a url"
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatal("expected error")
@@ -546,8 +629,9 @@ func TestConfig(t *testing.T) {
 
 		t.Run("rejects unsupported local stack asr provider", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
-			cfg.LocalStack.ASR.Provider = "unknown"
+			cfg := testGatewayConfig()
+			cfg.LocalStack = []LocalStackConfig{testLocalStackConfig()}
+			cfg.LocalStack[0].ASR.Provider = "unknown"
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatal("expected error")
@@ -559,8 +643,9 @@ func TestConfig(t *testing.T) {
 
 		t.Run("rejects local stack llm remote without provider", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
-			cfg.LocalStack.LLM.Remote = "http://localhost:8080"
+			cfg := testGatewayConfig()
+			cfg.LocalStack = []LocalStackConfig{testLocalStackConfig()}
+			cfg.LocalStack[0].LLM.Remote = "http://localhost:8080"
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatal("expected error")
@@ -572,9 +657,10 @@ func TestConfig(t *testing.T) {
 
 		t.Run("allows local stack llm remote with explicit provider", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
-			cfg.LocalStack.LLM.Provider = "llamacpp"
-			cfg.LocalStack.LLM.Remote = "http://localhost:8080"
+			cfg := testGatewayConfig()
+			cfg.LocalStack = []LocalStackConfig{testLocalStackConfig()}
+			cfg.LocalStack[0].LLM.Provider = "llamacpp"
+			cfg.LocalStack[0].LLM.Remote = "http://localhost:8080"
 			if err := cfg.Validate(); err != nil {
 				t.Fatal(err)
 			}
@@ -582,9 +668,10 @@ func TestConfig(t *testing.T) {
 
 		t.Run("rejects invalid local stack llm remote", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
-			cfg.LocalStack.LLM.Provider = "llamacpp"
-			cfg.LocalStack.LLM.Remote = "not a url"
+			cfg := testGatewayConfig()
+			cfg.LocalStack = []LocalStackConfig{testLocalStackConfig()}
+			cfg.LocalStack[0].LLM.Provider = "llamacpp"
+			cfg.LocalStack[0].LLM.Remote = "not a url"
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatal("expected error")
@@ -596,8 +683,9 @@ func TestConfig(t *testing.T) {
 
 		t.Run("rejects unsupported local stack llm provider", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
-			cfg.LocalStack.LLM.Provider = "unknown"
+			cfg := testGatewayConfig()
+			cfg.LocalStack = []LocalStackConfig{testLocalStackConfig()}
+			cfg.LocalStack[0].LLM.Provider = "unknown"
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatal("expected error")
@@ -609,9 +697,10 @@ func TestConfig(t *testing.T) {
 
 		t.Run("allows local stack provider from the genai providers registry", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
-			cfg.LocalStack.LLM.Provider = "openaicompatible"
-			cfg.LocalStack.LLM.Remote = "http://localhost:8080/v1/chat/completions"
+			cfg := testGatewayConfig()
+			cfg.LocalStack = []LocalStackConfig{testLocalStackConfig()}
+			cfg.LocalStack[0].LLM.Provider = "openaicompatible"
+			cfg.LocalStack[0].LLM.Remote = "http://localhost:8080/v1/chat/completions"
 			if err := cfg.Validate(); err != nil {
 				t.Fatal(err)
 			}
@@ -621,17 +710,18 @@ func TestConfig(t *testing.T) {
 			t.Parallel()
 			for _, tc := range []struct {
 				name string
-				llm  LocalStackLLMConfig
+				llm  ModelConfig
 				want string
 			}{
-				{"missing endpoint", LocalStackLLMConfig{Provider: "openaicompatible"}, "local_stack.llm.remote"},
-				{"key with managed llama", LocalStackLLMConfig{APIKeyName: "LLM_KEY"}, "local_stack.llm.api_key_name"},
-				{"path with llama", LocalStackLLMConfig{Provider: "llamacpp", Remote: "http://localhost:8080/v1/chat/completions"}, "must not contain a path"},
+				{"missing endpoint", ModelConfig{Provider: "openaicompatible"}, "local_stack.llm.remote"},
+				{"key with managed llama", ModelConfig{APIKeyName: "LLM_KEY"}, "local_stack.llm.api_key_name"},
+				{"path with llama", ModelConfig{Provider: "llamacpp", Remote: "http://localhost:8080/v1/chat/completions"}, "must not contain a path"},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					t.Parallel()
-					cfg := DefaultConfig()
-					cfg.LocalStack.LLM = tc.llm
+					cfg := testGatewayConfig()
+					cfg.LocalStack = []LocalStackConfig{testLocalStackConfig()}
+					cfg.LocalStack[0].LLM = tc.llm
 					if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
 						t.Fatalf("Validate() = %v, want %s", err, tc.want)
 					}
@@ -641,7 +731,7 @@ func TestConfig(t *testing.T) {
 
 		t.Run("allows trusted public key issuer", func(t *testing.T) {
 			t.Parallel()
-			cfg := DefaultConfig()
+			cfg := testGatewayConfig()
 			cfg.TrustedIssuers = []TrustedIssuerConfig{{
 				Service:   "caic",
 				Issuer:    "https://caic.example.com",
@@ -655,28 +745,36 @@ func TestConfig(t *testing.T) {
 		t.Run("kitten TTS", testLocalStackKittenTTSConfiguration)
 		t.Run("local stack ASR", testValidateLocalStackASR)
 	})
-	t.Run("invalid choice settings", func(t *testing.T) {
-		for _, ch := range []ChoiceConfig{
-			{Label: "Bad", Type: "unknown", Provider: "gemini"},
-			{Label: "Bad", Type: ChoiceChat, Provider: "llamacpp"},
-			{Label: "Bad", Type: ChoiceChat, Provider: "deepseek", LlamaCPPServer: true},
-			{Label: "Bad", Type: ChoiceChat, Provider: "llamacpp", LlamaCPPServer: true, Remote: "http://localhost:8080"},
+	t.Run("invalid chat settings", func(t *testing.T) {
+		for _, model := range []ModelConfig{
+			{Provider: "llamacpp"},
+			{Provider: "deepseek", LlamaCPPServer: true},
+			{Provider: "llamacpp", LlamaCPPServer: true, Remote: "http://localhost:8080"},
 		} {
-			cfg := DefaultConfig()
-			cfg.Choices = []ChoiceConfig{ch}
-			if err := cfg.Validate(); err == nil {
-				t.Fatalf("accepted %+v", ch)
+			cfg := Config{Chat: []ChatConfig{{Label: "Bad", ModelConfig: model}}}
+			if err := cfg.ValidateEmbedded(); err == nil {
+				t.Fatalf("accepted %+v", model)
 			}
 		}
 	})
-
-	t.Run("VoiceChoices", testChoiceConfig)
+	t.Run("requires a pipeline", func(t *testing.T) {
+		cfg := Config{}
+		if err := cfg.ValidateEmbedded(); err == nil {
+			t.Fatal("accepted configuration without a pipeline")
+		}
+	})
+	t.Run("Choices", testConfigChoices)
 }
 
 func testLocalStackKittenTTSConfiguration(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "kitten.toml")
-	content := `type = "local-stack"
+	content := `[[local_stack]]
+label = "Local"
+[local_stack.llm]
+model = "chat-model"
+[local_stack.asr]
+model = "asr-model"
 [local_stack.tts]
 engine = "kittentts"
 model = "owner/kitten-tts-2"
@@ -692,10 +790,10 @@ voice = "Luna"
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.LocalStack.TTS.Model != "owner/kitten-tts-2" || cfg.LocalStack.TTS.Voice != "Luna" {
-		t.Fatalf("TTS = %#v", cfg.LocalStack.TTS)
+	if cfg.LocalStack[0].TTS.Model != "owner/kitten-tts-2" || cfg.LocalStack[0].TTS.Voice != "Luna" {
+		t.Fatalf("TTS = %#v", cfg.LocalStack[0].TTS)
 	}
-	cfg.LocalStack.TTS.Remote = "http://127.0.0.1:8000"
+	cfg.LocalStack[0].TTS.Remote = "http://127.0.0.1:8000"
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "remote") {
 		t.Fatalf("managed remote error = %v", err)
 	}
@@ -715,23 +813,26 @@ func testValidateLocalStackASR(t *testing.T) {
 	}
 }
 
-func testChoiceConfig(t *testing.T) {
+func testConfigChoices(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte(`[[choices]]
+	if err := os.WriteFile(path, []byte(`[[realtime]]
 label = "Gemini Live"
-type = "realtime"
 provider = "gemini"
-[[choices]]
+model = "gemini-3.8-live"
+[[local_stack]]
 label = "Remote LLM"
-type = "local-stack"
-[choices.local_stack.llm]
+text_only = true
+[local_stack.llm]
 provider = "openaicompatible"
 remote = "https://example.com/v1/chat/completions"
 api_key_name = "REMOTE_KEY"
-[[choices]]
+model = "chat-model"
+[[local_stack]]
 label = "Local LLM"
-type = "local-stack"
+text_only = true
+[local_stack.llm]
+model = "chat-model"
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -742,158 +843,149 @@ type = "local-stack"
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	choices := cfg.VoiceChoices()
-	if len(choices) != 3 || choices[1].LocalStack.LLM.APIKeyName != "REMOTE_KEY" {
-		t.Fatalf("choices %+v", choices)
+	if len(cfg.Realtime) != 1 || len(cfg.LocalStack) != 2 || cfg.LocalStack[0].LLM.APIKeyName != "REMOTE_KEY" {
+		t.Fatalf("config %+v", cfg)
 	}
-	duplicate := cfg.Choices[0]
+	duplicate := cfg.Realtime[0]
 	duplicate.Label = "Same backend, renamed"
-	cfg.Choices = append(cfg.Choices, duplicate)
+	cfg.Realtime = append(cfg.Realtime, duplicate)
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("duplicate configuration accepted")
 	}
-	cfg.Choices = cfg.Choices[:3]
-	cfg.Choices[2].Label = " "
+	cfg.Realtime = cfg.Realtime[:1]
+	cfg.LocalStack[1].Label = " "
 	if cfg.Validate() == nil {
 		t.Fatal("empty label accepted")
 	}
-	cfg.Choices[2].Label = "Local"
-	cfg.Choices[2].LocalStack.LLM.APIKeyName = "KEY"
+	cfg.LocalStack[1].Label = "Local"
+	cfg.LocalStack[1].LLM.APIKeyName = "KEY"
 	if cfg.Validate() == nil {
 		t.Fatal("invalid per-choice model config accepted")
 	}
+	// Stopping iteration must not visit another section.
+	count := 0
+	for range cfg.Choices() {
+		count++
+		break
+	}
+	if count != 1 {
+		t.Fatalf("early exit visited %d choices", count)
+	}
 }
 
-func TestChoiceConfig(t *testing.T) {
+func TestChatConfig(t *testing.T) {
 	t.Parallel()
-	t.Run("ID", func(t *testing.T) {
-		t.Run("stable encoding", func(t *testing.T) {
-			for _, tc := range []struct {
-				choice ChoiceConfig
-				id     string
-			}{
-				{ChoiceConfig{Type: ChoiceRealtime, Provider: "gemini"}, "realtime-040d3be5a532c242"},
-				{ChoiceConfig{Type: ChoiceChat, Provider: "deepseek", Model: "deepseek-flash"}, "chat-66b3a07daa12c25f"},
-				{ChoiceConfig{Type: ChoiceLocalStack}, "local-stack-f1de32e404295d23"},
-			} {
-				id, err := tc.choice.ID()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if id != tc.id {
-					t.Fatalf("ID = %q, want %q", id, tc.id)
-				}
-			}
-		})
-		t.Run("equivalent defaults", func(t *testing.T) {
-			for _, pair := range [][2]ChoiceConfig{
-				{
-					{Type: ChoiceRealtime, Provider: "gemini"},
-					{Type: ChoiceRealtime, Provider: "gemini", Model: "models/gemini-3.8-live"},
-				},
-				{
-					{Type: ChoiceRealtime, Provider: "openai"},
-					{Type: ChoiceRealtime, Provider: "openairesponses", Model: "gpt-realtime-2.1-mini"},
-				},
-				{
-					{Type: ChoiceRealtime, Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel},
-					{Type: ChoiceRealtime, Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel, Realtime: RealtimeConfig{Slots: 1, ContextSize: 8192, SetupTimeoutSeconds: 15, PendingAudioSeconds: 5}},
-				},
-				{
-					{Type: ChoiceLocalStack},
-					{Type: ChoiceLocalStack, LocalStack: LocalStackConfig{
-						ASR: LocalStackASRConfig{Engine: LocalStackASRGenAI, Provider: "llamacpp", Model: "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"},
-						LLM: LocalStackLLMConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"},
-						TTS: LocalStackTTSConfig{Engine: LocalStackTTSKittenTTS, Model: "KittenML/kitten-tts-2", Voice: "Jasper"},
-					}},
-				},
-			} {
-				first, err := pair[0].ID()
-				if err != nil {
-					t.Fatal(err)
-				}
-				second, err := pair[1].ID()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if first != second {
-					t.Fatalf("equivalent choices differ: %s vs %s", first, second)
-				}
-			}
-		})
-		t.Run("managed cache default", func(t *testing.T) {
-			cache, err := os.UserCacheDir()
-			if err != nil {
-				t.Fatal(err)
-			}
-			implicit := ChoiceConfig{Label: "Implicit cache", Type: ChoiceRealtime, Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}
-			explicit := implicit
-			explicit.Label = "Explicit cache"
-			explicit.Realtime.CacheDir = filepath.Join(cache, "gomode", "llama-realtime")
-			first, err := implicit.ID()
-			if err != nil {
-				t.Fatal(err)
-			}
-			second, err := explicit.ID()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if first != second {
-				t.Fatalf("same runtime cache changed ID: %s vs %s", first, second)
-			}
-			cfg := Config{Choices: []ChoiceConfig{implicit, explicit}}
-			if err := cfg.ValidateEmbedded(); err == nil {
-				t.Fatal("duplicate effective cache configuration accepted")
-			}
-		})
-
-		t.Run("label credentials and order", func(t *testing.T) {
-			cfg := Config{Choices: []ChoiceConfig{
-				{Label: "First", Type: ChoiceChat, Provider: "openaicompatible", Remote: "https://example.com/chat", Model: "model-a", APIKeyName: "KEY_A"},
-				{Label: "Second", Type: ChoiceChat, Provider: "deepseek", Model: "deepseek-flash"},
-			}}
-			first := cfg.VoiceChoices()[0]
-			want, err := first.ID()
-			if err != nil {
-				t.Fatal(err)
-			}
-			cfg.Choices[0].Label, cfg.Choices[0].APIKeyName = "Renamed", "KEY_B"
-			cfg.Choices[0], cfg.Choices[1] = cfg.Choices[1], cfg.Choices[0]
-			reordered := cfg.VoiceChoices()[1]
-			got, err := reordered.ID()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got != want {
-				t.Fatalf("identity changed from %s to %s", want, got)
-			}
-			if first.Label != "First" {
-				t.Fatal("VoiceChoices mutated the config")
-			}
-		})
-		t.Run("settings change identity", func(t *testing.T) {
-			base := ChoiceConfig{Type: ChoiceRealtime, Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}
-			want, err := base.ID()
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, edit := range []func(*ChoiceConfig){
-				func(c *ChoiceConfig) { c.Model = "LiquidAI/other-model" },
-				func(c *ChoiceConfig) { c.LlamaCPPServer = false; c.Remote = "http://localhost:8080" },
-				func(c *ChoiceConfig) { c.Realtime.ContextSize = 65536 },
-				func(c *ChoiceConfig) { c.Realtime.Slots = 2 },
-				func(c *ChoiceConfig) { c.Type = ChoiceChat },
-			} {
-				changed := base
-				edit(&changed)
-				got, err := changed.ID()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if got == want {
-					t.Fatalf("changed settings retained %s: %+v", got, changed)
-				}
-			}
-		})
+	t.Run("WithDefaults", func(t *testing.T) {
+		cfg := ChatConfig{ModelConfig: ModelConfig{Provider: "gemini", Model: "models/models/chat-model"}}
+		resolved := cfg.WithDefaults()
+		if resolved.Model != "chat-model" {
+			t.Fatalf("model = %q", resolved.Model)
+		}
+		first, err := cfg.ID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := resolved.ID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first != second {
+			t.Fatal("Gemini model spelling changed chat identity")
+		}
 	})
+	t.Run("ID", func(t *testing.T) {
+		cfg := Config{Chat: []ChatConfig{
+			{Label: "First", ModelConfig: ModelConfig{Provider: "openaicompatible", Remote: "https://example.com/chat", Model: "model-a", APIKeyName: "KEY_A"}},
+			{Label: "Second", ModelConfig: ModelConfig{Provider: "deepseek", Model: "deepseek-flash"}},
+		}}
+		want, err := cfg.Chat[0].ID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Chat[0].Label, cfg.Chat[0].APIKeyName = "Renamed", "KEY_B"
+		cfg.Chat[0], cfg.Chat[1] = cfg.Chat[1], cfg.Chat[0]
+		got, err := cfg.Chat[1].ID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("identity changed from %s to %s", want, got)
+		}
+		cfg.Chat[1].Model = "model-b"
+		changed, err := cfg.Chat[1].ID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed == got {
+			t.Fatal("model change retained identity")
+		}
+	})
+}
+
+func TestLocalStackConfig(t *testing.T) {
+	t.Parallel()
+	t.Run("WithDefaults", func(t *testing.T) {
+		cfg := testLocalStackConfig()
+		cfg.ASR.Provider, cfg.ASR.Model = "gemini", "models/asr-model"
+		cfg.LLM.Provider, cfg.LLM.Model = "gemini", "models/chat-model"
+		resolved := cfg.WithDefaults()
+		if resolved.ASR.Model != "asr-model" || resolved.LLM.Model != "chat-model" {
+			t.Fatalf("resolved stages: ASR %+v, LLM %+v", resolved.ASR, resolved.LLM)
+		}
+		first, err := cfg.ID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := resolved.ID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first != second {
+			t.Fatal("Gemini model spelling changed stack identity")
+		}
+	})
+	t.Run("ID", func(t *testing.T) {
+		implicit := testLocalStackConfig()
+		explicit := LocalStackConfig{
+			Label: "Explicit",
+			ASR:   LocalStackASRConfig{Engine: LocalStackASRGenAI, Provider: "llamacpp", Model: "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"},
+			LLM:   ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"},
+			TTS:   LocalStackTTSConfig{Engine: LocalStackTTSKittenTTS, Model: "KittenML/kitten-tts-2", Voice: "Jasper"},
+		}
+		first, err := implicit.ID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := explicit.ID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first != second {
+			t.Fatalf("equivalent defaults differ: %s vs %s", first, second)
+		}
+		explicit.TTS.Voice = "Luna"
+		changed, err := explicit.ID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed == first {
+			t.Fatal("voice change retained identity")
+		}
+	})
+}
+
+// testGatewayConfig supplies an explicitly selected model for configuration tests.
+func testGatewayConfig() Config {
+	cfg := DefaultConfig()
+	cfg.Realtime = []RealtimeConfig{{Label: "Gemini", ModelConfig: ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}}}
+	return cfg
+}
+
+func testLocalStackConfig() LocalStackConfig {
+	return LocalStackConfig{
+		Label: "Local",
+		ASR:   LocalStackASRConfig{Model: "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"},
+		LLM:   ModelConfig{Model: "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"},
+		TTS:   LocalStackTTSConfig{Model: "KittenML/kitten-tts-2"},
+	}
 }

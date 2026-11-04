@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/maruel/genai/providers"
@@ -19,162 +19,132 @@ import (
 	"github.com/maruel/gomode"
 )
 
-// ChoiceType selects the session pipeline independently of the model provider.
-type ChoiceType string
-
-const (
-	// ChoiceChat serves text sessions with client-owned speech.
-	ChoiceChat ChoiceType = "chat"
-	// ChoiceLocalStack combines gateway-side ASR, chat, and TTS.
-	ChoiceLocalStack ChoiceType = "local-stack"
-	// ChoiceRealtime streams native audio through the provider.
-	ChoiceRealtime ChoiceType = "realtime"
-)
-
-// DefaultGeminiModel is the Gemini Live model used when config.model is empty.
-//
-// Model IDs are bare, without the models/ resource-name prefix; the Gemini
-// adapter qualifies them for the wire.
-const DefaultGeminiModel = "gemini-3.8-live"
-
-// DefaultOpenAIRealtimeModel is the OpenAI Realtime model used when config.model
-// is empty for an OpenAI realtime choice.
-const DefaultOpenAIRealtimeModel = "gpt-realtime-2.1-mini"
-
-// Config is the static voice gateway configuration.
-//
-// Choices offers independently configured backends on one endpoint. When empty,
-// Type, Provider, Model and LocalStack define the default choice.
+// Config is the static voice gateway configuration, matching the TOML sections.
+// Choices are offered in realtime, chat, then local_stack order.
 type Config struct {
-	Choices        []ChoiceConfig        `toml:"choices"`
 	Server         ServerConfig          `toml:"server"`
-	Model          string                `toml:"model"`
-	Provider       string                `toml:"provider"`
-	LlamaCPPServer bool                  `toml:"llamacppsrv"`
-	Type           ChoiceType            `toml:"type"`
-	Remote         string                `toml:"remote"`
-	APIKeyName     string                `toml:"api_key_name"`
-	LocalStack     LocalStackConfig      `toml:"local_stack"`
-	Realtime       RealtimeConfig        `toml:"realtime"`
 	TrustedIssuers []TrustedIssuerConfig `toml:"trusted_issuers"`
+	Realtime       []RealtimeConfig      `toml:"realtime"`
+	Chat           []ChatConfig          `toml:"chat"`
+	LocalStack     []LocalStackConfig    `toml:"local_stack"`
 }
 
-// ChoiceConfig defines one backend offered to clients. Its generated ID lets
-// clients save their selection independently of labels and list order.
-type ChoiceConfig struct {
-	Label          string           `toml:"label"`
-	Provider       string           `toml:"provider"`
-	LlamaCPPServer bool             `toml:"llamacppsrv"`
-	Type           ChoiceType       `toml:"type"`
-	Remote         string           `toml:"remote"`
-	APIKeyName     string           `toml:"api_key_name"`
-	Model          string           `toml:"model"`
-	LocalStack     LocalStackConfig `toml:"local_stack"`
-	Realtime       RealtimeConfig   `toml:"realtime"`
+// Choice is a typed pipeline configuration: *RealtimeConfig, *ChatConfig, or
+// *LocalStackConfig. IDs fingerprint effective settings independently of labels
+// and credentials. Each pipeline owns its defaults and validation.
+type Choice interface {
+	ID() (string, error)
+	validate() error
 }
 
-// ID returns a type-prefixed SHA-256 fingerprint of the effective settings.
-// Labels, credentials, and list position do not participate in the identity.
-func (c *ChoiceConfig) ID() (string, error) {
-	v := c.WithDefaults()
-	id := choiceIdentity{
-		Type: v.Type, Provider: v.Provider, Model: v.Model, Remote: v.Remote,
-		LlamaCPPServer: v.LlamaCPPServer, LocalStack: v.LocalStack, Realtime: v.Realtime,
-	}
-	if v.Type == ChoiceRealtime && v.Provider == "llamacpp" && v.Remote == "" {
-		cache, err := v.Realtime.CacheDirectory()
-		if err != nil {
-			return "", fmt.Errorf("resolve realtime cache directory: %w", err)
-		}
-		id.Realtime.CacheDir = cache
-	}
-	data, err := json.Marshal(id)
-	if err != nil {
-		return "", fmt.Errorf("encode choice identity: %w", err)
-	}
-	sum := sha256.Sum256(data)
-	return fmt.Sprintf("%s-%x", c.Type, sum[:8]), nil
-}
-
-// choiceIdentity is the canonical hash input. Its field names and order are
-// persistent: changes alter saved client selections. Only pipeline-relevant
-// settings are populated, with gateway defaults already applied.
-type choiceIdentity struct {
-	Type           ChoiceType       `json:"type"`
-	Provider       string           `json:"provider"`
-	Model          string           `json:"model"`
-	Remote         string           `json:"remote"`
-	LlamaCPPServer bool             `json:"llamacppsrv"`
-	LocalStack     LocalStackConfig `json:"local_stack"`
-	Realtime       RealtimeConfig   `json:"realtime"`
-}
-
-// WithDefaults resolves gateway-owned defaults and discards settings unused by
-// the selected pipeline. Provider-owned model discovery remains with genai.
-func (c ChoiceConfig) WithDefaults() ChoiceConfig {
-	if alias := providers.All[c.Provider].Alias; alias != "" {
-		c.Provider = alias
-	}
-	switch c.Type {
-	case ChoiceRealtime:
-		c.LocalStack = LocalStackConfig{}
-		if c.Provider == "gemini" {
-			c.Model = strings.TrimPrefix(c.Model, "models/")
-			if c.Model == "" {
-				c.Model = DefaultGeminiModel
+// Choices iterates labels and pipeline configurations in client preference order,
+// preserving entry order within each section. The configurations belong to c.
+func (c *Config) Choices() iter.Seq2[string, Choice] {
+	return func(yield func(string, Choice) bool) {
+		for i := range c.Realtime {
+			if !yield(c.Realtime[i].Label, &c.Realtime[i]) {
+				return
 			}
-		} else if c.Provider == "openairesponses" && c.Model == "" {
-			c.Model = DefaultOpenAIRealtimeModel
 		}
-		if c.Provider == "llamacpp" {
-			c.Realtime = c.Realtime.WithDefaults()
-			c.Realtime.Remote = "" // Remote is already represented on the choice.
-		} else {
-			c.Realtime = RealtimeConfig{}
+		for i := range c.Chat {
+			if !yield(c.Chat[i].Label, &c.Chat[i]) {
+				return
+			}
 		}
-	case ChoiceChat:
-		c.LocalStack = LocalStackConfig{}
-		c.Realtime = RealtimeConfig{}
-		if c.Provider == "llamacpp" && c.Remote == "" && c.Model == "" {
-			c.Model = DefaultLocalStackLLMModel
+		for i := range c.LocalStack {
+			if !yield(c.LocalStack[i].Label, &c.LocalStack[i]) {
+				return
+			}
 		}
-	case ChoiceLocalStack:
-		c.Provider, c.Model, c.Remote, c.APIKeyName = "", "", "", ""
-		c.LlamaCPPServer = false
-		c.Realtime = RealtimeConfig{}
-		c.LocalStack = c.LocalStack.WithDefaults()
 	}
+}
+
+// ModelConfig selects a provider, model, and managed or remote endpoint.
+type ModelConfig struct {
+	// LlamaCPPServer starts a managed llama.cpp server instead of connecting to Remote.
+	LlamaCPPServer bool   `toml:"llamacppsrv" json:"llamacppsrv"`
+	Provider       string `toml:"provider" json:"provider"`
+	Remote         string `toml:"remote" json:"remote"`
+	Model          string `toml:"model" json:"model"`
+	// APIKeyName names the environment variable containing the bearer token
+	// for an openaicompatible endpoint. The credential is never stored in TOML.
+	APIKeyName string `toml:"api_key_name" json:"-"`
+}
+
+// WithDefaults resolves provider aliases and Gemini model spelling.
+func (c ModelConfig) WithDefaults() ModelConfig {
+	c.Provider, c.Model = canonicalModel(c.Provider, c.Model)
 	return c
 }
 
-// VoiceChoices returns choices in configuration order. When no list is supplied,
-// the top-level settings form a single choice.
-func (c *Config) VoiceChoices() []ChoiceConfig {
-	if len(c.Choices) == 0 {
-		return []ChoiceConfig{{Label: "Default", Provider: c.Provider, LlamaCPPServer: c.LlamaCPPServer, Type: c.Type, Remote: c.Remote, APIKeyName: c.APIKeyName, Model: c.Model, LocalStack: c.LocalStack, Realtime: c.Realtime}}
+func (c *ModelConfig) validate(prefix string) error {
+	var errs []error
+	_, model := canonicalModel(c.Provider, c.Model)
+	if strings.TrimSpace(model) == "" {
+		errs = append(errs, fmt.Errorf("%s.model is required", prefix))
 	}
-	return slices.Clone(c.Choices)
+	errs = append(errs, validateProvider(prefix, c.Provider, c.Remote),
+		validateURL(prefix+".remote", c.Remote, c.Provider == "openaicompatible"))
+	if c.Provider == "llamacpp" && c.Remote == "" && !c.LlamaCPPServer {
+		errs = append(errs, fmt.Errorf("%s.provider llamacpp requires remote or llamacppsrv = true", prefix))
+	}
+	if c.LlamaCPPServer && (c.Provider != "llamacpp" || c.Remote != "") {
+		errs = append(errs, fmt.Errorf("%s.llamacppsrv requires provider llamacpp and no remote", prefix))
+	}
+	if c.Provider == "openaicompatible" && c.Remote == "" {
+		errs = append(errs, fmt.Errorf("%s.remote is required for openaicompatible", prefix))
+	}
+	if c.APIKeyName != "" && c.Provider != "openaicompatible" {
+		errs = append(errs, fmt.Errorf("%s.api_key_name requires provider openaicompatible", prefix))
+	}
+	return errors.Join(errs...)
 }
 
-// DefaultConfig returns the standalone voice gateway defaults.
+// ChatConfig serves text sessions with client-owned speech.
+type ChatConfig struct {
+	Label string `toml:"label" json:"-"`
+	ModelConfig
+}
+
+// ID returns the fingerprint of the effective chat settings.
+func (c *ChatConfig) ID() (string, error) {
+	return choiceID("chat", c.WithDefaults())
+}
+
+// WithDefaults resolves provider aliases and model spelling.
+func (c ChatConfig) WithDefaults() ChatConfig {
+	c.ModelConfig = c.ModelConfig.WithDefaults()
+	return c
+}
+
+func (c *ChatConfig) validate() error {
+	if c.Provider == "" {
+		return errors.New("chat.provider is required")
+	}
+	return c.ModelConfig.validate("chat")
+}
+
+// choiceID hashes the pipeline's canonical configuration. Labels and credential
+// environment variables are excluded by their JSON tags.
+func choiceID(pipeline string, cfg any) (string, error) {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return "", fmt.Errorf("encode %s identity: %w", pipeline, err)
+	}
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%s-%x", pipeline, sum[:8]), nil
+}
+
+// DefaultConfig returns listener defaults. Callers must configure pipeline entries.
 func DefaultConfig() Config {
-	return Config{
-		Server: ServerConfig{
-			HTTP:          ":3479",
-			WebRTCUDPPort: 0,
-		},
-		Provider: "gemini",
-		Type:     ChoiceRealtime,
-	}
+	return Config{Server: ServerConfig{HTTP: ":3479"}}
 }
 
-// LoadConfig reads config.toml, returning defaults when the file does not exist.
+// LoadConfig reads an explicit configuration file with listener defaults.
+// Call Validate before starting the gateway to check pipeline configuration.
 func LoadConfig(path string) (Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // config path is selected by the operator.
 	if err != nil {
-		if os.IsNotExist(err) {
-			return DefaultConfig(), nil
-		}
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
 	cfg := DefaultConfig()
@@ -217,47 +187,26 @@ func (c *Config) validate(requireHTTP bool) error {
 	if c.Server.WebRTCUDPPort < -1 || c.Server.WebRTCUDPPort > 65535 {
 		errs = append(errs, fmt.Errorf("server.webrtc_udp_port must be between -1 and 65535, got %d", c.Server.WebRTCUDPPort))
 	}
-	choices := c.VoiceChoices()
-	seen := make(map[string]struct{}, len(choices))
-	for i := range choices {
-		ch := &choices[i]
+	if len(c.Realtime)+len(c.Chat)+len(c.LocalStack) == 0 {
+		errs = append(errs, errors.New("at least one realtime, chat, or local_stack entry is required"))
+	}
+	seen := make(map[string]struct{})
+	for label, ch := range c.Choices() {
+		if strings.TrimSpace(label) == "" {
+			errs = append(errs, errors.New("choice label is required"))
+		}
+		if err := ch.validate(); err != nil {
+			errs = append(errs, fmt.Errorf("choice %q: %w", label, err))
+		}
 		id, err := ch.ID()
 		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
 		if _, ok := seen[id]; ok {
-			errs = append(errs, fmt.Errorf("duplicate choice %q (%s)", ch.Label, id))
+			errs = append(errs, fmt.Errorf("duplicate choice %q (%s)", label, id))
 		}
 		seen[id] = struct{}{}
-		if strings.TrimSpace(ch.Label) == "" {
-			errs = append(errs, fmt.Errorf("choices[%d].label is required", i))
-		}
-
-		switch ch.Type {
-		case ChoiceRealtime, ChoiceChat:
-			if ch.Provider == "" {
-				errs = append(errs, errors.New("provider is required"))
-			} else if entry, ok := providers.All[ch.Provider]; !ok || entry.Factory == nil {
-				errs = append(errs, fmt.Errorf("provider %q is not supported", ch.Provider))
-			}
-			llm := LocalStackLLMConfig{Provider: ch.Provider, Remote: ch.Remote, Model: ch.Model, APIKeyName: ch.APIKeyName, LlamaCPPServer: ch.LlamaCPPServer}
-			errs = append(errs, validateURL("remote", ch.Remote, ch.Provider == "openaicompatible"), validateLocalStackLLM(llm))
-			if ch.Type == ChoiceRealtime && ch.Provider == "llamacpp" {
-				rt := ch.Realtime
-				rt.Remote = ch.Remote
-				if err := rt.validate(ch.Model); err != nil {
-					errs = append(errs, fmt.Errorf("choice %q: %w", id, err))
-				}
-			}
-		case ChoiceLocalStack:
-		default:
-			errs = append(errs, fmt.Errorf("type %q must be realtime, chat, or local-stack", ch.Type))
-		}
-
-		if err := ch.LocalStack.validate(); err != nil {
-			errs = append(errs, fmt.Errorf("choice %q: %w", id, err))
-		}
 	}
 	for i, issuer := range c.TrustedIssuers {
 		errs = append(errs, validateTrustedIssuer(i, &issuer))
@@ -271,34 +220,28 @@ type ServerConfig struct {
 	WebRTCUDPPort int    `toml:"webrtc_udp_port"`
 }
 
-const (
-	// DefaultLocalStackASRModel is the managed speech recognition model.
-	DefaultLocalStackASRModel = "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"
-	// DefaultLocalStackLLMModel is the managed conversational model.
-	DefaultLocalStackLLMModel = "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"
-)
-
 // LocalStackConfig configures local model adapters.
 type LocalStackConfig struct {
+	Label string `toml:"label" json:"-"`
 	// TextOnly disables gateway speech processing. Clients transcribe and speak;
 	// the choice serves text sessions only and never initializes ASR or TTS.
 	TextOnly bool                `toml:"text_only" json:"text_only"`
 	ASR      LocalStackASRConfig `toml:"asr" json:"asr"`
-	LLM      LocalStackLLMConfig `toml:"llm" json:"llm"`
+	LLM      ModelConfig         `toml:"llm" json:"llm"`
 	TTS      LocalStackTTSConfig `toml:"tts" json:"tts"`
 }
 
-// WithDefaults resolves the local model and engine defaults.
+// ID returns the fingerprint of the effective local-stack settings.
+func (c *LocalStackConfig) ID() (string, error) {
+	return choiceID("local-stack", c.WithDefaults())
+}
+
+// WithDefaults resolves provider aliases, engines, and the default voice.
 func (c LocalStackConfig) WithDefaults() LocalStackConfig {
 	if c.LLM.Provider == "" {
 		c.LLM.Provider, c.LLM.LlamaCPPServer = "llamacpp", true
 	}
-	if alias := providers.All[c.LLM.Provider].Alias; alias != "" {
-		c.LLM.Provider = alias
-	}
-	if c.LLM.Provider == "llamacpp" && c.LLM.Remote == "" && c.LLM.Model == "" {
-		c.LLM.Model = DefaultLocalStackLLMModel
-	}
+	c.LLM = c.LLM.WithDefaults()
 	if c.TextOnly {
 		c.ASR, c.TTS = LocalStackASRConfig{}, LocalStackTTSConfig{}
 		return c
@@ -310,20 +253,12 @@ func (c LocalStackConfig) WithDefaults() LocalStackConfig {
 		if c.ASR.Provider == "" {
 			c.ASR.Provider = "llamacpp"
 		}
-		if alias := providers.All[c.ASR.Provider].Alias; alias != "" {
-			c.ASR.Provider = alias
-		}
-		if c.ASR.Provider == "llamacpp" && c.ASR.Remote == "" && c.ASR.Model == "" {
-			c.ASR.Model = DefaultLocalStackASRModel
-		}
+		c.ASR.Provider, c.ASR.Model = canonicalModel(c.ASR.Provider, c.ASR.Model)
 	}
 	if c.TTS.Engine == "" {
 		c.TTS.Engine = LocalStackTTSKittenTTS
 	}
 	if c.TTS.Engine == LocalStackTTSKittenTTS {
-		if c.TTS.Model == "" {
-			c.TTS.Model = "KittenML/kitten-tts-2"
-		}
 		if c.TTS.Voice == "" {
 			c.TTS.Voice = "Jasper"
 		}
@@ -332,17 +267,17 @@ func (c LocalStackConfig) WithDefaults() LocalStackConfig {
 }
 
 func (c *LocalStackConfig) validate() error {
-	var speechErr error
-	if c.TextOnly && (c.ASR != (LocalStackASRConfig{}) || c.TTS != (LocalStackTTSConfig{})) {
-		speechErr = errors.New("local_stack.text_only cannot be combined with asr or tts settings")
+	if c.TextOnly {
+		var speechErr error
+		if c.ASR != (LocalStackASRConfig{}) || c.TTS != (LocalStackTTSConfig{}) {
+			speechErr = errors.New("local_stack.text_only cannot be combined with asr or tts settings")
+		}
+		return errors.Join(speechErr, c.LLM.validate("local_stack.llm"))
 	}
 	return errors.Join(
-		speechErr,
 		validateLocalStackASR(c.ASR),
 		validateBaseURL("local_stack.asr.remote", c.ASR.Remote),
-		validateLocalStackProvider("local_stack.llm", c.LLM.Provider, c.LLM.Remote),
-		validateURL("local_stack.llm.remote", c.LLM.Remote, c.LLM.Provider == "openaicompatible"),
-		validateLocalStackLLM(c.LLM),
+		c.LLM.validate("local_stack.llm"),
 		validateLocalStackTTS(c.TTS),
 	)
 }
@@ -369,38 +304,10 @@ const (
 	LocalStackASRWhisperCPP LocalStackASREngine = "whispercpp"
 )
 
-// LocalStackLLMConfig configures the local LLM adapter.
-type LocalStackLLMConfig struct {
-	// LlamaCPPServer starts a managed llama.cpp server instead of connecting to Remote.
-	LlamaCPPServer bool   `toml:"llamacppsrv" json:"llamacppsrv"`
-	Provider       string `toml:"provider" json:"provider"`
-	Remote         string `toml:"remote" json:"remote"`
-	Model          string `toml:"model" json:"model"`
-	// APIKeyName names the environment variable containing the bearer token
-	// for an openaicompatible endpoint. The credential is never stored in TOML.
-	APIKeyName string `toml:"api_key_name" json:"-"`
-}
-
-func validateLocalStackLLM(c LocalStackLLMConfig) error {
-	if c.Provider == "llamacpp" && c.Remote == "" && !c.LlamaCPPServer {
-		return errors.New("provider llamacpp requires remote or llamacppsrv = true")
-	}
-	if c.LlamaCPPServer && (c.Provider != "llamacpp" || c.Remote != "") {
-		return errors.New("local_stack.llm.llamacppsrv requires provider llamacpp and no remote")
-	}
-	if c.Provider == "openaicompatible" && c.Remote == "" {
-		return errors.New("local_stack.llm.remote is required for openaicompatible")
-	}
-	if c.APIKeyName != "" && c.Provider != "openaicompatible" {
-		return errors.New("local_stack.llm.api_key_name requires provider openaicompatible")
-	}
-	return nil
-}
-
 // LocalStackTTSConfig selects a speech synthesis engine. The default is managed KittenTTS.
 //
-// KittenTTS defaults to the KittenTTS 2 model and Jasper voice when Model and Voice
-// are empty. OpenAI audio requires Remote, Model and Voice.
+// Model is required. KittenTTS uses Jasper when Voice is empty; OpenAI audio
+// also requires Remote and Voice.
 type LocalStackTTSConfig struct {
 	Engine LocalStackTTSEngine `toml:"engine" json:"engine"`
 	Remote string              `toml:"remote" json:"remote"`
@@ -421,7 +328,11 @@ const (
 func validateLocalStackASR(c LocalStackASRConfig) error {
 	switch c.Engine {
 	case "", LocalStackASRGenAI:
-		return validateLocalStackProvider("local_stack.asr", c.Provider, c.Remote)
+		_, model := canonicalModel(c.Provider, c.Model)
+		if strings.TrimSpace(model) == "" {
+			return errors.New("local_stack.asr.model is required")
+		}
+		return validateProvider("local_stack.asr", c.Provider, c.Remote)
 	case LocalStackASRWhistle:
 		if c.Provider != "" || c.Remote != "" {
 			return errors.New("local_stack.asr.whistle is managed locally; provider and remote must be empty")
@@ -434,7 +345,7 @@ func validateLocalStackASR(c LocalStackASRConfig) error {
 		if c.Remote == "" {
 			return fmt.Errorf("local_stack.asr.remote is required for %s", c.Engine)
 		}
-		if c.Engine == LocalStackASROpenAIAudio && c.Model == "" {
+		if c.Engine == LocalStackASROpenAIAudio && strings.TrimSpace(c.Model) == "" {
 			return errors.New("local_stack.asr.model is required for openai-audio")
 		}
 		if c.Engine == LocalStackASRWhisperCPP && c.Model != "" {
@@ -449,11 +360,14 @@ func validateLocalStackASR(c LocalStackASRConfig) error {
 func validateLocalStackTTS(c LocalStackTTSConfig) error {
 	switch c.Engine {
 	case "", LocalStackTTSKittenTTS:
+		if strings.TrimSpace(c.Model) == "" {
+			return errors.New("local_stack.tts.model is required")
+		}
 		if c.Remote != "" {
 			return errors.New("local_stack.tts.remote requires the openai-audio engine")
 		}
 	case LocalStackTTSOpenAIAudio:
-		if c.Remote == "" || c.Model == "" || c.Voice == "" {
+		if c.Remote == "" || strings.TrimSpace(c.Model) == "" || c.Voice == "" {
 			return errors.New("local_stack.tts.remote, model, and voice are required for openai-audio")
 		}
 	default:
@@ -508,10 +422,23 @@ func (c *TrustedIssuerConfig) OAuthScope() string {
 	return c.Scope
 }
 
-// validateLocalStackProvider checks that provider (defaulting to "llamacpp"
+// canonicalModel resolves provider aliases and provider-specific model spelling.
+func canonicalModel(provider, model string) (string, string) {
+	if alias := providers.All[provider].Alias; alias != "" {
+		provider = alias
+	}
+	if provider == "gemini" {
+		for strings.HasPrefix(model, "models/") {
+			model = strings.TrimPrefix(model, "models/")
+		}
+	}
+	return provider, model
+}
+
+// validateProvider checks that provider (defaulting to "llamacpp"
 // when unset) names a provider registered in the genai providers registry,
 // and that remote is not set without an explicit provider.
-func validateLocalStackProvider(prefix, provider, remote string) error {
+func validateProvider(prefix, provider, remote string) error {
 	p := provider
 	if p == "" {
 		if remote != "" {
@@ -519,7 +446,7 @@ func validateLocalStackProvider(prefix, provider, remote string) error {
 		}
 		p = "llamacpp"
 	}
-	if _, ok := providers.All[p]; !ok {
+	if entry, ok := providers.All[p]; !ok || entry.Factory == nil {
 		return fmt.Errorf("%s.provider %q is not supported", prefix, provider)
 	}
 	return nil

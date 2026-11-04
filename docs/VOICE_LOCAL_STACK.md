@@ -64,21 +64,20 @@ or final, and for a runtime with useful partial results.
 
 ### Client speech without ASR or TTS
 
-Set `type = "chat"` to run only the LLM. The gateway does not initialize
+Add a `[[chat]]` entry to run only the LLM. The gateway does not initialize
 ASR or TTS adapters, download their models, or start their processes. This
 choice advertises only the text transport, so browser and Android users select
 it with client speech enabled. WebRTC audio sessions are rejected.
 
 ```toml
-[[choices]]
+[[chat]]
 label = "DeepSeek"
-type = "chat"
 provider = "deepseek"
 model = "deepseek-flash"
 ```
 
 Supply `DEEPSEEK_API_KEY` to the gateway environment. To use a local LLM instead,
-set `provider = "llamacpp"`, `llamacppsrv = true`, and an optional `model`.
+set `provider = "llamacpp"`, `llamacppsrv = true`, and an explicit `model`.
 To connect to an existing server, set `remote` instead of `llamacppsrv`.
 
 ### Gateway speech
@@ -87,49 +86,44 @@ Omitting `text_only` or setting it to `false` enables gateway speech and starts
 the configured ASR and TTS alongside the LLM. ASR and TTS settings cannot be
 combined with `text_only = true`.
 
+Each active stage requires an explicit model. For a managed stack:
+
 ```toml
-type = "local-stack"
+[[local_stack]]
+label = "Local stack"
 
-# Omit these tables to let the gateway download and run its own llama.cpp
-# servers. Set remote only when you run llama-server yourself, for example
-# with custom flags, caches, thread counts, or builds.
-# [local_stack.asr]
-# provider = "llamacpp"
-# remote = "http://localhost:8090"
-# model = "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"
+[local_stack.asr]
+engine = "genai"
+provider = "llamacpp"
+model = "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"
 
-# To use an alternate ASR server, replace the table above with:
-# [local_stack.asr]
-# engine = "openai-audio" # or "whispercpp"
-# remote = "http://127.0.0.1:8000"
-# model = "mlx-community/parakeet-tdt-0.6b-v3" # omit for whispercpp
+[local_stack.llm]
+provider = "llamacpp"
+llamacppsrv = true
+model = "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"
 
-# [local_stack.llm]
-# provider = "llamacpp"
-# remote = "http://localhost:8080"
-# model = "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"
-
-# [local_stack.tts]
-# engine = "openai-audio"
-# remote = "http://127.0.0.1:8000"
-# model = "mlx-community/Kokoro-82M-bf16"
-# voice = "af_heart"
+[local_stack.tts]
+engine = "kittentts"
+model = "KittenML/kitten-tts-2"
+voice = "Jasper"
 ```
 
-ASR and LLM each run in their own managed llama.cpp server with independent
-lifetimes by default. ASR `engine = "genai"` uses the existing `provider` key
-to select any registered genai provider. The default TTS is
-`KittenML/kitten-tts-2` with the Jasper voice, started
-through `uv` and Python 3.12. Set `local_stack.tts.model` and
-`local_stack.tts.voice` to select a different KittenTTS model or voice. The gateway does not manage alternate servers;
-start them before starting the gateway. `remote` is a server origin without a
-path. Keep it on loopback to keep microphone audio and speech local.
+ASR and LLM run in their own managed llama.cpp servers. Set `remote` to use
+an existing server (and remove `llamacppsrv` from the LLM). ASR `engine = "genai"`
+can use any registered provider. KittenTTS starts through `uv` and Python 3.12;
+its voice defaults to Jasper, while its model must be selected explicitly.
+
+For alternate speech servers, see the engines below. The gateway does not manage
+those servers. Their `remote` is a server origin without a path; keep it on
+loopback to keep speech processing local. whisper.cpp selects its model on its
+server, so omit the gateway `model` for that engine. Selecting `engine = "whistle"`
+selects the dedicated Whistle model; its optional `model` is a local weights path.
 
 ### Remote chat completions LLM
 
 The LLM can use a remote OpenAI-compatible chat completions endpoint while
-ASR and TTS keep their local defaults. The remote model must support function
-tools. For example, to use RunInfra:
+ASR and TTS keep their configured models. The remote model must support function
+tools. To use RunInfra, replace the LLM table in the stack above:
 
 ```toml
 [local_stack.llm]
@@ -150,7 +144,7 @@ of the TOML file.
 Transcripts, the system instruction, and service-item context are sent to the
 configured LLM endpoint.
 
-For DeepSeek's native API, use the registered `deepseek` provider:
+For DeepSeek's native API, replace the LLM table with:
 
 ```toml
 [local_stack.llm]
@@ -218,7 +212,7 @@ every run includes cold llama.cpp, uv, and KittenTTS setup. Only `HF_HOME`
 stays on the host, defaulting to `~/.cache/huggingface`, so runs reuse
 downloaded models. `TestSmokeVoiceRTCLocalAudio` checks TTS, ASR, LLM, managed
 tool calls, and full WebRTC turns. `TestSmokeVoiceGatewayToolCall` serves the gateway HTTP API with
-the default local stack, speaks "Set a timer for five minutes." over WebRTC,
+an explicitly configured local stack, speaks "Set a timer for five minutes." over WebRTC,
 answers the `set_timer` tool call, and closes the session through the API.
 Linux CPU runs prove wiring and audio-path correctness only; latency and
 quality need the target Mac. Do not measure RSS.
@@ -247,7 +241,7 @@ Evaluate these after measuring the target hardware:
 ### Optional Whistle ASR
 
 To use [Cactus Whistle](https://cactuscompute.com/blog/whistle) instead of the
-managed Qwen ASR model:
+configured Qwen ASR model, replace its ASR table:
 
 ```toml
 [local_stack.asr]

@@ -57,7 +57,7 @@ func TestSmokeLlamaRealtimeGateway(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(oldLog) })
 	t.Logf("runtime log: %s", logFile.Name())
 	start := time.Now()
-	b, err := newLlamaRealtimeBackend(ctx, llamaRealtimeSmokeModel, voicegateway.RealtimeConfig{CacheDir: cache, Threads: 8, MaxOutputTokens: 256})
+	b, err := newLlamaRealtimeBackend(ctx, voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: llamaRealtimeSmokeModel}, CacheDir: cache, Threads: 8, MaxOutputTokens: 256})
 	if err != nil {
 		t.Fatal(err)
 	}

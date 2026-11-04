@@ -4,8 +4,10 @@
 # With systemd, put API keys in ~/.config/systemd/user/voice-gateway.env,
 # beside voice-gateway.service. See voice-gateway.env.example for the format.
 # Provider names come from genai's providers.All registry (openai aliases
-# openairesponses). type selects realtime audio, chat with client speech,
-# or a local-stack with gateway ASR and TTS.
+# openairesponses). Sections select realtime audio, chat with client speech,
+# or a local stack with gateway ASR and TTS. Choices are offered in realtime,
+# chat, then local_stack order, preserving order within each section.
+# Set model explicitly on every realtime/chat entry and configurable local stage.
 
 [server]
 # Use an HTTPS reverse proxy for secure signaling.
@@ -21,40 +23,34 @@ webrtc_udp_port = 3478
 # Realtime Audio models.
 
 # Gemini Live: reads GEMINI_API_KEY from the environment.
-[[choices]]
+[[realtime]]
 label = "Gemini Live"
-type = "realtime"
 provider = "gemini"
 model = "gemini-3.8-live"
 
-[[choices]]
+[[realtime]]
 label = "Gemini Live Thinking ($)"
-type = "realtime"
 provider = "gemini"
 model = "gemini-3.8-live-extended-thinking"
 
 # OpenAI Realtime: reads OPENAI_API_KEY from the environment.
-[[choices]]
+[[realtime]]
 label = "GPT Realtime mini"
-type = "realtime"
 provider = "openai"
 model = "gpt-realtime-2.1-mini"
 
-[[choices]]
+[[realtime]]
 label = "GPT Realtime ($)"
-type = "realtime"
 provider = "openai"
 model = "gpt-realtime-2.1"
 
 # Native audio-to-audio LFM3, independent of the ASR/LLM/TTS stack.
 # llamacppsrv downloads and starts the managed llama.cpp audio server.
-[[choices]]
+[[realtime]]
 label = "LFM3 audio"
-type = "realtime"
 provider = "llamacpp"
 llamacppsrv = true
 model = "LiquidAI/LFM3-Audio-2B-GGUF/LFM3-Audio-2B-Q4_K_M.gguf"
-[choices.realtime]
 context_size = 65536
 setup_timeout_seconds = 15
 pending_audio_seconds = 5
@@ -63,52 +59,47 @@ pending_audio_seconds = 5
 # Remote LLMs
 
 # reads DEEPSEEK_API_KEY; clients transcribe and speak.
-[[choices]]
+[[chat]]
 label = "DeepSeek Flash"
-type = "chat"
 provider = "deepseek"
 model = "deepseek-flash"
 
-[[choices]]
+[[chat]]
 label = "Groq Qwen3.8-27B"
-type = "chat"
 provider = "groq"
 model = "qwen/qwen3.8-27b"
 
-[[choices]]
+[[chat]]
 label = "Openrouter Gemma-4-26B-A4B (free)"
-type = "chat"
 provider = "openrouter"
 model = "google/gemma-4-26b-a4b-it:free"
 
 # An arbitrary OpenAI-compatible chat endpoint:
-# [[choices]]
+# [[chat]]
 # label = "Remote compatible LLM"
-# type = "chat"
 # provider = "openaicompatible"
 # remote = "https://llm.example/v1/chat/completions"
 # model = "your-model"
 # api_key_name = "REMOTE_LLM_API_KEY"
 
 # Local ASR/LLM/TTS stack. Prerequisites: docs/VOICE_LOCAL_STACK.md.
-# Set local_stack.text_only = true and omit ASR/TTS to use client speech.
-# [[choices]]
+# Set text_only = true on the local_stack entry and omit ASR/TTS to use client speech.
+# [[local_stack]]
 # label = "Local stack"
-# type = "local-stack"
-# [choices.local_stack.llm]
+# [local_stack.llm]
 # provider = "llamacpp"
 # llamacppsrv = true
 # model = "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"
-# [choices.local_stack.asr]
+# [local_stack.asr]
 # engine = "openai-audio"
 # remote = "http://127.0.0.1:8000"
 # model = "mlx-community/parakeet-tdt-0.6b-v3"
-# [choices.local_stack.tts]
+# [local_stack.tts]
 # engine = "kittentts"
 # model = "KittenML/kitten-tts-2"
 # voice = "Luna"
 # Alternatively, use an existing speech server (started separately):
-# [choices.local_stack.tts]
+# [local_stack.tts]
 # engine = "openai-audio"
 # remote = "http://127.0.0.1:8000"
 # model = "mlx-community/Kokoro-82M-bf16"

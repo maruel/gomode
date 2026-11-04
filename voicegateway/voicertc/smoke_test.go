@@ -55,7 +55,7 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 	t.Run("Audio", func(t *testing.T) {
 		t.Run("TTS", func(t *testing.T) {
 			startup := time.Now()
-			adapter, err := kittentts.New(runtimeCtx, kittentts.Config{})
+			adapter, err := kittentts.New(runtimeCtx, kittentts.Config{Model: "KittenML/kitten-tts-2"})
 			t.Logf("KittenTTS startup setup time, excluded from latency measurements: %s", smokeElapsed(startup))
 			if err != nil {
 				t.Fatal(err)
@@ -89,7 +89,7 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 				t.Fatal("TTS did not produce ASR input")
 			}
 			startup := time.Now()
-			endpoint, err := localStackLlamaEndpoint(runtimeCtx, "", "", voicegateway.DefaultLocalStackASRModel, startManagedLlamaServer)
+			endpoint, err := localStackLlamaEndpoint(runtimeCtx, "", "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0", startManagedLlamaServer)
 			t.Logf("managed Qwen3-ASR startup setup time, excluded from latency measurements: %s", smokeElapsed(startup))
 			if err != nil {
 				t.Fatal(err)
@@ -122,7 +122,7 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 
 	t.Run("LLM", func(t *testing.T) {
 		startup := time.Now()
-		endpoint, err := localStackLlamaEndpoint(runtimeCtx, "", "", voicegateway.DefaultLocalStackLLMModel, startManagedLlamaServer)
+		endpoint, err := localStackLlamaEndpoint(runtimeCtx, "", "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL", startManagedLlamaServer)
 		t.Logf("managed Gemma startup setup time, excluded from latency measurements: %s", smokeElapsed(startup))
 		if err != nil {
 			t.Fatal(err)
@@ -244,7 +244,7 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 }
 
 // TestSmokeVoiceGatewayToolCall serves the standalone gateway API over HTTP
-// with the default local stack, speaks a request that needs a client tool
+// with an explicitly configured local stack, speaks a request that needs a client tool
 // through WebRTC, and answers the resulting tool call.
 func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 	isolateSmokeHost(t)
@@ -255,7 +255,7 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 
 	// Synthesize the microphone input before the gateway starts its own
 	// KittenTTS worker, so only one worker runs at a time.
-	tts, err := kittentts.New(runtimeCtx, kittentts.Config{})
+	tts, err := kittentts.New(runtimeCtx, kittentts.Config{Model: "KittenML/kitten-tts-2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +287,13 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := voicegateway.DefaultConfig()
-	cfg.Type = voicegateway.ChoiceLocalStack
+	cfg.Realtime = nil
+	cfg.LocalStack = []voicegateway.LocalStackConfig{{
+		Label: "Local",
+		ASR:   voicegateway.LocalStackASRConfig{Model: "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"},
+		LLM:   voicegateway.ModelConfig{Model: "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"},
+		TTS:   voicegateway.LocalStackTTSConfig{Model: "KittenML/kitten-tts-2"},
+	}}
 	cfg.TrustedIssuers = []voicegateway.TrustedIssuerConfig{{Service: service.Kind, Issuer: service.BaseURL, PublicKey: encodedPublicKey}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)

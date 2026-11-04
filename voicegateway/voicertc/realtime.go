@@ -28,12 +28,12 @@ type llamaRealtimeBackend struct {
 	slots    chan struct{}
 }
 
-func newLlamaRealtimeBackend(ctx context.Context, model string, cfg voicegateway.RealtimeConfig) (*llamaRealtimeBackend, error) {
+func newLlamaRealtimeBackend(ctx context.Context, cfg voicegateway.RealtimeConfig) (*llamaRealtimeBackend, error) {
 	cfg = cfg.WithDefaults()
 	b := &llamaRealtimeBackend{cfg: cfg, slots: make(chan struct{}, cfg.Slots)}
 	remote := cfg.Remote
 	if remote == "" {
-		parts := strings.SplitN(model, "/", 3)
+		parts := strings.SplitN(cfg.Model, "/", 3)
 		if len(parts) < 2 || parts[0] == "" || parts[1] == "" || (len(parts) == 3 && (parts[2] == "" || strings.Contains(parts[2], "/"))) {
 			return nil, errors.New("realtime model must be a HuggingFace Author/Repo or Author/Repo/Filename")
 		}

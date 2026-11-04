@@ -117,7 +117,7 @@ func localStackModelsForConfigWithStarter(
 			asrAdapter = &speechASRAdapter{recognizer: recognizer}
 		default:
 			var err error
-			asr, err = resolveLocalStackEndpoint(ctx, "local_stack.asr", cfg.ASR.Provider, cfg.ASR.Remote, cfg.ASR.Model, voicegateway.DefaultLocalStackASRModel, start)
+			asr, err = resolveLocalStackEndpoint(ctx, "local_stack.asr", cfg.ASR.Provider, cfg.ASR.Remote, cfg.ASR.Model, start)
 			if err != nil {
 				return localStackModels{}, err
 			}
@@ -128,7 +128,7 @@ func localStackModelsForConfigWithStarter(
 			asrAdapter = &speechASRAdapter{recognizer: recognizer}
 		}
 	}
-	llm, err := resolveLocalStackEndpoint(ctx, "local_stack.llm", cfg.LLM.Provider, cfg.LLM.Remote, cfg.LLM.Model, voicegateway.DefaultLocalStackLLMModel, start, llmOpts...)
+	llm, err := resolveLocalStackEndpoint(ctx, "local_stack.llm", cfg.LLM.Provider, cfg.LLM.Remote, cfg.LLM.Model, start, llmOpts...)
 	if err != nil {
 		return localStackModels{}, errors.Join(err, joinClosers(asr.runtime).Close())
 	}
@@ -143,7 +143,7 @@ func localStackModelsForConfigWithStarter(
 // configured provider: a managed (or remote) llama.cpp runtime by default, or
 // any provider registered in providers.All when provider names one explicitly.
 // prefix names the config table in error messages, e.g. "local_stack.asr".
-func resolveLocalStackEndpoint(ctx context.Context, prefix, provider, remote, model, defaultModel string, start managedLlamaStarter, opts ...genai.ProviderOption) (localStackEndpoint, error) {
+func resolveLocalStackEndpoint(ctx context.Context, prefix, provider, remote, model string, start managedLlamaStarter, opts ...genai.ProviderOption) (localStackEndpoint, error) {
 	p := provider
 	if p == "" {
 		if remote != "" {
@@ -152,7 +152,7 @@ func resolveLocalStackEndpoint(ctx context.Context, prefix, provider, remote, mo
 		p = "llamacpp"
 	}
 	if p == "llamacpp" {
-		return localStackLlamaEndpoint(ctx, remote, model, defaultModel, start)
+		return localStackLlamaEndpoint(ctx, remote, model, start)
 	}
 	return localStackGenAIEndpoint(ctx, p, remote, model, opts...)
 }
@@ -160,20 +160,16 @@ func resolveLocalStackEndpoint(ctx context.Context, prefix, provider, remote, mo
 // localStackLlamaEndpoint wires the managed (or remote) llama.cpp runtime. A
 // managed server was just started by us, so it is known to be reachable; a
 // user-supplied remote is pinged to fail fast on misconfiguration.
-func localStackLlamaEndpoint(ctx context.Context, remote, model, defaultModel string, start managedLlamaStarter) (localStackEndpoint, error) {
+func localStackLlamaEndpoint(ctx context.Context, remote, model string, start managedLlamaStarter) (localStackEndpoint, error) {
 	var runtime io.Closer
 	if remote == "" {
-		wantModel := model
-		if wantModel == "" {
-			wantModel = defaultModel
-		}
-		srv, err := start(ctx, wantModel)
+		srv, err := start(ctx, model)
 		if err != nil {
 			return localStackEndpoint{}, err
 		}
 		remote = srv.URL()
 		runtime = srv
-		model = "" // the managed server is already pinned to wantModel
+		model = "" // The managed server is already pinned to the configured model.
 	}
 	p, err := newLlamaProvider(ctx, remote, model)
 	if err != nil {
@@ -198,9 +194,7 @@ func localStackGenAIEndpoint(ctx context.Context, provider, remote, model string
 	if remote != "" {
 		opts = append(opts, genai.ProviderOptionRemote(remote))
 	}
-	if model != "" {
-		opts = append(opts, genai.ProviderOptionModel(model))
-	}
+	opts = append(opts, genai.ProviderOptionModel(model))
 	p, err := entry.Factory(ctx, opts...)
 	if err != nil {
 		return localStackEndpoint{}, fmt.Errorf("create %s provider: %w", provider, err)
