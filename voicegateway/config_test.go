@@ -14,6 +14,16 @@ import (
 )
 
 func TestLoadConfig(t *testing.T) {
+	t.Run("syntax error location", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(path, []byte("[server]\nhttp = ':3479'\n[realtime]]\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := LoadConfig(path)
+		if err == nil || !strings.HasPrefix(err.Error(), "parse "+path+":3:11: ") {
+			t.Fatalf("syntax error = %v, want file:3:11 location", err)
+		}
+	})
 	t.Run("contributed choices", func(t *testing.T) {
 		cfg, err := LoadConfig("../contrib/config.toml")
 		if err != nil {

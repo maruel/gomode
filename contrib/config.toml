@@ -3,11 +3,12 @@
 #
 # With systemd, put API keys in ~/.config/systemd/user/voice-gateway.env,
 # beside voice-gateway.service. See voice-gateway.env.example for the format.
-# Provider names come from genai's providers.All registry (openai aliases
-# openairesponses). Sections select realtime audio, chat with client speech,
-# or a local stack with gateway ASR and TTS. Choices are offered in realtime,
-# chat, then local_stack order, preserving order within each section.
-# Set model explicitly on every realtime/chat entry and configurable local stage.
+#
+# Provider names come from genai's providers.All registry at https://github.com/maruel/genai
+#
+# At standalone startup, unavailable providers are hidden with a warning.
+# Managed llama.cpp and explicit local endpoints remain selectable without
+# default-endpoint probes.
 
 [server]
 # Use an HTTPS reverse proxy for secure signaling.
@@ -22,7 +23,6 @@ webrtc_udp_port = 3478
 
 # Realtime Audio models.
 
-# Gemini Live: reads GEMINI_API_KEY from the environment.
 [[realtime]]
 label = "Gemini Live"
 provider = "gemini"
@@ -33,7 +33,6 @@ label = "Gemini Live Thinking ($)"
 provider = "gemini"
 model = "gemini-3.8-live-extended-thinking"
 
-# OpenAI Realtime: reads OPENAI_API_KEY from the environment.
 [[realtime]]
 label = "GPT Realtime mini"
 provider = "openai"
@@ -57,8 +56,29 @@ pending_audio_seconds = 5
 # remote = "http://127.0.0.1:8080" directly on the choice.
 
 # Remote LLMs
+# Clients transcribe and speak for all chat choices. Credentials are listed in
+# voice-gateway.env.example, using genai's provider environment variables.
 
-# reads DEEPSEEK_API_KEY; clients transcribe and speak.
+[[chat]]
+label = "GPT 6 Luna"
+provider = "openai"
+model = "gpt-6-luna"
+
+[[chat]]
+label = "Claude Haiku 5.5"
+provider = "anthropic"
+model = "claude-haiku-5-5"
+
+[[chat]]
+label = "Gemini Flash 3.8"
+provider = "gemini"
+model = "gemini-3.8-flash"
+
+[[chat]]
+label = "Gemini Flash Lite"
+provider = "gemini"
+model = "gemini-flash-lite-latest"
+
 [[chat]]
 label = "DeepSeek Flash"
 provider = "deepseek"
@@ -73,6 +93,31 @@ model = "qwen/qwen3.8-27b"
 label = "Openrouter Gemma-4-26B-A4B (free)"
 provider = "openrouter"
 model = "google/gemma-4-26b-a4b-it:free"
+
+[[chat]]
+label = "Cerebras GPT OSS 120B"
+provider = "cerebras"
+model = "gpt-oss-120b"
+
+[[chat]]
+label = "Mistral Small"
+provider = "mistral"
+model = "mistral-small-latest"
+
+[[chat]]
+label = "Alibaba Qwen3.8 Flash"
+provider = "alibaba"
+model = "qwen3.8-flash"
+
+[[chat]]
+label = "Cohere Command A"
+provider = "cohere"
+model = "command-a-03-2025"
+
+[[chat]]
+label = "Together Qwen3.8 Flash"
+provider = "togetherai"
+model = "Qwen/Qwen3.8-Flash"
 
 # An arbitrary OpenAI-compatible chat endpoint:
 # [[chat]]

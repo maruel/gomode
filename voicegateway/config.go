@@ -3,16 +3,20 @@
 package voicegateway
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
+	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers"
 	"github.com/pelletier/go-toml/v2"
 
@@ -57,6 +61,112 @@ func (c *Config) Choices() iter.Seq2[string, Choice] {
 			}
 		}
 	}
+}
+
+// Available returns a copy containing only choices whose providers are available.
+// Call Validate or ValidateEmbedded first. Each configured provider using a default
+// endpoint is probed once, and probe clients are closed before returning. Missing
+// providers and custom credentials produce warnings. Managed runtimes and explicit
+// local endpoints remain selectable without probing their default servers.
+// The caller owns the probe timeout and must validate the result if no choices
+// would prevent startup. Availability does not guarantee access to a model.
+func (c *Config) Available(ctx context.Context) Config {
+	configured := make(map[string]providers.Config)
+	add := func(c *ModelConfig) {
+		if c.usesDefaultProviderEndpoint() {
+			configured[c.Provider] = providers.All[c.Provider]
+		}
+	}
+	for _, c := range c.Realtime {
+		add(&c.ModelConfig)
+	}
+	for _, c := range c.Chat {
+		add(&c.ModelConfig)
+	}
+	for _, c := range c.LocalStack {
+		add(&c.LLM)
+		if !c.TextOnly && c.ASR.Engine == LocalStackASRGenAI {
+			asr := c.ASR.modelConfig()
+			add(&asr)
+		}
+	}
+	available := make(map[string]providers.Config)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for name, entry := range configured {
+		wg.Go(func() {
+			p, err := entry.Factory(ctx)
+			if err == nil {
+				if ping, ok := p.(genai.ProviderPing); ok {
+					err = ping.Ping(ctx)
+				}
+				if err == nil {
+					mu.Lock()
+					available[name] = entry
+					mu.Unlock()
+				}
+			}
+			if p != nil {
+				if err := p.Close(); err != nil {
+					slog.WarnContext(ctx, "close provider availability probe", "provider", name, "err", err)
+				}
+			}
+		})
+	}
+	wg.Wait()
+
+	unavailable := func(label string, c *ModelConfig) bool {
+		_, ok := available[c.Provider]
+		if !c.usesDefaultProviderEndpoint() {
+			ok = true
+		}
+		if c.APIKeyName != "" && os.Getenv(c.APIKeyName) == "" {
+			ok = false
+		}
+		if !ok {
+			slog.WarnContext(ctx, "hiding voice choice: provider unavailable", "label", label, "provider", c.Provider)
+		}
+		return !ok
+	}
+	out := *c
+	out.Realtime = nil
+	for _, c := range c.Realtime {
+		if !unavailable(c.Label, &c.ModelConfig) {
+			out.Realtime = append(out.Realtime, c)
+		}
+	}
+	out.Chat = nil
+	for _, c := range c.Chat {
+		if !unavailable(c.Label, &c.ModelConfig) {
+			out.Chat = append(out.Chat, c)
+		}
+	}
+	out.LocalStack = nil
+	for _, c := range c.LocalStack {
+		llmUnavailable := unavailable(c.Label, &c.LLM)
+		asrUnavailable := false
+		if !c.TextOnly && c.ASR.Engine == LocalStackASRGenAI {
+			asr := c.ASR.modelConfig()
+			asrUnavailable = unavailable(c.Label, &asr)
+		}
+		if !llmUnavailable && !asrUnavailable {
+			out.LocalStack = append(out.LocalStack, c)
+		}
+	}
+	return out
+}
+
+func (c *LocalStackASRConfig) modelConfig() ModelConfig {
+	return ModelConfig{
+		Provider:       c.Provider,
+		Remote:         c.Remote,
+		Model:          c.Model,
+		LlamaCPPServer: c.Provider == "llamacpp" && c.Remote == "",
+	}
+}
+
+func (c *ModelConfig) usesDefaultProviderEndpoint() bool {
+	return !c.LlamaCPPServer && (c.Remote == "" || providers.All[c.Provider].APIKeyEnvVar != "")
 }
 
 // ModelConfig selects a provider, model, and managed or remote endpoint.
@@ -149,6 +259,10 @@ func LoadConfig(path string) (Config, error) {
 	dec := toml.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
+		if e, ok := errors.AsType[*toml.DecodeError](err); ok {
+			line, column := e.Position()
+			return Config{}, fmt.Errorf("parse %s:%d:%d: %w", path, line, column, err)
+		}
 		return Config{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return cfg, nil

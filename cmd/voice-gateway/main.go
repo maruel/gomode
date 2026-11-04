@@ -62,6 +62,13 @@ func mainImpl(args []string) (err error) {
 	if err := validateStandaloneConfig(&cfg); err != nil {
 		return err
 	}
+	cfg = cfg.Available(ctx)
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
+	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("available voice choices: %w", err)
+	}
 	watcher, err := startRestartWatch(ctx, *configPath, cancel)
 	if err != nil {
 		return err
