@@ -175,10 +175,11 @@ func (s *llamaRealtimeSession) setup(msg *voicev1.SessionSetup) error {
 	if err != nil {
 		return err
 	}
-	instruction := "Respond with function calls, and interleaved text and audio.\n" + msg.Context.SystemInstruction
+	instruction := "Respond with function calls, and interleaved text and audio.\n\n" + msg.Context.SystemInstruction
 	if msg.Context.Text != "" {
 		instruction += "\n" + msg.Context.Text
 	}
+	instruction += "\n\nList of tools:"
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -197,7 +198,8 @@ func (s *llamaRealtimeSession) setup(msg *voicev1.SessionSetup) error {
 	rt, err := s.backend.provider.ConnectRealtime(s.ctx,
 		genai.RealtimeOptionInstructions(instruction),
 		&genai.RealtimeOptionTools{Tools: tools},
-		genai.Modalities{genai.ModalityText, genai.ModalityAudio},
+		// Leave output mode automatic: explicit speech modalities prefill LFM3's
+		// speech token before it can choose a tool call.
 		genai.RealtimeTurnManual,
 		&llamacpp.RealtimeOption{MaxOutputTokens: s.backend.cfg.MaxOutputTokens})
 	if err == nil {
@@ -456,7 +458,11 @@ func (s *llamaRealtimeSession) finishToolsLocked(ctx context.Context) error {
 	s.tools = nil
 	s.results = nil
 	s.resultBytes = 0
-	return s.flushLocked(ctx)
+	// genai starts the continuation as part of sending the results. Preserve
+	// queued input until it finishes, and let new speech cancel it normally.
+	s.generating = true
+	s.cancelling = false
+	return s.sendLocked(&voicev1.TurnStatus{Kind: voicev1.MessageKindTurnStatus, State: voicev1.TurnStateThinking})
 }
 
 func (s *llamaRealtimeSession) sendLocked(msg any) error {

@@ -84,7 +84,7 @@ func TestSmokeLlamaRealtimeGateway(t *testing.T) {
 	if !sink.isReady() {
 		t.Fatal("not ready after accepted setup")
 	}
-	t.Logf("managed b11960 ready in %s", time.Since(start))
+	t.Logf("managed %s ready in %s", llamacppsrv.Version, time.Since(start))
 	start = time.Now()
 	// Deliberately unpaced 100ms capture chunks test streaming correctness and
 	// throughput, not a realtime capture-latency or hardware performance promise.

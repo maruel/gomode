@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -410,6 +409,9 @@ func TestLlamaRealtimeSession(t *testing.T) {
 					if in := p.next(t); in.toolResults == nil {
 						t.Fatalf("tools must precede preserved mic: %+v", in)
 					}
+					// The result batch starts another response. Its completion must
+					// precede the microphone input preserved during cancellation.
+					p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
 				}
 				if in := p.next(t); len(in.audio) == 0 {
 					t.Fatalf("lost microphone after terminal delivery: %+v", in)
@@ -441,6 +443,12 @@ func TestLlamaRealtimeSession(t *testing.T) {
 			if in.toolResults == nil || len(in.toolResults) != 2 || in.toolResults[0].ID != "a" {
 				t.Fatalf("complete original batch: %+v", in)
 			}
+			select {
+			case in := <-p.sent:
+				t.Fatalf("input passed active tool continuation: %+v", in)
+			default:
+			}
+			p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
 			if in = p.next(t); len(in.audio) == 0 {
 				t.Fatalf("mic must follow results: %+v", in)
 			}
@@ -538,6 +546,16 @@ func TestLlamaRealtimeSession(t *testing.T) {
 		if in := p.next(t); in.toolResults == nil {
 			t.Fatalf("result order: %+v", in)
 		}
+		if err := s.acceptMicPCM(t.Context(), testPCM(120, 2000)); err != nil {
+			t.Fatal(err)
+		}
+		if in := p.next(t); !in.cancel {
+			t.Fatalf("barge-in must cancel the tool continuation before sending microphone input: %+v", in)
+		}
+		p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
+		if in := p.next(t); len(in.audio) == 0 {
+			t.Fatalf("lost microphone input after cancelling tool continuation: %+v", in)
+		}
 	})
 
 	t.Run("result error", func(t *testing.T) {
@@ -628,8 +646,11 @@ func TestLlamaRealtimeSession(t *testing.T) {
 					return
 				}
 				session := setup["session"].(map[string]any)
-				if !slices.Equal(session["output_modalities"].([]any), []any{"text", "audio"}) {
-					t.Errorf("interleaved response modalities: %v", session["output_modalities"])
+				if mode, ok := session["output_modalities"]; !ok || mode != nil {
+					t.Errorf("output mode must let the model choose tool calls or speech: %v", session)
+				}
+				if session["instructions"] != "Respond with function calls, and interleaved text and audio.\n\nSpeak concisely\nSpeak in the selected language: en-AU.\n\nList of tools:" {
+					t.Errorf("tool-enabled instructions: %v", session["instructions"])
 				}
 				session["id"] = "local"
 				raw, err := json.Marshal(map[string]any{"type": "session.updated", "session": session})

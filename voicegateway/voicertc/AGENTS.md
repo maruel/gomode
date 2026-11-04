@@ -93,7 +93,7 @@ detection.
 
 `realtime.go` owns manual turn scheduling and host tool batches over genai's
 llama.cpp realtime client. genai owns all provider wire messages, setup
-validation and managed b11960 downloads/processes. Keep the native audio choice
+validation and managed runtime downloads/processes. Keep the native audio choice
 separate from `localstack.go`'s whole-utterance ASR/LLM/TTS pipeline.
 The common RTP owner schedules native speech boundaries against queued PCM;
 generation completion must not end playback or introduce a backend clock.

@@ -304,13 +304,13 @@ identify its startup and shutdown by provider and model.
 Set `model` to a Hugging Face reference such as `LiquidAI/LFM3-Audio-2B-GGUF`
 (repository default quant) or
 `LiquidAI/LFM3-Audio-2B-GGUF/LFM3-Audio-2B-Q4_K_M.gguf` (one file). Managed
-startup downloads the pinned llama.cpp b11960 runtime for Linux or macOS and
+startup downloads the pinned llama.cpp v0.9.0 runtime for Linux or macOS and
 the model's weights/mmproj. Weights use `LLAMA_CACHE` or llama.cpp's default
 cache; runtime files use the user's cache directory under `gomode/llama-realtime`.
 An optional absolute `cache_dir` changes only the runtime cache.
 
 Alternatively, set `remote = "http://127.0.0.1:8080"` for an operator-managed
-b11960 server with matching `--model`, `--mmproj`, `--jinja`, `--parallel`, and
+v0.9.0 server with matching `--model`, `--mmproj`, `--jinja`, `--parallel`, and
 `--ctx-size` settings. Configure admission and response bounds on the entry:
 
 - `slots`: defaults to 1, maximum 16; must not exceed server capacity. Each
