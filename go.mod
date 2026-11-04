@@ -9,7 +9,7 @@ require (
 	github.com/invopop/jsonschema v0.14.0
 	github.com/lmittmann/tint v1.2.1
 	github.com/maruel/apisdkgen v0.2.0
-	github.com/maruel/genai v0.10.3-0.20261103213525-a1b5520d1263
+	github.com/maruel/genai v0.10.3-0.20261104162737-ec2479994955
 	github.com/maruel/genaipy v0.1.2
 	github.com/mattn/go-colorable v0.1.16
 	github.com/mattn/go-isatty v0.0.24
