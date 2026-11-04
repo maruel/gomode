@@ -333,18 +333,18 @@ These platform rules follow
 ## Backends
 
 A gateway offers named `[[choices]]` together at one URL, sharing one WebRTC
-UDP port. Set `default_choice_id` to the preferred choice when a client omits
-its choice; when unset, the first configured choice is preferred. A family
-keeps the first choice that supports it when the preferred choice does not:
-`default_choice_id = "gemini"` leaves the text family to the first text-capable
-choice. IDs should stay stable so clients can save selections. Each choice has
-its own model configuration:
+UDP port. Each client family initially selects the first choice that supports
+its transport; reorder the list to change that preference. Choices have generated
+IDs in the form `<type>-<16 hex characters>`, using SHA-256 over their effective
+settings. Labels, credentials, and list position do not affect identity.
+Changing a model, endpoint, or runtime settings changes its ID. Duplicate choices
+are rejected. Each choice has its own model configuration:
 
-- `gemini-live`: full duplex WebRTC audio. Its `model` defaults to
+- `type = "realtime", provider = "gemini"`: full duplex WebRTC audio. Its `model` defaults to
   `voicegateway.DefaultGeminiModel`; bare IDs get the `models/` prefix. Supply
   `GEMINI_API_KEY`. Setup rules:
   [`voicegateway/voicertc/AGENTS.md`](../voicegateway/voicertc/AGENTS.md).
-- `openai-realtime`: full duplex WebRTC audio through the OpenAI Responses
+- `type = "realtime", provider = "openai"`: full duplex WebRTC audio through the OpenAI Responses
   realtime endpoint. Its `model` defaults to
   `voicegateway.DefaultOpenAIRealtimeModel`, which is
   `gpt-realtime-2.1-mini`. Set `model = "gpt-realtime-2.1"` for the larger
@@ -353,21 +353,26 @@ its own model configuration:
   input transcription model. The gateway decodes microphone Opus at OpenAI's
   negotiated 24 kHz input rate; it does not resample. It advertises no voice
   catalog because the OpenAI voice set is not pinned.
-- `llamacpp-realtime`: native audio-to-audio inference on a managed or remote
+- `type = "realtime", provider = "llamacpp"`: native audio-to-audio inference on a managed or remote
   llama.cpp server; see [Native local realtime audio](#native-local-realtime-audio).
-- `local-stack`: half-duplex ASR, LLM, and TTS:
+- `type = "local-stack"`: half-duplex ASR, LLM, and TTS:
   [VOICE_LOCAL_STACK.md](VOICE_LOCAL_STACK.md). Its LLM can run locally or use
   a remote provider. It also supports text sessions with client speech. Set
   `[choices.local_stack] text_only = true` to serve only text sessions without
   initializing ASR or TTS. Such choices appear only in client-speech modes.
 
-See [contrib/config.toml](../contrib/config.toml) for Gemini Live, OpenAI
-Realtime, remote LLM, and local LLM offered simultaneously, with client speech
-for the LLM choices.
+See [contrib/config.toml](../contrib/config.toml) for enabled Gemini Live, OpenAI
+Realtime, and remote chat examples, plus optional local audio and local-stack
+choices.
 All configured backends initialize before
 serving; a failed initialization stops startup and closes initialized backends.
-A configuration with top-level `backend`, `model`, and `local_stack` exposes
-one choice with ID `default`.
+Provider names use genai’s `providers.All` registry, including its aliases.
+Use `type = "chat"` with `provider`, `model`, optional `remote`, and optional
+`api_key_name` directly on the choice for client-owned speech. For llama.cpp,
+set `llamacppsrv = true` to start a managed server, or set `remote` to connect
+to an existing server. Local-stack choices set these on `local_stack.llm`.
+A configuration with top-level `type`, `provider`, `model`, and `local_stack` exposes
+one choice with a generated ID.
 
 `GET /api/voicegateway/v1/voice/choices` returns public metadata:
 `choices` with `id`, `label`, and `transports` (`webrtc` and/or `text`), plus
@@ -392,7 +397,7 @@ the same service identity authorization as the offer.
 
 ## Native local realtime audio
 
-A `llamacpp-realtime` choice runs LiquidAI LFM3-Audio-2B through genai's native
+A `type = "realtime", provider = "llamacpp"` choice runs LiquidAI LFM3-Audio-2B through genai's native
 llama.cpp realtime session. Microphone PCM streams at 16 kHz while the user is
 speaking; the same model produces assistant text, 24 kHz speech and host tool
 calls. It does not start separate ASR or TTS services. The existing `local-stack`

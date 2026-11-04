@@ -278,7 +278,7 @@ func TestRealtimeBridgeSessionReportsProviderErrorsAsRecoverable(t *testing.T) {
 	s := &realtimeBridgeSession{
 		ctx:     t.Context(),
 		sink:    sink,
-		backend: &realtimeBridgeBackend{kind: realtimeBackendOpenAI},
+		backend: &realtimeBridgeBackend{provider: "openai"},
 	}
 	if err := s.handleEvent(&genai.RealtimeEvent{
 		Kind:  genai.RealtimeEventError,
@@ -380,14 +380,14 @@ func TestGatewayRealtimeToolsCancelsDuringSend(t *testing.T) {
 func TestRealtimeBridgeBackendSetupOptions(t *testing.T) {
 	t.Parallel()
 	setup := &voicev1.SessionSetup{Voice: voicev1.VoiceConfig{Language: "fr-CA"}}
-	geminiOpts := (&realtimeBridgeBackend{kind: realtimeBackendGemini}).setupOptions(setup)
+	geminiOpts := (&realtimeBridgeBackend{provider: "gemini"}).setupOptions(setup)
 	if len(geminiOpts) != 1 || geminiOpts[0].(*gemini.RealtimeOption).InputLanguages[0] != "fr-CA" {
 		t.Fatalf("Gemini options = %+v", geminiOpts)
 	}
-	if openAIOpts := (&realtimeBridgeBackend{kind: realtimeBackendOpenAI}).setupOptions(setup); len(openAIOpts) != 0 {
+	if openAIOpts := (&realtimeBridgeBackend{provider: "openai"}).setupOptions(setup); len(openAIOpts) != 0 {
 		t.Fatalf("OpenAI options = %+v", openAIOpts)
 	}
-	if !(&realtimeBridgeBackend{kind: realtimeBackendGemini}).inputTranscription() || (&realtimeBridgeBackend{kind: realtimeBackendOpenAI}).inputTranscription() {
+	if !(&realtimeBridgeBackend{provider: "gemini"}).inputTranscription() || (&realtimeBridgeBackend{provider: "openai"}).inputTranscription() {
 		t.Fatal("input transcription policy differs from the provider contract")
 	}
 }

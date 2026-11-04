@@ -69,33 +69,23 @@ func mainImpl(args []string) (err error) {
 	defer func() { err = errors.Join(err, watcher.Close()) }()
 
 	keys := voicertc.ProviderKeys{Gemini: os.Getenv("GEMINI_API_KEY"), OpenAI: os.Getenv("OPENAI_API_KEY")}
-	var bridge *voicertc.Bridge
-	if len(cfg.Choices) == 0 && cfg.Backend == voicegateway.BackendGeminiLive && keys.Gemini == "" {
-		log.WarnContext(ctx, "voice media disabled", "reason", "GEMINI_API_KEY is not configured")
-	} else {
-		cacheDir, err := os.UserCacheDir()
-		if err != nil {
-			return fmt.Errorf("get user cache dir: %w", err)
-		}
-		bridge, err = voicertc.NewBridge(ctx, &cfg, keys, cfg.Server.WebRTCUDPPort, filepath.Join(cacheDir, "voice-gateway"))
-		if err != nil {
-			if ctx.Err() != nil {
-				return context.Cause(ctx)
-			}
-			return err
-		}
-		defer bridge.CloseAll(context.WithoutCancel(ctx))
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return fmt.Errorf("get user cache dir: %w", err)
 	}
+	bridge, err := voicertc.NewBridge(ctx, &cfg, keys, cfg.Server.WebRTCUDPPort, filepath.Join(cacheDir, "voice-gateway"))
+	if err != nil {
+		if ctx.Err() != nil {
+			return context.Cause(ctx)
+		}
+		return err
+	}
+	defer bridge.CloseAll(context.WithoutCancel(ctx))
 
 	// Text sessions are additive: a text client drives the same backend while
 	// WebRTC clients keep their audio session. A bridge whose backend has no
 	// language model answers the route with 503.
-	var textSessions voicegateway.TextSessionServer
-	if bridge != nil {
-		textSessions = bridge
-	}
-
-	handler, err := voicegateway.NewHandler(&cfg, bridge, textSessions)
+	handler, err := voicegateway.NewHandler(&cfg, bridge, bridge)
 	if err != nil {
 		return err
 	}

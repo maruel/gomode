@@ -13,11 +13,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/maruel/genai/providers"
 
 	activitydata "github.com/maruel/gomode/voicegateway/voicertc/data"
 
@@ -113,7 +116,11 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, keys Pr
 	if err := cfg.ValidateEmbedded(); err != nil {
 		return nil, err
 	}
-	configs, defaultID := cfg.VoiceChoices()
+	configs := cfg.VoiceChoices()
+	defaultID, err := configs[0].ID()
+	if err != nil {
+		return nil, err
+	}
 	backends := make(map[string]backendConnector, len(configs))
 	advertised := voicev1.VoiceChoicesResp{Choices: make([]voicev1.VoiceChoice, 0, len(configs))}
 	cleanup := func() error {
@@ -125,14 +132,18 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, keys Pr
 	}
 	for i := range configs {
 		ch := &configs[i]
-		backend, err := backendForConfig(ctx, &voicegateway.Config{Backend: ch.Backend, Model: ch.Model, LocalStack: ch.LocalStack, Realtime: ch.Realtime}, keys)
+		id, err := ch.ID()
 		if err != nil {
-			return nil, errors.Join(fmt.Errorf("initialize choice %q: %w", ch.ID, err), cleanup())
+			return nil, errors.Join(err, cleanup())
 		}
-		backends[ch.ID] = backend
-		advertised.Choices = append(advertised.Choices, backendChoice(backend, ch.ID, ch.Label))
+		backend, err := backendForConfig(ctx, ch, keys)
+		if err != nil {
+			return nil, errors.Join(fmt.Errorf("initialize choice %q: %w", id, err), cleanup())
+		}
+		backends[id] = backend
+		advertised.Choices = append(advertised.Choices, backendChoice(backend, id, ch.Label))
 	}
-	advertised.Defaults = preferredChoices(advertised.Choices, defaultID)
+	advertised.Defaults = voicev1.DefaultChoices(advertised.Choices, nil)
 	b, err := newBridgeWithBackendAndTimeout(ctx, backends[defaultID], udpPort, activityLogDir, upnpSSDPTimeout)
 	if err != nil {
 		return nil, errors.Join(err, cleanup())
@@ -196,16 +207,7 @@ func newBridgeWithBackendAndTimeout(ctx context.Context, backend backendConnecto
 
 func defaultBackendChoices(backend backendConnector) voicev1.VoiceChoicesResp {
 	choices := []voicev1.VoiceChoice{backendChoice(backend, "default", "Default")}
-	return voicev1.VoiceChoicesResp{Choices: choices, Defaults: preferredChoices(choices, "default")}
-}
-
-// preferredChoices expresses the configured default for every transport. A
-// transport the default backend cannot serve keeps the first capable choice.
-func preferredChoices(choices []voicev1.VoiceChoice, preferred string) []voicev1.VoiceChoiceDefault {
-	return voicev1.DefaultChoices(choices, []voicev1.VoiceChoiceDefault{
-		{Transport: voicev1.VoiceTransportText, ID: preferred},
-		{Transport: voicev1.VoiceTransportWebRTC, ID: preferred},
-	})
+	return voicev1.VoiceChoicesResp{Choices: choices, Defaults: voicev1.DefaultChoices(choices, nil)}
 }
 
 func backendChoice(backend backendConnector, id, label string) voicev1.VoiceChoice {
@@ -771,32 +773,40 @@ type udpCandidate struct {
 }
 
 // backendForConfig constructs one configured backend.
-func backendForConfig(ctx context.Context, cfg *voicegateway.Config, keys ProviderKeys) (backendConnector, error) {
-	switch cfg.Backend {
-	case voicegateway.BackendGeminiLive:
-		if keys.Gemini == "" {
-			return nil, errors.New("GEMINI_API_KEY not configured")
-		}
-		model := cfg.Model
-		if model == "" {
-			model = voicegateway.DefaultGeminiModel
-		}
-		return &realtimeBridgeBackend{kind: realtimeBackendGemini, apiKey: keys.Gemini, model: model}, nil
-	case voicegateway.BackendOpenAIRealtime:
-		if keys.OpenAI == "" {
-			return nil, errors.New("OPENAI_API_KEY not configured")
-		}
-		model := cfg.Model
-		if model == "" {
-			model = voicegateway.DefaultOpenAIRealtimeModel
-		}
-		return &realtimeBridgeBackend{kind: realtimeBackendOpenAI, apiKey: keys.OpenAI, model: model}, nil
-	case voicegateway.BackendLlamaRealtime:
-		return newLlamaRealtimeBackend(ctx, cfg.Model, cfg.Realtime)
-	case voicegateway.BackendLocalStack:
+func backendForConfig(ctx context.Context, cfg *voicegateway.ChoiceConfig, keys ProviderKeys) (backendConnector, error) {
+	resolved := cfg.WithDefaults()
+	cfg = &resolved
+	switch cfg.Type {
+	case voicegateway.ChoiceLocalStack:
 		return localStackBackendForConfig(ctx, &cfg.LocalStack)
+	case voicegateway.ChoiceChat:
+		return localStackBackendForConfig(ctx, &voicegateway.LocalStackConfig{
+			TextOnly: true,
+			LLM:      voicegateway.LocalStackLLMConfig{Provider: cfg.Provider, Remote: cfg.Remote, Model: cfg.Model, APIKeyName: cfg.APIKeyName, LlamaCPPServer: cfg.LlamaCPPServer},
+		})
+	case voicegateway.ChoiceRealtime:
+		if cfg.Provider == "llamacpp" {
+			rt := cfg.Realtime
+			rt.Remote = cfg.Remote
+			return newLlamaRealtimeBackend(ctx, cfg.Model, rt)
+		}
+		entry, ok := providers.All[cfg.Provider]
+		if !ok || entry.Factory == nil {
+			return nil, fmt.Errorf("unsupported provider %q", cfg.Provider)
+		}
+		key := os.Getenv(entry.APIKeyEnvVar)
+		if cfg.Provider == "gemini" {
+			key = keys.Gemini
+		}
+		if cfg.Provider == "openai" || cfg.Provider == "openairesponses" {
+			key = keys.OpenAI
+		}
+		if entry.APIKeyEnvVar != "" && key == "" {
+			return nil, fmt.Errorf("%s not configured", entry.APIKeyEnvVar)
+		}
+		return &realtimeBridgeBackend{provider: cfg.Provider, remote: cfg.Remote, apiKey: key, model: cfg.Model}, nil
 	default:
-		return nil, fmt.Errorf("unknown voice backend %q", cfg.Backend)
+		return nil, fmt.Errorf("unsupported choice type %q", cfg.Type)
 	}
 }
 

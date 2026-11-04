@@ -4,6 +4,7 @@ package voicegateway
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -11,14 +12,26 @@ import (
 // RealtimeConfig selects an existing endpoint or a managed llama.cpp audio runtime.
 // Endpoint capacity is an operator-declared reservation limit, not discovery.
 type RealtimeConfig struct {
-	Remote              string `toml:"remote"`
-	CacheDir            string `toml:"cache_dir"`
-	Threads             int    `toml:"threads"`
-	Slots               int    `toml:"slots"`
-	ContextSize         int    `toml:"context_size"`
-	MaxOutputTokens     int64  `toml:"max_output_tokens"`
-	SetupTimeoutSeconds int    `toml:"setup_timeout_seconds"`
-	PendingAudioSeconds int    `toml:"pending_audio_seconds"`
+	Remote              string `toml:"-" json:"-"`
+	CacheDir            string `toml:"cache_dir" json:"cache_dir"`
+	Threads             int    `toml:"threads" json:"threads"`
+	Slots               int    `toml:"slots" json:"slots"`
+	ContextSize         int    `toml:"context_size" json:"context_size"`
+	MaxOutputTokens     int64  `toml:"max_output_tokens" json:"max_output_tokens"`
+	SetupTimeoutSeconds int    `toml:"setup_timeout_seconds" json:"setup_timeout_seconds"`
+	PendingAudioSeconds int    `toml:"pending_audio_seconds" json:"pending_audio_seconds"`
+}
+
+// CacheDirectory returns the configured managed runtime cache or its platform default.
+func (c *RealtimeConfig) CacheDirectory() (string, error) {
+	if c.CacheDir != "" {
+		return c.CacheDir, nil
+	}
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "gomode", "llama-realtime"), nil
 }
 
 // WithDefaults returns explicit resource and setup bounds.

@@ -1022,7 +1022,7 @@ func TestLocalStackModelsForConfig(t *testing.T) {
 		if _, ok := models.llm.(*genaiLLMAdapter); !ok {
 			t.Fatalf("llm = %T, want genaiLLMAdapter", models.llm)
 		}
-		wantModels := []string{defaultLocalStackASRModel, defaultLocalStackLLMModel}
+		wantModels := []string{voicegateway.DefaultLocalStackASRModel, voicegateway.DefaultLocalStackLLMModel}
 		if !slices.Equal(startedModels, wantModels) {
 			t.Errorf("started models = %v, want %v", startedModels, wantModels)
 		}
@@ -1077,7 +1077,7 @@ func TestLocalStackTextOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(started) != 1 || started[0] != defaultLocalStackLLMModel {
+	if len(started) != 1 || started[0] != voicegateway.DefaultLocalStackLLMModel {
 		t.Fatalf("started models = %v, want only the LLM", started)
 	}
 	if models.asr != nil {
@@ -1107,7 +1107,7 @@ data: [DONE]
 	}))
 	t.Cleanup(llmServer.Close)
 	config := voicegateway.DefaultConfig()
-	config.Backend = voicegateway.BackendLocalStack
+	config.Type = voicegateway.ChoiceLocalStack
 	config.LocalStack = voicegateway.LocalStackConfig{
 		TextOnly: true,
 		LLM:      voicegateway.LocalStackLLMConfig{Provider: "openaicompatible", Remote: llmServer.URL + "/v1/chat/completions", Model: "test-model"},
@@ -1124,7 +1124,7 @@ data: [DONE]
 	if _, _, err := bridge.HandleOffer(t.Context(), "m=audio "); err == nil || !strings.Contains(err.Error(), "text-only") {
 		t.Fatalf("text-only offer error = %v", err)
 	}
-	backend := bridge.backends["default"]
+	backend := bridge.backends[choices.Choices[0].ID]
 	if _, err := backend.connect(t.Context(), "unsupported", &captureSink{}); err == nil {
 		t.Fatal("text-only backend accepted audio")
 	}

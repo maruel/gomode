@@ -141,7 +141,7 @@ func TestApplySessionLanguage(t *testing.T) {
 
 func TestNewBridge(t *testing.T) {
 	t.Parallel()
-	cfg := &voicegateway.Config{Backend: voicegateway.BackendGeminiLive}
+	cfg := &voicegateway.Config{Type: voicegateway.ChoiceRealtime, Provider: "gemini"}
 	t.Run("NewBridge", func(t *testing.T) {
 		t.Parallel()
 		b, err := newBridgeWithTimeout(t.Context(), cfg, ProviderKeys{Gemini: "test-key"}, 0, t.TempDir(), 5*time.Millisecond)
@@ -195,9 +195,9 @@ func TestBackendForConfigGeminiModel(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			backend, err := backendForConfig(t.Context(), &voicegateway.Config{
-				Backend: voicegateway.BackendGeminiLive,
-				Model:   tc.model,
+			backend, err := backendForConfig(t.Context(), &voicegateway.ChoiceConfig{
+				Type: voicegateway.ChoiceRealtime, Provider: "gemini",
+				Model: tc.model,
 			}, ProviderKeys{Gemini: "test-key"})
 			if err != nil {
 				t.Fatal(err)
@@ -218,7 +218,7 @@ func TestBackendForConfigOpenAI(t *testing.T) {
 	t.Parallel()
 	t.Run("missing key", func(t *testing.T) {
 		t.Parallel()
-		if _, err := backendForConfig(t.Context(), &voicegateway.Config{Backend: voicegateway.BackendOpenAIRealtime}, ProviderKeys{}); err == nil {
+		if _, err := backendForConfig(t.Context(), &voicegateway.ChoiceConfig{Type: voicegateway.ChoiceRealtime, Provider: "openai"}, ProviderKeys{}); err == nil {
 			t.Fatal("accepted a missing OPENAI_API_KEY")
 		}
 	})
@@ -232,7 +232,7 @@ func TestBackendForConfigOpenAI(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			backend, err := backendForConfig(t.Context(), &voicegateway.Config{Backend: voicegateway.BackendOpenAIRealtime, Model: tc.model}, ProviderKeys{OpenAI: "test-key"})
+			backend, err := backendForConfig(t.Context(), &voicegateway.ChoiceConfig{Type: voicegateway.ChoiceRealtime, Provider: "openai", Model: tc.model}, ProviderKeys{OpenAI: "test-key"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -241,7 +241,7 @@ func TestBackendForConfigOpenAI(t *testing.T) {
 			if !ok {
 				t.Fatalf("backend = %T, want *realtimeBridgeBackend", backend)
 			}
-			if provider.kind != realtimeBackendOpenAI || provider.model != tc.want {
+			if provider.provider != "openairesponses" || provider.model != tc.want {
 				t.Fatalf("provider = %+v", provider)
 			}
 		})
@@ -1283,6 +1283,7 @@ const browserDTXMeasurement = `(async () => {
 
 func TestBridge(t *testing.T) {
 	t.Parallel()
+	t.Run("configured choices", testBridgeConfiguredChoices)
 	t.Run("VoiceChoices", func(t *testing.T) {
 		t.Parallel()
 		for _, tc := range []struct {
@@ -1290,7 +1291,7 @@ func TestBridge(t *testing.T) {
 			backend backendConnector
 			voices  bool
 		}{
-			{name: "Gemini audio", backend: &realtimeBridgeBackend{apiKey: "test", model: voicegateway.DefaultGeminiModel}, voices: true},
+			{name: "Gemini audio", backend: &realtimeBridgeBackend{provider: "gemini", apiKey: "test", model: voicegateway.DefaultGeminiModel}, voices: true},
 			{name: "local audio", backend: newLocalStackBackend(nil, fixedASR{text: "test"}, &smokeLLM{text: "test"}, placeholderTTS{})},
 			{name: "local text", backend: newLocalStackBackend(nil, nil, &smokeLLM{text: "test"}, nil)},
 		} {
@@ -1950,4 +1951,104 @@ func TestSession(t *testing.T) {
 			t.Fatal("legacy backend opted into new speech policy")
 		}
 	})
+}
+
+func TestBackendForConfigChat(t *testing.T) {
+	t.Setenv("CHAT_TEST_KEY", "test-secret")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer test-secret" {
+			t.Errorf("request %s, authorization %q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if body.Model != "custom-model" {
+			t.Errorf("model = %q", body.Model)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	t.Cleanup(server.Close)
+	cfg := voicegateway.Config{Type: voicegateway.ChoiceChat, Provider: "openaicompatible", Remote: server.URL + "/v1/chat/completions", Model: "custom-model", APIKeyName: "CHAT_TEST_KEY"} //nolint:gosec // Environment variable name, not a credential.
+	if err := cfg.ValidateEmbedded(); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := backendForConfig(t.Context(), &cfg.VoiceChoices()[0], ProviderKeys{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if got := backendTransports(backend); !slices.Equal(got, []voicev1.VoiceTransport{voicev1.VoiceTransportText}) {
+		t.Fatalf("transports = %v", got)
+	}
+	local := backend.(*localStackBackend)
+	step, err := local.llm.newConversation("Be brief.", nil).user(t.Context(), "Hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text strings.Builder
+	step.stream(func(f llmFragment) bool { text.WriteString(f.text); return true })
+	if _, err := step.finish(); err != nil {
+		t.Fatal(err)
+	}
+	if text.String() != "Hello" {
+		t.Fatalf("reply = %q", text.String())
+	}
+}
+
+func testBridgeConfiguredChoices(t *testing.T) {
+	t.Parallel()
+	cfg := voicegateway.Config{Choices: []voicegateway.ChoiceConfig{
+		{Label: "Chat", Type: voicegateway.ChoiceChat, Provider: "openaicompatible", Remote: "https://example.com/v1/chat/completions", Model: "model-a"},
+		{Label: "Live", Type: voicegateway.ChoiceRealtime, Provider: "gemini"},
+		{Label: "Other live", Type: voicegateway.ChoiceRealtime, Provider: "openai"},
+	}}
+	bridge, err := newBridgeWithTimeout(t.Context(), &cfg, ProviderKeys{Gemini: "test-key", OpenAI: "test-key"}, 0, t.TempDir(), 5*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { bridge.CloseAll(t.Context()) })
+	catalog := bridge.VoiceChoices()
+	for i := range cfg.Choices {
+		id, err := cfg.Choices[i].ID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if catalog.Choices[i].ID != id {
+			t.Fatalf("choice %d = %s, want %s", i, catalog.Choices[i].ID, id)
+		}
+	}
+	for _, tc := range []struct {
+		transport voicev1.VoiceTransport
+		index     int
+	}{
+		{voicev1.VoiceTransportText, 0},
+		{voicev1.VoiceTransportWebRTC, 1},
+	} {
+		id := catalog.Choices[tc.index].ID
+		if got := catalog.DefaultChoiceID(tc.transport); got != id {
+			t.Fatalf("%s default = %s, want %s", tc.transport, got, id)
+		}
+		backend, err := bridge.choiceBackend("", tc.transport)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if backend != bridge.backends[id] {
+			t.Fatalf("%s resolved the wrong backend", tc.transport)
+		}
+	}
+	selected, err := bridge.choiceBackend(catalog.Choices[2].ID, voicev1.VoiceTransportWebRTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected != bridge.backends[catalog.Choices[2].ID] {
+		t.Fatal("generated ID selected the wrong backend")
+	}
 }

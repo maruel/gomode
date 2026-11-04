@@ -25,7 +25,6 @@ import (
 
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers"
-	"github.com/maruel/genai/providers/llamacpp"
 	"github.com/maruel/genai/providers/llamacpp/llamacppsrv"
 
 	"github.com/maruel/gomode/voicegateway"
@@ -118,7 +117,7 @@ func localStackModelsForConfigWithStarter(
 			asrAdapter = &speechASRAdapter{recognizer: recognizer}
 		default:
 			var err error
-			asr, err = resolveLocalStackEndpoint(ctx, "local_stack.asr", cfg.ASR.Provider, cfg.ASR.Remote, cfg.ASR.Model, defaultLocalStackASRModel, start)
+			asr, err = resolveLocalStackEndpoint(ctx, "local_stack.asr", cfg.ASR.Provider, cfg.ASR.Remote, cfg.ASR.Model, voicegateway.DefaultLocalStackASRModel, start)
 			if err != nil {
 				return localStackModels{}, err
 			}
@@ -129,7 +128,7 @@ func localStackModelsForConfigWithStarter(
 			asrAdapter = &speechASRAdapter{recognizer: recognizer}
 		}
 	}
-	llm, err := resolveLocalStackEndpoint(ctx, "local_stack.llm", cfg.LLM.Provider, cfg.LLM.Remote, cfg.LLM.Model, defaultLocalStackLLMModel, start, llmOpts...)
+	llm, err := resolveLocalStackEndpoint(ctx, "local_stack.llm", cfg.LLM.Provider, cfg.LLM.Remote, cfg.LLM.Model, voicegateway.DefaultLocalStackLLMModel, start, llmOpts...)
 	if err != nil {
 		return localStackModels{}, errors.Join(err, joinClosers(asr.runtime).Close())
 	}
@@ -349,21 +348,12 @@ func localStackLlamaCacheDir() (string, error) {
 	return filepath.Join(cacheBase, "caic", "llama-server"), nil
 }
 
-const (
-	// defaultLocalStackASRModel is a small dedicated speech-to-text model: it
-	// transcribes far more cheaply and reliably than asking the conversational
-	// LLM to read inline audio.
-	defaultLocalStackASRModel = "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"
-	// defaultLocalStackLLMModel handles conversation state and tool calls.
-	defaultLocalStackLLMModel = "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"
-)
-
 func newLlamaProvider(ctx context.Context, remote, model string) (genai.Provider, error) {
 	opts := []genai.ProviderOption{genai.ProviderOptionRemote(remote)}
 	if model != "" {
 		opts = append(opts, genai.ProviderOptionModel(model))
 	}
-	p, err := llamacpp.New(ctx, opts...)
+	p, err := providers.All["llamacpp"].Factory(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("create llama.cpp client: %w", err)
 	}

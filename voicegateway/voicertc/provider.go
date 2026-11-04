@@ -12,8 +12,8 @@ import (
 	"sync"
 
 	"github.com/maruel/genai"
+	"github.com/maruel/genai/providers"
 	"github.com/maruel/genai/providers/gemini"
-	"github.com/maruel/genai/providers/openairesponses"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
@@ -31,72 +31,77 @@ var geminiVoices = []string{
 
 const defaultGeminiVoice = "Orus"
 
-type realtimeBackendKind int
-
-const (
-	realtimeBackendGemini realtimeBackendKind = iota
-	realtimeBackendOpenAI
-)
-
 // realtimeBridgeBackend retains gateway policy; genai owns provider transport.
 type realtimeBridgeBackend struct {
-	kind   realtimeBackendKind
-	apiKey string
-	model  string
+	provider string
+	remote   string
+	apiKey   string
+	model    string
 }
 
 func (b *realtimeBridgeBackend) Close() error { return nil }
 
 // errorScope names the provider in a client-facing error message.
 func (b *realtimeBridgeBackend) errorScope() string {
-	switch b.kind {
-	case realtimeBackendGemini:
+	switch b.provider {
+	case "gemini":
 		return "gemini"
-	case realtimeBackendOpenAI:
+	case "openai", "openairesponses":
 		return "openai"
 	default:
-		return "provider"
+		return b.provider
 	}
 }
 
 func (b *realtimeBridgeBackend) providerName() string {
-	switch b.kind {
-	case realtimeBackendGemini:
+	switch b.provider {
+	case "gemini":
 		return "Gemini Live"
-	case realtimeBackendOpenAI:
+	case "openai", "openairesponses":
 		return "OpenAI Realtime"
 	default:
-		return "realtime provider"
+		return b.provider
 	}
 }
 
 func (b *realtimeBridgeBackend) voices() []string {
-	if b.kind == realtimeBackendGemini {
+	if b.provider == "gemini" {
 		return geminiVoices
 	}
 	return nil
 }
 
 func (b *realtimeBridgeBackend) defaultVoice() string {
-	if b.kind == realtimeBackendGemini {
+	if b.provider == "gemini" {
 		return defaultGeminiVoice
 	}
 	return ""
 }
 
 func (b *realtimeBridgeBackend) newProvider(ctx context.Context) (genai.Provider, error) {
-	switch b.kind {
-	case realtimeBackendGemini:
-		return gemini.New(ctx, genai.ProviderOptionAPIKey(b.apiKey), genai.ProviderOptionModel(strings.TrimPrefix(b.model, "models/")), genai.ProviderOptionModalities{genai.ModalityAudio})
-	case realtimeBackendOpenAI:
-		return openairesponses.New(ctx, genai.ProviderOptionAPIKey(b.apiKey), genai.ProviderOptionModel(b.model))
-	default:
-		return nil, fmt.Errorf("unknown realtime provider kind %d", b.kind)
+	entry, ok := providers.All[b.provider]
+	if !ok || entry.Factory == nil {
+		return nil, fmt.Errorf("unsupported provider %q", b.provider)
 	}
+	opts := []genai.ProviderOption{genai.ProviderOptionAPIKey(b.apiKey)}
+	if b.model != "" {
+		model := b.model
+		if b.provider == "gemini" {
+			model = strings.TrimPrefix(model, "models/")
+		}
+		opts = append(opts, genai.ProviderOptionModel(model))
+	}
+	if b.remote != "" {
+		opts = append(opts, genai.ProviderOptionRemote(b.remote))
+	}
+	if b.provider == "gemini" {
+		opts = append(opts, genai.ProviderOptionModalities{genai.ModalityAudio})
+	}
+	return entry.Factory(ctx, opts...)
 }
 
 func (b *realtimeBridgeBackend) setupOptions(msg *voicev1.SessionSetup) []genai.RealtimeOption {
-	if b.kind == realtimeBackendGemini {
+	if b.provider == "gemini" {
 		return []genai.RealtimeOption{&gemini.RealtimeOption{InputLanguages: []string{msg.Voice.Language}}}
 	}
 	return nil
@@ -106,7 +111,7 @@ func (b *realtimeBridgeBackend) setupOptions(msg *voicev1.SessionSetup) []genai.
 // transcription model. OpenAI Realtime transcribes output natively; its input
 // transcription is a different model, so the gateway leaves it disabled.
 func (b *realtimeBridgeBackend) inputTranscription() bool {
-	return b.kind == realtimeBackendGemini
+	return b.provider == "gemini"
 }
 
 func (b *realtimeBridgeBackend) connect(ctx context.Context, sessionID string, sink backendSink) (backendSession, error) {

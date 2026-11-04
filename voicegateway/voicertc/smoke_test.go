@@ -89,7 +89,7 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 				t.Fatal("TTS did not produce ASR input")
 			}
 			startup := time.Now()
-			endpoint, err := localStackLlamaEndpoint(runtimeCtx, "", "", defaultLocalStackASRModel, startManagedLlamaServer)
+			endpoint, err := localStackLlamaEndpoint(runtimeCtx, "", "", voicegateway.DefaultLocalStackASRModel, startManagedLlamaServer)
 			t.Logf("managed Qwen3-ASR startup setup time, excluded from latency measurements: %s", smokeElapsed(startup))
 			if err != nil {
 				t.Fatal(err)
@@ -122,7 +122,7 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 
 	t.Run("LLM", func(t *testing.T) {
 		startup := time.Now()
-		endpoint, err := localStackLlamaEndpoint(runtimeCtx, "", "", defaultLocalStackLLMModel, startManagedLlamaServer)
+		endpoint, err := localStackLlamaEndpoint(runtimeCtx, "", "", voicegateway.DefaultLocalStackLLMModel, startManagedLlamaServer)
 		t.Logf("managed Gemma startup setup time, excluded from latency measurements: %s", smokeElapsed(startup))
 		if err != nil {
 			t.Fatal(err)
@@ -287,7 +287,7 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := voicegateway.DefaultConfig()
-	cfg.Backend = voicegateway.BackendLocalStack
+	cfg.Type = voicegateway.ChoiceLocalStack
 	cfg.TrustedIssuers = []voicegateway.TrustedIssuerConfig{{Service: service.Kind, Issuer: service.BaseURL, PublicKey: encodedPublicKey}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)

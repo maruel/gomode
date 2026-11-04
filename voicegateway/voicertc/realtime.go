@@ -9,13 +9,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/maruel/genai"
+	"github.com/maruel/genai/providers"
 	"github.com/maruel/genai/providers/llamacpp"
 	"github.com/maruel/genai/providers/llamacpp/llamacppsrv"
 	"github.com/maruel/gomode/voicegateway"
@@ -23,7 +22,7 @@ import (
 )
 
 type llamaRealtimeBackend struct {
-	provider *llamacpp.Client
+	provider genai.Provider
 	runtime  io.Closer
 	cfg      voicegateway.RealtimeConfig
 	slots    chan struct{}
@@ -42,13 +41,9 @@ func newLlamaRealtimeBackend(ctx context.Context, model string, cfg voicegateway
 		if len(parts) == 3 {
 			args = append(args, "-hff", parts[2])
 		}
-		cache := cfg.CacheDir
-		if cache == "" {
-			base, err := os.UserCacheDir()
-			if err != nil {
-				return nil, err
-			}
-			cache = filepath.Join(base, "gomode", "llama-realtime")
+		cache, err := cfg.CacheDirectory()
+		if err != nil {
+			return nil, err
 		}
 		exe, err := llamacppsrv.DownloadVersion(ctx, cache, llamacppsrv.Version)
 		if err != nil {
@@ -68,7 +63,7 @@ func newLlamaRealtimeBackend(ctx context.Context, model string, cfg voicegateway
 		b.runtime = server
 		remote = server.URL()
 	}
-	provider, err := llamacpp.New(ctx, genai.ProviderOptionRemote(remote))
+	provider, err := providers.All["llamacpp"].Factory(ctx, genai.ProviderOptionRemote(remote))
 	if err != nil {
 		if b.runtime != nil {
 			err = errors.Join(err, b.runtime.Close())
