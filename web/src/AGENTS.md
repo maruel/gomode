@@ -6,6 +6,11 @@ frontends. Keep it host neutral. Product data, route choice, and auth policy
 belong to the host application. Supply the selected MCP group and captured auth
 adapters to `BrowserVoiceShell`; it owns browser client and gateway setup.
 
+When updating pnpm dependencies, also update Node in
+`package.json`'s `devEngines.runtime.version` and regenerate `pnpm-lock.yaml`.
+Use the latest Node release allowed by the engine range and release-age policy;
+`pnpm update --latest` does not update the runtime pin.
+
 CSS Module declarations (`*.module.css.d.ts`) ship with the source package.
 `make fix` regenerates them; `make verify` and build check freshness. Run
 `pnpm exec node scripts/css_module_types.mjs --source-path web/src --watch` from the
