@@ -14,7 +14,7 @@
 # Use an HTTPS reverse proxy for secure signaling.
 http = "127.0.0.1:3479"
 # The WebRTC UDP port must be reachable by clients (directly or through NAT).
-webrtc_udp_port = 3478
+webrtc_udp_port = 3480
 
 # [[trusted_issuers]]
 # service = "replace-with-host-service"
