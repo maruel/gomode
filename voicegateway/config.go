@@ -60,14 +60,21 @@ func (c *Config) Choices() iter.Seq2[string, Choice] {
 }
 
 // ModelConfig selects a provider, model, and managed or remote endpoint.
+//
+// Model is required. Providers use their native API-key environment variables
+// unless APIKeyName selects a token for an openaicompatible endpoint.
 type ModelConfig struct {
 	// LlamaCPPServer starts a managed llama.cpp server instead of connecting to Remote.
 	LlamaCPPServer bool   `toml:"llamacppsrv" json:"llamacppsrv"`
 	Provider       string `toml:"provider" json:"provider"`
-	Remote         string `toml:"remote" json:"remote"`
-	Model          string `toml:"model" json:"model"`
+	// Remote is a server origin, except for openaicompatible, which requires the
+	// complete chat completions endpoint URL, including its path.
+	Remote string `toml:"remote" json:"remote"`
+	Model  string `toml:"model" json:"model"`
 	// APIKeyName names the environment variable containing the bearer token
 	// for an openaicompatible endpoint. The credential is never stored in TOML.
+	// A named variable must be nonempty in the gateway process environment.
+	// Authenticated requests, including redirects, are confined to Remote.
 	APIKeyName string `toml:"api_key_name" json:"-"`
 }
 
@@ -98,6 +105,9 @@ func (c *ModelConfig) validate(prefix string) error {
 }
 
 // ChatConfig serves text sessions with client-owned speech.
+//
+// It never initializes ASR or TTS, downloads their models, or starts their
+// processes. Clients must enable their own speech; WebRTC audio is rejected.
 type ChatConfig struct {
 	Label string `toml:"label" json:"-"`
 	ModelConfig
@@ -209,14 +219,20 @@ type ServerConfig struct {
 }
 
 // LocalStackConfig configures local model adapters.
+//
+// Gateway speech is enabled unless TextOnly is set. Each active stage requires
+// explicit engine/model selection, except for the ASR engines documented below.
 type LocalStackConfig struct {
 	Label string `toml:"label" json:"-"`
 	// TextOnly disables gateway speech processing. Clients transcribe and speak;
 	// the choice serves text sessions only and never initializes ASR or TTS.
+	// ASR and TTS settings must be omitted when TextOnly is true.
 	TextOnly bool                `toml:"text_only" json:"text_only"`
 	ASR      LocalStackASRConfig `toml:"asr" json:"asr"`
-	LLM      ModelConfig         `toml:"llm" json:"llm"`
-	TTS      LocalStackTTSConfig `toml:"tts" json:"tts"`
+	// LLM must support function tools. Its endpoint receives transcripts, the
+	// system instruction, and service-item context, even when speech stays local.
+	LLM ModelConfig         `toml:"llm" json:"llm"`
+	TTS LocalStackTTSConfig `toml:"tts" json:"tts"`
 }
 
 // ID returns the fingerprint of the effective local-stack settings.
@@ -241,6 +257,10 @@ func (c *LocalStackConfig) validate() error {
 }
 
 // LocalStackASRConfig configures the local ASR (speech-to-text) adapter.
+//
+// Provider is used only by the genai engine. Remote is a server origin without
+// a path; use loopback to keep speech processing local. External speech servers
+// must be started separately and warmed before a session.
 type LocalStackASRConfig struct {
 	Engine   LocalStackASREngine `toml:"engine" json:"engine"`
 	Provider string              `toml:"provider" json:"provider"`
@@ -253,18 +273,29 @@ type LocalStackASREngine string
 
 const (
 	// LocalStackASRGenAI uses an explicitly configured registered genai provider.
+	// Model is required. With llamacpp and no Remote, the gateway starts a
+	// dedicated managed server; other providers use their configured endpoint.
 	LocalStackASRGenAI LocalStackASREngine = "genai"
 	// LocalStackASROpenAIAudio uses an OpenAI-compatible transcription endpoint.
+	// Remote and Model are required. POST /v1/audio/transcriptions accepts a
+	// multipart WAV and model and returns JSON text. MLX Audio is one compatible
+	// server on Apple Silicon; the gateway and server may run on different hosts.
 	LocalStackASROpenAIAudio LocalStackASREngine = "openai-audio"
 	// LocalStackASRWhistle runs the managed Cactus Whistle recognizer.
+	// Model optionally names local .cact weights; empty downloads the dedicated
+	// Whistle model. Provider and Remote must be empty.
 	LocalStackASRWhistle LocalStackASREngine = "whistle"
 	// LocalStackASRWhisperCPP uses whisper.cpp's inference endpoint.
+	// Remote is required; Model must be empty because the server selects it.
+	// POST /inference accepts multipart WAV and returns JSON transcription.
 	LocalStackASRWhisperCPP LocalStackASREngine = "whispercpp"
 )
 
 // LocalStackTTSConfig selects a speech synthesis engine.
 //
 // Engine, Model, and Voice are required. OpenAI audio also requires Remote.
+// Remote is a separately started server origin without a path; use loopback
+// for local speech processing and warm the selected model before a session.
 type LocalStackTTSConfig struct {
 	Engine LocalStackTTSEngine `toml:"engine" json:"engine"`
 	Remote string              `toml:"remote" json:"remote"`
@@ -277,8 +308,12 @@ type LocalStackTTSEngine string
 
 const (
 	// LocalStackTTSKittenTTS runs the managed KittenTTS worker.
+	// Remote must be empty; the shared genaipy runtime owns Python and caches.
 	LocalStackTTSKittenTTS LocalStackTTSEngine = "kittentts"
 	// LocalStackTTSOpenAIAudio uses an OpenAI-compatible speech endpoint.
+	// POST /v1/audio/speech must accept response_format=pcm and stream=true
+	// and return raw 24 kHz mono S16LE PCM. The gateway does not resample it;
+	// a different format or sample rate produces incorrect playback.
 	LocalStackTTSOpenAIAudio LocalStackTTSEngine = "openai-audio"
 )
 

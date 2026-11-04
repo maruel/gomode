@@ -34,6 +34,9 @@ import (
 // localStackBackendForConfig builds gateway-side ASR, LLM, and TTS adapters.
 // Text-only clients own recognition and synthesis, so their configuration
 // initializes only the LLM and does not provision gateway speech models.
+// External speech servers are not pinged: engines share no health or model
+// readiness endpoint. Operators must warm them before latency-sensitive use;
+// the first request may otherwise load or download a model.
 func localStackBackendForConfig(ctx context.Context, cfg *voicegateway.LocalStackConfig) (*localStackBackend, error) {
 	models, err := localStackModelsForConfigWithStarter(ctx, cfg, startManagedLlamaServer)
 	if err != nil {
@@ -49,6 +52,11 @@ func localStackBackendForConfig(ctx context.Context, cfg *voicegateway.LocalStac
 			}
 			tts = &speechTTSAdapter{synthesizer: synth}
 		} else {
+			// genaipy owns the pinned KittenTTS worker, uv/Python 3.12 setup,
+			// and user caches. Python 3.13 cannot build its transitive dependencies.
+			// Cold setup can pull large ML packages; HF_TOKEN avoids anonymous
+			// Hugging Face download rate limits. Cancellation preserves the worker
+			// for another fragment; gateway shutdown closes it through ttsRuntime.
 			kitten, err := kittentts.New(ctx, kittentts.Config{Model: cfg.TTS.Model, Voice: cfg.TTS.Voice})
 			if err != nil {
 				return nil, errors.Join(err, models.runtime.Close())
@@ -99,6 +107,14 @@ func localStackModelsForConfigWithStarter(
 	if !cfg.TextOnly {
 		switch cfg.ASR.Engine {
 		case voicegateway.LocalStackASRWhistle:
+			// genaipy owns the isolated uv/Python 3.12 Needle worker and disables
+			// telemetry. Needle downloads a prebuilt native engine and weights
+			// into its own cache, rather than building the runtime from source.
+			// Recognition is final-only with automatic language detection. The
+			// worker normalizes 16 kHz PCM to float samples, serializes native
+			// calls, and splits utterances into consecutive 30-second windows;
+			// words crossing a window boundary may lose accuracy. Cancellation
+			// preserves the model for subsequent requests.
 			w, err := whistle.New(ctx, cfg.ASR.Model)
 			if err != nil {
 				return localStackModels{}, err
@@ -345,6 +361,9 @@ func newLlamaProvider(ctx context.Context, remote, model string) (genai.Provider
 }
 
 // speechASRAdapter binds the gateway's capture sample rate to a shared recognizer.
+// HTTP engines receive one completed 16 kHz utterance WAV and return final text;
+// the shared runtime bounds responses to 1 MiB and rejects malformed or failed
+// responses. Request cancellation aborts outstanding HTTP work on barge-in.
 type speechASRAdapter struct {
 	recognizer speech.Recognizer
 }
