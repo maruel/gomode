@@ -71,20 +71,17 @@ type ModelConfig struct {
 	APIKeyName string `toml:"api_key_name" json:"-"`
 }
 
-// WithDefaults resolves provider aliases and Gemini model spelling.
-func (c ModelConfig) WithDefaults() ModelConfig {
-	c.Provider, c.Model = canonicalModel(c.Provider, c.Model)
-	return c
-}
-
 func (c *ModelConfig) validate(prefix string) error {
 	var errs []error
-	_, model := canonicalModel(c.Provider, c.Model)
-	if strings.TrimSpace(model) == "" {
+	if strings.TrimSpace(c.Model) == "" {
 		errs = append(errs, fmt.Errorf("%s.model is required", prefix))
 	}
-	errs = append(errs, validateProvider(prefix, c.Provider, c.Remote),
-		validateURL(prefix+".remote", c.Remote, c.Provider == "openaicompatible"))
+	if c.Provider == "" {
+		errs = append(errs, fmt.Errorf("%s.provider is required", prefix))
+	} else if entry, ok := providers.All[c.Provider]; !ok || entry.Factory == nil {
+		errs = append(errs, fmt.Errorf("%s.provider %q is not supported", prefix, c.Provider))
+	}
+	errs = append(errs, validateURL(prefix+".remote", c.Remote, c.Provider == "openaicompatible"))
 	if c.Provider == "llamacpp" && c.Remote == "" && !c.LlamaCPPServer {
 		errs = append(errs, fmt.Errorf("%s.provider llamacpp requires remote or llamacppsrv = true", prefix))
 	}
@@ -108,19 +105,10 @@ type ChatConfig struct {
 
 // ID returns the fingerprint of the effective chat settings.
 func (c *ChatConfig) ID() (string, error) {
-	return choiceID("chat", c.WithDefaults())
-}
-
-// WithDefaults resolves provider aliases and model spelling.
-func (c ChatConfig) WithDefaults() ChatConfig {
-	c.ModelConfig = c.ModelConfig.WithDefaults()
-	return c
+	return choiceID("chat", c)
 }
 
 func (c *ChatConfig) validate() error {
-	if c.Provider == "" {
-		return errors.New("chat.provider is required")
-	}
 	return c.ModelConfig.validate("chat")
 }
 
@@ -233,37 +221,7 @@ type LocalStackConfig struct {
 
 // ID returns the fingerprint of the effective local-stack settings.
 func (c *LocalStackConfig) ID() (string, error) {
-	return choiceID("local-stack", c.WithDefaults())
-}
-
-// WithDefaults resolves provider aliases, engines, and the default voice.
-func (c LocalStackConfig) WithDefaults() LocalStackConfig {
-	if c.LLM.Provider == "" {
-		c.LLM.Provider, c.LLM.LlamaCPPServer = "llamacpp", true
-	}
-	c.LLM = c.LLM.WithDefaults()
-	if c.TextOnly {
-		c.ASR, c.TTS = LocalStackASRConfig{}, LocalStackTTSConfig{}
-		return c
-	}
-	if c.ASR.Engine == "" {
-		c.ASR.Engine = LocalStackASRGenAI
-	}
-	if c.ASR.Engine == LocalStackASRGenAI {
-		if c.ASR.Provider == "" {
-			c.ASR.Provider = "llamacpp"
-		}
-		c.ASR.Provider, c.ASR.Model = canonicalModel(c.ASR.Provider, c.ASR.Model)
-	}
-	if c.TTS.Engine == "" {
-		c.TTS.Engine = LocalStackTTSKittenTTS
-	}
-	if c.TTS.Engine == LocalStackTTSKittenTTS {
-		if c.TTS.Voice == "" {
-			c.TTS.Voice = "Jasper"
-		}
-	}
-	return c
+	return choiceID("local-stack", c)
 }
 
 func (c *LocalStackConfig) validate() error {
@@ -276,7 +234,7 @@ func (c *LocalStackConfig) validate() error {
 	}
 	return errors.Join(
 		validateLocalStackASR(c.ASR),
-		validateBaseURL("local_stack.asr.remote", c.ASR.Remote),
+		validateURL("local_stack.asr.remote", c.ASR.Remote, false),
 		c.LLM.validate("local_stack.llm"),
 		validateLocalStackTTS(c.TTS),
 	)
@@ -294,7 +252,7 @@ type LocalStackASRConfig struct {
 type LocalStackASREngine string
 
 const (
-	// LocalStackASRGenAI uses a registered genai provider (managed llama.cpp by default).
+	// LocalStackASRGenAI uses an explicitly configured registered genai provider.
 	LocalStackASRGenAI LocalStackASREngine = "genai"
 	// LocalStackASROpenAIAudio uses an OpenAI-compatible transcription endpoint.
 	LocalStackASROpenAIAudio LocalStackASREngine = "openai-audio"
@@ -304,10 +262,9 @@ const (
 	LocalStackASRWhisperCPP LocalStackASREngine = "whispercpp"
 )
 
-// LocalStackTTSConfig selects a speech synthesis engine. The default is managed KittenTTS.
+// LocalStackTTSConfig selects a speech synthesis engine.
 //
-// Model is required. KittenTTS uses Jasper when Voice is empty; OpenAI audio
-// also requires Remote and Voice.
+// Engine, Model, and Voice are required. OpenAI audio also requires Remote.
 type LocalStackTTSConfig struct {
 	Engine LocalStackTTSEngine `toml:"engine" json:"engine"`
 	Remote string              `toml:"remote" json:"remote"`
@@ -327,12 +284,19 @@ const (
 
 func validateLocalStackASR(c LocalStackASRConfig) error {
 	switch c.Engine {
-	case "", LocalStackASRGenAI:
-		_, model := canonicalModel(c.Provider, c.Model)
-		if strings.TrimSpace(model) == "" {
+	case "":
+		return errors.New("local_stack.asr.engine is required")
+	case LocalStackASRGenAI:
+		if strings.TrimSpace(c.Model) == "" {
 			return errors.New("local_stack.asr.model is required")
 		}
-		return validateProvider("local_stack.asr", c.Provider, c.Remote)
+		if c.Provider == "" {
+			return errors.New("local_stack.asr.provider is required")
+		}
+		if entry, ok := providers.All[c.Provider]; !ok || entry.Factory == nil {
+			return fmt.Errorf("local_stack.asr.provider %q is not supported", c.Provider)
+		}
+		return nil
 	case LocalStackASRWhistle:
 		if c.Provider != "" || c.Remote != "" {
 			return errors.New("local_stack.asr.whistle is managed locally; provider and remote must be empty")
@@ -359,21 +323,26 @@ func validateLocalStackASR(c LocalStackASRConfig) error {
 
 func validateLocalStackTTS(c LocalStackTTSConfig) error {
 	switch c.Engine {
-	case "", LocalStackTTSKittenTTS:
+	case "":
+		return errors.New("local_stack.tts.engine is required")
+	case LocalStackTTSKittenTTS:
 		if strings.TrimSpace(c.Model) == "" {
 			return errors.New("local_stack.tts.model is required")
+		}
+		if strings.TrimSpace(c.Voice) == "" {
+			return errors.New("local_stack.tts.voice is required")
 		}
 		if c.Remote != "" {
 			return errors.New("local_stack.tts.remote requires the openai-audio engine")
 		}
 	case LocalStackTTSOpenAIAudio:
-		if c.Remote == "" || strings.TrimSpace(c.Model) == "" || c.Voice == "" {
+		if c.Remote == "" || strings.TrimSpace(c.Model) == "" || strings.TrimSpace(c.Voice) == "" {
 			return errors.New("local_stack.tts.remote, model, and voice are required for openai-audio")
 		}
 	default:
 		return fmt.Errorf("local_stack.tts.engine %q is not supported", c.Engine)
 	}
-	return validateBaseURL("local_stack.tts.remote", c.Remote)
+	return validateURL("local_stack.tts.remote", c.Remote, false)
 }
 
 // DefaultVoiceScope is the OAuth scope a gateway requires on an OAuth access
@@ -398,20 +367,9 @@ type TrustedIssuerConfig struct {
 	PublicKey string `toml:"public_key"`
 	// OAuth enables OAuth 2.0 access token verification through discovery and JWKS.
 	OAuth bool `toml:"oauth"`
-	// Audience is the required OAuth token audience. It defaults to
-	// gomode.ScopedTokenAudience when empty.
-	Audience string `toml:"audience"`
 	// Scope is the OAuth scope a token must carry. It defaults to
 	// DefaultVoiceScope when empty.
 	Scope string `toml:"scope"`
-}
-
-// OAuthAudience returns the audience an OAuth token from this issuer must carry.
-func (c *TrustedIssuerConfig) OAuthAudience() string {
-	if c.Audience == "" {
-		return gomode.ScopedTokenAudience
-	}
-	return c.Audience
 }
 
 // OAuthScope returns the scope an OAuth token from this issuer must carry.
@@ -420,36 +378,6 @@ func (c *TrustedIssuerConfig) OAuthScope() string {
 		return DefaultVoiceScope
 	}
 	return c.Scope
-}
-
-// canonicalModel resolves provider aliases and provider-specific model spelling.
-func canonicalModel(provider, model string) (string, string) {
-	if alias := providers.All[provider].Alias; alias != "" {
-		provider = alias
-	}
-	if provider == "gemini" {
-		for strings.HasPrefix(model, "models/") {
-			model = strings.TrimPrefix(model, "models/")
-		}
-	}
-	return provider, model
-}
-
-// validateProvider checks that provider (defaulting to "llamacpp"
-// when unset) names a provider registered in the genai providers registry,
-// and that remote is not set without an explicit provider.
-func validateProvider(prefix, provider, remote string) error {
-	p := provider
-	if p == "" {
-		if remote != "" {
-			return fmt.Errorf("%s.provider is required when %s.remote is set", prefix, prefix)
-		}
-		p = "llamacpp"
-	}
-	if entry, ok := providers.All[p]; !ok || entry.Factory == nil {
-		return fmt.Errorf("%s.provider %q is not supported", prefix, provider)
-	}
-	return nil
 }
 
 func validateTrustedIssuer(i int, issuer *TrustedIssuerConfig) error {
@@ -461,7 +389,7 @@ func validateTrustedIssuer(i int, issuer *TrustedIssuerConfig) error {
 	if issuer.Issuer == "" {
 		errs = append(errs, fmt.Errorf("%s.issuer is required", prefix))
 	} else {
-		errs = append(errs, validateBaseURL(prefix+".issuer", issuer.Issuer))
+		errs = append(errs, validateURL(prefix+".issuer", issuer.Issuer, false))
 	}
 	switch {
 	case issuer.PublicKey == "" && !issuer.OAuth:
@@ -474,10 +402,6 @@ func validateTrustedIssuer(i int, issuer *TrustedIssuerConfig) error {
 		}
 	}
 	return errors.Join(errs...)
-}
-
-func validateBaseURL(name, value string) error {
-	return validateURL(name, value, false)
 }
 
 // validateURL allows a full endpoint path only for providers that consume one.

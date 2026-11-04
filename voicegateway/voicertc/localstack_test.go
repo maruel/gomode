@@ -1007,7 +1007,7 @@ func TestLocalStackModelsForConfig(t *testing.T) {
 		t.Parallel()
 		var startedModels []string
 		var servers []*fakeManagedLlamaServer
-		models, err := localStackModelsForConfigWithStarter(t.Context(), &voicegateway.LocalStackConfig{ASR: voicegateway.LocalStackASRConfig{Model: "owner/asr"}, LLM: voicegateway.ModelConfig{Model: "owner/chat"}}, func(_ context.Context, model string) (managedLlamaServer, error) {
+		models, err := localStackModelsForConfigWithStarter(t.Context(), &voicegateway.LocalStackConfig{ASR: voicegateway.LocalStackASRConfig{Engine: voicegateway.LocalStackASRGenAI, Provider: "llamacpp", Model: "owner/asr"}, LLM: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "owner/chat"}}, func(_ context.Context, model string) (managedLlamaServer, error) {
 			startedModels = append(startedModels, model)
 			srv := &fakeManagedLlamaServer{url: "http://127.0.0.1:12345"}
 			servers = append(servers, srv)
@@ -1038,36 +1038,11 @@ func TestLocalStackModelsForConfig(t *testing.T) {
 			}
 		}
 	})
-
-	t.Run("requires provider with remote", func(t *testing.T) {
-		t.Parallel()
-		start := func(context.Context, string) (managedLlamaServer, error) {
-			return &fakeManagedLlamaServer{url: "http://127.0.0.1:12345"}, nil
-		}
-
-		t.Run("asr", func(t *testing.T) {
-			t.Parallel()
-			cfg := &voicegateway.LocalStackConfig{ASR: voicegateway.LocalStackASRConfig{Remote: "http://127.0.0.1:12345"}}
-			_, err := localStackModelsForConfigWithStarter(t.Context(), cfg, start)
-			if err == nil || !strings.Contains(err.Error(), "local_stack.asr.provider") {
-				t.Fatalf("err = %v, want local_stack.asr.provider error", err)
-			}
-		})
-
-		t.Run("llm", func(t *testing.T) {
-			t.Parallel()
-			cfg := &voicegateway.LocalStackConfig{LLM: voicegateway.ModelConfig{Remote: "http://127.0.0.1:12345"}}
-			_, err := localStackModelsForConfigWithStarter(t.Context(), cfg, start)
-			if err == nil || !strings.Contains(err.Error(), "local_stack.llm.provider") {
-				t.Fatalf("err = %v, want local_stack.llm.provider error", err)
-			}
-		})
-	})
 }
 
 func TestLocalStackTextOnly(t *testing.T) {
 	t.Parallel()
-	cfg := &voicegateway.LocalStackConfig{TextOnly: true, LLM: voicegateway.ModelConfig{Model: "owner/chat"}}
+	cfg := &voicegateway.LocalStackConfig{TextOnly: true, LLM: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "owner/chat"}}
 	var started []string
 	server := &fakeManagedLlamaServer{url: "http://127.0.0.1:12345"}
 	models, err := localStackModelsForConfigWithStarter(t.Context(), cfg, func(_ context.Context, model string) (managedLlamaServer, error) {
@@ -1174,7 +1149,7 @@ func TestLocalStackProviderCleanup(t *testing.T) { //nolint:paralleltest // The 
 				return p, nil
 			}}
 			cfg := &voicegateway.LocalStackConfig{
-				ASR: voicegateway.LocalStackASRConfig{Provider: name},
+				ASR: voicegateway.LocalStackASRConfig{Engine: voicegateway.LocalStackASRGenAI, Provider: name},
 				LLM: voicegateway.ModelConfig{Provider: tc.llmProvider},
 			}
 			models, err := localStackModelsForConfigWithStarter(t.Context(), cfg, nil)

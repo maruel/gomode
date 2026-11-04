@@ -781,13 +781,11 @@ type udpCandidate struct {
 func backendForConfig(ctx context.Context, cfg voicegateway.Choice, keys ProviderKeys) (backendConnector, error) {
 	switch c := cfg.(type) {
 	case *voicegateway.LocalStackConfig:
-		resolved := c.WithDefaults()
-		return localStackBackendForConfig(ctx, &resolved)
+		return localStackBackendForConfig(ctx, c)
 	case *voicegateway.ChatConfig:
-		resolved := c.WithDefaults()
 		return localStackBackendForConfig(ctx, &voicegateway.LocalStackConfig{
 			TextOnly: true,
-			LLM:      resolved.ModelConfig,
+			LLM:      c.ModelConfig,
 		})
 	case *voicegateway.RealtimeConfig:
 		resolved := c.WithDefaults()
@@ -802,7 +800,7 @@ func backendForConfig(ctx context.Context, cfg voicegateway.Choice, keys Provide
 		if resolved.Provider == "gemini" {
 			key = keys.Gemini
 		}
-		if resolved.Provider == "openairesponses" {
+		if resolved.Provider == "openai" || resolved.Provider == "openairesponses" {
 			key = keys.OpenAI
 		}
 		if entry.APIKeyEnvVar != "" && key == "" {

@@ -11,8 +11,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/maruel/gomode"
 )
 
 func TestLoadConfig(t *testing.T) {
@@ -108,6 +106,8 @@ func TestLoadConfig(t *testing.T) {
 label = "Local"
 text_only = true
 [local_stack.llm]
+provider = "llamacpp"
+llamacppsrv = true
 model = "chat-model"
 `), 0o600); err != nil {
 			t.Fatal(err)
@@ -225,6 +225,7 @@ public_key = %q
 label = "Local"
 
 [local_stack.asr]
+engine = "genai"
 provider = "llamacpp"
 remote = "http://localhost:8090"
 model = "asr-local"
@@ -234,6 +235,8 @@ provider = "llamacpp"
 remote = "http://localhost:8080"
 model = "gemma-local"
 [local_stack.tts]
+engine = "kittentts"
+voice = "Jasper"
 model = "KittenML/kitten-tts-2"
 `
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -331,6 +334,8 @@ func testLocalStackAudioEngines(t *testing.T) {
 	content := `[[local_stack]]
 label = "Local"
 [local_stack.llm]
+provider = "llamacpp"
+llamacppsrv = true
 model = "chat-model"
 [local_stack.asr]
 engine = "openai-audio"
@@ -406,17 +411,12 @@ func TestConfig(t *testing.T) {
 			field string
 		}{
 			{"Gemini", Config{Realtime: []RealtimeConfig{{Label: "Live", ModelConfig: ModelConfig{Provider: "gemini"}}}}, "realtime.model"},
-			{"Gemini prefix only", Config{Realtime: []RealtimeConfig{{Label: "Live", ModelConfig: ModelConfig{Provider: "gemini", Model: "models/"}}}}, "realtime.model"},
-			{"Gemini repeated prefix only", Config{Realtime: []RealtimeConfig{{Label: "Live", ModelConfig: ModelConfig{Provider: "gemini", Model: "models/models/"}}}}, "realtime.model"},
 			{"OpenAI", Config{Realtime: []RealtimeConfig{{Label: "Live", ModelConfig: ModelConfig{Provider: "openai"}}}}, "realtime.model"},
 			{"remote realtime", Config{Realtime: []RealtimeConfig{{Label: "Local", ModelConfig: ModelConfig{Provider: "llamacpp", Remote: "http://localhost:8080"}}}}, "realtime.model"},
 			{"chat", Config{Chat: []ChatConfig{{Label: "Chat", ModelConfig: ModelConfig{Provider: "deepseek", Model: "   "}}}}, "chat.model"},
-			{"Gemini chat prefix only", Config{Chat: []ChatConfig{{Label: "Chat", ModelConfig: ModelConfig{Provider: "gemini", Model: "models/"}}}}, "chat.model"},
 			{"local LLM", Config{LocalStack: []LocalStackConfig{{Label: "Stack", TextOnly: true}}}, "local_stack.llm.model"},
-			{"Gemini LLM prefix only", Config{LocalStack: []LocalStackConfig{{Label: "Stack", TextOnly: true, LLM: ModelConfig{Provider: "gemini", Model: "models/"}}}}, "local_stack.llm.model"},
-			{"local ASR", Config{LocalStack: []LocalStackConfig{{Label: "Stack", LLM: ModelConfig{Provider: "deepseek", Model: "deepseek-flash"}, TTS: LocalStackTTSConfig{Model: "KittenML/kitten-tts-2"}}}}, "local_stack.asr.model"},
-			{"Gemini ASR prefix only", Config{LocalStack: []LocalStackConfig{{Label: "Stack", LLM: ModelConfig{Provider: "deepseek", Model: "deepseek-flash"}, ASR: LocalStackASRConfig{Provider: "gemini", Model: "models/"}, TTS: LocalStackTTSConfig{Model: "KittenML/kitten-tts-2"}}}}, "local_stack.asr.model"},
-			{"local TTS", Config{LocalStack: []LocalStackConfig{{Label: "Stack", LLM: ModelConfig{Provider: "deepseek", Model: "deepseek-flash"}, ASR: LocalStackASRConfig{Model: "asr-model"}}}}, "local_stack.tts.model"},
+			{"local ASR", Config{LocalStack: []LocalStackConfig{{Label: "Stack", LLM: ModelConfig{Provider: "deepseek", Model: "deepseek-flash"}, ASR: LocalStackASRConfig{Engine: LocalStackASRGenAI}, TTS: LocalStackTTSConfig{Engine: LocalStackTTSKittenTTS, Voice: "Jasper", Model: "KittenML/kitten-tts-2"}}}}, "local_stack.asr.model"},
+			{"local TTS", Config{LocalStack: []LocalStackConfig{{Label: "Stack", LLM: ModelConfig{Provider: "deepseek", Model: "deepseek-flash"}, ASR: LocalStackASRConfig{Engine: LocalStackASRGenAI, Provider: "llamacpp", Model: "asr-model"}, TTS: LocalStackTTSConfig{Engine: LocalStackTTSKittenTTS, Voice: "Jasper"}}}}, "local_stack.tts.model"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				if err := tc.cfg.ValidateEmbedded(); err == nil || !strings.Contains(err.Error(), tc.field+" is required") {
@@ -501,7 +501,7 @@ func TestConfig(t *testing.T) {
 			}
 		})
 
-		t.Run("accepts oauth issuer with defaults", func(t *testing.T) {
+		t.Run("accepts oauth issuer", func(t *testing.T) {
 			t.Parallel()
 			cfg := testGatewayConfig()
 			cfg.TrustedIssuers = []TrustedIssuerConfig{{
@@ -511,9 +511,6 @@ func TestConfig(t *testing.T) {
 			}}
 			if err := cfg.Validate(); err != nil {
 				t.Fatal(err)
-			}
-			if got := cfg.TrustedIssuers[0].OAuthAudience(); got != gomode.ScopedTokenAudience {
-				t.Errorf("OAuthAudience = %q, want %q", got, gomode.ScopedTokenAudience)
 			}
 			if got := cfg.TrustedIssuers[0].OAuthScope(); got != DefaultVoiceScope {
 				t.Errorf("OAuthScope = %q, want %q", got, DefaultVoiceScope)
@@ -587,10 +584,30 @@ func TestConfig(t *testing.T) {
 			}
 		})
 
+		t.Run("requires local stack providers", func(t *testing.T) {
+			for _, stage := range []string{"asr", "llm"} {
+				t.Run(stage, func(t *testing.T) {
+					cfg := testGatewayConfig()
+					stack := testLocalStackConfig()
+					if stage == "asr" {
+						stack.ASR.Provider = ""
+					} else {
+						stack.LLM.Provider = ""
+						stack.LLM.LlamaCPPServer = false
+					}
+					cfg.LocalStack = []LocalStackConfig{stack}
+					if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "local_stack."+stage+".provider is required") {
+						t.Fatalf("expected provider validation error, got %v", err)
+					}
+				})
+			}
+		})
+
 		t.Run("rejects local stack asr remote without provider", func(t *testing.T) {
 			t.Parallel()
 			cfg := testGatewayConfig()
 			cfg.LocalStack = []LocalStackConfig{testLocalStackConfig()}
+			cfg.LocalStack[0].ASR.Provider = ""
 			cfg.LocalStack[0].ASR.Remote = "http://localhost:8090"
 			err := cfg.Validate()
 			if err == nil {
@@ -645,6 +662,8 @@ func TestConfig(t *testing.T) {
 			t.Parallel()
 			cfg := testGatewayConfig()
 			cfg.LocalStack = []LocalStackConfig{testLocalStackConfig()}
+			cfg.LocalStack[0].LLM.Provider = ""
+			cfg.LocalStack[0].LLM.LlamaCPPServer = false
 			cfg.LocalStack[0].LLM.Remote = "http://localhost:8080"
 			err := cfg.Validate()
 			if err == nil {
@@ -660,6 +679,7 @@ func TestConfig(t *testing.T) {
 			cfg := testGatewayConfig()
 			cfg.LocalStack = []LocalStackConfig{testLocalStackConfig()}
 			cfg.LocalStack[0].LLM.Provider = "llamacpp"
+			cfg.LocalStack[0].LLM.LlamaCPPServer = false
 			cfg.LocalStack[0].LLM.Remote = "http://localhost:8080"
 			if err := cfg.Validate(); err != nil {
 				t.Fatal(err)
@@ -671,6 +691,7 @@ func TestConfig(t *testing.T) {
 			cfg := testGatewayConfig()
 			cfg.LocalStack = []LocalStackConfig{testLocalStackConfig()}
 			cfg.LocalStack[0].LLM.Provider = "llamacpp"
+			cfg.LocalStack[0].LLM.LlamaCPPServer = false
 			cfg.LocalStack[0].LLM.Remote = "not a url"
 			err := cfg.Validate()
 			if err == nil {
@@ -700,6 +721,7 @@ func TestConfig(t *testing.T) {
 			cfg := testGatewayConfig()
 			cfg.LocalStack = []LocalStackConfig{testLocalStackConfig()}
 			cfg.LocalStack[0].LLM.Provider = "openaicompatible"
+			cfg.LocalStack[0].LLM.LlamaCPPServer = false
 			cfg.LocalStack[0].LLM.Remote = "http://localhost:8080/v1/chat/completions"
 			if err := cfg.Validate(); err != nil {
 				t.Fatal(err)
@@ -772,8 +794,12 @@ func testLocalStackKittenTTSConfiguration(t *testing.T) {
 	content := `[[local_stack]]
 label = "Local"
 [local_stack.llm]
+provider = "llamacpp"
+llamacppsrv = true
 model = "chat-model"
 [local_stack.asr]
+engine = "genai"
+provider = "llamacpp"
 model = "asr-model"
 [local_stack.tts]
 engine = "kittentts"
@@ -832,6 +858,8 @@ model = "chat-model"
 label = "Local LLM"
 text_only = true
 [local_stack.llm]
+provider = "llamacpp"
+llamacppsrv = true
 model = "chat-model"
 `), 0o600); err != nil {
 		t.Fatal(err)
@@ -875,24 +903,6 @@ model = "chat-model"
 
 func TestChatConfig(t *testing.T) {
 	t.Parallel()
-	t.Run("WithDefaults", func(t *testing.T) {
-		cfg := ChatConfig{ModelConfig: ModelConfig{Provider: "gemini", Model: "models/models/chat-model"}}
-		resolved := cfg.WithDefaults()
-		if resolved.Model != "chat-model" {
-			t.Fatalf("model = %q", resolved.Model)
-		}
-		first, err := cfg.ID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		second, err := resolved.ID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if first != second {
-			t.Fatal("Gemini model spelling changed chat identity")
-		}
-	})
 	t.Run("ID", func(t *testing.T) {
 		cfg := Config{Chat: []ChatConfig{
 			{Label: "First", ModelConfig: ModelConfig{Provider: "openaicompatible", Remote: "https://example.com/chat", Model: "model-a", APIKeyName: "KEY_A"}},
@@ -924,47 +934,44 @@ func TestChatConfig(t *testing.T) {
 
 func TestLocalStackConfig(t *testing.T) {
 	t.Parallel()
-	t.Run("WithDefaults", func(t *testing.T) {
-		cfg := testLocalStackConfig()
-		cfg.ASR.Provider, cfg.ASR.Model = "gemini", "models/asr-model"
-		cfg.LLM.Provider, cfg.LLM.Model = "gemini", "models/chat-model"
-		resolved := cfg.WithDefaults()
-		if resolved.ASR.Model != "asr-model" || resolved.LLM.Model != "chat-model" {
-			t.Fatalf("resolved stages: ASR %+v, LLM %+v", resolved.ASR, resolved.LLM)
+	t.Run("required speech settings", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			edit  func(*LocalStackConfig)
+			field string
+		}{
+			{"ASR engine", func(c *LocalStackConfig) { c.ASR.Engine = "" }, "local_stack.asr.engine"},
+			{"TTS engine", func(c *LocalStackConfig) { c.TTS.Engine = "" }, "local_stack.tts.engine"},
+			{"TTS voice", func(c *LocalStackConfig) { c.TTS.Voice = "" }, "local_stack.tts.voice"},
+			{"blank TTS voice", func(c *LocalStackConfig) { c.TTS.Voice = " " }, "local_stack.tts.voice"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				cfg := Config{LocalStack: []LocalStackConfig{testLocalStackConfig()}}
+				tc.edit(&cfg.LocalStack[0])
+				if err := cfg.ValidateEmbedded(); err == nil || !strings.Contains(err.Error(), tc.field) {
+					t.Fatalf("expected %s validation error, got %v", tc.field, err)
+				}
+			})
 		}
+	})
+
+	t.Run("ID", func(t *testing.T) {
+		cfg := testLocalStackConfig()
+		renamed := cfg
+		renamed.Label = "Renamed"
 		first, err := cfg.ID()
 		if err != nil {
 			t.Fatal(err)
 		}
-		second, err := resolved.ID()
+		second, err := renamed.ID()
 		if err != nil {
 			t.Fatal(err)
 		}
 		if first != second {
-			t.Fatal("Gemini model spelling changed stack identity")
+			t.Fatalf("renaming changed identity: %s vs %s", first, second)
 		}
-	})
-	t.Run("ID", func(t *testing.T) {
-		implicit := testLocalStackConfig()
-		explicit := LocalStackConfig{
-			Label: "Explicit",
-			ASR:   LocalStackASRConfig{Engine: LocalStackASRGenAI, Provider: "llamacpp", Model: "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"},
-			LLM:   ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"},
-			TTS:   LocalStackTTSConfig{Engine: LocalStackTTSKittenTTS, Model: "KittenML/kitten-tts-2", Voice: "Jasper"},
-		}
-		first, err := implicit.ID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		second, err := explicit.ID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if first != second {
-			t.Fatalf("equivalent defaults differ: %s vs %s", first, second)
-		}
-		explicit.TTS.Voice = "Luna"
-		changed, err := explicit.ID()
+		renamed.TTS.Voice = "Luna"
+		changed, err := renamed.ID()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -984,8 +991,8 @@ func testGatewayConfig() Config {
 func testLocalStackConfig() LocalStackConfig {
 	return LocalStackConfig{
 		Label: "Local",
-		ASR:   LocalStackASRConfig{Model: "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"},
-		LLM:   ModelConfig{Model: "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"},
-		TTS:   LocalStackTTSConfig{Model: "KittenML/kitten-tts-2"},
+		ASR:   LocalStackASRConfig{Engine: LocalStackASRGenAI, Provider: "llamacpp", Model: "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"},
+		LLM:   ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"},
+		TTS:   LocalStackTTSConfig{Engine: LocalStackTTSKittenTTS, Voice: "Jasper", Model: "KittenML/kitten-tts-2"},
 	}
 }

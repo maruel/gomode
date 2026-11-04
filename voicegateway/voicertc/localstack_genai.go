@@ -117,7 +117,7 @@ func localStackModelsForConfigWithStarter(
 			asrAdapter = &speechASRAdapter{recognizer: recognizer}
 		default:
 			var err error
-			asr, err = resolveLocalStackEndpoint(ctx, "local_stack.asr", cfg.ASR.Provider, cfg.ASR.Remote, cfg.ASR.Model, start)
+			asr, err = resolveLocalStackEndpoint(ctx, cfg.ASR.Provider, cfg.ASR.Remote, cfg.ASR.Model, start)
 			if err != nil {
 				return localStackModels{}, err
 			}
@@ -128,7 +128,7 @@ func localStackModelsForConfigWithStarter(
 			asrAdapter = &speechASRAdapter{recognizer: recognizer}
 		}
 	}
-	llm, err := resolveLocalStackEndpoint(ctx, "local_stack.llm", cfg.LLM.Provider, cfg.LLM.Remote, cfg.LLM.Model, start, llmOpts...)
+	llm, err := resolveLocalStackEndpoint(ctx, cfg.LLM.Provider, cfg.LLM.Remote, cfg.LLM.Model, start, llmOpts...)
 	if err != nil {
 		return localStackModels{}, errors.Join(err, joinClosers(asr.runtime).Close())
 	}
@@ -139,22 +139,12 @@ func localStackModelsForConfigWithStarter(
 	}, nil
 }
 
-// resolveLocalStackEndpoint wires one local stack adapter (ASR or LLM) to its
-// configured provider: a managed (or remote) llama.cpp runtime by default, or
-// any provider registered in providers.All when provider names one explicitly.
-// prefix names the config table in error messages, e.g. "local_stack.asr".
-func resolveLocalStackEndpoint(ctx context.Context, prefix, provider, remote, model string, start managedLlamaStarter, opts ...genai.ProviderOption) (localStackEndpoint, error) {
-	p := provider
-	if p == "" {
-		if remote != "" {
-			return localStackEndpoint{}, fmt.Errorf("%s.provider is required when %s.remote is set", prefix, prefix)
-		}
-		p = "llamacpp"
-	}
-	if p == "llamacpp" {
+// resolveLocalStackEndpoint wires one local stack adapter to its configured provider.
+func resolveLocalStackEndpoint(ctx context.Context, provider, remote, model string, start managedLlamaStarter, opts ...genai.ProviderOption) (localStackEndpoint, error) {
+	if provider == "llamacpp" {
 		return localStackLlamaEndpoint(ctx, remote, model, start)
 	}
-	return localStackGenAIEndpoint(ctx, p, remote, model, opts...)
+	return localStackGenAIEndpoint(ctx, provider, remote, model, opts...)
 }
 
 // localStackLlamaEndpoint wires the managed (or remote) llama.cpp runtime. A

@@ -290,9 +290,9 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 	cfg.Realtime = nil
 	cfg.LocalStack = []voicegateway.LocalStackConfig{{
 		Label: "Local",
-		ASR:   voicegateway.LocalStackASRConfig{Model: "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"},
-		LLM:   voicegateway.ModelConfig{Model: "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"},
-		TTS:   voicegateway.LocalStackTTSConfig{Model: "KittenML/kitten-tts-2"},
+		ASR:   voicegateway.LocalStackASRConfig{Engine: voicegateway.LocalStackASRGenAI, Provider: "llamacpp", Model: "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"},
+		LLM:   voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"},
+		TTS:   voicegateway.LocalStackTTSConfig{Engine: voicegateway.LocalStackTTSKittenTTS, Voice: "Jasper", Model: "KittenML/kitten-tts-2"},
 	}}
 	cfg.TrustedIssuers = []voicegateway.TrustedIssuerConfig{{Service: service.Kind, Issuer: service.BaseURL, PublicKey: encodedPublicKey}}
 	if err := cfg.Validate(); err != nil {

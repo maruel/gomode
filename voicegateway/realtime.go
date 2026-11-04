@@ -49,10 +49,9 @@ func (c *RealtimeConfig) CacheDirectory() (string, error) {
 	return filepath.Join(base, "gomode", "llama-realtime"), nil
 }
 
-// WithDefaults resolves provider aliases, model spelling, and llama.cpp resource
-// bounds. Cloud providers do not use the llama.cpp runtime settings.
+// WithDefaults resolves llama.cpp resource bounds. Cloud providers do not use
+// the llama.cpp runtime settings.
 func (c RealtimeConfig) WithDefaults() RealtimeConfig {
-	c.ModelConfig = c.ModelConfig.WithDefaults()
 	if c.Provider != "llamacpp" {
 		c = RealtimeConfig{Label: c.Label, ModelConfig: c.ModelConfig}
 		return c
@@ -81,9 +80,6 @@ func validRealtimeModel(model string) bool {
 }
 
 func (c *RealtimeConfig) validate() error {
-	if c.Provider == "" {
-		return errors.New("realtime.provider is required")
-	}
 	if c.Provider != "llamacpp" {
 		return c.ModelConfig.validate("realtime")
 	}

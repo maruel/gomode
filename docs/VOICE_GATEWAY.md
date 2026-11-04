@@ -142,7 +142,7 @@ entry selects one form:
   static public key. Claims bind service kind, instance, backend origin,
   subject, capabilities (`voice.session`), audience, and expiry.
 - **OAuth access token** (`oauth = true`): a short-lived JWT with audience
-  `voice-gateway` and scope `voice.session`, both overridable per issuer. The
+  `voice-gateway` and scope `voice.session` (overridable per issuer). The
   gateway rejects an `iss` outside the allowlist before any fetch. It discovers
   JWKS through `/.well-known/oauth-authorization-server`, verifies against
   cached keys, and refreshes on an unknown key ID. The token supplies the

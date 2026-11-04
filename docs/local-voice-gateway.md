@@ -13,16 +13,17 @@ OpenAI Realtime, and LFM3 audio through `llamacpp-realtime`). This page covers
 the half-duplex stack, which keeps recognition, conversation, and synthesis
 separately selectable.
 
-Defaults: managed llama.cpp Qwen3-ASR-0.6B for recognition, managed llama.cpp
-Gemma-4-E2B for conversation, CPU KittenTTS for synthesis, and a 20 ms RMS
-energy detector with 200 ms silence hangover for turn taking. No M5 Pro
-measurement, listening test, or hardware acceptance exists for them.
+The example stack selects managed llama.cpp Qwen3-ASR-0.6B for recognition,
+managed llama.cpp Gemma-4-E2B for conversation, and CPU KittenTTS for synthesis.
+Turn taking uses a 20 ms RMS energy detector with a default 200 ms silence
+hangover. No M5 Pro measurement, listening test, or hardware acceptance exists
+for this stack.
 
 ## Speech recognition
 
 | Candidate | Route | Constraint |
 | --- | --- | --- |
-| Qwen3-ASR-0.6B | Shipped default through genai's llama.cpp provider; batch per utterance. | llama.cpp calls audio support experimental. Validate transcripts on a real Mac before replacing it. |
+| Qwen3-ASR-0.6B | Managed through genai's llama.cpp provider; batch per utterance. | llama.cpp calls audio support experimental. Validate transcripts on a real Mac before replacing it. |
 | Parakeet TDT 0.6B v3 | [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) serves it over an OpenAI-compatible transcription endpoint, matching the `openai-audio` adapter. MLX Audio is the Apple route. | 600M parameters; needs a source-built service or a Python boundary. |
 | [Parakeet Redux](https://huggingface.co/moondream/parakeet-redux) | 207 MB 1.58-bit variant of v3. | Modest English/noise WER regression; wait for its fast path before depending on it. |
 | [Phonon-2](https://www.fermionresearch.com/research/phonon-2/) | English-only 2.1-bit Parakeet derivative; HTTP transcription route. | Each streaming partial re-decodes the buffered phrase, and a CPU fixture held about 1.5 GiB resident. |
@@ -55,7 +56,7 @@ wait and a manual cancel path whatever detector is used.
 
 | Candidate | Route | Constraint |
 | --- | --- | --- |
-| KittenTTS | Shipped default: managed CPU worker (genaipy owns the runtime), KittenTTS 2 with the Jasper voice, 24 kHz. | Its streaming yields after each text chunk's full inference, so a short sentence can arrive as one chunk. |
+| KittenTTS | Managed CPU worker (genaipy owns the runtime), KittenTTS 2 with the Jasper voice, 24 kHz. | Its streaming yields after each text chunk's full inference, so a short sentence can arrive as one chunk. |
 | FluidAudio Supertonic-3 | Core ML through [FluidAudio](https://github.com/FluidInference/FluidAudio); 31 languages, 44.1 kHz. | Fastest complete-utterance option in the upstream M5 benchmark; measured on whole phrases, not gateway fragments. |
 | FluidAudio PocketTTS | Core ML, 24 kHz, streaming 80 ms frames. | The strongest conversational-TTS candidate; check its research-licensed weights. |
 | [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) | Native CPU/PyTorch, about 100M parameters, waveform streaming. | Upstream figures are M4 Air, not M5 Pro. |

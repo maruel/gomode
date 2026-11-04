@@ -111,7 +111,7 @@ voice = "Jasper"
 ASR and LLM run in their own managed llama.cpp servers. Set `remote` to use
 an existing server (and remove `llamacppsrv` from the LLM). ASR `engine = "genai"`
 can use any registered provider. KittenTTS starts through `uv` and Python 3.12;
-its voice defaults to Jasper, while its model must be selected explicitly.
+its engine, model, and voice must be selected explicitly.
 
 For alternate speech servers, see the engines below. The gateway does not manage
 those servers. Their `remote` is a server origin without a path; keep it on

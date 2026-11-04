@@ -15,14 +15,6 @@ func TestRealtimeConfig(t *testing.T) {
 		t.Run("equivalent settings", func(t *testing.T) {
 			for _, pair := range [][2]RealtimeConfig{
 				{
-					{ModelConfig: ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}},
-					{ModelConfig: ModelConfig{Provider: "gemini", Model: "models/gemini-3.8-live"}},
-				},
-				{
-					{ModelConfig: ModelConfig{Provider: "openai", Model: "gpt-realtime-2.1-mini"}},
-					{ModelConfig: ModelConfig{Provider: "openairesponses", Model: "gpt-realtime-2.1-mini"}},
-				},
-				{
 					{ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}},
 					{ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}, Slots: 1, ContextSize: 8192, SetupTimeoutSeconds: 15, PendingAudioSeconds: 5},
 				},

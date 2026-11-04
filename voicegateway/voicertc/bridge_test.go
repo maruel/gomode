@@ -237,7 +237,7 @@ func TestBackendForConfigOpenAI(t *testing.T) {
 			if !ok {
 				t.Fatalf("backend = %T, want *realtimeBridgeBackend", backend)
 			}
-			if provider.provider != "openairesponses" || provider.model != tc.want {
+			if provider.provider != "openai" || provider.model != tc.want {
 				t.Fatalf("provider = %+v", provider)
 			}
 		})

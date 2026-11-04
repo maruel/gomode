@@ -624,7 +624,7 @@ func (h *handler) verifyOAuthToken(ctx context.Context, issuer *TrustedIssuerCon
 		return serviceSessionIdentity{}, errors.New("oauth token verifier is not configured")
 	}
 	origin := strings.TrimRight(issuer.Issuer, "/")
-	claims, err := h.verifier.Verify(ctx, s.Token, origin, issuer.OAuthAudience(), issuer.OAuthScope())
+	claims, err := h.verifier.Verify(ctx, s.Token, origin, gomode.ScopedTokenAudience, issuer.OAuthScope())
 	if err != nil {
 		return serviceSessionIdentity{}, err
 	}
