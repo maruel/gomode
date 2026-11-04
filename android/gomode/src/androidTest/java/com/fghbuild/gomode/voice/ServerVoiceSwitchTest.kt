@@ -747,7 +747,8 @@ class ServerVoiceSwitchTest {
 
                 "/api/voicegateway/v1/voice/choices" -> {
                     json(
-                        """{"choices":[{"id":"text","label":"Text","transports":["text","webrtc"]}],"defaultChoiceID":"text"}""",
+                        """{"choices":[{"id":"text","label":"Text","transports":["text","webrtc"]}],""" +
+                            """"defaults":[{"transport":"text","id":"text"},{"transport":"webrtc","id":"text"}]}""",
                     )
                 }
 

@@ -23,6 +23,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.caic.voicegateway.sdk.v1.VoiceTransport
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
@@ -30,6 +31,7 @@ import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.voice.GatewayVoiceChoices
 import com.fghbuild.gomode.voice.discoverVoiceChoices
+import com.fghbuild.gomode.voice.voiceTransport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
@@ -76,7 +78,7 @@ internal fun VoiceChoiceSetting(
             @Suppress("TooGenericExceptionCaught") e: Exception,
         ) {
             // User-visible discovery boundary.
-            discovery = ChoiceDiscovery.Failed(e.message ?: "Unable to load LLMs")
+            discovery = ChoiceDiscovery.Failed(e.message ?: "Unable to load voice choices")
         }
     }
     (settings.loadState as? SettingsLoadState.Failed)?.message?.let {
@@ -84,7 +86,7 @@ internal fun VoiceChoiceSetting(
     }
     when (val state = discovery) {
         ChoiceDiscovery.Loading -> {
-            Text("Loading LLMs…", modifier = Modifier.testTag("gomode-voice-choices-loading"))
+            Text("Loading voice choices…", modifier = Modifier.testTag("gomode-voice-choices-loading"))
         }
 
         is ChoiceDiscovery.Failed -> {
@@ -103,24 +105,31 @@ internal fun VoiceChoiceSetting(
             selection.exceptionOrNull()?.message?.let {
                 Text(it, modifier = Modifier.testTag("gomode-voice-choice-error"))
             }
+            val transport = voiceTransport(settings)
             val compatible = state.choices.compatible(settings)
-            // A missing saved model still needs an explicit replacement, even with only one candidate.
+            // The cloud family selects a model; the text family selects an LLM.
+            val familyLabel = if (transport == VoiceTransport.WebRTC) "Model" else "LLM"
+            // A missing saved choice still needs an explicit replacement, even with only one candidate.
             if (compatible.size > 1 || (compatible.isNotEmpty() && selection.isFailure)) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("LLM", style = MaterialTheme.typography.labelLarge)
+                    Text(familyLabel, style = MaterialTheme.typography.labelLarge)
                     ChoiceChips(state.choices, settings, selection.getOrNull()?.id, enabled && !saving) { choiceID ->
                         scope.launch {
                             saving = true
                             saveError = null
                             try {
-                                repository.updateVoiceChoice(state.choices.gatewayURL, choiceID)
+                                repository.updateVoiceChoice(
+                                    state.choices.gatewayURL,
+                                    transport.value,
+                                    choiceID,
+                                )
                             } catch (e: CancellationException) {
                                 throw e
                             } catch (
                                 @Suppress("TooGenericExceptionCaught") e: Exception,
                             ) {
                                 // Display failed persistence.
-                                saveError = "Unable to save LLM: ${e.message}"
+                                saveError = "Unable to save $familyLabel: ${e.message}"
                             } finally {
                                 saving = false
                             }

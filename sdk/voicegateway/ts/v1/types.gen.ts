@@ -223,10 +223,26 @@ export interface VoiceChoice {
   defaultVoice?: string;
 }
 
-/** VoiceChoicesResp advertises the available voice choices and default selection. */
+/**
+ * VoiceChoiceDefault names the choice a transport family uses when a session
+ * omits choiceID. A family is one transport: WebRTC audio for gateway speech,
+ * or text for client speech with a gateway LLM.
+ */
+export interface VoiceChoiceDefault {
+  /** Transport is the family this default applies to. */
+  transport: VoiceTransport;
+  /** ID names a choice that offers Transport. */
+  id: string;
+}
+
+/**
+ * VoiceChoicesResp advertises the available voice choices and one default per
+ * offered family.
+ */
 export interface VoiceChoicesResp {
   choices: VoiceChoice[];
-  defaultChoiceID: string;
+  /** Defaults holds one entry per offered transport, ordered by transport name. */
+  defaults: VoiceChoiceDefault[];
 }
 
 /** ServiceAuthorization identifies the host and carries its scoped gateway token. */

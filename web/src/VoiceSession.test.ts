@@ -213,7 +213,10 @@ beforeEach(() => {
                 : { voices: offeredVoices, ...(offeredVoices.length === 0 ? {} : { defaultVoice: "Orus" }) }),
             },
           ],
-          defaultChoiceID: "gemini",
+          defaults: [
+            { transport: "webrtc", id: "gemini" },
+            { transport: "text", id: "gemini" },
+          ],
         }),
       );
     if (url.endsWith("/voice/rtc/offer")) {
@@ -1594,20 +1597,20 @@ describe("VoiceSession", () => {
   it("revalidates a removed selection before creating an offer", async () => {
     const session = new VoiceSession();
     await session.loadVoiceChoices();
-    session.selectChoice("gemini");
+    session.selectChoice("webrtc", "gemini");
     const gatewayFetch = globalThis.fetch;
     globalThis.fetch = async (input, init) =>
       String(input).endsWith("/voice/choices")
         ? new Response(
             JSON.stringify({
               choices: [{ id: "local", label: "Local LLM", transports: ["webrtc"] }],
-              defaultChoiceID: "local",
+              defaults: [{ transport: "webrtc", id: "local" }],
             }),
           )
         : gatewayFetch(input, init);
     await session.connect();
     expect(offerRequests).toHaveLength(0);
-    expect(session.state.choiceID).toBe("gemini");
+    expect(session.state.choiceIDs.webrtc).toBe("gemini");
     expect(session.state.error).toContain("selected voice choice is unavailable");
     expect(session.state.choicesError).toContain("selected voice choice is unavailable");
     session.disconnect();
@@ -1617,7 +1620,7 @@ describe("VoiceSession", () => {
     configureVoiceGateway("https://original.example", null);
     const session = new VoiceSession();
     await session.loadVoiceChoices();
-    session.selectChoice("gemini");
+    session.selectChoice("webrtc", "gemini");
     const instructions = deferred<string>();
     mcpMocks.mcpServerInstructions.mockReturnValueOnce(instructions.promise);
     const connecting = session.connect();

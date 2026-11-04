@@ -4,6 +4,7 @@ package com.fghbuild.gomode.voice
 import android.webkit.CookieManager
 import com.caic.voicegateway.sdk.v1.ApiClient
 import com.caic.voicegateway.sdk.v1.VoiceChoice
+import com.caic.voicegateway.sdk.v1.VoiceChoiceDefault
 import com.caic.voicegateway.sdk.v1.VoiceChoicesResp
 import com.caic.voicegateway.sdk.v1.VoiceRTCDiagnosticsReq
 import com.caic.voicegateway.sdk.v1.VoiceTransport
@@ -96,7 +97,10 @@ class VoiceChoicesTest {
                     VoiceChoice("remote", "Remote LLM", listOf(VoiceTransport.Text, VoiceTransport.WebRTC)),
                     VoiceChoice("local", "Local LLM", listOf(VoiceTransport.Text)),
                 ),
-                "live",
+                listOf(
+                    VoiceChoiceDefault(VoiceTransport.Text, "remote"),
+                    VoiceChoiceDefault(VoiceTransport.WebRTC, "live"),
+                ),
             ),
         )
     private val settings = SettingsState(loadState = SettingsLoadState.Ready)
@@ -108,7 +112,7 @@ class VoiceChoicesTest {
         gateway,
         VoiceChoicesResp(
             listOf(VoiceChoice("live", "Gemini Live", listOf(VoiceTransport.WebRTC), voices, default)),
-            "live",
+            listOf(VoiceChoiceDefault(VoiceTransport.WebRTC, "live")),
         ),
     )
 
@@ -186,7 +190,14 @@ class VoiceChoicesTest {
                 .single()
                 .copy(defaultVoice = "Kore")
         val alternative = oldChoice.copy(id = "alternative", defaultVoice = "Kore")
-        val updated = original.copy(catalog = VoiceChoicesResp(listOf(oldChoice, alternative), "alternative"))
+        val updated =
+            original.copy(
+                catalog =
+                    VoiceChoicesResp(
+                        listOf(oldChoice, alternative),
+                        listOf(VoiceChoiceDefault(VoiceTransport.WebRTC, "alternative")),
+                    ),
+            )
         val recovered = updated.resolve(settings, pinned)
         assertEquals("live", recovered.choiceID)
         assertEquals("Orus", recovered.voiceName)
@@ -195,11 +206,23 @@ class VoiceChoicesTest {
         val incompatible = oldChoice.copy(transports = listOf(VoiceTransport.Text))
         assertThrows(VoiceSetupException::class.java) {
             updated
-                .copy(catalog = VoiceChoicesResp(listOf(incompatible, alternative), "alternative"))
-                .resolve(settings, pinned)
+                .copy(
+                    catalog =
+                        VoiceChoicesResp(
+                            listOf(incompatible, alternative),
+                            listOf(VoiceChoiceDefault(VoiceTransport.WebRTC, "alternative")),
+                        ),
+                ).resolve(settings, pinned)
         }
         assertThrows(VoiceSetupException::class.java) {
-            updated.copy(catalog = VoiceChoicesResp(listOf(alternative), "alternative")).resolve(settings, pinned)
+            updated
+                .copy(
+                    catalog =
+                        VoiceChoicesResp(
+                            listOf(alternative),
+                            listOf(VoiceChoiceDefault(VoiceTransport.WebRTC, "alternative")),
+                        ),
+                ).resolve(settings, pinned)
         }
     }
 
@@ -210,21 +233,61 @@ class VoiceChoicesTest {
         val device = settings.copy(voiceMode = VoiceMode.DEVICE)
         assertEquals(listOf("remote", "local"), choices.compatible(device).map { it.id })
         assertEquals("remote", choices.selection(device).id)
-        val saved = device.copy(voiceChoices = mapOf(gateway to "local"))
+        val saved = device.copy(voiceChoices = mapOf(gateway to mapOf("text" to "local")))
         assertEquals("local", choices.selection(saved).id)
         assertEquals("live", choices.selection(saved.copy(voiceMode = VoiceMode.CLOUD)).id)
+        val both = settings.copy(voiceChoices = mapOf(gateway to mapOf("text" to "local", "webrtc" to "remote")))
+        assertEquals("remote", choices.selection(both).id)
+        assertEquals("local", choices.selection(both.copy(voiceMode = VoiceMode.DEVICE)).id)
     }
 
     @Test
     fun `removed selection and unreadable preferences block a new session`() {
         assertThrows(VoiceSetupException::class.java) {
-            choices.selection(settings.copy(voiceChoices = mapOf(gateway to "removed")))
+            choices.selection(settings.copy(voiceChoices = mapOf(gateway to mapOf("webrtc" to "removed"))))
         }
         assertThrows(VoiceSetupException::class.java) { choices.selection(SettingsState()) }
         assertThrows(VoiceSetupException::class.java) {
             choices.selection(settings.copy(loadState = SettingsLoadState.Failed("read failed")))
         }
     }
+
+    @Test
+    fun `invalid family defaults are rejected`() =
+        runTest {
+            MockWebServer().use { server ->
+                server.start()
+                val base = server.url("/").toString().trimEnd('/')
+                val service =
+                    Settings(
+                        "fixture",
+                        apiVersion = 1,
+                        webShell = WebShellSettings(1, emptyList(), VoiceGatewaySettings(false, base)),
+                    )
+                for (defaults in listOf(
+                    """[{"transport":"webrtc","id":"missing"}]""",
+                    """[{"transport":"text","id":"live"}]""",
+                    """[{"transport":"webrtc","id":"live"},{"transport":"webrtc","id":"remote"}]""",
+                    """[{"transport":"","id":"live"}]""",
+                    """[{"transport":"webrtc","id":""}]""",
+                )) {
+                    server.enqueue(
+                        MockResponse().setBody(
+                            """{"choices":[{"id":"live","label":"Gemini Live","transports":["webrtc"]}],""" +
+                                """"defaults":$defaults}""",
+                        ),
+                    )
+                    val error =
+                        try {
+                            discoverVoiceChoices(base, service) { null }
+                            null
+                        } catch (error: VoiceSetupException) {
+                            error
+                        }
+                    assertEquals("Gateway returned invalid voice choices", error?.message)
+                }
+            }
+        }
 
     @Test
     fun `fully native engines do not use gateway choices`() {
@@ -241,7 +304,10 @@ class VoiceChoicesTest {
             ensureVoiceSettingsCurrent(captured, captured.copy(activeServiceId = "two"))
         }
         assertThrows(VoiceSetupException::class.java) {
-            ensureVoiceSettingsCurrent(captured, captured.copy(voiceChoices = mapOf(gateway to "remote")))
+            ensureVoiceSettingsCurrent(
+                captured,
+                captured.copy(voiceChoices = mapOf(gateway to mapOf("webrtc" to "remote"))),
+            )
         }
         assertThrows(VoiceSetupException::class.java) {
             ensureVoiceSettingsCurrent(
@@ -293,6 +359,6 @@ class VoiceChoicesTest {
     companion object {
         private const val CATALOG =
             """{"choices":[{"id":"live","label":"Gemini Live","transports":["webrtc"]}],""" +
-                """"defaultChoiceID":"live"}"""
+                """"defaults":[{"transport":"webrtc","id":"live"}]}"""
     }
 }

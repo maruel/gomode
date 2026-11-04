@@ -11,8 +11,8 @@ import { createStore, produce } from "solid-js/store";
 import * as voicegatewaySDK from "../../sdk/voicegateway/ts/v1/api.gen";
 import { createApiClient as createGoModeClient } from "../../sdk/gomode/ts/v1/api.gen";
 import {
-  type Error,
   type ContextUpdate,
+  type Error as GatewayError,
   type UserMessage,
   type MessageEnvelope,
   type SessionSetup,
@@ -44,6 +44,7 @@ import {
   type ServiceAuthorization,
   type VoiceChoice,
   type VoiceChoicesResp,
+  type VoiceTransport,
 } from "../../sdk/voicegateway/ts/v1/types.gen";
 
 import { mcpClient, type McpToolDescriptor } from "./McpClient";
@@ -376,7 +377,8 @@ export function microphoneMuted(state: Pick<VoiceState, "microphoneMode" | "spea
 export interface VoiceState {
   mode: VoiceMode;
   choices: VoiceChoice[];
-  choiceID: string | null;
+  /** Effective gateway choice per family, null when the gateway offers none. */
+  choiceIDs: Record<VoiceTransport, string | null>;
   choicesStatus: "idle" | "loading" | "ready" | "error";
   choicesError: string | null;
   voiceName: string | null;
@@ -459,16 +461,23 @@ function savedReasoning(): boolean {
   }
 }
 
-function choiceStorageKey(origin: string): string {
-  return `gomode.voiceChoice.${origin}`;
+function choiceStorageKey(origin: string, transport: VoiceTransport): string {
+  return `gomode.voiceChoice.${origin}.${transport}`;
 }
 
-function savedVoiceChoice(origin: string): string | null {
-  return localStorage.getItem(choiceStorageKey(origin));
+function savedVoiceChoice(origin: string, transport: VoiceTransport): string | null {
+  return localStorage.getItem(choiceStorageKey(origin, transport));
 }
 
-function compatibleChoices(choices: VoiceChoice[], mode: VoiceMode): VoiceChoice[] {
-  return choices.filter((choice) => choice.transports.includes(mode === "browser" ? "text" : "webrtc"));
+// A family is one transport: WebRTC audio for Cloud voice, text for client speech.
+const VOICE_TRANSPORTS: readonly VoiceTransport[] = ["text", "webrtc"];
+
+function transportFor(mode: VoiceMode): VoiceTransport {
+  return mode === "browser" ? "text" : "webrtc";
+}
+
+function compatibleChoices(choices: VoiceChoice[], transport: VoiceTransport): VoiceChoice[] {
+  return choices.filter((choice) => choice.transports.includes(transport));
 }
 
 function validVoiceCatalog(choice: VoiceChoice): boolean {
@@ -500,7 +509,7 @@ function speakingVoiceError(choice: VoiceChoice, name: string): string | null {
 function validateVoiceChoices(value: VoiceChoicesResp): VoiceChoicesResp {
   if (
     !Array.isArray(value.choices) ||
-    typeof value.defaultChoiceID !== "string" ||
+    !Array.isArray(value.defaults) ||
     value.choices.some(
       (choice) =>
         typeof choice.id !== "string" ||
@@ -509,26 +518,43 @@ function validateVoiceChoices(value: VoiceChoicesResp): VoiceChoicesResp {
         choice.label === "" ||
         !Array.isArray(choice.transports) ||
         choice.transports.length === 0 ||
-        choice.transports.some((transport) => transport !== "text" && transport !== "webrtc") ||
+        choice.transports.some((transport) => !VOICE_TRANSPORTS.includes(transport)) ||
         !validVoiceCatalog(choice),
     ) ||
+    value.defaults.some(
+      (fallback) =>
+        !VOICE_TRANSPORTS.includes(fallback.transport) ||
+        typeof fallback.id !== "string" ||
+        fallback.id === "" ||
+        !value.choices.some((choice) => choice.id === fallback.id && choice.transports.includes(fallback.transport)),
+    ) ||
     new Set(value.choices.map((choice) => choice.id)).size !== value.choices.length ||
-    !value.choices.some((choice) => choice.id === value.defaultChoiceID)
+    new Set(value.defaults.map((fallback) => fallback.transport)).size !== value.defaults.length
   )
     throw new Error("The voice gateway returned invalid choices");
   return value;
 }
 
-function resolveVoiceChoice(metadata: VoiceChoicesResp, mode: VoiceMode, selected: string | null): string {
-  const compatible = compatibleChoices(metadata.choices, mode);
+function defaultChoiceID(metadata: VoiceChoicesResp, transport: VoiceTransport): string | null {
+  return metadata.defaults.find((fallback) => fallback.transport === transport)?.id ?? null;
+}
+
+// resolveVoiceChoice keeps a saved choice for its own family, and falls back to
+// the family default when the saved choice serves only the other family.
+function resolveVoiceChoice(
+  metadata: VoiceChoicesResp,
+  transport: VoiceTransport,
+  selected: string | null,
+): string | null {
+  const compatible = compatibleChoices(metadata.choices, transport);
   if (selected !== null) {
     if (!metadata.choices.some((choice) => choice.id === selected))
       throw new Error("The selected voice choice is unavailable. Choose another voice choice.");
     if (compatible.some((choice) => choice.id === selected)) return selected;
   }
-  const choice = compatible.find((choice) => choice.id === metadata.defaultChoiceID) ?? compatible[0];
-  if (!choice) throw new Error("The voice gateway has no choices for this voice mode");
-  return choice.id;
+  const fallback = defaultChoiceID(metadata, transport);
+  const choice = compatible.find((choice) => choice.id === fallback) ?? compatible[0];
+  return choice?.id ?? null;
 }
 
 // bluetoothAudioDeviceLabel recognizes explicit Bluetooth and common AirPods labels.
@@ -639,7 +665,7 @@ export class VoiceSession {
     const [state, setState] = createStore<VoiceState>({
       mode: savedVoiceMode(),
       choices: [],
-      choiceID: null,
+      choiceIDs: { text: null, webrtc: null },
       choicesStatus: "idle",
       choicesError: null,
       voiceName: null,
@@ -686,12 +712,17 @@ export class VoiceSession {
   readonly gatewayIdentity = gatewayVersion;
 
   get compatibleChoices(): VoiceChoice[] {
-    return compatibleChoices(this.state.choices, this.state.mode);
+    return compatibleChoices(this.state.choices, transportFor(this.state.mode));
+  }
+
+  /** Lists the gateway choices offered for one family. */
+  choicesFor(transport: VoiceTransport): VoiceChoice[] {
+    return compatibleChoices(this.state.choices, transport);
   }
 
   get speakingVoices(): string[] {
     if (this.state.mode !== "cloud") return [];
-    return this.state.choices.find((choice) => choice.id === this.state.choiceID)?.voices ?? [];
+    return this.state.choices.find((choice) => choice.id === this.state.choiceIDs.webrtc)?.voices ?? [];
   }
 
   private _restoreSpeakingVoice(origin: string, choice: VoiceChoice): void {
@@ -722,7 +753,7 @@ export class VoiceSession {
       !this.speakingVoices.includes(name)
     )
       throw new Error("Choose an available speaking voice");
-    const choiceID = this.state.choiceID!;
+    const choiceID = this.state.choiceIDs.webrtc!;
     localStorage.setItem(speakingVoiceStorageKey(gatewaySnapshot().origin, choiceID), name);
     this._update((s) => {
       s.voiceName = name;
@@ -750,11 +781,14 @@ export class VoiceSession {
         s.voiceError = null;
       });
       if (this._choicesVersion !== snapshot.version) {
-        const choiceID = savedVoiceChoice(snapshot.origin);
+        const choiceIDs = {
+          text: savedVoiceChoice(snapshot.origin, "text"),
+          webrtc: savedVoiceChoice(snapshot.origin, "webrtc"),
+        };
         this._choicesVersion = snapshot.version;
         this._update((s) => {
           s.choices = [];
-          s.choiceID = choiceID;
+          s.choiceIDs = choiceIDs;
         });
       }
       const metadata = validateVoiceChoices(await snapshot.api.voiceChoices());
@@ -763,14 +797,7 @@ export class VoiceSession {
         s.choices = metadata.choices;
         s.choicesStatus = "ready";
       });
-      const choiceID = resolveVoiceChoice(metadata, this.state.mode, this.state.choiceID);
-      this._update((s) => {
-        s.choiceID = choiceID;
-      });
-      this._restoreSpeakingVoice(
-        snapshot.origin,
-        metadata.choices.find((choice) => choice.id === choiceID)!,
-      );
+      this._resolveFamilies(snapshot.origin, metadata);
     } catch (error) {
       if (snapshot.version !== untrack(gatewayVersion) || attempt !== this._choicesAttempt) return;
       this._update((s) => {
@@ -780,23 +807,48 @@ export class VoiceSession {
     }
   }
 
-  /** Persist an explicit choice only after validating it against the current gateway and transport. */
-  selectChoice(choiceID: string): void {
+  /** Resolve both families, surfacing a failure for the active one and keeping saved values otherwise. */
+  private _resolveFamilies(origin: string, metadata: VoiceChoicesResp): void {
+    const choiceIDs: Record<VoiceTransport, string | null> = { text: null, webrtc: null };
+    const failures = new Map<VoiceTransport, globalThis.Error>();
+    for (const transport of VOICE_TRANSPORTS) {
+      const saved = savedVoiceChoice(origin, transport);
+      try {
+        choiceIDs[transport] = resolveVoiceChoice(metadata, transport, saved);
+      } catch (err) {
+        choiceIDs[transport] = saved;
+        failures.set(transport, err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+    this._update((s) => {
+      s.choiceIDs = choiceIDs;
+    });
+    const active = transportFor(this.state.mode);
+    const failure = failures.get(active);
+    if (failure) throw failure;
+    const choiceID = choiceIDs[active];
+    if (choiceID === null) throw new Error("The voice gateway has no choices for this voice mode");
+    this._restoreSpeakingVoice(
+      origin,
+      metadata.choices.find((choice) => choice.id === choiceID)!,
+    );
+  }
+
+  /** Persist an explicit choice only after validating it against the current gateway and family. */
+  selectChoice(transport: VoiceTransport, choiceID: string): void {
     if (this.state.connected || this.state.connectStatus !== null)
       throw new Error("End the session before changing voice choice");
     if (this._choicesVersion !== untrack(gatewayVersion) || this.state.choicesStatus !== "ready")
       throw new Error("Load voice choices before selecting one");
-    if (!this.compatibleChoices.some((choice) => choice.id === choiceID))
-      throw new Error("Choose an available voice choice");
-    localStorage.setItem(choiceStorageKey(gatewaySnapshot().origin), choiceID);
+    const choice = compatibleChoices(this.state.choices, transport).find((candidate) => candidate.id === choiceID);
+    if (!choice) throw new Error("Choose an available voice choice");
+    const origin = gatewaySnapshot().origin;
+    localStorage.setItem(choiceStorageKey(origin, transport), choiceID);
     this._update((s) => {
-      s.choiceID = choiceID;
+      s.choiceIDs = { ...s.choiceIDs, [transport]: choiceID };
       s.choicesError = null;
     });
-    this._restoreSpeakingVoice(
-      gatewaySnapshot().origin,
-      this.state.choices.find((choice) => choice.id === choiceID)!,
-    );
+    if (transport === transportFor(this.state.mode)) this._restoreSpeakingVoice(origin, choice);
   }
 
   private async _resolveSessionChoice(snapshot: GatewaySnapshot, attempt: number): Promise<string | null> {
@@ -806,16 +858,17 @@ export class VoiceSession {
       // A connect-time refresh owns publication over an older settings request.
       this._choicesAttempt++;
       this._choicesVersion = snapshot.version;
+      const transport = transportFor(this.state.mode);
       this._update((s) => {
         s.choices = metadata.choices;
-        s.choiceID = this._sessionChoiceID;
+        s.choiceIDs = { ...s.choiceIDs, [transport]: this._sessionChoiceID };
         s.choicesStatus = "ready";
         s.choicesError = null;
       });
     }
-    let choiceID: string;
+    let choiceID: string | null;
     try {
-      choiceID = resolveVoiceChoice(metadata, this.state.mode, this._sessionChoiceID);
+      choiceID = resolveVoiceChoice(metadata, transportFor(this.state.mode), this._sessionChoiceID);
     } catch (error) {
       if (snapshot.version === untrack(gatewayVersion))
         this._update((s) => {
@@ -823,6 +876,7 @@ export class VoiceSession {
         });
       throw error;
     }
+    if (choiceID === null) throw new Error("The voice gateway has no choices for this voice mode");
     this._sessionChoiceID = choiceID;
     const choice = metadata.choices.find((choice) => choice.id === choiceID)!;
     let voiceError: string | null = null;
@@ -835,7 +889,7 @@ export class VoiceSession {
       voiceError = this.state.mode === "cloud" ? speakingVoiceError(choice, name) : null;
       if (snapshot.version === untrack(gatewayVersion))
         this._update((s) => {
-          s.choiceID = choiceID;
+          s.choiceIDs = { ...s.choiceIDs, [transportFor(this.state.mode)]: choiceID };
           s.voiceName = name;
           s.voiceError = voiceError;
           s.voiceStatus = "ready";
@@ -1284,8 +1338,8 @@ export class VoiceSession {
     try {
       this._sessionChoiceID =
         this._choicesVersion === this._sessionGateway.version
-          ? this.state.choiceID
-          : savedVoiceChoice(this._sessionGateway.origin);
+          ? this.state.choiceIDs[transportFor(this.state.mode)]
+          : savedVoiceChoice(this._sessionGateway.origin, transportFor(this.state.mode));
       if (this._choicesVersion === this._sessionGateway.version) {
         const choice = this.state.choices.find((choice) => choice.id === this._sessionChoiceID);
         if (choice && (this.state.mode !== "cloud" || choice.voices?.length))
@@ -2107,7 +2161,7 @@ export class VoiceSession {
     }
 
     if (env.kind === MessageKindError) {
-      const msg = JSON.parse(text) as Error;
+      const msg = JSON.parse(text) as GatewayError;
       if (msg.recoverable) {
         // Keep the connection and outstanding tool deliveries alive. Diagnostics
         // use the same transcript presentation as tool errors, not fatal state.

@@ -69,7 +69,7 @@ beforeEach(() => {
       return new Response(
         JSON.stringify({
           choices: [{ id: "remote", label: "Remote LLM", transports: ["text"] }],
-          defaultChoiceID: "remote",
+          defaults: [{ transport: "text", id: "remote" }],
         }),
       );
     requests.push({
@@ -514,7 +514,7 @@ describe("browser voice sessions", () => {
   });
   it("uses a text choice and one-shot Android recognition when an audio-only choice was saved", async () => {
     Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Chrome Android" });
-    localStorage.setItem("gomode.voiceChoice.https://gateway.example", "gemini");
+    localStorage.setItem("gomode.voiceChoice.https://gateway.example.webrtc", "gemini");
     const gatewayFetch = globalThis.fetch;
     globalThis.fetch = async (input, init) =>
       String(input).endsWith("/voice/choices")
@@ -524,7 +524,10 @@ describe("browser voice sessions", () => {
                 { id: "gemini", label: "Gemini Live", transports: ["webrtc"] },
                 { id: "remote", label: "Remote LLM", transports: ["text"] },
               ],
-              defaultChoiceID: "gemini",
+              defaults: [
+                { transport: "webrtc", id: "gemini" },
+                { transport: "text", id: "remote" },
+              ],
             }),
           )
         : gatewayFetch(input, init);
@@ -575,15 +578,15 @@ describe("browser voice sessions", () => {
                 { id: "remote", label: "Remote LLM", transports: ["text"] },
                 { id: "local", label: "Local LLM", transports: ["text"] },
               ],
-              defaultChoiceID: "remote",
+              defaults: [{ transport: "text", id: "remote" }],
             }),
           )
         : gatewayFetch(input, init);
     await session.loadVoiceChoices();
-    session.selectChoice("local");
+    session.selectChoice("text", "local");
     await readySocket();
     expect(requests[0]?.body).toEqual({ choiceID: "local" });
-    expect(localStorage.getItem("gomode.voiceChoice.https://gateway.example")).toBe("local");
+    expect(localStorage.getItem("gomode.voiceChoice.https://gateway.example.text")).toBe("local");
   });
 
   it("authenticates same-origin ticket issuance with the host bearer provider", async () => {

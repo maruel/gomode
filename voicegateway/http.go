@@ -161,23 +161,25 @@ func (h *handler) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // server without choice routing serves the default choice alone.
 func (h *handler) voiceChoices() voicev1.VoiceChoicesResp {
 	bridge := h.mediaBridge()
-	media := voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{}, DefaultChoiceID: "default"}
+	media := voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{}}
 	if provider, ok := bridge.(ChoiceMediaBridge); ok {
 		media = provider.VoiceChoices()
 	} else if bridge != nil {
 		media.Choices = []voicev1.VoiceChoice{{ID: "default", Label: "Default", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}}}
+		media.Defaults = []voicev1.VoiceChoiceDefault{{Transport: voicev1.VoiceTransportWebRTC, ID: "default"}}
 	}
 	text := voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{}}
 	if provider, ok := h.textSessions.(ChoiceTextSessionServer); ok {
 		text = provider.VoiceChoices()
 	} else if h.textSessions != nil {
-		text.Choices = []voicev1.VoiceChoice{{ID: media.DefaultChoiceID, Label: "Default", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText}}}
-		text.DefaultChoiceID = media.DefaultChoiceID
+		id := media.DefaultChoiceID(voicev1.VoiceTransportWebRTC)
+		if id == "" {
+			id = "default"
+		}
+		text.Choices = []voicev1.VoiceChoice{{ID: id, Label: "Default", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText}}}
+		text.Defaults = []voicev1.VoiceChoiceDefault{{Transport: voicev1.VoiceTransportText, ID: id}}
 	}
-	choices := voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{}, DefaultChoiceID: media.DefaultChoiceID}
-	if bridge == nil {
-		choices.DefaultChoiceID = text.DefaultChoiceID
-	}
+	choices := voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{}}
 	for _, ch := range media.Choices {
 		if slices.Contains(ch.Transports, voicev1.VoiceTransportWebRTC) {
 			ch.Transports = []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}
@@ -196,11 +198,7 @@ func (h *handler) voiceChoices() voicev1.VoiceChoicesResp {
 			choices.Choices[i].Transports = append([]voicev1.VoiceTransport{voicev1.VoiceTransportText}, choices.Choices[i].Transports...)
 		}
 	}
-	if len(choices.Choices) == 0 {
-		choices.DefaultChoiceID = ""
-	} else if !slices.ContainsFunc(choices.Choices, func(c voicev1.VoiceChoice) bool { return c.ID == choices.DefaultChoiceID }) {
-		choices.DefaultChoiceID = choices.Choices[0].ID
-	}
+	choices.Defaults = voicev1.DefaultChoices(choices.Choices, slices.Concat(media.Defaults, text.Defaults))
 	return choices
 }
 
@@ -216,7 +214,11 @@ func (h *handler) selectChoice(w http.ResponseWriter, id string, transport voice
 		return "", false
 	}
 	if id == "" {
-		id = choices.DefaultChoiceID
+		id = choices.DefaultChoiceID(transport)
+		if id == "" {
+			voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "no voice choice supports the requested transport")
+			return "", false
+		}
 	}
 	for _, ch := range choices.Choices {
 		if ch.ID != id {

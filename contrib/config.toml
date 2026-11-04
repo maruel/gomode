@@ -5,8 +5,9 @@
 # beside voice-gateway.service. See voice-gateway.env.example for the format.
 # Each choice below documents the environment variable it needs.
 
-# Choices are offered together at one gateway URL. Clients can select a choice;
-# sessions that omit a choice use this ID.
+# Choices are offered together at one gateway URL. Clients can select one
+# choice per family: WebRTC audio, or text with client speech. A family uses
+# this choice when it supports the family, then falls back to its first choice.
 default_choice_id = "gemini"
 
 # Shared listener and trusted hosts.

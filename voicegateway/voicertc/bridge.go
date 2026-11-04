@@ -115,7 +115,7 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, keys Pr
 	}
 	configs, defaultID := cfg.VoiceChoices()
 	backends := make(map[string]backendConnector, len(configs))
-	advertised := voicev1.VoiceChoicesResp{Choices: make([]voicev1.VoiceChoice, 0, len(configs)), DefaultChoiceID: defaultID}
+	advertised := voicev1.VoiceChoicesResp{Choices: make([]voicev1.VoiceChoice, 0, len(configs))}
 	cleanup := func() error {
 		errs := make([]error, 0, len(backends))
 		for _, backend := range backends {
@@ -132,6 +132,7 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, keys Pr
 		backends[ch.ID] = backend
 		advertised.Choices = append(advertised.Choices, backendChoice(backend, ch.ID, ch.Label))
 	}
+	advertised.Defaults = preferredChoices(advertised.Choices, defaultID)
 	b, err := newBridgeWithBackendAndTimeout(ctx, backends[defaultID], udpPort, activityLogDir, upnpSSDPTimeout)
 	if err != nil {
 		return nil, errors.Join(err, cleanup())
@@ -194,7 +195,17 @@ func newBridgeWithBackendAndTimeout(ctx context.Context, backend backendConnecto
 }
 
 func defaultBackendChoices(backend backendConnector) voicev1.VoiceChoicesResp {
-	return voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{backendChoice(backend, "default", "Default")}, DefaultChoiceID: "default"}
+	choices := []voicev1.VoiceChoice{backendChoice(backend, "default", "Default")}
+	return voicev1.VoiceChoicesResp{Choices: choices, Defaults: preferredChoices(choices, "default")}
+}
+
+// preferredChoices expresses the configured default for every transport. A
+// transport the default backend cannot serve keeps the first capable choice.
+func preferredChoices(choices []voicev1.VoiceChoice, preferred string) []voicev1.VoiceChoiceDefault {
+	return voicev1.DefaultChoices(choices, []voicev1.VoiceChoiceDefault{
+		{Transport: voicev1.VoiceTransportText, ID: preferred},
+		{Transport: voicev1.VoiceTransportWebRTC, ID: preferred},
+	})
 }
 
 func backendChoice(backend backendConnector, id, label string) voicev1.VoiceChoice {
@@ -230,12 +241,18 @@ func (b *Bridge) VoiceChoices() voicev1.VoiceChoicesResp {
 		ch.Voices = append([]string(nil), ch.Voices...)
 		out.Choices[i] = ch
 	}
+	out.Defaults = slices.Clone(b.choices.Defaults)
 	return out
 }
 
-func (b *Bridge) choiceBackend(id string) (backendConnector, error) {
+func (b *Bridge) choiceBackend(id string, transport voicev1.VoiceTransport) (backendConnector, error) {
 	if id == "" {
-		id = b.choices.DefaultChoiceID
+		id = b.choices.DefaultChoiceID(transport)
+		if id == "" && len(b.choices.Choices) != 0 {
+			// No choice serves this transport. Resolve the first one so the caller
+			// rejects the session with its transport-specific reason.
+			id = b.choices.Choices[0].ID
+		}
 	}
 	backend, ok := b.backends[id]
 	if !ok {
@@ -246,7 +263,7 @@ func (b *Bridge) choiceBackend(id string) (backendConnector, error) {
 
 // HandleChoiceOffer opens a session bound to the selected backend.
 func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID string) (sdpAnswer, sessionID string, err error) {
-	connector, err := b.choiceBackend(choiceID)
+	connector, err := b.choiceBackend(choiceID, voicev1.VoiceTransportWebRTC)
 	if err != nil {
 		return "", "", err
 	}
@@ -604,7 +621,7 @@ func (b *Bridge) ServeTextSession(ctx context.Context, w http.ResponseWriter, r 
 
 // ServeTextChoice runs a text session bound to the selected backend.
 func (b *Bridge) ServeTextChoice(ctx context.Context, w http.ResponseWriter, r *http.Request, choiceID string) error {
-	connector, err := b.choiceBackend(choiceID)
+	connector, err := b.choiceBackend(choiceID, voicev1.VoiceTransportText)
 	if err != nil {
 		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, err.Error())
 		return err

@@ -45,13 +45,17 @@ VOICE_CHOICES = {
         {
             "id": "gemini",
             "label": "Gemini Live",
-            "transports": ["webrtc", "text"],
+            "transports": ["webrtc"],
             "voices": ["Orus", "Puck"],
             "defaultVoice": "Orus",
         },
         {"id": "remote", "label": "Remote LLM", "transports": ["text"]},
+        {"id": "local", "label": "Local LLM", "transports": ["text"]},
     ],
-    "defaultChoiceID": "gemini",
+    "defaults": [
+        {"transport": "text", "id": "remote"},
+        {"transport": "webrtc", "id": "gemini"},
+    ],
 }
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent

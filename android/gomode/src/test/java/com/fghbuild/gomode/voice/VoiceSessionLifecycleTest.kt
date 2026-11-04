@@ -320,7 +320,7 @@ class VoiceSessionLifecycleTest {
                                     MockResponse().setBody(
                                         """
                                         {"choices":[{"id":"live","label":"Gemini Live","transports":["webrtc"]}],
-                                        "defaultChoiceID":"live"}
+                                        "defaults":[{"transport":"webrtc","id":"live"}]}
                                         """.trimIndent(),
                                     )
                                 }
@@ -360,8 +360,8 @@ class VoiceSessionLifecycleTest {
                         }
 
                         "choice" -> {
-                            repository.updateVoiceChoice(base, "remote")
-                            repository.settings.first { it.voiceChoices[base] == "remote" }
+                            repository.updateVoiceChoice(base, "text", "remote")
+                            repository.settings.first { it.voiceChoices[base]?.get("text") == "remote" }
                         }
                     }
                     releaseDiscovery.countDown()

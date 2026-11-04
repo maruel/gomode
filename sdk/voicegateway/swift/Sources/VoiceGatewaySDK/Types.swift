@@ -365,10 +365,22 @@ public struct VoiceChoice: Codable {
     public let defaultVoice: String?
 }
 
-/// VoiceChoicesResp advertises the available voice choices and default selection.
+/// VoiceChoiceDefault names the choice a transport family uses when a session
+/// omits choiceID. A family is one transport: WebRTC audio for gateway speech,
+/// or text for client speech with a gateway LLM.
+public struct VoiceChoiceDefault: Codable {
+    /// Transport is the family this default applies to.
+    public let transport: VoiceTransport
+    /// ID names a choice that offers Transport.
+    public let id: String
+}
+
+/// VoiceChoicesResp advertises the available voice choices and one default per
+/// offered family.
 public struct VoiceChoicesResp: Codable {
     public let choices: [VoiceChoice]
-    public let defaultChoiceID: String
+    /// Defaults holds one entry per offered transport, ordered by transport name.
+    public let defaults: [VoiceChoiceDefault]
 }
 
 /// ServiceAuthorization identifies the host and carries its scoped gateway token.

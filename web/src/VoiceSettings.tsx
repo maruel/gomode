@@ -3,6 +3,7 @@
 import { createEffect, createSignal, createUniqueId, onCleanup, Show, For, on, type Accessor } from "solid-js";
 import { browserSpeechAvailable } from "./BrowserSpeech";
 import { voiceSession, type VoiceMode } from "./VoiceSession";
+import type { VoiceTransport } from "../../sdk/voicegateway/ts/v1/types.gen";
 import { WebAudioThinkingEarcon } from "./ThinkingEarcon";
 import VoiceIcon from "./VoiceIcon";
 import controls from "./VoiceControls.module.css";
@@ -11,11 +12,12 @@ import styles from "./VoiceSettings.module.css";
 export interface VoiceSettingsMessages {
   browserSpeech: string;
   browserSpeechPrivacy: string;
+  browserSpeechLlm: string;
   browserSpeechUnavailable: string;
   cloudVoice: string;
   cloudVoiceDescription: string;
+  cloudVoiceModel: string;
   endSessionToChange: string;
-  voiceChoice: string;
   speakingVoice: string;
   speakingVoiceUnavailable: string;
   choicesLoading: string;
@@ -39,16 +41,17 @@ export const defaultVoiceSettingsMessages: VoiceSettingsMessages = {
   browserSpeech: "Browser speech",
   browserSpeechPrivacy:
     "Your browser converts your speech to text and reads replies aloud. Only text goes to the voice gateway. Speech recognition may use your browser vendor's cloud service.",
+  browserSpeechLlm: "LLM",
   browserSpeechUnavailable: "Browser speech is unavailable in this browser. Use Cloud voice.",
   cloudVoice: "Cloud voice",
   cloudVoiceDescription: "The voice gateway receives your microphone audio and sends back spoken replies.",
-  endSessionToChange: "End the voice session to change voice mode, voice choice, or language.",
-  voiceChoice: "Voice choice",
+  cloudVoiceModel: "Model",
+  endSessionToChange: "End the voice session to change voice mode, gateway model, or language.",
   speakingVoice: "Speaking voice",
   speakingVoiceUnavailable: "Choose an available speaking voice",
   choicesLoading: "Loading voice choices…",
   choicesRetry: "Retry loading voice choices",
-  choiceUnavailable: "Choose an available voice choice",
+  choiceUnavailable: "Choose an available gateway model",
   credits: "Credits",
   musicComposer: "Composed by Hans Zimmer.",
   musicArranger: "Arranged for Solo-Piano by Philipp A. G. Grzywaczyk.",
@@ -93,7 +96,12 @@ export default function VoiceSettings(props: {
   const [reasoningError, setReasoningError] = createSignal<string | null>(null);
   createEffect(
     on(
-      () => [voiceSession.gatewayIdentity(), voiceSession.state.choiceID, voiceSession.state.mode],
+      () => [
+        voiceSession.gatewayIdentity(),
+        voiceSession.state.choiceIDs.text,
+        voiceSession.state.choiceIDs.webrtc,
+        voiceSession.state.mode,
+      ],
       () => {
         setVoiceSaveError(null);
       },
@@ -160,62 +168,56 @@ export default function VoiceSettings(props: {
       </Show>
       <fieldset disabled={active()}>
         <legend>{messages().voiceMode}</legend>
-        <label>
-          <input
-            type="radio"
-            name={modeName}
-            ref={cloudRadio}
-            value="cloud"
-            checked={voiceSession.state.mode === "cloud"}
-            onChange={() => selectMode("cloud")}
-            aria-describedby={cloudDescriptionId}
+        <div class={styles.family}>
+          <label>
+            <input
+              type="radio"
+              name={modeName}
+              ref={cloudRadio}
+              value="cloud"
+              checked={voiceSession.state.mode === "cloud"}
+              onChange={() => selectMode("cloud")}
+              aria-describedby={cloudDescriptionId}
+            />
+            {messages().cloudVoice}
+          </label>
+          <p id={cloudDescriptionId}>{messages().cloudVoiceDescription}</p>
+          <ChoiceSelect
+            transport="webrtc"
+            label={messages().cloudVoiceModel}
+            unavailable={messages().choiceUnavailable}
+            disabled={active()}
+            errorId={error() === null ? undefined : errorId}
+            onError={setChoiceError}
           />
-          {messages().cloudVoice}
-        </label>
-        <p id={cloudDescriptionId}>{messages().cloudVoiceDescription}</p>
-        <label>
-          <input
-            type="radio"
-            name={modeName}
-            ref={browserRadio}
-            value="browser"
-            checked={voiceSession.state.mode === "browser"}
-            disabled={!supported}
-            onChange={() => selectMode("browser")}
-            aria-describedby={browserDescriptionId}
+        </div>
+        <div class={styles.family}>
+          <label>
+            <input
+              type="radio"
+              name={modeName}
+              ref={browserRadio}
+              value="browser"
+              checked={voiceSession.state.mode === "browser"}
+              disabled={!supported}
+              onChange={() => selectMode("browser")}
+              aria-describedby={browserDescriptionId}
+            />
+            {messages().browserSpeech}
+          </label>
+          <p id={browserDescriptionId}>
+            {supported ? messages().browserSpeechPrivacy : messages().browserSpeechUnavailable}
+          </p>
+          <ChoiceSelect
+            transport="text"
+            label={messages().browserSpeechLlm}
+            unavailable={messages().choiceUnavailable}
+            disabled={active()}
+            errorId={error() === null ? undefined : errorId}
+            onError={setChoiceError}
           />
-          {messages().browserSpeech}
-        </label>
-        <p id={browserDescriptionId}>
-          {supported ? messages().browserSpeechPrivacy : messages().browserSpeechUnavailable}
-        </p>
+        </div>
       </fieldset>
-      <label>
-        {messages().voiceChoice}
-        <select
-          disabled={active() || voiceSession.state.choicesStatus !== "ready"}
-          value={voiceSession.state.choiceID ?? ""}
-          onChange={(event) => {
-            try {
-              voiceSession.selectChoice(event.currentTarget.value);
-              setChoiceError(null);
-            } catch (err) {
-              event.currentTarget.value = voiceSession.state.choiceID ?? "";
-              setChoiceError(err instanceof Error ? err.message : String(err));
-            }
-          }}
-          aria-describedby={error() === null ? undefined : errorId}
-        >
-          <Show when={!voiceSession.compatibleChoices.some((choice) => choice.id === voiceSession.state.choiceID)}>
-            <option value={voiceSession.state.choiceID ?? ""} disabled>
-              {messages().choiceUnavailable}
-            </option>
-          </Show>
-          <For each={voiceSession.compatibleChoices}>
-            {(choice) => <option value={choice.id}>{choice.label}</option>}
-          </For>
-        </select>
-      </label>
       <Show when={voiceSession.speakingVoices.length > 0}>
         <label>
           {messages().speakingVoice}
@@ -353,5 +355,46 @@ function ThinkingMusicPreview(props: { active: boolean; visible: boolean; messag
         </p>
       </Show>
     </>
+  );
+}
+
+function ChoiceSelect(props: {
+  transport: VoiceTransport;
+  label: string;
+  unavailable: string;
+  disabled: boolean;
+  errorId: string | undefined;
+  onError: (error: string | null) => void;
+}) {
+  const choices = () => voiceSession.choicesFor(props.transport);
+  const selected = () => voiceSession.state.choiceIDs[props.transport];
+  return (
+    <Show when={choices().length > 0}>
+      <label>
+        {props.label}
+        <select
+          disabled={props.disabled || voiceSession.state.choicesStatus !== "ready"}
+          value={selected() ?? ""}
+          onChange={(event) => {
+            const previous = selected() ?? "";
+            try {
+              voiceSession.selectChoice(props.transport, event.currentTarget.value);
+              props.onError(null);
+            } catch (err) {
+              event.currentTarget.value = previous;
+              props.onError(err instanceof Error ? err.message : String(err));
+            }
+          }}
+          aria-describedby={props.errorId}
+        >
+          <Show when={!choices().some((choice) => choice.id === selected())}>
+            <option value={selected() ?? ""} disabled>
+              {props.unavailable}
+            </option>
+          </Show>
+          <For each={choices()}>{(choice) => <option value={choice.id}>{choice.label}</option>}</For>
+        </select>
+      </label>
+    </Show>
   );
 }

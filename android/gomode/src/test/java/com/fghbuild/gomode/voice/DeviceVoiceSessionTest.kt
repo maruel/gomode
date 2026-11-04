@@ -548,7 +548,8 @@ class DeviceVoiceSessionTest {
                                     """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":3,"toolGroups":[],
                         "voiceGateway":{"url":"/","required":false,"authRequired":false}}}"""
                                 } else {
-                                    """{"choices":[{"id":"text","label":"Text","transports":["text"]}],"defaultChoiceID":"text"}"""
+                                    """{"choices":[{"id":"text","label":"Text","transports":["text"]}],""" +
+                                        """"defaults":[{"transport":"text","id":"text"}]}"""
                                 },
                             )
                     }

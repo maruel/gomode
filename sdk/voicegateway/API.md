@@ -209,14 +209,26 @@ VoiceChoice describes a selectable backend without exposing its credentials.
 | `voices` | `string[]` | Voices lists supported audio voice names. Omitted when the choice does not offer voice selection. |  |
 | `defaultVoice` | `string` | DefaultVoice is the voice used when session.setup.voice.name is omitted. |  |
 
+### VoiceChoiceDefault
+
+VoiceChoiceDefault names the choice a transport family uses when a session
+omits choiceID. A family is one transport: WebRTC audio for gateway speech,
+or text for client speech with a gateway LLM.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `transport` | `VoiceTransport` | Transport is the family this default applies to. | yes |
+| `id` | `string` | ID names a choice that offers Transport. | yes |
+
 ### VoiceChoicesResp
 
-VoiceChoicesResp advertises the available voice choices and default selection.
+VoiceChoicesResp advertises the available voice choices and one default per
+offered family.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
 | `choices` | `VoiceChoice[]` |  | yes |
-| `defaultChoiceID` | `string` |  | yes |
+| `defaults` | `VoiceChoiceDefault[]` | Defaults holds one entry per offered transport, ordered by transport name. | yes |
 
 ### ServiceAuthorization
 

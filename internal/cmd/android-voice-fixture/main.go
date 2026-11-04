@@ -212,7 +212,10 @@ func (f *fixture) handleChoices(w http.ResponseWriter, _ *http.Request) {
 			Label:      "Fixture text",
 			Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText, voicev1.VoiceTransportWebRTC},
 		}},
-		DefaultChoiceID: "fixture",
+		Defaults: []voicev1.VoiceChoiceDefault{
+			{Transport: voicev1.VoiceTransportText, ID: "fixture"},
+			{Transport: voicev1.VoiceTransportWebRTC, ID: "fixture"},
+		},
 	})
 }
 

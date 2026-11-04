@@ -19,7 +19,7 @@ beforeEach(() => {
   voiceSession.setState((s) => ({
     ...s,
     choices: [],
-    choiceID: null,
+    choiceIDs: { text: null, webrtc: null },
     choicesStatus: "ready",
     choicesError: null,
     voiceName: null,

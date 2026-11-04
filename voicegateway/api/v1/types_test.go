@@ -3,6 +3,7 @@ package v1
 
 import (
 	"net/http"
+	"slices"
 	"testing"
 )
 
@@ -57,4 +58,52 @@ func routeByName(t *testing.T, name string) Route {
 	}
 	t.Fatalf("route %q not found", name)
 	return Route{}
+}
+
+func TestDefaultChoices(t *testing.T) {
+	t.Parallel()
+	choices := []VoiceChoice{
+		{ID: "live", Transports: []VoiceTransport{VoiceTransportWebRTC}},
+		{ID: "remote", Transports: []VoiceTransport{VoiceTransportText, VoiceTransportWebRTC}},
+		{ID: "local", Transports: []VoiceTransport{VoiceTransportText}},
+	}
+
+	t.Run("preferred per transport", func(t *testing.T) {
+		t.Parallel()
+		got := DefaultChoices(choices, []VoiceChoiceDefault{
+			{Transport: VoiceTransportText, ID: "local"},
+			{Transport: VoiceTransportWebRTC, ID: "remote"},
+		})
+		want := []VoiceChoiceDefault{
+			{Transport: VoiceTransportText, ID: "local"},
+			{Transport: VoiceTransportWebRTC, ID: "remote"},
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("defaults = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("incompatible preferred falls back to the first capable choice", func(t *testing.T) {
+		t.Parallel()
+		got := DefaultChoices(choices, []VoiceChoiceDefault{
+			{Transport: VoiceTransportText, ID: "live"},
+			{Transport: VoiceTransportWebRTC, ID: "local"},
+		})
+		want := []VoiceChoiceDefault{
+			{Transport: VoiceTransportText, ID: "remote"},
+			{Transport: VoiceTransportWebRTC, ID: "live"},
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("defaults = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("omits transports no choice offers", func(t *testing.T) {
+		t.Parallel()
+		got := DefaultChoices(choices[2:], nil)
+		want := []VoiceChoiceDefault{{Transport: VoiceTransportText, ID: "local"}}
+		if !slices.Equal(got, want) {
+			t.Fatalf("defaults = %+v, want %+v", got, want)
+		}
+	})
 }

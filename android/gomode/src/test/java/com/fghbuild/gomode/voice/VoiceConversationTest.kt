@@ -135,7 +135,7 @@ class VoiceConversationTest {
                                     check(releaseChoices.await(10, TimeUnit.SECONDS))
                                     MockResponse().setBody(
                                         """{"choices":[{"id":"live","label":"Live","transports":["webrtc"],
-                            "voices":["Orus","Kore"],"defaultVoice":"Orus"}],"defaultChoiceID":"live"}""",
+                            "voices":["Orus","Kore"],"defaultVoice":"Orus"}],"defaults":[{"transport":"webrtc","id":"live"}]}""",
                                     )
                                 }
 

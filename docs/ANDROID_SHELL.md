@@ -361,18 +361,20 @@ while a session connects or remains active:
   the reply.
 
 Native Settings shows **Gateway voice** for Cloud voice and the on-device Remote
-gateway engine, listing the active gateway's named choices filtered to WebRTC or
-text support for the selected speech mode. Selection is saved per gateway URL
-and pinned per session: a first connection uses the compatible advertised
-default, or the first compatible choice, a mode switch selects a compatible
-choice visibly, and a removed saved choice blocks reconnecting until the user
-picks an available one. Discovery errors offer Retry, and choices cannot change
-during an active session. The **Speaking voice** dropdown saves a voice per
-gateway and choice for Cloud choices that advertise voices; the advertised
-default applies until then, and a removed saved voice blocks connecting. Active
-sessions and recovery connections keep the resolved voice. Choices without a
-voice catalog use the gateway's default, client speech modes keep the device's
-synthesis, and fully native engines keep their own model selection.
+gateway engine, listing the active gateway's named choices filtered to the
+selected family. Cloud voice selects a **Model**; client speech selects an
+**LLM**. Each family is one transport, saves its own selection per gateway URL,
+and pins it per session: a first connection uses that family's advertised
+default, or its first compatible choice, and a removed saved choice blocks
+reconnecting until the user picks an available one. Switching speech mode or
+engine keeps the other family's selection. Discovery errors offer Retry, and
+choices cannot change during an active session. The **Speaking voice** dropdown
+saves a voice per gateway and choice for Cloud choices that advertise voices;
+the advertised default applies until then, and a removed saved voice blocks
+connecting. Active sessions and recovery connections keep the resolved voice.
+Choices without a voice catalog use the gateway's default, client speech modes
+keep the device's synthesis, and fully native engines keep their own model
+selection.
 
 ## Voice Session Setup
 

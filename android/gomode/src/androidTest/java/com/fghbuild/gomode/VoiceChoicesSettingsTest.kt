@@ -58,7 +58,8 @@ class VoiceChoicesSettingsTest {
                     {"choices":[{"id":"live","label":"Gemini Live","transports":["webrtc"],
                     "voices":["Kore","Orus"],"defaultVoice":"Orus"},
                     {"id":"remote","label":"Remote LLM","transports":["webrtc","text"]},
-                    {"id":"local","label":"Local LLM","transports":["text"]}],"defaultChoiceID":"live"}
+                    {"id":"local","label":"Local LLM","transports":["text"]}],
+                    "defaults":[{"transport":"text","id":"remote"},{"transport":"webrtc","id":"live"}]}
                     """.trimIndent()
                 server.enqueue(MockResponse().setBody(manifest))
                 server.enqueue(MockResponse().setResponseCode(503))
@@ -95,7 +96,7 @@ class VoiceChoicesSettingsTest {
                         .isNotEmpty()
                 }
                 composeRule.onNodeWithTag("gomode-voice-choice-live").performScrollTo().assertIsSelected()
-                composeRule.onNodeWithText("LLM").assertExists()
+                composeRule.onNodeWithText("Model").assertExists()
                 composeRule.onNodeWithTag("gomode-voice-choice-local").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-speaking-voice").performScrollTo().assertTextContains("Orus")
                 composeRule.runOnIdle { store.failWrites = true }
@@ -120,22 +121,45 @@ class VoiceChoicesSettingsTest {
                 composeRule.onNodeWithTag("gomode-speaking-voice").assertTextContains("Kore").assertIsNotEnabled()
                 composeRule.runOnIdle { active.value = false }
                 composeRule.onNodeWithTag("gomode-voice-choice-remote").performScrollTo().performClick()
-                composeRule.waitUntil { repository.settings.value.voiceChoices[base] == "remote" }
+                composeRule.waitUntil {
+                    repository.settings.value.voiceChoices[base]
+                        ?.get("webrtc") == "remote"
+                }
                 composeRule.onNodeWithTag("gomode-speaking-voice").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-voice-choice-live").performClick()
-                composeRule.waitUntil { repository.settings.value.voiceChoices[base] == "live" }
+                composeRule.waitUntil {
+                    repository.settings.value.voiceChoices[base]
+                        ?.get("webrtc") == "live"
+                }
                 composeRule.onNodeWithTag("gomode-speaking-voice").performScrollTo().assertTextContains("Kore")
                 composeRule.onNodeWithTag("gomode-voice-choice-remote").performScrollTo().performClick()
-                composeRule.waitUntil { repository.settings.value.voiceChoices[base] == "remote" }
+                composeRule.waitUntil {
+                    repository.settings.value.voiceChoices[base]
+                        ?.get("webrtc") == "remote"
+                }
                 composeRule.onNodeWithTag("gomode-voice-mode-device").performScrollTo().performClick()
                 composeRule.waitUntil { repository.settings.value.voiceMode == VoiceMode.DEVICE }
                 composeRule.onNodeWithTag("gomode-voice-choice-live").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-voice-choice-remote").performScrollTo().assertIsSelected()
                 composeRule.onNodeWithTag("gomode-voice-choice-local").performClick()
-                composeRule.waitUntil { repository.settings.value.voiceChoices[base] == "local" }
+                composeRule.waitUntil {
+                    repository.settings.value.voiceChoices[base]
+                        ?.get("text") == "local"
+                }
                 composeRule.runOnIdle { active.value = true }
                 composeRule.onNodeWithTag("gomode-voice-choice-local").assertIsSelected().assertIsNotEnabled()
                 composeRule.onNodeWithTag("gomode-voice-choice-remote").assertIsNotEnabled()
+                composeRule.runOnIdle { active.value = false }
+                composeRule.onNodeWithTag("gomode-voice-mode-cloud").performScrollTo().performClick()
+                composeRule.waitUntil { repository.settings.value.voiceMode == VoiceMode.CLOUD }
+                // Each family keeps its own selection.
+                composeRule.onNodeWithTag("gomode-voice-choice-remote").performScrollTo().assertIsSelected()
+                composeRule.onNodeWithTag("gomode-voice-choice-local").assertDoesNotExist()
+                assertEquals(
+                    "local",
+                    repository.settings.value.voiceChoices[base]
+                        ?.get("text"),
+                )
                 assertEquals(4, server.requestCount)
             }
         }
@@ -162,7 +186,8 @@ class VoiceChoicesSettingsTest {
                         """
                         {"choices":[{"id":"live","label":"Gemini Live","transports":["webrtc"],
                         "voices":["Kore","Orus"],"defaultVoice":"Orus"},
-                        {"id":"local","label":"Local LLM","transports":["text"]}],"defaultChoiceID":"live"}
+                        {"id":"local","label":"Local LLM","transports":["text"]}],
+                        "defaults":[{"transport":"text","id":"local"},{"transport":"webrtc","id":"live"}]}
                         """.trimIndent(),
                     ),
                 )
@@ -182,7 +207,7 @@ class VoiceChoicesSettingsTest {
                 composeRule.waitUntil(10_000) {
                     composeRule.onAllNodes(hasTestTag("gomode-speaking-voice")).fetchSemanticsNodes().isNotEmpty()
                 }
-                composeRule.onNodeWithText("LLM").assertDoesNotExist()
+                composeRule.onNodeWithText("Model").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-voice-choice-live").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-voice-choice-local").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-speaking-voice").performScrollTo().assertTextContains("Orus")
@@ -201,12 +226,15 @@ class VoiceChoicesSettingsTest {
                 composeRule.onNodeWithTag("gomode-voice-choice-local").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-speaking-voice").assertDoesNotExist()
 
-                repository.updateVoiceChoice(base, "missing")
+                repository.updateVoiceChoice(base, "text", "missing")
                 composeRule.waitUntil {
                     composeRule.onAllNodes(hasTestTag("gomode-voice-choice-error")).fetchSemanticsNodes().isNotEmpty()
                 }
                 composeRule.onNodeWithTag("gomode-voice-choice-local").performScrollTo().performClick()
-                composeRule.waitUntil { repository.settings.value.voiceChoices[base] == "local" }
+                composeRule.waitUntil {
+                    repository.settings.value.voiceChoices[base]
+                        ?.get("text") == "local"
+                }
                 composeRule.onNodeWithText("LLM").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-voice-choice-error").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-voice-choice-local").assertDoesNotExist()

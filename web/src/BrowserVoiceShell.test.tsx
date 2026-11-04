@@ -58,7 +58,7 @@ beforeEach(() => {
   scope = owner.createScope();
   globalThis.fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (url) => {
     if (String(url).endsWith("/gomode.json")) return Response.json(manifest);
-    return Response.json({ choices: [], defaultChoiceID: "" });
+    return Response.json({ choices: [], defaults: [] });
   });
 });
 afterEach(() => {
@@ -201,7 +201,7 @@ it("configures scoped embedded MCP and gateway headers while translating the laz
     requests.push({ url: String(url), headers: new Headers(init?.headers) });
     if (String(url).endsWith("/gomode.json")) return Response.json(manifest);
     if (String(url).startsWith("/mcp")) return Response.json({ jsonrpc: "2.0", result: { tools: [] } });
-    return Response.json({ choices: [], defaultChoiceID: "" });
+    return Response.json({ choices: [], defaults: [] });
   });
   scope.setTools([]);
   scope.setDataReady(true);
@@ -235,7 +235,7 @@ it("configures external gateways without forwarding host headers or exchanging t
           voiceGateway: { url: "https://voice.example", tokenEndpoint: "/authorize" },
         },
       });
-    return Response.json({ choices: [], defaultChoiceID: "" });
+    return Response.json({ choices: [], defaults: [] });
   });
   const authorize = vi.fn(async () => ({
     kind: "example",

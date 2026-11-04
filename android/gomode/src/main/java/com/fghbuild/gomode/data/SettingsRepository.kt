@@ -20,6 +20,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.decodeFromJsonElement
 import java.util.Locale
 import java.util.UUID
 
@@ -141,7 +144,8 @@ data class SettingsState(
     val onDeviceEngine: OnDeviceEngine = OnDeviceEngine.REMOTE_GATEWAY,
     val localLlmModel: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
     val voiceAudioDeviceType: Int? = null,
-    val voiceChoices: Map<String, String> = emptyMap(),
+    /** Saved gateway choice per gateway URL, then per transport family. */
+    val voiceChoices: Map<String, Map<String, String>> = emptyMap(),
     val speakingVoices: Map<String, Map<String, String>> = emptyMap(),
     val carCallerSlots: Map<String, Int> = emptyMap(),
     val showServiceOnLockScreen: Boolean = false,
@@ -318,12 +322,15 @@ class SettingsRepository(
 
     suspend fun updateVoiceChoice(
         gatewayURL: String,
+        transport: String,
         choiceID: String,
     ) {
-        require(choiceID.isNotBlank()) { "Select a voice choice" }
+        require(transport.isNotBlank() && choiceID.isNotBlank()) { "Select a voice choice" }
         dataStore.edit { prefs ->
-            prefs[Keys.VOICE_CHOICES] =
-                json.encodeToString(decodeVoiceChoices(prefs) + (normalizeURL(gatewayURL) to choiceID))
+            val gateway = normalizeURL(gatewayURL)
+            val saved = decodeVoiceChoices(prefs)
+            val families = saved[gateway].orEmpty() + (transport to choiceID)
+            prefs[Keys.VOICE_CHOICES] = json.encodeToString(saved + (gateway to families))
         }
     }
 
@@ -368,8 +375,17 @@ class SettingsRepository(
         return slots
     }
 
-    private fun decodeVoiceChoices(prefs: Preferences): Map<String, String> =
-        prefs[Keys.VOICE_CHOICES]?.let { json.decodeFromString<Map<String, String>>(it) } ?: emptyMap()
+    private fun decodeVoiceChoices(prefs: Preferences): Map<String, Map<String, String>> =
+        prefs[Keys.VOICE_CHOICES]?.let { encoded ->
+            val parsed = json.parseToJsonElement(encoded)
+            // A build with one selection per gateway stored plain strings. It
+            // cannot be mapped to a family, so each family uses its advertised default.
+            if (parsed is JsonObject && parsed.values.all { it is JsonPrimitive }) {
+                emptyMap()
+            } else {
+                json.decodeFromJsonElement<Map<String, Map<String, String>>>(parsed)
+            }
+        } ?: emptyMap()
 
     private fun decodeServices(prefs: Preferences): List<ServiceInstance> =
         prefs[Keys.SERVICES]?.let { encoded ->

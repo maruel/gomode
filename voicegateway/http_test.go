@@ -457,9 +457,12 @@ type choiceBridge struct {
 }
 
 func (b *choiceBridge) VoiceChoices() voicev1.VoiceChoicesResp {
-	return voicev1.VoiceChoicesResp{DefaultChoiceID: "live", Choices: []voicev1.VoiceChoice{
+	return voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{
 		{ID: "live", Label: "Live", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}, Voices: []string{"Kore", "Orus"}, DefaultVoice: "Orus"},
 		{ID: "remote", Label: "Remote", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText, voicev1.VoiceTransportWebRTC}},
+	}, Defaults: []voicev1.VoiceChoiceDefault{
+		{Transport: voicev1.VoiceTransportText, ID: "remote"},
+		{Transport: voicev1.VoiceTransportWebRTC, ID: "live"},
 	}}
 }
 func (b *choiceBridge) HandleChoiceOffer(ctx context.Context, sdp, id string) (string, string, error) {
@@ -493,7 +496,7 @@ func TestVoiceChoices(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &choices); err != nil {
 		t.Fatal(err)
 	}
-	if w.Code != 200 || len(choices.Choices) != 2 || choices.DefaultChoiceID != "live" {
+	if w.Code != 200 || len(choices.Choices) != 2 || choices.DefaultChoiceID(voicev1.VoiceTransportWebRTC) != "live" || choices.DefaultChoiceID(voicev1.VoiceTransportText) != "remote" {
 		t.Fatalf("choices: %d %s", w.Code, w.Body)
 	}
 	if ch := choices.Choices[0]; len(ch.Voices) != 2 || ch.Voices[0] != "Kore" || ch.DefaultVoice != "Orus" {
@@ -520,9 +523,14 @@ func TestVoiceChoices(t *testing.T) {
 			}
 		}
 	}
-	for _, id := range []string{"", "live", "missing"} {
-		if w := request("POST", "/api/voicegateway/v1/voice/text/ticket", `{"choiceID":"`+id+`","service":`+service+`}`); w.Code != 400 {
-			t.Fatalf("ticket %q: %d %s", id, w.Code, w.Body)
+	// Each family defaults to its own choice.
+	for _, tc := range []struct {
+		id     string
+		status int
+	}{{"", 200}, {"remote", 200}, {"live", 400}, {"missing", 400}} {
+		w := request("POST", "/api/voicegateway/v1/voice/text/ticket", `{"choiceID":"`+tc.id+`","service":`+service+`}`)
+		if w.Code != tc.status {
+			t.Fatalf("ticket %q: %d %s", tc.id, w.Code, w.Body)
 		}
 	}
 	w = request("POST", "/api/voicegateway/v1/voice/text/ticket", `{"choiceID":"remote","service":`+service+`}`)
@@ -574,7 +582,7 @@ func TestEmbeddedChoiceCapabilities(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &choices); err != nil {
 			t.Fatal(err)
 		}
-		if choices.DefaultChoiceID != "remote" || len(choices.Choices) != 1 || len(choices.Choices[0].Transports) != 1 || choices.Choices[0].Transports[0] != voicev1.VoiceTransportText {
+		if choices.DefaultChoiceID(voicev1.VoiceTransportText) != "remote" || len(choices.Choices) != 1 || len(choices.Choices[0].Transports) != 1 || choices.Choices[0].Transports[0] != voicev1.VoiceTransportText {
 			t.Fatalf("text-only choices: %+v", choices)
 		}
 		if ch := choices.Choices[0]; len(ch.Voices) != 0 || ch.DefaultVoice != "" {
@@ -587,16 +595,17 @@ func TestEmbeddedChoiceCapabilities(t *testing.T) {
 		}
 	})
 	for _, tc := range []struct {
-		name        string
-		media       bool
-		singleMedia bool
-		text        bool
-		defaultID   string
+		name         string
+		media        bool
+		singleMedia  bool
+		text         bool
+		mediaDefault string
+		textDefault  string
 	}{
-		{name: "media choices without text server", media: true, defaultID: "live"},
-		{name: "media choices with default-only text server", media: true, text: true, defaultID: "live"},
-		{name: "default-only text server", text: true, defaultID: "default"},
-		{name: "single media with default-only text server", media: true, singleMedia: true, text: true, defaultID: "default"},
+		{name: "media choices without text server", media: true, mediaDefault: "live"},
+		{name: "media choices with default-only text server", media: true, text: true, mediaDefault: "live", textDefault: "live"},
+		{name: "default-only text server", text: true, textDefault: "default"},
+		{name: "single media with default-only text server", media: true, singleMedia: true, text: true, mediaDefault: "default", textDefault: "default"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -625,8 +634,8 @@ func TestEmbeddedChoiceCapabilities(t *testing.T) {
 			if err := json.Unmarshal(w.Body.Bytes(), &choices); err != nil {
 				t.Fatal(err)
 			}
-			if choices.DefaultChoiceID != tc.defaultID {
-				t.Fatalf("default %q", choices.DefaultChoiceID)
+			if choices.DefaultChoiceID(voicev1.VoiceTransportText) != tc.textDefault || choices.DefaultChoiceID(voicev1.VoiceTransportWebRTC) != tc.mediaDefault {
+				t.Fatalf("defaults %+v", choices.Defaults)
 			}
 			for _, ch := range choices.Choices {
 				supportsText := false
@@ -635,7 +644,7 @@ func TestEmbeddedChoiceCapabilities(t *testing.T) {
 						supportsText = true
 					}
 				}
-				want := tc.text && ch.ID == tc.defaultID
+				want := tc.text && ch.ID == tc.textDefault
 				if supportsText != want {
 					t.Errorf("choice %s text = %v, want %v", ch.ID, supportsText, want)
 				}

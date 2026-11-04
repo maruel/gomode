@@ -94,8 +94,10 @@ internal data class GatewayVoiceChoices(
     val gatewayURL: String,
     val catalog: VoiceChoicesResp,
 ) {
-    fun compatible(settings: SettingsState): List<VoiceChoice> =
-        catalog.choices.filter { voiceTransport(settings) in it.transports }
+    fun compatible(settings: SettingsState): List<VoiceChoice> = compatible(voiceTransport(settings))
+
+    private fun compatible(transport: VoiceTransport): List<VoiceChoice> =
+        catalog.choices.filter { transport in it.transports }
 
     fun speakingVoice(
         settings: SettingsState,
@@ -145,13 +147,15 @@ internal data class GatewayVoiceChoices(
 
     fun selection(settings: SettingsState): VoiceChoice {
         requireLoadedVoiceSettings(settings)
-        val saved = settings.voiceChoices[gatewayURL]
+        val transport = voiceTransport(settings)
+        val saved = settings.voiceChoices[gatewayURL]?.get(transport.value)
         if (saved != null && catalog.choices.none { it.id == saved }) {
             throw VoiceSetupException("Saved voice choice is unavailable. Select a voice choice in Settings.")
         }
-        val compatible = compatible(settings)
+        val compatible = compatible(transport)
+        val advertised = catalog.defaults.firstOrNull { it.transport == transport }?.id
         return compatible.firstOrNull { it.id == saved }
-            ?: compatible.firstOrNull { it.id == catalog.defaultChoiceID }
+            ?: compatible.firstOrNull { it.id == advertised }
             ?: compatible.firstOrNull()
             ?: throw VoiceSetupException("No gateway voice choices support this voice mode")
     }
@@ -160,7 +164,7 @@ internal data class GatewayVoiceChoices(
 internal fun usesGatewayVoice(settings: SettingsState): Boolean =
     settings.voiceMode == VoiceMode.CLOUD || settings.onDeviceEngine == OnDeviceEngine.REMOTE_GATEWAY
 
-private fun voiceTransport(settings: SettingsState): VoiceTransport =
+internal fun voiceTransport(settings: SettingsState): VoiceTransport =
     if (settings.voiceMode == VoiceMode.CLOUD) VoiceTransport.WebRTC else VoiceTransport.Text
 
 internal suspend fun discoverVoiceChoices(
@@ -179,12 +183,21 @@ internal suspend fun discoverVoiceChoices(
             emptyMap()
         }
     val catalog = ApiClient(gatewayURL, httpClient = voiceGatewayHTTPClient).voiceChoices(headers)
+    // Each family advertises one default that must name a choice offering it.
+    val invalidDefaults =
+        catalog.defaults.any { advertised ->
+            advertised.id.isBlank() ||
+                catalog.choices.none { advertised.transport in it.transports && it.id == advertised.id }
+        } || catalog.defaults
+            .map { it.transport }
+            .toSet()
+            .size != catalog.defaults.size
     if (catalog.choices.any { it.id.isBlank() || it.label.isBlank() } ||
         catalog.choices
             .map { it.id }
             .toSet()
             .size != catalog.choices.size ||
-        catalog.choices.none { it.id == catalog.defaultChoiceID }
+        invalidDefaults
     ) {
         throw VoiceSetupException("Gateway returned invalid voice choices")
     }

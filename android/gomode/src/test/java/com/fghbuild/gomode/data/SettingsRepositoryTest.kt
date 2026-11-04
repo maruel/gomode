@@ -178,15 +178,16 @@ class SettingsRepositoryTest {
         runBlocking {
             val store = InMemoryPreferencesDataStore()
             val repository = SettingsRepository(store)
-            repository.updateVoiceChoice("https://first.example/", "live")
-            repository.updateVoiceChoice("https://second.example", "local")
+            repository.updateVoiceChoice("https://first.example/", "webrtc", "live")
+            repository.updateVoiceChoice("https://first.example/", "text", "remote")
+            repository.updateVoiceChoice("https://second.example", "text", "local")
             val restored =
                 SettingsRepository(store).awaitSettings("gateway choices restored") {
                     it.voiceChoices.size ==
                         2
                 }
-            assertEquals("live", restored.voiceChoices["https://first.example"])
-            assertEquals("local", restored.voiceChoices["https://second.example"])
+            assertEquals(mapOf("text" to "remote", "webrtc" to "live"), restored.voiceChoices["https://first.example"])
+            assertEquals(mapOf("text" to "local"), restored.voiceChoices["https://second.example"])
         }
 
     @Test
@@ -206,7 +207,7 @@ class SettingsRepositoryTest {
     fun `speaking voices restore by gateway and choice with existing preferences intact`() =
         runBlocking {
             val store = InMemoryPreferencesDataStore()
-            store.edit { it[stringPreferencesKey("VOICE_CHOICES")] = """{"https://first.example":"live"}""" }
+            store.edit { it[stringPreferencesKey("VOICE_CHOICES")] = """{"https://first.example":{"webrtc":"live"}}""" }
             val repository = SettingsRepository(store)
             repository.awaitSettings("existing preferences") { it.loadState == SettingsLoadState.Ready }
             assertTrue(
@@ -220,7 +221,20 @@ class SettingsRepositoryTest {
             assertEquals("Kore", restored.speakingVoices["https://first.example"]?.get("live"))
             assertEquals("Orus", restored.speakingVoices["https://first.example"]?.get("other"))
             assertEquals("Puck", restored.speakingVoices["https://second.example"]?.get("live"))
-            assertEquals("live", restored.voiceChoices["https://first.example"])
+            assertEquals("live", restored.voiceChoices["https://first.example"]?.get("webrtc"))
+        }
+
+    @Test
+    fun `legacy single family choice is discarded instead of failing the settings load`() =
+        runBlocking {
+            val store = InMemoryPreferencesDataStore()
+            store.edit { it[stringPreferencesKey("VOICE_CHOICES")] = """{"https://first.example":"live"}""" }
+            val repository = SettingsRepository(store)
+            repository.awaitSettings("legacy choices") { it.loadState == SettingsLoadState.Ready }
+            assertTrue(
+                repository.settings.value.voiceChoices
+                    .isEmpty(),
+            )
         }
 
     @Test

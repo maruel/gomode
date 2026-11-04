@@ -331,9 +331,12 @@ These platform rules follow
 ## Backends
 
 A gateway offers named `[[choices]]` together at one URL, sharing one WebRTC
-UDP port. Set `default_choice_id` to the ID used when a client omits its choice;
-when unset, the first configured choice is the default. IDs should stay stable
-so clients can save selections. Each choice has its own model configuration:
+UDP port. Set `default_choice_id` to the preferred choice when a client omits
+its choice; when unset, the first configured choice is preferred. A family
+keeps the first choice that supports it when the preferred choice does not:
+`default_choice_id = "gemini"` leaves the text family to the first text-capable
+choice. IDs should stay stable so clients can save selections. Each choice has
+its own model configuration:
 
 - `gemini-live`: full duplex WebRTC audio. Its `model` defaults to
   `voicegateway.DefaultGeminiModel`; bare IDs get the `models/` prefix. Supply
@@ -366,8 +369,11 @@ one choice with ID `default`.
 
 `GET /api/voicegateway/v1/voice/choices` returns public metadata:
 `choices` with `id`, `label`, and `transports` (`webrtc` and/or `text`), plus
-`defaultChoiceID`. Audio choices that support voice selection also include a
-`voices` catalog and `defaultVoice`. Clients send a selected catalog name in
+`defaults` with one `transport` and choice `id` per offered family. The
+WebRTC family is gateway speech; the text family is client speech with a
+gateway LLM. A choice that offers both appears in both families. Audio choices
+that support voice selection also include a `voices` catalog and
+`defaultVoice`. Clients send a selected catalog name in
 `session.setup.voice.name`; omitting it uses the advertised default (Orus for
 Gemini Live). Text-only choices omit voice metadata. Discovery contains no
 credentials or model endpoint addresses.
@@ -377,10 +383,10 @@ apply their existing authentication middleware.
 Pass optional `choiceID` in WebRTC offer and browser text-ticket JSON requests.
 Native text clients pass `?choiceID=...` on `/voice/text`. Unknown choices and
 unsupported transports return 400 before opening a session or issuing a ticket.
-An omitted choice selects the gateway default. A browser ticket binds its
-selected choice; the redemption URL cannot override it. Each session retains
-its backend throughout its lifetime, and session close/diagnostics keep the
-same service identity authorization as the offer.
+An omitted choice selects the default of the requested family. A browser ticket
+binds its selected choice; the redemption URL cannot override it. Each session
+retains its backend throughout its lifetime, and session close/diagnostics keep
+the same service identity authorization as the offer.
 
 ## Native local realtime audio
 

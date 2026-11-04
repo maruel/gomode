@@ -183,7 +183,8 @@ func TestFixtureVoiceChoices(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog.Choices) != 1 || catalog.Choices[0].ID != catalog.DefaultChoiceID {
+	if len(catalog.Choices) != 1 || catalog.Choices[0].ID != catalog.DefaultChoiceID(voicev1.VoiceTransportText) ||
+		catalog.Choices[0].ID != catalog.DefaultChoiceID(voicev1.VoiceTransportWebRTC) {
 		t.Fatalf("catalog must select its single fixture choice: %+v", catalog)
 	}
 	if got := catalog.Choices[0].Transports; len(got) != 2 || got[0] != voicev1.VoiceTransportText || got[1] != voicev1.VoiceTransportWebRTC {

@@ -12,7 +12,7 @@ window.fetch = (input, init) =>
         new Response(
           JSON.stringify({
             choices: [{ id: "preview", label: "Demonstration", transports: ["webrtc"] }],
-            defaultChoiceID: "preview",
+            defaults: [{ transport: "webrtc", id: "preview" }],
           }),
           { headers: { "Content-Type": "application/json" } },
         ),
