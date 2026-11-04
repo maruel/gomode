@@ -88,6 +88,36 @@ class DeviceVoiceSessionTest {
     }
 
     @Test
+    fun `startup progress stays disconnected until ready and ignores late status`() {
+        val socket = FakeWebSocket()
+        var listener: WebSocketListener? = null
+        val session =
+            createSession(FakeSpeech()) { _, captured ->
+                listener = captured
+                socket
+            }
+        try {
+            session.connect()
+            val backend = requireNotNull(listener)
+            backend.onOpen(socket, upgradeResponse())
+            backend.onMessage(socket, """{"kind":"session.status","message":"Loading local stack…"}""")
+            assertEquals("Loading local stack…", session.state.value.connectStatus)
+            assertFalse(session.state.value.connected)
+            val firstProgress = requireNotNull(session.state.value.startupProgressAtMillis)
+            ShadowSystemClock.advanceBy(Duration.ofSeconds(5))
+            backend.onMessage(socket, """{"kind":"session.status","message":"Loading local stack…"}""")
+            assertTrue(requireNotNull(session.state.value.startupProgressAtMillis) > firstProgress)
+            backend.onMessage(socket, """{"kind":"session.ready"}""")
+            assertNull(session.state.value.connectStatus)
+            assertTrue(session.state.value.connected)
+            backend.onMessage(socket, """{"kind":"session.status","message":"Loading local stack…"}""")
+            assertNull(session.state.value.connectStatus)
+        } finally {
+            session.close()
+        }
+    }
+
+    @Test
     fun `speech omits formatting but transcript retains raw streamed text`() {
         val speech = FakeSpeech()
         val socket = FakeWebSocket()

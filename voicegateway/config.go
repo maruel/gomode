@@ -27,11 +27,12 @@ import (
 // Config is the static voice gateway configuration, matching the TOML sections.
 // Choices are offered in realtime, chat, then local_stack order.
 type Config struct {
-	Server         ServerConfig          `toml:"server"`
-	TrustedIssuers []TrustedIssuerConfig `toml:"trusted_issuers"`
-	Realtime       []RealtimeConfig      `toml:"realtime"`
-	Chat           []ChatConfig          `toml:"chat"`
-	LocalStack     []LocalStackConfig    `toml:"local_stack"`
+	LocalStackRuntime LocalStackRuntimeConfig `toml:"local_stack_runtime"`
+	Server            ServerConfig            `toml:"server"`
+	TrustedIssuers    []TrustedIssuerConfig   `toml:"trusted_issuers"`
+	Realtime          []RealtimeConfig        `toml:"realtime"`
+	Chat              []ChatConfig            `toml:"chat"`
+	LocalStack        []LocalStackConfig      `toml:"local_stack"`
 }
 
 // Choice is a typed pipeline configuration: *RealtimeConfig, *ChatConfig, or
@@ -297,6 +298,9 @@ func DefaultConfigPath() string {
 
 func (c *Config) validate(requireHTTP bool) error {
 	var errs []error
+	if c.LocalStackRuntime.IdleTimeoutSeconds < 0 || c.LocalStackRuntime.IdleTimeoutSeconds > 31536000 || c.LocalStackRuntime.MaxInstances < 0 {
+		errs = append(errs, errors.New("local_stack_runtime requires idle_timeout_seconds in 0..31536000 and max_instances >= 0"))
+	}
 	if requireHTTP && c.Server.HTTP == "" {
 		errs = append(errs, errors.New("server.http is required"))
 	}
@@ -334,6 +338,27 @@ func (c *Config) validate(requireHTTP bool) error {
 type ServerConfig struct {
 	HTTP          string `toml:"http"`
 	WebRTCUDPPort int    `toml:"webrtc_udp_port"`
+}
+
+// LocalStackRuntimeConfig bounds loaded local-stack, chat, and native llama.cpp
+// audio choices, including all their providers and managed workers. Active sessions pin their choice;
+// capacity waits never evict active sessions. Remote servers remain host-owned.
+type LocalStackRuntimeConfig struct {
+	// IdleTimeoutSeconds defaults to 3600. Time starts when the last session closes.
+	IdleTimeoutSeconds int `toml:"idle_timeout_seconds"`
+	// MaxInstances defaults to 1. One instance is a complete choice, including ASR/LLM/TTS.
+	MaxInstances int `toml:"max_instances"`
+}
+
+// WithDefaults resolves omitted runtime limits.
+func (c LocalStackRuntimeConfig) WithDefaults() LocalStackRuntimeConfig {
+	if c.IdleTimeoutSeconds == 0 {
+		c.IdleTimeoutSeconds = 3600
+	}
+	if c.MaxInstances == 0 {
+		c.MaxInstances = 1
+	}
+	return c
 }
 
 // LocalStackConfig configures local model adapters.

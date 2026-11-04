@@ -196,7 +196,7 @@ func TestBackendForConfigGeminiModel(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			backend, err := backendForConfig(t.Context(), &voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "gemini", Model: tc.model}})
+			backend, err := backendForConfig(&voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "gemini", Model: tc.model}}, newLocalStackPool(voicegateway.LocalStackRuntimeConfig{}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -219,7 +219,7 @@ func TestBackendForConfigOpenAI(t *testing.T) {
 	t.Run("missing key", func(t *testing.T) {
 		t.Setenv("OPENAI_API_KEY", "")
 
-		if _, err := backendForConfig(t.Context(), &voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openai", Model: "gpt-realtime-2.1-mini"}}); err == nil {
+		if _, err := backendForConfig(&voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openai", Model: "gpt-realtime-2.1-mini"}}, newLocalStackPool(voicegateway.LocalStackRuntimeConfig{})); err == nil {
 			t.Fatal("accepted a missing OPENAI_API_KEY")
 		}
 	})
@@ -234,7 +234,7 @@ func TestBackendForConfigOpenAI(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("OPENAI_API_KEY", "test-key")
 
-			backend, err := backendForConfig(t.Context(), &voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openai", Model: tc.model}})
+			backend, err := backendForConfig(&voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openai", Model: tc.model}}, newLocalStackPool(voicegateway.LocalStackRuntimeConfig{}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1296,8 +1296,8 @@ func TestBridge(t *testing.T) {
 			voices  bool
 		}{
 			{name: "Gemini audio", backend: &realtimeBridgeBackend{provider: "gemini", apiKey: "test", model: "gemini-3.8-live"}, voices: true},
-			{name: "local audio", backend: newLocalStackBackend(nil, fixedASR{text: "test"}, &smokeLLM{text: "test"}, placeholderTTS{})},
-			{name: "local text", backend: newLocalStackBackend(nil, nil, &smokeLLM{text: "test"}, nil)},
+			{name: "local audio", backend: newTestLocalStackBackend(t, nil, fixedASR{text: "test"}, &smokeLLM{text: "test"}, placeholderTTS{})},
+			{name: "local text", backend: newTestLocalStackBackend(t, nil, nil, &smokeLLM{text: "test"}, nil)},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
@@ -1728,8 +1728,8 @@ func TestBridge(t *testing.T) {
 			t.Parallel()
 			rec := &lifecycleRecorder{}
 			conv := &blockingTurnConversation{rec: rec, entered: make(chan struct{})}
-			backend := newLocalStackBackend(nil, nil, fixedConversationLLM{conv: conv}, nil)
-			backend.runtime = recordingBackendRuntime{rec: rec}
+			backend := newTestLocalStackBackend(t, nil, nil, fixedConversationLLM{conv: conv}, nil)
+			backend.lazy.loaded.(*localStackRuntime).runtime = recordingBackendRuntime{rec: rec}
 			textCtx, textCancel := context.WithCancel(t.Context())
 			t.Cleanup(textCancel)
 			bridge := &Bridge{
@@ -1980,7 +1980,7 @@ func TestBackendForConfigChat(t *testing.T) {
 	if err := cfg.ValidateEmbedded(); err != nil {
 		t.Fatal(err)
 	}
-	backend, err := backendForConfig(t.Context(), &cfg.Chat[0])
+	backend, err := backendForConfig(&cfg.Chat[0], newLocalStackPool(cfg.LocalStackRuntime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1993,7 +1993,12 @@ func TestBackendForConfigChat(t *testing.T) {
 		t.Fatalf("transports = %v", got)
 	}
 	local := backend.(*localStackBackend)
-	step, err := local.llm.newConversation("Be brief.", nil).user(t.Context(), "Hi")
+	loaded, err := local.lazy.acquire(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(local.lazy.release)
+	step, err := loaded.(*localStackRuntime).llm.newConversation("Be brief.", nil).user(t.Context(), "Hi")
 	if err != nil {
 		t.Fatal(err)
 	}

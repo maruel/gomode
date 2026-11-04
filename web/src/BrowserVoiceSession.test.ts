@@ -103,6 +103,30 @@ it("explains a text gateway connection failure and releases the session", async 
   expect(socket.readyState).toBe(3);
 });
 
+it("shows model startup progress and times out when progress stops", async () => {
+  vi.useFakeTimers();
+  await session.connect();
+  const socket = FakeWebSocket.instances[0];
+  ok(socket);
+  socket.open();
+  for (let i = 0; i < 5; i++) {
+    vi.advanceTimersByTime(10000);
+    socket.message({ kind: "session.status", message: "Loading local stack…" });
+    expect(session.state.connectStatus).toBe("Loading local stack…");
+    expect(session.state.error).toBeNull();
+    expect(session.state.connected).toBe(false);
+  }
+  vi.advanceTimersByTime(15000);
+  expect(session.state.error).toContain("timed out");
+});
+
+it("clears startup progress only when ready and ignores late progress", async () => {
+  const socket = await readySocket();
+  socket.message({ kind: "session.status", message: "Loading local stack…" });
+  expect(session.state.connectStatus).toBeNull();
+  expect(session.state.connected).toBe(true);
+});
+
 async function readySocket(): Promise<FakeWebSocket> {
   await session.connect();
   const socket = FakeWebSocket.instances.at(-1);

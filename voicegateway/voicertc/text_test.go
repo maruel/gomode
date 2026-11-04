@@ -175,7 +175,7 @@ func (c *blockingFirstConversation) addContext(string) {}
 func newTestTextBridge(t *testing.T, llm llmAdapter) *Bridge {
 	textCtx, textCancel := context.WithCancel(t.Context())
 	t.Cleanup(textCancel)
-	backend := newLocalStackBackend(nil, nil, llm, nil)
+	backend := newTestLocalStackBackend(t, nil, nil, llm, nil)
 	return &Bridge{
 		backends:       map[string]backendConnector{"default": backend},
 		choices:        defaultBackendChoices(backend),
@@ -302,6 +302,13 @@ func readMessage(t *testing.T, ctx context.Context, conn *websocket.Conn) (kind 
 
 func expectKind(t *testing.T, ctx context.Context, conn *websocket.Conn, want voicev1.MessageKind) []byte {
 	kind, data := readMessage(t, ctx, conn)
+	for kind == voicev1.MessageKindSessionStatus && want == voicev1.MessageKindSessionReady {
+		var status voicev1.SessionStatus
+		if err := json.Unmarshal(data, &status); err != nil || status.Message == "" {
+			t.Fatalf("invalid startup status: %s (%v)", data, err)
+		}
+		kind, data = readMessage(t, ctx, conn)
+	}
 	if kind != want {
 		t.Fatalf("message kind = %q, want %q (%s)", kind, want, data)
 	}

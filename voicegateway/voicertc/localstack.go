@@ -108,10 +108,26 @@ type ttsAdapter interface {
 	synthesize(ctx context.Context, text string) iter.Seq2[[]byte, error]
 }
 
-// localStackBackend is a backendConnector that runs a half-duplex
-// VAD→ASR→LLM→TTS pipeline. The adapters are pluggable; the default ones are
-// deterministic placeholders until real local models are wired in.
+// localStackBackend acquires a session-pinned lazy runtime for every connection.
 type localStackBackend struct {
+	lazy *lazyLocalStack
+}
+
+func (b *localStackBackend) Close() error {
+	return b.lazy.close()
+}
+
+func (b *localStackBackend) connect(ctx context.Context, sessionID string, sink backendSink) (backendSession, error) {
+	return b.lazy.connect(ctx, sessionID, sink, false)
+}
+
+// newTextSession creates a client-speech session that shares this backend's LLM.
+func (b *localStackBackend) newTextSession(ctx context.Context, sessionID string, sink backendSink) (backendSession, error) {
+	return b.lazy.connect(ctx, sessionID, sink, true)
+}
+
+// localStackRuntime owns the loaded VAD→ASR→LLM→TTS adapters and their clients.
+type localStackRuntime struct {
 	newVAD  func() vadSegmenter
 	asr     asrAdapter
 	llm     llmAdapter
@@ -119,30 +135,18 @@ type localStackBackend struct {
 	runtime io.Closer
 }
 
-func newLocalStackBackend(newVAD func() vadSegmenter, asr asrAdapter, llm llmAdapter, tts ttsAdapter) *localStackBackend {
-	return &localStackBackend{newVAD: newVAD, asr: asr, llm: llm, tts: tts}
-}
-
-func (b *localStackBackend) Close() error {
+func (b *localStackRuntime) Close() error {
 	if b.runtime == nil {
 		return nil
 	}
 	return b.runtime.Close()
 }
 
-func (b *localStackBackend) connect(ctx context.Context, sessionID string, sink backendSink) (backendSession, error) {
-	if b.asr == nil || b.tts == nil {
-		return nil, errors.New("text-only choice does not support WebRTC audio")
-	}
+func (b *localStackRuntime) connect(ctx context.Context, sessionID string, sink backendSink) (backendSession, error) {
 	return b.newSession(ctx, sessionID, sink, false), nil
 }
 
-// newTextSession creates a client-speech session that shares this backend's LLM.
-func (b *localStackBackend) newTextSession(ctx context.Context, sessionID string, sink backendSink) backendSession {
-	return b.newSession(ctx, sessionID, sink, true)
-}
-
-func (b *localStackBackend) newSession(ctx context.Context, sessionID string, sink backendSink, clientSpeech bool) *localStackSession {
+func (b *localStackRuntime) newSession(ctx context.Context, sessionID string, sink backendSink, clientSpeech bool) *localStackSession {
 	sessionCtx, cancel := context.WithCancel(ctx)
 	turns, sessionCtx := errgroup.WithContext(sessionCtx)
 	s := &localStackSession{

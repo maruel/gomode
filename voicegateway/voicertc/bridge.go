@@ -118,6 +118,7 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, activit
 		return nil, err
 	}
 	count := len(cfg.Realtime) + len(cfg.Chat) + len(cfg.LocalStack)
+	pool := newLocalStackPool(cfg.LocalStackRuntime)
 	backends := make(map[string]backendConnector, count)
 	advertised := voicev1.VoiceChoicesResp{Choices: make([]voicev1.VoiceChoice, 0, count)}
 	var defaultID string
@@ -133,7 +134,7 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, activit
 		if err != nil {
 			return nil, errors.Join(err, cleanup())
 		}
-		backend, err := backendForConfig(ctx, ch)
+		backend, err := backendForConfig(ch, pool)
 		if err != nil {
 			return nil, errors.Join(fmt.Errorf("initialize choice %q: %w", id, err), cleanup())
 		}
@@ -221,7 +222,7 @@ func backendChoice(backend backendConnector, id, label string) voicev1.VoiceChoi
 
 func backendTransports(backend backendConnector) []voicev1.VoiceTransport {
 	if local, ok := backend.(*localStackBackend); ok {
-		if local.asr == nil || local.tts == nil {
+		if local.lazy.cfg.(*voicegateway.LocalStackConfig).TextOnly {
 			return []voicev1.VoiceTransport{voicev1.VoiceTransportText}
 		}
 		return []voicev1.VoiceTransport{voicev1.VoiceTransportText, voicev1.VoiceTransportWebRTC}
@@ -773,19 +774,19 @@ type udpCandidate struct {
 }
 
 // backendForConfig constructs one typed pipeline backend.
-func backendForConfig(ctx context.Context, cfg voicegateway.Choice) (backendConnector, error) {
+func backendForConfig(cfg voicegateway.Choice, pool *localStackPool) (backendConnector, error) {
 	switch c := cfg.(type) {
 	case *voicegateway.LocalStackConfig:
-		return localStackBackendForConfig(ctx, c)
+		return pool.backend(*c), nil
 	case *voicegateway.ChatConfig:
-		return localStackBackendForConfig(ctx, &voicegateway.LocalStackConfig{
+		return pool.backend(voicegateway.LocalStackConfig{
 			TextOnly: true,
 			LLM:      c.ModelConfig,
-		})
+		}), nil
 	case *voicegateway.RealtimeConfig:
 		resolved := c.WithDefaults()
 		if resolved.Provider == "llamacpp" {
-			return newLlamaRealtimeBackend(ctx, resolved)
+			return pool.realtimeBackend(resolved), nil
 		}
 		entry, ok := providers.All[resolved.Provider]
 		if !ok || entry.Factory == nil {

@@ -23,6 +23,7 @@ import {
   type ReasoningDelta,
   type TurnState,
   type TurnStatus,
+  type SessionStatus,
   type VoiceRTCClientDiagnostics,
   type VoiceRTCDiagnosticsResp,
   MessageKindContextUpdate,
@@ -32,6 +33,7 @@ import {
   MessageKindError,
   MessageKindInterrupted,
   MessageKindSessionReady,
+  MessageKindSessionStatus,
   MessageKindSessionSetup,
   MessageKindSpeechEnded,
   MessageKindSpeechStarted,
@@ -2036,6 +2038,19 @@ export class VoiceSession {
     try {
       env = JSON.parse(text) as MessageEnvelope;
     } catch {
+      return;
+    }
+
+    if (env.kind === MessageKindSessionStatus && !this.state.connected) {
+      const msg = JSON.parse(text) as SessionStatus;
+      if (typeof msg.message !== "string") return;
+      this._update((s) => {
+        s.connectStatus = msg.message;
+      });
+      if (this._setupTimer !== null) clearTimeout(this._setupTimer);
+      this._setupTimer = setTimeout(() => {
+        if (this._ownsChannel(attempt, channel) && !this.state.connected) this._setError("Voice connection timed out.");
+      }, SETUP_TIMEOUT_MS);
       return;
     }
 

@@ -69,6 +69,7 @@ MessageKind identifies a voice gateway WebRTC data-channel message.
 | `turn.cancel` | MessageKindTurnCancel asks the gateway to cancel the current turn. |
 | `session.close` | MessageKindSessionClose asks the gateway to close the session. |
 | `session.ready` | MessageKindSessionReady reports that the gateway session is ready. |
+| `session.status` | MessageKindSessionStatus reports startup progress before session.ready. |
 | `transcript.delta` | MessageKindTranscriptDelta streams transcript text. |
 | `assistant.text.delta` | MessageKindAssistantTextDelta streams assistant text. |
 | `reasoning.delta` | MessageKindReasoningDelta streams provider reasoning text. |
@@ -470,6 +471,17 @@ SessionReady is a gateway message that reports the session is ready.
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
 | `kind` | `MessageKind` | Kind is "session.ready". | yes |
+
+### SessionStatus
+
+SessionStatus reports startup progress. Gateways repeat it at least every five
+seconds while loading or waiting for capacity. Clients may refresh their
+setup timeout on receipt; only session.ready enables microphone input.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `kind` | `MessageKind` | Kind is "session.status". | yes |
+| `message` | `string` | Message is a short user-visible description of startup work. | yes |
 
 ### TranscriptDelta
 

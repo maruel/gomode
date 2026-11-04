@@ -1,8 +1,11 @@
-// Records monotonic, identity-free stage timings for one native voice startup attempt.
+// Tracks monotonic stages and progress-aware readiness budgets for native voice startup.
 package com.fghbuild.gomode.voice
 
 import android.os.SystemClock
 import android.util.Log
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
 import java.net.SocketTimeoutException
 import java.util.concurrent.atomic.AtomicLong
 
@@ -40,13 +43,34 @@ internal class VoiceStartupTiming(
         record("started", startedAt)
     }
 
-    // Start this budget where the owner's existing overall timeout starts. The
-    // stopwatch also includes foreground setup that precedes that timeout.
+    // Start or renew the current preparation or transport budget. The stopwatch
+    // also includes foreground setup that precedes the first budget.
     fun startDeadline(timeoutMillis: Long) {
         if (finished) return
         val now = SystemClock.elapsedRealtime()
         deadline = now + timeoutMillis
         record("deadline", now)
+    }
+
+    // Keep pre-transport preparation bounded separately. During transport
+    // startup only gateway heartbeats renew this owner's readiness budget.
+    suspend fun awaitConnection(
+        state: StateFlow<VoiceState>,
+        timeoutMillis: Long,
+    ): VoiceState {
+        var progress = state.value.startupProgressAtMillis
+        while (true) {
+            startDeadline(timeoutMillis)
+            val next =
+                withTimeout(timeoutMillis) {
+                    state.first {
+                        it.connected || it.error != null || it.connectStatus == null ||
+                            it.startupProgressAtMillis != progress
+                    }
+                }
+            if (next.connected || next.error != null || next.connectStatus == null) return next
+            progress = next.startupProgressAtMillis
+        }
     }
 
     fun enter(next: VoiceStartupStage) {

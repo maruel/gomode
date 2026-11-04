@@ -2,11 +2,15 @@
 package com.fghbuild.gomode.voice
 
 import android.Manifest
+import android.graphics.Bitmap
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -15,6 +19,8 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.datastore.core.DataStore
@@ -50,6 +56,7 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -68,6 +75,69 @@ class ServerVoiceSwitchTest {
 
     @Test
     fun spokenWebRtcSwitchKeepsOneConversationAcrossBothDirections() = exerciseSharedConversation(VoiceMode.CLOUD)
+
+    @Test
+    fun textStartupProgressPrecedesReadiness() = exerciseStartupProgress(VoiceMode.DEVICE)
+
+    @Test
+    fun webRtcStartupProgressPrecedesReadiness() = exerciseStartupProgress(VoiceMode.CLOUD)
+
+    private fun exerciseStartupProgress(mode: VoiceMode) =
+        runTest {
+            MockWebServer().use { server ->
+                val startup = CountDownLatch(1)
+                val fixture = HostedVoiceFixture(bearer = false, startupGate = startup)
+                server.dispatcher = fixture
+                server.start()
+                val repository = SettingsRepository(MemoryPreferences())
+                val id = repository.addService("Local stack", server.url("/").toString())
+                repository.updateVoiceMode(mode)
+                repository.settings.first { it.activeServiceId == id && it.voiceMode == mode }
+                val context = InstrumentationRegistry.getInstrumentation().targetContext
+                val owner = LocalModelOwner(context, localModelInstallation(ModelDownloadState.Missing(0)))
+                val shellOwner = ServiceShellOwner(context, repository)
+                val mounted = mutableStateOf(true)
+                try {
+                    composeRule.setContent {
+                        if (mounted.value) GoModeTheme { GoModeApp(shellOwner, owner) }
+                    }
+                    composeRule.waitUntil(30_000) {
+                        composeRule
+                            .onAllNodes(hasTestTag("gomode-voice-connect") and isEnabled())
+                            .fetchSemanticsNodes()
+                            .isNotEmpty()
+                    }
+                    composeRule.onNodeWithTag("gomode-voice-connect").performClick()
+                    composeRule.waitUntil(30_000) {
+                        composeRule.onAllNodesWithText("Loading local stack…").fetchSemanticsNodes().isNotEmpty()
+                    }
+                    composeRule.mainClock.advanceTimeBy(500)
+                    composeRule.waitForIdle()
+                    composeRule.onNodeWithText("Loading local stack…").assertIsDisplayed()
+                    val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
+                    val file = File(context.getExternalFilesDir(null), "loading.png")
+                    val bitmap = composeRule.onRoot().captureToImage().asAndroidBitmap()
+                    file.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+                    val capture =
+                        device.executeShellCommand(
+                            "cp ${file.absolutePath} /sdcard/Download/local-stack-loading-${mode.name}.png",
+                        )
+                    check(capture.isBlank()) { "Loading screenshot failed: $capture" }
+                    startup.countDown()
+                    waitForConnected()
+                    composeRule.waitUntil(10_000) {
+                        composeRule.onAllNodesWithText("Loading local stack…").fetchSemanticsNodes().isEmpty()
+                    }
+                } finally {
+                    startup.countDown()
+                    composeRule.runOnIdle { mounted.value = false }
+                    composeRule.waitForIdle()
+                    composeRule.runOnIdle { shellOwner.close() }
+                    owner.close()
+                    fixture.close()
+                }
+            }
+        }
 
     private fun exerciseSharedConversation(mode: VoiceMode) =
         runTest {
@@ -688,6 +758,7 @@ class ServerVoiceSwitchTest {
         private val authGate: CountDownLatch? = null,
         private val mcpPath: String = "/mcp",
         private val secondPageGate: CountDownLatch? = null,
+        private val startupGate: CountDownLatch? = null,
     ) : Dispatcher(),
         AutoCloseable {
         @Volatile
@@ -943,6 +1014,10 @@ class ServerVoiceSwitchTest {
                 "session.setup" -> {
                     setupMessages += message
                     sessions += ControlledTransport(send)
+                    if (startupGate != null) {
+                        send("""{"kind":"session.status","message":"Loading local stack…"}""")
+                        check(startupGate.await(30, TimeUnit.SECONDS)) { "Startup progress was not acknowledged" }
+                    }
                     send("""{"kind":"session.ready"}""")
                 }
 

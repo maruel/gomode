@@ -65,8 +65,6 @@ func TestLoadConfig(t *testing.T) {
  threads = 4
  slots = 2
  max_output_tokens = 256
- setup_timeout_seconds = 20
- pending_audio_seconds = 6
  cache_dir = "/tmp/gomode-test-runtime"
  [[chat]]
  label = "DeepSeek"
@@ -93,7 +91,7 @@ func TestLoadConfig(t *testing.T) {
 			Realtime: []RealtimeConfig{
 				{Label: "LFM3", ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "LiquidAI/LFM3-Audio-2B-GGUF"},
 					ContextSize: 65536, Threads: 4, Slots: 2, MaxOutputTokens: 256,
-					SetupTimeoutSeconds: 20, PendingAudioSeconds: 6, CacheDir: "/tmp/gomode-test-runtime"},
+					CacheDir: "/tmp/gomode-test-runtime"},
 				{Label: "Remote audio", ModelConfig: ModelConfig{Provider: "llamacpp", Remote: "http://localhost:8080", Model: "audio-model"}, Slots: 3},
 			},
 			Chat: []ChatConfig{
@@ -342,6 +340,21 @@ model = "KittenML/kitten-tts-2"
 			})
 		}
 	})
+}
+
+func TestLocalStackRuntimeConfig(t *testing.T) {
+	t.Parallel()
+	if got := (LocalStackRuntimeConfig{}).WithDefaults(); got.IdleTimeoutSeconds != 3600 || got.MaxInstances != 1 {
+		t.Fatalf("defaults = %+v", got)
+	}
+	for _, limits := range []LocalStackRuntimeConfig{{IdleTimeoutSeconds: -1}, {IdleTimeoutSeconds: 31536001}, {MaxInstances: -1}} {
+		cfg := DefaultConfig()
+		cfg.Chat = []ChatConfig{{Label: "test", ModelConfig: ModelConfig{Provider: "openaicompatible", Remote: "http://localhost/completions", Model: "test"}}}
+		cfg.LocalStackRuntime = limits
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("accepted invalid runtime limits %+v", limits)
+		}
+	}
 }
 
 func testLocalStackAudioEngines(t *testing.T) {

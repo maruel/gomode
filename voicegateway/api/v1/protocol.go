@@ -22,6 +22,8 @@ const (
 	MessageKindSessionClose MessageKind = "session.close"
 	// MessageKindSessionReady reports that the gateway session is ready.
 	MessageKindSessionReady MessageKind = "session.ready"
+	// MessageKindSessionStatus reports startup progress before session.ready.
+	MessageKindSessionStatus MessageKind = "session.status"
 	// MessageKindTranscriptDelta streams transcript text.
 	MessageKindTranscriptDelta MessageKind = "transcript.delta"
 	// MessageKindAssistantTextDelta streams assistant text.
@@ -116,6 +118,16 @@ type SessionClose struct {
 type SessionReady struct {
 	// Kind is "session.ready".
 	Kind MessageKind `json:"kind"`
+}
+
+// SessionStatus reports startup progress. Gateways repeat it at least every five
+// seconds while loading or waiting for capacity. Clients may refresh their
+// setup timeout on receipt; only session.ready enables microphone input.
+type SessionStatus struct {
+	// Kind is "session.status".
+	Kind MessageKind `json:"kind"`
+	// Message is a short user-visible description of startup work.
+	Message string `json:"message"`
 }
 
 // Context carries provider-neutral text or instruction context.

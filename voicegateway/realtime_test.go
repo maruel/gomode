@@ -16,7 +16,7 @@ func TestRealtimeConfig(t *testing.T) {
 			for _, pair := range [][2]RealtimeConfig{
 				{
 					{ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}},
-					{ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}, Slots: 1, ContextSize: 8192, SetupTimeoutSeconds: 15, PendingAudioSeconds: 5},
+					{ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}, Slots: 1, ContextSize: 8192},
 				},
 			} {
 				first, err := pair[0].ID()
@@ -111,8 +111,6 @@ func TestRealtimeConfig(t *testing.T) {
 				{RealtimeConfig{ModelConfig: ModelConfig{Remote: "http://localhost"}, ContextSize: 8192}, ""},
 				{RealtimeConfig{ModelConfig: ModelConfig{Remote: "http://localhost"}, Slots: -1}, ""},
 				{RealtimeConfig{ModelConfig: ModelConfig{Remote: "http://localhost"}, Slots: 17}, ""},
-				{RealtimeConfig{Slots: 1, PendingAudioSeconds: 31}, testRealtimeModel},
-				{RealtimeConfig{Slots: 1, SetupTimeoutSeconds: -1}, testRealtimeModel},
 				{RealtimeConfig{Slots: 1, CacheDir: "relative"}, testRealtimeModel},
 				{RealtimeConfig{ModelConfig: ModelConfig{Remote: "http://localhost"}, MaxOutputTokens: 2147483648}, ""},
 			} {
@@ -125,7 +123,7 @@ func TestRealtimeConfig(t *testing.T) {
 	})
 	t.Run("WithDefaults", func(t *testing.T) {
 		c := RealtimeConfig{ModelConfig: ModelConfig{Provider: "llamacpp"}}.WithDefaults()
-		if c.Slots != 1 || c.ContextSize != 8192 || c.PendingAudioSeconds != 5 || c.SetupTimeoutSeconds != 15 {
+		if c.Slots != 1 || c.ContextSize != 8192 {
 			t.Fatalf("defaults: %+v", c)
 		}
 	})

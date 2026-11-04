@@ -297,7 +297,9 @@ the same service identity authorization as the offer.
 A `[[realtime]]` entry with `provider = "llamacpp"` runs LiquidAI LFM3-Audio-2B
 through genai's native llama.cpp session. It accepts 16 kHz microphone PCM and
 produces assistant text, 24 kHz speech, and host tool calls without separate
-ASR/TTS services.
+ASR/TTS services. It loads on first use and shares `[local_stack_runtime]`
+capacity and idle eviction with local-stack and chat choices. Gateway logs
+identify its startup and shutdown by provider and model.
 
 Set `model` to a Hugging Face reference such as `LiquidAI/LFM3-Audio-2B-GGUF`
 (repository default quant) or
@@ -313,12 +315,8 @@ b11960 server with matching `--model`, `--mmproj`, `--jinja`, `--parallel`, and
 
 - `slots`: defaults to 1, maximum 16; must not exceed server capacity. Each
   session reserves a slot until close, and excess sessions fail immediately.
-- `setup_timeout_seconds`: defaults to 15, range 1–120.
 - `context_size`: managed servers only, defaults to 8192 tokens per slot;
   cannot accompany `remote`.
-- `pending_audio_seconds`: defaults to 5, range 1–30. Bounds queued microphone,
-  text, and control data while waiting for tool results or cancellation.
-  Overflow reports an error and stops the session.
 - `max_output_tokens`: limits individual responses. Context exhaustion requires
   reconnecting; the runtime does not truncate history automatically.
 

@@ -57,7 +57,8 @@ func TestSmokeLlamaRealtimeGateway(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(oldLog) })
 	t.Logf("runtime log: %s", logFile.Name())
 	start := time.Now()
-	b, err := newLlamaRealtimeBackend(ctx, voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: llamaRealtimeSmokeModel}, CacheDir: cache, Threads: 8, MaxOutputTokens: 256})
+	pool := newLocalStackPool(voicegateway.LocalStackRuntimeConfig{})
+	b, err := backendForConfig(&voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: llamaRealtimeSmokeModel}, CacheDir: cache, Threads: 8, MaxOutputTokens: 256}, pool)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +148,7 @@ func TestSmokeLlamaRealtimeGateway(t *testing.T) {
 		select {
 		case <-sink.events:
 		case <-ctx.Done():
-			local := s.(*llamaRealtimeSession)
+			local := s.(*leasedLocalStackSession).backendSession.(*llamaRealtimeSession)
 			local.mu.Lock()
 			t.Logf("state: generating=%v cancelling=%v speech=%v pending=%d tools=%d results=%d", local.generating, local.cancelling, local.gate.active, len(local.pending), len(local.tools), len(local.results))
 			local.mu.Unlock()

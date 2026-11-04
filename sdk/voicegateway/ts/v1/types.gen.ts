@@ -37,6 +37,7 @@ export type MessageKind =
   | "turn.cancel"
   | "session.close"
   | "session.ready"
+  | "session.status"
   | "transcript.delta"
   | "assistant.text.delta"
   | "reasoning.delta"
@@ -56,6 +57,7 @@ export const MessageKindToolResult = "tool.result";
 export const MessageKindTurnCancel = "turn.cancel";
 export const MessageKindSessionClose = "session.close";
 export const MessageKindSessionReady = "session.ready";
+export const MessageKindSessionStatus = "session.status";
 export const MessageKindTranscriptDelta = "transcript.delta";
 export const MessageKindAssistantTextDelta = "assistant.text.delta";
 export const MessageKindReasoningDelta = "reasoning.delta";
@@ -481,6 +483,18 @@ export interface SessionClose {
 export interface SessionReady {
   /** Kind is "session.ready". */
   kind: MessageKind;
+}
+
+/**
+ * SessionStatus reports startup progress. Gateways repeat it at least every five
+ * seconds while loading or waiting for capacity. Clients may refresh their
+ * setup timeout on receipt; only session.ready enables microphone input.
+ */
+export interface SessionStatus {
+  /** Kind is "session.status". */
+  kind: MessageKind;
+  /** Message is a short user-visible description of startup work. */
+  message: string;
 }
 
 /** TranscriptDelta is a gateway message that streams transcript text. */

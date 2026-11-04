@@ -2,6 +2,7 @@
 package com.fghbuild.gomode.voice
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import com.caic.voicegateway.sdk.v1.AssistantTextDelta
 import com.caic.voicegateway.sdk.v1.ContextUpdate
@@ -9,6 +10,7 @@ import com.caic.voicegateway.sdk.v1.Error
 import com.caic.voicegateway.sdk.v1.MessageEnvelope
 import com.caic.voicegateway.sdk.v1.MessageKind
 import com.caic.voicegateway.sdk.v1.SessionSetup
+import com.caic.voicegateway.sdk.v1.SessionStatus
 import com.caic.voicegateway.sdk.v1.ToolCall
 import com.caic.voicegateway.sdk.v1.ToolResult
 import com.caic.voicegateway.sdk.v1.TurnCancel
@@ -507,6 +509,18 @@ internal class DeviceVoiceSession(
         try {
             val env = json.decodeFromString(MessageEnvelope.serializer(), text)
             when (env.kind) {
+                MessageKind.SessionStatus -> {
+                    if (!_state.value.connected) {
+                        val status = json.decodeFromString(SessionStatus.serializer(), text)
+                        _state.update {
+                            it.copy(
+                                connectStatus = status.message,
+                                startupProgressAtMillis = SystemClock.elapsedRealtime(),
+                            )
+                        }
+                    }
+                }
+
                 MessageKind.SessionReady -> {
                     Log.i(TAG, "session.ready received")
                     _state.update {

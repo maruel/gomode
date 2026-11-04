@@ -29,6 +29,21 @@ import (
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
+// newTestLocalStackBackend seeds a lazy choice with controlled loaded adapters.
+func newTestLocalStackBackend(t *testing.T, newVAD func() vadSegmenter, asr asrAdapter, llm llmAdapter, tts ttsAdapter) *localStackBackend {
+	p := newLocalStackPool(voicegateway.LocalStackRuntimeConfig{})
+	b := p.backend(voicegateway.LocalStackConfig{TextOnly: asr == nil || tts == nil})
+	_, cancel := context.WithCancel(t.Context())
+	b.lazy.loaded = &localStackRuntime{newVAD: newVAD, asr: asr, llm: llm, tts: tts}
+	b.lazy.cancel = cancel
+	t.Cleanup(func() {
+		if err := b.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return b
+}
+
 func TestEnergyVAD(t *testing.T) {
 	t.Parallel()
 
@@ -109,7 +124,7 @@ func TestLocalStackSession(t *testing.T) {
 
 	t.Run("tool round trip", func(t *testing.T) {
 		t.Parallel()
-		backend := newLocalStackBackend(
+		backend := newTestLocalStackBackend(t,
 			func() vadSegmenter { return &energyVAD{} },
 			placeholderASR{}, placeholderLLM{}, placeholderTTS{},
 		)
@@ -172,7 +187,7 @@ func TestLocalStackSession(t *testing.T) {
 
 	t.Run("turn status", func(t *testing.T) {
 		t.Parallel()
-		backend := newLocalStackBackend(
+		backend := newTestLocalStackBackend(t,
 			func() vadSegmenter { return &energyVAD{} },
 			placeholderASR{}, placeholderLLM{}, placeholderTTS{},
 		)
@@ -215,7 +230,7 @@ func TestLocalStackSession(t *testing.T) {
 	t.Run("superseded turn keeps newer status", func(t *testing.T) {
 		t.Parallel()
 		llm := &blockingLLM{finished: make(chan struct{}, 2)}
-		backend := newLocalStackBackend(
+		backend := newTestLocalStackBackend(t,
 			func() vadSegmenter { return &energyVAD{} },
 			placeholderASR{}, llm, placeholderTTS{},
 		)
@@ -253,7 +268,7 @@ func TestLocalStackSession(t *testing.T) {
 	t.Run("setup includes initial context", func(t *testing.T) {
 		t.Parallel()
 		conv := &fakeConversation{}
-		backend := newLocalStackBackend(
+		backend := newTestLocalStackBackend(t,
 			func() vadSegmenter { return &energyVAD{} },
 			placeholderASR{}, fixedConversationLLM{conv: conv}, placeholderTTS{},
 		)
@@ -281,7 +296,7 @@ func TestLocalStackSession(t *testing.T) {
 
 	t.Run("user message", func(t *testing.T) {
 		t.Parallel()
-		backend := newLocalStackBackend(
+		backend := newTestLocalStackBackend(t,
 			func() vadSegmenter { return &energyVAD{} },
 			placeholderASR{}, placeholderLLM{}, placeholderTTS{},
 		)
@@ -326,7 +341,7 @@ func TestLocalStackSession(t *testing.T) {
 			},
 		}
 		tts := &recordingTTS{}
-		backend := newLocalStackBackend(
+		backend := newTestLocalStackBackend(t,
 			func() vadSegmenter { return &energyVAD{} },
 			placeholderASR{}, fixedConversationLLM{conv: conv}, tts,
 		)
@@ -381,7 +396,7 @@ func TestLocalStackSession(t *testing.T) {
 			},
 		}
 		tts := &recordingTTS{}
-		backend := newLocalStackBackend(
+		backend := newTestLocalStackBackend(t,
 			func() vadSegmenter { return &energyVAD{} },
 			placeholderASR{}, fixedConversationLLM{conv: conv}, tts,
 		)
@@ -504,7 +519,7 @@ func TestLocalStackSession(t *testing.T) {
 
 	t.Run("barge in", func(t *testing.T) {
 		t.Parallel()
-		backend := newLocalStackBackend(
+		backend := newTestLocalStackBackend(t,
 			func() vadSegmenter { return &energyVAD{} },
 			fixedASR{text: "interrupt test"}, echoLLM{}, longTTS{ms: 800},
 		)
@@ -542,11 +557,8 @@ func TestLocalStackSession(t *testing.T) {
 
 	t.Run("language", func(t *testing.T) {
 		t.Parallel()
-		backend := newLocalStackBackend(
-			func() vadSegmenter { return &energyVAD{} },
-			placeholderASR{}, &genaiLLMAdapter{provider: &fakeGenAIProvider{}}, placeholderTTS{},
-		)
-		sess := backend.newSession(t.Context(), "language", &captureSink{}, true)
+		runtime := &localStackRuntime{llm: &genaiLLMAdapter{provider: &fakeGenAIProvider{}}}
+		sess := runtime.newSession(t.Context(), "language", &captureSink{}, true)
 		t.Cleanup(func() { _ = sess.close() })
 		setup := mustJSON(t, voicev1.SessionSetup{
 			Kind:    voicev1.MessageKindSessionSetup,
@@ -574,8 +586,8 @@ func TestLocalStackSession(t *testing.T) {
 
 	t.Run("closed session rejects turns", func(t *testing.T) {
 		t.Parallel()
-		backend := newLocalStackBackend(nil, nil, fixedConversationLLM{conv: &fakeConversation{}}, nil)
-		sess := backend.newSession(t.Context(), "closed", &captureSink{}, true)
+		runtime := &localStackRuntime{llm: fixedConversationLLM{conv: &fakeConversation{}}}
+		sess := runtime.newSession(t.Context(), "closed", &captureSink{}, true)
 		setup, err := json.Marshal(voicev1.SessionSetup{
 			Kind:    voicev1.MessageKindSessionSetup,
 			Context: voicev1.Context{SystemInstruction: "be terse"},
@@ -604,9 +616,9 @@ func TestLocalStackReasoning(t *testing.T) {
 
 	t.Run("client speech", func(t *testing.T) {
 		t.Parallel()
-		backend := newLocalStackBackend(nil, nil, fixedConversationLLM{conv: reasoningConversation{}}, nil)
+		runtime := &localStackRuntime{llm: fixedConversationLLM{conv: reasoningConversation{}}}
 		sink := &captureSink{}
-		sess := backend.newSession(t.Context(), "reasoning text", sink, true)
+		sess := runtime.newSession(t.Context(), "reasoning text", sink, true)
 		t.Cleanup(func() { _ = sess.close() })
 		if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
 			t.Fatal(err)
@@ -628,7 +640,7 @@ func TestLocalStackReasoning(t *testing.T) {
 
 	t.Run("spoken turn", func(t *testing.T) {
 		t.Parallel()
-		backend := newLocalStackBackend(
+		backend := newTestLocalStackBackend(t,
 			func() vadSegmenter { return &energyVAD{} },
 			placeholderASR{}, fixedConversationLLM{conv: reasoningConversation{}}, placeholderTTS{},
 		)
@@ -1184,7 +1196,7 @@ func TestVoiceRTCLocalStackPlaceholders(t *testing.T) {
 		t.Parallel()
 		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 		t.Cleanup(cancel)
-		s := newVoiceRTCTestSession(ctx, t, newLocalStackBackend(
+		s := newVoiceRTCTestSession(ctx, t, newTestLocalStackBackend(t,
 			func() vadSegmenter { return &energyVAD{} },
 			fixedASR{text: "smoke transcript"}, &smokeLLM{text: "ack"}, placeholderTTS{},
 		))
@@ -1203,7 +1215,7 @@ func TestVoiceRTCLocalStackPlaceholders(t *testing.T) {
 		t.Parallel()
 		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 		t.Cleanup(cancel)
-		s := newVoiceRTCTestSession(ctx, t, newLocalStackBackend(
+		s := newVoiceRTCTestSession(ctx, t, newTestLocalStackBackend(t,
 			func() vadSegmenter { return &energyVAD{} },
 			fixedASR{text: "hello"}, &smokeLLM{text: "smoke llm response"}, placeholderTTS{},
 		))
@@ -1222,7 +1234,7 @@ func TestVoiceRTCLocalStackPlaceholders(t *testing.T) {
 		t.Parallel()
 		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 		t.Cleanup(cancel)
-		s := newVoiceRTCTestSession(ctx, t, newLocalStackBackend(
+		s := newVoiceRTCTestSession(ctx, t, newTestLocalStackBackend(t,
 			func() vadSegmenter { return &energyVAD{} },
 			fixedASR{text: "hello"}, &smokeLLM{text: "smoke tts response"}, placeholderTTS{},
 		))
@@ -1245,7 +1257,7 @@ func TestVoiceRTCLocalStackPlaceholders(t *testing.T) {
 		t.Parallel()
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		t.Cleanup(cancel)
-		s := newVoiceRTCTestSession(ctx, t, newLocalStackBackend(
+		s := newVoiceRTCTestSession(ctx, t, newTestLocalStackBackend(t,
 			func() vadSegmenter { return &energyVAD{} },
 			fixedASR{text: "DTX turn"}, &smokeLLM{text: "ack"}, placeholderTTS{},
 		))

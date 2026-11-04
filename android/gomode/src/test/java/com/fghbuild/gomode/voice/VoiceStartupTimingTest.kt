@@ -1,6 +1,13 @@
 // Verifies elapsed stage attribution, overall budgets, and sealed startup outcomes with controlled monotonic time.
 package com.fghbuild.gomode.voice
 
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -13,6 +20,42 @@ import java.time.Duration
 
 @RunWith(RobolectricTestRunner::class)
 class VoiceStartupTimingTest {
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun startupHeartbeatsExtendTheCarReadinessBudgetUntilReady() =
+        runTest {
+            val timing = VoiceStartupTiming(VoiceStartupSource.CAR)
+            val state = MutableStateFlow(VoiceState(connectStatus = "Loading local stack…"))
+            val ready = async { timing.awaitConnection(state, 60_000) }
+            runCurrent()
+            repeat(3) {
+                advanceTimeBy(50_000)
+                state.value = state.value.copy(startupProgressAtMillis = testScheduler.currentTime)
+                runCurrent()
+                assertFalse(ready.isCompleted)
+            }
+            state.value = state.value.copy(connected = true, connectStatus = null)
+            assertTrue(ready.await().connected)
+        }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun startupWithoutHeartbeatsTimesOutDespiteOtherStateUpdates() =
+        runTest {
+            val timing = VoiceStartupTiming(VoiceStartupSource.CAR)
+            val state = MutableStateFlow(VoiceState(connectStatus = "Loading local stack…"))
+            val result = async { runCatching { timing.awaitConnection(state, 60_000) }.exceptionOrNull() }
+            runCurrent()
+            repeat(2) { i ->
+                advanceTimeBy(20_000)
+                state.value = state.value.copy(micLevel = (i + 1) * 0.1f)
+                runCurrent()
+                assertFalse(result.isCompleted)
+            }
+            advanceTimeBy(20_001)
+            assertTrue(result.await() is TimeoutCancellationException)
+        }
+
     @Test
     fun stageDurationsAndRemainingOverallBudgetUseMonotonicTime() {
         val timing = VoiceStartupTiming(VoiceStartupSource.CAR)

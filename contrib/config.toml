@@ -16,6 +16,14 @@ http = "127.0.0.1:3479"
 # The WebRTC UDP port must be reachable by clients (directly or through NAT).
 webrtc_udp_port = 3480
 
+# Local-stack, chat, and native llama.cpp audio load on first use. A choice counts as
+# one instance, including its ASR/LLM/TTS workers. Active sessions pin instances;
+# another choice waits when all instances are busy. Idle choices are evicted
+# first when capacity is needed. External servers remain operator-owned.
+[local_stack_runtime]
+idle_timeout_seconds = 3600
+max_instances = 1
+
 # [[trusted_issuers]]
 # service = "replace-with-host-service"
 # issuer = "https://host.example"
@@ -51,8 +59,6 @@ provider = "llamacpp"
 llamacppsrv = true
 model = "LiquidAI/LFM3-Audio-2B-GGUF/LFM3-Audio-2B-Q4_K_M.gguf"
 context_size = 65536
-setup_timeout_seconds = 15
-pending_audio_seconds = 5
 # remote = "http://127.0.0.1:8080" directly on the choice.
 
 # Remote LLMs

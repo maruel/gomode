@@ -119,6 +119,10 @@ sealed interface MessageKind {
         override val value = "session.ready"
     }
     @Serializable
+    data object SessionStatus : MessageKind {
+        override val value = "session.status"
+    }
+    @Serializable
     data object TranscriptDelta : MessageKind {
         override val value = "transcript.delta"
     }
@@ -171,6 +175,7 @@ object MessageKindSerializer : KSerializer<MessageKind> {
             "turn.cancel" -> MessageKind.TurnCancel
             "session.close" -> MessageKind.SessionClose
             "session.ready" -> MessageKind.SessionReady
+            "session.status" -> MessageKind.SessionStatus
             "transcript.delta" -> MessageKind.TranscriptDelta
             "assistant.text.delta" -> MessageKind.AssistantTextDelta
             "reasoning.delta" -> MessageKind.ReasoningDelta
@@ -893,6 +898,19 @@ data class SessionClose(
 data class SessionReady(
     /** Kind is "session.ready". */
     val kind: MessageKind,
+)
+
+/**
+ * SessionStatus reports startup progress. Gateways repeat it at least every five
+ * seconds while loading or waiting for capacity. Clients may refresh their
+ * setup timeout on receipt; only session.ready enables microphone input.
+ */
+@Serializable
+data class SessionStatus(
+    /** Kind is "session.status". */
+    val kind: MessageKind,
+    /** Message is a short user-visible description of startup work. */
+    val message: String,
 )
 
 /** TranscriptDelta is a gateway message that streams transcript text. */

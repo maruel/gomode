@@ -5,6 +5,7 @@ package voicertc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -13,12 +14,32 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/maruel/genai"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
+
+func TestManagedLlamaReleaseCache(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		r := newManagedLlamaReleaseCache()
+		// Another choice owns the shared release download.
+		r.gate <- struct{}{}
+		ctx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+		done := make(chan error, 1)
+		go func() { _, err := r.executable(ctx, t.TempDir(), "unused"); done <- err }()
+		synctest.Wait()
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("queued initialization = %v", err)
+		}
+		<-r.gate
+	})
+}
 
 type chronologicalWireMessage struct {
 	Role       string `json:"role"`
@@ -157,13 +178,13 @@ func TestLocalStackChronologicalTransport(t *testing.T) {
 			asr := &scriptedASR{texts: make(chan string, 8)}
 			speech := &interruptibleSpeech{started: make(chan struct{}), stopped: make(chan struct{})}
 			sink := &barrierSink{messages: make(chan []byte, 100)}
-			backend := newLocalStackBackend(func() vadSegmenter { return &energyVAD{} }, asr, a, speech)
+			backend := newTestLocalStackBackend(t, func() vadSegmenter { return &energyVAD{} }, asr, a, speech)
 			var conn *websocket.Conn
 			var sess *localStackSession
 			if path == "text" {
 				conn = dialTextSession(t, newTestTextBridge(t, a))
 			} else {
-				sess = backend.newSession(ctx, "chronology", sink, false)
+				sess = backend.lazy.loaded.(*localStackRuntime).newSession(ctx, "chronology", sink, false)
 				t.Cleanup(func() {
 					if sess != nil {
 						if err := sess.close(); err != nil {
@@ -459,9 +480,9 @@ func TestLocalStackASRShutdown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	t.Cleanup(cancel)
 	asr := &barrierASR{started: make(chan struct{}), stopped: make(chan struct{})}
-	backend := newLocalStackBackend(func() vadSegmenter { return &energyVAD{} }, asr, echoLLM{}, &recordingTTS{})
+	backend := newTestLocalStackBackend(t, func() vadSegmenter { return &energyVAD{} }, asr, echoLLM{}, &recordingTTS{})
 	sink := &barrierSink{messages: make(chan []byte, 20)}
-	sess := backend.newSession(ctx, "asr-shutdown", sink, false)
+	sess := backend.lazy.loaded.(*localStackRuntime).newSession(ctx, "asr-shutdown", sink, false)
 	if err := sess.acceptClientMessage(ctx, mustJSON(t, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})); err != nil {
 		t.Fatal(err)
 	}

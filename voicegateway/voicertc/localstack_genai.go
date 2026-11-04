@@ -31,13 +31,13 @@ import (
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
-// localStackBackendForConfig builds gateway-side ASR, LLM, and TTS adapters.
+// localStackRuntimeForConfig builds gateway-side ASR, LLM, and TTS adapters.
 // Text-only clients own recognition and synthesis, so their configuration
 // initializes only the LLM and does not provision gateway speech models.
 // External speech servers are not pinged: engines share no health or model
 // readiness endpoint. Operators must warm them before latency-sensitive use;
 // the first request may otherwise load or download a model.
-func localStackBackendForConfig(ctx context.Context, cfg *voicegateway.LocalStackConfig) (*localStackBackend, error) {
+func localStackRuntimeForConfig(ctx context.Context, cfg *voicegateway.LocalStackConfig) (*localStackRuntime, error) {
 	models, err := localStackModelsForConfigWithStarter(ctx, cfg, startManagedLlamaServer)
 	if err != nil {
 		return nil, err
@@ -56,7 +56,7 @@ func localStackBackendForConfig(ctx context.Context, cfg *voicegateway.LocalStac
 			// and user caches. Python 3.13 cannot build its transitive dependencies.
 			// Cold setup can pull large ML packages; HF_TOKEN avoids anonymous
 			// Hugging Face download rate limits. Cancellation preserves the worker
-			// for another fragment; gateway shutdown closes it through ttsRuntime.
+			// for another fragment; runtime eviction closes it through ttsRuntime.
 			kitten, err := kittentts.New(ctx, kittentts.Config{Model: cfg.TTS.Model, Voice: cfg.TTS.Voice})
 			if err != nil {
 				return nil, errors.Join(err, models.runtime.Close())
@@ -64,13 +64,13 @@ func localStackBackendForConfig(ctx context.Context, cfg *voicegateway.LocalStac
 			tts, ttsRuntime = &speechTTSAdapter{synthesizer: kitten}, kitten
 		}
 	}
-	b := newLocalStackBackend(
-		func() vadSegmenter { return &energyVAD{} },
-		models.asr,
-		models.llm,
-		tts,
-	)
-	b.runtime = joinClosers(models.runtime, ttsRuntime)
+	b := &localStackRuntime{
+		newVAD:  func() vadSegmenter { return &energyVAD{} },
+		asr:     models.asr,
+		llm:     models.llm,
+		tts:     tts,
+		runtime: joinClosers(models.runtime, ttsRuntime),
+	}
 	return b, nil
 }
 
@@ -191,7 +191,7 @@ func localStackLlamaEndpoint(ctx context.Context, remote, model string, start ma
 
 // localStackGenAIEndpoint wires any provider registered in providers.All (e.g.
 // ollama, openaicompatible pointed at a local server). We don't manage the
-// provider's process, so ping it at startup to fail fast if it's unreachable.
+// provider's process, so ping it when loading the choice to detect unreachable endpoints.
 func localStackGenAIEndpoint(ctx context.Context, provider, remote, model string, opts ...genai.ProviderOption) (localStackEndpoint, error) {
 	entry, ok := providers.All[provider]
 	if !ok || entry.Factory == nil {
@@ -268,11 +268,16 @@ type managedLlamaServer interface {
 
 type managedLlamaStarter func(context.Context, string) (managedLlamaServer, error)
 
-var managedLlamaRelease struct {
-	sync.Mutex
-
+type managedLlamaReleaseCache struct {
+	gate  chan struct{}
 	cache string
 	exe   string
+}
+
+var managedLlamaRelease = newManagedLlamaReleaseCache()
+
+func newManagedLlamaReleaseCache() *managedLlamaReleaseCache {
+	return &managedLlamaReleaseCache{gate: make(chan struct{}, 1)}
 }
 
 func startManagedLlamaServer(ctx context.Context, model string) (managedLlamaServer, error) {
@@ -284,7 +289,7 @@ func startManagedLlamaServer(ctx context.Context, model string) (managedLlamaSer
 	if err := os.MkdirAll(cache, 0o750); err != nil {
 		return nil, fmt.Errorf("create llama.cpp cache dir: %w", err)
 	}
-	exe, err := managedLlamaExecutable(ctx, cache, version)
+	exe, err := managedLlamaRelease.executable(ctx, cache, version)
 	if err != nil {
 		return nil, err
 	}
@@ -305,11 +310,15 @@ func startManagedLlamaServer(ctx context.Context, model string) (managedLlamaSer
 	return srv, nil
 }
 
-func managedLlamaExecutable(ctx context.Context, cache, version string) (string, error) {
-	managedLlamaRelease.Lock()
-	defer managedLlamaRelease.Unlock()
-	if managedLlamaRelease.cache == cache && managedLlamaRelease.exe != "" {
-		return managedLlamaRelease.exe, nil
+func (r *managedLlamaReleaseCache) executable(ctx context.Context, cache, version string) (string, error) {
+	select {
+	case r.gate <- struct{}{}:
+		defer func() { <-r.gate }()
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	if r.cache == cache && r.exe != "" {
+		return r.exe, nil
 	}
 	// DownloadVersion may overwrite the executable even when it is already
 	// running. Reuse the release for both managed model servers in this process.
@@ -317,8 +326,8 @@ func managedLlamaExecutable(ctx context.Context, cache, version string) (string,
 	if err != nil {
 		return "", err
 	}
-	managedLlamaRelease.cache = cache
-	managedLlamaRelease.exe = exe
+	r.cache = cache
+	r.exe = exe
 	return exe, nil
 }
 

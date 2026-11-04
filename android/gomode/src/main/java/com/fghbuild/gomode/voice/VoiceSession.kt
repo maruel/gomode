@@ -12,6 +12,7 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import com.caic.voicegateway.sdk.v1.ApiClient
 import com.caic.voicegateway.sdk.v1.ContextUpdate
@@ -20,6 +21,7 @@ import com.caic.voicegateway.sdk.v1.MessageEnvelope
 import com.caic.voicegateway.sdk.v1.MessageKind
 import com.caic.voicegateway.sdk.v1.ReasoningDelta
 import com.caic.voicegateway.sdk.v1.SessionSetup
+import com.caic.voicegateway.sdk.v1.SessionStatus
 import com.caic.voicegateway.sdk.v1.Speaker
 import com.caic.voicegateway.sdk.v1.ToolCall
 import com.caic.voicegateway.sdk.v1.ToolDeclaration
@@ -765,9 +767,18 @@ internal class VoiceSession(
         timing: VoiceStartupTiming?,
     ) {
         setupTimeoutJob?.cancel()
+        val startedAt = SystemClock.elapsedRealtime()
+        _state.update { it.copy(startupProgressAtMillis = null) }
         setupTimeoutJob =
             scope.launch {
-                delay(SETUP_TIMEOUT_MS)
+                do {
+                    val lastProgress = _state.value.startupProgressAtMillis ?: startedAt
+                    val remaining = SETUP_TIMEOUT_MS - (SystemClock.elapsedRealtime() - lastProgress)
+                    if (remaining > 0) delay(remaining)
+                } while (
+                    SystemClock.elapsedRealtime() - (_state.value.startupProgressAtMillis ?: startedAt) <
+                    SETUP_TIMEOUT_MS
+                )
                 if (peerConnection !== pc || _state.value.connected || _state.value.error != null) return@launch
                 setDiagnosticError(
                     pc = pc,
@@ -1112,6 +1123,18 @@ internal class VoiceSession(
         try {
             val env = json.decodeFromString(MessageEnvelope.serializer(), text)
             when (env.kind) {
+                MessageKind.SessionStatus -> {
+                    if (!_state.value.connected) {
+                        val status = json.decodeFromString(SessionStatus.serializer(), text)
+                        _state.update {
+                            it.copy(
+                                connectStatus = status.message,
+                                startupProgressAtMillis = SystemClock.elapsedRealtime(),
+                            )
+                        }
+                    }
+                }
+
                 MessageKind.SessionReady -> {
                     Log.i(TAG, "session.ready received")
                     setupTimeoutJob?.cancel()
@@ -1556,6 +1579,8 @@ enum class MicrophoneMode {
 
 data class VoiceState(
     val connectStatus: String? = null,
+    /** Latest gateway startup heartbeat, on the elapsed-realtime clock. */
+    val startupProgressAtMillis: Long? = null,
     val connected: Boolean = false,
     val listening: Boolean = false,
     val speaking: Boolean = false,

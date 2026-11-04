@@ -93,6 +93,7 @@ public struct MessageKind: Codable, Equatable, Hashable {
     public static let TurnCancel = MessageKind("turn.cancel")
     public static let SessionClose = MessageKind("session.close")
     public static let SessionReady = MessageKind("session.ready")
+    public static let SessionStatus = MessageKind("session.status")
     public static let TranscriptDelta = MessageKind("transcript.delta")
     public static let AssistantTextDelta = MessageKind("assistant.text.delta")
     public static let ReasoningDelta = MessageKind("reasoning.delta")
@@ -611,6 +612,16 @@ public struct SessionClose: Codable {
 public struct SessionReady: Codable {
     /// Kind is "session.ready".
     public let kind: MessageKind
+}
+
+/// SessionStatus reports startup progress. Gateways repeat it at least every five
+/// seconds while loading or waiting for capacity. Clients may refresh their
+/// setup timeout on receipt; only session.ready enables microphone input.
+public struct SessionStatus: Codable {
+    /// Kind is "session.status".
+    public let kind: MessageKind
+    /// Message is a short user-visible description of startup work.
+    public let message: String
 }
 
 /// TranscriptDelta is a gateway message that streams transcript text.

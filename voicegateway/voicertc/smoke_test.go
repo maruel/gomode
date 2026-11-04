@@ -168,7 +168,7 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 
 		verifyManagedLLMToolCall(t, endpoint.provider)
 
-		s := newVoiceRTCTestSession(t.Context(), t, newLocalStackBackend(
+		s := newVoiceRTCTestSession(t.Context(), t, newTestLocalStackBackend(t,
 			func() vadSegmenter { return &energyVAD{} },
 			fixedASR{text: "hello"}, llm, placeholderTTS{},
 		))
@@ -200,7 +200,7 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 		t.Cleanup(cancel)
-		s := newVoiceRTCTestSession(ctx, t, newLocalStackBackend(
+		s := newVoiceRTCTestSession(ctx, t, newTestLocalStackBackend(t,
 			func() vadSegmenter { return &energyVAD{} },
 			asr, llm, &speechTTSAdapter{synthesizer: tts},
 		))

@@ -15,13 +15,11 @@ type RealtimeConfig struct {
 	Label string `toml:"label" json:"-"`
 	ModelConfig
 
-	CacheDir            string `toml:"cache_dir" json:"cache_dir"`
-	Threads             int    `toml:"threads" json:"threads"`
-	Slots               int    `toml:"slots" json:"slots"`
-	ContextSize         int    `toml:"context_size" json:"context_size"`
-	MaxOutputTokens     int64  `toml:"max_output_tokens" json:"max_output_tokens"`
-	SetupTimeoutSeconds int    `toml:"setup_timeout_seconds" json:"setup_timeout_seconds"`
-	PendingAudioSeconds int    `toml:"pending_audio_seconds" json:"pending_audio_seconds"`
+	CacheDir        string `toml:"cache_dir" json:"cache_dir"`
+	Threads         int    `toml:"threads" json:"threads"`
+	Slots           int    `toml:"slots" json:"slots"`
+	ContextSize     int    `toml:"context_size" json:"context_size"`
+	MaxOutputTokens int64  `toml:"max_output_tokens" json:"max_output_tokens"`
 }
 
 // ID returns the fingerprint of the effective realtime settings.
@@ -62,12 +60,6 @@ func (c RealtimeConfig) WithDefaults() RealtimeConfig {
 	if c.ContextSize == 0 {
 		c.ContextSize = 8192
 	}
-	if c.SetupTimeoutSeconds == 0 {
-		c.SetupTimeoutSeconds = 15
-	}
-	if c.PendingAudioSeconds == 0 {
-		c.PendingAudioSeconds = 5
-	}
 	return c
 }
 
@@ -100,9 +92,6 @@ func (c *RealtimeConfig) validate() error {
 	}
 	if c.MaxOutputTokens < 0 || c.MaxOutputTokens > 2147483647 {
 		errs = append(errs, errors.New("invalid realtime.max_output_tokens"))
-	}
-	if v.SetupTimeoutSeconds < 1 || v.SetupTimeoutSeconds > 120 || v.PendingAudioSeconds < 1 || v.PendingAudioSeconds > 30 {
-		errs = append(errs, errors.New("realtime setup timeout must be 1..120 seconds and pending audio 1..30 seconds"))
 	}
 	if c.CacheDir != "" && !filepath.IsAbs(c.CacheDir) {
 		errs = append(errs, errors.New("realtime.cache_dir must be absolute"))

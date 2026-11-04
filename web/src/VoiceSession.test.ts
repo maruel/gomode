@@ -2224,6 +2224,38 @@ describe("VoiceSession", () => {
       vi.useRealTimers();
     }
   });
+
+  it("keeps WebRTC setup alive while the local stack reports progress", async () => {
+    vi.useFakeTimers();
+    const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
+    try {
+      await session.connect();
+      const channel = FakePeerConnection.dataChannels[0];
+      channel?.onopen?.();
+      for (let i = 0; i < 5; i++) {
+        await vi.advanceTimersByTimeAsync(10000);
+        channel?.onmessage?.(
+          new MessageEvent("message", {
+            data: JSON.stringify({
+              kind: "session.status",
+              message: "Loading local stack…",
+            }),
+          }),
+        );
+        expect(session.state.connectStatus).toBe("Loading local stack…");
+        expect(session.state.connected).toBe(false);
+        expect(session.state.error).toBeNull();
+      }
+      channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindSessionReady }) }));
+      await vi.advanceTimersByTimeAsync(15000);
+      expect(session.state.connected).toBe(true);
+      expect(session.state.connectStatus).toBeNull();
+      expect(session.state.error).toBeNull();
+    } finally {
+      session.disconnect();
+      vi.useRealTimers();
+    }
+  });
 });
 
 function triggerIceState(state: RTCIceConnectionState): void {

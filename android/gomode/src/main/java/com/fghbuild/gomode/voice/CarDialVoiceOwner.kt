@@ -265,7 +265,8 @@ internal class CarDialVoiceOwner(
             scope.launch {
                 try {
                     next.timing.startDeadline(STARTUP_TIMEOUT_MS)
-                    withTimeout(STARTUP_TIMEOUT_MS) { connect(current, next) }
+                    val voice = withTimeout(STARTUP_TIMEOUT_MS) { prepareConnection(current, next) }
+                    finishConnection(current, next, voice)
                 } catch (error: TimeoutCancellationException) {
                     next.timing.finish(VoiceStartupOutcome.TIMED_OUT)
                     Log.w("GoModeCarDial", "Voice setup timed out", error)
@@ -285,10 +286,10 @@ internal class CarDialVoiceOwner(
             }
     }
 
-    private suspend fun connect(
+    private suspend fun prepareConnection(
         current: CarDialRequest,
         next: CarDialAttempt,
-    ) {
+    ): VoiceSessionController {
         checkCurrent(current, next)
         next.timing.enter(VoiceStartupStage.CALL)
         val ended = { if (request === current && attempt === next) cancel(current.identity) }
@@ -401,7 +402,15 @@ internal class CarDialVoiceOwner(
         Log.i("GoModeCarDial", "Starting prepared voice transport")
         next.timing.enter(VoiceStartupStage.TRANSPORT)
         voice.connect()
-        val connected = voice.state.first { it.connected || it.error != null || it.connectStatus == null }
+        return voice
+    }
+
+    private suspend fun finishConnection(
+        current: CarDialRequest,
+        next: CarDialAttempt,
+        voice: VoiceSessionController,
+    ) {
+        val connected = next.timing.awaitConnection(voice.state, STARTUP_TIMEOUT_MS)
         if (!connected.connected) {
             Log.w("GoModeCarDial", "Voice session did not connect: ${connected.error}")
             if (connected.error == FRONTEND_NOT_READY) next.failure = CarDialFailure.FRONTEND

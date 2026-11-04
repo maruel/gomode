@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coder/websocket"
@@ -190,7 +191,7 @@ func newRealtimePolicySession(t *testing.T, paused bool) (*llamaRealtimeSession,
 		p.terminalRead = make(chan struct{})
 		p.terminalRelease = make(chan struct{})
 	}
-	b := &llamaRealtimeBackend{cfg: voicegateway.RealtimeConfig{PendingAudioSeconds: 1}, slots: make(chan struct{}, 1)}
+	b := &llamaRealtimeBackend{slots: make(chan struct{}, 1)}
 	b.slots <- struct{}{}
 	sink := &realtimeEventSink{events: make(chan struct{}, 1)}
 	s := &llamaRealtimeSession{backend: b, ctx: ctx, cancel: cancel, sink: sink, playback: sink, rt: p}
@@ -215,6 +216,13 @@ func (s *realtimePacedSink) assistantAudioPending() bool      { return s.output.
 func (s *realtimePacedSink) clearAssistantAudio() {
 	s.output.clearAssistantAudio()
 	s.realtimeEventSink.clearAssistantAudio()
+}
+
+type stalledRealtimeProvider struct{ genai.Provider }
+
+func (stalledRealtimeProvider) ConnectRealtime(ctx context.Context, _ ...genai.RealtimeOption) (genai.RealtimeSession, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func TestLlamaRealtimeSession(t *testing.T) {
@@ -282,7 +290,7 @@ func TestLlamaRealtimeSession(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		peer := newRealtimePeer()
 		sink := &realtimePacedSink{realtimeEventSink: realtimeEventSink{events: make(chan struct{}, 1)}}
-		backend := &llamaRealtimeBackend{cfg: voicegateway.RealtimeConfig{PendingAudioSeconds: 1}, slots: make(chan struct{}, 1)}
+		backend := &llamaRealtimeBackend{slots: make(chan struct{}, 1)}
 		backend.slots <- struct{}{}
 		s := &llamaRealtimeSession{backend: backend, ctx: ctx, cancel: cancel, sink: sink, playback: sink, rt: peer}
 		s.workers.Go(s.receive)
@@ -443,7 +451,10 @@ func TestLlamaRealtimeSession(t *testing.T) {
 				s.mu.Lock()
 				s.tools = []genai.ToolCall{{ID: "pending", Name: "slow"}}
 				s.mu.Unlock()
-				if err := s.acceptMicPCM(t.Context(), testPCM(1200, 2000)); err == nil {
+				if err := s.acceptMicPCM(t.Context(), testPCM(14900, 2000)); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.acceptMicPCM(t.Context(), testPCM(200, 2000)); err == nil {
 					t.Fatal("accepted overflowing tool-wait audio")
 				}
 				if !sink.wasCanceled() {
@@ -456,7 +467,7 @@ func TestLlamaRealtimeSession(t *testing.T) {
 				s.mu.Lock()
 				s.tools = []genai.ToolCall{{ID: "pending", Name: "slow"}}
 				s.mu.Unlock()
-				if err := s.acceptMicPCM(t.Context(), testPCM(600, 2000)); err != nil {
+				if err := s.acceptMicPCM(t.Context(), testPCM(14900, 2000)); err != nil {
 					t.Fatal(err)
 				}
 				// The queue is charged but not yet full; a client turn overflows it.
@@ -774,45 +785,29 @@ func TestLlamaRealtimeSession(t *testing.T) {
 				}
 			})
 			t.Run("setup deadline", func(t *testing.T) {
-				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					ws, err := websocket.Accept(w, r, nil)
+				synctest.Test(t, func(t *testing.T) {
+					b := &llamaRealtimeBackend{provider: stalledRealtimeProvider{}, slots: make(chan struct{}, 1)}
+					sink := &realtimeEventSink{events: make(chan struct{}, 1)}
+					session, err := b.connect(t.Context(), "deadline", sink)
 					if err != nil {
-						t.Error(err)
-						return
+						t.Fatal(err)
 					}
 					t.Cleanup(func() {
-						if err := ws.CloseNow(); err != nil && !errors.Is(err, net.ErrClosed) {
+						if err := session.close(); err != nil {
 							t.Error(err)
 						}
 					})
-					_, _, _ = ws.Read(r.Context())
-				}))
-				t.Cleanup(srv.Close)
-				b, err := newLlamaRealtimeBackend(t.Context(), voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", Remote: srv.URL}, SetupTimeoutSeconds: 1})
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() {
-					if err := b.Close(); err != nil {
-						t.Error(err)
+					start := time.Now()
+					if err := session.acceptClientMessage(t.Context(), []byte(`{"kind":"session.setup","context":{"systemInstruction":"System"}}`)); err == nil {
+						t.Fatal("accepted stalled setup")
+					}
+					if elapsed := time.Since(start); elapsed != 2*time.Minute {
+						t.Fatalf("setup deadline after %v", elapsed)
+					}
+					if sink.isReady() {
+						t.Fatal("ready after deadline")
 					}
 				})
-				sink := &realtimeEventSink{events: make(chan struct{}, 1)}
-				session, err := b.connect(t.Context(), "deadline", sink)
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() {
-					if err := session.close(); err != nil {
-						t.Error(err)
-					}
-				})
-				if err := session.acceptClientMessage(t.Context(), []byte(`{"kind":"session.setup","context":{"systemInstruction":"System"}}`)); err == nil {
-					t.Fatal("accepted stalled setup")
-				}
-				if sink.isReady() {
-					t.Fatal("ready after deadline")
-				}
 			})
 		})
 	})

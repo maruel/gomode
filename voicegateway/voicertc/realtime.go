@@ -21,6 +21,19 @@ import (
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
+// lazyLlamaRealtimeBackend shares residency limits with local ASR/LLM/TTS choices.
+type lazyLlamaRealtimeBackend struct {
+	lazy *lazyLocalStack
+}
+
+func (b *lazyLlamaRealtimeBackend) Close() error {
+	return b.lazy.close()
+}
+
+func (b *lazyLlamaRealtimeBackend) connect(ctx context.Context, id string, sink backendSink) (backendSession, error) {
+	return b.lazy.connect(ctx, id, sink, false)
+}
+
 type llamaRealtimeBackend struct {
 	provider genai.Provider
 	runtime  io.Closer
@@ -179,7 +192,8 @@ func (s *llamaRealtimeSession) setup(msg *voicev1.SessionSetup) error {
 	s.workers.Add(1)
 	s.mu.Unlock()
 	defer s.workers.Done()
-	deadline := time.AfterFunc(time.Duration(s.backend.cfg.SetupTimeoutSeconds)*time.Second, s.expireSetup)
+	// Bound cold model setup without limiting the accepted session lifetime.
+	deadline := time.AfterFunc(2*time.Minute, s.expireSetup)
 	rt, err := s.backend.provider.ConnectRealtime(s.ctx,
 		genai.RealtimeOptionInstructions(instruction),
 		&genai.RealtimeOptionTools{Tools: tools},
@@ -347,9 +361,10 @@ var errRealtimeQueueFull = errors.New("input queue exceeded its limit")
 
 func (s *llamaRealtimeSession) enqueueLocked(input genai.RealtimeInputContent) error {
 	size := len(input.Audio) + len(input.Text)
+	// Share a 15-second PCM budget across audio, text, and control records.
 	// Charge control records as well, bounding allocations even without audio.
 	size = max(size, 64)
-	if s.pendingBytes+size > s.backend.cfg.PendingAudioSeconds*micSampleRate*2 {
+	if s.pendingBytes+size > 15*micSampleRate*2 {
 		// The caller owns the scope of the failure; report it there once.
 		return errRealtimeQueueFull
 	}

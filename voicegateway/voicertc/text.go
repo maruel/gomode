@@ -4,6 +4,7 @@ package voicertc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -50,25 +51,72 @@ func serveTextSession(ctx context.Context, w http.ResponseWriter, r *http.Reques
 	sessionCtx, cancel := context.WithTimeout(ctx, sessionLifetime)
 	defer cancel()
 	sink := &textSink{conn: conn, cancel: cancel, log: log}
-	sess := backend.newTextSession(sessionCtx, sessionID, sink)
+	// Keep reading during cold startup so a disconnected client cancels model
+	// downloads and capacity waits. One queued message bounds client buffering.
+	incoming := make(chan []byte, 1)
+	startupDone := make(chan struct{})
+	var reader sync.WaitGroup
+	reader.Go(func() {
+		defer cancel()
+		for {
+			kind, data, err := conn.Read(sessionCtx)
+			if err != nil {
+				status := websocket.CloseStatus(err)
+				if sessionCtx.Err() == nil && status != websocket.StatusNormalClosure && status != websocket.StatusGoingAway {
+					slog.InfoContext(sessionCtx, "voicertc: text session closed", "err", err)
+				}
+				return
+			}
+			if kind != websocket.MessageText {
+				continue
+			}
+			select {
+			case <-startupDone:
+			default:
+				var env voicev1.MessageEnvelope
+				if json.Unmarshal(data, &env) == nil && env.Kind == voicev1.MessageKindSessionClose {
+					return
+				}
+				select {
+				case incoming <- data:
+					continue
+				default:
+					select {
+					case <-startupDone:
+					default:
+						cancel()
+						sink.sendGatewayError(sessionCtx, "too many messages during local stack startup")
+						return
+					}
+				}
+			}
+			select {
+			case incoming <- data:
+			case <-sessionCtx.Done():
+				return
+			}
+		}
+	})
+	defer func() { cancel(); reader.Wait() }()
+	sess, err := backend.newTextSession(sessionCtx, sessionID, sink)
+	if err != nil {
+		if sessionCtx.Err() == nil {
+			sink.sendGatewayError(sessionCtx, "local stack: "+err.Error())
+		}
+		return err
+	}
+	close(startupDone)
 	defer func() {
 		if err := sess.close(); err != nil {
 			slog.WarnContext(sessionCtx, "voicertc: close text session", "err", err)
 		}
 	}()
 	for {
-		kind, data, err := conn.Read(sessionCtx)
-		if err != nil {
-			// The WebSocket reader returns close frames as errors, including
-			// ordinary hangups and clients leaving the app.
-			status := websocket.CloseStatus(err)
-			if sessionCtx.Err() == nil && status != websocket.StatusNormalClosure && status != websocket.StatusGoingAway {
-				slog.InfoContext(sessionCtx, "voicertc: text session closed", "err", err)
-			}
+		var data []byte
+		select {
+		case data = <-incoming:
+		case <-sessionCtx.Done():
 			return nil
-		}
-		if kind != websocket.MessageText {
-			continue
 		}
 		if err := log.record(activitydata.SourceClient, data); err != nil {
 			slog.ErrorContext(sessionCtx, "voicertc: activity log write failed", "session", sessionID, "err", err)
