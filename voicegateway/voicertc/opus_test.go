@@ -1,8 +1,70 @@
-// Opus decoder contract tests; they run in race builds too.
+// Opus codec contract tests; they run in race builds too.
 
 package voicertc
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
+
+func TestOpusEncoder(t *testing.T) {
+	tone := make([]int16, encoderFrameSamples)
+	for i := range tone {
+		tone[i] = int16(12000 * math.Sin(2*math.Pi*440*float64(i)/float64(encoderSampleRate)))
+	}
+
+	t.Run("Encode", func(t *testing.T) {
+		t.Run("constrained vbr holds the bitrate target", func(t *testing.T) {
+			enc, err := newEncoder()
+			if err != nil {
+				t.Fatal(err)
+			}
+			const frames = 200
+			total := 0
+			for range frames {
+				pkt, err := enc.Encode(tone)
+				if err != nil {
+					t.Fatal(err)
+				}
+				total += len(pkt)
+			}
+			// 20ms at 40kbps is 100 bytes. Unconstrained VBR, the go-opus zero
+			// value, spends 193 bytes on this tone.
+			if avg := total / frames; avg > 140 {
+				t.Errorf("average packet = %d bytes, want 140 or less: is ConstrainedVBR set?", avg)
+			}
+		})
+
+		t.Run("packet decodes back to audio", func(t *testing.T) {
+			enc, err := newEncoder()
+			if err != nil {
+				t.Fatal(err)
+			}
+			dec, err := newDecoder(micSampleRate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pkt, err := enc.Encode(tone)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pcm, err := dec.Decode(pkt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(pcm) != micSampleRate/50 {
+				t.Fatalf("samples = %d, want %d", len(pcm), micSampleRate/50)
+			}
+			var energy float64
+			for _, s := range pcm {
+				energy += float64(s) * float64(s)
+			}
+			if energy /= float64(len(pcm)); energy < 1e6 {
+				t.Errorf("energy = %.0f, want audible audio", energy)
+			}
+		})
+	})
+}
 
 func TestOpusDecoder(t *testing.T) {
 	t.Run("Decode", func(t *testing.T) {

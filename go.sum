@@ -308,8 +308,6 @@ github.com/maruel/genai v0.10.3-0.20261103213525-a1b5520d1263 h1:UEP4ai+PH2LJS9/
 github.com/maruel/genai v0.10.3-0.20261103213525-a1b5520d1263/go.mod h1:Fi+Y4994n0An6/D/0kVq8+DuDSfgg/qndlO+11ACVTo=
 github.com/maruel/genaipy v0.1.2 h1:LCjKM72hIHTyL9Nt8Fb7DYv7/UJNjGjCjG5fHntO59w=
 github.com/maruel/genaipy v0.1.2/go.mod h1:VERlWtNMq1oCuG7CzRZJSQ0EUVYGkgMGdU+Z2WQzvpI=
-github.com/maruel/gopus v0.1.0 h1:sMFMWII8AmJdKIYvl+BHO3Ysx25/HzvxmkD5YU3/0x8=
-github.com/maruel/gopus v0.1.0/go.mod h1:k6iNRgw7GovdcpFDalSZhuveD/oFLUU188FrWXdduXc=
 github.com/maruel/httpjson v0.5.3 h1:GXxDoiaMJyax0nMR0RfefzDiKd86lbMeqPIgkoFqI2I=
 github.com/maruel/httpjson v0.5.3/go.mod h1:YJmWM63IM6ykT1NKm67b5Cuhshl1JUXuxFnmnqmr5Rg=
 github.com/maruel/roundtrippers v0.5.1 h1:ztW+4P91AV2e1ifzRnw7XG593IFn7po4Z3hdxMXzACQ=

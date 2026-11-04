@@ -10,15 +10,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 	voiceapi "github.com/maruel/gomode/voicegateway/api"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
-	"github.com/maruel/gopus"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
@@ -39,6 +40,10 @@ type fixtureStats struct {
 	AssistantPackets     int               `json:"assistantPackets"`
 	ReceiverReports      int               `json:"receiverReports"`
 	ToolResults          []json.RawMessage `json:"toolResults"`
+
+	// MicFrameSamples counts decoded microphone packets by samples per packet,
+	// which is the sender's frame size at the 48kHz decode rate.
+	MicFrameSamples map[string]int `json:"micFrameSamples"`
 }
 
 type mediaPeer struct {
@@ -60,6 +65,7 @@ func (f *fixture) handleStats(w http.ResponseWriter, _ *http.Request) {
 	f.mu.Lock()
 	stats := f.stats
 	stats.ToolResults = append([]json.RawMessage(nil), f.stats.ToolResults...)
+	stats.MicFrameSamples = maps.Clone(f.stats.MicFrameSamples)
 	f.mu.Unlock()
 	writeJSON(w, stats)
 }
@@ -304,6 +310,10 @@ func (p *mediaPeer) receiveMic(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver)
 		if n > 0 {
 			p.fixture.mu.Lock()
 			p.fixture.stats.MicFrames++
+			if p.fixture.stats.MicFrameSamples == nil {
+				p.fixture.stats.MicFrameSamples = map[string]int{}
+			}
+			p.fixture.stats.MicFrameSamples[strconv.Itoa(n)]++
 			p.fixture.mu.Unlock()
 		}
 	}
@@ -332,7 +342,14 @@ func (p *mediaPeer) receiveReports(sender *webrtc.RTPSender) {
 }
 
 func (p *mediaPeer) sendTone(track *webrtc.TrackLocalStaticSample) {
-	encoder, err := gopus.NewEncoder(48000, 1, gopus.AppVoIP)
+	encoder, err := opus.NewEncoder(opus.EncoderConfig{
+		SampleRate: 48000,
+		Channels:   1,
+		Bitrate:    40000,
+		// Match the gateway encoder: libopus' constrained VBR and complexity.
+		ConstrainedVBR: true,
+		Complexity:     9,
+	})
 	if err != nil {
 		p.fixture.log.Error("create assistant encoder", "err", err)
 		return

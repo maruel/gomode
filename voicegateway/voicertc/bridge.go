@@ -57,12 +57,18 @@ const (
 	backendOutputFrameBytes = backendOutputSampleRate * 2 * int(frameDuration/time.Millisecond) / 1000 // 960 bytes
 )
 
-// opusReceiveCodec asks the client's encoder to use DTX on the mobile uplink.
-// These are receive preferences, not settings for the gateway's own encoder.
+// opusReceiveCodec asks the client's encoder for inband FEC and discontinuous
+// transmission on the mobile uplink. Both are RFC 7587 fmtp parameters:
 // https://datatracker.ietf.org/doc/html/rfc7587#section-7.1
+//
+// libwebrtc advertises minptime=10 in its own offers, but RFC 7587 defines no
+// such parameter, and libwebrtc only reads it to filter Audio Network Adaptor
+// frame lengths, a list that starts at 20ms. Packet duration reaches the
+// encoder through ptime and defaults to 20ms, which is the frame size the
+// microphone clock and the downlink budget assume.
 var opusReceiveCodec = webrtc.RTPCodecCapability{
 	MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2,
-	SDPFmtpLine: "minptime=10;useinbandfec=1;usedtx=1",
+	SDPFmtpLine: "useinbandfec=1;usedtx=1",
 }
 
 // Bridge manages voice choices and sessions on one shared WebRTC transport.

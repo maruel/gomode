@@ -27,9 +27,9 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/maruel/gopus"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
+	"github.com/tphakala/go-opus/opus"
 
 	"github.com/maruel/gomode/voicegateway"
 	voiceapi "github.com/maruel/gomode/voicegateway/api"
@@ -484,8 +484,8 @@ func TestBrowserOpusDTX(t *testing.T) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if !strings.Contains(sdp, "usedtx=1") {
-			t.Error("gateway answer did not request uplink DTX")
+		if got, ok := opusFmtp(sdp); !ok || got != "useinbandfec=1;usedtx=1" {
+			t.Errorf("answer opus fmtp = %q, want \"useinbandfec=1;usedtx=1\"", got)
 		}
 		// The control changes only the receive preference, keeping the same audio path.
 		if r.URL.Query().Get("dtx") == "0" {
@@ -637,9 +637,9 @@ func TestEncodeDecodeRoundtrip(t *testing.T) {
 	}
 
 	// Decode at 48kHz.
-	dec, err := gopus.NewDecoder(48000, 1)
+	dec, err := opus.NewDecoder(48000, 1)
 	if err != nil {
-		t.Fatalf("gopus.NewDecoder: %v", err)
+		t.Fatalf("opus.NewDecoder: %v", err)
 	}
 	var decoded []int16
 	for _, pkt := range packets {
@@ -675,7 +675,7 @@ func TestEncodeDecodeRoundtrip(t *testing.T) {
 }
 
 // decode48 decodes an Opus packet at 48kHz into int16 samples.
-func decode48(dec *gopus.Decoder, pkt []byte) ([]int16, error) {
+func decode48(dec *opus.Decoder, pkt []byte) ([]int16, error) {
 	pcm := make([]int16, maxFrameSamples)
 	n, err := dec.Decode(pkt, pcm)
 	if err != nil {
@@ -934,7 +934,7 @@ func connectVoiceRTCClient(ctx context.Context, t *testing.T, fn voiceRTCOffer, 
 }
 
 func (s *voiceRTCTestSession) collectAudioEnergy(tr *webrtc.TrackRemote) {
-	dec, err := gopus.NewDecoder(encoderSampleRate, 1)
+	dec, err := opus.NewDecoder(encoderSampleRate, 1)
 	if err != nil {
 		select {
 		case s.mediaErrs <- err:
@@ -1362,8 +1362,8 @@ func TestBridge(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !strings.Contains(answer, "usedtx=1") {
-					t.Fatalf("answer for payload %d omitted uplink DTX", pt)
+				if got, ok := opusFmtp(answer); !ok || got != "useinbandfec=1;usedtx=1" {
+					t.Fatalf("answer for payload %d has opus fmtp %q, want \"useinbandfec=1;usedtx=1\"", pt, got)
 				}
 				if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer}); err != nil {
 					t.Fatalf("client rejected answer for payload %d: %v", pt, err)
@@ -2051,4 +2051,28 @@ func testBridgeConfiguredChoices(t *testing.T) {
 	if selected != bridge.backends[catalog.Choices[2].ID] {
 		t.Fatal("generated ID selected the wrong backend")
 	}
+}
+
+// opusFmtp returns the fmtp parameters of the SDP's Opus payload.
+func opusFmtp(sdp string) (string, bool) {
+	payload := ""
+	for line := range strings.SplitSeq(sdp, "\r\n") {
+		rest, ok := strings.CutPrefix(line, "a=rtpmap:")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(rest)
+		if len(fields) == 2 && strings.HasPrefix(fields[1], "opus/48000") {
+			payload = fields[0]
+		}
+	}
+	if payload == "" {
+		return "", false
+	}
+	for line := range strings.SplitSeq(sdp, "\r\n") {
+		if rest, ok := strings.CutPrefix(line, "a=fmtp:"+payload+" "); ok {
+			return rest, true
+		}
+	}
+	return "", false
 }

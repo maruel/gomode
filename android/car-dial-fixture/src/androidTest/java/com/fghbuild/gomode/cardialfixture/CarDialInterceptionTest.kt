@@ -1042,17 +1042,13 @@ class CarDialInterceptionTest {
         mode: String,
         before: JSONObject,
     ) {
-        val connectedDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
-        while (!device.hasObject(By.res("car_dial_status").text("Voice connected")) &&
-            !device.hasObject(By.desc("End voice")) && System.nanoTime() < connectedDeadline
-        ) {
+        // Telecom routing, ICE and DTLS share the emulator with a loaded host, so
+        // the setup budget is generous; the media evidence below has its own.
+        val connectedDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(SETUP_TIMEOUT_S)
+        while (!voiceConnected() && System.nanoTime() < connectedDeadline) {
             Thread.sleep(100)
         }
-        assertTrue(
-            "Voice controls did not connect: ${shell("dumpsys activity activities")}",
-            device.hasObject(By.res("car_dial_status").text("Voice connected")) ||
-                device.hasObject(By.desc("End voice")),
-        )
+        assertTrue("Voice controls did not connect: ${voiceStatusText()}", voiceConnected())
         awaitMicrophoneForeground()
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
         var stats = fixtureStats()
@@ -1068,11 +1064,32 @@ class CarDialInterceptionTest {
                         stats.getInt("assistantPackets") >= before.getInt("assistantPackets") + 5 &&
                         stats.getInt("receiverReports") > before.getInt("receiverReports")
                 }
-            if (complete) return
+            if (complete) {
+                assertTwentyMillisecondMicFrames(stats)
+                return
+            }
             Thread.sleep(100)
         }
         throw AssertionError("No real $mode media/turn evidence: before=$before after=$stats")
     }
+
+    // The gateway's microphone clock and downlink budget assume 20ms uplink
+    // frames, which libwebrtc takes from ptime rather than from a minimum packet
+    // time. One 20ms frame decodes to 960 samples at the fixture's 48kHz rate.
+    private fun assertTwentyMillisecondMicFrames(stats: JSONObject) {
+        val counts = stats.optJSONObject("micFrameSamples") ?: JSONObject()
+        val sizes = counts.keys().asSequence().associateWith { counts.getInt(it) }
+        assertEquals(
+            "microphone frame sizes at the 48kHz decode rate: $sizes",
+            "960",
+            sizes.maxByOrNull { it.value }?.key,
+        )
+    }
+
+    private fun voiceConnected(): Boolean =
+        device.hasObject(By.res("car_dial_status").text("Voice connected")) || device.hasObject(By.desc("End voice"))
+
+    private fun voiceStatusText(): String = device.findObject(By.res("car_dial_status"))?.text ?: "no status"
 
     private fun awaitMicrophoneForeground() {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
@@ -1703,6 +1720,9 @@ class CarDialInterceptionTest {
         private const val PROBE_REDIRECTION = "$APP/.voice.CarDialLaunchProbeService"
         private const val PROBE_PIN = "1234"
         private const val SETTINGS = "files/datastore/gomode_settings.preferences_pb"
+
+        // Telecom routing, ICE and DTLS share the emulator with a loaded host.
+        private const val SETUP_TIMEOUT_S = 45L
 
         // First allocated fixed-server slot; the generic shortcut has its own reserved number.
         private const val NUMBER = "+18675550101"

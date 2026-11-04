@@ -12,9 +12,12 @@ import json
 import os
 import pathlib
 import re
+import shutil
+import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 
 from android_devices import adb_path, selected_device_serial
@@ -64,6 +67,8 @@ PAGE = (ROOT / "e2e" / "hosted.html").read_bytes()
 HOSTED_FIXTURE_ANNOTATION = "com.fghbuild.gomode.StandaloneHostedFixture"
 VOICE_FIXTURE_ANNOTATION = "com.fghbuild.gomode.VoiceFixture"
 VOICE_FIXTURE_PACKAGE = "./internal/cmd/android-voice-fixture"
+# Matches PROBE_PIN in the car-dial keyguard scenarios.
+CAR_DIAL_PROBE_PIN = "1234"
 
 
 class FixtureHandler(http.server.BaseHTTPRequestHandler):
@@ -124,6 +129,55 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
+def build_fixture() -> tuple[pathlib.Path, pathlib.Path]:
+    """Build the voice fixture so the process that serves it owns that pid.
+
+    `go run` runs the compiled binary as a child and does not forward the
+    termination signal to it, which leaves an orphan holding the port after the
+    script stops. Building first means the pid this script starts is the server.
+    """
+    directory = pathlib.Path(tempfile.mkdtemp(prefix="gomode-voice-fixture-"))
+    binary = directory / "android-voice-fixture"
+    subprocess.run(["go", "build", "-o", str(binary), VOICE_FIXTURE_PACKAGE], cwd=ROOT, check=True)
+    return directory, binary
+
+
+def clear_stale_probe_pin(adb: str, serial: str) -> None:
+    """Clear the keyguard PIN that an interrupted car-dial run leaves behind.
+
+    The instrumented keyguard scenarios install a known probe PIN and remove it
+    when they finish. An interrupted run leaves it set, and the device rule then
+    refuses every later run. Recovery belongs here because the rule itself is
+    read-only by contract: it must not change a device it refuses.
+    """
+    subprocess.run(
+        [adb, "-s", serial, "shell", "locksettings", "clear", "--old", CAR_DIAL_PROBE_PIN],
+        capture_output=True,
+        check=False,
+    )
+
+
+def stop_fixture(fixture: subprocess.Popen[bytes]) -> None:
+    """Stop the fixture and anything it started."""
+    if fixture.poll() is not None:
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(fixture.pid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            fixture.wait(timeout=10)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def exit_on_signal(signum: int, _frame: object) -> None:
+    """Turn SIGTERM into SystemExit so the fixture and adb forwarding are cleaned up."""
+    raise SystemExit(128 + signum)
+
+
 def run_instrumented_tests(port: int, selection: list[str], serial: str, *, car_dial: bool = False) -> int:
     """Run selected Android tests with a hosted fixture and clean up adb forwarding."""
     adb = adb_path()
@@ -170,6 +224,7 @@ def run_instrumented_tests(port: int, selection: list[str], serial: str, *, car_
 
 def run_car_dial_tests(adb: str, serial: str, port: int, selection: list[str], gradle_env: dict[str, str]) -> int:
     """Release Gradle's heap before running the independent fixture on the emulator."""
+    clear_stale_probe_pin(adb, serial)
     command = [adb, "-s", serial, "shell", "am", "instrument", "-w", "-r", "-e", "baseUrl", f"http://localhost:{port}"]
     for option in selection:
         prefix = "-Pandroid.testInstrumentationRunnerArguments."
@@ -238,12 +293,15 @@ def main() -> int:
     args = parser.parse_args()
     server: http.server.ThreadingHTTPServer | None = None
     fixture: subprocess.Popen[bytes] | None = None
+    fixture_dir: pathlib.Path | None = None
     if args.voice or args.car_dial:
+        signal.signal(signal.SIGTERM, exit_on_signal)
         port = free_port()
-        command = ["go", "run", VOICE_FIXTURE_PACKAGE, "-addr", f"127.0.0.1:{port}"]
+        fixture_dir, binary = build_fixture()
+        command = [str(binary), "-addr", f"127.0.0.1:{port}"]
         if args.car_dial:
             command += ["-rtc-ip", "10.0.2.2"]
-        fixture = subprocess.Popen(command, cwd=ROOT)
+        fixture = subprocess.Popen(command, cwd=ROOT, start_new_session=True)
         annotation = VOICE_FIXTURE_ANNOTATION
     else:
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
@@ -263,8 +321,9 @@ def main() -> int:
         return run_instrumented_tests(port, selection, serial, car_dial=args.car_dial)
     finally:
         if fixture is not None:
-            fixture.terminate()
-            fixture.wait(timeout=10)
+            stop_fixture(fixture)
+        if fixture_dir is not None:
+            shutil.rmtree(fixture_dir, ignore_errors=True)
         if server is not None:
             server.shutdown()
             server.server_close()

@@ -11,7 +11,6 @@ require (
 	github.com/maruel/apisdkgen v0.2.0
 	github.com/maruel/genai v0.10.3-0.20261103213525-a1b5520d1263
 	github.com/maruel/genaipy v0.1.2
-	github.com/maruel/gopus v0.1.0
 	github.com/mattn/go-colorable v0.1.16
 	github.com/mattn/go-isatty v0.0.24
 	github.com/pelletier/go-toml/v2 v2.4.3
