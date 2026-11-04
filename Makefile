@@ -39,7 +39,7 @@ help:
 	@printf '  %-27s - %s\n' 'make refresh-generated' 'Regenerate SDKs and AGENTS file indexes'
 	@printf '  %-27s - %s\n' 'make upgrade' 'Upgrade Go and pnpm dependencies'
 
-fix: android-sdk node_modules/.modules.yaml
+fix: node_modules/.modules.yaml
 	@pnpm exec node scripts/css_module_types.mjs --source-path web/src --write
 	@go tool golangci-lint fmt
 	@go tool golangci-lint run --show-stats=false --fix ./...
@@ -48,10 +48,10 @@ fix: android-sdk node_modules/.modules.yaml
 	@uv run --locked ruff check --quiet --fix scripts
 	@uv run --locked ruff format scripts >/dev/null
 	@files=$$(git ls-files '*.sh' 'scripts/hooks/*'); [ -z "$$files" ] || go tool shfmt -w $$files
-	@cd ./android && ./gradlew :gomode:ktlintFormat :halo-sdk:ktlintFormat :car-dial-fixture:ktlintFormat --quiet
+	@./scripts/android-checks.sh :gomode:ktlintFormat :halo-sdk:ktlintFormat :car-dial-fixture:ktlintFormat --quiet
 	@uv run --locked python scripts/update_agents_file_index.py
 
-verify: android-sdk node_modules/.modules.yaml
+verify: node_modules/.modules.yaml
 	@./scripts/run-concurrently.sh sdk,workflows,go,format,lint,ts,python,shell,misc,android \
 		'go run ./internal/cmd/gen-sdk -check' \
 		'go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12' \
@@ -62,17 +62,17 @@ verify: android-sdk node_modules/.modules.yaml
 		'uv run --locked ruff check --quiet scripts && uv run --locked ruff format --check --quiet scripts && uv run --locked python scripts/generate_thinking_score.py --check' \
 		'files=$$(git ls-files "*.sh" "scripts/hooks/*"); [ -z "$$files" ] || go tool shfmt -d $$files' \
 		'uv run --locked python scripts/lint_binaries.py && uv run --locked python scripts/update_agents_file_index.py --check && git diff --check' \
-		'cd ./android && ./gradlew :gomode:ktlintCheck :halo-sdk:ktlintCheck :car-dial-fixture:ktlintCheck :gomode:detekt :car-dial-fixture:detekt :gomode:lintDebug :car-dial-fixture:lintDebug :oauth-sdk:assemble --quiet'
+		'./scripts/android-checks.sh :gomode:ktlintCheck :halo-sdk:ktlintCheck :car-dial-fixture:ktlintCheck :gomode:detekt :car-dial-fixture:detekt :gomode:lintDebug :car-dial-fixture:lintDebug :oauth-sdk:assemble --quiet'
 
 git-hooks:
 	@./scripts/install-git-hooks.sh
 
-test: android-sdk node_modules/.modules.yaml
+test: node_modules/.modules.yaml
 	@./scripts/run-concurrently.sh go,browser-scripts,browser,android \
 		'go test ./...' \
 		'pnpm exec node --test --test-reporter=./scripts/quiet-test-reporter.mjs scripts/browser_integration.test.mjs scripts/css_module_types.test.mjs scripts/voice_preview.test.mjs' \
 		'NODE_OPTIONS=--no-experimental-webstorage pnpm exec tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts "web/src/**/*.test.ts" "web/src/**/*.test.tsx"' \
-		'cd ./android && ./gradlew :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet'
+		'./scripts/android-checks.sh :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet'
 
 test-race:
 	@go test -race ./voicegateway/voicertc

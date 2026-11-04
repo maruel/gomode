@@ -5,23 +5,31 @@ on:
     branches: [main]
     paths:
       - .github/workflows/android.yml
+      - .github/workflows/ci.yml
       - Makefile
       - pyproject.toml
       - uv.lock
       - android/**
+      - assets/**
       - sdk/**
+      - testdata/speech-text/**
       - scripts/android*
+      - scripts/run-concurrently.sh
       - scripts/screenshot_publish.py
       - e2e/**
   pull_request:
     paths:
       - .github/workflows/android.yml
+      - .github/workflows/ci.yml
       - Makefile
       - pyproject.toml
       - uv.lock
       - android/**
+      - assets/**
       - sdk/**
+      - testdata/speech-text/**
       - scripts/android*
+      - scripts/run-concurrently.sh
       - scripts/screenshot_publish.py
       - e2e/**
   workflow_dispatch:
