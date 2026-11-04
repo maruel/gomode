@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/maruel/genai"
-	"github.com/maruel/genai/providers/llamacpp"
 	"github.com/maruel/genaipy/kittentts"
 	"github.com/maruel/genaipy/speech"
 	"github.com/pion/webrtc/v4"
@@ -542,7 +541,7 @@ func verifyManagedLLMToolCall(t *testing.T, provider genai.Provider) {
 		toolOptions := &genai.GenOptionTools{Tools: tools, Force: genai.ToolCallRequired}
 		options := []genai.GenOption{
 			&genai.GenOptionText{SystemPrompt: "Use tools when required, then answer briefly after tool results."},
-			&llamacpp.GenOption{},
+			genai.EffortOff,
 			toolOptions,
 		}
 		messages := make(genai.Messages, 0, 3)

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -622,6 +623,10 @@ func TestLlamaRealtimeSession(t *testing.T) {
 	})
 	t.Run("setup", func(t *testing.T) {
 		t.Run("valid", func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
 			accepted := make(chan struct{})
 			release := make(chan struct{})
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -659,11 +664,11 @@ func TestLlamaRealtimeSession(t *testing.T) {
 					return
 				}
 				writeGeminiFixture(t, ctx, ws, string(raw))
-				for {
-					if _, _, err := ws.Read(ctx); err != nil {
-						return
-					}
+				if _, _, err := ws.Read(ctx); err != nil {
+					return
 				}
+				// Even machine correlation fields can echo private tool content.
+				writeGeminiFixture(t, ctx, ws, `{"type":"error","error":{"code":"PRIVATE_RESULT","message":"bad tool output: PRIVATE_RESULT"}}`)
 			}))
 			t.Cleanup(srv.Close)
 			b, err := newLlamaRealtimeBackend(t.Context(), voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", Remote: srv.URL}})
@@ -715,6 +720,11 @@ func TestLlamaRealtimeSession(t *testing.T) {
 			ch := backendChoice(b, "local", "Local")
 			if len(ch.Voices) != 0 || ch.DefaultVoice != "" {
 				t.Fatalf("unsupported voice advertised: %+v", ch)
+			}
+			waitRealtimeSignal(t, s.ctx.Done())
+			s.workers.Wait()
+			if got := logs.String(); !strings.Contains(got, "session failed") || !strings.Contains(got, "session=setup") || strings.Contains(got, "PRIVATE_RESULT") {
+				t.Fatalf("unsafe or missing failure log: %s", got)
 			}
 		})
 		t.Run("error", func(t *testing.T) {

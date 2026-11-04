@@ -95,7 +95,7 @@ func (b *llamaRealtimeBackend) Close() error {
 	return err
 }
 
-func (b *llamaRealtimeBackend) connect(ctx context.Context, _ string, sink backendSink) (backendSession, error) {
+func (b *llamaRealtimeBackend) connect(ctx context.Context, id string, sink backendSink) (backendSession, error) {
 	playback, ok := sink.(backendSpeechSink)
 	if !ok {
 		return nil, errors.New("realtime backend requires paced speech playback")
@@ -106,7 +106,7 @@ func (b *llamaRealtimeBackend) connect(ctx context.Context, _ string, sink backe
 		return nil, errors.New("realtime capacity exhausted; all configured slots are reserved")
 	}
 	life, cancel := context.WithCancel(ctx)
-	return &llamaRealtimeSession{backend: b, sink: sink, playback: playback, ctx: life, cancel: cancel}, nil
+	return &llamaRealtimeSession{backend: b, id: id, sink: sink, playback: playback, ctx: life, cancel: cancel}, nil
 }
 
 type realtimePendingInput struct {
@@ -119,6 +119,7 @@ type realtimePendingInput struct {
 // wakes a blocked send before shutdown waits for the reader.
 type llamaRealtimeSession struct {
 	backend  *llamaRealtimeBackend
+	id       string
 	sink     backendSink
 	playback backendSpeechSink
 	ctx      context.Context
@@ -441,6 +442,7 @@ func (s *llamaRealtimeSession) resultLocked(ctx context.Context, msg *voicev1.To
 	}
 	s.resultBytes += len(value)
 	s.results[msg.ID] = genai.ToolCallResult{ID: msg.ID, Name: msg.Name, Result: value}
+	slog.InfoContext(s.ctx, "llama.cpp realtime: tool result received", "session", s.id, "id", msg.ID, "name", msg.Name, "bytes", len(value), "received", len(s.results), "expected", len(s.tools))
 	return s.finishToolsLocked(ctx)
 }
 
@@ -455,6 +457,7 @@ func (s *llamaRealtimeSession) finishToolsLocked(ctx context.Context) error {
 	if err := s.rt.Send(ctx, genai.RealtimeInputContent{ToolResults: results}); err != nil {
 		return err
 	}
+	slog.InfoContext(s.ctx, "llama.cpp realtime: continuing after tool results", "session", s.id, "count", len(results), "bytes", s.resultBytes)
 	s.tools = nil
 	s.results = nil
 	s.resultBytes = 0
@@ -478,6 +481,8 @@ func (s *llamaRealtimeSession) receive() {
 		}
 		if err != nil {
 			if s.ctx.Err() == nil {
+				// Provider and decoding errors may include private tool content.
+				slog.ErrorContext(s.ctx, "llama.cpp realtime: session failed", "session", s.id, "error_type", fmt.Sprintf("%T", err), "timeout", errors.Is(err, context.DeadlineExceeded))
 				s.sink.sendGatewayError(s.ctx, "llama.cpp: "+err.Error())
 				s.sink.cancelSession()
 				s.cancel()
@@ -518,6 +523,7 @@ func (s *llamaRealtimeSession) eventLocked(event *genai.RealtimeEvent) error {
 		s.tools = event.Content.ToolCalls
 		for i := range s.tools {
 			call := &s.tools[i]
+			slog.InfoContext(s.ctx, "llama.cpp realtime: tool call", "session", s.id, "id", call.ID, "name", call.Name)
 			if err := s.sendLocked(&voicev1.ToolCall{Kind: voicev1.MessageKindToolCall, ID: call.ID, Name: call.Name, Args: json.RawMessage(call.Arguments)}); err != nil {
 				return err
 			}
