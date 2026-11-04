@@ -1042,12 +1042,22 @@ type browserDTXResult struct {
 	Speech, Quiet, Resumed struct{ Packets, Bytes uint64 }
 }
 
+func TestDTXBrowser(t *testing.T) {
+	c := newDTXBrowser(t.Context(), t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, _, err := c.ws.Read(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled DevTools read: %v", err)
+	}
+}
+
 // dtxBrowser owns an isolated Chromium process and its synchronous DevTools connection.
 type dtxBrowser struct {
 	t       *testing.T
 	ctx     context.Context
 	cmd     *exec.Cmd
 	ws      *websocket.Conn
+	addr    string
 	session string
 	id      int
 	loaded  bool
@@ -1057,28 +1067,33 @@ type dtxBrowser struct {
 }
 
 func newDTXBrowser(ctx context.Context, t *testing.T) *dtxBrowser {
-	exe, err := exec.LookPath("chromium")
-	if err != nil {
-		t.Skip("Chromium is not installed; run this test on a browser-equipped host")
+	exe := os.Getenv("CHROME_BIN")
+	if exe == "" {
+		var err error
+		exe, err = exec.LookPath("chromium")
+		if err != nil {
+			t.Skip("Chromium is not installed; set CHROME_BIN or run this test on a browser-equipped host")
+		}
 	}
+	t.Logf("browser executable: %s", exe)
 	dir := t.TempDir()
 	// Cleanup owns shutdown; test cancellation must not kill Chromium before its children exit.
-	cmd := exec.Command(exe, "--headless", "--no-sandbox", "--disable-gpu", //nolint:gosec // Test-owned executable from LookPath; arguments never contain user input.
+	cmd := exec.Command(exe, "--headless", "--no-sandbox", "--disable-gpu", //nolint:gosec // Test executable from CHROME_BIN or LookPath, with fixed flags and a test-owned profile.
 		"--autoplay-policy=no-user-gesture-required", "--remote-debugging-port=0", "--user-data-dir="+dir, "about:blank")
+	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	c := &dtxBrowser{t: t, ctx: ctx, cmd: cmd, exited: make(chan struct{})}
 	c.wg.Go(func() { c.exitErr = cmd.Wait(); close(c.exited) })
 	t.Cleanup(c.close)
-	var addr string
-	for addr == "" {
+	for c.addr == "" {
 		data, err := os.ReadFile(filepath.Join(dir, "DevToolsActivePort")) //nolint:gosec // Chromium writes this fixed filename inside the test-owned temporary profile.
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			t.Fatal(err)
 		}
 		if lines := strings.Fields(string(data)); len(lines) == 2 {
-			addr = "ws://127.0.0.1:" + lines[0] + lines[1]
+			c.addr = "ws://127.0.0.1:" + lines[0] + lines[1]
 			break
 		}
 		select {
@@ -1089,7 +1104,7 @@ func newDTXBrowser(ctx context.Context, t *testing.T) *dtxBrowser {
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
-	ws, res, err := websocket.Dial(ctx, addr, nil)
+	ws, res, err := websocket.Dial(ctx, c.addr, nil)
 	if res != nil && res.Body != nil {
 		if err := res.Body.Close(); err != nil {
 			t.Error(err)
@@ -1109,13 +1124,28 @@ func newDTXBrowser(ctx context.Context, t *testing.T) *dtxBrowser {
 }
 
 func (c *dtxBrowser) close() {
-	if c.ws != nil {
+	if c.addr != "" {
+		// A cancelled DevTools read closes its connection. Shutdown needs its own
+		// connection and deadline so a failed measurement can still stop Chromium.
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(c.ctx), time.Second)
-		err := c.ws.Write(ctx, websocket.MessageText, []byte(`{"id":1000000,"method":"Browser.close"}`))
+		ws, res, err := websocket.Dial(ctx, c.addr, nil)
+		if res != nil && res.Body != nil {
+			if err := res.Body.Close(); err != nil {
+				c.t.Error(err)
+			}
+		}
+		if err == nil {
+			err = ws.Write(ctx, websocket.MessageText, []byte(`{"id":1000000,"method":"Browser.close"}`))
+			if err := ws.CloseNow(); err != nil {
+				c.t.Errorf("close shutdown DevTools: %v", err)
+			}
+		}
 		cancel()
 		if err != nil {
 			c.t.Errorf("request Chromium shutdown: %v", err)
 		}
+	}
+	if c.ws != nil {
 		if err := c.ws.CloseNow(); err != nil {
 			c.t.Errorf("close DevTools: %v", err)
 		}
@@ -1155,12 +1185,12 @@ func (c *dtxBrowser) call(m string, p any, sid string, v any) {
 		c.t.Fatal(err)
 	}
 	if err := c.ws.Write(c.ctx, websocket.MessageText, data); err != nil {
-		c.t.Fatal(err)
+		c.t.Fatalf("DevTools %s request: %v", m, err)
 	}
 	for {
 		_, data, err := c.ws.Read(c.ctx)
 		if err != nil {
-			c.t.Fatal(err)
+			c.t.Fatalf("DevTools %s response: %v", m, err)
 		}
 		var msg struct {
 			ID        int
