@@ -26,6 +26,7 @@ import (
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers"
 	"github.com/maruel/genai/providers/llamacpp/llamacppsrv"
+	"github.com/maruel/genai/providers/openrouter"
 
 	"github.com/maruel/gomode/voicegateway"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
@@ -150,7 +151,7 @@ func localStackModelsForConfigWithStarter(
 	}
 	return localStackModels{
 		asr:     asrAdapter,
-		llm:     &genaiLLMAdapter{provider: llm.provider, effort: cfg.LLM.Effort},
+		llm:     &genaiLLMAdapter{provider: llm.provider, effort: cfg.LLM.Effort, openRouterSort: cfg.LLM.OpenRouterSort},
 		runtime: joinClosers(asr.runtime, llm.runtime),
 	}, nil
 }
@@ -391,8 +392,9 @@ func (a *speechTTSAdapter) synthesize(ctx context.Context, text string) iter.Seq
 }
 
 type genaiLLMAdapter struct {
-	provider genai.Provider
-	effort   genai.EffortLevel
+	provider       genai.Provider
+	effort         genai.EffortLevel
+	openRouterSort openrouter.ProviderSort
 }
 
 func (a *genaiLLMAdapter) newConversation(systemInstruction string, tools []voicev1.ToolDeclaration, includeReasoning bool) llmConversation {
@@ -400,6 +402,7 @@ func (a *genaiLLMAdapter) newConversation(systemInstruction string, tools []voic
 	return &genaiConversation{
 		provider:          a.provider,
 		effort:            a.effort,
+		openRouterSort:    a.openRouterSort,
 		includeReasoning:  includeReasoning,
 		systemInstruction: systemInstruction,
 		tools:             defs,
@@ -412,6 +415,7 @@ func (a *genaiLLMAdapter) newConversation(systemInstruction string, tools []voic
 type genaiConversation struct {
 	provider         genai.Provider
 	effort           genai.EffortLevel
+	openRouterSort   openrouter.ProviderSort
 	includeReasoning bool
 
 	mu                sync.Mutex
@@ -516,6 +520,9 @@ func (c *genaiConversation) genOptions() []genai.GenOption {
 	}
 	if c.effort != "" {
 		opts = append(opts, c.effort)
+	}
+	if c.openRouterSort != "" {
+		opts = append(opts, &openrouter.GenOption{Provider: &openrouter.ProviderPreferences{Sort: c.openRouterSort}})
 	}
 	if c.includeReasoning {
 		opts = append(opts, genai.IncludeReasoning)

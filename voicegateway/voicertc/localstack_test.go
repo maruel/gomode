@@ -23,6 +23,7 @@ import (
 	"github.com/maruel/genai/base"
 	"github.com/maruel/genai/providers"
 	"github.com/maruel/genai/providers/deepseek"
+	"github.com/maruel/genai/providers/openrouter"
 	"github.com/maruel/genai/scoreboard"
 
 	"github.com/maruel/gomode/voicegateway"
@@ -909,6 +910,43 @@ func TestGenaiToolDefs(t *testing.T) {
 
 func TestGenaiConversation(t *testing.T) {
 	t.Parallel()
+	t.Run("OpenRouter sorting survives turns", func(t *testing.T) {
+		t.Parallel()
+		for _, sort := range []openrouter.ProviderSort{"", "latency", "price", "throughput"} {
+			t.Run(string(sort), func(t *testing.T) {
+				p := &fakeGenAIProvider{firstReplies: []genai.Reply{{Text: "Hello."}}}
+				conv := (&genaiLLMAdapter{provider: p, openRouterSort: sort}).newConversation("Answer briefly.", nil, false)
+				for range 2 {
+					step, err := conv.user(t.Context(), "Hello")
+					if err != nil {
+						t.Fatal(err)
+					}
+					finishLLMStep(t, step)
+				}
+				for _, call := range p.callsSnapshot() {
+					var req openrouter.ChatRequest
+					if err := req.Init(call.messages, "test/model", call.opts...); err != nil {
+						t.Fatal(err)
+					}
+					data, err := json.Marshal(&req)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var wire map[string]json.RawMessage
+					if err := json.Unmarshal(data, &wire); err != nil {
+						t.Fatal(err)
+					}
+					want := ""
+					if sort != "" {
+						want = fmt.Sprintf(`{"sort":%q}`, sort)
+					}
+					if got := string(wire["provider"]); got != want {
+						t.Fatalf("wire provider = %s, want %s", got, want)
+					}
+				}
+			})
+		}
+	})
 	t.Run("toolResult", func(t *testing.T) {
 		t.Parallel()
 		p := &fakeGenAIProvider{}

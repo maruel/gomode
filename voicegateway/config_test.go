@@ -17,9 +17,79 @@ import (
 
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers"
+	"github.com/maruel/genai/providers/openrouter"
 )
 
 func TestLoadConfig(t *testing.T) {
+	t.Run("OpenRouter sorting", func(t *testing.T) {
+		t.Run("valid", func(t *testing.T) {
+			for _, sort := range []string{"", "latency", "price", "throughput"} {
+				t.Run(sort, func(t *testing.T) {
+					path := filepath.Join(t.TempDir(), "config.toml")
+					data := fmt.Sprintf(`[[chat]]
+label = "Chat"
+provider = "openrouter"
+model = "test/model"
+openrouter_sort = %q
+[[local_stack]]
+label = "Stack"
+text_only = true
+[local_stack.llm]
+provider = "openrouter"
+model = "test/model"
+openrouter_sort = %q
+`, sort, sort)
+					if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					cfg, err := LoadConfig(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := cfg.Validate(); err != nil {
+						t.Fatal(err)
+					}
+					for _, model := range []*ModelConfig{&cfg.Chat[0].ModelConfig, &cfg.LocalStack[0].LLM} {
+						if string(model.OpenRouterSort) != sort {
+							t.Fatalf("decoded sorting = %q, want %q", model.OpenRouterSort, sort)
+						}
+					}
+					for _, choice := range cfg.Choices() {
+						id, err := choice.ID()
+						if err != nil {
+							t.Fatal(err)
+						}
+						cfg.Chat[0].OpenRouterSort = ""
+						cfg.LocalStack[0].LLM.OpenRouterSort = ""
+						defaultID, err := choice.ID()
+						if err != nil {
+							t.Fatal(err)
+						}
+						if (id == defaultID) != (sort == "") {
+							t.Fatalf("sort %q identity = %s, default = %s", sort, id, defaultID)
+						}
+						cfg.Chat[0].OpenRouterSort = openrouter.ProviderSort(sort)
+						cfg.LocalStack[0].LLM.OpenRouterSort = openrouter.ProviderSort(sort)
+					}
+				})
+			}
+		})
+		t.Run("error", func(t *testing.T) {
+			for _, tc := range []struct{ provider, sort, want string }{
+				{"openrouter", "fastest", "openrouter_sort: invalid provider sort"},
+				{"openai", "latency", "openrouter_sort requires provider openrouter"},
+			} {
+				t.Run(tc.provider+"/"+tc.sort, func(t *testing.T) {
+					cfg := Config{Chat: []ChatConfig{{Label: "Chat", ModelConfig: ModelConfig{
+						Provider: tc.provider, Model: "test/model", OpenRouterSort: openrouter.ProviderSort(tc.sort),
+					}}}}
+					if err := cfg.ValidateEmbedded(); err == nil || !strings.Contains(err.Error(), tc.want) {
+						t.Fatalf("validation = %v, want %q", err, tc.want)
+					}
+				})
+			}
+		})
+	})
 	t.Run("effort", func(t *testing.T) {
 		for _, effort := range []genai.EffortLevel{"", "off", "low", "medium", "high", "xhigh", "max", "typo"} {
 			t.Run(string(effort), func(t *testing.T) {

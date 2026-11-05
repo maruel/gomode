@@ -126,6 +126,9 @@ effort = "low"
 label = "Openrouter Minimax M3.1 Flash"
 provider = "openrouter"
 model = "minimax/minimax-m3.1-flash"
+# Optional: "latency" (lowest), "price" (lowest), or "throughput" (highest).
+# Omit to use OpenRouter's default routing. Also supported in [local_stack.llm].
+openrouter_sort = "latency"
 
 [[chat]]
 # https://openrouter.ai/xiaomi/mimo-v2.6-flash
@@ -133,6 +136,7 @@ model = "minimax/minimax-m3.1-flash"
 label = "Openrouter MiMo-V2.6-Flash"
 provider = "openrouter"
 model = "xiaomi/mimo-v2.6-flash"
+openrouter_sort = "latency"
 
 [[chat]]
 # https://openrouter.ai/mistralai/ministral-14b-2512
@@ -140,6 +144,7 @@ model = "xiaomi/mimo-v2.6-flash"
 label = "Openrouter Ministral 3 14B"
 provider = "openrouter"
 model = "mistralai/ministral-14b-2512"
+openrouter_sort = "latency"
 
 [[chat]]
 # https://docs.mistral.ai/models/ministral-3-14b-25-12

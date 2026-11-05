@@ -19,6 +19,7 @@ import (
 
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers"
+	"github.com/maruel/genai/providers/openrouter"
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/maruel/gomode"
@@ -190,6 +191,9 @@ type ModelConfig struct {
 	// omits the effort option, preserving provider defaults. Supported levels
 	// depend on the provider and model; off requests the lowest supported effort.
 	Effort genai.EffortLevel `toml:"effort" json:"effort,omitempty"`
+	// OpenRouterSort prioritizes OpenRouter providers by latency, price, or
+	// throughput. Empty preserves OpenRouter's default routing.
+	OpenRouterSort openrouter.ProviderSort `toml:"openrouter_sort" json:"openrouter_sort,omitempty"`
 	// APIKeyName names the environment variable containing the bearer token
 	// for an openaicompatible endpoint. The credential is never stored in TOML.
 	// A named variable must be nonempty in the gateway process environment.
@@ -199,6 +203,12 @@ type ModelConfig struct {
 
 func (c *ModelConfig) validate(prefix string) error {
 	var errs []error
+	if err := c.OpenRouterSort.Validate(); err != nil {
+		errs = append(errs, fmt.Errorf("%s.openrouter_sort: %w", prefix, err))
+	}
+	if c.OpenRouterSort != "" && c.Provider != "openrouter" {
+		errs = append(errs, fmt.Errorf("%s.openrouter_sort requires provider openrouter", prefix))
+	}
 	if err := c.Effort.Validate(); err != nil {
 		errs = append(errs, fmt.Errorf("%s.effort: %w", prefix, err))
 	}
