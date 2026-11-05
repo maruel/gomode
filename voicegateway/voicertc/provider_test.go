@@ -13,7 +13,7 @@ import (
 
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers/gemini"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 func TestRealtimeTranscript(t *testing.T) {
@@ -215,7 +215,7 @@ func (s *realtimeEventSink) cancelSession() {
 func (s *realtimeEventSink) addAssistantSpeechPCM(pcm []byte) {
 	s.mu.Lock()
 	if !s.speechOpen {
-		s.msgs = append(s.msgs, mustGatewayServerMessage(&voicev1.SpeechStarted{Kind: voicev1.MessageKindSpeechStarted, Speaker: voicev1.SpeakerAssistant}))
+		s.msgs = append(s.msgs, mustGatewayServerMessage(&voicev2.SpeechStarted{Kind: voicev2.MessageKindSpeechStarted, Speaker: voicev2.SpeakerAssistant}))
 		s.speechOpen = true
 	}
 	s.pcm = append(s.pcm, pcm...)
@@ -225,7 +225,7 @@ func (s *realtimeEventSink) addAssistantSpeechPCM(pcm []byte) {
 func (s *realtimeEventSink) finishAssistantSpeech() {
 	s.mu.Lock()
 	if s.speechOpen {
-		s.msgs = append(s.msgs, mustGatewayServerMessage(&voicev1.SpeechEnded{Kind: voicev1.MessageKindSpeechEnded, Speaker: voicev1.SpeakerAssistant}))
+		s.msgs = append(s.msgs, mustGatewayServerMessage(&voicev2.SpeechEnded{Kind: voicev2.MessageKindSpeechEnded, Speaker: voicev2.SpeakerAssistant}))
 		s.speechOpen = false
 	}
 	s.mu.Unlock()
@@ -251,7 +251,7 @@ func (s *realtimeEventSink) signal() {
 	}
 }
 
-func (s *realtimeEventSink) waitForKind(t *testing.T, kind voicev1.MessageKind, count int) {
+func (s *realtimeEventSink) waitForKind(t *testing.T, kind voicev2.MessageKind, count int) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	t.Cleanup(cancel)
 	for {
@@ -286,7 +286,7 @@ func TestRealtimeBridgeSessionReportsProviderErrorsAsRecoverable(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	var msg voicev1.Error
+	var msg voicev2.Error
 	if err := json.Unmarshal(sink.msgs[0], &msg); err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,7 @@ func TestGatewayRealtimeToolsCancelsDuringSend(t *testing.T) {
 
 func TestRealtimeBridgeBackendSetupOptions(t *testing.T) {
 	t.Parallel()
-	setup := &voicev1.SessionSetup{Voice: voicev1.VoiceConfig{Language: "fr-CA"}}
+	setup := &voicev2.SessionSetup{Voice: voicev2.VoiceConfig{Language: "fr-CA"}}
 	geminiOpts := (&realtimeBridgeBackend{provider: "gemini"}).setupOptions(setup)
 	if len(geminiOpts) != 1 || geminiOpts[0].(*gemini.RealtimeOption).InputLanguages[0] != "fr-CA" {
 		t.Fatalf("Gemini options = %+v", geminiOpts)

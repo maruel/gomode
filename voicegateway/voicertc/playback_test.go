@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 func TestAssistantSpeechPlayback(t *testing.T) {
@@ -20,7 +20,7 @@ func TestAssistantSpeechPlayback(t *testing.T) {
 			if events := p.tick(false); len(events) != 0 {
 				t.Fatalf("started without RTP: %v", events)
 			}
-			if events := p.tick(true); !slices.Equal(events, []voicev1.MessageKind{voicev1.MessageKindSpeechStarted}) {
+			if events := p.tick(true); !slices.Equal(events, []voicev2.MessageKind{voicev2.MessageKindSpeechStarted}) {
 				t.Fatalf("start: %v", events)
 			}
 			for range 2 {
@@ -31,7 +31,7 @@ func TestAssistantSpeechPlayback(t *testing.T) {
 			if !p.pending() {
 				t.Fatal("last frame still playing must remain pending")
 			}
-			if events := p.tick(false); !slices.Equal(events, []voicev1.MessageKind{voicev1.MessageKindSpeechEnded}) {
+			if events := p.tick(false); !slices.Equal(events, []voicev2.MessageKind{voicev2.MessageKindSpeechEnded}) {
 				t.Fatalf("completion: %v", events)
 			}
 			if p.pending() {
@@ -50,10 +50,10 @@ func TestAssistantSpeechPlayback(t *testing.T) {
 				}
 			}
 			p.tick(true)
-			if events := p.tick(true); !slices.Equal(events, []voicev1.MessageKind{voicev1.MessageKindSpeechEnded, voicev1.MessageKindSpeechStarted}) {
+			if events := p.tick(true); !slices.Equal(events, []voicev2.MessageKind{voicev2.MessageKindSpeechEnded, voicev2.MessageKindSpeechStarted}) {
 				t.Fatalf("boundary order: %v", events)
 			}
-			if events := p.tick(false); !slices.Equal(events, []voicev1.MessageKind{voicev1.MessageKindSpeechEnded}) {
+			if events := p.tick(false); !slices.Equal(events, []voicev2.MessageKind{voicev2.MessageKindSpeechEnded}) {
 				t.Fatalf("second completion: %v", events)
 			}
 		})
@@ -69,7 +69,7 @@ func TestAssistantSpeechPlayback(t *testing.T) {
 			if events := p.tick(true); len(events) != 0 {
 				t.Fatalf("gap duplicated start: %v", events)
 			}
-			if events := p.tick(false); len(events) != 1 || events[0] != voicev1.MessageKindSpeechEnded {
+			if events := p.tick(false); len(events) != 1 || events[0] != voicev2.MessageKindSpeechEnded {
 				t.Fatalf("final end: %v", events)
 			}
 		})

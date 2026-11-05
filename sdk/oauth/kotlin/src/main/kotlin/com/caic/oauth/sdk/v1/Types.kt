@@ -228,4 +228,3 @@ data class DeviceAuthorizationResponse(
     val expires_in: Long,
     val interval: Long? = null,
 )
-

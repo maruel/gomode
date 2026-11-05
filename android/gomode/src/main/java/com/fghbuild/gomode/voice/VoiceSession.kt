@@ -14,31 +14,31 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
-import com.caic.voicegateway.sdk.v1.ApiClient
-import com.caic.voicegateway.sdk.v1.ContextUpdate
-import com.caic.voicegateway.sdk.v1.Error
-import com.caic.voicegateway.sdk.v1.MessageEnvelope
-import com.caic.voicegateway.sdk.v1.MessageKind
-import com.caic.voicegateway.sdk.v1.ReasoningDelta
-import com.caic.voicegateway.sdk.v1.SessionSetup
-import com.caic.voicegateway.sdk.v1.SessionStatus
-import com.caic.voicegateway.sdk.v1.Speaker
-import com.caic.voicegateway.sdk.v1.ToolCall
-import com.caic.voicegateway.sdk.v1.ToolDeclaration
-import com.caic.voicegateway.sdk.v1.ToolResult
-import com.caic.voicegateway.sdk.v1.TranscriptDelta
-import com.caic.voicegateway.sdk.v1.TurnState
-import com.caic.voicegateway.sdk.v1.TurnStatus
-import com.caic.voicegateway.sdk.v1.UserMessage
-import com.caic.voicegateway.sdk.v1.VoiceConfig
-import com.caic.voicegateway.sdk.v1.VoiceRTCClientDiagnostics
-import com.caic.voicegateway.sdk.v1.VoiceRTCDataChannelState
-import com.caic.voicegateway.sdk.v1.VoiceRTCDiagnosticsReq
-import com.caic.voicegateway.sdk.v1.VoiceRTCDiagnosticsResp
-import com.caic.voicegateway.sdk.v1.VoiceRTCICEConnectionState
-import com.caic.voicegateway.sdk.v1.VoiceRTCICEGatheringState
-import com.caic.voicegateway.sdk.v1.VoiceRTCOfferReq
-import com.caic.voicegateway.sdk.v1.VoiceRTCSignalingState
+import com.caic.voicegateway.sdk.v2.ApiClient
+import com.caic.voicegateway.sdk.v2.ContextUpdate
+import com.caic.voicegateway.sdk.v2.Error
+import com.caic.voicegateway.sdk.v2.MessageEnvelope
+import com.caic.voicegateway.sdk.v2.MessageKind
+import com.caic.voicegateway.sdk.v2.ReasoningDelta
+import com.caic.voicegateway.sdk.v2.SessionSetup
+import com.caic.voicegateway.sdk.v2.SessionStatus
+import com.caic.voicegateway.sdk.v2.Speaker
+import com.caic.voicegateway.sdk.v2.ToolCall
+import com.caic.voicegateway.sdk.v2.ToolDeclaration
+import com.caic.voicegateway.sdk.v2.ToolResult
+import com.caic.voicegateway.sdk.v2.TranscriptDelta
+import com.caic.voicegateway.sdk.v2.TurnState
+import com.caic.voicegateway.sdk.v2.TurnStatus
+import com.caic.voicegateway.sdk.v2.UserMessage
+import com.caic.voicegateway.sdk.v2.VoiceConfig
+import com.caic.voicegateway.sdk.v2.VoiceRTCClientDiagnostics
+import com.caic.voicegateway.sdk.v2.VoiceRTCDataChannelState
+import com.caic.voicegateway.sdk.v2.VoiceRTCDiagnosticsReq
+import com.caic.voicegateway.sdk.v2.VoiceRTCDiagnosticsResp
+import com.caic.voicegateway.sdk.v2.VoiceRTCICEConnectionState
+import com.caic.voicegateway.sdk.v2.VoiceRTCICEGatheringState
+import com.caic.voicegateway.sdk.v2.VoiceRTCOfferReq
+import com.caic.voicegateway.sdk.v2.VoiceRTCSignalingState
 import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
@@ -1669,7 +1669,7 @@ internal fun gatewaySessionSetup(
         ),
     tools = tools,
     context =
-        com.caic.voicegateway.sdk.v1.Context(
+        com.caic.voicegateway.sdk.v2.Context(
             systemInstruction = combineSystemInstructions(systemInstruction),
             text = serviceContextText,
         ),
@@ -1697,7 +1697,7 @@ internal fun gatewayContextUpdate(text: String) =
     ContextUpdate(
         kind = MessageKind.ContextUpdate,
         context =
-            com.caic.voicegateway.sdk.v1
+            com.caic.voicegateway.sdk.v2
                 .Context(text = text),
     )
 

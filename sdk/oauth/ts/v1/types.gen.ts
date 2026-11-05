@@ -175,4 +175,3 @@ export interface DeviceAuthorizationResponse {
   expires_in: number /* int64 */;
   interval?: number /* int64 */;
 }
-

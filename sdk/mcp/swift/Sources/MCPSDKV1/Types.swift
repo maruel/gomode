@@ -674,4 +674,3 @@ public struct SubscriptionsInitialStateParams: Codable {
     /// second read.
     public let contents: [ResourceContent]
 }
-

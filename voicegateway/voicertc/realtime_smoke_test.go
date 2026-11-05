@@ -20,7 +20,7 @@ import (
 
 	"github.com/maruel/genai/providers/llamacpp/llamacppsrv"
 	"github.com/maruel/gomode/voicegateway"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 const (
@@ -77,7 +77,7 @@ func TestSmokeLlamaRealtimeGateway(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	setup := &voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup, Context: voicev1.Context{SystemInstruction: "List of tools:"}, Tools: []voicev1.ToolDeclaration{{Name: "set_volume", Description: "Set the device speaker volume.", Parameters: json.RawMessage(`{"type":"object","properties":{"volume":{"type":"integer","description":"Volume from 0 to 100."}},"required":["volume"]}`)}}}
+	setup := &voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup, Context: voicev2.Context{SystemInstruction: "List of tools:"}, Tools: []voicev2.ToolDeclaration{{Name: "set_volume", Description: "Set the device speaker volume.", Parameters: json.RawMessage(`{"type":"object","properties":{"volume":{"type":"integer","description":"Volume from 0 to 100."}},"required":["volume"]}`)}}}
 	if err := s.acceptClientMessage(ctx, mustGatewayServerMessage(setup)); err != nil {
 		t.Fatal(err)
 	}
@@ -104,15 +104,15 @@ func TestSmokeLlamaRealtimeGateway(t *testing.T) {
 		msgs := append([][]byte(nil), sink.msgs...)
 		sink.mu.Unlock()
 		for _, raw := range msgs {
-			var env voicev1.MessageEnvelope
+			var env voicev2.MessageEnvelope
 			if err := json.Unmarshal(raw, &env); err != nil {
 				t.Fatal(err)
 			}
-			if env.Kind == voicev1.MessageKindError {
+			if env.Kind == voicev2.MessageKindError {
 				t.Fatalf("gateway error: %s", raw)
 			}
-			if env.Kind == voicev1.MessageKindToolCall && !resultSent {
-				var call voicev1.ToolCall
+			if env.Kind == voicev2.MessageKindToolCall && !resultSent {
+				var call voicev2.ToolCall
 				if err := json.Unmarshal(raw, &call); err != nil {
 					t.Fatal(err)
 				}
@@ -124,7 +124,7 @@ func TestSmokeLlamaRealtimeGateway(t *testing.T) {
 				}
 				firstTool = time.Since(start)
 				beforeResult = sink.pcmLen()
-				if err := s.acceptClientMessage(ctx, mustGatewayServerMessage(&voicev1.ToolResult{Kind: voicev1.MessageKindToolResult, ID: call.ID, Name: call.Name, Result: json.RawMessage(`{"volume":30}`)})); err != nil {
+				if err := s.acceptClientMessage(ctx, mustGatewayServerMessage(&voicev2.ToolResult{Kind: voicev2.MessageKindToolResult, ID: call.ID, Name: call.Name, Result: json.RawMessage(`{"volume":30}`)})); err != nil {
 					t.Fatal(err)
 				}
 				resultSent = true
@@ -133,8 +133,8 @@ func TestSmokeLlamaRealtimeGateway(t *testing.T) {
 		// Turn idle is emitted after terminal response, so PCM observed here after a
 		// real correlated result belongs to the resumed conversation.
 		for _, raw := range msgs {
-			var status voicev1.TurnStatus
-			if json.Unmarshal(raw, &status) == nil && status.Kind == voicev1.MessageKindTurnStatus && status.State == voicev1.TurnStateIdle {
+			var status voicev2.TurnStatus
+			if json.Unmarshal(raw, &status) == nil && status.Kind == voicev2.MessageKindTurnStatus && status.State == voicev2.TurnStateIdle {
 				if !resultSent {
 					t.Fatalf("completed response omitted expected spoken tool; gateway messages: %s", realtimeSmokeMessages(msgs))
 				}

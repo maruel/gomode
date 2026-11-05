@@ -27,7 +27,7 @@ import (
 	"github.com/maruel/genai/scoreboard"
 
 	"github.com/maruel/gomode/voicegateway"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 // newTestLocalStackBackend seeds a lazy choice with controlled loaded adapters.
@@ -96,7 +96,7 @@ func TestLocalStackSession(t *testing.T) {
 		for _, include := range []bool{true, false} {
 			sess := runtime.newSession(t.Context(), "reasoning", &captureSink{}, true)
 			t.Cleanup(func() { _ = sess.close() })
-			setup := mustJSON(t, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup, IncludeReasoning: include})
+			setup := mustJSON(t, voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup, IncludeReasoning: include})
 			if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
 				t.Fatal(err)
 			}
@@ -132,10 +132,10 @@ func TestLocalStackSession(t *testing.T) {
 					}
 					return
 				}
-				if got := sink.kinds(); !slices.Equal(got, []voicev1.MessageKind{voicev1.MessageKindError}) {
+				if got := sink.kinds(); !slices.Equal(got, []voicev2.MessageKind{voicev2.MessageKindError}) {
 					t.Fatalf("messages = %v, want error", got)
 				}
-				var msg voicev1.Error
+				var msg voicev2.Error
 				if err := json.Unmarshal(sink.msgs[0], &msg); err != nil {
 					t.Fatal(err)
 				}
@@ -159,10 +159,10 @@ func TestLocalStackSession(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = sess.close() })
 
-		setup := mustJSON(t, voicev1.SessionSetup{
-			Kind:  voicev1.MessageKindSessionSetup,
-			Voice: voicev1.VoiceConfig{Name: "local", Language: "en"},
-			Tools: []voicev1.ToolDeclaration{{Name: "tasks_list", Description: "List tasks", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		setup := mustJSON(t, voicev2.SessionSetup{
+			Kind:  voicev2.MessageKindSessionSetup,
+			Voice: voicev2.VoiceConfig{Name: "local", Language: "en"},
+			Tools: []voicev2.ToolDeclaration{{Name: "tasks_list", Description: "List tasks", Parameters: json.RawMessage(`{"type":"object"}`)}},
 		})
 		if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
 			t.Fatal(err)
@@ -176,8 +176,8 @@ func TestLocalStackSession(t *testing.T) {
 		mustAcceptMic(t, sess, silencePCM(vadSilenceHangoverMS+vadFrameMS))
 
 		// The placeholder LLM calls the first declared tool first.
-		waitForKind(t, sink, voicev1.MessageKindToolCall)
-		if !slices.Contains(sink.kinds(), voicev1.MessageKindTranscriptDelta) {
+		waitForKind(t, sink, voicev2.MessageKindToolCall)
+		if !slices.Contains(sink.kinds(), voicev2.MessageKindTranscriptDelta) {
 			t.Fatal("missing user transcript before tool call")
 		}
 		call := decodeToolCall(t, sink)
@@ -186,19 +186,19 @@ func TestLocalStackSession(t *testing.T) {
 		}
 
 		// Return the tool result; the turn should then speak.
-		result := mustJSON(t, voicev1.ToolResult{
-			Kind: voicev1.MessageKindToolResult, ID: call.ID, Name: call.Name, Result: json.RawMessage(`{"tasks":[]}`),
+		result := mustJSON(t, voicev2.ToolResult{
+			Kind: voicev2.MessageKindToolResult, ID: call.ID, Name: call.Name, Result: json.RawMessage(`{"tasks":[]}`),
 		})
 		if err := sess.acceptClientMessage(t.Context(), result); err != nil {
 			t.Fatal(err)
 		}
 
-		waitForKind(t, sink, voicev1.MessageKindSpeechEnded)
+		waitForKind(t, sink, voicev2.MessageKindSpeechEnded)
 		kinds := sink.kinds()
-		for _, want := range []voicev1.MessageKind{
-			voicev1.MessageKindSpeechStarted,
-			voicev1.MessageKindAssistantTextDelta,
-			voicev1.MessageKindSpeechEnded,
+		for _, want := range []voicev2.MessageKind{
+			voicev2.MessageKindSpeechStarted,
+			voicev2.MessageKindAssistantTextDelta,
+			voicev2.MessageKindSpeechEnded,
 		} {
 			if !slices.Contains(kinds, want) {
 				t.Fatalf("kinds = %v, missing %s", kinds, want)
@@ -221,32 +221,32 @@ func TestLocalStackSession(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = sess.close() })
-		setup := mustJSON(t, voicev1.SessionSetup{
-			Kind:  voicev1.MessageKindSessionSetup,
-			Tools: []voicev1.ToolDeclaration{{Name: "tasks_list", Description: "List tasks", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		setup := mustJSON(t, voicev2.SessionSetup{
+			Kind:  voicev2.MessageKindSessionSetup,
+			Tools: []voicev2.ToolDeclaration{{Name: "tasks_list", Description: "List tasks", Parameters: json.RawMessage(`{"type":"object"}`)}},
 		})
 		if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
 			t.Fatal(err)
 		}
 		mustAcceptMic(t, sess, loudPCM(200))
 		mustAcceptMic(t, sess, silencePCM(vadSilenceHangoverMS+vadFrameMS))
-		waitForKind(t, sink, voicev1.MessageKindToolCall)
+		waitForKind(t, sink, voicev2.MessageKindToolCall)
 		call := decodeToolCall(t, sink)
-		result := mustJSON(t, voicev1.ToolResult{Kind: voicev1.MessageKindToolResult, ID: call.ID, Name: call.Name, Result: json.RawMessage(`{"type":"object"}`)})
+		result := mustJSON(t, voicev2.ToolResult{Kind: voicev2.MessageKindToolResult, ID: call.ID, Name: call.Name, Result: json.RawMessage(`{"type":"object"}`)})
 		if err := sess.acceptClientMessage(t.Context(), result); err != nil {
 			t.Fatal(err)
 		}
 		waitForTurnStates(t, sink, 3)
 
-		want := []voicev1.TurnState{voicev1.TurnStateTranscribing, voicev1.TurnStateThinking, voicev1.TurnStateIdle}
+		want := []voicev2.TurnState{voicev2.TurnStateTranscribing, voicev2.TurnStateThinking, voicev2.TurnStateIdle}
 		if got := sink.turnStates(); !slices.Equal(got, want) {
 			t.Fatalf("turn states = %v, want %v", got, want)
 		}
 		kinds := sink.kinds()
-		if first, transcript := slices.Index(kinds, voicev1.MessageKindTurnStatus), slices.Index(kinds, voicev1.MessageKindTranscriptDelta); first > transcript {
+		if first, transcript := slices.Index(kinds, voicev2.MessageKindTurnStatus), slices.Index(kinds, voicev2.MessageKindTranscriptDelta); first > transcript {
 			t.Fatalf("kinds = %v, want transcribing before the user transcript", kinds)
 		}
-		if kinds[len(kinds)-1] != voicev1.MessageKindTurnStatus || !slices.Contains(kinds, voicev1.MessageKindSpeechEnded) {
+		if kinds[len(kinds)-1] != voicev2.MessageKindTurnStatus || !slices.Contains(kinds, voicev2.MessageKindSpeechEnded) {
 			t.Fatalf("kinds = %v, want idle after speech ends", kinds)
 		}
 	})
@@ -264,11 +264,11 @@ func TestLocalStackSession(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = sess.close() })
-		if err := sess.acceptClientMessage(t.Context(), mustJSON(t, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})); err != nil {
+		if err := sess.acceptClientMessage(t.Context(), mustJSON(t, voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup})); err != nil {
 			t.Fatal(err)
 		}
 		for i, text := range []string{"one", "two"} {
-			if err := sess.acceptClientMessage(t.Context(), mustJSON(t, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: text})); err != nil {
+			if err := sess.acceptClientMessage(t.Context(), mustJSON(t, voicev2.UserMessage{Kind: voicev2.MessageKindUserMessage, Text: text})); err != nil {
 				t.Fatal(err)
 			}
 			waitForTurnStates(t, sink, i+1)
@@ -276,14 +276,14 @@ func TestLocalStackSession(t *testing.T) {
 		// The first turn ends after the second started; it must not report idle.
 		<-llm.finished
 		time.Sleep(100 * time.Millisecond)
-		if got := sink.turnStates(); !slices.Equal(got, []voicev1.TurnState{voicev1.TurnStateThinking, voicev1.TurnStateThinking}) {
+		if got := sink.turnStates(); !slices.Equal(got, []voicev2.TurnState{voicev2.TurnStateThinking, voicev2.TurnStateThinking}) {
 			t.Fatalf("turn states after superseded turn ended = %v, want two thinking", got)
 		}
-		if err := sess.acceptClientMessage(t.Context(), mustJSON(t, voicev1.TurnCancel{Kind: voicev1.MessageKindTurnCancel})); err != nil {
+		if err := sess.acceptClientMessage(t.Context(), mustJSON(t, voicev2.TurnCancel{Kind: voicev2.MessageKindTurnCancel})); err != nil {
 			t.Fatal(err)
 		}
 		waitForTurnStates(t, sink, 3)
-		want := []voicev1.TurnState{voicev1.TurnStateThinking, voicev1.TurnStateThinking, voicev1.TurnStateIdle}
+		want := []voicev2.TurnState{voicev2.TurnStateThinking, voicev2.TurnStateThinking, voicev2.TurnStateIdle}
 		if got := sink.turnStates(); !slices.Equal(got, want) {
 			t.Fatalf("turn states = %v, want %v", got, want)
 		}
@@ -303,9 +303,9 @@ func TestLocalStackSession(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = sess.close() })
 
-		setup := mustJSON(t, voicev1.SessionSetup{
-			Kind: voicev1.MessageKindSessionSetup,
-			Context: voicev1.Context{
+		setup := mustJSON(t, voicev2.SessionSetup{
+			Kind: voicev2.MessageKindSessionSetup,
+			Context: voicev2.Context{
 				SystemInstruction: "system prompt",
 				Text:              "Current service items:\n- Build (running)",
 			},
@@ -331,16 +331,16 @@ func TestLocalStackSession(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = sess.close() })
 
-		setup := mustJSON(t, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})
+		setup := mustJSON(t, voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup})
 		if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
 			t.Fatal(err)
 		}
-		msg := mustJSON(t, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "Say exactly one word: Ready"})
+		msg := mustJSON(t, voicev2.UserMessage{Kind: voicev2.MessageKindUserMessage, Text: "Say exactly one word: Ready"})
 		if err := sess.acceptClientMessage(t.Context(), msg); err != nil {
 			t.Fatal(err)
 		}
-		waitForKind(t, sink, voicev1.MessageKindSpeechEnded)
-		if !slices.Contains(sink.kinds(), voicev1.MessageKindSpeechStarted) {
+		waitForKind(t, sink, voicev2.MessageKindSpeechEnded)
+		if !slices.Contains(sink.kinds(), voicev2.MessageKindSpeechStarted) {
 			t.Fatal("missing speech.started")
 		}
 		wantText := "You said: Say exactly one word: Ready"
@@ -376,19 +376,19 @@ func TestLocalStackSession(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = sess.close() })
 
-		setup := mustJSON(t, voicev1.SessionSetup{
-			Kind:  voicev1.MessageKindSessionSetup,
-			Tools: []voicev1.ToolDeclaration{{Name: "tasks_list", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		setup := mustJSON(t, voicev2.SessionSetup{
+			Kind:  voicev2.MessageKindSessionSetup,
+			Tools: []voicev2.ToolDeclaration{{Name: "tasks_list", Parameters: json.RawMessage(`{"type":"object"}`)}},
 		})
 		if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
 			t.Fatal(err)
 		}
-		msg := mustJSON(t, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "List tasks"})
+		msg := mustJSON(t, voicev2.UserMessage{Kind: voicev2.MessageKindUserMessage, Text: "List tasks"})
 		if err := sess.acceptClientMessage(t.Context(), msg); err != nil {
 			t.Fatal(err)
 		}
 
-		waitForKind(t, sink, voicev1.MessageKindToolCall)
+		waitForKind(t, sink, voicev2.MessageKindToolCall)
 		if conv.userCalls() != 1 {
 			t.Fatalf("user calls = %d, want 1", conv.userCalls())
 		}
@@ -431,9 +431,9 @@ func TestLocalStackSession(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = sess.close() })
 
-		setup := mustJSON(t, voicev1.SessionSetup{
-			Kind: voicev1.MessageKindSessionSetup,
-			Tools: []voicev1.ToolDeclaration{
+		setup := mustJSON(t, voicev2.SessionSetup{
+			Kind: voicev2.MessageKindSessionSetup,
+			Tools: []voicev2.ToolDeclaration{
 				{Name: "tasks_list", Parameters: json.RawMessage(`{"type":"object"}`)},
 				{Name: "tasks_get", Parameters: json.RawMessage(`{"type":"object"}`)},
 			},
@@ -441,21 +441,21 @@ func TestLocalStackSession(t *testing.T) {
 		if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
 			t.Fatal(err)
 		}
-		msg := mustJSON(t, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "List tasks"})
+		msg := mustJSON(t, voicev2.UserMessage{Kind: voicev2.MessageKindUserMessage, Text: "List tasks"})
 		if err := sess.acceptClientMessage(t.Context(), msg); err != nil {
 			t.Fatal(err)
 		}
-		waitForKindCount(t, sink, voicev1.MessageKindToolCall, 1)
-		result := mustJSON(t, voicev1.ToolResult{
-			Kind: voicev1.MessageKindToolResult, ID: "call-1", Name: "tasks_list", Result: json.RawMessage(`{"tasks":[]}`),
+		waitForKindCount(t, sink, voicev2.MessageKindToolCall, 1)
+		result := mustJSON(t, voicev2.ToolResult{
+			Kind: voicev2.MessageKindToolResult, ID: "call-1", Name: "tasks_list", Result: json.RawMessage(`{"tasks":[]}`),
 		})
 		if err := sess.acceptClientMessage(t.Context(), result); err != nil {
 			t.Fatal(err)
 		}
-		waitForKindCount(t, sink, voicev1.MessageKindToolCall, 2)
+		waitForKindCount(t, sink, voicev2.MessageKindToolCall, 2)
 
-		result = mustJSON(t, voicev1.ToolResult{
-			Kind: voicev1.MessageKindToolResult, ID: "call-2", Name: "tasks_get", Result: json.RawMessage(`{"task":null}`),
+		result = mustJSON(t, voicev2.ToolResult{
+			Kind: voicev2.MessageKindToolResult, ID: "call-2", Name: "tasks_get", Result: json.RawMessage(`{"task":null}`),
 		})
 		if err := sess.acceptClientMessage(t.Context(), result); err != nil {
 			t.Fatal(err)
@@ -529,7 +529,7 @@ func TestLocalStackSession(t *testing.T) {
 			default:
 				t.Fatal("TTS was not called")
 			}
-			if kinds := sink.kinds(); !slices.Equal(kinds, []voicev1.MessageKind{voicev1.MessageKindError}) {
+			if kinds := sink.kinds(); !slices.Equal(kinds, []voicev2.MessageKind{voicev2.MessageKindError}) {
 				t.Fatalf("kinds = %v, want error without speech events after TTS failure", kinds)
 			}
 			if sink.pcmLen() != 0 {
@@ -555,7 +555,7 @@ func TestLocalStackSession(t *testing.T) {
 		t.Cleanup(func() { _ = sess.close() })
 
 		// No tools: the echo LLM speaks immediately.
-		setup := mustJSON(t, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})
+		setup := mustJSON(t, voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup})
 		if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
 			t.Fatal(err)
 		}
@@ -564,14 +564,14 @@ func TestLocalStackSession(t *testing.T) {
 		mustAcceptMic(t, sess, silencePCM(vadSilenceHangoverMS+vadFrameMS))
 
 		// Wait until the assistant is speaking, then barge in with new speech.
-		waitForKind(t, sink, voicev1.MessageKindSpeechStarted)
+		waitForKind(t, sink, voicev2.MessageKindSpeechStarted)
 		mustAcceptMic(t, sess, loudPCM(60))
 
-		waitForKind(t, sink, voicev1.MessageKindInterrupted)
+		waitForKind(t, sink, voicev2.MessageKindInterrupted)
 		// The interrupted turn must not complete (no speech.ended afterward).
 		time.Sleep(50 * time.Millisecond)
 		kinds := sink.kinds()
-		if slices.Contains(kinds, voicev1.MessageKindSpeechEnded) {
+		if slices.Contains(kinds, voicev2.MessageKindSpeechEnded) {
 			t.Fatalf("kinds = %v, barge-in must cancel before speech.ended", kinds)
 		}
 		if sink.wasCanceled() {
@@ -584,10 +584,10 @@ func TestLocalStackSession(t *testing.T) {
 		runtime := &localStackRuntime{llm: &genaiLLMAdapter{provider: &fakeGenAIProvider{}}}
 		sess := runtime.newSession(t.Context(), "language", &captureSink{}, true)
 		t.Cleanup(func() { _ = sess.close() })
-		setup := mustJSON(t, voicev1.SessionSetup{
-			Kind:    voicev1.MessageKindSessionSetup,
-			Voice:   voicev1.VoiceConfig{Language: "fr-CA"},
-			Context: voicev1.Context{SystemInstruction: "Answer briefly."},
+		setup := mustJSON(t, voicev2.SessionSetup{
+			Kind:    voicev2.MessageKindSessionSetup,
+			Voice:   voicev2.VoiceConfig{Language: "fr-CA"},
+			Context: voicev2.Context{SystemInstruction: "Answer briefly."},
 		})
 		if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
 			t.Fatal(err)
@@ -599,7 +599,7 @@ func TestLocalStackSession(t *testing.T) {
 		if !strings.Contains(conv.systemInstruction, "selected language: fr-CA") {
 			t.Fatalf("instruction = %q, want selected language", conv.systemInstruction)
 		}
-		invalid := mustJSON(t, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup, Voice: voicev1.VoiceConfig{Language: "en_US"}})
+		invalid := mustJSON(t, voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup, Voice: voicev2.VoiceConfig{Language: "en_US"}})
 		if err := sess.acceptClientMessage(t.Context(), invalid); err == nil {
 			t.Fatal("expected invalid language error")
 		}
@@ -612,9 +612,9 @@ func TestLocalStackSession(t *testing.T) {
 		t.Parallel()
 		runtime := &localStackRuntime{llm: fixedConversationLLM{conv: &fakeConversation{}}}
 		sess := runtime.newSession(t.Context(), "closed", &captureSink{}, true)
-		setup, err := json.Marshal(voicev1.SessionSetup{
-			Kind:    voicev1.MessageKindSessionSetup,
-			Context: voicev1.Context{SystemInstruction: "be terse"},
+		setup, err := json.Marshal(voicev2.SessionSetup{
+			Kind:    voicev2.MessageKindSessionSetup,
+			Context: voicev2.Context{SystemInstruction: "be terse"},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -633,9 +633,9 @@ func TestLocalStackReasoning(t *testing.T) {
 	t.Parallel()
 	const reasoning = "Weigh both dates. Compare them. "
 	const answer = "The first date is earlier."
-	setup := mustJSON(t, voicev1.SessionSetup{
-		Kind:    voicev1.MessageKindSessionSetup,
-		Context: voicev1.Context{SystemInstruction: "Answer briefly."},
+	setup := mustJSON(t, voicev2.SessionSetup{
+		Kind:    voicev2.MessageKindSessionSetup,
+		Context: voicev2.Context{SystemInstruction: "Answer briefly."},
 	})
 
 	t.Run("client speech", func(t *testing.T) {
@@ -648,9 +648,9 @@ func TestLocalStackReasoning(t *testing.T) {
 			t.Fatal(err)
 		}
 		sess.startUserMessage(t.Context(), "Which date is earlier?")
-		waitForKind(t, sink, voicev1.MessageKindAssistantTextDelta)
+		waitForKind(t, sink, voicev2.MessageKindAssistantTextDelta)
 		kinds := sink.kinds()
-		firstReasoning, firstText := slices.Index(kinds, voicev1.MessageKindReasoningDelta), slices.Index(kinds, voicev1.MessageKindAssistantTextDelta)
+		firstReasoning, firstText := slices.Index(kinds, voicev2.MessageKindReasoningDelta), slices.Index(kinds, voicev2.MessageKindAssistantTextDelta)
 		if firstReasoning < 0 || firstReasoning > firstText {
 			t.Fatalf("kinds = %v, want reasoning before assistant text", kinds)
 		}
@@ -679,9 +679,9 @@ func TestLocalStackReasoning(t *testing.T) {
 		}
 		mustAcceptMic(t, sess, loudPCM(200))
 		mustAcceptMic(t, sess, silencePCM(vadSilenceHangoverMS+vadFrameMS))
-		waitForKind(t, sink, voicev1.MessageKindSpeechEnded)
+		waitForKind(t, sink, voicev2.MessageKindSpeechEnded)
 		kinds := sink.kinds()
-		firstReasoning, firstSpeech := slices.Index(kinds, voicev1.MessageKindReasoningDelta), slices.Index(kinds, voicev1.MessageKindSpeechStarted)
+		firstReasoning, firstSpeech := slices.Index(kinds, voicev2.MessageKindReasoningDelta), slices.Index(kinds, voicev2.MessageKindSpeechStarted)
 		if firstReasoning < 0 || firstReasoning > firstSpeech {
 			t.Fatalf("kinds = %v, want reasoning before speech", kinds)
 		}
@@ -711,11 +711,11 @@ func (c *failingConversation) toolResult(context.Context, string, string, json.R
 
 func TestLocalStackSessionScopedErrors(t *testing.T) {
 	t.Parallel()
-	errorOf := func(t *testing.T, sink *captureSink) voicev1.Error {
-		if got := sink.kinds(); !slices.Equal(got, []voicev1.MessageKind{voicev1.MessageKindError}) {
+	errorOf := func(t *testing.T, sink *captureSink) voicev2.Error {
+		if got := sink.kinds(); !slices.Equal(got, []voicev2.MessageKind{voicev2.MessageKindError}) {
 			t.Fatalf("messages = %v, want one error", got)
 		}
-		var msg voicev1.Error
+		var msg voicev2.Error
 		if err := json.Unmarshal(sink.msgs[0], &msg); err != nil {
 			t.Fatal(err)
 		}
@@ -810,7 +810,7 @@ func TestGenaiToolDefs(t *testing.T) {
 	t.Parallel()
 	t.Run("missing parameters default to object", func(t *testing.T) {
 		t.Parallel()
-		tools, err := genaiToolDefs([]voicev1.ToolDeclaration{{Name: "hang_up", Description: "End the call"}})
+		tools, err := genaiToolDefs([]voicev2.ToolDeclaration{{Name: "hang_up", Description: "End the call"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -831,7 +831,7 @@ func TestGenaiToolDefs(t *testing.T) {
 
 	t.Run("valid", func(t *testing.T) {
 		t.Parallel()
-		tools, err := genaiToolDefs([]voicev1.ToolDeclaration{{
+		tools, err := genaiToolDefs([]voicev2.ToolDeclaration{{
 			Name:        "tasks_list",
 			Description: "List tasks",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer"}}}`),
@@ -858,7 +858,7 @@ func TestGenaiToolDefs(t *testing.T) {
 
 	t.Run("object schema preserves constraints", func(t *testing.T) {
 		t.Parallel()
-		tools, err := genaiToolDefs([]voicev1.ToolDeclaration{{
+		tools, err := genaiToolDefs([]voicev2.ToolDeclaration{{
 			Name: "tasks_list", Description: "List tasks",
 			Parameters: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1}},"required":["limit"],"additionalProperties":false}`),
 		}})
@@ -887,7 +887,7 @@ func TestGenaiToolDefs(t *testing.T) {
 		for _, raw := range []string{`null`, `[]`, `true`, `{}`, `{"type":null}`, `{"type":"string"}`, `{"type":1}`, `{"properties":{"limit":{"type":"integer"}}}`, `{"type":`} {
 			t.Run(raw, func(t *testing.T) {
 				t.Parallel()
-				_, err := genaiToolDefs([]voicev1.ToolDeclaration{{Name: "hang_up", Description: "End the call", Parameters: json.RawMessage(raw)}})
+				_, err := genaiToolDefs([]voicev2.ToolDeclaration{{Name: "hang_up", Description: "End the call", Parameters: json.RawMessage(raw)}})
 				if err == nil || !strings.Contains(err.Error(), "hang_up") {
 					t.Fatalf("error = %v, want named tool schema error", err)
 				}
@@ -897,7 +897,7 @@ func TestGenaiToolDefs(t *testing.T) {
 
 	t.Run("error", func(t *testing.T) {
 		t.Parallel()
-		_, err := genaiToolDefs([]voicev1.ToolDeclaration{{
+		_, err := genaiToolDefs([]voicev2.ToolDeclaration{{
 			Name:        "bad name",
 			Description: "Bad",
 			Parameters:  json.RawMessage(`{"type":`),
@@ -950,7 +950,7 @@ func TestGenaiConversation(t *testing.T) {
 	t.Run("toolResult", func(t *testing.T) {
 		t.Parallel()
 		p := &fakeGenAIProvider{}
-		conv := (&genaiLLMAdapter{provider: p, effort: genai.EffortOff}).newConversation("Answer briefly.", []voicev1.ToolDeclaration{{
+		conv := (&genaiLLMAdapter{provider: p, effort: genai.EffortOff}).newConversation("Answer briefly.", []voicev2.ToolDeclaration{{
 			Name:        "tasks_list",
 			Description: "List tasks",
 			Parameters:  json.RawMessage(`{"type":"object"}`),
@@ -1175,7 +1175,7 @@ data: [DONE]
 	}
 	t.Cleanup(func() { bridge.CloseAll(t.Context()) })
 	choices := bridge.VoiceChoices()
-	if len(choices.Choices) != 1 || !slices.Equal(choices.Choices[0].Transports, []voicev1.VoiceTransport{voicev1.VoiceTransportText}) {
+	if len(choices.Choices) != 1 || !slices.Equal(choices.Choices[0].Transports, []voicev2.VoiceTransport{voicev2.VoiceTransportText}) {
 		t.Fatalf("text-only choices = %+v", choices)
 	}
 	if _, _, err := bridge.HandleOffer(t.Context(), "m=audio "); err == nil || !strings.Contains(err.Error(), "text-only") {
@@ -1187,25 +1187,25 @@ data: [DONE]
 	}
 	handler := voicegateway.NewEmbeddedHandler(func() voicegateway.MediaBridge { return bridge }, bridge)
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), "POST", "/api/voicegateway/v1/voice/rtc/offer", strings.NewReader(`{"sdp":"m=audio "}`)))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), "POST", "/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(`{"sdp":"m=audio "}`)))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("audio offer status = %d: %s", rec.Code, rec.Body)
 	}
 	conn := dialTextSession(t, bridge)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	t.Cleanup(cancel)
-	writeMessage(t, ctx, conn, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})
-	expectKind(t, ctx, conn, voicev1.MessageKindSessionReady)
-	writeMessage(t, ctx, conn, voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "Hi"})
-	expectTurnStatus(t, ctx, conn, voicev1.TurnStateThinking)
-	var reply voicev1.AssistantTextDelta
-	if err := json.Unmarshal(expectKind(t, ctx, conn, voicev1.MessageKindAssistantTextDelta), &reply); err != nil {
+	writeMessage(t, ctx, conn, voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup})
+	expectKind(t, ctx, conn, voicev2.MessageKindSessionReady)
+	writeMessage(t, ctx, conn, voicev2.UserMessage{Kind: voicev2.MessageKindUserMessage, Text: "Hi"})
+	expectTurnStatus(t, ctx, conn, voicev2.TurnStateThinking)
+	var reply voicev2.AssistantTextDelta
+	if err := json.Unmarshal(expectKind(t, ctx, conn, voicev2.MessageKindAssistantTextDelta), &reply); err != nil {
 		t.Fatal(err)
 	}
 	if reply.Text != "Hello." {
 		t.Fatalf("reply = %+v", reply)
 	}
-	expectTurnStatus(t, ctx, conn, voicev1.TurnStateIdle)
+	expectTurnStatus(t, ctx, conn, voicev2.TurnStateIdle)
 }
 
 func TestLocalStackProviderCleanup(t *testing.T) { //nolint:paralleltest // The test registers a provider in the process-wide genai registry.
@@ -1270,12 +1270,12 @@ func TestVoiceRTCLocalStackPlaceholders(t *testing.T) {
 			fixedASR{text: "smoke transcript"}, &smokeLLM{text: "ack"}, placeholderTTS{},
 		))
 		s.writeMicAudio(ctx, t, 24)
-		data := s.waitMessage(ctx, t, voicev1.MessageKindTranscriptDelta)
-		var msg voicev1.TranscriptDelta
+		data := s.waitMessage(ctx, t, voicev2.MessageKindTranscriptDelta)
+		var msg voicev2.TranscriptDelta
 		if err := json.Unmarshal(data, &msg); err != nil {
 			t.Fatal(err)
 		}
-		if msg.Speaker != voicev1.SpeakerUser || msg.Text != "smoke transcript" {
+		if msg.Speaker != voicev2.SpeakerUser || msg.Text != "smoke transcript" {
 			t.Fatalf("transcript = %+v, want user smoke transcript", msg)
 		}
 	})
@@ -1289,8 +1289,8 @@ func TestVoiceRTCLocalStackPlaceholders(t *testing.T) {
 			fixedASR{text: "hello"}, &smokeLLM{text: "smoke llm response"}, placeholderTTS{},
 		))
 		s.writeMicAudio(ctx, t, 24)
-		data := s.waitMessage(ctx, t, voicev1.MessageKindAssistantTextDelta)
-		var msg voicev1.AssistantTextDelta
+		data := s.waitMessage(ctx, t, voicev2.MessageKindAssistantTextDelta)
+		var msg voicev2.AssistantTextDelta
 		if err := json.Unmarshal(data, &msg); err != nil {
 			t.Fatal(err)
 		}
@@ -1308,7 +1308,7 @@ func TestVoiceRTCLocalStackPlaceholders(t *testing.T) {
 			fixedASR{text: "hello"}, &smokeLLM{text: "smoke tts response"}, placeholderTTS{},
 		))
 		s.writeMicAudio(ctx, t, 24)
-		s.waitMessage(ctx, t, voicev1.MessageKindSpeechStarted)
+		s.waitMessage(ctx, t, voicev2.MessageKindSpeechStarted)
 		select {
 		case energy := <-s.remoteAudioEnergy:
 			if energy < 1_000 {
@@ -1332,13 +1332,13 @@ func TestVoiceRTCLocalStackPlaceholders(t *testing.T) {
 		))
 		s.writeMicAudio(ctx, t, 10)
 		started := time.Now()
-		s.waitMessage(ctx, t, voicev1.MessageKindTranscriptDelta)
+		s.waitMessage(ctx, t, voicev2.MessageKindTranscriptDelta)
 		if elapsed := time.Since(started); elapsed > time.Second {
 			t.Fatalf("turn ending took %s after the microphone stopped sending", elapsed)
 		}
 		// Speech can resume on the same track after idle synthesis.
 		s.writeMicAudio(ctx, t, 10)
-		s.waitMessage(ctx, t, voicev1.MessageKindTranscriptDelta)
+		s.waitMessage(ctx, t, voicev2.MessageKindTranscriptDelta)
 	})
 }
 
@@ -1440,7 +1440,7 @@ func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			conv := models.llm.newConversation("Answer briefly.", []voicev1.ToolDeclaration{{Name: "tasks_list", Description: "List tasks"}}, false)
+			conv := models.llm.newConversation("Answer briefly.", []voicev2.ToolDeclaration{{Name: "tasks_list", Description: "List tasks"}}, false)
 			step, err := conv.user(t.Context(), "List tasks")
 			if err != nil {
 				t.Fatal(err)
@@ -1518,8 +1518,8 @@ func (c *captureSink) sendTurnError(ctx context.Context, message string) {
 }
 
 func (c *captureSink) reportError(ctx context.Context, message string, recoverable bool) {
-	_ = c.sendGatewayMessage(ctx, mustGatewayServerMessage(&voicev1.Error{
-		Kind: voicev1.MessageKindError, Message: message, Recoverable: recoverable,
+	_ = c.sendGatewayMessage(ctx, mustGatewayServerMessage(&voicev2.Error{
+		Kind: voicev2.MessageKindError, Message: message, Recoverable: recoverable,
 	}))
 }
 
@@ -1559,12 +1559,12 @@ func (c *captureSink) pcmLen() int {
 	return len(c.pcm)
 }
 
-func (c *captureSink) kinds() []voicev1.MessageKind {
+func (c *captureSink) kinds() []voicev2.MessageKind {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	kinds := make([]voicev1.MessageKind, 0, len(c.msgs))
+	kinds := make([]voicev2.MessageKind, 0, len(c.msgs))
 	for _, m := range c.msgs {
-		var env voicev1.MessageEnvelope
+		var env voicev2.MessageEnvelope
 		if json.Unmarshal(m, &env) == nil {
 			kinds = append(kinds, env.Kind)
 		}
@@ -1577,8 +1577,8 @@ func (c *captureSink) reasoningText() string {
 	defer c.mu.Unlock()
 	var out strings.Builder
 	for _, m := range c.msgs {
-		var msg voicev1.ReasoningDelta
-		if json.Unmarshal(m, &msg) == nil && msg.Kind == voicev1.MessageKindReasoningDelta {
+		var msg voicev2.ReasoningDelta
+		if json.Unmarshal(m, &msg) == nil && msg.Kind == voicev2.MessageKindReasoningDelta {
 			out.WriteString(msg.Text)
 		}
 	}
@@ -1590,11 +1590,11 @@ func (c *captureSink) assistantText() string {
 	defer c.mu.Unlock()
 	var out strings.Builder
 	for _, m := range c.msgs {
-		var env voicev1.MessageEnvelope
-		if json.Unmarshal(m, &env) != nil || env.Kind != voicev1.MessageKindAssistantTextDelta {
+		var env voicev2.MessageEnvelope
+		if json.Unmarshal(m, &env) != nil || env.Kind != voicev2.MessageKindAssistantTextDelta {
 			continue
 		}
-		var msg voicev1.AssistantTextDelta
+		var msg voicev2.AssistantTextDelta
 		if json.Unmarshal(m, &msg) == nil {
 			out.WriteString(msg.Text)
 		}
@@ -1602,13 +1602,13 @@ func (c *captureSink) assistantText() string {
 	return out.String()
 }
 
-func (c *captureSink) turnStates() []voicev1.TurnState {
+func (c *captureSink) turnStates() []voicev2.TurnState {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var states []voicev1.TurnState
+	var states []voicev2.TurnState
 	for _, m := range c.msgs {
-		var msg voicev1.TurnStatus
-		if json.Unmarshal(m, &msg) == nil && msg.Kind == voicev1.MessageKindTurnStatus {
+		var msg voicev2.TurnStatus
+		if json.Unmarshal(m, &msg) == nil && msg.Kind == voicev2.MessageKindTurnStatus {
 			states = append(states, msg.State)
 		}
 	}
@@ -1616,28 +1616,28 @@ func (c *captureSink) turnStates() []voicev1.TurnState {
 }
 
 func waitForTurnStates(t *testing.T, sink *captureSink, count int) {
-	waitForKindCount(t, sink, voicev1.MessageKindTurnStatus, count)
+	waitForKindCount(t, sink, voicev2.MessageKindTurnStatus, count)
 }
 
-func decodeToolCall(t *testing.T, sink *captureSink) voicev1.ToolCall {
+func decodeToolCall(t *testing.T, sink *captureSink) voicev2.ToolCall {
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
 	for _, m := range sink.msgs {
-		var env voicev1.MessageEnvelope
-		if json.Unmarshal(m, &env) != nil || env.Kind != voicev1.MessageKindToolCall {
+		var env voicev2.MessageEnvelope
+		if json.Unmarshal(m, &env) != nil || env.Kind != voicev2.MessageKindToolCall {
 			continue
 		}
-		var call voicev1.ToolCall
+		var call voicev2.ToolCall
 		if err := json.Unmarshal(m, &call); err != nil {
 			t.Fatal(err)
 		}
 		return call
 	}
 	t.Fatal("no tool.call captured")
-	return voicev1.ToolCall{}
+	return voicev2.ToolCall{}
 }
 
-func waitForKind(t *testing.T, sink *captureSink, kind voicev1.MessageKind) {
+func waitForKind(t *testing.T, sink *captureSink, kind voicev2.MessageKind) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if slices.Contains(sink.kinds(), kind) {
@@ -1648,7 +1648,7 @@ func waitForKind(t *testing.T, sink *captureSink, kind voicev1.MessageKind) {
 	t.Fatalf("timed out waiting for %s; got %v", kind, sink.kinds())
 }
 
-func waitForKindCount(t *testing.T, sink *captureSink, kind voicev1.MessageKind, count int) {
+func waitForKindCount(t *testing.T, sink *captureSink, kind voicev2.MessageKind, count int) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if got := kindCount(sink.kinds(), kind); got >= count {
@@ -1659,7 +1659,7 @@ func waitForKindCount(t *testing.T, sink *captureSink, kind voicev1.MessageKind,
 	t.Fatalf("timed out waiting for %d %s messages; got %v", count, kind, sink.kinds())
 }
 
-func kindCount(kinds []voicev1.MessageKind, want voicev1.MessageKind) int {
+func kindCount(kinds []voicev2.MessageKind, want voicev2.MessageKind) int {
 	count := 0
 	for _, kind := range kinds {
 		if kind == want {
@@ -1699,7 +1699,7 @@ func silencePCM(ms int) []byte {
 
 type echoLLM struct{}
 
-func (echoLLM) newConversation(string, []voicev1.ToolDeclaration, bool) llmConversation {
+func (echoLLM) newConversation(string, []voicev2.ToolDeclaration, bool) llmConversation {
 	return echoConv{}
 }
 
@@ -1718,7 +1718,7 @@ func (echoConv) addContext(string) {}
 // blockingLLM generates until its turn is cancelled and reports each end.
 type blockingLLM struct{ finished chan struct{} }
 
-func (l *blockingLLM) newConversation(string, []voicev1.ToolDeclaration, bool) llmConversation {
+func (l *blockingLLM) newConversation(string, []voicev2.ToolDeclaration, bool) llmConversation {
 	return l
 }
 
@@ -1820,7 +1820,7 @@ func reasoningStep() llmStep {
 
 type fixedConversationLLM struct{ conv llmConversation }
 
-func (l fixedConversationLLM) newConversation(string, []voicev1.ToolDeclaration, bool) llmConversation {
+func (l fixedConversationLLM) newConversation(string, []voicev2.ToolDeclaration, bool) llmConversation {
 	return l.conv
 }
 
@@ -2005,7 +2005,7 @@ type smokeLLM struct {
 	text string
 }
 
-func (l *smokeLLM) newConversation(string, []voicev1.ToolDeclaration, bool) llmConversation {
+func (l *smokeLLM) newConversation(string, []voicev2.ToolDeclaration, bool) llmConversation {
 	return &smokeLLMConversation{text: l.text}
 }
 

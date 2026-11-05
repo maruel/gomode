@@ -9,9 +9,11 @@ let package = Package(
         .iOS(.v16),
     ],
     products: [
-        .library(name: "VoiceGatewaySDK", targets: ["VoiceGatewaySDK"]),
+        .library(name: "VoiceGatewaySDKV1", targets: ["VoiceGatewaySDKV1"]),
+        .library(name: "VoiceGatewaySDKV2", targets: ["VoiceGatewaySDKV2"]),
     ],
     targets: [
-        .target(name: "VoiceGatewaySDK", path: "Sources/VoiceGatewaySDK"),
+        .target(name: "VoiceGatewaySDKV1", path: "Sources/VoiceGatewaySDKV1"),
+        .target(name: "VoiceGatewaySDKV2", path: "Sources/VoiceGatewaySDKV2"),
     ]
 )

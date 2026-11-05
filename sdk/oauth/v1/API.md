@@ -236,4 +236,3 @@ DeviceAuthorizationResponse is an RFC 8628 device authorization response body.
 | `verification_uri_complete` | `string` |  |  |
 | `expires_in` | `int64` |  | yes |
 | `interval` | `int64` |  |  |
-

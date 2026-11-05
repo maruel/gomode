@@ -1,13 +1,13 @@
 // Unit tests for Go Mode voice session diagnostics and service URL resolution.
 package com.fghbuild.gomode.voice
 
-import com.caic.voicegateway.sdk.v1.ApiClient
-import com.caic.voicegateway.sdk.v1.SessionSetup
-import com.caic.voicegateway.sdk.v1.VoiceRTCConnectivityIssue
-import com.caic.voicegateway.sdk.v1.VoiceRTCConnectivitySide
-import com.caic.voicegateway.sdk.v1.VoiceRTCDiagnosticsResp
-import com.caic.voicegateway.sdk.v1.VoiceRTCOfferReq
-import com.caic.voicegateway.sdk.v1.VoiceRTCServerDiagnostics
+import com.caic.voicegateway.sdk.v2.ApiClient
+import com.caic.voicegateway.sdk.v2.SessionSetup
+import com.caic.voicegateway.sdk.v2.VoiceRTCConnectivityIssue
+import com.caic.voicegateway.sdk.v2.VoiceRTCConnectivitySide
+import com.caic.voicegateway.sdk.v2.VoiceRTCDiagnosticsResp
+import com.caic.voicegateway.sdk.v2.VoiceRTCOfferReq
+import com.caic.voicegateway.sdk.v2.VoiceRTCServerDiagnostics
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.service.credentialedHTTPClient
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor

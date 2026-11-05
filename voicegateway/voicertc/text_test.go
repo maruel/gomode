@@ -19,7 +19,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 func TestServeTextSessionCloseLogging(t *testing.T) { //nolint:paralleltest // The cases replace the process logger.
@@ -58,8 +58,8 @@ func TestServeTextSessionCloseLogging(t *testing.T) { //nolint:paralleltest // T
 			t.Cleanup(func() { _ = conn.CloseNow() })
 			// Wait until the server owns the socket: an immediate disconnect
 			// can cancel the HTTP request context before Hijack completes.
-			writeMessage(t, ctx, conn, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})
-			expectKind(t, ctx, conn, voicev1.MessageKindSessionReady)
+			writeMessage(t, ctx, conn, voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup})
+			expectKind(t, ctx, conn, voicev2.MessageKindSessionReady)
 			if tc.abrupt {
 				err = conn.CloseNow()
 			} else {
@@ -250,7 +250,7 @@ func TestTextSinkEscalatesLogFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var msg voicev1.Error
+	var msg voicev2.Error
 	if err := json.Unmarshal(data, &msg); err != nil {
 		t.Fatal(err)
 	}
@@ -292,22 +292,22 @@ func writeMessage(t *testing.T, ctx context.Context, conn *websocket.Conn, msg a
 	}
 }
 
-func readMessage(t *testing.T, ctx context.Context, conn *websocket.Conn) (kind voicev1.MessageKind, data []byte) {
+func readMessage(t *testing.T, ctx context.Context, conn *websocket.Conn) (kind voicev2.MessageKind, data []byte) {
 	_, data, err := conn.Read(ctx)
 	if err != nil {
 		t.Fatalf("read message: %v", err)
 	}
-	var env voicev1.MessageEnvelope
+	var env voicev2.MessageEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
 		t.Fatalf("decode message envelope: %v", err)
 	}
 	return env.Kind, data
 }
 
-func expectKind(t *testing.T, ctx context.Context, conn *websocket.Conn, want voicev1.MessageKind) []byte {
+func expectKind(t *testing.T, ctx context.Context, conn *websocket.Conn, want voicev2.MessageKind) []byte {
 	kind, data := readMessage(t, ctx, conn)
-	for kind == voicev1.MessageKindSessionStatus && want == voicev1.MessageKindSessionReady {
-		var status voicev1.SessionStatus
+	for kind == voicev2.MessageKindSessionStatus && want == voicev2.MessageKindSessionReady {
+		var status voicev2.SessionStatus
 		if err := json.Unmarshal(data, &status); err != nil || status.Message == "" {
 			t.Fatalf("invalid startup status: %s (%v)", data, err)
 		}
@@ -319,9 +319,9 @@ func expectKind(t *testing.T, ctx context.Context, conn *websocket.Conn, want vo
 	return data
 }
 
-func expectTurnStatus(t *testing.T, ctx context.Context, conn *websocket.Conn, want voicev1.TurnState) {
-	data := expectKind(t, ctx, conn, voicev1.MessageKindTurnStatus)
-	var msg voicev1.TurnStatus
+func expectTurnStatus(t *testing.T, ctx context.Context, conn *websocket.Conn, want voicev2.TurnState) {
+	data := expectKind(t, ctx, conn, voicev2.MessageKindTurnStatus)
+	var msg voicev2.TurnStatus
 	if err := json.Unmarshal(data, &msg); err != nil {
 		t.Fatal(err)
 	}
@@ -331,8 +331,8 @@ func expectTurnStatus(t *testing.T, ctx context.Context, conn *websocket.Conn, w
 }
 
 func expectAssistantText(t *testing.T, ctx context.Context, conn *websocket.Conn, want string) {
-	data := expectKind(t, ctx, conn, voicev1.MessageKindAssistantTextDelta)
-	var msg voicev1.AssistantTextDelta
+	data := expectKind(t, ctx, conn, voicev2.MessageKindAssistantTextDelta)
+	var msg voicev2.AssistantTextDelta
 	if err := json.Unmarshal(data, &msg); err != nil {
 		t.Fatal(err)
 	}
@@ -347,13 +347,13 @@ func expectAssistantTextSkippingStatus(t *testing.T, ctx context.Context, conn *
 	for {
 		kind, data := readMessage(t, ctx, conn)
 		switch kind {
-		case voicev1.MessageKindAssistantTextDelta:
-			var msg voicev1.AssistantTextDelta
+		case voicev2.MessageKindAssistantTextDelta:
+			var msg voicev2.AssistantTextDelta
 			if err := json.Unmarshal(data, &msg); err != nil {
 				t.Fatal(err)
 			}
 			return msg.Text
-		case voicev1.MessageKindTurnStatus, voicev1.MessageKindInterrupted:
+		case voicev2.MessageKindTurnStatus, voicev2.MessageKindInterrupted:
 			continue
 		default:
 			t.Fatalf("unexpected message kind %q (%s)", kind, data)
@@ -361,9 +361,9 @@ func expectAssistantTextSkippingStatus(t *testing.T, ctx context.Context, conn *
 	}
 }
 
-func expectToolCall(t *testing.T, ctx context.Context, conn *websocket.Conn) voicev1.ToolCall {
-	data := expectKind(t, ctx, conn, voicev1.MessageKindToolCall)
-	var msg voicev1.ToolCall
+func expectToolCall(t *testing.T, ctx context.Context, conn *websocket.Conn) voicev2.ToolCall {
+	data := expectKind(t, ctx, conn, voicev2.MessageKindToolCall)
+	var msg voicev2.ToolCall
 	if err := json.Unmarshal(data, &msg); err != nil {
 		t.Fatal(err)
 	}

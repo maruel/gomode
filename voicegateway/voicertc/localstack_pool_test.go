@@ -20,7 +20,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/maruel/gomode/voicegateway"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 func poolTestConfig(model string) voicegateway.LocalStackConfig {
@@ -152,7 +152,7 @@ func TestLocalStackPool(t *testing.T) {
 				t.Fatal(err)
 			}
 			time.Sleep(5 * time.Second)
-			var msg voicev1.SessionStatus
+			var msg voicev2.SessionStatus
 			if err := json.Unmarshal(<-sink.messages, &msg); err != nil {
 				t.Fatal(err)
 			}
@@ -200,18 +200,18 @@ func TestLocalStackPool(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() { _ = conn.CloseNow() })
-				expectKind(t, ctx, conn, voicev1.MessageKindSessionStatus)
+				expectKind(t, ctx, conn, voicev2.MessageKindSessionStatus)
 				select {
 				case <-started:
 				case <-ctx.Done():
 					t.Fatal("provider did not start")
 				}
 				if action != "disconnect" {
-					writeMessage(t, ctx, conn, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})
+					writeMessage(t, ctx, conn, voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup})
 					if action == "session.close" {
-						writeMessage(t, ctx, conn, voicev1.SessionClose{Kind: voicev1.MessageKindSessionClose})
+						writeMessage(t, ctx, conn, voicev2.SessionClose{Kind: voicev2.MessageKindSessionClose})
 					} else {
-						writeMessage(t, ctx, conn, voicev1.ContextUpdate{Kind: voicev1.MessageKindContextUpdate})
+						writeMessage(t, ctx, conn, voicev2.ContextUpdate{Kind: voicev2.MessageKindContextUpdate})
 					}
 				}
 				if action == "disconnect" || action == "overflow-disconnect" {
@@ -249,11 +249,11 @@ func TestLocalStackPool(t *testing.T) {
 				done <- err
 			}()
 			for i := 0; i < 3; i++ {
-				var msg voicev1.SessionStatus
+				var msg voicev2.SessionStatus
 				if err := json.Unmarshal(<-sink.messages, &msg); err != nil {
 					t.Fatal(err)
 				}
-				if msg.Kind != voicev1.MessageKindSessionStatus || msg.Message != "Waiting for an available local stack…" {
+				if msg.Kind != voicev2.MessageKindSessionStatus || msg.Message != "Waiting for an available local stack…" {
 					t.Fatalf("status = %+v", msg)
 				}
 				if sink.isReady() {

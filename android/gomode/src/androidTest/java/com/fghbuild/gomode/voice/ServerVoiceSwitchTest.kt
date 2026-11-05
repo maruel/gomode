@@ -818,7 +818,7 @@ class ServerVoiceSwitchTest {
                     )
                 }
 
-                "/api/voicegateway/v1/voice/choices" -> {
+                "/api/voicegateway/v2/voice/choices" -> {
                     json(
                         """{"choices":[{"id":"text","label":"Text","transports":["text","webrtc"]}],""" +
                             """"defaults":[{"transport":"text","id":"text"},{"transport":"webrtc","id":"text"}]}""",
@@ -859,7 +859,7 @@ class ServerVoiceSwitchTest {
                         .apply { if (bearer) setHeadersDelay(250, TimeUnit.MILLISECONDS) }
                 }
 
-                "/api/voicegateway/v1/voice/text" -> {
+                "/api/voicegateway/v2/voice/text" -> {
                     MockResponse().withWebSocketUpgrade(
                         object : WebSocketListener() {
                             override fun onOpen(
@@ -903,7 +903,7 @@ class ServerVoiceSwitchTest {
                     )
                 }
 
-                "/api/voicegateway/v1/voice/rtc/offer" -> {
+                "/api/voicegateway/v2/voice/rtc/offer" -> {
                     val gateway =
                         rtcGateway ?: ControlledRtcGateway { text, send -> receive(text, send) }
                             .also { rtcGateway = it }

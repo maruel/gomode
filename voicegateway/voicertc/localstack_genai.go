@@ -29,7 +29,7 @@ import (
 	"github.com/maruel/genai/providers/openrouter"
 
 	"github.com/maruel/gomode/voicegateway"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 // localStackRuntimeForConfig builds gateway-side ASR, LLM, and TTS adapters.
@@ -397,7 +397,7 @@ type genaiLLMAdapter struct {
 	openRouterSort openrouter.ProviderSort
 }
 
-func (a *genaiLLMAdapter) newConversation(systemInstruction string, tools []voicev1.ToolDeclaration, includeReasoning bool) llmConversation {
+func (a *genaiLLMAdapter) newConversation(systemInstruction string, tools []voicev2.ToolDeclaration, includeReasoning bool) llmConversation {
 	defs, err := genaiToolDefs(tools)
 	return &genaiConversation{
 		provider:          a.provider,

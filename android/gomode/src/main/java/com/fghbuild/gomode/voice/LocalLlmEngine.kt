@@ -4,8 +4,8 @@ package com.fghbuild.gomode.voice
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
-import com.caic.voicegateway.sdk.v1.MessageKind
-import com.caic.voicegateway.sdk.v1.ToolCall
+import com.caic.voicegateway.sdk.v2.MessageKind
+import com.caic.voicegateway.sdk.v2.ToolCall
 import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.OnDeviceEngine

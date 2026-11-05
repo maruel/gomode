@@ -26,7 +26,7 @@ import (
 	"github.com/maruel/genai/base"
 	"github.com/maruel/genai/providers/llamacpp"
 	"github.com/maruel/gomode/voicegateway"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 type realtimePeerFrame struct {
@@ -261,7 +261,7 @@ func TestLlamaRealtimeSession(t *testing.T) {
 			}
 			p.next(t)
 			p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventContentAudio, Content: genai.RealtimeContent{Audio: []byte{1, 0}}})
-			sink.waitForKind(t, voicev1.MessageKindSpeechStarted, 1)
+			sink.waitForKind(t, voicev2.MessageKindSpeechStarted, 1)
 			if err := s.acceptMicPCM(t.Context(), testPCM(120, 2000)); err != nil {
 				t.Fatal(err)
 			}
@@ -316,7 +316,7 @@ func TestLlamaRealtimeSession(t *testing.T) {
 		if sink.assistantAudioPending() {
 			t.Fatal("barge in retained completed generation PCM")
 		}
-		sink.waitForKind(t, voicev1.MessageKindInterrupted, 1)
+		sink.waitForKind(t, voicev2.MessageKindInterrupted, 1)
 		if input := peer.next(t); len(input.audio) == 0 {
 			t.Fatalf("idle generation must not cancel; preserve new microphone: %+v", input)
 		}
@@ -374,7 +374,7 @@ func TestLlamaRealtimeSession(t *testing.T) {
 		if !sink.wasCanceled() {
 			t.Fatal("microphone transport failure left session running")
 		}
-		sink.waitForKind(t, voicev1.MessageKindError, 1)
+		sink.waitForKind(t, voicev2.MessageKindError, 1)
 	})
 
 	t.Run("cancel after terminal normalization before delivery", func(t *testing.T) {
@@ -401,7 +401,7 @@ func TestLlamaRealtimeSession(t *testing.T) {
 				}
 				close(p.terminalRelease)
 				if tools {
-					sink.waitForKind(t, voicev1.MessageKindToolCall, 1)
+					sink.waitForKind(t, voicev2.MessageKindToolCall, 1)
 					if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"tool.result","id":"a","name":"lookup","result":{}}`)); err != nil {
 						t.Fatal(err)
 					}
@@ -443,17 +443,17 @@ func TestLlamaRealtimeSession(t *testing.T) {
 					if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"user.message","text":"Ready"}`)); err != nil {
 						t.Fatal(err)
 					}
-					sink.waitForKind(t, voicev1.MessageKindError, 1)
+					sink.waitForKind(t, voicev2.MessageKindError, 1)
 					if sink.wasCanceled() {
 						t.Fatal("microphone overflow ended the session")
 					}
 					var drops int
 					for _, raw := range sink.msgs {
-						var msg voicev1.Error
+						var msg voicev2.Error
 						if err := json.Unmarshal(raw, &msg); err != nil {
 							t.Fatal(err)
 						}
-						if msg.Kind == voicev1.MessageKindError {
+						if msg.Kind == voicev2.MessageKindError {
 							drops++
 							if !msg.Recoverable {
 								t.Fatalf("fatal microphone drop: %+v", msg)
@@ -618,15 +618,15 @@ func TestLlamaRealtimeSession(t *testing.T) {
 				}
 				var errors int
 				for _, data := range sink.msgs {
-					var env voicev1.MessageEnvelope
+					var env voicev2.MessageEnvelope
 					if err := json.Unmarshal(data, &env); err != nil {
 						t.Fatal(err)
 					}
-					if env.Kind != voicev1.MessageKindError {
+					if env.Kind != voicev2.MessageKindError {
 						continue
 					}
 					errors++
-					var msg voicev1.Error
+					var msg voicev2.Error
 					if err := json.Unmarshal(data, &msg); err != nil {
 						t.Fatal(err)
 					}
@@ -664,7 +664,7 @@ func TestLlamaRealtimeSession(t *testing.T) {
 		}
 		p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventContentToolCalls, Content: genai.RealtimeContent{ToolCalls: []genai.ToolCall{{ID: "a", Name: "lookup", Arguments: "{}"}}}})
 		p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
-		sink.waitForKind(t, voicev1.MessageKindToolCall, 1)
+		sink.waitForKind(t, voicev2.MessageKindToolCall, 1)
 		if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"tool.result","id":"a","name":"lookup","result":{}}`)); err != nil {
 			t.Fatal(err)
 		}
@@ -703,10 +703,10 @@ func TestLlamaRealtimeSession(t *testing.T) {
 			s.tools = []genai.ToolCall{{ID: "a", Name: "one"}, {ID: "b", Name: "two"}}
 			s.mu.Unlock()
 			value := json.RawMessage(`"` + strings.Repeat("x", 600000) + `"`)
-			if err := s.acceptClientMessage(t.Context(), mustGatewayServerMessage(&voicev1.ToolResult{Kind: voicev1.MessageKindToolResult, ID: "a", Name: "one", Result: value})); err != nil {
+			if err := s.acceptClientMessage(t.Context(), mustGatewayServerMessage(&voicev2.ToolResult{Kind: voicev2.MessageKindToolResult, ID: "a", Name: "one", Result: value})); err != nil {
 				t.Fatal(err)
 			}
-			if err := s.acceptClientMessage(t.Context(), mustGatewayServerMessage(&voicev1.ToolResult{Kind: voicev1.MessageKindToolResult, ID: "b", Name: "two", Result: value})); err == nil {
+			if err := s.acceptClientMessage(t.Context(), mustGatewayServerMessage(&voicev2.ToolResult{Kind: voicev2.MessageKindToolResult, ID: "b", Name: "two", Result: value})); err == nil {
 				t.Fatal("unbounded aggregate tool results")
 			}
 		})
@@ -714,7 +714,7 @@ func TestLlamaRealtimeSession(t *testing.T) {
 	t.Run("provider failure stops session", func(t *testing.T) {
 		_, p, sink := newRealtimePolicySession(t, false)
 		p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventError})
-		sink.waitForKind(t, voicev1.MessageKindError, 1)
+		sink.waitForKind(t, voicev2.MessageKindError, 1)
 		// Error delivery and cancellation are separate notifications; wait for the
 		// cancellation notification rather than assuming delivery schedules both.
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -735,7 +735,7 @@ func TestLlamaRealtimeSession(t *testing.T) {
 		p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventContentAudio, Content: genai.RealtimeContent{Audio: []byte{1, 0}}})
 		p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
 		p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventTurnDone})
-		sink.waitForKind(t, voicev1.MessageKindSpeechEnded, 1)
+		sink.waitForKind(t, voicev2.MessageKindSpeechEnded, 1)
 		if sink.assistantText() != "hello there" || sink.pcmLen() != 2 {
 			t.Fatal("output translation failed")
 		}

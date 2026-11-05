@@ -21,7 +21,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/maruel/gomode"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 func TestFixtureFrontendPreparation(t *testing.T) {
@@ -171,7 +171,7 @@ func TestFixtureServesSettings(t *testing.T) {
 func TestFixtureVoiceChoices(t *testing.T) {
 	t.Parallel()
 	srv := newFixture(t)
-	resp, err := httpGet(t, srv.URL+"/api/voicegateway/v1/voice/choices")
+	resp, err := httpGet(t, srv.URL+"/api/voicegateway/v2/voice/choices")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,15 +179,15 @@ func TestFixtureVoiceChoices(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
-	var catalog voicev1.VoiceChoicesResp
+	var catalog voicev2.VoiceChoicesResp
 	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog.Choices) != 1 || catalog.Choices[0].ID != catalog.DefaultChoiceID(voicev1.VoiceTransportText) ||
-		catalog.Choices[0].ID != catalog.DefaultChoiceID(voicev1.VoiceTransportWebRTC) {
+	if len(catalog.Choices) != 1 || catalog.Choices[0].ID != catalog.DefaultChoiceID(voicev2.VoiceTransportText) ||
+		catalog.Choices[0].ID != catalog.DefaultChoiceID(voicev2.VoiceTransportWebRTC) {
 		t.Fatalf("catalog must select its single fixture choice: %+v", catalog)
 	}
-	if got := catalog.Choices[0].Transports; len(got) != 2 || got[0] != voicev1.VoiceTransportText || got[1] != voicev1.VoiceTransportWebRTC {
+	if got := catalog.Choices[0].Transports; len(got) != 2 || got[0] != voicev2.VoiceTransportText || got[1] != voicev2.VoiceTransportWebRTC {
 		t.Fatalf("fixture transports = %v, want text and WebRTC", got)
 	}
 }
@@ -259,7 +259,7 @@ func TestFixtureTextSession(t *testing.T) {
 	t.Parallel()
 	srv := newFixture(t)
 	ctx := t.Context()
-	conn, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/api/voicegateway/v1/voice/text", nil)
+	conn, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/api/voicegateway/v2/voice/text", nil)
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
 	}
@@ -278,29 +278,29 @@ func TestFixtureTextSession(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	read := func() voicev1.MessageEnvelope {
+	read := func() voicev2.MessageEnvelope {
 		t.Helper()
 		_, data, err := conn.Read(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var env voicev1.MessageEnvelope
+		var env voicev2.MessageEnvelope
 		if err := json.Unmarshal(data, &env); err != nil {
 			t.Fatal(err)
 		}
 		return env
 	}
 
-	write(voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})
-	if got := read().Kind; got != voicev1.MessageKindSessionReady {
-		t.Fatalf("after setup: kind = %q, want %q", got, voicev1.MessageKindSessionReady)
+	write(voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup})
+	if got := read().Kind; got != voicev2.MessageKindSessionReady {
+		t.Fatalf("after setup: kind = %q, want %q", got, voicev2.MessageKindSessionReady)
 	}
 
-	write(voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "hi"})
-	want := []voicev1.MessageKind{
-		voicev1.MessageKindTurnStatus,
-		voicev1.MessageKindAssistantTextDelta,
-		voicev1.MessageKindTurnStatus,
+	write(voicev2.UserMessage{Kind: voicev2.MessageKindUserMessage, Text: "hi"})
+	want := []voicev2.MessageKind{
+		voicev2.MessageKindTurnStatus,
+		voicev2.MessageKindAssistantTextDelta,
+		voicev2.MessageKindTurnStatus,
 	}
 	for i, kind := range want {
 		if got := read().Kind; got != kind {
@@ -312,7 +312,7 @@ func TestFixtureTextSession(t *testing.T) {
 func TestFixtureRejectsInvalidOffer(t *testing.T) {
 	t.Parallel()
 	srv := newFixture(t)
-	resp, err := httpPost(t, srv.URL+"/api/voicegateway/v1/voice/rtc/offer", "application/json", bytes.NewReader([]byte(`{"sdp":"v=0"}`)))
+	resp, err := httpPost(t, srv.URL+"/api/voicegateway/v2/voice/rtc/offer", "application/json", bytes.NewReader([]byte(`{"sdp":"v=0"}`)))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,9 +9,9 @@ let package = Package(
         .iOS(.v16),
     ],
     products: [
-        .library(name: "GoModeSDK", targets: ["GoModeSDK"]),
+        .library(name: "GoModeSDKV1", targets: ["GoModeSDKV1"]),
     ],
     targets: [
-        .target(name: "GoModeSDK", path: "Sources/GoModeSDK"),
+        .target(name: "GoModeSDKV1", path: "Sources/GoModeSDKV1"),
     ]
 )

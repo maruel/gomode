@@ -302,8 +302,8 @@ github.com/maratori/testableexamples v1.0.1 h1:HfOQXs+XgfeRBJ+Wz0XfH+FHnoY9TVqL6
 github.com/maratori/testableexamples v1.0.1/go.mod h1:XE2F/nQs7B9N08JgyRmdGjYVGqxWwClLPCGSQhXQSrQ=
 github.com/maratori/testpackage v1.1.2 h1:ffDSh+AgqluCLMXhM19f/cpvQAKygKAJXFl9aUjmbqs=
 github.com/maratori/testpackage v1.1.2/go.mod h1:8F24GdVDFW5Ew43Et02jamrVMNXLUNaOynhDssITGfc=
-github.com/maruel/apisdkgen v0.2.0 h1:RWqxHX4rRivZyG1EdVigSwjcaB8wa7Z8qnNnFPpIkXg=
-github.com/maruel/apisdkgen v0.2.0/go.mod h1:PDekGWyiIvU3oOqTUnuJF7ZmOPiUHIYe7CqsIybxmic=
+github.com/maruel/apisdkgen v0.2.1-0.20261105163001-7f54d937d446 h1:kbFwPCaWQrmZ65ryonkzEqnjWJcNWUp4g3GC1EX4ux0=
+github.com/maruel/apisdkgen v0.2.1-0.20261105163001-7f54d937d446/go.mod h1:PDekGWyiIvU3oOqTUnuJF7ZmOPiUHIYe7CqsIybxmic=
 github.com/maruel/genai v0.10.3-0.20261105153340-b4cbe6ce73c8 h1:x5IsoeM9Ys081vackttUvx99kjNHlV0qW+FtjXX9kSA=
 github.com/maruel/genai v0.10.3-0.20261105153340-b4cbe6ce73c8/go.mod h1:Fi+Y4994n0An6/D/0kVq8+DuDSfgg/qndlO+11ACVTo=
 github.com/maruel/genaipy v0.1.2 h1:LCjKM72hIHTyL9Nt8Fb7DYv7/UJNjGjCjG5fHntO59w=

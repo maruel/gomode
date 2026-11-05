@@ -2,7 +2,7 @@
 
 import { createEffect, createSignal, createUniqueId, For, Show, on, onCleanup, onMount, type Accessor } from "solid-js";
 
-import { TurnStateThinking, TurnStateTranscribing } from "../../sdk/voicegateway/ts/v1/types.gen";
+import { TurnStateThinking, TurnStateTranscribing } from "../../sdk/voicegateway/ts/v2/types.gen";
 import { bluetoothAudioDeviceLabel, microphoneMuted, previousErrors, voiceSession } from "./VoiceSession";
 import type { MicrophoneMode, VoiceState, TranscriptEntry } from "./VoiceSession";
 import { notifications } from "./notifications";

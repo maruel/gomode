@@ -5,16 +5,38 @@ Clients never see Gemini, the local stack, or any other provider or runtime.
 
 ## Public Contract
 
-- HTTP signaling under `/api/voicegateway/v1/voice/rtc/...`: offer,
+- HTTP signaling under `/api/voicegateway/v2/voice/rtc/...`: offer,
   diagnostics, and close
 - WebRTC RTP Opus for microphone and assistant audio
 - the `voice-gateway` data channel, carrying UTF-8 JSON messages from
-  `voicegateway/api/v1`
-- a text WebSocket at `GET /api/voicegateway/v1/voice/text` for sessions where
+  `voicegateway/api/v2`
+- a text WebSocket at `GET /api/voicegateway/v2/voice/text` for sessions where
   the client performs speech recognition and synthesis
 
 The signaling route version selects the data-channel schema. The generated
-reference is [`sdk/voicegateway/API.md`](../sdk/voicegateway/API.md).
+reference is [`sdk/voicegateway/v2/API.md`](../sdk/voicegateway/v2/API.md).
+
+### Published versions
+
+The gateway serves both v1 and v2. V1 preserves the v0.3.0 wire schema and
+SDK type contents: one `defaultChoiceID`, an explicit advertised default voice
+for each nonempty catalog, and its published event vocabulary. Its selected
+default voice is the first advertised voice for that choice. Empty v1 setup
+voice names use that same gateway-selected voice. V1 diagnostics retain
+`lastError` when the bridge has observed an error.
+
+V2 uses per-transport defaults, optional provider-default voice selection,
+startup progress, and optional reasoning output.
+The current Android and browser clients require v2 and do not downgrade to v1.
+Deploy a gateway serving both versions before updating those clients; v0.3.0
+clients continue to use the v1 routes.
+
+The route selects the session schema. Browser text upgrades require the matching
+`gomode.text.v1` or `gomode.text.v2` subprotocol and a single-use ticket issued
+by that same route version. Tickets retain the authenticated origin binding.
+Native text upgrades may omit the subprotocol; an explicit offer must include
+the route's version. WebRTC data-channel events use the version chosen
+by the signaling offer route.
 
 ## Responsibilities
 
@@ -192,7 +214,7 @@ Transcripts append deltas; corrections to already emitted text are not replaced.
 
 ### Text sessions
 
-`GET /api/voicegateway/v1/voice/text` upgrades to a WebSocket that carries the
+`GET /api/voicegateway/v2/voice/text` upgrades to a WebSocket that carries the
 same messages as the data channel. The client performs speech recognition and
 synthesis. It sends `user.message` for each transcribed utterance and
 synthesizes `assistant.text.delta` locally. The gateway sends no audio and no
@@ -205,12 +227,12 @@ carrying the same `service` values as the RTC offer. An embedded gateway uses
 host authentication.
 
 Browsers cannot send these headers on a WebSocket handshake. They first call
-`POST /api/voicegateway/v1/voice/text/ticket` through the authenticated HTTP
+`POST /api/voicegateway/v2/voice/text/ticket` through the authenticated HTTP
 client, with the same `service` envelope as an RTC offer. The response contains
 a single-use ticket that expires after 30 seconds. They connect to
-`GET /api/voicegateway/v1/voice/text/browser` with WebSocket subprotocols
-`gomode.text.v1` and `gomode.ticket.<ticket>`. The gateway binds the ticket to
-the issuing request's Origin and negotiates only `gomode.text.v1`. Keep tickets
+`GET /api/voicegateway/v2/voice/text/browser` with WebSocket subprotocols
+`gomode.text.v2` and `gomode.ticket.<ticket>`. The gateway binds the ticket to
+the issuing request's Origin and negotiates only `gomode.text.v2`. Keep tickets
 out of URLs, persistent storage, and request-header logs.
 
 Embedded hosts must authenticate ticket issuance. They may exempt only the
@@ -271,7 +293,7 @@ The config file must exist and configure at least one pipeline entry. Every
 realtime/chat entry and active configurable local-stack stage requires `model`.
 whisper.cpp selects its model on the server; the `whistle` engine selects Whistle.
 
-`GET /api/voicegateway/v1/voice/choices` returns public metadata:
+`GET /api/voicegateway/v2/voice/choices` returns public metadata:
 `choices` with `id`, `label`, and `transports` (`webrtc` and/or `text`), plus
 `defaults` with one `transport` and choice `id` per offered family. The
 WebRTC family is gateway speech; the text family is client speech with a

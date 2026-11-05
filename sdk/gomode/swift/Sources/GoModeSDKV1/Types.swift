@@ -160,4 +160,3 @@ public struct SkillFrontmatter: Codable {
     public let description: String
     public let gomode: SkillGoMode
 }
-

@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 func TestGeminiAudioGate(t *testing.T) {
@@ -95,7 +95,7 @@ func TestGeminiAudioGate(t *testing.T) {
 				t.Errorf("stream %d: got %d bytes want %d", i, len(streams[i]), len(want[i]))
 			}
 		}
-		sink.waitForKind(t, voicev1.MessageKindError, 1)
+		sink.waitForKind(t, voicev2.MessageKindError, 1)
 		if err := s.acceptMicPCM(t.Context(), speech); err == nil {
 			t.Fatal("closed provider accepted audio")
 		}

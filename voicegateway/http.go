@@ -19,7 +19,7 @@ import (
 	"github.com/maruel/gomode"
 	"github.com/maruel/gomode/oauth/oauthverify"
 	voiceapi "github.com/maruel/gomode/voicegateway/api"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 // MediaBridge is the WebRTC media transport used by the voice gateway API.
@@ -42,12 +42,12 @@ type TextSessionServer interface {
 
 // DiagnosticMediaBridge returns structured WebRTC connectivity diagnostics.
 type DiagnosticMediaBridge interface {
-	DiagnoseVoiceRTC(ctx context.Context, sessionID string, client *voicev1.VoiceRTCClientDiagnostics) voicev1.VoiceRTCDiagnosticsResp
+	DiagnoseVoiceRTC(ctx context.Context, sessionID string, client *voicev2.VoiceRTCClientDiagnostics) voicev2.VoiceRTCDiagnosticsResp
 }
 
 // VoiceChoiceProvider advertises the choices available through a transport.
 type VoiceChoiceProvider interface {
-	VoiceChoices() voicev1.VoiceChoicesResp
+	VoiceChoices() voicev2.VoiceChoicesResp
 }
 
 // ChoiceMediaBridge advertises and selects named voice backends.
@@ -102,16 +102,26 @@ func newHandler(cfg *Config, bridge MediaBridgeProvider, textSessions TextSessio
 		}
 	}
 	mux := http.NewServeMux()
-	if includeHealth {
-		mux.HandleFunc("GET /api/voicegateway/v1/voice/health", h.handleHealth)
+	for _, version := range []voiceapi.ProtocolVersion{voiceapi.ProtocolV1, voiceapi.ProtocolV2} {
+		prefix := "/api/voicegateway/" + version.String() + "/voice"
+		register := func(pattern string, handle http.HandlerFunc) {
+			mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+				p := voiceapi.SessionProtocol{Version: version}
+				handle(w, r.WithContext(voiceapi.WithSessionProtocol(r.Context(), p)))
+			})
+		}
+		if includeHealth {
+			register("GET "+prefix+"/health", h.handleHealth)
+		}
+		register("GET "+prefix+"/choices", h.handleChoices)
+		register("POST "+prefix+"/rtc/offer", h.handleOffer)
+		register("POST "+prefix+"/rtc/{sessionID}/diagnostics", h.handleDiagnostics)
+		register("POST "+prefix+"/rtc/{sessionID}", h.handleClose)
+		register("GET "+prefix+"/text", h.handleTextSession)
+		register("GET "+prefix+"/text/browser", h.handleBrowserTextSession)
+		register("POST "+prefix+"/text/ticket", h.handleTextTicket)
 	}
-	mux.HandleFunc("GET /api/voicegateway/v1/voice/choices", h.handleChoices)
-	mux.HandleFunc("POST /api/voicegateway/v1/voice/rtc/offer", h.handleOffer)
-	mux.HandleFunc("POST /api/voicegateway/v1/voice/rtc/{sessionID}/diagnostics", h.handleDiagnostics)
-	mux.HandleFunc("POST /api/voicegateway/v1/voice/rtc/{sessionID}", h.handleClose)
-	mux.HandleFunc("GET /api/voicegateway/v1/voice/text", h.handleTextSession)
-	mux.HandleFunc("GET /api/voicegateway/v1/voice/text/browser", h.handleBrowserTextSession)
-	mux.HandleFunc("POST /api/voicegateway/v1/voice/text/ticket", h.handleTextTicket)
+
 	if requireServiceAuth {
 		return allowTrustedIssuerOrigins(cfg, mux)
 	}
@@ -159,30 +169,30 @@ func (h *handler) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 // voiceChoices advertises only transports supplied to this handler. A text
 // server without choice routing serves the default choice alone.
-func (h *handler) voiceChoices() voicev1.VoiceChoicesResp {
+func (h *handler) voiceChoices() voicev2.VoiceChoicesResp {
 	bridge := h.mediaBridge()
-	media := voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{}}
+	media := voicev2.VoiceChoicesResp{Choices: []voicev2.VoiceChoice{}}
 	if provider, ok := bridge.(ChoiceMediaBridge); ok {
 		media = provider.VoiceChoices()
 	} else if bridge != nil {
-		media.Choices = []voicev1.VoiceChoice{{ID: "default", Label: "Default", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}}}
-		media.Defaults = []voicev1.VoiceChoiceDefault{{Transport: voicev1.VoiceTransportWebRTC, ID: "default"}}
+		media.Choices = []voicev2.VoiceChoice{{ID: "default", Label: "Default", Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportWebRTC}}}
+		media.Defaults = []voicev2.VoiceChoiceDefault{{Transport: voicev2.VoiceTransportWebRTC, ID: "default"}}
 	}
-	text := voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{}}
+	text := voicev2.VoiceChoicesResp{Choices: []voicev2.VoiceChoice{}}
 	if provider, ok := h.textSessions.(ChoiceTextSessionServer); ok {
 		text = provider.VoiceChoices()
 	} else if h.textSessions != nil {
-		id := media.DefaultChoiceID(voicev1.VoiceTransportWebRTC)
+		id := media.DefaultChoiceID(voicev2.VoiceTransportWebRTC)
 		if id == "" {
 			id = "default"
 		}
-		text.Choices = []voicev1.VoiceChoice{{ID: id, Label: "Default", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText}}}
-		text.Defaults = []voicev1.VoiceChoiceDefault{{Transport: voicev1.VoiceTransportText, ID: id}}
+		text.Choices = []voicev2.VoiceChoice{{ID: id, Label: "Default", Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportText}}}
+		text.Defaults = []voicev2.VoiceChoiceDefault{{Transport: voicev2.VoiceTransportText, ID: id}}
 	}
-	choices := voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{}}
+	choices := voicev2.VoiceChoicesResp{Choices: []voicev2.VoiceChoice{}}
 	for _, ch := range media.Choices {
-		if slices.Contains(ch.Transports, voicev1.VoiceTransportWebRTC) {
-			ch.Transports = []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}
+		if slices.Contains(ch.Transports, voicev2.VoiceTransportWebRTC) {
+			ch.Transports = []voicev2.VoiceTransport{voicev2.VoiceTransportWebRTC}
 			ch.Voices = slices.Clone(ch.Voices)
 		} else {
 			// Retain the catalog position for text-only choices until the text
@@ -193,34 +203,42 @@ func (h *handler) voiceChoices() voicev1.VoiceChoicesResp {
 		choices.Choices = append(choices.Choices, ch)
 	}
 	for _, ch := range text.Choices {
-		if !slices.Contains(ch.Transports, voicev1.VoiceTransportText) {
+		if !slices.Contains(ch.Transports, voicev2.VoiceTransportText) {
 			continue
 		}
-		i := slices.IndexFunc(choices.Choices, func(c voicev1.VoiceChoice) bool { return c.ID == ch.ID })
+		i := slices.IndexFunc(choices.Choices, func(c voicev2.VoiceChoice) bool { return c.ID == ch.ID })
 		if i < 0 {
-			choices.Choices = append(choices.Choices, voicev1.VoiceChoice{ID: ch.ID, Label: ch.Label, Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText}})
+			choices.Choices = append(choices.Choices, voicev2.VoiceChoice{ID: ch.ID, Label: ch.Label, Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportText}})
 		} else {
-			choices.Choices[i].Transports = append([]voicev1.VoiceTransport{voicev1.VoiceTransportText}, choices.Choices[i].Transports...)
+			choices.Choices[i].Transports = append([]voicev2.VoiceTransport{voicev2.VoiceTransportText}, choices.Choices[i].Transports...)
 		}
 	}
-	choices.Choices = slices.DeleteFunc(choices.Choices, func(ch voicev1.VoiceChoice) bool { return len(ch.Transports) == 0 })
-	choices.Defaults = voicev1.DefaultChoices(choices.Choices, slices.Concat(media.Defaults, text.Defaults))
+	choices.Choices = slices.DeleteFunc(choices.Choices, func(ch voicev2.VoiceChoice) bool { return len(ch.Transports) == 0 })
+	choices.Defaults = voicev2.DefaultChoices(choices.Choices, slices.Concat(media.Defaults, text.Defaults))
 	return choices
 }
 
-func (h *handler) handleChoices(w http.ResponseWriter, _ *http.Request) {
+func (h *handler) handleChoices(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	if voiceapi.SessionProtocolFromContext(r.Context()).Version == voiceapi.ProtocolV1 {
+		voiceapi.WriteJSON(w, http.StatusOK, publishedChoices(h.voiceChoices()))
+		return
+	}
 	voiceapi.WriteJSON(w, http.StatusOK, h.voiceChoices())
 }
 
-func (h *handler) selectChoice(w http.ResponseWriter, id string, transport voicev1.VoiceTransport) (string, bool) {
+func (h *handler) selectChoice(w http.ResponseWriter, r *http.Request, id string, transport voicev2.VoiceTransport) (string, bool) {
 	choices := h.voiceChoices()
 	if len(choices.Choices) == 0 {
 		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "voice sessions unavailable")
 		return "", false
 	}
 	if id == "" {
-		id = choices.DefaultChoiceID(transport)
+		if voiceapi.SessionProtocolFromContext(r.Context()).Version == voiceapi.ProtocolV1 {
+			id = publishedChoices(choices).DefaultChoiceID
+		} else {
+			id = choices.DefaultChoiceID(transport)
+		}
 		if id == "" {
 			voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "no voice choice supports the requested transport")
 			return "", false
@@ -241,7 +259,7 @@ func (h *handler) selectChoice(w http.ResponseWriter, id string, transport voice
 }
 
 func (h *handler) handleOffer(w http.ResponseWriter, r *http.Request) {
-	var req voicev1.VoiceRTCOfferReq
+	var req voicev2.VoiceRTCOfferReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "invalid request body")
 		return
@@ -259,10 +277,11 @@ func (h *handler) handleOffer(w http.ResponseWriter, r *http.Request) {
 		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "voice bridge unavailable")
 		return
 	}
-	choiceID, ok := h.selectChoice(w, req.ChoiceID, voicev1.VoiceTransportWebRTC)
+	choiceID, ok := h.selectChoice(w, r, req.ChoiceID, voicev2.VoiceTransportWebRTC)
 	if !ok {
 		return
 	}
+	r = h.bindChoiceProtocol(r, choiceID)
 	var sdpAnswer, sessionID string
 	var err error
 	if choices, ok := bridge.(ChoiceMediaBridge); ok {
@@ -293,7 +312,7 @@ func (h *handler) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	if !h.authorizeSession(w, r, sessionID) {
 		return
 	}
-	var req voicev1.VoiceRTCDiagnosticsReq
+	var req voicev2.VoiceRTCDiagnosticsReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "invalid request body")
 		return
@@ -301,10 +320,10 @@ func (h *handler) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	bridge := h.mediaBridge()
 	diagnosticBridge, ok := bridge.(DiagnosticMediaBridge)
 	if bridge == nil || !ok {
-		voiceapi.WriteJSON(w, http.StatusOK, unavailableVoiceRTCDiagnostics(sessionID, &req.Client))
+		writeDiagnostics(w, r, bridge, unavailableVoiceRTCDiagnostics(sessionID, &req.Client))
 		return
 	}
-	voiceapi.WriteJSON(w, http.StatusOK, diagnosticBridge.DiagnoseVoiceRTC(r.Context(), sessionID, &req.Client))
+	writeDiagnostics(w, r, bridge, diagnosticBridge.DiagnoseVoiceRTC(r.Context(), sessionID, &req.Client))
 }
 
 func (h *handler) handleClose(w http.ResponseWriter, r *http.Request) {
@@ -329,7 +348,7 @@ func (h *handler) handleClose(w http.ResponseWriter, r *http.Request) {
 // handleTextTicket keeps browser WebSocket credentials out of URLs. The JSON
 // request uses the same standalone service authorization as a WebRTC offer.
 func (h *handler) handleTextTicket(w http.ResponseWriter, r *http.Request) {
-	var req voicev1.VoiceTextTicketReq
+	var req voicev2.VoiceTextTicketReq
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "invalid request body")
 		return
@@ -349,7 +368,7 @@ func (h *handler) handleTextTicket(w http.ResponseWriter, r *http.Request) {
 		voiceapi.WriteError(w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "text voice sessions unavailable")
 		return
 	}
-	choiceID, ok := h.selectChoice(w, req.ChoiceID, voicev1.VoiceTransportText)
+	choiceID, ok := h.selectChoice(w, r, req.ChoiceID, voicev2.VoiceTransportText)
 	if !ok {
 		return
 	}
@@ -366,10 +385,10 @@ func (h *handler) handleTextTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ticket := rand.Text()
-	h.textTickets[ticket] = textTicket{origin: origin, choiceID: choiceID, expires: now.Add(30 * time.Second)}
+	h.textTickets[ticket] = textTicket{origin: origin, choiceID: choiceID, protocol: voiceapi.SessionProtocolFromContext(h.bindChoiceProtocol(r, choiceID).Context()), expires: now.Add(30 * time.Second)}
 	h.textTicketMu.Unlock()
 	w.Header().Set("Cache-Control", "no-store")
-	voiceapi.WriteJSON(w, http.StatusOK, voicev1.VoiceTextTicketResp{Ticket: ticket})
+	voiceapi.WriteJSON(w, http.StatusOK, voicev2.VoiceTextTicketResp{Ticket: ticket})
 }
 
 // handleBrowserTextSession always requires a ticket, including on embedded
@@ -381,7 +400,7 @@ func (h *handler) handleBrowserTextSession(w http.ResponseWriter, r *http.Reques
 	for _, header := range r.Header.Values("Sec-WebSocket-Protocol") {
 		for protocol := range strings.SplitSeq(header, ",") {
 			protocol = strings.TrimSpace(protocol)
-			if protocol == "gomode.text.v1" {
+			if protocol == voiceapi.SessionProtocolFromContext(r.Context()).Version.TextSubprotocol() {
 				textProtocol = true
 			}
 			if value, ok := strings.CutPrefix(protocol, "gomode.ticket."); ok {
@@ -397,20 +416,24 @@ func (h *handler) handleBrowserTextSession(w http.ResponseWriter, r *http.Reques
 	entry, ok := h.textTickets[ticket]
 	delete(h.textTickets, ticket)
 	h.textTicketMu.Unlock()
-	if ticket == "" || !textProtocol || !ok || !time.Now().Before(entry.expires) || entry.origin != r.Header.Get("Origin") {
+	if ticket == "" || !textProtocol || !ok || entry.protocol.Version != voiceapi.SessionProtocolFromContext(r.Context()).Version || !entry.protocol.Version.AcceptsTextSubprotocol(r.Header.Values("Sec-WebSocket-Protocol")) || !time.Now().Before(entry.expires) || entry.origin != r.Header.Get("Origin") {
 		voiceapi.WriteError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, "invalid or expired voice ticket")
 		return
 	}
 	// The issuing authenticated request binds the exact browser origin. The
 	// upgrade has matched it, so the transport's same-origin default check
 	// must not reject an authorized standalone cross-origin gateway.
-	r = r.Clone(r.Context())
+	r = r.Clone(voiceapi.WithSessionProtocol(r.Context(), entry.protocol))
 	r.Header.Del("Origin")
-	r.Header.Set("Sec-WebSocket-Protocol", "gomode.text.v1")
+	r.Header.Set("Sec-WebSocket-Protocol", entry.protocol.Version.TextSubprotocol())
 	h.serveTextSession(w, r, entry.choiceID)
 }
 
 func (h *handler) handleTextSession(w http.ResponseWriter, r *http.Request) {
+	if !voiceapi.SessionProtocolFromContext(r.Context()).Version.AcceptsTextSubprotocol(r.Header.Values("Sec-WebSocket-Protocol")) {
+		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, "text subprotocol does not match route version")
+		return
+	}
 	if h.requireServiceAuth {
 		auth, err := serviceAuthorizationFromHeaders(r)
 		if err != nil {
@@ -421,11 +444,11 @@ func (h *handler) handleTextSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	choiceID, ok := h.selectChoice(w, r.URL.Query().Get("choiceID"), voicev1.VoiceTransportText)
+	choiceID, ok := h.selectChoice(w, r, r.URL.Query().Get("choiceID"), voicev2.VoiceTransportText)
 	if !ok {
 		return
 	}
-	h.serveTextSession(w, r, choiceID)
+	h.serveTextSession(w, h.bindChoiceProtocol(r, choiceID), choiceID)
 }
 
 func (h *handler) serveTextSession(w http.ResponseWriter, r *http.Request, choiceID string) {
@@ -458,12 +481,12 @@ func bearerToken(r *http.Request) (string, bool) {
 
 // serviceAuthorizationFromHeaders reads the service authorization a native
 // client presents on the WebSocket handshake.
-func serviceAuthorizationFromHeaders(r *http.Request) (voicev1.ServiceAuthorization, error) {
+func serviceAuthorizationFromHeaders(r *http.Request) (voicev2.ServiceAuthorization, error) {
 	token, ok := bearerToken(r)
 	if !ok {
-		return voicev1.ServiceAuthorization{}, errors.New("bearer token required")
+		return voicev2.ServiceAuthorization{}, errors.New("bearer token required")
 	}
-	return voicev1.ServiceAuthorization{
+	return voicev2.ServiceAuthorization{
 		Kind:       r.Header.Get("X-Service-Kind"),
 		InstanceID: r.Header.Get("X-Service-Instance"),
 		BaseURL:    r.Header.Get("X-Service-Origin"),
@@ -471,7 +494,7 @@ func serviceAuthorizationFromHeaders(r *http.Request) (voicev1.ServiceAuthorizat
 	}, nil
 }
 
-func (h *handler) authorizeService(w http.ResponseWriter, r *http.Request, service *voicev1.ServiceAuthorization) (serviceSessionIdentity, bool) {
+func (h *handler) authorizeService(w http.ResponseWriter, r *http.Request, service *voicev2.ServiceAuthorization) (serviceSessionIdentity, bool) {
 	if !h.requireServiceAuth {
 		return serviceSessionIdentity{}, true
 	}
@@ -510,7 +533,7 @@ func (h *handler) authorizeSession(w http.ResponseWriter, r *http.Request, sessi
 		voiceapi.WriteError(w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, "bearer token required")
 		return false
 	}
-	verified, err := h.verifyServiceToken(r.Context(), voicev1.ServiceAuthorization{
+	verified, err := h.verifyServiceToken(r.Context(), voicev2.ServiceAuthorization{
 		Kind:       identity.kind,
 		InstanceID: identity.instanceID,
 		BaseURL:    identity.origin,
@@ -523,13 +546,13 @@ func (h *handler) authorizeSession(w http.ResponseWriter, r *http.Request, sessi
 	return true
 }
 
-func unavailableVoiceRTCDiagnostics(sessionID string, client *voicev1.VoiceRTCClientDiagnostics) voicev1.VoiceRTCDiagnosticsResp {
-	return voicev1.VoiceRTCDiagnosticsResp{
+func unavailableVoiceRTCDiagnostics(sessionID string, client *voicev2.VoiceRTCClientDiagnostics) voicev2.VoiceRTCDiagnosticsResp {
+	return voicev2.VoiceRTCDiagnosticsResp{
 		SessionID: sessionID,
-		Issue:     voicev1.VoiceRTCConnectivityIssueVoiceBridgeUnavailable,
-		Side:      voicev1.VoiceRTCConnectivitySideServer,
+		Issue:     voicev2.VoiceRTCConnectivityIssueVoiceBridgeUnavailable,
+		Side:      voicev2.VoiceRTCConnectivitySideServer,
 		Message:   "voice bridge is unavailable on this server",
-		Server: voicev1.VoiceRTCServerDiagnostics{
+		Server: voicev2.VoiceRTCServerDiagnostics{
 			SessionFound: false,
 		},
 		Client: *client,
@@ -547,7 +570,7 @@ func (h *handler) mediaBridge() MediaBridge {
 	return bridge
 }
 
-// HealthResp is returned by GET /api/voicegateway/v1/voice/health.
+// HealthResp is returned by GET /api/voicegateway/v2/voice/health.
 type HealthResp struct {
 	Status string `json:"status"`
 }
@@ -580,7 +603,7 @@ func isNilMediaBridge(bridge MediaBridge) bool {
 // it authorizes. It selects the token form from the matching trusted issuer:
 // OAuth access token verification through discovery and JWKS, or the
 // transitional scoped Ed25519 token.
-func (h *handler) verifyServiceToken(ctx context.Context, s voicev1.ServiceAuthorization) (serviceSessionIdentity, error) {
+func (h *handler) verifyServiceToken(ctx context.Context, s voicev2.ServiceAuthorization) (serviceSessionIdentity, error) {
 	for _, issuer := range h.cfg.TrustedIssuers {
 		if issuer.Service != s.Kind || strings.TrimRight(issuer.Issuer, "/") != strings.TrimRight(s.BaseURL, "/") {
 			continue
@@ -618,7 +641,7 @@ func (h *handler) verifyServiceToken(ctx context.Context, s voicev1.ServiceAutho
 // issuer. The subject comes from the verified token; the service kind,
 // instance, and origin come from the host's authorization envelope because
 // standard access tokens do not carry host-instance claims.
-func (h *handler) verifyOAuthToken(ctx context.Context, issuer *TrustedIssuerConfig, s voicev1.ServiceAuthorization) (serviceSessionIdentity, error) {
+func (h *handler) verifyOAuthToken(ctx context.Context, issuer *TrustedIssuerConfig, s voicev2.ServiceAuthorization) (serviceSessionIdentity, error) {
 	if h.verifier == nil {
 		return serviceSessionIdentity{}, errors.New("oauth token verifier is not configured")
 	}
@@ -634,6 +657,7 @@ func (h *handler) verifyOAuthToken(ctx context.Context, issuer *TrustedIssuerCon
 }
 
 type textTicket struct {
+	protocol voiceapi.SessionProtocol
 	choiceID string
 	origin   string
 	expires  time.Time
@@ -647,7 +671,7 @@ func hasVoiceSessionCapability(claims *gomode.ScopedTokenClaims) bool {
 	return slices.Contains(claims.Capabilities, "voice.session")
 }
 
-func validateServiceAuthorization(s voicev1.ServiceAuthorization) error {
+func validateServiceAuthorization(s voicev2.ServiceAuthorization) error {
 	if s.Kind == "" {
 		return errors.New("service.kind is required")
 	}

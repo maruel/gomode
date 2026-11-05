@@ -19,7 +19,8 @@ oauth/               OAuth 2.0 DTOs
 sse/                 deadline-bounded Server-Sent Event frames
 httplog/             slog HTTP access logging
 voicegateway/        voice gateway HTTP server and config
-  api/v1/            signaling and data-channel DTOs, SDK spec
+  api/v1/            published v0.3.0 signaling and data-channel contract
+  api/v2/            current signaling and data-channel contract
   voicertc/          WebRTC bridge and backend adapters
 cmd/voice-gateway/   standalone gateway
 internal/cmd/gen-sdk/ SDK generator
@@ -118,3 +119,15 @@ surfaces:
 - `sdk/mcp`: MCP DTOs
 - `sdk/oauth`: OAuth 2.0 DTOs
 - `sdk/voicegateway`: gateway signaling and data-channel messages
+
+SDK imports explicitly select a protocol version. TypeScript exports use
+`@maruel/gomode/sdk/gomode/v1/api.gen`, `sdk/mcp/v1/types.gen`,
+`sdk/oauth/v1/types.gen`, and `sdk/voicegateway/v1/api.gen` or
+`sdk/voicegateway/v2/api.gen` under that package prefix. Unversioned SDK exports
+are not available. Kotlin packages end in `.sdk.v1` or `.sdk.v2`.
+
+Swift package containers remain under `sdk/<family>/swift`; their library
+products and import modules are `GoModeSDKV1`, `MCPSDKV1`, `OAuthSDKV1`,
+`VoiceGatewaySDKV1`, and `VoiceGatewaySDKV2`. API references live at
+`sdk/<family>/<version>/API.md`. Go Mode discovery, native bridge, MCP, and
+OAuth protocol versions are unchanged by the voice gateway split.

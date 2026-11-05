@@ -99,7 +99,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import com.caic.voicegateway.sdk.v1.TurnState
+import com.caic.voicegateway.sdk.v2.TurnState
 import kotlinx.coroutines.launch
 
 private const val PULSE_MIN_ALPHA = 0.5f

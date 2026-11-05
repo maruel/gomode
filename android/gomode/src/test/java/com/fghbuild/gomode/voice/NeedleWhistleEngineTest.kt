@@ -1,7 +1,7 @@
 // Unit tests for NeedleWhistleEngine unified biased action model on Google Pixel 8 Pro.
 package com.fghbuild.gomode.voice
 
-import com.caic.voicegateway.sdk.v1.ToolCall
+import com.caic.voicegateway.sdk.v2.ToolCall
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import kotlinx.coroutines.runBlocking

@@ -5,7 +5,7 @@ import { useHostMode } from "./HostMode";
 import { discoverBrowserVoice, sameOriginVoiceEndpoint, type BrowserVoiceEndpoints } from "./BrowserVoiceManifest";
 import type { FrontendPreparationScope } from "./FrontendVoiceTools";
 import type { VoiceOverlayMessages } from "./VoiceOverlay";
-import type { ServiceAuthorization } from "../../sdk/voicegateway/ts/v1/types.gen";
+import type { ServiceAuthorization } from "../../sdk/voicegateway/ts/v2/types.gen";
 import type { BrowserVoiceRuntime } from "./BrowserVoiceRuntime";
 
 export interface BrowserVoiceShellProps {

@@ -22,14 +22,10 @@ const (
 	MessageKindSessionClose MessageKind = "session.close"
 	// MessageKindSessionReady reports that the gateway session is ready.
 	MessageKindSessionReady MessageKind = "session.ready"
-	// MessageKindSessionStatus reports startup progress before session.ready.
-	MessageKindSessionStatus MessageKind = "session.status"
 	// MessageKindTranscriptDelta streams transcript text.
 	MessageKindTranscriptDelta MessageKind = "transcript.delta"
 	// MessageKindAssistantTextDelta streams assistant text.
 	MessageKindAssistantTextDelta MessageKind = "assistant.text.delta"
-	// MessageKindReasoningDelta streams provider reasoning text.
-	MessageKindReasoningDelta MessageKind = "reasoning.delta"
 	// MessageKindSpeechStarted reports that speech output started.
 	MessageKindSpeechStarted MessageKind = "speech.started"
 	// MessageKindSpeechEnded reports that speech output ended.
@@ -84,8 +80,8 @@ type MessageEnvelope struct {
 
 // VoiceConfig describes provider-neutral voice preferences.
 type VoiceConfig struct {
-	// Name is the requested provider-specific voice name. Empty uses the provider default.
-	Name string `json:"name,omitempty"`
+	// Name is the requested provider-specific voice name.
+	Name string `json:"name"`
 	// Language is the requested BCP 47 language tag, such as "en-US" or "fr-CA".
 	// Empty defaults to "en-US". Invalid tags fail session setup. The gateway
 	// instructs the assistant to use this language and supplies recognition hints
@@ -104,9 +100,6 @@ type SessionSetup struct {
 	Tools []ToolDeclaration `json:"tools"`
 	// Context provides initial instructions or text context for the session.
 	Context Context `json:"context"`
-	// IncludeReasoning requests optional provider reasoning output for this session.
-	// It does not enable thinking or change reasoning effort.
-	IncludeReasoning bool `json:"includeReasoning,omitempty"`
 }
 
 // SessionClose is a client message that closes the voice session.
@@ -121,16 +114,6 @@ type SessionClose struct {
 type SessionReady struct {
 	// Kind is "session.ready".
 	Kind MessageKind `json:"kind"`
-}
-
-// SessionStatus reports startup progress. Gateways repeat it at least every five
-// seconds while loading or waiting for capacity. Clients may refresh their
-// setup timeout on receipt; only session.ready enables microphone input.
-type SessionStatus struct {
-	// Kind is "session.status".
-	Kind MessageKind `json:"kind"`
-	// Message is a short user-visible description of startup work.
-	Message string `json:"message"`
 }
 
 // Context carries provider-neutral text or instruction context.
@@ -163,8 +146,7 @@ type ToolDeclaration struct {
 	Name string `json:"name"`
 	// Description explains when and how the assistant should use the tool.
 	Description string `json:"description"`
-	// Parameters is a JSON Schema object describing the tool arguments. When
-	// present, it must declare "type": "object".
+	// Parameters is a JSON Schema object describing the tool arguments.
 	Parameters json.RawMessage `json:"parameters"`
 }
 
@@ -215,17 +197,6 @@ type AssistantTextDelta struct {
 	// Kind is "assistant.text.delta".
 	Kind MessageKind `json:"kind"`
 	// Text is an incremental assistant text fragment.
-	Text string `json:"text"`
-}
-
-// ReasoningDelta is a gateway message that streams provider reasoning text.
-//
-// Reasoning is not speech and not a transcript statement. A client decides
-// whether to display it.
-type ReasoningDelta struct {
-	// Kind is "reasoning.delta".
-	Kind MessageKind `json:"kind"`
-	// Text is an incremental reasoning fragment.
 	Text string `json:"text"`
 }
 

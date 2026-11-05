@@ -2,12 +2,12 @@
 package com.fghbuild.gomode.voice
 
 import android.webkit.CookieManager
-import com.caic.voicegateway.sdk.v1.ApiClient
-import com.caic.voicegateway.sdk.v1.VoiceChoice
-import com.caic.voicegateway.sdk.v1.VoiceChoiceDefault
-import com.caic.voicegateway.sdk.v1.VoiceChoicesResp
-import com.caic.voicegateway.sdk.v1.VoiceRTCDiagnosticsReq
-import com.caic.voicegateway.sdk.v1.VoiceTransport
+import com.caic.voicegateway.sdk.v2.ApiClient
+import com.caic.voicegateway.sdk.v2.VoiceChoice
+import com.caic.voicegateway.sdk.v2.VoiceChoiceDefault
+import com.caic.voicegateway.sdk.v2.VoiceChoicesResp
+import com.caic.voicegateway.sdk.v2.VoiceRTCDiagnosticsReq
+import com.caic.voicegateway.sdk.v2.VoiceTransport
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsState
@@ -331,7 +331,7 @@ class VoiceChoicesTest {
                 repeat(2) { server.enqueue(MockResponse().setBody(CATALOG)) }
                 discoverVoiceChoices(base, service) { "embedded-bearer" }
                 val embedded = requireNotNull(server.takeRequest())
-                assertEquals("/api/voicegateway/v1/voice/choices", embedded.path)
+                assertEquals("/api/voicegateway/v2/voice/choices", embedded.path)
                 assertEquals("Bearer embedded-bearer", embedded.getHeader("Authorization"))
                 assertEquals("session=embedded", embedded.getHeader("Cookie"))
                 discoverVoiceChoices("https://service.example", service) { "must-not-leak" }
@@ -344,7 +344,7 @@ class VoiceChoicesTest {
     @Test
     fun `text choice query is escaped and cannot inject another parameter`() {
         assertEquals(
-            "wss://gateway.example/api/voicegateway/v1/voice/text?choiceID=local%26other%3Dvalue",
+            "wss://gateway.example/api/voicegateway/v2/voice/text?choiceID=local%26other%3Dvalue",
             textSessionWebSocketURL(gateway, "local&other=value"),
         )
     }

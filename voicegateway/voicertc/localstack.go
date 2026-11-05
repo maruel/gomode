@@ -20,7 +20,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 // Local stack tuning. These bound the placeholder VAD/segmentation and TTS
@@ -100,7 +100,7 @@ type llmConversation interface {
 
 // llmAdapter builds conversations bound to a session's system instruction and tools.
 type llmAdapter interface {
-	newConversation(systemInstruction string, tools []voicev1.ToolDeclaration, includeReasoning bool) llmConversation
+	newConversation(systemInstruction string, tools []voicev2.ToolDeclaration, includeReasoning bool) llmConversation
 }
 
 // ttsAdapter streams S16LE mono PCM at backendOutputSampleRate from text.
@@ -211,13 +211,13 @@ type localStackSession struct {
 }
 
 func (s *localStackSession) acceptClientMessage(ctx context.Context, data []byte) error {
-	var env voicev1.MessageEnvelope
+	var env voicev2.MessageEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
 		return fmt.Errorf("decode gateway message: %w", err)
 	}
 	switch env.Kind {
-	case voicev1.MessageKindSessionSetup:
-		var msg voicev1.SessionSetup
+	case voicev2.MessageKindSessionSetup:
+		var msg voicev2.SessionSetup
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("decode session.setup: %w", err)
 		}
@@ -239,8 +239,8 @@ func (s *localStackSession) acceptClientMessage(ctx context.Context, data []byte
 		s.events.Unlock()
 		s.sink.backendReady(ctx)
 		return nil
-	case voicev1.MessageKindContextUpdate:
-		var msg voicev1.ContextUpdate
+	case voicev2.MessageKindContextUpdate:
+		var msg voicev2.ContextUpdate
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("decode context.update: %w", err)
 		}
@@ -253,24 +253,24 @@ func (s *localStackSession) acceptClientMessage(ctx context.Context, data []byte
 		}
 		s.events.Unlock()
 		return nil
-	case voicev1.MessageKindUserMessage:
-		var msg voicev1.UserMessage
+	case voicev2.MessageKindUserMessage:
+		var msg voicev2.UserMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("decode user.message: %w", err)
 		}
 		s.startUserMessage(ctx, msg.Text)
 		return nil
-	case voicev1.MessageKindToolResult:
-		var msg voicev1.ToolResult
+	case voicev2.MessageKindToolResult:
+		var msg voicev2.ToolResult
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("decode tool.result: %w", err)
 		}
 		s.deliverToolResult(ctx, toolResultMsg{id: msg.ID, name: msg.Name, result: msg.Result})
 		return nil
-	case voicev1.MessageKindTurnCancel:
-		s.bargeIn(voicev1.InterruptSourceUser, "turn cancelled")
+	case voicev2.MessageKindTurnCancel:
+		s.bargeIn(voicev2.InterruptSourceUser, "turn cancelled")
 		return nil
-	case voicev1.MessageKindSessionClose:
+	case voicev2.MessageKindSessionClose:
 		return errSessionClosed
 	default:
 		return fmt.Errorf("unsupported gateway message kind %q", env.Kind)
@@ -285,7 +285,7 @@ func (s *localStackSession) acceptMicPCM(ctx context.Context, pcm []byte) error 
 	utterance, speechActive := s.vad.push(pcm)
 	if speechActive && s.isSpeaking() {
 		// New user speech while the assistant is talking is a barge-in.
-		s.bargeIn(voicev1.InterruptSourceUser, "")
+		s.bargeIn(voicev2.InterruptSourceUser, "")
 	}
 	if utterance != nil {
 		s.startTurn(ctx, utterance)
@@ -310,11 +310,11 @@ func (s *localStackSession) close() error {
 
 // reportTurnState sends state unless a newer turn superseded generation. It
 // sends under the lock so a superseded turn cannot overwrite a newer state.
-func (s *localStackSession) reportTurnState(generation int, state voicev1.TurnState) {
+func (s *localStackSession) reportTurnState(generation int, state voicev2.TurnState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.closed && s.turnGeneration == generation {
-		s.emit(&voicev1.TurnStatus{Kind: voicev1.MessageKindTurnStatus, State: state})
+		s.emit(&voicev2.TurnStatus{Kind: voicev2.MessageKindTurnStatus, State: state})
 	}
 }
 
@@ -330,7 +330,7 @@ func (s *localStackSession) finishTurn(generation int) {
 		if len(s.outstanding) != 0 {
 			return
 		}
-		s.emit(&voicev1.TurnStatus{Kind: voicev1.MessageKindTurnStatus, State: voicev1.TurnStateIdle})
+		s.emit(&voicev2.TurnStatus{Kind: voicev2.MessageKindTurnStatus, State: voicev2.TurnStateIdle})
 	}
 }
 
@@ -373,7 +373,7 @@ func (s *localStackSession) startTurn(ctx context.Context, utterance []byte) {
 	}
 	s.turnGeneration++
 	generation := s.turnGeneration
-	s.emit(&voicev1.TurnStatus{Kind: voicev1.MessageKindTurnStatus, State: voicev1.TurnStateTranscribing})
+	s.emit(&voicev2.TurnStatus{Kind: voicev2.MessageKindTurnStatus, State: voicev2.TurnStateTranscribing})
 	previous := s.transcriptionTail
 	done := make(chan struct{})
 	s.transcriptionTail = done
@@ -395,7 +395,7 @@ func (s *localStackSession) startTurn(ctx context.Context, utterance []byte) {
 			s.warnTurn(s.baseCtx, "asr", err) //nolint:contextcheck // turn goroutines run on the session lifetime context
 			return nil
 		}
-		s.emit(&voicev1.TranscriptDelta{Kind: voicev1.MessageKindTranscriptDelta, Speaker: voicev1.SpeakerUser, Text: text})
+		s.emit(&voicev2.TranscriptDelta{Kind: voicev2.MessageKindTranscriptDelta, Speaker: voicev2.SpeakerUser, Text: text})
 		s.startUserMessage(ctx, text)
 		return nil
 	})
@@ -425,7 +425,7 @@ func (s *localStackSession) startAdmittedStep(ctx context.Context, conv llmConve
 	})
 	s.mu.Unlock()
 	if reportThinking {
-		s.reportTurnState(generation, voicev1.TurnStateThinking)
+		s.reportTurnState(generation, voicev2.TurnStateThinking)
 	}
 	close(ready)
 }
@@ -440,11 +440,11 @@ func (s *localStackSession) handleTextStep(ctx context.Context, conv llmConversa
 			continue
 		}
 		if fragment.reasoning != "" {
-			s.emit(&voicev1.ReasoningDelta{Kind: voicev1.MessageKindReasoningDelta, Text: fragment.reasoning})
+			s.emit(&voicev2.ReasoningDelta{Kind: voicev2.MessageKindReasoningDelta, Text: fragment.reasoning})
 		}
 		if fragment.text != "" {
 			streamed = true
-			s.emit(&voicev1.AssistantTextDelta{Kind: voicev1.MessageKindAssistantTextDelta, Text: fragment.text})
+			s.emit(&voicev2.AssistantTextDelta{Kind: voicev2.MessageKindAssistantTextDelta, Text: fragment.text})
 		}
 	}
 	reply, err := s.finishStep(ctx, conv, step)
@@ -453,7 +453,7 @@ func (s *localStackSession) handleTextStep(ctx context.Context, conv llmConversa
 		return
 	}
 	if ctx.Err() == nil && !streamed && reply.text != "" {
-		s.emit(&voicev1.AssistantTextDelta{Kind: voicev1.MessageKindAssistantTextDelta, Text: reply.text})
+		s.emit(&voicev2.AssistantTextDelta{Kind: voicev2.MessageKindAssistantTextDelta, Text: reply.text})
 	}
 }
 
@@ -481,7 +481,7 @@ func (s *localStackSession) finishStep(ctx context.Context, conv llmConversation
 		s.mu.Lock()
 		s.outstanding[call.id] = sessionToolCall{name: call.name, conv: conv}
 		s.mu.Unlock()
-		s.emit(&voicev1.ToolCall{Kind: voicev1.MessageKindToolCall, ID: call.id, Name: call.name, Args: call.args})
+		s.emit(&voicev2.ToolCall{Kind: voicev2.MessageKindToolCall, ID: call.id, Name: call.name, Args: call.args})
 	}
 	return reply, nil
 }
@@ -502,7 +502,7 @@ func (s *localStackSession) forwardLLMText(ctx context.Context, conv llmConversa
 	}
 	for output := range step.stream {
 		if output.reasoning != "" && ctx.Err() == nil {
-			s.emit(&voicev1.ReasoningDelta{Kind: voicev1.MessageKindReasoningDelta, Text: output.reasoning})
+			s.emit(&voicev2.ReasoningDelta{Kind: voicev2.MessageKindReasoningDelta, Text: output.reasoning})
 		}
 		for _, fragment := range fragmenter.push(output.text) {
 			sendFragment(fragment)
@@ -574,7 +574,7 @@ func (s *localStackSession) speakFragments(ctx, turnCtx context.Context, fragmen
 				if ctx.Err() == nil {
 					s.warnTurn(ctx, "tts", err)
 					if started {
-						s.emit(&voicev1.SpeechEnded{Kind: voicev1.MessageKindSpeechEnded, Speaker: voicev1.SpeakerAssistant})
+						s.emit(&voicev2.SpeechEnded{Kind: voicev2.MessageKindSpeechEnded, Speaker: voicev2.SpeakerAssistant})
 					}
 				}
 				return
@@ -591,10 +591,10 @@ func (s *localStackSession) speakFragments(ctx, turnCtx context.Context, fragmen
 					started = true
 					audioStartedAt = time.Now()
 					s.setSpeaking(turnCtx, true)
-					s.emit(&voicev1.SpeechStarted{Kind: voicev1.MessageKindSpeechStarted, Speaker: voicev1.SpeakerAssistant})
+					s.emit(&voicev2.SpeechStarted{Kind: voicev2.MessageKindSpeechStarted, Speaker: voicev2.SpeakerAssistant})
 				}
-				s.emit(&voicev1.TranscriptDelta{Kind: voicev1.MessageKindTranscriptDelta, Speaker: voicev1.SpeakerAssistant, Text: text})
-				s.emit(&voicev1.AssistantTextDelta{Kind: voicev1.MessageKindAssistantTextDelta, Text: text})
+				s.emit(&voicev2.TranscriptDelta{Kind: voicev2.MessageKindTranscriptDelta, Speaker: voicev2.SpeakerAssistant, Text: text})
+				s.emit(&voicev2.AssistantTextDelta{Kind: voicev2.MessageKindAssistantTextDelta, Text: text})
 				textEmitted = true
 			}
 			for off := 0; off < len(pcm); off += ttsChunkBytes {
@@ -617,7 +617,7 @@ func (s *localStackSession) speakFragments(ctx, turnCtx context.Context, fragmen
 	if !sleepCtx(ctx, remaining) {
 		return
 	}
-	s.emit(&voicev1.SpeechEnded{Kind: voicev1.MessageKindSpeechEnded, Speaker: voicev1.SpeakerAssistant})
+	s.emit(&voicev2.SpeechEnded{Kind: voicev2.MessageKindSpeechEnded, Speaker: voicev2.SpeakerAssistant})
 }
 
 func queuedTextFragments(ch <-chan assistantSpeechQueueItem) iter.Seq[string] {
@@ -633,7 +633,7 @@ func queuedTextFragments(ch <-chan assistantSpeechQueueItem) iter.Seq[string] {
 	}
 }
 
-func (s *localStackSession) bargeIn(source voicev1.InterruptSource, message string) {
+func (s *localStackSession) bargeIn(source voicev2.InterruptSource, message string) {
 	s.events.Lock()
 	defer s.events.Unlock()
 	s.mu.Lock()
@@ -645,7 +645,7 @@ func (s *localStackSession) bargeIn(source voicev1.InterruptSource, message stri
 	}
 	s.mu.Unlock()
 	s.sink.clearAssistantAudio()
-	s.emit(&voicev1.Interrupted{Kind: voicev1.MessageKindInterrupted, Source: source, Message: message})
+	s.emit(&voicev2.Interrupted{Kind: voicev2.MessageKindInterrupted, Source: source, Message: message})
 }
 
 // deliverToolResult validates session identity before admitting a result. Late
@@ -829,12 +829,12 @@ func (placeholderASR) transcribe(_ context.Context, _ []byte) (string, error) {
 // placeholderLLM calls the first declared tool once, then answers with text.
 type placeholderLLM struct{}
 
-func (placeholderLLM) newConversation(_ string, tools []voicev1.ToolDeclaration, _ bool) llmConversation {
+func (placeholderLLM) newConversation(_ string, tools []voicev2.ToolDeclaration, _ bool) llmConversation {
 	return &placeholderConversation{tools: tools}
 }
 
 type placeholderConversation struct {
-	tools      []voicev1.ToolDeclaration
+	tools      []voicev2.ToolDeclaration
 	calledTool bool
 }
 

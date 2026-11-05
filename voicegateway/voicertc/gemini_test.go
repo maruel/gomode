@@ -18,7 +18,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers/gemini"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 // geminiTestTransport routes the configured HTTP transport to a local peer.
@@ -202,7 +202,7 @@ func TestGeminiBridgeSession(t *testing.T) {
 				if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"session.setup","context":{"systemInstruction":"test"},"tools":[{"name":"lookup"}]}`)); err != nil {
 					t.Fatal(err)
 				}
-				sink.waitForKind(t, voicev1.MessageKindToolCall, 1)
+				sink.waitForKind(t, voicev2.MessageKindToolCall, 1)
 				if sink.pcmLen() != 4 {
 					t.Fatal("initial audio was not delivered")
 				}
@@ -214,14 +214,14 @@ func TestGeminiBridgeSession(t *testing.T) {
 						t.Fatal("transcript barrier not reached")
 					}
 				} else {
-					sink.waitForKind(t, voicev1.MessageKindInterrupted, 2)
+					sink.waitForKind(t, voicev2.MessageKindInterrupted, 2)
 				}
 				if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"tool.result","id":"cancelled-1","name":"lookup","result":{"value":"late"}}`)); err != nil {
 					t.Fatalf("late cancelled result ended voice: %v", err)
 				}
 				if race {
 					close(release)
-					sink.waitForKind(t, voicev1.MessageKindInterrupted, 2)
+					sink.waitForKind(t, voicev2.MessageKindInterrupted, 2)
 				}
 				if sink.pcmLen() != 0 {
 					t.Fatal("cancelled playback was retained")
@@ -237,8 +237,8 @@ func TestGeminiBridgeSession(t *testing.T) {
 				if _, ok := (<-sent)["clientContent"]; !ok {
 					t.Fatal("cancelled result was forwarded to provider")
 				}
-				sink.waitForKind(t, voicev1.MessageKindSpeechEnded, 1)
-				if sink.wasCanceled() || slices.Contains(sink.kinds(), voicev1.MessageKindError) || sink.pcmLen() != 2 || !strings.HasSuffix(sink.assistantText(), "next") {
+				sink.waitForKind(t, voicev2.MessageKindSpeechEnded, 1)
+				if sink.wasCanceled() || slices.Contains(sink.kinds(), voicev2.MessageKindError) || sink.pcmLen() != 2 || !strings.HasSuffix(sink.assistantText(), "next") {
 					t.Fatalf("next turn failed: cancelled=%t audio=%d kinds=%v", sink.wasCanceled(), sink.pcmLen(), sink.kinds())
 				}
 			})
@@ -265,12 +265,12 @@ func TestGeminiBridgeSession(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		sink.waitForKind(t, voicev1.MessageKindToolCall, 1)
+		sink.waitForKind(t, voicev2.MessageKindToolCall, 1)
 		call := decodeToolCall(t, &sink.captureSink)
 		if call.ID == "" || call.Name != "lookup" || string(call.Args) != `{"key":7}` {
 			t.Fatalf("tool call: %+v", call)
 		}
-		result, err := json.Marshal(&voicev1.ToolResult{Kind: voicev1.MessageKindToolResult, ID: call.ID, Name: call.Name, Result: json.RawMessage(`{"value":"done"}`)})
+		result, err := json.Marshal(&voicev2.ToolResult{Kind: voicev2.MessageKindToolResult, ID: call.ID, Name: call.Name, Result: json.RawMessage(`{"value":"done"}`)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -285,7 +285,7 @@ func TestGeminiBridgeSession(t *testing.T) {
 		if _, ok := response["id"]; ok {
 			t.Fatal("local synthetic tool ID leaked onto provider wire")
 		}
-		sink.waitForKind(t, voicev1.MessageKindSpeechEnded, 1)
+		sink.waitForKind(t, voicev2.MessageKindSpeechEnded, 1)
 		if sink.pcmLen() != 4 || sink.assistantText() != "done" {
 			t.Fatalf("tool continuation: audio=%d text=%q", sink.pcmLen(), sink.assistantText())
 		}
@@ -299,7 +299,7 @@ func TestGeminiBridgeSession(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if sink.reasoningText() != "weigh the request" || sink.assistantText() != "hello worldagain" || slices.Contains(sink.kinds(), voicev1.MessageKindSpeechEnded) {
+		if sink.reasoningText() != "weigh the request" || sink.assistantText() != "hello worldagain" || slices.Contains(sink.kinds(), voicev2.MessageKindSpeechEnded) {
 			t.Fatalf("transcript/completion: %q %v", sink.assistantText(), sink.kinds())
 		}
 		if err := s.handleEvent(&genai.RealtimeEvent{Kind: genai.RealtimeEventInterrupted}); err != nil {
@@ -313,7 +313,7 @@ func TestGeminiBridgeSession(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		want := []voicev1.MessageKind{voicev1.MessageKindSpeechStarted, voicev1.MessageKindReasoningDelta, voicev1.MessageKindTranscriptDelta, voicev1.MessageKindAssistantTextDelta, voicev1.MessageKindTranscriptDelta, voicev1.MessageKindAssistantTextDelta, voicev1.MessageKindTranscriptDelta, voicev1.MessageKindTranscriptDelta, voicev1.MessageKindAssistantTextDelta, voicev1.MessageKindInterrupted, voicev1.MessageKindInterrupted, voicev1.MessageKindSpeechEnded}
+		want := []voicev2.MessageKind{voicev2.MessageKindSpeechStarted, voicev2.MessageKindReasoningDelta, voicev2.MessageKindTranscriptDelta, voicev2.MessageKindAssistantTextDelta, voicev2.MessageKindTranscriptDelta, voicev2.MessageKindAssistantTextDelta, voicev2.MessageKindTranscriptDelta, voicev2.MessageKindTranscriptDelta, voicev2.MessageKindAssistantTextDelta, voicev2.MessageKindInterrupted, voicev2.MessageKindInterrupted, voicev2.MessageKindSpeechEnded}
 		if !slices.Equal(sink.kinds(), want) {
 			t.Fatalf("gateway ordering: %v", sink.kinds())
 		}
@@ -352,7 +352,7 @@ func TestGeminiBridgeSession(t *testing.T) {
 		if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"session.setup","context":{"systemInstruction":"test"}}`)); err != nil {
 			t.Fatal(err)
 		}
-		sink.waitForKind(t, voicev1.MessageKindError, 1)
+		sink.waitForKind(t, voicev2.MessageKindError, 1)
 		if sink.wasCanceled() || sink.pcmLen() != 0 {
 			t.Fatal("failure canceled before error delivery or accepted invalid audio")
 		}
@@ -374,11 +374,11 @@ type geminiTranscriptBarrier struct {
 }
 
 func (s *geminiTranscriptBarrier) sendGatewayMessage(ctx context.Context, data []byte) error {
-	var msg voicev1.TranscriptDelta
+	var msg voicev2.TranscriptDelta
 	if err := json.Unmarshal(data, &msg); err != nil {
 		return err
 	}
-	if msg.Kind == voicev1.MessageKindTranscriptDelta && msg.Text == "stopping" {
+	if msg.Kind == voicev2.MessageKindTranscriptDelta && msg.Text == "stopping" {
 		select {
 		case s.reached <- struct{}{}:
 		case <-ctx.Done():

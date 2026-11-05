@@ -400,14 +400,14 @@ public struct VoiceTextTicketReq: Codable {
 }
 
 /// VoiceTextTicketResp carries a single-use ticket that expires after 30 seconds.
-/// Connect to /api/voicegateway/v1/voice/text/browser with the
-/// gomode.ticket.<ticket> WebSocket subprotocol alongside gomode.text.v1.
+/// Connect to /api/voicegateway/v2/voice/text/browser with the
+/// gomode.ticket.<ticket> WebSocket subprotocol alongside gomode.text.v2.
 /// Never put it in a URL or store it persistently.
 public struct VoiceTextTicketResp: Codable {
     public let ticket: String
 }
 
-/// VoiceRTCOfferReq is the request body for POST /api/voicegateway/v1/voice/rtc/offer.
+/// VoiceRTCOfferReq is the request body for POST /api/voicegateway/v2/voice/rtc/offer.
 public struct VoiceRTCOfferReq: Codable {
     /// ChoiceID selects a gateway choice; empty uses the advertised default.
     public let choiceID: String?
@@ -417,7 +417,7 @@ public struct VoiceRTCOfferReq: Codable {
     public let service: ServiceAuthorization?
 }
 
-/// VoiceRTCAnswerResp is the response for POST /api/voicegateway/v1/voice/rtc/offer.
+/// VoiceRTCAnswerResp is the response for POST /api/voicegateway/v2/voice/rtc/offer.
 public struct VoiceRTCAnswerResp: Codable {
     /// SDP is the gateway WebRTC answer session description to pass to setRemoteDescription with type "answer".
     public let sdp: String
@@ -439,7 +439,7 @@ public struct VoiceRTCClientDiagnostics: Codable {
     public let dataChannelState: VoiceRTCDataChannelState?
 }
 
-/// VoiceRTCDiagnosticsReq is the request body for POST /api/voicegateway/v1/voice/rtc/{sessionID}/diagnostics.
+/// VoiceRTCDiagnosticsReq is the request body for POST /api/voicegateway/v2/voice/rtc/{sessionID}/diagnostics.
 public struct VoiceRTCDiagnosticsReq: Codable {
     /// Client contains the browser/client WebRTC state observed by the caller.
     public let client: VoiceRTCClientDiagnostics?
@@ -713,4 +713,3 @@ public struct Error: Codable {
     /// Recoverable reports whether the client may continue using the session.
     public let recoverable: Bool
 }
-

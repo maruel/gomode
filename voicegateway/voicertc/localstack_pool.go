@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/maruel/gomode/voicegateway"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 type localStackPool struct {
@@ -302,8 +302,8 @@ func (l *lazyLocalStack) reportStartupProgress(ctx context.Context, sink backend
 		// A cached observation is not a lease. Keep watching until acquire
 		// finishes: an idle timer or competing choice can evict it meanwhile.
 		if !cached {
-			if err := sink.sendGatewayMessage(ctx, mustGatewayServerMessage(&voicev1.SessionStatus{
-				Kind: voicev1.MessageKindSessionStatus, Message: message,
+			if err := sink.sendGatewayMessage(ctx, mustGatewayServerMessage(&voicev2.SessionStatus{
+				Kind: voicev2.MessageKindSessionStatus, Message: message,
 			})); err != nil {
 				if ctx.Err() == nil {
 					return err

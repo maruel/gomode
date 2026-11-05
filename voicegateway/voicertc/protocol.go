@@ -10,17 +10,17 @@ import (
 
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/base"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 	"golang.org/x/text/language"
 )
 
 var errSessionClosed = errors.New("session closed")
 
-func decodeGatewayMessage(data []byte, want voicev1.MessageKind, msg any) error {
+func decodeGatewayMessage(data []byte, want voicev2.MessageKind, msg any) error {
 	if err := json.Unmarshal(data, msg); err != nil {
 		return fmt.Errorf("decode %s message: %w", want, err)
 	}
-	var env voicev1.MessageEnvelope
+	var env voicev2.MessageEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
 		return fmt.Errorf("decode %s envelope: %w", want, err)
 	}
@@ -30,7 +30,7 @@ func decodeGatewayMessage(data []byte, want voicev1.MessageKind, msg any) error 
 	return nil
 }
 
-func applySessionLanguage(msg *voicev1.SessionSetup) error {
+func applySessionLanguage(msg *voicev2.SessionSetup) error {
 	tag := msg.Voice.Language
 	if tag == "" {
 		tag = "en-US"
@@ -56,8 +56,8 @@ func applySessionLanguage(msg *voicev1.SessionSetup) error {
 // gatewaySessionReady builds the session.ready message the gateway core emits
 // once a backend is ready.
 func gatewaySessionReady() []byte {
-	return mustGatewayServerMessage(&voicev1.SessionReady{
-		Kind: voicev1.MessageKindSessionReady,
+	return mustGatewayServerMessage(&voicev2.SessionReady{
+		Kind: voicev2.MessageKindSessionReady,
 	})
 }
 
@@ -69,7 +69,7 @@ func mustGatewayServerMessage(msg any) []byte {
 	return data
 }
 
-func genaiToolDefs(tools []voicev1.ToolDeclaration) ([]genai.ToolDef, error) {
+func genaiToolDefs(tools []voicev2.ToolDeclaration) ([]genai.ToolDef, error) {
 	if len(tools) == 0 {
 		return nil, nil
 	}

@@ -18,8 +18,14 @@
     "sdk/gomode/ts"
   ],
   "exports": {
-    "./web/BrowserVoiceShell": "./web/src/BrowserVoiceShell.tsx",
+    "./sdk/gomode/v1/*": "./sdk/gomode/ts/v1/*",
+    "./sdk/mcp/v1/*": "./sdk/mcp/ts/v1/*",
+    "./sdk/oauth/v1/*": "./sdk/oauth/ts/v1/*",
+    "./sdk/voicegateway/v1/*": "./sdk/voicegateway/ts/v1/*",
+    "./sdk/voicegateway/v2/*": "./sdk/voicegateway/ts/v2/*",
     "./web/BrowserVoiceManifest": "./web/src/BrowserVoiceManifest.ts",
+    "./web/BrowserVoiceShell": "./web/src/BrowserVoiceShell.tsx",
+    "./web/DeviceLogin": "./web/src/DeviceLogin.tsx",
     "./web/FrontendVoiceTools": "./web/src/FrontendVoiceTools.ts",
     "./web/HostMode": "./web/src/HostMode.tsx",
     "./web/McpClient": "./web/src/McpClient.ts",
@@ -27,12 +33,7 @@
     "./web/VoiceOverlay": "./web/src/VoiceOverlay.tsx",
     "./web/VoiceSession": "./web/src/VoiceSession.ts",
     "./web/VoiceSettings": "./web/src/VoiceSettings.tsx",
-    "./web/notifications": "./web/src/notifications.ts",
-    "./sdk/mcp/*": "./sdk/mcp/ts/v1/*",
-    "./sdk/oauth/*": "./sdk/oauth/ts/v1/*",
-    "./sdk/gomode/*": "./sdk/gomode/ts/v1/*",
-    "./sdk/voicegateway/*": "./sdk/voicegateway/ts/v1/*",
-    "./web/DeviceLogin": "./web/src/DeviceLogin.tsx"
+    "./web/notifications": "./web/src/notifications.ts"
   },
   "peerDependencies": {
     "@solidjs/router": "^1.0.0",

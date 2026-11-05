@@ -19,7 +19,7 @@ import (
 
 	"github.com/coder/websocket"
 	voiceapi "github.com/maruel/gomode/voicegateway/api"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
@@ -108,7 +108,7 @@ func (f *fixture) handleFrontend(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fixture) handleOffer(w http.ResponseWriter, r *http.Request) {
-	var req voicev1.VoiceRTCOfferReq
+	var req voicev2.VoiceRTCOfferReq
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		http.Error(w, "invalid offer", http.StatusBadRequest)
 		return
@@ -119,7 +119,7 @@ func (f *fixture) handleOffer(w http.ResponseWriter, r *http.Request) {
 		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeVoiceOfferFailed, "invalid fixture offer")
 		return
 	}
-	writeJSON(w, voicev1.VoiceRTCAnswerResp{SDP: answer, SessionID: id})
+	writeJSON(w, voicev2.VoiceRTCAnswerResp{SDP: answer, SessionID: id})
 }
 
 func (f *fixture) handleClose(w http.ResponseWriter, r *http.Request) {
@@ -252,28 +252,28 @@ func (p *mediaPeer) handleMessages(dc *webrtc.DataChannel) {
 	p.fixture.mu.Unlock()
 	dc.OnClose(p.requestClose)
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		var env voicev1.MessageEnvelope
+		var env voicev2.MessageEnvelope
 		if err := json.Unmarshal(msg.Data, &env); err != nil {
 			p.fixture.log.Warn("decode RTC message", "err", err)
 			return
 		}
-		if env.Kind == voicev1.MessageKindToolResult {
+		if env.Kind == voicev2.MessageKindToolResult {
 			p.fixture.recordToolResult(msg.Data)
 		}
-		if env.Kind != voicev1.MessageKindSessionSetup {
+		if env.Kind != voicev2.MessageKindSessionSetup {
 			return
 		}
 		p.fixture.mu.Lock()
 		p.fixture.stats.RTCSetups++
 		p.fixture.mu.Unlock()
 		for _, message := range []any{
-			voicev1.SessionReady{Kind: voicev1.MessageKindSessionReady},
-			voicev1.TranscriptDelta{
-				Kind: voicev1.MessageKindTranscriptDelta, Speaker: voicev1.SpeakerUser,
+			voicev2.SessionReady{Kind: voicev2.MessageKindSessionReady},
+			voicev2.TranscriptDelta{
+				Kind: voicev2.MessageKindTranscriptDelta, Speaker: voicev2.SpeakerUser,
 				Text: "How is the service doing?",
 			},
-			voicev1.TranscriptDelta{
-				Kind: voicev1.MessageKindTranscriptDelta, Speaker: voicev1.SpeakerAssistant,
+			voicev2.TranscriptDelta{
+				Kind: voicev2.MessageKindTranscriptDelta, Speaker: voicev2.SpeakerAssistant,
 				Text: "Your service is ready.",
 			},
 		} {
@@ -395,12 +395,12 @@ func (f *fixture) recordToolResult(data []byte) {
 }
 
 func (f *fixture) handleTool(w http.ResponseWriter, r *http.Request) {
-	var call voicev1.ToolCall
+	var call voicev2.ToolCall
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&call); err != nil {
 		http.Error(w, "invalid tool call", http.StatusBadRequest)
 		return
 	}
-	call.Kind = voicev1.MessageKindToolCall
+	call.Kind = voicev2.MessageKindToolCall
 	data, err := json.Marshal(call)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

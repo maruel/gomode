@@ -9,9 +9,9 @@ let package = Package(
         .iOS(.v16),
     ],
     products: [
-        .library(name: "MCPSDK", targets: ["MCPSDK"]),
+        .library(name: "MCPSDKV1", targets: ["MCPSDKV1"]),
     ],
     targets: [
-        .target(name: "MCPSDK", path: "Sources/MCPSDK"),
+        .target(name: "MCPSDKV1", path: "Sources/MCPSDKV1"),
     ]
 )

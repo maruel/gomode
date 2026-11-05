@@ -163,4 +163,3 @@ data class SkillFrontmatter(
     val description: String,
     val gomode: SkillGoMode,
 )
-

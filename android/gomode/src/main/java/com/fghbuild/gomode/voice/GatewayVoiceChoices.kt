@@ -1,10 +1,10 @@
 // Discovers gateway voice choices, explains gateway HTTP failures, and resolves pinned transport-compatible selections.
 package com.fghbuild.gomode.voice
 
-import com.caic.voicegateway.sdk.v1.ApiClient
-import com.caic.voicegateway.sdk.v1.VoiceChoice
-import com.caic.voicegateway.sdk.v1.VoiceChoicesResp
-import com.caic.voicegateway.sdk.v1.VoiceTransport
+import com.caic.voicegateway.sdk.v2.ApiClient
+import com.caic.voicegateway.sdk.v2.VoiceChoice
+import com.caic.voicegateway.sdk.v2.VoiceChoicesResp
+import com.caic.voicegateway.sdk.v2.VoiceTransport
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsState
@@ -31,7 +31,7 @@ internal fun gatewayHTTPError(
         }
 
         404 -> {
-            if (path.startsWith("/api/voicegateway/v1/voice/rtc/") && !path.endsWith("/rtc/offer")) {
+            if (path.startsWith("/api/voicegateway/v2/voice/rtc/") && !path.endsWith("/rtc/offer")) {
                 "Voice session not found (HTTP 404)."
             } else {
                 "Voice gateway not found (HTTP 404)."

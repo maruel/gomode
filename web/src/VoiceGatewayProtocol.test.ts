@@ -14,7 +14,7 @@ import {
   MessageKindUserMessage,
   MessageKindSessionSetup,
   MessageKindToolResult,
-} from "../../sdk/voicegateway/ts/v1/types.gen";
+} from "../../sdk/voicegateway/ts/v2/types.gen";
 
 describe("voice gateway generated protocol DTOs", () => {
   it("serializes session setup exactly", () => {

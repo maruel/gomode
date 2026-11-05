@@ -116,7 +116,7 @@ class DeviceVoiceSessionTest {
                         requireNotNull(speech.resultCallback)("Stop")
                     }
                     assertEquals(VOICE_MESSAGE_DELIVERY_ERROR, session.state.value.error)
-                    assertEquals(com.caic.voicegateway.sdk.v1.TurnState.Idle, session.state.value.turnState)
+                    assertEquals(com.caic.voicegateway.sdk.v2.TurnState.Idle, session.state.value.turnState)
                     assertFalse(session.state.value.connected)
                     assertFalse(session.state.value.listening)
                     assertFalse(
@@ -237,8 +237,8 @@ class DeviceVoiceSessionTest {
                 backend.onMessage(
                     socket,
                     Json.encodeToString(
-                        com.caic.voicegateway.sdk.v1.AssistantTextDelta(
-                            kind = com.caic.voicegateway.sdk.v1.MessageKind.AssistantTextDelta,
+                        com.caic.voicegateway.sdk.v2.AssistantTextDelta(
+                            kind = com.caic.voicegateway.sdk.v2.MessageKind.AssistantTextDelta,
                             text = text,
                         ),
                     ),
@@ -808,9 +808,9 @@ class DeviceVoiceSessionTest {
                     switchBlocked.receive()
                     val usersBefore = socket.sent.count { it.contains("user.message") }
                     requireNotNull(speech.resultCallback)("Continue after the switch")
-                    assertEquals(com.caic.voicegateway.sdk.v1.TurnState.Thinking, session.state.value.turnState)
+                    assertEquals(com.caic.voicegateway.sdk.v2.TurnState.Thinking, session.state.value.turnState)
                     backend.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
-                    assertEquals(com.caic.voicegateway.sdk.v1.TurnState.Thinking, session.state.value.turnState)
+                    assertEquals(com.caic.voicegateway.sdk.v2.TurnState.Thinking, session.state.value.turnState)
                     assertEquals(usersBefore, socket.sent.count { it.contains("user.message") })
                     finishSwitch.complete(Unit)
                     socket.awaitSent { frames ->
@@ -819,7 +819,7 @@ class DeviceVoiceSessionTest {
                     assertTrue(socket.sent[socket.sent.lastIndex - 2].contains("tool.result"))
                     assertTrue(socket.sent[socket.sent.lastIndex - 1].contains("context.update"))
                     assertTrue(socket.sent.last().contains("user.message"))
-                    assertEquals(com.caic.voicegateway.sdk.v1.TurnState.Thinking, session.state.value.turnState)
+                    assertEquals(com.caic.voicegateway.sdk.v2.TurnState.Thinking, session.state.value.turnState)
                     assertEquals(1, transports)
                     assertEquals(1, call.started)
                     assertEquals(1, call.activated)
@@ -1026,14 +1026,14 @@ class DeviceVoiceSessionTest {
                                 override suspend fun processTurn(
                                     input: UserTurnInput,
                                     onDelta: (String) -> Unit,
-                                    onToolCall: suspend (com.caic.voicegateway.sdk.v1.ToolCall) ->
+                                    onToolCall: suspend (com.caic.voicegateway.sdk.v2.ToolCall) ->
                                     kotlinx.serialization.json.JsonElement?,
                                 ): EngineTurnResult {
                                     onDelta("First sentence. ")
                                     val result =
                                         onToolCall(
-                                            com.caic.voicegateway.sdk.v1.ToolCall(
-                                                kind = com.caic.voicegateway.sdk.v1.MessageKind.ToolCall,
+                                            com.caic.voicegateway.sdk.v2.ToolCall(
+                                                kind = com.caic.voicegateway.sdk.v2.MessageKind.ToolCall,
                                                 id = "call-1",
                                                 name = "example_tool",
                                                 args = kotlinx.serialization.json.JsonObject(emptyMap()),
@@ -1517,7 +1517,7 @@ class DeviceVoiceSessionTest {
                             override suspend fun processTurn(
                                 input: UserTurnInput,
                                 onDelta: (String) -> Unit,
-                                onToolCall: suspend (com.caic.voicegateway.sdk.v1.ToolCall) ->
+                                onToolCall: suspend (com.caic.voicegateway.sdk.v2.ToolCall) ->
                                 kotlinx.serialization.json.JsonElement?,
                             ): EngineTurnResult {
                                 turns.add(input.text)
@@ -1527,8 +1527,8 @@ class DeviceVoiceSessionTest {
                                     onDelta("Stale reply.")
                                     val cancellation =
                                         onToolCall(
-                                            com.caic.voicegateway.sdk.v1.ToolCall(
-                                                kind = com.caic.voicegateway.sdk.v1.MessageKind.ToolCall,
+                                            com.caic.voicegateway.sdk.v2.ToolCall(
+                                                kind = com.caic.voicegateway.sdk.v2.MessageKind.ToolCall,
                                                 id = "stale",
                                                 name = HANG_UP_TOOL_NAME,
                                                 args = kotlinx.serialization.json.JsonObject(emptyMap()),
@@ -1592,7 +1592,7 @@ class DeviceVoiceSessionTest {
         session.connect()
         requireNotNull(listener).onOpen(socket, upgradeResponse())
         val setup =
-            kotlinx.serialization.json.Json.decodeFromString<com.caic.voicegateway.sdk.v1.SessionSetup>(
+            kotlinx.serialization.json.Json.decodeFromString<com.caic.voicegateway.sdk.v2.SessionSetup>(
                 socket.sent.single(),
             )
         assertEquals("fr-CA", setup.voice.language)
@@ -1823,11 +1823,11 @@ class DeviceVoiceSessionTest {
     @Test
     fun `textSessionWebSocketURL maps gateway schemes and path`() {
         assertEquals(
-            "wss://gateway.example.com/api/voicegateway/v1/voice/text",
+            "wss://gateway.example.com/api/voicegateway/v2/voice/text",
             textSessionWebSocketURL("https://gateway.example.com"),
         )
         assertEquals(
-            "ws://127.0.0.1:3479/api/voicegateway/v1/voice/text",
+            "ws://127.0.0.1:3479/api/voicegateway/v2/voice/text",
             textSessionWebSocketURL("http://127.0.0.1:3479/"),
         )
     }
@@ -2383,13 +2383,13 @@ class DeviceVoiceSessionTest {
                                 input: UserTurnInput,
                                 onDelta: (String) -> Unit,
                                 onToolCall: suspend (
-                                    com.caic.voicegateway.sdk.v1.ToolCall,
+                                    com.caic.voicegateway.sdk.v2.ToolCall,
                                 ) -> kotlinx.serialization.json.JsonElement?,
                             ): EngineTurnResult {
                                 val servers =
                                     onToolCall(
-                                        com.caic.voicegateway.sdk.v1.ToolCall(
-                                            kind = com.caic.voicegateway.sdk.v1.MessageKind.ToolCall,
+                                        com.caic.voicegateway.sdk.v2.ToolCall(
+                                            kind = com.caic.voicegateway.sdk.v2.MessageKind.ToolCall,
                                             id = "list-local",
                                             name = "list_servers",
                                             args = kotlinx.serialization.json.JsonObject(emptyMap()),
@@ -2398,8 +2398,8 @@ class DeviceVoiceSessionTest {
                                 assertTrue(servers.toString().contains(serverId))
                                 turnProcessed = true
                                 onToolCall(
-                                    com.caic.voicegateway.sdk.v1.ToolCall(
-                                        kind = com.caic.voicegateway.sdk.v1.MessageKind.ToolCall,
+                                    com.caic.voicegateway.sdk.v2.ToolCall(
+                                        kind = com.caic.voicegateway.sdk.v2.MessageKind.ToolCall,
                                         id = "test-call-1",
                                         name = HANG_UP_TOOL_NAME,
                                         args = kotlinx.serialization.json.JsonObject(emptyMap()),
@@ -2460,7 +2460,7 @@ class DeviceVoiceSessionTest {
                                     input: UserTurnInput,
                                     onDelta: (String) -> Unit,
                                     onToolCall: suspend (
-                                        com.caic.voicegateway.sdk.v1.ToolCall,
+                                        com.caic.voicegateway.sdk.v2.ToolCall,
                                     ) -> kotlinx.serialization.json.JsonElement?,
                                 ) = EngineTurnResult(assistantText = "")
 
@@ -2623,7 +2623,7 @@ class DeviceVoiceSessionTest {
                             override suspend fun processTurn(
                                 input: UserTurnInput,
                                 onDelta: (String) -> Unit,
-                                onToolCall: suspend (com.caic.voicegateway.sdk.v1.ToolCall) ->
+                                onToolCall: suspend (com.caic.voicegateway.sdk.v2.ToolCall) ->
                                 kotlinx.serialization.json.JsonElement?,
                             ): EngineTurnResult {
                                 finish.await()

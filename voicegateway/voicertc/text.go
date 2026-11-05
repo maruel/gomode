@@ -16,7 +16,8 @@ import (
 
 	"github.com/coder/websocket"
 
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voiceapi "github.com/maruel/gomode/voicegateway/api"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 const (
@@ -32,7 +33,12 @@ const (
 // channel. websocket.Accept writes its own HTTP error response when the upgrade
 // fails, so a returned error is for logging only.
 func serveTextSession(ctx context.Context, w http.ResponseWriter, r *http.Request, sessionID, activityLogDir string, backend *localStackBackend) error {
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"gomode.text.v1"}})
+	protocol := voiceapi.SessionProtocolFromContext(ctx)
+	if !protocol.Version.AcceptsTextSubprotocol(r.Header.Values("Sec-WebSocket-Protocol")) {
+		http.Error(w, "text subprotocol does not match route version", http.StatusBadRequest)
+		return errors.New("text subprotocol does not match route version")
+	}
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{protocol.Version.TextSubprotocol()}})
 	if err != nil {
 		return fmt.Errorf("accept text session: %w", err)
 	}
@@ -50,7 +56,7 @@ func serveTextSession(ctx context.Context, w http.ResponseWriter, r *http.Reques
 	conn.SetReadLimit(textReadLimit)
 	sessionCtx, cancel := context.WithTimeout(ctx, sessionLifetime)
 	defer cancel()
-	sink := &textSink{conn: conn, cancel: cancel, log: log}
+	sink := &textSink{conn: conn, cancel: cancel, log: log, protocol: protocol}
 	// Keep reading during cold startup so a disconnected client cancels model
 	// downloads and capacity waits. One queued message bounds client buffering.
 	incoming := make(chan []byte, 1)
@@ -73,8 +79,8 @@ func serveTextSession(ctx context.Context, w http.ResponseWriter, r *http.Reques
 			select {
 			case <-startupDone:
 			default:
-				var env voicev1.MessageEnvelope
-				if json.Unmarshal(data, &env) == nil && env.Kind == voicev1.MessageKindSessionClose {
+				var env voicev2.MessageEnvelope
+				if json.Unmarshal(data, &env) == nil && env.Kind == voicev2.MessageKindSessionClose {
 					return
 				}
 				select {
@@ -123,7 +129,11 @@ func serveTextSession(ctx context.Context, w http.ResponseWriter, r *http.Reques
 			sink.sendGatewayError(sessionCtx, "activity log: "+err.Error())
 			return nil
 		}
-		if err := sess.acceptClientMessage(sessionCtx, data); err != nil {
+		normalized, err := clientProtocolMessage(protocol, data)
+		if err == nil {
+			err = sess.acceptClientMessage(sessionCtx, normalized)
+		}
+		if err != nil {
 			if errors.Is(err, errSessionClosed) {
 				return nil
 			}
@@ -136,8 +146,9 @@ func serveTextSession(ctx context.Context, w http.ResponseWriter, r *http.Reques
 
 // textSink carries gateway messages from a text session to its WebSocket write.
 type textSink struct {
-	cancel context.CancelFunc
-	log    *activityLog
+	protocol voiceapi.SessionProtocol
+	cancel   context.CancelFunc
+	log      *activityLog
 
 	mu   sync.Mutex
 	conn *websocket.Conn
@@ -157,8 +168,8 @@ func (s *textSink) sendGatewayMessage(ctx context.Context, data []byte) error {
 
 // reportUnrecordedError delivers a fatal error and ends the session.
 func (s *textSink) reportUnrecordedError(ctx context.Context, message string) {
-	if err := s.deliverGatewayMessage(context.WithoutCancel(ctx), mustGatewayServerMessage(&voicev1.Error{
-		Kind:    voicev1.MessageKindError,
+	if err := s.deliverGatewayMessage(context.WithoutCancel(ctx), mustGatewayServerMessage(&voicev2.Error{
+		Kind:    voicev2.MessageKindError,
 		Message: message,
 	})); err != nil {
 		slog.WarnContext(ctx, "voicertc: deliver text gateway error failed", "err", err)
@@ -168,6 +179,10 @@ func (s *textSink) reportUnrecordedError(ctx context.Context, message string) {
 
 // deliverGatewayMessage writes one message to the client without recording it.
 func (s *textSink) deliverGatewayMessage(ctx context.Context, data []byte) error {
+	data, err := serverProtocolMessage(s.protocol, data)
+	if err != nil || len(data) == 0 {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	writeCtx, cancel := context.WithTimeout(ctx, textWriteTimeout)
@@ -194,8 +209,8 @@ func (s *textSink) sendTurnError(ctx context.Context, message string) {
 // call.
 func (s *textSink) reportError(ctx context.Context, message string, recoverable bool) {
 	sendCtx := context.WithoutCancel(ctx)
-	if err := s.sendGatewayMessage(sendCtx, mustGatewayServerMessage(&voicev1.Error{
-		Kind:        voicev1.MessageKindError,
+	if err := s.sendGatewayMessage(sendCtx, mustGatewayServerMessage(&voicev2.Error{
+		Kind:        voicev2.MessageKindError,
 		Message:     message,
 		Recoverable: recoverable,
 	})); err != nil {

@@ -8,7 +8,7 @@ import { createSignal } from "solid-js";
 import { deferred } from "../tests/deferred";
 import { installBrowserSpeech } from "../tests/browser-speech";
 
-import { TurnStateIdle, TurnStateThinking, TurnStateTranscribing } from "../../sdk/voicegateway/ts/v1/types.gen";
+import { TurnStateIdle, TurnStateThinking, TurnStateTranscribing } from "../../sdk/voicegateway/ts/v2/types.gen";
 import VoiceOverlay, { defaultVoiceOverlayMessages, type VoiceOverlayMessages } from "./VoiceOverlay";
 import { notifications } from "./notifications";
 import { voiceSession } from "./VoiceSession";

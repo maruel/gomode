@@ -9,9 +9,9 @@ let package = Package(
         .iOS(.v16),
     ],
     products: [
-        .library(name: "OAuthSDK", targets: ["OAuthSDK"]),
+        .library(name: "OAuthSDKV1", targets: ["OAuthSDKV1"]),
     ],
     targets: [
-        .target(name: "OAuthSDK", path: "Sources/OAuthSDK"),
+        .target(name: "OAuthSDKV1", path: "Sources/OAuthSDKV1"),
     ]
 )

@@ -5,9 +5,9 @@ import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
-import com.caic.voicegateway.sdk.v1.ApiClient
-import com.caic.voicegateway.sdk.v1.MessageKind
-import com.caic.voicegateway.sdk.v1.ToolCall
+import com.caic.voicegateway.sdk.v2.ApiClient
+import com.caic.voicegateway.sdk.v2.MessageKind
+import com.caic.voicegateway.sdk.v2.ToolCall
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
@@ -124,7 +124,7 @@ class VoiceSessionLifecycleTest {
                     assertEquals(VOICE_TOOL_RESULT_DELIVERY_ERROR, session.state.value.error)
                     assertFalse(session.state.value.connected)
                     assertNull(session.state.value.activeTool)
-                    assertEquals(com.caic.voicegateway.sdk.v1.TurnState.Idle, session.state.value.turnState)
+                    assertEquals(com.caic.voicegateway.sdk.v2.TurnState.Idle, session.state.value.turnState)
                     assertEquals(if (failure == "closed") 0 else 1, channel.sendAttempts)
                     assertTrue(channel.sent.isEmpty())
                     assertFalse(ShadowLog.getLogsForTag("GoModeVoiceSession").any { it.msg.contains("private result") })
@@ -390,7 +390,7 @@ class VoiceSessionLifecycleTest {
                                     )
                                 }
 
-                                "/api/voicegateway/v1/voice/choices" -> {
+                                "/api/voicegateway/v2/voice/choices" -> {
                                     discoveryStarted.countDown()
                                     releaseDiscovery.await(5, TimeUnit.SECONDS)
                                     MockResponse().setBody(
@@ -443,7 +443,7 @@ class VoiceSessionLifecycleTest {
                     releaseDiscovery.countDown()
                     assertTrue(attempt.await().exceptionOrNull() is VoiceSetupException)
                     assertEquals("/.well-known/gomode.json", server.takeRequest(5, TimeUnit.SECONDS)?.path)
-                    assertEquals("/api/voicegateway/v1/voice/choices", server.takeRequest(5, TimeUnit.SECONDS)?.path)
+                    assertEquals("/api/voicegateway/v2/voice/choices", server.takeRequest(5, TimeUnit.SECONDS)?.path)
                     assertNull(server.takeRequest(100, TimeUnit.MILLISECONDS))
                 } finally {
                     releaseDiscovery.countDown()

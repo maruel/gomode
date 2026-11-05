@@ -11,7 +11,7 @@ import (
 
 	activitydata "github.com/maruel/gomode/voicegateway/voicertc/data"
 
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 func TestActivityLog(t *testing.T) {
@@ -86,25 +86,25 @@ func TestActivityLog(t *testing.T) {
 	if len(records) != 7 {
 		t.Fatalf("records = %d, want 7", len(records))
 	}
-	if records[0].Source != activitydata.SourceClient || records[0].Kind != string(voicev1.MessageKindSessionSetup) || !bytes.Contains(records[0].Message, []byte("Initial context")) {
+	if records[0].Source != activitydata.SourceClient || records[0].Kind != string(voicev2.MessageKindSessionSetup) || !bytes.Contains(records[0].Message, []byte("Initial context")) {
 		t.Fatalf("first record = %+v, want initial context", records[0])
 	}
 	if !bytes.Contains(records[0].Message, []byte(`"extension":{"future":[true,null,42]}`)) {
 		t.Fatalf("opaque extension lost: %s", records[0].Message)
 	}
-	if records[1].Kind != string(voicev1.MessageKindTranscriptDelta) {
+	if records[1].Kind != string(voicev2.MessageKindTranscriptDelta) {
 		t.Fatalf("second record = %+v, want user transcript", records[1])
 	}
-	if records[2].Kind != string(voicev1.MessageKindReasoningDelta) {
+	if records[2].Kind != string(voicev2.MessageKindReasoningDelta) {
 		t.Fatalf("reasoning record = %+v, want provider reasoning persisted", records[2])
 	}
-	if records[3].Kind != string(voicev1.MessageKindToolCall) || records[4].Kind != string(voicev1.MessageKindToolResult) || records[4].Source != activitydata.SourceClient {
+	if records[3].Kind != string(voicev2.MessageKindToolCall) || records[4].Kind != string(voicev2.MessageKindToolResult) || records[4].Source != activitydata.SourceClient {
 		t.Fatalf("tool records = %+v, want call then client result", records[3:])
 	}
-	if records[5].Kind != string(voicev1.MessageKindInterrupted) {
+	if records[5].Kind != string(voicev2.MessageKindInterrupted) {
 		t.Fatalf("interruption record = %+v, want the barge-in persisted", records[5])
 	}
-	if records[6].Kind != string(voicev1.MessageKindError) || !bytes.Contains(records[6].Message, []byte("upstream refused")) {
+	if records[6].Kind != string(voicev2.MessageKindError) || !bytes.Contains(records[6].Message, []byte("upstream refused")) {
 		t.Fatalf("error record = %+v, want the failure persisted", records[6])
 	}
 }

@@ -2,7 +2,7 @@
 package com.fghbuild.gomode.voice
 
 import android.webkit.CookieManager
-import com.caic.voicegateway.sdk.v1.ServiceAuthorization
+import com.caic.voicegateway.sdk.v2.ServiceAuthorization
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.service.ServiceCatalog

@@ -140,7 +140,7 @@ class VoiceConversationTest {
                                         )
                                     }
 
-                                    "/api/voicegateway/v1/voice/choices" -> {
+                                    "/api/voicegateway/v2/voice/choices" -> {
                                         MockResponse().setBody(
                                             """{"choices":[{"id":"live","label":"Live","transports":["webrtc"],
                             "voices":${voices.get()}}],"defaults":[{"transport":"webrtc","id":"live"}]}""",
@@ -200,7 +200,7 @@ class VoiceConversationTest {
                                     )
                                 }
 
-                                "/api/voicegateway/v1/voice/choices" -> {
+                                "/api/voicegateway/v2/voice/choices" -> {
                                     choicesStarted.countDown()
                                     check(releaseChoices.await(10, TimeUnit.SECONDS))
                                     MockResponse().setBody(

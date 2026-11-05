@@ -11,6 +11,7 @@ import (
 	"github.com/maruel/gomode/mcp"
 	"github.com/maruel/gomode/oauth"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 func main() {
@@ -24,10 +25,16 @@ func run() error {
 	check := flag.Bool("check", false, "verify generated SDKs without writing them")
 	flag.Parse()
 	for _, api := range []apisdkgen.API{
-		apisdkgen.NewAPI(".", output("sdk/gomode", "sdk/gomode/kotlin/src/main/kotlin/com/fghbuild/gomode/sdk/v1", "sdk/gomode/swift/Sources/GoModeSDK"), gomode.SDKAPI()),
-		apisdkgen.NewAPI("mcp", output("sdk/mcp", "sdk/mcp/kotlin/src/main/kotlin/com/fghbuild/mcp/sdk/v1", "sdk/mcp/swift/Sources/MCPSDK"), mcp.SDKAPI()),
-		apisdkgen.NewAPI("oauth", output("sdk/oauth", "sdk/oauth/kotlin/src/main/kotlin/com/caic/oauth/sdk/v1", "sdk/oauth/swift/Sources/OAuthSDK"), oauth.SDKAPI()),
-		apisdkgen.NewAPI("voicegateway/api/v1", output("sdk/voicegateway", "sdk/voicegateway/kotlin/src/main/kotlin/com/caic/voicegateway/sdk/v1", "sdk/voicegateway/swift/Sources/VoiceGatewaySDK"), voicev1.SDKAPI()),
+		apisdkgen.NewAPI(".", output("sdk/gomode", "sdk/gomode/kotlin/src/main/kotlin/com/fghbuild/gomode/sdk/v1", "sdk/gomode/swift/Sources/GoModeSDKV1"), gomode.SDKAPI()),
+		apisdkgen.NewAPI("mcp", output("sdk/mcp", "sdk/mcp/kotlin/src/main/kotlin/com/fghbuild/mcp/sdk/v1", "sdk/mcp/swift/Sources/MCPSDKV1"), mcp.SDKAPI()),
+		apisdkgen.NewAPI("oauth", output("sdk/oauth", "sdk/oauth/kotlin/src/main/kotlin/com/caic/oauth/sdk/v1", "sdk/oauth/swift/Sources/OAuthSDKV1"), oauth.SDKAPI()),
+		apisdkgen.NewAPI("voicegateway/api/v1", output("sdk/voicegateway", "sdk/voicegateway/kotlin/src/main/kotlin/com/caic/voicegateway/sdk/v1", "sdk/voicegateway/swift/Sources/VoiceGatewaySDKV1"), voicev1.SDKAPI()),
+		apisdkgen.NewAPI("voicegateway/api/v2", apisdkgen.OutputConfig{
+			TypeScriptDir: "sdk/voicegateway/ts/v2",
+			KotlinDir:     "sdk/voicegateway/kotlin/src/main/kotlin/com/caic/voicegateway/sdk/v2",
+			SwiftDir:      "sdk/voicegateway/swift/Sources/VoiceGatewaySDKV2",
+			MarkdownDir:   "sdk/voicegateway/v2",
+		}, voicev2.SDKAPI()),
 	} {
 		var err error
 		if *check {
@@ -47,6 +54,6 @@ func output(dir, kotlin, swift string) apisdkgen.OutputConfig {
 		TypeScriptDir: dir + "/ts/v1",
 		KotlinDir:     kotlin,
 		SwiftDir:      swift,
-		MarkdownDir:   dir,
+		MarkdownDir:   dir + "/v1",
 	}
 }

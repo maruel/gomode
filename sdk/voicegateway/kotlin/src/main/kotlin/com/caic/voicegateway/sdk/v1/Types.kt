@@ -119,20 +119,12 @@ sealed interface MessageKind {
         override val value = "session.ready"
     }
     @Serializable
-    data object SessionStatus : MessageKind {
-        override val value = "session.status"
-    }
-    @Serializable
     data object TranscriptDelta : MessageKind {
         override val value = "transcript.delta"
     }
     @Serializable
     data object AssistantTextDelta : MessageKind {
         override val value = "assistant.text.delta"
-    }
-    @Serializable
-    data object ReasoningDelta : MessageKind {
-        override val value = "reasoning.delta"
     }
     @Serializable
     data object SpeechStarted : MessageKind {
@@ -175,10 +167,8 @@ object MessageKindSerializer : KSerializer<MessageKind> {
             "turn.cancel" -> MessageKind.TurnCancel
             "session.close" -> MessageKind.SessionClose
             "session.ready" -> MessageKind.SessionReady
-            "session.status" -> MessageKind.SessionStatus
             "transcript.delta" -> MessageKind.TranscriptDelta
             "assistant.text.delta" -> MessageKind.AssistantTextDelta
-            "reasoning.delta" -> MessageKind.ReasoningDelta
             "speech.started" -> MessageKind.SpeechStarted
             "speech.ended" -> MessageKind.SpeechEnded
             "tool.call" -> MessageKind.ToolCall
@@ -618,30 +608,15 @@ data class VoiceChoice(
     val transports: List<VoiceTransport>,
     /** Voices lists supported audio voice names. Omitted when the choice does not offer voice selection. */
     val voices: List<String>? = null,
+    /** DefaultVoice is the voice used when session.setup.voice.name is omitted. */
+    val defaultVoice: String? = null,
 )
 
-/**
- * VoiceChoiceDefault names the choice a transport family uses when a session
- * omits choiceID. A family is one transport: WebRTC audio for gateway speech,
- * or text for client speech with a gateway LLM.
- */
-@Serializable
-data class VoiceChoiceDefault(
-    /** Transport is the family this default applies to. */
-    val transport: VoiceTransport,
-    /** ID names a choice that offers Transport. */
-    val id: String,
-)
-
-/**
- * VoiceChoicesResp advertises the available voice choices and one default per
- * offered family.
- */
+/** VoiceChoicesResp advertises the available voice choices and default selection. */
 @Serializable
 data class VoiceChoicesResp(
     val choices: List<VoiceChoice>,
-    /** Defaults holds one entry per offered transport, ordered by transport name. */
-    val defaults: List<VoiceChoiceDefault>,
+    @SerialName("defaultChoiceID") val defaultChoiceID: String,
 )
 
 /** ServiceAuthorization identifies the host and carries its scoped gateway token. */
@@ -752,6 +727,8 @@ data class VoiceRTCServerDiagnostics(
     val backendConnected: Boolean? = null,
     /** SessionReadySent reports whether the gateway sent session.ready to the client. */
     val sessionReadySent: Boolean? = null,
+    /** LastError is the last gateway error sent to the client, if any. */
+    val lastError: String? = null,
 )
 
 /** VoiceRTCDiagnosticsResp reports structured WebRTC connectivity diagnostics. */
@@ -794,8 +771,8 @@ data class MessageEnvelope(
 /** VoiceConfig describes provider-neutral voice preferences. */
 @Serializable
 data class VoiceConfig(
-    /** Name is the requested provider-specific voice name. Empty uses the provider default. */
-    val name: String? = null,
+    /** Name is the requested provider-specific voice name. */
+    val name: String,
     /**
      * Language is the requested BCP 47 language tag, such as "en-US" or "fr-CA".
      * Empty defaults to "en-US". Invalid tags fail session setup. The gateway
@@ -813,10 +790,7 @@ data class ToolDeclaration(
     val name: String,
     /** Description explains when and how the assistant should use the tool. */
     val description: String,
-    /**
-     * Parameters is a JSON Schema object describing the tool arguments. When
-     * present, it must declare "type": "object".
-     */
+    /** Parameters is a JSON Schema object describing the tool arguments. */
     val parameters: JsonElement,
 )
 
@@ -840,11 +814,6 @@ data class SessionSetup(
     val tools: List<ToolDeclaration>,
     /** Context provides initial instructions or text context for the session. */
     val context: Context,
-    /**
-     * IncludeReasoning requests optional provider reasoning output for this session.
-     * It does not enable thinking or change reasoning effort.
-     */
-    val includeReasoning: Boolean? = null,
 )
 
 /** ContextUpdate is a client message that appends session context. */
@@ -903,19 +872,6 @@ data class SessionReady(
     val kind: MessageKind,
 )
 
-/**
- * SessionStatus reports startup progress. Gateways repeat it at least every five
- * seconds while loading or waiting for capacity. Clients may refresh their
- * setup timeout on receipt; only session.ready enables microphone input.
- */
-@Serializable
-data class SessionStatus(
-    /** Kind is "session.status". */
-    val kind: MessageKind,
-    /** Message is a short user-visible description of startup work. */
-    val message: String,
-)
-
 /** TranscriptDelta is a gateway message that streams transcript text. */
 @Serializable
 data class TranscriptDelta(
@@ -933,20 +889,6 @@ data class AssistantTextDelta(
     /** Kind is "assistant.text.delta". */
     val kind: MessageKind,
     /** Text is an incremental assistant text fragment. */
-    val text: String,
-)
-
-/**
- * ReasoningDelta is a gateway message that streams provider reasoning text.
- *
- * Reasoning is not speech and not a transcript statement. A client decides
- * whether to display it.
- */
-@Serializable
-data class ReasoningDelta(
-    /** Kind is "reasoning.delta". */
-    val kind: MessageKind,
-    /** Text is an incremental reasoning fragment. */
     val text: String,
 )
 
@@ -1019,4 +961,3 @@ data class Error(
     /** Recoverable reports whether the client may continue using the session. */
     val recoverable: Boolean,
 )
-

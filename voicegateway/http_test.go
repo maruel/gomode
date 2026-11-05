@@ -17,7 +17,7 @@ import (
 
 	"github.com/maruel/gomode"
 	voiceapi "github.com/maruel/gomode/voicegateway/api"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 // fakeMediaBridge is a MediaBridge stub for handler tests.
@@ -29,15 +29,15 @@ func (f *fakeMediaBridge) HandleOffer(context.Context, string) (sdpAnswer, sessi
 
 func (f *fakeMediaBridge) Close(string) {}
 
-func (f *fakeMediaBridge) DiagnoseVoiceRTC(_ context.Context, sessionID string, client *voicev1.VoiceRTCClientDiagnostics) voicev1.VoiceRTCDiagnosticsResp {
-	return voicev1.VoiceRTCDiagnosticsResp{
+func (f *fakeMediaBridge) DiagnoseVoiceRTC(_ context.Context, sessionID string, client *voicev2.VoiceRTCClientDiagnostics) voicev2.VoiceRTCDiagnosticsResp {
+	return voicev2.VoiceRTCDiagnosticsResp{
 		SessionID: sessionID,
-		Issue:     voicev1.VoiceRTCConnectivityIssueUDPUnreachable,
-		Side:      voicev1.VoiceRTCConnectivitySideNetwork,
+		Issue:     voicev2.VoiceRTCConnectivityIssueUDPUnreachable,
+		Side:      voicev2.VoiceRTCConnectivitySideNetwork,
 		Message:   "server is waiting for a WebRTC data channel on UDP 192.0.2.10:3478",
-		Server: voicev1.VoiceRTCServerDiagnostics{
+		Server: voicev2.VoiceRTCServerDiagnostics{
 			SessionFound: true,
-			UDPEndpoints: []voicev1.VoiceRTCUDPEndpoint{{Host: "192.0.2.10", Port: 3478}},
+			UDPEndpoints: []voicev2.VoiceRTCUDPEndpoint{{Host: "192.0.2.10", Port: 3478}},
 		},
 		Client: *client,
 	}
@@ -58,23 +58,23 @@ func TestNewHandler(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var service voicev1.ServiceAuthorization
+		var service voicev2.ServiceAuthorization
 		if err := json.Unmarshal([]byte(serviceJSON), &service); err != nil {
 			t.Fatal(err)
 		}
-		body, err := json.Marshal(voicev1.VoiceRTCOfferReq{SDP: "offer", Service: &service})
+		body, err := json.Marshal(voicev2.VoiceRTCOfferReq{SDP: "offer", Service: &service})
 		if err != nil {
 			t.Fatal(err)
 		}
 		w := httptest.NewRecorder()
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/offer", strings.NewReader(string(body)))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(string(body)))
 		handler.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("offer status = %d, want 200: %s", w.Code, w.Body.String())
 		}
 		for _, path := range []string{
-			"/api/voicegateway/v1/voice/rtc/session-1/diagnostics",
-			"/api/voicegateway/v1/voice/rtc/session-1",
+			"/api/voicegateway/v2/voice/rtc/session-1/diagnostics",
+			"/api/voicegateway/v2/voice/rtc/session-1",
 		} {
 			for _, token := range []string{"", service.Token} {
 				w := httptest.NewRecorder()
@@ -109,7 +109,7 @@ func TestNewHandler(t *testing.T) {
 			{"https://attacker.example.com", http.StatusMethodNotAllowed},
 		} {
 			w := httptest.NewRecorder()
-			req := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/api/voicegateway/v1/voice/rtc/offer", http.NoBody)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodOptions, "/api/voicegateway/v2/voice/rtc/offer", http.NoBody)
 			req.Header.Set("Origin", tc.origin)
 			req.Header.Set("Access-Control-Request-Method", "POST")
 			req.Header.Set("Access-Control-Request-Headers", "content-type")
@@ -129,7 +129,7 @@ func TestNewHandler(t *testing.T) {
 	t.Run("health", func(t *testing.T) {
 		t.Parallel()
 		w := httptest.NewRecorder()
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/health", http.NoBody)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v2/voice/health", http.NoBody)
 		cfg := DefaultConfig()
 		handler, err := NewHandler(&cfg, nil, nil)
 		if err != nil {
@@ -151,7 +151,7 @@ func TestNewHandler(t *testing.T) {
 	t.Run("offer requires sdp", func(t *testing.T) {
 		t.Parallel()
 		w := httptest.NewRecorder()
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/offer", strings.NewReader(`{}`))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(`{}`))
 		cfg := DefaultConfig()
 		handler, err := NewHandler(&cfg, nil, nil)
 		if err != nil {
@@ -164,7 +164,7 @@ func TestNewHandler(t *testing.T) {
 	t.Run("offer requires service identity", func(t *testing.T) {
 		t.Parallel()
 		w := httptest.NewRecorder()
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/offer", strings.NewReader(`{"sdp":"offer"}`))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(`{"sdp":"offer"}`))
 		cfg := DefaultConfig()
 		handler, err := NewHandler(&cfg, nil, nil)
 		if err != nil {
@@ -198,7 +198,7 @@ func TestNewHandler(t *testing.T) {
 		}
 		w := httptest.NewRecorder()
 		body := `{"sdp":"offer","service":{"kind":"caic","instanceID":"home","baseURL":"https://caic.example.com","token":"` + token + `"}}`
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/offer", strings.NewReader(body))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(body))
 		cfg := DefaultConfig()
 		cfg.TrustedIssuers = []TrustedIssuerConfig{{
 			Service:   "caic",
@@ -222,15 +222,15 @@ func TestNewHandler(t *testing.T) {
 			t.Fatal(err)
 		}
 		w := httptest.NewRecorder()
-		var auth voicev1.ServiceAuthorization
+		var auth voicev2.ServiceAuthorization
 		if err := json.Unmarshal([]byte(service), &auth); err != nil {
 			t.Fatal(err)
 		}
-		body, err := json.Marshal(voicev1.VoiceRTCOfferReq{SDP: "offer", Service: &auth})
+		body, err := json.Marshal(voicev2.VoiceRTCOfferReq{SDP: "offer", Service: &auth})
 		if err != nil {
 			t.Fatal(err)
 		}
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/offer", strings.NewReader(string(body)))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(string(body)))
 		handler.ServeHTTP(w, req)
 		assertErrorResponse(t, w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "voice bridge unavailable")
 	})
@@ -243,15 +243,15 @@ func TestNewHandler(t *testing.T) {
 			t.Fatal(err)
 		}
 		w := httptest.NewRecorder()
-		var auth voicev1.ServiceAuthorization
+		var auth voicev2.ServiceAuthorization
 		if err := json.Unmarshal([]byte(service), &auth); err != nil {
 			t.Fatal(err)
 		}
-		body, err := json.Marshal(voicev1.VoiceRTCOfferReq{SDP: "offer", Service: &auth})
+		body, err := json.Marshal(voicev2.VoiceRTCOfferReq{SDP: "offer", Service: &auth})
 		if err != nil {
 			t.Fatal(err)
 		}
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/offer", strings.NewReader(string(body)))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(string(body)))
 		handler.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", w.Code)
@@ -273,7 +273,7 @@ func TestNewHandler(t *testing.T) {
 			t.Fatal(err)
 		}
 		w := httptest.NewRecorder()
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/offer", strings.NewReader(`{"sdp":"offer","service":`+service+`}`))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(`{"sdp":"offer","service":`+service+`}`))
 		handler.ServeHTTP(w, req)
 		assertErrorResponse(t, w, http.StatusInternalServerError, voiceapi.CodeVoiceOfferFailed, "offer failed")
 	})
@@ -287,7 +287,7 @@ func TestNewHandler(t *testing.T) {
 		}
 		w := httptest.NewRecorder()
 		body := `{"sdp":"offer","service":{"kind":"caic","instanceID":"home","baseURL":"https://caic.example.com","token":"dummy"}}`
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/offer", strings.NewReader(body))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(body))
 		handler.ServeHTTP(w, req)
 		assertErrorResponse(t, w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, "no trusted issuer configured for service")
 	})
@@ -299,7 +299,7 @@ func TestNewHandler(t *testing.T) {
 			t.Fatal(err)
 		}
 		w := httptest.NewRecorder()
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/offer", strings.NewReader(`{"sdp":"offer","service":`+service+`}`))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(`{"sdp":"offer","service":`+service+`}`))
 		handler.ServeHTTP(w, req)
 		assertErrorResponse(t, w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, "scoped token lacks voice.session capability")
 	})
@@ -311,7 +311,7 @@ func TestNewEmbeddedHandler(t *testing.T) {
 		t.Parallel()
 		handler := NewEmbeddedHandler(func() MediaBridge { return &fakeMediaBridge{} }, nil)
 		w := httptest.NewRecorder()
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/offer", strings.NewReader(`{"sdp":"offer"}`))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(`{"sdp":"offer"}`))
 		handler.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", w.Code)
@@ -329,16 +329,16 @@ func TestNewEmbeddedHandler(t *testing.T) {
 		t.Parallel()
 		handler := NewEmbeddedHandler(func() MediaBridge { return &fakeMediaBridge{} }, nil)
 		w := httptest.NewRecorder()
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/session-1/diagnostics", strings.NewReader(`{"client":{"iceConnectionState":"failed"}}`))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/session-1/diagnostics", strings.NewReader(`{"client":{"iceConnectionState":"failed"}}`))
 		handler.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", w.Code)
 		}
-		var resp voicev1.VoiceRTCDiagnosticsResp
+		var resp voicev2.VoiceRTCDiagnosticsResp
 		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 			t.Fatal(err)
 		}
-		if resp.SessionID != "session-1" || resp.Issue != voicev1.VoiceRTCConnectivityIssueUDPUnreachable {
+		if resp.SessionID != "session-1" || resp.Issue != voicev2.VoiceRTCConnectivityIssueUDPUnreachable {
 			t.Fatalf("resp = %+v, want session-1 UDP issue", resp)
 		}
 		if resp.Client.ICEConnectionState != "failed" {
@@ -350,16 +350,16 @@ func TestNewEmbeddedHandler(t *testing.T) {
 		t.Parallel()
 		handler := NewEmbeddedHandler(func() MediaBridge { return nil }, nil)
 		w := httptest.NewRecorder()
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/session-1/diagnostics", strings.NewReader(`{}`))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/session-1/diagnostics", strings.NewReader(`{}`))
 		handler.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", w.Code)
 		}
-		var resp voicev1.VoiceRTCDiagnosticsResp
+		var resp voicev2.VoiceRTCDiagnosticsResp
 		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 			t.Fatal(err)
 		}
-		if resp.Issue != voicev1.VoiceRTCConnectivityIssueVoiceBridgeUnavailable || resp.Side != voicev1.VoiceRTCConnectivitySideServer {
+		if resp.Issue != voicev2.VoiceRTCConnectivityIssueVoiceBridgeUnavailable || resp.Side != voicev2.VoiceRTCConnectivitySideServer {
 			t.Fatalf("resp = %+v, want unavailable bridge", resp)
 		}
 	})
@@ -369,7 +369,7 @@ func TestNewEmbeddedHandler(t *testing.T) {
 
 		handler := NewEmbeddedHandler(func() MediaBridge { return nil }, nil)
 		w := httptest.NewRecorder()
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/session-1", http.NoBody)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/session-1", http.NoBody)
 		handler.ServeHTTP(w, req)
 		assertErrorResponse(t, w, http.StatusServiceUnavailable, voiceapi.CodeVoiceBridgeUnavailable, "voice bridge unavailable")
 	})
@@ -378,7 +378,7 @@ func TestNewEmbeddedHandler(t *testing.T) {
 		t.Parallel()
 		handler := NewEmbeddedHandler(func() MediaBridge { return &fakeMediaBridge{} }, nil)
 		w := httptest.NewRecorder()
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/health", http.NoBody)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v2/voice/health", http.NoBody)
 		handler.ServeHTTP(w, req)
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404", w.Code)
@@ -455,19 +455,19 @@ type choiceBridge struct {
 	fakeMediaBridge
 	rtcChoice  string
 	textChoice string
-	choices    *voicev1.VoiceChoicesResp
+	choices    *voicev2.VoiceChoicesResp
 }
 
-func (b *choiceBridge) VoiceChoices() voicev1.VoiceChoicesResp {
+func (b *choiceBridge) VoiceChoices() voicev2.VoiceChoicesResp {
 	if b.choices != nil {
 		return *b.choices
 	}
-	return voicev1.VoiceChoicesResp{Choices: []voicev1.VoiceChoice{
-		{ID: "live", Label: "Live", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}, Voices: []string{"Kore", "Orus"}},
-		{ID: "remote", Label: "Remote", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText, voicev1.VoiceTransportWebRTC}},
-	}, Defaults: []voicev1.VoiceChoiceDefault{
-		{Transport: voicev1.VoiceTransportText, ID: "remote"},
-		{Transport: voicev1.VoiceTransportWebRTC, ID: "live"},
+	return voicev2.VoiceChoicesResp{Choices: []voicev2.VoiceChoice{
+		{ID: "live", Label: "Live", Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportWebRTC}, Voices: []string{"Kore", "Orus"}},
+		{ID: "remote", Label: "Remote", Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportText, voicev2.VoiceTransportWebRTC}},
+	}, Defaults: []voicev2.VoiceChoiceDefault{
+		{Transport: voicev2.VoiceTransportText, ID: "remote"},
+		{Transport: voicev2.VoiceTransportWebRTC, ID: "live"},
 	}}
 }
 func (b *choiceBridge) HandleChoiceOffer(ctx context.Context, sdp, id string) (string, string, error) {
@@ -487,22 +487,22 @@ func TestVoiceChoices(t *testing.T) {
 	t.Parallel()
 	t.Run("preserves pipeline order", func(t *testing.T) {
 		t.Parallel()
-		catalog := voicev1.VoiceChoicesResp{
-			Choices: []voicev1.VoiceChoice{
-				{ID: "live", Label: "Realtime", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}, Voices: []string{"Kore"}},
-				{ID: "chat", Label: "Chat", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText}},
-				{ID: "stack", Label: "Local stack", Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText, voicev1.VoiceTransportWebRTC}},
+		catalog := voicev2.VoiceChoicesResp{
+			Choices: []voicev2.VoiceChoice{
+				{ID: "live", Label: "Realtime", Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportWebRTC}, Voices: []string{"Kore"}},
+				{ID: "chat", Label: "Chat", Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportText}},
+				{ID: "stack", Label: "Local stack", Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportText, voicev2.VoiceTransportWebRTC}},
 			},
-			Defaults: []voicev1.VoiceChoiceDefault{
-				{Transport: voicev1.VoiceTransportText, ID: "chat"},
-				{Transport: voicev1.VoiceTransportWebRTC, ID: "live"},
+			Defaults: []voicev2.VoiceChoiceDefault{
+				{Transport: voicev2.VoiceTransportText, ID: "chat"},
+				{Transport: voicev2.VoiceTransportWebRTC, ID: "live"},
 			},
 		}
 		b := &choiceBridge{choices: &catalog}
 		h := NewEmbeddedHandler(func() MediaBridge { return b }, b)
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v1/voice/choices", http.NoBody))
-		var got voicev1.VoiceChoicesResp
+		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v2/voice/choices", http.NoBody))
+		var got voicev2.VoiceChoicesResp
 		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 			t.Fatal(err)
 		}
@@ -521,12 +521,12 @@ func TestVoiceChoices(t *testing.T) {
 		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), method, path, strings.NewReader(body)))
 		return w
 	}
-	w := request("GET", "/api/voicegateway/v1/voice/choices", "")
-	var choices voicev1.VoiceChoicesResp
+	w := request("GET", "/api/voicegateway/v2/voice/choices", "")
+	var choices voicev2.VoiceChoicesResp
 	if err := json.Unmarshal(w.Body.Bytes(), &choices); err != nil {
 		t.Fatal(err)
 	}
-	if w.Code != 200 || len(choices.Choices) != 2 || choices.DefaultChoiceID(voicev1.VoiceTransportWebRTC) != "live" || choices.DefaultChoiceID(voicev1.VoiceTransportText) != "remote" {
+	if w.Code != 200 || len(choices.Choices) != 2 || choices.DefaultChoiceID(voicev2.VoiceTransportWebRTC) != "live" || choices.DefaultChoiceID(voicev2.VoiceTransportText) != "remote" {
 		t.Fatalf("choices: %d %s", w.Code, w.Body)
 	}
 	if ch := choices.Choices[0]; len(ch.Voices) != 2 || ch.Voices[0] != "Kore" {
@@ -539,7 +539,7 @@ func TestVoiceChoices(t *testing.T) {
 		id     string
 		status int
 	}{{"", 200}, {"remote", 200}, {"missing", 400}} {
-		w := request("POST", "/api/voicegateway/v1/voice/rtc/offer", `{"sdp":"offer","choiceID":"`+tc.id+`","service":`+service+`}`)
+		w := request("POST", "/api/voicegateway/v2/voice/rtc/offer", `{"sdp":"offer","choiceID":"`+tc.id+`","service":`+service+`}`)
 		if w.Code != tc.status {
 			t.Fatalf("offer %q: %d %s", tc.id, w.Code, w.Body)
 		}
@@ -558,28 +558,28 @@ func TestVoiceChoices(t *testing.T) {
 		id     string
 		status int
 	}{{"", 200}, {"remote", 200}, {"live", 400}, {"missing", 400}} {
-		w := request("POST", "/api/voicegateway/v1/voice/text/ticket", `{"choiceID":"`+tc.id+`","service":`+service+`}`)
+		w := request("POST", "/api/voicegateway/v2/voice/text/ticket", `{"choiceID":"`+tc.id+`","service":`+service+`}`)
 		if w.Code != tc.status {
 			t.Fatalf("ticket %q: %d %s", tc.id, w.Code, w.Body)
 		}
 	}
-	w = request("POST", "/api/voicegateway/v1/voice/text/ticket", `{"choiceID":"remote","service":`+service+`}`)
+	w = request("POST", "/api/voicegateway/v2/voice/text/ticket", `{"choiceID":"remote","service":`+service+`}`)
 	if w.Code != 200 {
 		t.Fatalf("ticket: %d %s", w.Code, w.Body)
 	}
-	var ticket voicev1.VoiceTextTicketResp
+	var ticket voicev2.VoiceTextTicketResp
 	if err := json.Unmarshal(w.Body.Bytes(), &ticket); err != nil {
 		t.Fatal(err)
 	}
-	r := httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v1/voice/text/browser?choiceID=live", http.NoBody)
-	r.Header.Set("Sec-WebSocket-Protocol", "gomode.text.v1, gomode.ticket."+ticket.Ticket)
+	r := httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v2/voice/text/browser?choiceID=live", http.NoBody)
+	r.Header.Set("Sec-WebSocket-Protocol", "gomode.text.v2, gomode.ticket."+ticket.Ticket)
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if w.Code != 204 || b.textChoice != "remote" {
 		t.Fatalf("bound ticket: %d choice %q", w.Code, b.textChoice)
 	}
 	// Native selection retains the authenticated handshake and rejects unsupported transports.
-	var auth voicev1.ServiceAuthorization
+	var auth voicev2.ServiceAuthorization
 	if err := json.Unmarshal([]byte(service), &auth); err != nil {
 		t.Fatal(err)
 	}
@@ -587,7 +587,7 @@ func TestVoiceChoices(t *testing.T) {
 		id     string
 		status int
 	}{{"remote", 204}, {"live", 400}, {"missing", 400}} {
-		r := httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v1/voice/text?choiceID="+tc.id, http.NoBody)
+		r := httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v2/voice/text?choiceID="+tc.id, http.NoBody)
 		r.Header.Set("Authorization", "Bearer "+auth.Token)
 		r.Header.Set("X-Service-Kind", auth.Kind)
 		r.Header.Set("X-Service-Origin", auth.BaseURL)
@@ -607,19 +607,19 @@ func TestEmbeddedChoiceCapabilities(t *testing.T) {
 		text := &choiceBridge{}
 		h := NewEmbeddedHandler(nil, text)
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v1/voice/choices", http.NoBody))
-		var choices voicev1.VoiceChoicesResp
+		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v2/voice/choices", http.NoBody))
+		var choices voicev2.VoiceChoicesResp
 		if err := json.Unmarshal(w.Body.Bytes(), &choices); err != nil {
 			t.Fatal(err)
 		}
-		if choices.DefaultChoiceID(voicev1.VoiceTransportText) != "remote" || len(choices.Choices) != 1 || len(choices.Choices[0].Transports) != 1 || choices.Choices[0].Transports[0] != voicev1.VoiceTransportText {
+		if choices.DefaultChoiceID(voicev2.VoiceTransportText) != "remote" || len(choices.Choices) != 1 || len(choices.Choices[0].Transports) != 1 || choices.Choices[0].Transports[0] != voicev2.VoiceTransportText {
 			t.Fatalf("text-only choices: %+v", choices)
 		}
 		if ch := choices.Choices[0]; len(ch.Voices) != 0 {
 			t.Fatalf("unexpected text-only voice metadata: %+v", ch)
 		}
 		w = httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v1/voice/text", http.NoBody))
+		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v2/voice/text", http.NoBody))
 		if w.Code != http.StatusNoContent || text.textChoice != "remote" {
 			t.Fatalf("text-only default: %d %q", w.Code, text.textChoice)
 		}
@@ -659,18 +659,18 @@ func TestEmbeddedChoiceCapabilities(t *testing.T) {
 			}
 			h := NewEmbeddedHandler(media, text)
 			w := httptest.NewRecorder()
-			h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v1/voice/choices", http.NoBody))
-			var choices voicev1.VoiceChoicesResp
+			h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v2/voice/choices", http.NoBody))
+			var choices voicev2.VoiceChoicesResp
 			if err := json.Unmarshal(w.Body.Bytes(), &choices); err != nil {
 				t.Fatal(err)
 			}
-			if choices.DefaultChoiceID(voicev1.VoiceTransportText) != tc.textDefault || choices.DefaultChoiceID(voicev1.VoiceTransportWebRTC) != tc.mediaDefault {
+			if choices.DefaultChoiceID(voicev2.VoiceTransportText) != tc.textDefault || choices.DefaultChoiceID(voicev2.VoiceTransportWebRTC) != tc.mediaDefault {
 				t.Fatalf("defaults %+v", choices.Defaults)
 			}
 			for _, ch := range choices.Choices {
 				supportsText := false
 				for _, transport := range ch.Transports {
-					if transport == voicev1.VoiceTransportText {
+					if transport == voicev2.VoiceTransportText {
 						supportsText = true
 					}
 				}
@@ -681,7 +681,7 @@ func TestEmbeddedChoiceCapabilities(t *testing.T) {
 			}
 			for _, id := range []string{"", "remote"} {
 				w := httptest.NewRecorder()
-				h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v1/voice/text?choiceID="+id, http.NoBody))
+				h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v2/voice/text?choiceID="+id, http.NoBody))
 				if tc.text && id == "" {
 					if w.Code != http.StatusNoContent {
 						t.Fatalf("default text: %d %s", w.Code, w.Body)
@@ -699,7 +699,7 @@ func TestEmbeddedChoiceCapabilities(t *testing.T) {
 			}
 			if tc.text && tc.media {
 				w := httptest.NewRecorder()
-				h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "POST", "/api/voicegateway/v1/voice/text/ticket", strings.NewReader(`{"choiceID":"remote"}`)))
+				h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "POST", "/api/voicegateway/v2/voice/text/ticket", strings.NewReader(`{"choiceID":"remote"}`)))
 				if w.Code != http.StatusBadRequest {
 					t.Fatalf("unroutable text ticket: %d %s", w.Code, w.Body)
 				}

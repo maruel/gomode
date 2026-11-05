@@ -607,8 +607,8 @@ describe("browser voice sessions", () => {
       choiceID: "remote",
       service: { kind: "web", instanceID: "one", baseURL: "https://host.example", token: "scoped-token" },
     });
-    expect(socket.url.toString()).toBe("wss://gateway.example/api/voicegateway/v1/voice/text/browser");
-    expect(socket.protocols).toEqual(["gomode.text.v1", "gomode.ticket.one-time-ticket"]);
+    expect(socket.url.toString()).toBe("wss://gateway.example/api/voicegateway/v2/voice/text/browser");
+    expect(socket.protocols).toEqual(["gomode.text.v2", "gomode.ticket.one-time-ticket"]);
     expect(JSON.parse(socket.sent[0] ?? "{}").voice.language).toBe("fr-CA");
     expect(JSON.parse(socket.sent[0] ?? "{}").voice).not.toHaveProperty("name");
     expect(new VoiceSession(chime).state.mode).toBe("browser");

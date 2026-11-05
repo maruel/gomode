@@ -57,7 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
-import com.caic.voicegateway.sdk.v1.TurnState
+import com.caic.voicegateway.sdk.v2.TurnState
 import com.fghbuild.gomode.LockedCarCall
 import com.fghbuild.gomode.ui.theme.GoModeTheme
 import org.json.JSONObject

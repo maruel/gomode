@@ -17,7 +17,7 @@
 // registration, or a duplicate invocation.
 
 import { createSignal, untrack, type Accessor } from "solid-js";
-import type { ToolDeclaration } from "../../sdk/voicegateway/ts/v1/types.gen";
+import type { ToolDeclaration } from "../../sdk/voicegateway/ts/v2/types.gen";
 
 export interface FrontendVoiceToolContext {
   signal: AbortSignal;

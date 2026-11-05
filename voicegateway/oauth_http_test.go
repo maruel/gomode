@@ -19,7 +19,7 @@ import (
 	"github.com/maruel/gomode/oauth"
 	"github.com/maruel/gomode/oauth/oauthverify"
 	voiceapi "github.com/maruel/gomode/voicegateway/api"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 type oauthTestKey struct {
@@ -120,7 +120,7 @@ func sha256Sum(data []byte) []byte {
 func (ti *oauthTestIssuer) authorization(t *testing.T, key oauthTestKey, scope string, expiry time.Time) string {
 	t.Helper()
 	token := ti.token(t, key, "voice-gateway", scope, expiry)
-	body, err := json.Marshal(voicev1.ServiceAuthorization{
+	body, err := json.Marshal(voicev2.ServiceAuthorization{
 		Kind: "caic", InstanceID: "home", BaseURL: ti.issuer, Token: token,
 	})
 	if err != nil {
@@ -157,7 +157,7 @@ func assertUnauthorized(t *testing.T, w *httptest.ResponseRecorder) {
 func offerWithService(t *testing.T, handler http.Handler, service string) *httptest.ResponseRecorder {
 	t.Helper()
 	body := `{"sdp":"offer","service":` + service + `}`
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/rtc/offer", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(body))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	return w
@@ -209,7 +209,7 @@ func testOAuthOfferRejectsUnknownIssuerBeforeFetch(t *testing.T) {
 	// The envelope names the trusted issuer, but the token claims another one.
 	rogue := &oauthTestIssuer{issuer: "https://rogue.example.com", key: key}
 	token := rogue.token(t, key, "voice-gateway", "voice.session", time.Now().Add(time.Minute))
-	service, err := json.Marshal(voicev1.ServiceAuthorization{Kind: "caic", InstanceID: "home", BaseURL: ti.issuer, Token: token})
+	service, err := json.Marshal(voicev2.ServiceAuthorization{Kind: "caic", InstanceID: "home", BaseURL: ti.issuer, Token: token})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func testOAuthOfferRejections(t *testing.T) {
 	t.Run("wrong audience", func(t *testing.T) {
 		t.Parallel()
 		token := ti.token(t, key, "other-service", "voice.session", time.Now().Add(time.Minute))
-		service, err := json.Marshal(voicev1.ServiceAuthorization{Kind: "caic", InstanceID: "home", BaseURL: ti.issuer, Token: token})
+		service, err := json.Marshal(voicev2.ServiceAuthorization{Kind: "caic", InstanceID: "home", BaseURL: ti.issuer, Token: token})
 		if err != nil {
 			t.Fatal(err)
 		}

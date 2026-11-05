@@ -35,7 +35,7 @@ import (
 
 	"github.com/maruel/gomode"
 	"github.com/maruel/gomode/voicegateway"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 // TestSmokeVoiceRTCLocalAudio verifies the managed local-stack ASR, LLM, and
@@ -174,9 +174,9 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 		))
 		turn := time.Now()
 		s.writeMicAudio(t.Context(), t, 24)
-		data := s.waitMessage(t.Context(), t, voicev1.MessageKindAssistantTextDelta)
+		data := s.waitMessage(t.Context(), t, voicev2.MessageKindAssistantTextDelta)
 		t.Logf("WebRTC local turn to assistant text latency: %s", smokeElapsed(turn))
-		var msg voicev1.AssistantTextDelta
+		var msg voicev2.AssistantTextDelta
 		if err := json.Unmarshal(data, &msg); err != nil {
 			t.Fatal(err)
 		}
@@ -206,18 +206,18 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 		))
 		turn := time.Now()
 		writePCM24MicAudio(ctx, t, s.micTrack, spokenPCM24)
-		data := s.waitMessage(ctx, t, voicev1.MessageKindTranscriptDelta)
-		var transcript voicev1.TranscriptDelta
+		data := s.waitMessage(ctx, t, voicev2.MessageKindTranscriptDelta)
+		var transcript voicev2.TranscriptDelta
 		if err := json.Unmarshal(data, &transcript); err != nil {
 			t.Fatal(err)
 		}
-		if transcript.Speaker != voicev1.SpeakerUser || smokeWords(transcript.Text) != "i love bananas" {
+		if transcript.Speaker != voicev2.SpeakerUser || smokeWords(transcript.Text) != "i love bananas" {
 			t.Fatalf("user transcript = %+v, want user saying I love bananas", transcript)
 		}
 		t.Logf("full WebRTC user transcript: %s", transcript.Text)
 
-		data = s.waitMessage(ctx, t, voicev1.MessageKindAssistantTextDelta)
-		var assistant voicev1.AssistantTextDelta
+		data = s.waitMessage(ctx, t, voicev2.MessageKindAssistantTextDelta)
+		var assistant voicev2.AssistantTextDelta
 		if err := json.Unmarshal(data, &assistant); err != nil {
 			t.Fatal(err)
 		}
@@ -273,7 +273,7 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := voicev1.ServiceAuthorization{Kind: "smoke", InstanceID: "local", BaseURL: "https://smoke.example.com"}
+	service := voicev2.ServiceAuthorization{Kind: "smoke", InstanceID: "local", BaseURL: "https://smoke.example.com"}
 	service.Token, err = gomode.IssueServiceScopedToken(&gomode.ScopedTokenClaims{
 		ServiceKind:       service.Kind,
 		ServiceInstanceID: service.InstanceID,
@@ -312,7 +312,7 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 	}
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	api := srv.URL + "/api/voicegateway/v1/voice"
+	api := srv.URL + "/api/voicegateway/v2/voice"
 
 	var health voicegateway.HealthResp
 	if err := smokeGatewayCall(ctx, http.MethodGet, api+"/health", "", nil, &health); err != nil {
@@ -323,51 +323,51 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 	}
 
 	offer := func(ctx context.Context, sdp string) (string, string, error) {
-		var resp voicev1.VoiceRTCAnswerResp
-		err := smokeGatewayCall(ctx, http.MethodPost, api+"/rtc/offer", "", voicev1.VoiceRTCOfferReq{SDP: sdp, Service: &service}, &resp)
+		var resp voicev2.VoiceRTCAnswerResp
+		err := smokeGatewayCall(ctx, http.MethodPost, api+"/rtc/offer", "", voicev2.VoiceRTCOfferReq{SDP: sdp, Service: &service}, &resp)
 		return resp.SDP, resp.SessionID, err
 	}
-	s := connectVoiceRTCClient(ctx, t, offer, &voicev1.SessionSetup{
-		Kind:  voicev1.MessageKindSessionSetup,
-		Voice: voicev1.VoiceConfig{Name: "local", Language: "en"},
-		Tools: []voicev1.ToolDeclaration{{
+	s := connectVoiceRTCClient(ctx, t, offer, &voicev2.SessionSetup{
+		Kind:  voicev2.MessageKindSessionSetup,
+		Voice: voicev2.VoiceConfig{Name: "local", Language: "en"},
+		Tools: []voicev2.ToolDeclaration{{
 			Name:        "set_timer",
 			Description: "Start a countdown timer.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"minutes":{"type":"integer","minimum":1,"description":"Timer duration in minutes."}},"required":["minutes"],"additionalProperties":false}`),
 		}},
-		Context: voicev1.Context{SystemInstruction: "You are a terse voice assistant. Call set_timer whenever the user asks for a timer. After the tool result, confirm in one short sentence."},
+		Context: voicev2.Context{SystemInstruction: "You are a terse voice assistant. Call set_timer whenever the user asks for a timer. After the tool result, confirm in one short sentence."},
 	})
 
 	// web/src/VoiceSession.ts greets on session.ready, so the spoken request
 	// is the second user turn, as it is in caic.
-	s.send(ctx, t, &voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "Say exactly one word: Ready"})
-	data := s.waitMessage(ctx, t, voicev1.MessageKindAssistantTextDelta)
-	var greeting voicev1.AssistantTextDelta
+	s.send(ctx, t, &voicev2.UserMessage{Kind: voicev2.MessageKindUserMessage, Text: "Say exactly one word: Ready"})
+	data := s.waitMessage(ctx, t, voicev2.MessageKindAssistantTextDelta)
+	var greeting voicev2.AssistantTextDelta
 	if err := json.Unmarshal(data, &greeting); err != nil {
 		t.Fatal(err)
 	}
 	if smokeWords(greeting.Text) != "ready" {
 		t.Fatalf("greeting = %q, want Ready", greeting.Text)
 	}
-	s.waitMessage(ctx, t, voicev1.MessageKindSpeechEnded)
-	waitForSmokeTurnState(ctx, t, s, voicev1.TurnStateIdle)
+	s.waitMessage(ctx, t, voicev2.MessageKindSpeechEnded)
+	waitForSmokeTurnState(ctx, t, s, voicev2.TurnStateIdle)
 
 	turn := time.Now()
 	writePCM24MicAudio(ctx, t, s.micTrack, speech)
-	waitForSmokeTurnState(ctx, t, s, voicev1.TurnStateTranscribing)
-	data = s.waitMessage(ctx, t, voicev1.MessageKindTranscriptDelta)
-	var transcript voicev1.TranscriptDelta
+	waitForSmokeTurnState(ctx, t, s, voicev2.TurnStateTranscribing)
+	data = s.waitMessage(ctx, t, voicev2.MessageKindTranscriptDelta)
+	var transcript voicev2.TranscriptDelta
 	if err := json.Unmarshal(data, &transcript); err != nil {
 		t.Fatal(err)
 	}
-	if transcript.Speaker != voicev1.SpeakerUser || smokeWords(transcript.Text) != "set a timer for five minutes" {
+	if transcript.Speaker != voicev2.SpeakerUser || smokeWords(transcript.Text) != "set a timer for five minutes" {
 		t.Fatalf("user transcript = %+v, want user saying set a timer for five minutes", transcript)
 	}
 	t.Logf("user transcript after %s: %s", smokeElapsed(turn), transcript.Text)
-	waitForSmokeTurnState(ctx, t, s, voicev1.TurnStateThinking)
+	waitForSmokeTurnState(ctx, t, s, voicev2.TurnStateThinking)
 
-	data = s.waitMessage(ctx, t, voicev1.MessageKindToolCall)
-	var call voicev1.ToolCall
+	data = s.waitMessage(ctx, t, voicev2.MessageKindToolCall)
+	var call voicev2.ToolCall
 	if err := json.Unmarshal(data, &call); err != nil {
 		t.Fatal(err)
 	}
@@ -385,14 +385,14 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 		t.Fatalf("set_timer minutes = %d, want 5", args.Minutes)
 	}
 
-	s.send(ctx, t, &voicev1.ToolResult{
-		Kind:   voicev1.MessageKindToolResult,
+	s.send(ctx, t, &voicev2.ToolResult{
+		Kind:   voicev2.MessageKindToolResult,
 		ID:     call.ID,
 		Name:   call.Name,
 		Result: json.RawMessage(`{"status":"started","minutes":5}`),
 	})
-	data = s.waitMessage(ctx, t, voicev1.MessageKindAssistantTextDelta)
-	var assistant voicev1.AssistantTextDelta
+	data = s.waitMessage(ctx, t, voicev2.MessageKindAssistantTextDelta)
+	var assistant voicev2.AssistantTextDelta
 	if err := json.Unmarshal(data, &assistant); err != nil {
 		t.Fatal(err)
 	}
@@ -411,9 +411,9 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 		t.Fatal(ctx.Err())
 	}
 
-	waitForSmokeTurnState(ctx, t, s, voicev1.TurnStateIdle)
+	waitForSmokeTurnState(ctx, t, s, voicev2.TurnStateIdle)
 
-	var closed voicev1.StatusResp
+	var closed voicev2.StatusResp
 	if err := smokeGatewayCall(ctx, http.MethodPost, api+"/rtc/"+s.sessionID, service.Token, nil, &closed); err != nil {
 		t.Fatal(err)
 	}
@@ -423,9 +423,9 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 }
 
 // waitForSmokeTurnState requires the next turn.status message to report want.
-func waitForSmokeTurnState(ctx context.Context, t *testing.T, s *voiceRTCTestSession, want voicev1.TurnState) {
-	data := s.waitMessage(ctx, t, voicev1.MessageKindTurnStatus)
-	var status voicev1.TurnStatus
+func waitForSmokeTurnState(ctx context.Context, t *testing.T, s *voiceRTCTestSession, want voicev2.TurnState) {
+	data := s.waitMessage(ctx, t, voicev2.MessageKindTurnStatus)
+	var status voicev2.TurnStatus
 	if err := json.Unmarshal(data, &status); err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +531,7 @@ func genStreamResult(ctx context.Context, provider genai.Provider, messages gena
 
 func verifyManagedLLMToolCall(t *testing.T, provider genai.Provider) {
 	t.Run("ToolCall", func(t *testing.T) {
-		tools, err := genaiToolDefs([]voicev1.ToolDeclaration{{
+		tools, err := genaiToolDefs([]voicev2.ToolDeclaration{{
 			Name:        "tasks_list",
 			Description: "List current tasks.",
 			Parameters:  json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":5}},"required":["limit"],"additionalProperties":false}`),

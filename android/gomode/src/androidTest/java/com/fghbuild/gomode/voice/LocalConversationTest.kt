@@ -19,7 +19,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.GrantPermissionRule
-import com.caic.voicegateway.sdk.v1.TurnState
+import com.caic.voicegateway.sdk.v2.TurnState
 import com.fghbuild.gomode.completeFixtureFrontend
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository

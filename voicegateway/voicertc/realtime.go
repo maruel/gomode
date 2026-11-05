@@ -18,7 +18,7 @@ import (
 	"github.com/maruel/genai/providers/llamacpp"
 	"github.com/maruel/genai/providers/llamacpp/llamacppsrv"
 	"github.com/maruel/gomode/voicegateway"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 // lazyLlamaRealtimeBackend shares residency limits with local ASR/LLM/TTS choices.
@@ -168,7 +168,7 @@ func (s *llamaRealtimeSession) close() error {
 	return s.closeErr
 }
 
-func (s *llamaRealtimeSession) setup(msg *voicev1.SessionSetup) error {
+func (s *llamaRealtimeSession) setup(msg *voicev2.SessionSetup) error {
 	if msg.Context.SystemInstruction == "" {
 		return errors.New("session.setup context.systemInstruction is required")
 	}
@@ -261,15 +261,15 @@ func (s *llamaRealtimeSession) acceptClientMessage(ctx context.Context, data []b
 			err = errSessionClosed
 		}
 	}()
-	var env voicev1.MessageEnvelope
+	var env voicev2.MessageEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
 		return err
 	}
-	if env.Kind == voicev1.MessageKindSessionClose {
+	if env.Kind == voicev2.MessageKindSessionClose {
 		return errSessionClosed
 	}
-	if env.Kind == voicev1.MessageKindSessionSetup {
-		var msg voicev1.SessionSetup
+	if env.Kind == voicev2.MessageKindSessionSetup {
+		var msg voicev2.SessionSetup
 		if err := decodeGatewayMessage(data, env.Kind, &msg); err != nil {
 			return err
 		}
@@ -284,16 +284,16 @@ func (s *llamaRealtimeSession) acceptClientMessage(ctx context.Context, data []b
 		return errors.New("session.setup is required before client messages")
 	}
 	switch env.Kind {
-	case voicev1.MessageKindTurnCancel:
+	case voicev2.MessageKindTurnCancel:
 		return s.interruptLocked(ctx)
-	case voicev1.MessageKindToolResult:
-		var msg voicev1.ToolResult
+	case voicev2.MessageKindToolResult:
+		var msg voicev2.ToolResult
 		if err := decodeGatewayMessage(data, env.Kind, &msg); err != nil {
 			return err
 		}
 		return s.resultLocked(ctx, &msg)
-	case voicev1.MessageKindUserMessage:
-		var msg voicev1.UserMessage
+	case voicev2.MessageKindUserMessage:
+		var msg voicev2.UserMessage
 		if err := decodeGatewayMessage(data, env.Kind, &msg); err != nil {
 			return err
 		}
@@ -308,8 +308,8 @@ func (s *llamaRealtimeSession) acceptClientMessage(ctx context.Context, data []b
 		if err := s.enqueueLocked(genai.RealtimeInputContent{Text: msg.Text, Generate: true}, nil); err != nil {
 			return err
 		}
-	case voicev1.MessageKindContextUpdate:
-		var msg voicev1.ContextUpdate
+	case voicev2.MessageKindContextUpdate:
+		var msg voicev2.ContextUpdate
 		if err := decodeGatewayMessage(data, env.Kind, &msg); err != nil {
 			return err
 		}
@@ -462,7 +462,7 @@ func (s *llamaRealtimeSession) flushLocked(ctx context.Context) error {
 		if next.input.Generate {
 			s.generating = true
 			s.cancelling = false
-			return s.sendLocked(&voicev1.TurnStatus{Kind: voicev1.MessageKindTurnStatus, State: voicev1.TurnStateThinking})
+			return s.sendLocked(&voicev2.TurnStatus{Kind: voicev2.MessageKindTurnStatus, State: voicev2.TurnStateThinking})
 		}
 	}
 	return nil
@@ -478,12 +478,12 @@ func (s *llamaRealtimeSession) interruptLocked(ctx context.Context) error {
 	}
 	if s.generating || s.playback.assistantAudioPending() {
 		s.sink.clearAssistantAudio()
-		return s.sendLocked(&voicev1.Interrupted{Kind: voicev1.MessageKindInterrupted, Source: voicev1.InterruptSourceUser})
+		return s.sendLocked(&voicev2.Interrupted{Kind: voicev2.MessageKindInterrupted, Source: voicev2.InterruptSourceUser})
 	}
 	return nil
 }
 
-func (s *llamaRealtimeSession) resultLocked(ctx context.Context, msg *voicev1.ToolResult) error {
+func (s *llamaRealtimeSession) resultLocked(ctx context.Context, msg *voicev2.ToolResult) error {
 	var call *genai.ToolCall
 	for i := range s.tools {
 		if s.tools[i].ID == msg.ID {
@@ -532,7 +532,7 @@ func (s *llamaRealtimeSession) finishToolsLocked(ctx context.Context) error {
 	// queued input until it finishes, and let new speech cancel it normally.
 	s.generating = true
 	s.cancelling = false
-	return s.sendLocked(&voicev1.TurnStatus{Kind: voicev1.MessageKindTurnStatus, State: voicev1.TurnStateThinking})
+	return s.sendLocked(&voicev2.TurnStatus{Kind: voicev2.MessageKindTurnStatus, State: voicev2.TurnStateThinking})
 }
 
 func (s *llamaRealtimeSession) sendLocked(msg any) error {
@@ -574,14 +574,14 @@ func (s *llamaRealtimeSession) eventLocked(event *genai.RealtimeEvent) error {
 		if text == "" {
 			return nil
 		}
-		if err := s.sendLocked(&voicev1.TranscriptDelta{Kind: voicev1.MessageKindTranscriptDelta, Speaker: voicev1.SpeakerAssistant, Text: text}); err != nil {
+		if err := s.sendLocked(&voicev2.TranscriptDelta{Kind: voicev2.MessageKindTranscriptDelta, Speaker: voicev2.SpeakerAssistant, Text: text}); err != nil {
 			return err
 		}
-		return s.sendLocked(&voicev1.AssistantTextDelta{Kind: voicev1.MessageKindAssistantTextDelta, Text: text})
+		return s.sendLocked(&voicev2.AssistantTextDelta{Kind: voicev2.MessageKindAssistantTextDelta, Text: text})
 	case genai.RealtimeEventInterrupted:
 		if !s.cancelling {
 			s.sink.clearAssistantAudio()
-			return s.sendLocked(&voicev1.Interrupted{Kind: voicev1.MessageKindInterrupted, Source: voicev1.InterruptSourceUser})
+			return s.sendLocked(&voicev2.Interrupted{Kind: voicev2.MessageKindInterrupted, Source: voicev2.InterruptSourceUser})
 		}
 	case genai.RealtimeEventContentToolCalls:
 		if len(s.tools) != 0 {
@@ -591,7 +591,7 @@ func (s *llamaRealtimeSession) eventLocked(event *genai.RealtimeEvent) error {
 		for i := range s.tools {
 			call := &s.tools[i]
 			slog.InfoContext(s.ctx, "llama.cpp realtime: tool call", "session", s.id, "id", call.ID, "name", call.Name)
-			if err := s.sendLocked(&voicev1.ToolCall{Kind: voicev1.MessageKindToolCall, ID: call.ID, Name: call.Name, Args: json.RawMessage(call.Arguments)}); err != nil {
+			if err := s.sendLocked(&voicev2.ToolCall{Kind: voicev2.MessageKindToolCall, ID: call.ID, Name: call.Name, Args: json.RawMessage(call.Arguments)}); err != nil {
 				return err
 			}
 		}
@@ -608,7 +608,7 @@ func (s *llamaRealtimeSession) eventLocked(event *genai.RealtimeEvent) error {
 		return fmt.Errorf("provider error: %w", event.Error)
 	case genai.RealtimeEventTurnDone:
 		if !s.generating {
-			return s.sendLocked(&voicev1.TurnStatus{Kind: voicev1.MessageKindTurnStatus, State: voicev1.TurnStateIdle})
+			return s.sendLocked(&voicev2.TurnStatus{Kind: voicev2.MessageKindTurnStatus, State: voicev2.TurnStateIdle})
 		}
 	}
 	return nil

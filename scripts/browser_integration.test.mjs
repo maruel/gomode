@@ -73,3 +73,20 @@ test("a production consumer loads voice runtime and UI only through its dynamic 
     }),
   );
 });
+
+test("SDK exports require an explicit protocol version", () => {
+  for (const [family, versions] of [
+    ["gomode", ["v1"]],
+    ["mcp", ["v1"]],
+    ["oauth", ["v1"]],
+    ["voicegateway", ["v1", "v2"]],
+  ]) {
+    for (const version of versions) {
+      const resolved = import.meta.resolve(`@maruel/gomode/sdk/${family}/${version}/types.gen`);
+      assert.equal(resolved, new URL(`../sdk/${family}/ts/${version}/types.gen`, import.meta.url).href);
+    }
+    assert.throws(() => import.meta.resolve(`@maruel/gomode/sdk/${family}/types.gen`), {
+      code: "ERR_PACKAGE_PATH_NOT_EXPORTED",
+    });
+  }
+});

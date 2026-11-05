@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -30,7 +31,7 @@ import (
 
 	"github.com/maruel/gomode/voicegateway"
 	voiceapi "github.com/maruel/gomode/voicegateway/api"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 const (
@@ -74,7 +75,7 @@ var opusReceiveCodec = webrtc.RTPCodecCapability{
 // Bridge manages voice choices and sessions on one shared WebRTC transport.
 type Bridge struct {
 	backends        map[string]backendConnector
-	choices         voicev1.VoiceChoicesResp
+	choices         voicev2.VoiceChoicesResp
 	activityLogDir  string
 	udpMux          ice.UDPMux
 	voiceNet        *ipv4Net
@@ -120,7 +121,7 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, activit
 	count := len(cfg.Realtime) + len(cfg.Chat) + len(cfg.LocalStack)
 	pool := newLocalStackPool(cfg.LocalStackRuntime)
 	backends := make(map[string]backendConnector, count)
-	advertised := voicev1.VoiceChoicesResp{Choices: make([]voicev1.VoiceChoice, 0, count)}
+	advertised := voicev2.VoiceChoicesResp{Choices: make([]voicev2.VoiceChoice, 0, count)}
 	var defaultID string
 	cleanup := func() error {
 		errs := make([]error, 0, len(backends))
@@ -148,7 +149,7 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, activit
 			defaultID = id
 		}
 	}
-	advertised.Defaults = voicev1.DefaultChoices(advertised.Choices, nil)
+	advertised.Defaults = voicev2.DefaultChoices(advertised.Choices, nil)
 	b, err := newBridgeWithBackendAndTimeout(ctx, backends[defaultID], cfg.Server.WebRTCUDPPort, activityLogDir, upnpSSDPTimeout)
 	if err != nil {
 		return nil, errors.Join(err, cleanup())
@@ -214,35 +215,35 @@ func newBridgeWithBackendAndTimeout(ctx context.Context, backend backendConnecto
 	}, nil
 }
 
-func defaultBackendChoices(ctx context.Context, backend backendConnector) (voicev1.VoiceChoicesResp, error) {
+func defaultBackendChoices(ctx context.Context, backend backendConnector) (voicev2.VoiceChoicesResp, error) {
 	ch, err := backendChoice(ctx, backend, "default", "Default")
 	if err != nil {
-		return voicev1.VoiceChoicesResp{}, err
+		return voicev2.VoiceChoicesResp{}, err
 	}
-	choices := []voicev1.VoiceChoice{ch}
-	return voicev1.VoiceChoicesResp{Choices: choices, Defaults: voicev1.DefaultChoices(choices, nil)}, nil
+	choices := []voicev2.VoiceChoice{ch}
+	return voicev2.VoiceChoicesResp{Choices: choices, Defaults: voicev2.DefaultChoices(choices, nil)}, nil
 }
 
-func backendChoice(ctx context.Context, backend backendConnector, id, label string) (voicev1.VoiceChoice, error) {
-	ch := voicev1.VoiceChoice{ID: id, Label: label, Transports: backendTransports(backend)}
+func backendChoice(ctx context.Context, backend backendConnector, id, label string) (voicev2.VoiceChoice, error) {
+	ch := voicev2.VoiceChoice{ID: id, Label: label, Transports: backendTransports(backend)}
 	if provider, ok := backend.(*realtimeBridgeBackend); ok {
 		voices, err := provider.voices(ctx)
 		if err != nil {
-			return voicev1.VoiceChoice{}, err
+			return voicev2.VoiceChoice{}, err
 		}
 		ch.Voices = append([]string(nil), voices...)
 	}
 	return ch, nil
 }
 
-func backendTransports(backend backendConnector) []voicev1.VoiceTransport {
+func backendTransports(backend backendConnector) []voicev2.VoiceTransport {
 	if local, ok := backend.(*localStackBackend); ok {
 		if local.lazy.cfg.(*voicegateway.LocalStackConfig).TextOnly {
-			return []voicev1.VoiceTransport{voicev1.VoiceTransportText}
+			return []voicev2.VoiceTransport{voicev2.VoiceTransportText}
 		}
-		return []voicev1.VoiceTransport{voicev1.VoiceTransportText, voicev1.VoiceTransportWebRTC}
+		return []voicev2.VoiceTransport{voicev2.VoiceTransportText, voicev2.VoiceTransportWebRTC}
 	}
-	return []voicev1.VoiceTransport{voicev1.VoiceTransportWebRTC}
+	return []voicev2.VoiceTransport{voicev2.VoiceTransportWebRTC}
 }
 
 // HandleOffer processes a WebRTC SDP offer and returns the SDP answer.
@@ -251,11 +252,11 @@ func (b *Bridge) HandleOffer(ctx context.Context, sdpOffer string) (sdpAnswer, s
 }
 
 // VoiceChoices returns the choices available on this bridge.
-func (b *Bridge) VoiceChoices() voicev1.VoiceChoicesResp {
+func (b *Bridge) VoiceChoices() voicev2.VoiceChoicesResp {
 	out := b.choices
-	out.Choices = make([]voicev1.VoiceChoice, len(b.choices.Choices))
+	out.Choices = make([]voicev2.VoiceChoice, len(b.choices.Choices))
 	for i, ch := range b.choices.Choices {
-		ch.Transports = append([]voicev1.VoiceTransport(nil), ch.Transports...)
+		ch.Transports = append([]voicev2.VoiceTransport(nil), ch.Transports...)
 		ch.Voices = append([]string(nil), ch.Voices...)
 		out.Choices[i] = ch
 	}
@@ -263,7 +264,7 @@ func (b *Bridge) VoiceChoices() voicev1.VoiceChoicesResp {
 	return out
 }
 
-func (b *Bridge) choiceBackend(id string, transport voicev1.VoiceTransport) (backendConnector, error) {
+func (b *Bridge) choiceBackend(id string, transport voicev2.VoiceTransport) (backendConnector, error) {
 	if id == "" {
 		id = b.choices.DefaultChoiceID(transport)
 		if id == "" && len(b.choices.Choices) != 0 {
@@ -281,11 +282,11 @@ func (b *Bridge) choiceBackend(id string, transport voicev1.VoiceTransport) (bac
 
 // HandleChoiceOffer opens a session bound to the selected backend.
 func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID string) (sdpAnswer, sessionID string, err error) {
-	connector, err := b.choiceBackend(choiceID, voicev1.VoiceTransportWebRTC)
+	connector, err := b.choiceBackend(choiceID, voicev2.VoiceTransportWebRTC)
 	if err != nil {
 		return "", "", err
 	}
-	if !slices.Contains(backendTransports(connector), voicev1.VoiceTransportWebRTC) {
+	if !slices.Contains(backendTransports(connector), voicev2.VoiceTransportWebRTC) {
 		return "", "", errors.New("text-only choice does not support WebRTC audio")
 	}
 
@@ -308,14 +309,15 @@ func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID strin
 
 	sessionCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sessionLifetime)
 	sess := &session{
+		protocol:            voiceapi.SessionProtocolFromContext(ctx),
 		id:                  generateSessionID(),
 		pc:                  pc,
 		backend:             nil,
-		iceConnectionState:  voicev1.VoiceRTCICEConnectionState(pc.ICEConnectionState().String()),
-		iceGatheringState:   voicev1.VoiceRTCICEGatheringState(pc.ICEGatheringState().String()),
-		signalingState:      voicev1.VoiceRTCSignalingState(pc.SignalingState().String()),
-		peerConnectionState: voicev1.VoiceRTCConnectionState(pc.ConnectionState().String()),
-		dataChannelState:    voicev1.VoiceRTCDataChannelStateNew,
+		iceConnectionState:  voicev2.VoiceRTCICEConnectionState(pc.ICEConnectionState().String()),
+		iceGatheringState:   voicev2.VoiceRTCICEGatheringState(pc.ICEGatheringState().String()),
+		signalingState:      voicev2.VoiceRTCSignalingState(pc.SignalingState().String()),
+		peerConnectionState: voicev2.VoiceRTCConnectionState(pc.ConnectionState().String()),
+		dataChannelState:    voicev2.VoiceRTCDataChannelStateNew,
 		cancel:              cancel,
 	}
 	activityLog, err := openActivityLog(b.activityLogDir, sess.id)
@@ -373,7 +375,7 @@ func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID strin
 		slog.InfoContext(sessionCtx, "voicertc: data channel opened", "label", dc.Label(), "session", sess.id)
 		sess.mu.Lock()
 		sess.dc = dc
-		sess.dataChannelState = voicev1.VoiceRTCDataChannelState(dc.ReadyState().String())
+		sess.dataChannelState = voicev2.VoiceRTCDataChannelState(dc.ReadyState().String())
 		sess.mu.Unlock()
 
 		dc.OnOpen(func() {
@@ -423,7 +425,10 @@ func (b *Bridge) HandleChoiceOffer(ctx context.Context, sdpOffer, choiceID strin
 				sess.sendGatewayError(sessionCtx, "activity log: "+err.Error())
 				return
 			}
-			err := backendSession.acceptClientMessage(sessionCtx, msg.Data)
+			data, err := clientProtocolMessage(sess.protocol, msg.Data)
+			if err == nil {
+				err = backendSession.acceptClientMessage(sessionCtx, data)
+			}
 			if err != nil {
 				if errors.Is(err, errSessionClosed) {
 					cancel()
@@ -530,7 +535,7 @@ func (b *Bridge) HasSession(sessionID string) bool {
 }
 
 // DiagnoseVoiceRTC returns structured connectivity diagnostics for a session.
-func (b *Bridge) DiagnoseVoiceRTC(_ context.Context, sessionID string, client *voicev1.VoiceRTCClientDiagnostics) voicev1.VoiceRTCDiagnosticsResp {
+func (b *Bridge) DiagnoseVoiceRTC(_ context.Context, sessionID string, client *voicev2.VoiceRTCClientDiagnostics) voicev2.VoiceRTCDiagnosticsResp {
 	udpEndpoints, udpMappingError := b.udpDiagnostics()
 	b.sessionsMu.Lock()
 	sess := b.sessions[sessionID]
@@ -539,7 +544,7 @@ func (b *Bridge) DiagnoseVoiceRTC(_ context.Context, sessionID string, client *v
 	}
 	b.sessionsMu.Unlock()
 	if sess == nil {
-		server := voicev1.VoiceRTCServerDiagnostics{
+		server := voicev2.VoiceRTCServerDiagnostics{
 			SessionFound:    false,
 			UDPEndpoints:    udpEndpoints,
 			UDPMappingError: udpMappingError,
@@ -548,6 +553,19 @@ func (b *Bridge) DiagnoseVoiceRTC(_ context.Context, sessionID string, client *v
 	}
 	server := sess.diagnostics(udpEndpoints, udpMappingError)
 	return buildVoiceRTCDiagnostics(sessionID, &server, client)
+}
+
+// VoiceRTCError returns the latest gateway error retained for v1 diagnostics.
+func (b *Bridge) VoiceRTCError(sessionID string) string {
+	b.sessionsMu.Lock()
+	sess := b.sessions[sessionID]
+	b.sessionsMu.Unlock()
+	if sess == nil {
+		return ""
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.lastError
 }
 
 // Close tears down a session by ID. No-op if not found.
@@ -639,7 +657,7 @@ func (b *Bridge) ServeTextSession(ctx context.Context, w http.ResponseWriter, r 
 
 // ServeTextChoice runs a text session bound to the selected backend.
 func (b *Bridge) ServeTextChoice(ctx context.Context, w http.ResponseWriter, r *http.Request, choiceID string) error {
-	connector, err := b.choiceBackend(choiceID, voicev1.VoiceTransportText)
+	connector, err := b.choiceBackend(choiceID, voicev2.VoiceTransportText)
 	if err != nil {
 		voiceapi.WriteError(w, http.StatusBadRequest, voiceapi.CodeBadRequest, err.Error())
 		return err
@@ -758,7 +776,7 @@ func (b *Bridge) ensureWebRTCAPI(ctx context.Context) (*webrtc.API, error) {
 	return b.api, nil
 }
 
-func (b *Bridge) udpDiagnostics() (endpoints []voicev1.VoiceRTCUDPEndpoint, mappingError string) {
+func (b *Bridge) udpDiagnostics() (endpoints []voicev2.VoiceRTCUDPEndpoint, mappingError string) {
 	b.setupMu.Lock()
 	mapping := b.upnpMapping
 	endpoints = voiceRTCUDPEndpoints(b.advertisedEndpoints)
@@ -819,7 +837,8 @@ func backendForConfig(cfg voicegateway.Choice, pool *localStackPool) (backendCon
 
 // session holds all state for one bridge session.
 type session struct {
-	id string
+	protocol voiceapi.SessionProtocol
+	id       string
 
 	// stopping is protected by the bridge's sessionsMu.
 	stopping    bool
@@ -837,15 +856,16 @@ type session struct {
 	backendSetupComplete bool
 	audioOutputStarted   bool
 	cancel               context.CancelFunc
-	iceConnectionState   voicev1.VoiceRTCICEConnectionState
-	iceGatheringState    voicev1.VoiceRTCICEGatheringState
-	peerConnectionState  voicev1.VoiceRTCConnectionState
-	signalingState       voicev1.VoiceRTCSignalingState
-	dataChannelState     voicev1.VoiceRTCDataChannelState
+	iceConnectionState   voicev2.VoiceRTCICEConnectionState
+	iceGatheringState    voicev2.VoiceRTCICEGatheringState
+	peerConnectionState  voicev2.VoiceRTCConnectionState
+	signalingState       voicev2.VoiceRTCSignalingState
+	dataChannelState     voicev2.VoiceRTCDataChannelState
 	dataChannelOpened    bool
 	audioTrackReceived   bool
 	backendConnected     bool
 	sessionReadySent     bool
+	lastError            string
 	workers              sync.WaitGroup
 	workerActive         int
 	workersDone          chan struct{}
@@ -898,31 +918,31 @@ func (s *session) startWorker(f func()) {
 
 func (s *session) setICEConnectionState(state string) {
 	s.mu.Lock()
-	s.iceConnectionState = voicev1.VoiceRTCICEConnectionState(state)
+	s.iceConnectionState = voicev2.VoiceRTCICEConnectionState(state)
 	s.mu.Unlock()
 }
 
 func (s *session) setICEGatheringState(state string) {
 	s.mu.Lock()
-	s.iceGatheringState = voicev1.VoiceRTCICEGatheringState(state)
+	s.iceGatheringState = voicev2.VoiceRTCICEGatheringState(state)
 	s.mu.Unlock()
 }
 
 func (s *session) setPeerConnectionState(state string) {
 	s.mu.Lock()
-	s.peerConnectionState = voicev1.VoiceRTCConnectionState(state)
+	s.peerConnectionState = voicev2.VoiceRTCConnectionState(state)
 	s.mu.Unlock()
 }
 
 func (s *session) setSignalingState(state string) {
 	s.mu.Lock()
-	s.signalingState = voicev1.VoiceRTCSignalingState(state)
+	s.signalingState = voicev2.VoiceRTCSignalingState(state)
 	s.mu.Unlock()
 }
 
 func (s *session) setDataChannelState(state string) {
 	s.mu.Lock()
-	s.dataChannelState = voicev1.VoiceRTCDataChannelState(state)
+	s.dataChannelState = voicev2.VoiceRTCDataChannelState(state)
 	if strings.EqualFold(state, "open") {
 		s.dataChannelOpened = true
 	}
@@ -935,10 +955,10 @@ func (s *session) markAudioTrackReceived() {
 	s.mu.Unlock()
 }
 
-func (s *session) diagnostics(endpoints []voicev1.VoiceRTCUDPEndpoint, mappingError string) voicev1.VoiceRTCServerDiagnostics {
+func (s *session) diagnostics(endpoints []voicev2.VoiceRTCUDPEndpoint, mappingError string) voicev2.VoiceRTCServerDiagnostics {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return voicev1.VoiceRTCServerDiagnostics{
+	return voicev2.VoiceRTCServerDiagnostics{
 		SessionFound:       true,
 		UDPEndpoints:       endpoints,
 		UDPMappingError:    mappingError,
@@ -989,6 +1009,19 @@ func (s *session) sendGatewayMessage(ctx context.Context, data []byte) error {
 
 // deliverGatewayMessage writes one message to the client without recording it.
 func (s *session) deliverGatewayMessage(data []byte) error {
+	data, err := serverProtocolMessage(s.protocol, data)
+	if err != nil || len(data) == 0 {
+		return err
+	}
+	var msg voicev2.Error
+	if err := json.Unmarshal(data, &msg); err != nil {
+		return err
+	}
+	if msg.Kind == voicev2.MessageKindError {
+		s.mu.Lock()
+		s.lastError = msg.Message
+		s.mu.Unlock()
+	}
 	s.mu.Lock()
 	dc := s.dc
 	s.mu.Unlock()
@@ -1099,10 +1132,10 @@ func (s *session) audioSendLoop(ctx context.Context, enc *opusEncoder) {
 			if s.audioSpeech != nil {
 				for _, kind := range s.audioSpeech.tick(len(s.audioBuf) >= backendOutputFrameBytes) {
 					var msg any
-					if kind == voicev1.MessageKindSpeechStarted {
-						msg = &voicev1.SpeechStarted{Kind: kind, Speaker: voicev1.SpeakerAssistant}
+					if kind == voicev2.MessageKindSpeechStarted {
+						msg = &voicev2.SpeechStarted{Kind: kind, Speaker: voicev2.SpeakerAssistant}
 					} else {
-						msg = &voicev1.SpeechEnded{Kind: kind, Speaker: voicev1.SpeakerAssistant}
+						msg = &voicev2.SpeechEnded{Kind: kind, Speaker: voicev2.SpeakerAssistant}
 					}
 					if err := s.sendGatewayMessage(ctx, mustGatewayServerMessage(msg)); err != nil {
 						// A record failure is already reported and cancelled there;
@@ -1168,8 +1201,8 @@ func (s *session) sendTurnError(ctx context.Context, message string) {
 // session through sendGatewayMessage, because the activity record can no longer
 // describe the call.
 func (s *session) reportError(ctx context.Context, message string, recoverable bool) {
-	data := mustGatewayServerMessage(&voicev1.Error{
-		Kind:        voicev1.MessageKindError,
+	data := mustGatewayServerMessage(&voicev2.Error{
+		Kind:        voicev2.MessageKindError,
 		Message:     message,
 		Recoverable: recoverable,
 	})
@@ -1180,8 +1213,8 @@ func (s *session) reportError(ctx context.Context, message string, recoverable b
 
 // reportUnrecordedError delivers a fatal error and ends the session.
 func (s *session) reportUnrecordedError(ctx context.Context, message string) {
-	if err := s.deliverGatewayMessage(mustGatewayServerMessage(&voicev1.Error{
-		Kind:    voicev1.MessageKindError,
+	if err := s.deliverGatewayMessage(mustGatewayServerMessage(&voicev2.Error{
+		Kind:    voicev2.MessageKindError,
 		Message: message,
 	})); err != nil {
 		slog.WarnContext(ctx, "voicertc: deliver gateway error failed", "session", s.id, "err", err)
@@ -1189,12 +1222,12 @@ func (s *session) reportUnrecordedError(ctx context.Context, message string) {
 	s.cancel()
 }
 
-func buildVoiceRTCDiagnostics(sessionID string, server *voicev1.VoiceRTCServerDiagnostics, client *voicev1.VoiceRTCClientDiagnostics) voicev1.VoiceRTCDiagnosticsResp {
+func buildVoiceRTCDiagnostics(sessionID string, server *voicev2.VoiceRTCServerDiagnostics, client *voicev2.VoiceRTCClientDiagnostics) voicev2.VoiceRTCDiagnosticsResp {
 	if client == nil {
-		client = &voicev1.VoiceRTCClientDiagnostics{}
+		client = &voicev2.VoiceRTCClientDiagnostics{}
 	}
 	issue, side, message := classifyVoiceRTCConnectivity(server, client)
-	return voicev1.VoiceRTCDiagnosticsResp{
+	return voicev2.VoiceRTCDiagnosticsResp{
 		SessionID: sessionID,
 		Issue:     issue,
 		Side:      side,
@@ -1252,13 +1285,13 @@ func appendUniqueUDPCandidate(candidates []udpCandidate, c udpCandidate) []udpCa
 	return append(candidates, udpCandidate{host: append(net.IP(nil), v4...), port: c.port})
 }
 
-func voiceRTCUDPEndpoints(candidates []udpCandidate) []voicev1.VoiceRTCUDPEndpoint {
+func voiceRTCUDPEndpoints(candidates []udpCandidate) []voicev2.VoiceRTCUDPEndpoint {
 	if len(candidates) == 0 {
 		return nil
 	}
-	endpoints := make([]voicev1.VoiceRTCUDPEndpoint, 0, len(candidates))
+	endpoints := make([]voicev2.VoiceRTCUDPEndpoint, 0, len(candidates))
 	for _, c := range candidates {
-		endpoints = append(endpoints, voicev1.VoiceRTCUDPEndpoint{Host: c.host.String(), Port: c.port})
+		endpoints = append(endpoints, voicev2.VoiceRTCUDPEndpoint{Host: c.host.String(), Port: c.port})
 	}
 	return endpoints
 }
@@ -1274,7 +1307,7 @@ func udpEndpointStrings(candidates []udpCandidate) []string {
 	return endpoints
 }
 
-func formatUDPServerCandidates(server *voicev1.VoiceRTCServerDiagnostics) string {
+func formatUDPServerCandidates(server *voicev2.VoiceRTCServerDiagnostics) string {
 	if len(server.UDPEndpoints) == 0 {
 		return "unknown"
 	}
@@ -1285,47 +1318,47 @@ func formatUDPServerCandidates(server *voicev1.VoiceRTCServerDiagnostics) string
 	return strings.Join(candidates, ", ")
 }
 
-func classifyVoiceRTCConnectivity(server *voicev1.VoiceRTCServerDiagnostics, client *voicev1.VoiceRTCClientDiagnostics) (voicev1.VoiceRTCConnectivityIssue, voicev1.VoiceRTCConnectivitySide, string) {
+func classifyVoiceRTCConnectivity(server *voicev2.VoiceRTCServerDiagnostics, client *voicev2.VoiceRTCClientDiagnostics) (voicev2.VoiceRTCConnectivityIssue, voicev2.VoiceRTCConnectivitySide, string) {
 	if !server.SessionFound {
-		return voicev1.VoiceRTCConnectivityIssueServerSessionMissing,
-			voicev1.VoiceRTCConnectivitySideServer,
+		return voicev2.VoiceRTCConnectivityIssueServerSessionMissing,
+			voicev2.VoiceRTCConnectivitySideServer,
 			"session missing"
 	}
 	serverICE := strings.ToLower(string(server.ICEConnectionState))
 	clientICE := strings.ToLower(string(client.ICEConnectionState))
 	clientConn := strings.ToLower(string(client.ConnectionState))
 	if serverICE == "failed" || serverICE == "disconnected" || serverICE == "closed" {
-		return voicev1.VoiceRTCConnectivityIssueServerICEFailed,
-			voicev1.VoiceRTCConnectivitySideNetwork,
+		return voicev2.VoiceRTCConnectivityIssueServerICEFailed,
+			voicev2.VoiceRTCConnectivitySideNetwork,
 			"server ICE failed; UDP is not flowing"
 	}
 	if !server.DataChannelOpened {
 		if clientICE == "failed" || clientICE == "disconnected" || clientICE == "closed" || clientConn == "failed" || clientConn == "closed" {
-			return voicev1.VoiceRTCConnectivityIssueUDPUnreachable,
-				voicev1.VoiceRTCConnectivitySideNetwork,
+			return voicev2.VoiceRTCConnectivityIssueUDPUnreachable,
+				voicev2.VoiceRTCConnectivitySideNetwork,
 				"no ICE with UDP candidates " + formatUDPServerCandidates(server)
 		}
 		if clientICE == "connected" || clientICE == "completed" || clientConn == "connected" {
-			return voicev1.VoiceRTCConnectivityIssueDataChannelNotOpen,
-				voicev1.VoiceRTCConnectivitySideClient,
+			return voicev2.VoiceRTCConnectivityIssueDataChannelNotOpen,
+				voicev2.VoiceRTCConnectivitySideClient,
 				"ICE connected, data channel closed"
 		}
-		return voicev1.VoiceRTCConnectivityIssueUDPUnreachable,
-			voicev1.VoiceRTCConnectivitySideNetwork,
+		return voicev2.VoiceRTCConnectivityIssueUDPUnreachable,
+			voicev2.VoiceRTCConnectivitySideNetwork,
 			"no data channel on UDP candidates " + formatUDPServerCandidates(server)
 	}
 	if !server.BackendConnected {
-		return voicev1.VoiceRTCConnectivityIssueVoiceBackendConnecting,
-			voicev1.VoiceRTCConnectivitySideServer,
+		return voicev2.VoiceRTCConnectivityIssueVoiceBackendConnecting,
+			voicev2.VoiceRTCConnectivitySideServer,
 			"backend not connected"
 	}
 	if !server.SessionReadySent {
-		return voicev1.VoiceRTCConnectivityIssueVoiceBackendConnecting,
-			voicev1.VoiceRTCConnectivitySideServer,
+		return voicev2.VoiceRTCConnectivityIssueVoiceBackendConnecting,
+			voicev2.VoiceRTCConnectivitySideServer,
 			"backend connected, no session.ready"
 	}
-	return voicev1.VoiceRTCConnectivityIssueSessionReadyNotDelivered,
-		voicev1.VoiceRTCConnectivitySideClient,
+	return voicev2.VoiceRTCConnectivityIssueSessionReadyNotDelivered,
+		voicev2.VoiceRTCConnectivitySideClient,
 		"session.ready not received"
 }
 

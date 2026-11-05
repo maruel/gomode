@@ -239,4 +239,3 @@ public struct DeviceAuthorizationResponse: Codable {
     public let expires_in: Int
     public let interval: Int?
 }
-

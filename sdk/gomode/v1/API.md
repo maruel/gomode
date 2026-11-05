@@ -176,4 +176,3 @@ shell can register when the skill becomes active.
 | `name` | `string` |  | yes |
 | `description` | `string` |  | yes |
 | `gomode` | `SkillGoMode` |  | yes |
-

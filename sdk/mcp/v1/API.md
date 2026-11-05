@@ -548,4 +548,3 @@ notifications/subscriptions/initial_state notification.
 | `contents` | `ResourceContent[]` | Contents is the resources/read result for the same target, so a client
 that applies the payload holds the post-subscription state without a
 second read. | yes |
-

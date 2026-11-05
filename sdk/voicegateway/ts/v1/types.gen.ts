@@ -37,10 +37,8 @@ export type MessageKind =
   | "turn.cancel"
   | "session.close"
   | "session.ready"
-  | "session.status"
   | "transcript.delta"
   | "assistant.text.delta"
-  | "reasoning.delta"
   | "speech.started"
   | "speech.ended"
   | "tool.call"
@@ -57,10 +55,8 @@ export const MessageKindToolResult = "tool.result";
 export const MessageKindTurnCancel = "turn.cancel";
 export const MessageKindSessionClose = "session.close";
 export const MessageKindSessionReady = "session.ready";
-export const MessageKindSessionStatus = "session.status";
 export const MessageKindTranscriptDelta = "transcript.delta";
 export const MessageKindAssistantTextDelta = "assistant.text.delta";
-export const MessageKindReasoningDelta = "reasoning.delta";
 export const MessageKindSpeechStarted = "speech.started";
 export const MessageKindSpeechEnded = "speech.ended";
 export const MessageKindToolCall = "tool.call";
@@ -221,28 +217,14 @@ export interface VoiceChoice {
   transports: VoiceTransport[];
   /** Voices lists supported audio voice names. Omitted when the choice does not offer voice selection. */
   voices?: string[];
+  /** DefaultVoice is the voice used when session.setup.voice.name is omitted. */
+  defaultVoice?: string;
 }
 
-/**
- * VoiceChoiceDefault names the choice a transport family uses when a session
- * omits choiceID. A family is one transport: WebRTC audio for gateway speech,
- * or text for client speech with a gateway LLM.
- */
-export interface VoiceChoiceDefault {
-  /** Transport is the family this default applies to. */
-  transport: VoiceTransport;
-  /** ID names a choice that offers Transport. */
-  id: string;
-}
-
-/**
- * VoiceChoicesResp advertises the available voice choices and one default per
- * offered family.
- */
+/** VoiceChoicesResp advertises the available voice choices and default selection. */
 export interface VoiceChoicesResp {
   choices: VoiceChoice[];
-  /** Defaults holds one entry per offered transport, ordered by transport name. */
-  defaults: VoiceChoiceDefault[];
+  defaultChoiceID: string;
 }
 
 /** ServiceAuthorization identifies the host and carries its scoped gateway token. */
@@ -346,6 +328,8 @@ export interface VoiceRTCServerDiagnostics {
   backendConnected?: boolean;
   /** SessionReadySent reports whether the gateway sent session.ready to the client. */
   sessionReadySent?: boolean;
+  /** LastError is the last gateway error sent to the client, if any. */
+  lastError?: string;
 }
 
 /** VoiceRTCDiagnosticsResp reports structured WebRTC connectivity diagnostics. */
@@ -388,8 +372,8 @@ export interface MessageEnvelope {
 
 /** VoiceConfig describes provider-neutral voice preferences. */
 export interface VoiceConfig {
-  /** Name is the requested provider-specific voice name. Empty uses the provider default. */
-  name?: string;
+  /** Name is the requested provider-specific voice name. */
+  name: string;
   /**
    * Language is the requested BCP 47 language tag, such as "en-US" or "fr-CA".
    * Empty defaults to "en-US". Invalid tags fail session setup. The gateway
@@ -406,10 +390,7 @@ export interface ToolDeclaration {
   name: string;
   /** Description explains when and how the assistant should use the tool. */
   description: string;
-  /**
-   * Parameters is a JSON Schema object describing the tool arguments. When
-   * present, it must declare "type": "object".
-   */
+  /** Parameters is a JSON Schema object describing the tool arguments. */
   parameters: any /* json.RawMessage */;
 }
 
@@ -431,11 +412,6 @@ export interface SessionSetup {
   tools: ToolDeclaration[];
   /** Context provides initial instructions or text context for the session. */
   context: Context;
-  /**
-   * IncludeReasoning requests optional provider reasoning output for this session.
-   * It does not enable thinking or change reasoning effort.
-   */
-  includeReasoning?: boolean;
 }
 
 /** ContextUpdate is a client message that appends session context. */
@@ -488,18 +464,6 @@ export interface SessionReady {
   kind: MessageKind;
 }
 
-/**
- * SessionStatus reports startup progress. Gateways repeat it at least every five
- * seconds while loading or waiting for capacity. Clients may refresh their
- * setup timeout on receipt; only session.ready enables microphone input.
- */
-export interface SessionStatus {
-  /** Kind is "session.status". */
-  kind: MessageKind;
-  /** Message is a short user-visible description of startup work. */
-  message: string;
-}
-
 /** TranscriptDelta is a gateway message that streams transcript text. */
 export interface TranscriptDelta {
   /** Kind is "transcript.delta". */
@@ -515,19 +479,6 @@ export interface AssistantTextDelta {
   /** Kind is "assistant.text.delta". */
   kind: MessageKind;
   /** Text is an incremental assistant text fragment. */
-  text: string;
-}
-
-/**
- * ReasoningDelta is a gateway message that streams provider reasoning text.
- *
- * Reasoning is not speech and not a transcript statement. A client decides
- * whether to display it.
- */
-export interface ReasoningDelta {
-  /** Kind is "reasoning.delta". */
-  kind: MessageKind;
-  /** Text is an incremental reasoning fragment. */
   text: string;
 }
 
@@ -594,4 +545,3 @@ export interface Error {
   /** Recoverable reports whether the client may continue using the session. */
   recoverable: boolean;
 }
-

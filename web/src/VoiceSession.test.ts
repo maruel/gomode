@@ -36,7 +36,7 @@ import {
   VoiceRTCConnectivitySideNetwork,
   type VoiceRTCAnswerResp,
   type VoiceRTCDiagnosticsResp,
-} from "../../sdk/voicegateway/ts/v1/types.gen";
+} from "../../sdk/voicegateway/ts/v2/types.gen";
 
 class FakePeerConnection extends EventTarget {
   readonly sender = { track: { kind: "audio" }, replaceTrack: vi.fn(async (_track: MediaStreamTrack) => {}) };
@@ -1129,7 +1129,7 @@ describe("VoiceSession", () => {
 
     await vi.waitFor(() =>
       expect(closeRequests).toEqual([
-        { url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/late-session`, authorization: null },
+        { url: `${window.location.origin}/api/voicegateway/v2/voice/rtc/late-session`, authorization: null },
       ]),
     );
     expect(FakePeerConnection.dataChannels[0]?.send).not.toHaveBeenCalled();
@@ -1170,7 +1170,7 @@ describe("VoiceSession", () => {
       await vi.waitFor(() =>
         expect(closeRequests).toEqual([
           {
-            url: "https://voice.example.com/api/voicegateway/v1/voice/rtc/late-external-session",
+            url: "https://voice.example.com/api/voicegateway/v2/voice/rtc/late-external-session",
             authorization: `Bearer ${serviceToken("user-1", 2)}`,
           },
         ]),
@@ -1722,7 +1722,7 @@ describe("VoiceSession", () => {
     await vi.waitFor(() =>
       expect(closeRequests).toEqual([
         {
-          url: "https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1",
+          url: "https://voice.example.com/api/voicegateway/v2/voice/rtc/session-1",
           authorization: `Bearer ${serviceToken("user-1", 2)}`,
         },
       ]),
@@ -1749,7 +1749,7 @@ describe("VoiceSession", () => {
     await vi.waitFor(() =>
       expect(closeRequests).toEqual([
         {
-          url: "https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1",
+          url: "https://voice.example.com/api/voicegateway/v2/voice/rtc/session-1",
           authorization: `Bearer ${oauthToken("user-1", 2)}`,
         },
       ]),
@@ -1777,7 +1777,7 @@ describe("VoiceSession", () => {
       await vi.waitFor(() =>
         expect(closeRequests).toEqual([
           {
-            url: "https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1",
+            url: "https://voice.example.com/api/voicegateway/v2/voice/rtc/session-1",
             authorization: `Bearer ${serviceToken("user-1", 1)}`,
           },
         ]),
@@ -1811,7 +1811,7 @@ describe("VoiceSession", () => {
       await vi.waitFor(() =>
         expect(closeRequests).toEqual([
           {
-            url: "https://old-voice.example.com/api/voicegateway/v1/voice/rtc/session-1",
+            url: "https://old-voice.example.com/api/voicegateway/v2/voice/rtc/session-1",
             authorization: `Bearer ${serviceToken("user-1", 1)}`,
           },
         ]),
@@ -1847,7 +1847,7 @@ describe("VoiceSession", () => {
 
     expect(offerRequests).toEqual([
       {
-        url: "https://old-voice.example.com/api/voicegateway/v1/voice/rtc/offer",
+        url: "https://old-voice.example.com/api/voicegateway/v2/voice/rtc/offer",
         authorization: null,
         body: {
           choiceID: "gemini",
@@ -1887,7 +1887,7 @@ describe("VoiceSession", () => {
       await vi.waitFor(() =>
         expect(closeRequests).toEqual([
           {
-            url: "https://old-voice.example.com/api/voicegateway/v1/voice/rtc/late-session",
+            url: "https://old-voice.example.com/api/voicegateway/v2/voice/rtc/late-session",
             authorization: `Bearer ${serviceToken("user-1", 1)}`,
           },
         ]),
@@ -1908,7 +1908,7 @@ describe("VoiceSession", () => {
     await vi.waitFor(() =>
       expect(closeRequests).toEqual([
         {
-          url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/session-1`,
+          url: `${window.location.origin}/api/voicegateway/v2/voice/rtc/session-1`,
           authorization: null,
         },
       ]),
@@ -1931,7 +1931,7 @@ describe("VoiceSession", () => {
     await vi.waitFor(() =>
       expect(closeRequests).toEqual([
         {
-          url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/session-1`,
+          url: `${window.location.origin}/api/voicegateway/v2/voice/rtc/session-1`,
           authorization: "Bearer refreshed-token",
         },
       ]),
@@ -1974,7 +1974,7 @@ describe("VoiceSession", () => {
     await vi.waitFor(() =>
       expect(closeRequests).toEqual([
         {
-          url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/session-1`,
+          url: `${window.location.origin}/api/voicegateway/v2/voice/rtc/session-1`,
           authorization: null,
         },
       ]),
@@ -2013,7 +2013,7 @@ describe("VoiceSession", () => {
       expect(diagnosticRequests).toHaveLength(1);
       expect(diagnosticRequests[0]?.authorization).toBe(`Bearer ${serviceToken("user-1", 2)}`);
       expect(diagnosticRequests[0]?.url).toBe(
-        "https://voice.example.com/api/voicegateway/v1/voice/rtc/session-1/diagnostics",
+        "https://voice.example.com/api/voicegateway/v2/voice/rtc/session-1/diagnostics",
       );
     } finally {
       session.disconnect();
@@ -2340,7 +2340,7 @@ describe("voice network recovery", () => {
       await vi.advanceTimersByTimeAsync(0);
       await vi.waitFor(() => expect(FakePeerConnection.dataChannels).toHaveLength(2));
       expect(closeRequests).toContainEqual({
-        url: `${window.location.origin}/api/voicegateway/v1/voice/rtc/session-1`,
+        url: `${window.location.origin}/api/voicegateway/v2/voice/rtc/session-1`,
         authorization: null,
       });
       FakePeerConnection.dataChannels[1]?.onopen?.();

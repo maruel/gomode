@@ -4,19 +4,19 @@ package com.fghbuild.gomode.voice
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
-import com.caic.voicegateway.sdk.v1.AssistantTextDelta
-import com.caic.voicegateway.sdk.v1.ContextUpdate
-import com.caic.voicegateway.sdk.v1.Error
-import com.caic.voicegateway.sdk.v1.MessageEnvelope
-import com.caic.voicegateway.sdk.v1.MessageKind
-import com.caic.voicegateway.sdk.v1.SessionSetup
-import com.caic.voicegateway.sdk.v1.SessionStatus
-import com.caic.voicegateway.sdk.v1.ToolCall
-import com.caic.voicegateway.sdk.v1.ToolResult
-import com.caic.voicegateway.sdk.v1.TurnCancel
-import com.caic.voicegateway.sdk.v1.TurnState
-import com.caic.voicegateway.sdk.v1.TurnStatus
-import com.caic.voicegateway.sdk.v1.UserMessage
+import com.caic.voicegateway.sdk.v2.AssistantTextDelta
+import com.caic.voicegateway.sdk.v2.ContextUpdate
+import com.caic.voicegateway.sdk.v2.Error
+import com.caic.voicegateway.sdk.v2.MessageEnvelope
+import com.caic.voicegateway.sdk.v2.MessageKind
+import com.caic.voicegateway.sdk.v2.SessionSetup
+import com.caic.voicegateway.sdk.v2.SessionStatus
+import com.caic.voicegateway.sdk.v2.ToolCall
+import com.caic.voicegateway.sdk.v2.ToolResult
+import com.caic.voicegateway.sdk.v2.TurnCancel
+import com.caic.voicegateway.sdk.v2.TurnState
+import com.caic.voicegateway.sdk.v2.TurnStatus
+import com.caic.voicegateway.sdk.v2.UserMessage
 import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
@@ -61,7 +61,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 private const val TAG = "GoModeDeviceVoice"
-private const val TEXT_SESSION_PATH = "/api/voicegateway/v1/voice/text"
+private const val TEXT_SESSION_PATH = "/api/voicegateway/v2/voice/text"
 
 private val VoiceState.needsThinkingAudio: Boolean
     get() = connected && turnState == TurnState.Thinking && !speaking && !muted

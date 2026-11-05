@@ -15,7 +15,7 @@ import (
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers"
 	"github.com/maruel/genai/providers/gemini"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 // realtimeBridgeBackend retains gateway policy; genai owns provider transport.
@@ -85,7 +85,7 @@ func (b *realtimeBridgeBackend) newProvider(ctx context.Context) (genai.Provider
 	return entry.Factory(ctx, opts...)
 }
 
-func (b *realtimeBridgeBackend) setupOptions(msg *voicev1.SessionSetup) []genai.RealtimeOption {
+func (b *realtimeBridgeBackend) setupOptions(msg *voicev2.SessionSetup) []genai.RealtimeOption {
 	var opts []genai.RealtimeOption
 	if msg.IncludeReasoning {
 		opts = append(opts, genai.IncludeReasoning)
@@ -171,18 +171,18 @@ func (s *realtimeBridgeSession) sendLocked(ctx context.Context, input genai.Real
 }
 
 func (s *realtimeBridgeSession) acceptClientMessage(ctx context.Context, data []byte) error {
-	var env voicev1.MessageEnvelope
+	var env voicev2.MessageEnvelope
 	if err := json.Unmarshal(data, &env); err != nil {
 		return fmt.Errorf("decode gateway message: %w", err)
 	}
-	if env.Kind == voicev1.MessageKindTurnCancel {
+	if env.Kind == voicev2.MessageKindTurnCancel {
 		return nil
 	}
-	if env.Kind == voicev1.MessageKindSessionClose {
+	if env.Kind == voicev2.MessageKindSessionClose {
 		return errSessionClosed
 	}
-	if env.Kind == voicev1.MessageKindSessionSetup {
-		var setup voicev1.SessionSetup
+	if env.Kind == voicev2.MessageKindSessionSetup {
+		var setup voicev2.SessionSetup
 		if err := decodeGatewayMessage(data, env.Kind, &setup); err != nil {
 			return err
 		}
@@ -200,20 +200,20 @@ func (s *realtimeBridgeSession) acceptClientMessage(ctx context.Context, data []
 	}
 	var input genai.RealtimeInputContent
 	switch env.Kind {
-	case voicev1.MessageKindContextUpdate:
-		var msg voicev1.ContextUpdate
+	case voicev2.MessageKindContextUpdate:
+		var msg voicev2.ContextUpdate
 		if err := decodeGatewayMessage(data, env.Kind, &msg); err != nil {
 			return err
 		}
 		input = genai.RealtimeInputContent{Text: msg.Context.Text}
-	case voicev1.MessageKindUserMessage:
-		var msg voicev1.UserMessage
+	case voicev2.MessageKindUserMessage:
+		var msg voicev2.UserMessage
 		if err := decodeGatewayMessage(data, env.Kind, &msg); err != nil {
 			return err
 		}
 		input = genai.RealtimeInputContent{Text: msg.Text, Generate: true}
-	case voicev1.MessageKindToolResult:
-		var msg voicev1.ToolResult
+	case voicev2.MessageKindToolResult:
+		var msg voicev2.ToolResult
 		if err := decodeGatewayMessage(data, env.Kind, &msg); err != nil {
 			return err
 		}
@@ -228,7 +228,7 @@ func (s *realtimeBridgeSession) acceptClientMessage(ctx context.Context, data []
 	return s.send(ctx, input)
 }
 
-func (s *realtimeBridgeSession) setup(msg *voicev1.SessionSetup) error {
+func (s *realtimeBridgeSession) setup(msg *voicev2.SessionSetup) error {
 	if msg.Context.SystemInstruction == "" {
 		return errors.New("session.setup context.systemInstruction is required")
 	}
@@ -360,36 +360,36 @@ func (s *realtimeBridgeSession) handleEvent(event *genai.RealtimeEvent) error {
 		s.sink.addAssistantPCM(event.Content.Audio)
 		if !s.assistantSpeaking {
 			s.assistantSpeaking = true
-			out = append(out, mustGatewayServerMessage(&voicev1.SpeechStarted{Kind: voicev1.MessageKindSpeechStarted, Speaker: voicev1.SpeakerAssistant}))
+			out = append(out, mustGatewayServerMessage(&voicev2.SpeechStarted{Kind: voicev2.MessageKindSpeechStarted, Speaker: voicev2.SpeakerAssistant}))
 		}
 	case genai.RealtimeEventContentReasoning:
 		if event.Content.Reasoning != "" {
-			out = append(out, mustGatewayServerMessage(&voicev1.ReasoningDelta{Kind: voicev1.MessageKindReasoningDelta, Text: event.Content.Reasoning}))
+			out = append(out, mustGatewayServerMessage(&voicev2.ReasoningDelta{Kind: voicev2.MessageKindReasoningDelta, Text: event.Content.Reasoning}))
 		}
 	case genai.RealtimeEventTranscriptInput, genai.RealtimeEventTranscriptOutput:
-		speaker := voicev1.SpeakerUser
+		speaker := voicev2.SpeakerUser
 		transcript := &s.inputTranscript
 		if event.Kind == genai.RealtimeEventTranscriptOutput {
-			speaker = voicev1.SpeakerAssistant
+			speaker = voicev2.SpeakerAssistant
 			transcript = &s.outputTranscript
 		}
 		text := transcript.consume(event)
 		if text != "" {
-			out = append(out, mustGatewayServerMessage(&voicev1.TranscriptDelta{Kind: voicev1.MessageKindTranscriptDelta, Speaker: speaker, Text: text}))
-			if speaker == voicev1.SpeakerAssistant {
-				out = append(out, mustGatewayServerMessage(&voicev1.AssistantTextDelta{Kind: voicev1.MessageKindAssistantTextDelta, Text: text}))
+			out = append(out, mustGatewayServerMessage(&voicev2.TranscriptDelta{Kind: voicev2.MessageKindTranscriptDelta, Speaker: speaker, Text: text}))
+			if speaker == voicev2.SpeakerAssistant {
+				out = append(out, mustGatewayServerMessage(&voicev2.AssistantTextDelta{Kind: voicev2.MessageKindAssistantTextDelta, Text: text}))
 			}
 		}
 	case genai.RealtimeEventInterrupted:
 		s.sink.clearAssistantAudio()
 		s.assistantSpeaking = false
-		out = append(out, mustGatewayServerMessage(&voicev1.Interrupted{Kind: voicev1.MessageKindInterrupted, Source: voicev1.InterruptSourceUser}))
+		out = append(out, mustGatewayServerMessage(&voicev2.Interrupted{Kind: voicev2.MessageKindInterrupted, Source: voicev2.InterruptSourceUser}))
 	case genai.RealtimeEventProvider:
 		if cancelled, ok := event.ProviderEvent.(*gemini.ToolCallCancellation); ok {
 			if err := s.tools.cancel(cancelled.IDs); err != nil {
 				return err
 			}
-			out = append(out, mustGatewayServerMessage(&voicev1.Interrupted{Kind: voicev1.MessageKindInterrupted, Source: voicev1.InterruptSourceTool, Message: "tool call cancelled"}))
+			out = append(out, mustGatewayServerMessage(&voicev2.Interrupted{Kind: voicev2.MessageKindInterrupted, Source: voicev2.InterruptSourceTool, Message: "tool call cancelled"}))
 		}
 	case genai.RealtimeEventContentToolCalls:
 		if err := s.tools.register(event.Content.ToolCalls); err != nil {
@@ -397,11 +397,11 @@ func (s *realtimeBridgeSession) handleEvent(event *genai.RealtimeEvent) error {
 		}
 		for i := range event.Content.ToolCalls {
 			call := &event.Content.ToolCalls[i]
-			out = append(out, mustGatewayServerMessage(&voicev1.ToolCall{Kind: voicev1.MessageKindToolCall, ID: call.ID, Name: call.Name, Args: json.RawMessage(call.Arguments)}))
+			out = append(out, mustGatewayServerMessage(&voicev2.ToolCall{Kind: voicev2.MessageKindToolCall, ID: call.ID, Name: call.Name, Args: json.RawMessage(call.Arguments)}))
 		}
 	case genai.RealtimeEventTurnDone:
 		s.assistantSpeaking = false
-		out = append(out, mustGatewayServerMessage(&voicev1.SpeechEnded{Kind: voicev1.MessageKindSpeechEnded, Speaker: voicev1.SpeakerAssistant}))
+		out = append(out, mustGatewayServerMessage(&voicev2.SpeechEnded{Kind: voicev2.MessageKindSpeechEnded, Speaker: voicev2.SpeakerAssistant}))
 	case genai.RealtimeEventError:
 		// genai reserves Error events for recoverable provider errors; terminal
 		// failures arrive through Receive.

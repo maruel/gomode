@@ -598,4 +598,3 @@ export interface SubscriptionsInitialStateParams {
    */
   contents: ResourceContent[];
 }
-

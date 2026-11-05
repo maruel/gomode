@@ -144,4 +144,3 @@ export interface SkillFrontmatter {
   description: string;
   gomode: SkillGoMode;
 }
-

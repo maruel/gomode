@@ -3,7 +3,7 @@
 import { createEffect, createSignal, createUniqueId, onCleanup, Show, For, on, type Accessor } from "solid-js";
 import { browserSpeechAvailable } from "./BrowserSpeech";
 import { voiceSession, type VoiceMode } from "./VoiceSession";
-import type { VoiceTransport } from "../../sdk/voicegateway/ts/v1/types.gen";
+import type { VoiceTransport } from "../../sdk/voicegateway/ts/v2/types.gen";
 import { WebAudioThinkingEarcon } from "./ThinkingEarcon";
 import VoiceIcon from "./VoiceIcon";
 import controls from "./VoiceControls.module.css";

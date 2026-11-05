@@ -104,7 +104,7 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         if self.path == "/.well-known/gomode.json":
             body = json.dumps(SETTINGS).encode("utf-8")
             content_type = "application/json"
-        elif self.path == "/voice/api/voicegateway/v1/voice/choices":
+        elif self.path == "/voice/api/voicegateway/v2/voice/choices":
             body = json.dumps(VOICE_CHOICES).encode("utf-8")
             content_type = "application/json"
         else:

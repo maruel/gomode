@@ -4,7 +4,6 @@ package v1
 
 import (
 	"net/http"
-	"slices"
 
 	"github.com/maruel/gomode/voicegateway/api"
 )
@@ -204,6 +203,8 @@ type VoiceRTCServerDiagnostics struct {
 	BackendConnected bool `json:"backendConnected,omitempty"`
 	// SessionReadySent reports whether the gateway sent session.ready to the client.
 	SessionReadySent bool `json:"sessionReadySent,omitempty"`
+	// LastError is the last gateway error sent to the client, if any.
+	LastError string `json:"lastError,omitempty"`
 }
 
 // VoiceRTCDiagnosticsReq is the request body for POST /api/voicegateway/v1/voice/rtc/{sessionID}/diagnostics.
@@ -245,69 +246,12 @@ type VoiceChoice struct {
 	Transports []VoiceTransport `json:"transports"`
 	// Voices lists supported audio voice names. Omitted when the choice does not offer voice selection.
 	Voices []string `json:"voices,omitempty"`
+	// DefaultVoice is the voice used when session.setup.voice.name is omitted.
+	DefaultVoice string `json:"defaultVoice,omitempty"`
 }
 
-// VoiceChoiceDefault names the choice a transport family uses when a session
-// omits choiceID. A family is one transport: WebRTC audio for gateway speech,
-// or text for client speech with a gateway LLM.
-type VoiceChoiceDefault struct {
-	// Transport is the family this default applies to.
-	Transport VoiceTransport `json:"transport"`
-	// ID names a choice that offers Transport.
-	ID string `json:"id"`
-}
-
-// VoiceChoicesResp advertises the available voice choices and one default per
-// offered family.
+// VoiceChoicesResp advertises the available voice choices and default selection.
 type VoiceChoicesResp struct {
-	Choices []VoiceChoice `json:"choices"`
-	// Defaults holds one entry per offered transport, ordered by transport name.
-	Defaults []VoiceChoiceDefault `json:"defaults"`
-}
-
-// DefaultChoiceID returns the default choice for transport, or "" when the
-// gateway offers no choice for it.
-func (r *VoiceChoicesResp) DefaultChoiceID(transport VoiceTransport) string {
-	for _, d := range r.Defaults {
-		if d.Transport == transport {
-			return d.ID
-		}
-	}
-	return ""
-}
-
-// DefaultChoices returns one default per transport offered by choices.
-//
-// A transport uses the first preferred entry that names a choice offering it,
-// and otherwise the first choice that offers it. Transports no choice offers are
-// omitted.
-func DefaultChoices(choices []VoiceChoice, preferred []VoiceChoiceDefault) []VoiceChoiceDefault {
-	var out []VoiceChoiceDefault
-	for _, transport := range []VoiceTransport{VoiceTransportText, VoiceTransportWebRTC} {
-		id := ""
-		for _, p := range preferred {
-			if p.Transport == transport && choiceOffers(choices, p.ID, transport) {
-				id = p.ID
-				break
-			}
-		}
-		if id == "" {
-			for _, ch := range choices {
-				if slices.Contains(ch.Transports, transport) {
-					id = ch.ID
-					break
-				}
-			}
-		}
-		if id != "" {
-			out = append(out, VoiceChoiceDefault{Transport: transport, ID: id})
-		}
-	}
-	return out
-}
-
-func choiceOffers(choices []VoiceChoice, id string, transport VoiceTransport) bool {
-	return id != "" && slices.ContainsFunc(choices, func(ch VoiceChoice) bool {
-		return ch.ID == id && slices.Contains(ch.Transports, transport)
-	})
+	Choices         []VoiceChoice `json:"choices"`
+	DefaultChoiceID string        `json:"defaultChoiceID"`
 }

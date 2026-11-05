@@ -8,7 +8,7 @@ import { createSignal, untrack } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 
 // TODO: Cleanup imports.
-import * as voicegatewaySDK from "../../sdk/voicegateway/ts/v1/api.gen";
+import * as voicegatewaySDK from "../../sdk/voicegateway/ts/v2/api.gen";
 import { createApiClient as createGoModeClient } from "../../sdk/gomode/ts/v1/api.gen";
 import {
   type ContextUpdate,
@@ -47,7 +47,7 @@ import {
   type VoiceChoice,
   type VoiceChoicesResp,
   type VoiceTransport,
-} from "../../sdk/voicegateway/ts/v1/types.gen";
+} from "../../sdk/voicegateway/ts/v2/types.gen";
 
 import { mcpClient, type McpToolDescriptor } from "./McpClient";
 import { captureFrontendVoiceTools, type FrontendVoiceToolsSnapshot } from "./FrontendVoiceTools";
@@ -155,7 +155,7 @@ function gatewayHTTPError(status: number, path: string): string | null {
     case 403:
       return "Voice access denied (HTTP 403).";
     case 404:
-      return path.startsWith("/api/voicegateway/v1/voice/rtc/") && !path.endsWith("/rtc/offer")
+      return path.startsWith("/api/voicegateway/v2/voice/rtc/") && !path.endsWith("/rtc/offer")
         ? "Voice session not found (HTTP 404)."
         : "Voice gateway not found (HTTP 404).";
     case 408:
@@ -1595,9 +1595,9 @@ export class VoiceSession {
       this._monitorMicrophone(stream);
       const response = await snapshot.api.voiceTextTicket(service === null ? { choiceID } : { choiceID, service });
       if (attempt !== this._connectionAttempt) return;
-      const url = new URL("/api/voicegateway/v1/voice/text/browser", snapshot.origin);
+      const url = new URL("/api/voicegateway/v2/voice/text/browser", snapshot.origin);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-      const socket = new WebSocket(url, ["gomode.text.v1", `gomode.ticket.${response.ticket}`]);
+      const socket = new WebSocket(url, ["gomode.text.v2", `gomode.ticket.${response.ticket}`]);
       this._textSocket = socket;
       const speech = new BrowserSpeech(this.state.languageTag, {
         listening: (value) => {

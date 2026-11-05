@@ -2,7 +2,7 @@
 
 package voicertc
 
-import voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+import voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 
 // backendSpeechSink opts native realtime speech into common playback events.
 // Generation completion queues a boundary; it does not mean PCM has played.
@@ -14,7 +14,7 @@ type backendSpeechSink interface {
 
 type speechBoundary struct {
 	offset int64
-	kind   voicev1.MessageKind
+	kind   voicev2.MessageKind
 }
 
 // assistantSpeechPlayback is protected by session.audioMu. Each tick completes
@@ -33,7 +33,7 @@ func (p *assistantSpeechPlayback) append(n int) {
 		return
 	}
 	if !p.open {
-		p.boundaries = append(p.boundaries, speechBoundary{offset: p.queued, kind: voicev1.MessageKindSpeechStarted})
+		p.boundaries = append(p.boundaries, speechBoundary{offset: p.queued, kind: voicev2.MessageKindSpeechStarted})
 		p.open = true
 	}
 	p.queued += int64(n)
@@ -45,18 +45,18 @@ func (p *assistantSpeechPlayback) finish() int {
 	}
 	pad := int((int64(backendOutputFrameBytes) - p.queued%int64(backendOutputFrameBytes)) % int64(backendOutputFrameBytes))
 	p.queued += int64(pad)
-	p.boundaries = append(p.boundaries, speechBoundary{offset: p.queued, kind: voicev1.MessageKindSpeechEnded})
+	p.boundaries = append(p.boundaries, speechBoundary{offset: p.queued, kind: voicev2.MessageKindSpeechEnded})
 	p.open = false
 	return pad
 }
 
-func (p *assistantSpeechPlayback) tick(frameAvailable bool) []voicev1.MessageKind {
+func (p *assistantSpeechPlayback) tick(frameAvailable bool) []voicev2.MessageKind {
 	p.played += int64(p.inflight)
 	p.inflight = 0
-	var events []voicev1.MessageKind
+	var events []voicev2.MessageKind
 	for len(p.boundaries) > 0 {
 		b := p.boundaries[0]
-		if b.offset > p.played || b.kind == voicev1.MessageKindSpeechStarted && !frameAvailable {
+		if b.offset > p.played || b.kind == voicev2.MessageKindSpeechStarted && !frameAvailable {
 			break
 		}
 		events = append(events, b.kind)

@@ -799,4 +799,3 @@ data class SubscriptionsInitialStateParams(
      */
     val contents: List<ResourceContent>,
 )
-

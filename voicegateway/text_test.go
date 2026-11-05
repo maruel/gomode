@@ -15,7 +15,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 type textSessionServerFunc func(context.Context, http.ResponseWriter, *http.Request) error
@@ -29,7 +29,7 @@ func TestTextSessionTickets(t *testing.T) {
 	t.Run("authenticated origin-bound single-use ticket", func(t *testing.T) {
 		t.Parallel()
 		cfg, serviceJSON := testServiceAuth(t)
-		var auth voicev1.ServiceAuthorization
+		var auth voicev2.ServiceAuthorization
 		if err := json.Unmarshal([]byte(serviceJSON), &auth); err != nil {
 			t.Fatal(err)
 		}
@@ -41,7 +41,7 @@ func TestTextSessionTickets(t *testing.T) {
 		var calls atomic.Int32
 		handler, err := NewHandler(&cfg, nil, textSessionServerFunc(func(_ context.Context, w http.ResponseWriter, r *http.Request) error {
 			calls.Add(1)
-			if r.Header.Get("Origin") != "" || r.Header.Get("Sec-WebSocket-Protocol") != "gomode.text.v1" {
+			if r.Header.Get("Origin") != "" || r.Header.Get("Sec-WebSocket-Protocol") != "gomode.text.v2" {
 				t.Error("authorized ticket headers were not normalized for the transport")
 			}
 			w.WriteHeader(http.StatusNoContent)
@@ -51,7 +51,7 @@ func TestTextSessionTickets(t *testing.T) {
 			t.Fatal(err)
 		}
 		issue := func(requestOrigin, body string) *httptest.ResponseRecorder {
-			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/text/ticket", strings.NewReader(body))
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/text/ticket", strings.NewReader(body))
 			r.Header.Set("Origin", requestOrigin)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, r)
@@ -67,7 +67,7 @@ func TestTextSessionTickets(t *testing.T) {
 		if w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("ticket response = %d %s", w.Code, w.Body.String())
 		}
-		var response voicev1.VoiceTextTicketResp
+		var response voicev2.VoiceTextTicketResp
 		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 			t.Fatal(err)
 		}
@@ -75,14 +75,14 @@ func TestTextSessionTickets(t *testing.T) {
 			t.Fatal("empty ticket")
 		}
 		redeem := func(requestOrigin, protocols string) int {
-			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/text/browser", http.NoBody)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v2/voice/text/browser", http.NoBody)
 			r.Header.Set("Origin", requestOrigin)
 			r.Header.Set("Sec-WebSocket-Protocol", protocols)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, r)
 			return w.Code
 		}
-		protocols := "gomode.text.v1, gomode.ticket." + response.Ticket
+		protocols := "gomode.text.v2, gomode.ticket." + response.Ticket
 		if got := redeem(origin, protocols); got != http.StatusNoContent {
 			t.Fatalf("redeem status = %d", got)
 		}
@@ -93,7 +93,7 @@ func TestTextSessionTickets(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 			t.Fatal(err)
 		}
-		if got := redeem("https://attacker.example", "gomode.text.v1, gomode.ticket."+response.Ticket); got != http.StatusUnauthorized {
+		if got := redeem("https://attacker.example", "gomode.text.v2, gomode.ticket."+response.Ticket); got != http.StatusUnauthorized {
 			t.Fatalf("origin mismatch status = %d", got)
 		}
 		if got := redeem(origin, "gomode.ticket."); got != http.StatusUnauthorized {
@@ -109,7 +109,7 @@ func TestTextSessionTickets(t *testing.T) {
 	t.Run("upgrades a cross-origin browser with the public subprotocol", func(t *testing.T) {
 		t.Parallel()
 		cfg, serviceJSON := testServiceAuth(t)
-		var auth voicev1.ServiceAuthorization
+		var auth voicev2.ServiceAuthorization
 		if err := json.Unmarshal([]byte(serviceJSON), &auth); err != nil {
 			t.Fatal(err)
 		}
@@ -119,7 +119,7 @@ func TestTextSessionTickets(t *testing.T) {
 		}
 		origin := u.Scheme + "://" + u.Host
 		h, err := NewHandler(&cfg, nil, textSessionServerFunc(func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-			conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"gomode.text.v1"}})
+			conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"gomode.text.v2"}})
 			if err != nil {
 				return err
 			}
@@ -134,23 +134,23 @@ func TestTextSessionTickets(t *testing.T) {
 		}
 		server := httptest.NewServer(h)
 		t.Cleanup(server.Close)
-		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/text/ticket", strings.NewReader(`{"service":`+serviceJSON+`}`))
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/text/ticket", strings.NewReader(`{"service":`+serviceJSON+`}`))
 		r.Header.Set("Origin", origin)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
 		if w.Code != http.StatusOK {
 			t.Fatalf("issue status = %d", w.Code)
 		}
-		var ticket voicev1.VoiceTextTicketResp
+		var ticket voicev2.VoiceTextTicketResp
 		if err := json.Unmarshal(w.Body.Bytes(), &ticket); err != nil {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		t.Cleanup(cancel)
 		headers := http.Header{"Origin": []string{origin}}
-		conn, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/voicegateway/v1/voice/text/browser", &websocket.DialOptions{
+		conn, resp, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/voicegateway/v2/voice/text/browser", &websocket.DialOptions{
 			HTTPHeader:   headers,
-			Subprotocols: []string{"gomode.text.v1", "gomode.ticket." + ticket.Ticket},
+			Subprotocols: []string{"gomode.text.v2", "gomode.ticket." + ticket.Ticket},
 		})
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
@@ -159,7 +159,7 @@ func TestTextSessionTickets(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = conn.CloseNow() })
-		if conn.Subprotocol() != "gomode.text.v1" {
+		if conn.Subprotocol() != "gomode.text.v2" {
 			t.Fatalf("subprotocol = %q", conn.Subprotocol())
 		}
 		if _, _, err := conn.Read(ctx); err != nil {
@@ -176,7 +176,7 @@ func TestTextSessionTickets(t *testing.T) {
 			return nil
 		}))
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/text/browser", http.NoBody))
+		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v2/voice/text/browser", http.NoBody))
 		if w.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d", w.Code)
 		}
@@ -184,9 +184,9 @@ func TestTextSessionTickets(t *testing.T) {
 	t.Run("rejects expired tickets", func(t *testing.T) {
 		t.Parallel()
 		h := &handler{textTickets: map[string]textTicket{"expired": {origin: "https://host.example", expires: time.Now().Add(-time.Second)}}}
-		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/text/browser", http.NoBody)
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v2/voice/text/browser", http.NoBody)
 		r.Header.Set("Origin", "https://host.example")
-		r.Header.Set("Sec-WebSocket-Protocol", "gomode.text.v1, gomode.ticket.expired")
+		r.Header.Set("Sec-WebSocket-Protocol", "gomode.text.v2, gomode.ticket.expired")
 		w := httptest.NewRecorder()
 		h.handleBrowserTextSession(w, r)
 		if w.Code != http.StatusUnauthorized {
@@ -197,7 +197,7 @@ func TestTextSessionTickets(t *testing.T) {
 		t.Parallel()
 		h := NewEmbeddedHandler(nil, nil)
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v1/voice/text/ticket", strings.NewReader(`{}`)))
+		h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/text/ticket", strings.NewReader(`{}`)))
 		if w.Code != http.StatusServiceUnavailable {
 			t.Fatalf("status = %d", w.Code)
 		}
@@ -211,7 +211,7 @@ func TestTextSessionRoute(t *testing.T) {
 		t.Parallel()
 		handler := NewEmbeddedHandler(nil, nil)
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/text", http.NoBody))
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v2/voice/text", http.NoBody))
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 		}
@@ -227,7 +227,7 @@ func TestTextSessionRoute(t *testing.T) {
 			t.Fatal(err)
 		}
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/text", http.NoBody))
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v2/voice/text", http.NoBody))
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 		}
@@ -243,7 +243,7 @@ func TestTextSessionRoute(t *testing.T) {
 		})
 		handler := NewEmbeddedHandler(nil, server)
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/text", http.NoBody))
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v2/voice/text", http.NoBody))
 		if !called {
 			t.Fatal("text session server was not called")
 		}
@@ -255,7 +255,7 @@ func TestTextSessionRoute(t *testing.T) {
 	t.Run("accepts a valid service token", func(t *testing.T) {
 		t.Parallel()
 		cfg, serviceJSON := testServiceAuth(t)
-		var auth voicev1.ServiceAuthorization
+		var auth voicev2.ServiceAuthorization
 		if err := json.Unmarshal([]byte(serviceJSON), &auth); err != nil {
 			t.Fatal(err)
 		}
@@ -268,7 +268,7 @@ func TestTextSessionRoute(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/text", http.NoBody)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v2/voice/text", http.NoBody)
 		req.Header.Set("Authorization", "Bearer "+auth.Token)
 		req.Header.Set("X-Service-Kind", auth.Kind)
 		req.Header.Set("X-Service-Instance", auth.InstanceID)
@@ -286,7 +286,7 @@ func TestTextSessionRoute(t *testing.T) {
 	t.Run("rejects an invalid service token", func(t *testing.T) {
 		t.Parallel()
 		cfg, serviceJSON := testServiceAuth(t)
-		var auth voicev1.ServiceAuthorization
+		var auth voicev2.ServiceAuthorization
 		if err := json.Unmarshal([]byte(serviceJSON), &auth); err != nil {
 			t.Fatal(err)
 		}
@@ -298,7 +298,7 @@ func TestTextSessionRoute(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v1/voice/text", http.NoBody)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v2/voice/text", http.NoBody)
 		req.Header.Set("Authorization", "Bearer bogus")
 		req.Header.Set("X-Service-Kind", auth.Kind)
 		req.Header.Set("X-Service-Instance", auth.InstanceID)

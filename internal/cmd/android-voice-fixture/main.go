@@ -21,7 +21,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/maruel/gomode"
 	"github.com/maruel/gomode/mcp"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 // fixture serves the root settings document, a minimal MCP endpoint, and the
@@ -92,11 +92,11 @@ binding.then(document => {
 	})
 	mux.HandleFunc("GET /.well-known/gomode.json", f.handleSettings)
 	mux.HandleFunc("POST /api/mcp", f.handleMCP)
-	mux.HandleFunc("GET /api/voicegateway/v1/voice/choices", f.handleChoices)
-	mux.HandleFunc("GET /api/voicegateway/v1/voice/health", f.handleHealth)
-	mux.HandleFunc("GET /api/voicegateway/v1/voice/text", f.handleTextSession)
-	mux.HandleFunc("POST /api/voicegateway/v1/voice/rtc/offer", f.handleOffer)
-	mux.HandleFunc("POST /api/voicegateway/v1/voice/rtc/{sessionID}", f.handleClose)
+	mux.HandleFunc("GET /api/voicegateway/v2/voice/choices", f.handleChoices)
+	mux.HandleFunc("GET /api/voicegateway/v2/voice/health", f.handleHealth)
+	mux.HandleFunc("GET /api/voicegateway/v2/voice/text", f.handleTextSession)
+	mux.HandleFunc("POST /api/voicegateway/v2/voice/rtc/offer", f.handleOffer)
+	mux.HandleFunc("POST /api/voicegateway/v2/voice/rtc/{sessionID}", f.handleClose)
 	mux.HandleFunc("GET /fixture/stats", f.handleStats)
 	mux.HandleFunc("POST /fixture/config", f.handleConfig)
 	mux.HandleFunc("POST /fixture/tool", f.handleTool)
@@ -206,15 +206,15 @@ func (f *fixture) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (f *fixture) handleChoices(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, voicev1.VoiceChoicesResp{
-		Choices: []voicev1.VoiceChoice{{
+	writeJSON(w, voicev2.VoiceChoicesResp{
+		Choices: []voicev2.VoiceChoice{{
 			ID:         "fixture",
 			Label:      "Fixture text",
-			Transports: []voicev1.VoiceTransport{voicev1.VoiceTransportText, voicev1.VoiceTransportWebRTC},
+			Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportText, voicev2.VoiceTransportWebRTC},
 		}},
-		Defaults: []voicev1.VoiceChoiceDefault{
-			{Transport: voicev1.VoiceTransportText, ID: "fixture"},
-			{Transport: voicev1.VoiceTransportWebRTC, ID: "fixture"},
+		Defaults: []voicev2.VoiceChoiceDefault{
+			{Transport: voicev2.VoiceTransportText, ID: "fixture"},
+			{Transport: voicev2.VoiceTransportWebRTC, ID: "fixture"},
 		},
 	})
 }
@@ -248,25 +248,25 @@ func (f *fixture) handleTextSession(w http.ResponseWriter, r *http.Request) {
 			f.log.InfoContext(ctx, "text session closed", "err", err)
 			return
 		}
-		var env voicev1.MessageEnvelope
+		var env voicev2.MessageEnvelope
 		if err := json.Unmarshal(data, &env); err != nil {
 			f.log.WarnContext(ctx, "decode client message", "err", err)
 			continue
 		}
 		f.log.InfoContext(ctx, "client message", "kind", env.Kind)
 		switch env.Kind {
-		case voicev1.MessageKindSessionSetup:
+		case voicev2.MessageKindSessionSetup:
 			f.mu.Lock()
 			f.stats.TextSetups++
 			f.mu.Unlock()
-			if !writeMessage(ctx, f.log, conn, voicev1.SessionReady{Kind: voicev1.MessageKindSessionReady}) {
+			if !writeMessage(ctx, f.log, conn, voicev2.SessionReady{Kind: voicev2.MessageKindSessionReady}) {
 				return
 			}
-		case voicev1.MessageKindUserMessage:
+		case voicev2.MessageKindUserMessage:
 			replies := []any{
-				voicev1.TurnStatus{Kind: voicev1.MessageKindTurnStatus, State: voicev1.TurnStateThinking},
-				voicev1.AssistantTextDelta{Kind: voicev1.MessageKindAssistantTextDelta, Text: "Ready."},
-				voicev1.TurnStatus{Kind: voicev1.MessageKindTurnStatus, State: voicev1.TurnStateIdle},
+				voicev2.TurnStatus{Kind: voicev2.MessageKindTurnStatus, State: voicev2.TurnStateThinking},
+				voicev2.AssistantTextDelta{Kind: voicev2.MessageKindAssistantTextDelta, Text: "Ready."},
+				voicev2.TurnStatus{Kind: voicev2.MessageKindTurnStatus, State: voicev2.TurnStateIdle},
 			}
 			for _, reply := range replies {
 				if !writeMessage(ctx, f.log, conn, reply) {
@@ -276,12 +276,12 @@ func (f *fixture) handleTextSession(w http.ResponseWriter, r *http.Request) {
 			f.mu.Lock()
 			f.stats.TextTurns++
 			f.mu.Unlock()
-		case voicev1.MessageKindSessionClose:
+		case voicev2.MessageKindSessionClose:
 			_ = conn.Close(websocket.StatusNormalClosure, "closed")
 			return
-		case voicev1.MessageKindToolResult:
+		case voicev2.MessageKindToolResult:
 			f.recordToolResult(data)
-		case voicev1.MessageKindContextUpdate, voicev1.MessageKindTurnCancel:
+		case voicev2.MessageKindContextUpdate, voicev2.MessageKindTurnCancel:
 			// Valid client messages the fixture does not act on: it never calls
 			// tools or runs a cancellable turn. The "client message" log above
 			// records each one.

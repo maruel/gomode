@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 func TestSmokeGatewayServerFocusRecall(t *testing.T) {
@@ -47,8 +47,8 @@ func TestSmokeGatewayServerFocusRecall(t *testing.T) {
 			sink.mu.Lock()
 			var providerError string
 			for _, data := range sink.msgs {
-				var message voicev1.Error
-				if json.Unmarshal(data, &message) == nil && message.Kind == voicev1.MessageKindError {
+				var message voicev2.Error
+				if json.Unmarshal(data, &message) == nil && message.Kind == voicev2.MessageKindError {
 					providerError = message.Message
 					break
 				}
@@ -66,7 +66,7 @@ func TestSmokeGatewayServerFocusRecall(t *testing.T) {
 			if !ready {
 				count := 0
 				for _, kind := range sink.kinds() {
-					if kind == voicev1.MessageKindSpeechEnded {
+					if kind == voicev2.MessageKindSpeechEnded {
 						count++
 					}
 				}
@@ -81,18 +81,18 @@ func TestSmokeGatewayServerFocusRecall(t *testing.T) {
 			}
 		}
 	}
-	send(voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup,
-		Voice:   voicev1.VoiceConfig{Language: "en-US"},
-		Context: voicev1.Context{SystemInstruction: "Answer synthetic test questions briefly. Preserve facts across server focus changes.", Text: "Selected server: A. Servers A and B are connected."}})
+	send(voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup,
+		Voice:   voicev2.VoiceConfig{Language: "en-US"},
+		Context: voicev2.Context{SystemInstruction: "Answer synthetic test questions briefly. Preserve facts across server focus changes.", Text: "Selected server: A. Servers A and B are connected."}})
 	wait(true, 0)
-	send(voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "On server A my code word is cedar. Repeat only that word."})
+	send(voicev2.UserMessage{Kind: voicev2.MessageKindUserMessage, Text: "On server A my code word is cedar. Repeat only that word."})
 	wait(false, 1)
 	first := sink.assistantText()
 	if !strings.Contains(strings.ToLower(first), "cedar") {
 		t.Fatalf("First synthetic turn did not establish the fact: %q", first)
 	}
-	send(voicev1.ContextUpdate{Kind: voicev1.MessageKindContextUpdate, Context: voicev1.Context{Text: "Selected server (focus only): B. The same conversation continues; all servers remain connected."}})
-	send(voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "What code word did I give you while focused on server A? Reply with only that word."})
+	send(voicev2.ContextUpdate{Kind: voicev2.MessageKindContextUpdate, Context: voicev2.Context{Text: "Selected server (focus only): B. The same conversation continues; all servers remain connected."}})
+	send(voicev2.UserMessage{Kind: voicev2.MessageKindUserMessage, Text: "What code word did I give you while focused on server A? Reply with only that word."})
 	wait(false, 2)
 	recall := strings.TrimPrefix(sink.assistantText(), first)
 	if !strings.Contains(strings.ToLower(recall), "cedar") {
@@ -119,7 +119,7 @@ func TestSmokeGeminiBridgeSession(t *testing.T) {
 				t.Error(err)
 			}
 		})
-		for _, msg := range []any{&voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup, Context: voicev1.Context{SystemInstruction: "When asked for the code, call lookup_code then speak the returned code briefly. Never guess."}, Tools: []voicev1.ToolDeclaration{{Name: "lookup_code", Parameters: json.RawMessage(`{"type":"object","properties":{}}`)}}}, &voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: "What is the code? Use lookup_code before answering."}} {
+		for _, msg := range []any{&voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup, Context: voicev2.Context{SystemInstruction: "When asked for the code, call lookup_code then speak the returned code briefly. Never guess."}, Tools: []voicev2.ToolDeclaration{{Name: "lookup_code", Parameters: json.RawMessage(`{"type":"object","properties":{}}`)}}}, &voicev2.UserMessage{Kind: voicev2.MessageKindUserMessage, Text: "What is the code? Use lookup_code before answering."}} {
 			data, err := json.Marshal(msg)
 			if err != nil {
 				t.Fatal(err)
@@ -137,22 +137,22 @@ func TestSmokeGeminiBridgeSession(t *testing.T) {
 			for next < len(messages) {
 				data := messages[next]
 				next++
-				var env voicev1.MessageEnvelope
+				var env voicev2.MessageEnvelope
 				if err := json.Unmarshal(data, &env); err != nil {
 					t.Fatal(err)
 				}
 				switch env.Kind {
-				case voicev1.MessageKindError:
+				case voicev2.MessageKindError:
 					t.Fatal("Gemini gateway reported a provider error")
-				case voicev1.MessageKindToolCall:
-					var call voicev1.ToolCall
+				case voicev2.MessageKindToolCall:
+					var call voicev2.ToolCall
 					if err := json.Unmarshal(data, &call); err != nil {
 						t.Fatal(err)
 					}
 					if call.Name != "lookup_code" || call.ID == "" {
 						t.Fatal("unexpected tool call")
 					}
-					result, err := json.Marshal(&voicev1.ToolResult{Kind: voicev1.MessageKindToolResult, ID: call.ID, Name: call.Name, Result: json.RawMessage(`{"code":"violet seven"}`)})
+					result, err := json.Marshal(&voicev2.ToolResult{Kind: voicev2.MessageKindToolResult, ID: call.ID, Name: call.Name, Result: json.RawMessage(`{"code":"violet seven"}`)})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -160,7 +160,7 @@ func TestSmokeGeminiBridgeSession(t *testing.T) {
 						t.Fatal(err)
 					}
 					called = true
-				case voicev1.MessageKindSpeechEnded:
+				case voicev2.MessageKindSpeechEnded:
 					if called && sink.pcmLen() > 0 && sink.assistantText() != "" {
 						return
 					}

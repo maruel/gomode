@@ -13,7 +13,7 @@ import (
 
 	activitydata "github.com/maruel/gomode/voicegateway/voicertc/data"
 
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 // activityLog writes the transcript and tool activity for one voice session.
@@ -35,21 +35,21 @@ func openActivityLog(dir, sessionID string) (*activityLog, error) {
 }
 
 func (l *activityLog) record(source activitydata.Source, data []byte) error {
-	var envelope voicev1.MessageEnvelope
+	var envelope voicev2.MessageEnvelope
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return fmt.Errorf("decode voice activity message: %w", err)
 	}
 	// Persist only transcript, reasoning, tool, interruption, and error activity.
 	switch envelope.Kind {
-	case voicev1.MessageKindSessionSetup,
-		voicev1.MessageKindUserMessage,
-		voicev1.MessageKindTranscriptDelta,
-		voicev1.MessageKindAssistantTextDelta,
-		voicev1.MessageKindReasoningDelta,
-		voicev1.MessageKindToolCall,
-		voicev1.MessageKindToolResult,
-		voicev1.MessageKindInterrupted,
-		voicev1.MessageKindError:
+	case voicev2.MessageKindSessionSetup,
+		voicev2.MessageKindUserMessage,
+		voicev2.MessageKindTranscriptDelta,
+		voicev2.MessageKindAssistantTextDelta,
+		voicev2.MessageKindReasoningDelta,
+		voicev2.MessageKindToolCall,
+		voicev2.MessageKindToolResult,
+		voicev2.MessageKindInterrupted,
+		voicev2.MessageKindError:
 	default:
 		return nil
 	}

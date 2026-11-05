@@ -19,7 +19,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/maruel/genai"
-	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
+	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
 func TestManagedLlamaReleaseCache(t *testing.T) {
@@ -79,8 +79,8 @@ func (s *barrierSink) sendTurnError(ctx context.Context, message string) {
 }
 
 func (s *barrierSink) reportError(ctx context.Context, message string, recoverable bool) {
-	_ = s.sendGatewayMessage(ctx, mustGatewayServerMessage(&voicev1.Error{
-		Kind: voicev1.MessageKindError, Message: message, Recoverable: recoverable,
+	_ = s.sendGatewayMessage(ctx, mustGatewayServerMessage(&voicev2.Error{
+		Kind: voicev2.MessageKindError, Message: message, Recoverable: recoverable,
 	}))
 }
 
@@ -202,7 +202,7 @@ func TestLocalStackChronologicalTransport(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			readKind := func(want voicev1.MessageKind) []byte {
+			readKind := func(want voicev2.MessageKind) []byte {
 				for {
 					var data []byte
 					if conn != nil {
@@ -214,14 +214,14 @@ func TestLocalStackChronologicalTransport(t *testing.T) {
 							t.Fatal("missing gateway event", want)
 						}
 					}
-					var env voicev1.MessageEnvelope
+					var env voicev2.MessageEnvelope
 					if err := json.Unmarshal(data, &env); err != nil {
 						t.Fatal(err)
 					}
 					if env.Kind == want {
 						return data
 					}
-					if env.Kind == voicev1.MessageKindError {
+					if env.Kind == voicev2.MessageKindError {
 						t.Fatalf("unexpected gateway error: %s", data)
 					}
 				}
@@ -244,7 +244,7 @@ func TestLocalStackChronologicalTransport(t *testing.T) {
 			}
 			utterance := func(text string) {
 				if conn != nil {
-					send(voicev1.UserMessage{Kind: voicev1.MessageKindUserMessage, Text: text})
+					send(voicev2.UserMessage{Kind: voicev2.MessageKindUserMessage, Text: text})
 					return
 				}
 				asr.texts <- text
@@ -255,13 +255,13 @@ func TestLocalStackChronologicalTransport(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			send(voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup, Context: voicev1.Context{SystemInstruction: "Follow latest intent; do not replay tools."}, Tools: []voicev1.ToolDeclaration{{Name: "task_status", Description: "Read a task state", Parameters: json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"integer"}}}`)}}})
-			readKind(voicev1.MessageKindSessionReady)
+			send(voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup, Context: voicev2.Context{SystemInstruction: "Follow latest intent; do not replay tools."}, Tools: []voicev2.ToolDeclaration{{Name: "task_status", Description: "Read a task state", Parameters: json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"integer"}}}`)}}})
+			readKind(voicev2.MessageKindSessionReady)
 			utterance("Check task 3.")
 			initial := nextRequest()
 			release(initial, `{"tool_calls":[{"index":0,"id":"A","type":"function","function":{"name":"task_status","arguments":"{\"task_id\":3}"}},{"index":1,"id":"C","type":"function","function":{"name":"task_status","arguments":"{\"task_id\":9}"}}]}`)
-			readKind(voicev1.MessageKindToolCall)
-			readKind(voicev1.MessageKindToolCall)
+			readKind(voicev2.MessageKindToolCall)
+			readKind(voicev2.MessageKindToolCall)
 			utterance("Actually, check task 7 instead.")
 			superseded := nextRequest()
 			utterance("Only status and reference. Do not change anything.")
@@ -276,8 +276,8 @@ func TestLocalStackChronologicalTransport(t *testing.T) {
 			// An active request's snapshot is unchanged by later event admission.
 			assertChronologicalUsers(t, superseded.messages, wantUsers[:2])
 			release(latest, `{"tool_calls":[{"index":0,"id":"B","type":"function","function":{"name":"task_status","arguments":"{\"task_id\":7}"}}]}`)
-			data := readKind(voicev1.MessageKindToolCall)
-			var b voicev1.ToolCall
+			data := readKind(voicev2.MessageKindToolCall)
+			var b voicev2.ToolCall
 			if err := json.Unmarshal(data, &b); err != nil {
 				t.Fatal(err)
 			}
@@ -285,11 +285,11 @@ func TestLocalStackChronologicalTransport(t *testing.T) {
 				t.Fatalf("latest call = %+v", b)
 			}
 			result := func(id, name, state string) {
-				send(voicev1.ToolResult{Kind: voicev1.MessageKindToolResult, ID: id, Name: name, Result: json.RawMessage(fmt.Sprintf(`{"state":%q}`, state))})
+				send(voicev2.ToolResult{Kind: voicev2.MessageKindToolResult, ID: id, Name: name, Result: json.RawMessage(fmt.Sprintf(`{"state":%q}`, state))})
 			}
 			for _, invalid := range []struct{ id, name string }{{"unknown", "task_status"}, {"A", "wrong"}} {
 				result(invalid.id, invalid.name, "invalid")
-				readKind(voicev1.MessageKindError)
+				readKind(voicev2.MessageKindError)
 			}
 			result("B", "task_status", "waiting-violet")
 			partial := nextRequest()
@@ -309,24 +309,24 @@ func TestLocalStackChronologicalTransport(t *testing.T) {
 				case <-ctx.Done():
 					t.Fatal("speech did not start")
 				}
-				send(voicev1.TurnCancel{Kind: voicev1.MessageKindTurnCancel})
+				send(voicev2.TurnCancel{Kind: voicev2.MessageKindTurnCancel})
 				select {
 				case <-speech.stopped:
 				case <-ctx.Done():
 					t.Fatal("speech waiter leaked")
 				}
 			} else {
-				readKind(voicev1.MessageKindAssistantTextDelta)
-				send(voicev1.TurnCancel{Kind: voicev1.MessageKindTurnCancel})
+				readKind(voicev2.MessageKindAssistantTextDelta)
+				send(voicev2.TurnCancel{Kind: voicev2.MessageKindTurnCancel})
 			}
-			readKind(voicev1.MessageKindInterrupted)
+			readKind(voicev2.MessageKindInterrupted)
 			result("B", "task_status", "duplicate")
-			readKind(voicev1.MessageKindError)
+			readKind(voicev2.MessageKindError)
 			result("A", "task_status", "running-amber")
 			late := nextRequest()
 			assertWireResults(t, late.messages, []string{"B", "A"})
 			release(late, `{"content":"Waiting, violet."}`)
-			readKind(voicev1.MessageKindAssistantTextDelta)
+			readKind(voicev2.MessageKindAssistantTextDelta)
 			result("C", "task_status", "paused-cobalt")
 			final := nextRequest()
 			assertWireResults(t, final.messages, []string{"B", "A", "C"})
@@ -351,7 +351,7 @@ func TestLocalStackChronologicalTransport(t *testing.T) {
 				}
 				sess = nil
 			} else {
-				send(voicev1.SessionClose{Kind: voicev1.MessageKindSessionClose})
+				send(voicev2.SessionClose{Kind: voicev2.MessageKindSessionClose})
 			}
 			select {
 			case <-final.cancelled:
@@ -483,7 +483,7 @@ func TestLocalStackASRShutdown(t *testing.T) {
 	backend := newTestLocalStackBackend(t, func() vadSegmenter { return &energyVAD{} }, asr, echoLLM{}, &recordingTTS{})
 	sink := &barrierSink{messages: make(chan []byte, 20)}
 	sess := backend.lazy.loaded.(*localStackRuntime).newSession(ctx, "asr-shutdown", sink, false)
-	if err := sess.acceptClientMessage(ctx, mustJSON(t, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup})); err != nil {
+	if err := sess.acceptClientMessage(ctx, mustJSON(t, voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup})); err != nil {
 		t.Fatal(err)
 	}
 	sess.startTurn(ctx, []byte{1})
