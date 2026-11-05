@@ -1,0 +1,131 @@
+/* Standalone voice test page and public theme tokens for shared controls. */
+.app {
+  --color-bg: #f5f7fa;
+  --color-bg-surface: #fff;
+  --color-bg-hover: #e8edf3;
+  --color-border: #cbd3df;
+  --color-border-medium: #8c9ab0;
+  --color-danger: #b42332;
+  --color-primary: #245cba;
+  --color-text: #192638;
+  --color-text-secondary: #45556b;
+  --color-text-muted: #53647a;
+  --color-plan: #7143a8;
+  --color-text-faint: #63728a;
+  --radius-sm: 0.4rem;
+  --color-success: #167448;
+  --color-warning: #916000;
+
+  min-height: 100dvh;
+  color: var(--color-text);
+  background: var(--color-bg);
+  font-family: system-ui, sans-serif;
+  line-height: 1.6;
+}
+
+:global(body) {
+  margin: 0;
+}
+
+:global(*) {
+  box-sizing: border-box;
+}
+
+.main {
+  width: min(100%, 48rem);
+  margin: 0 auto;
+  padding: 3rem 1.5rem 2rem;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--color-primary);
+  font-weight: 650;
+}
+
+.main h1 {
+  margin: 0.25rem 0 0;
+  font-size: 2.25rem;
+  line-height: 1.2;
+}
+
+.main h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.note {
+  margin-top: 2rem;
+  padding: 1.5rem;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+}
+
+.hint {
+  color: var(--color-text-secondary);
+}
+
+.value {
+  min-height: 3rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.note button {
+  min-height: 2.75rem;
+  padding: 0.5rem 1rem;
+  color: var(--color-text);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-medium);
+  border-radius: 0.4rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.note button:hover:enabled {
+  background: var(--color-bg-hover);
+}
+
+.note button:disabled {
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
+.app :focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 3px;
+}
+
+.help {
+  margin-top: 1.5rem;
+}
+
+.help summary {
+  cursor: pointer;
+}
+
+@media (prefers-color-scheme: dark) {
+  .app {
+    --color-bg: #111923;
+    --color-bg-surface: #1b2736;
+    --color-bg-hover: #2b3c50;
+    --color-border: #405069;
+    --color-border-medium: #687c98;
+    --color-danger: #ff8b98;
+    --color-primary: #92b9ff;
+    --color-text: #edf2fa;
+    --color-text-secondary: #c0ccde;
+    --color-text-muted: #acbbd1;
+    --color-plan: #ccadff;
+    --color-text-faint: #96a7c0;
+    --color-success: #76dbab;
+    --color-warning: #efcb7b;
+  }
+}
+
+@media (width <= 30rem) {
+  .main {
+    padding: 1.5rem 1rem;
+  }
+}

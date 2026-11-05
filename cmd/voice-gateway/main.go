@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -24,6 +25,7 @@ import (
 	"github.com/mattn/go-isatty"
 
 	"github.com/maruel/gomode/httplog"
+	"github.com/maruel/gomode/internal/gatewayfrontend"
 	"github.com/maruel/gomode/voicegateway"
 	"github.com/maruel/gomode/voicegateway/voicertc"
 )
@@ -38,12 +40,28 @@ func mainImpl(args []string) (err error) {
 	configPath := flags.String("config", envDefault("VOICE_GATEWAY_CONFIG", voicegateway.DefaultConfigPath()), "voice gateway config.toml path")
 	addr := flags.String("http", envDefault("VOICE_GATEWAY_HTTP", ""), "HTTP listen address for signaling")
 	udpPort := flags.String("udp-port", envDefault("VOICE_GATEWAY_WEBRTC_UDP_PORT", ""), "UDP port for WebRTC ICE")
+	frontend := flags.Bool("frontend", false, "serve the standalone live-test frontend")
+	frontendAddr := flags.String("frontend-http", "127.0.0.1:3480", "loopback HTTP address for the frontend (requires -frontend)")
 	logLevel := flags.String("log-level", envDefault("VOICE_GATEWAY_LOG_LEVEL", "info"), "log level (debug, info, warn, error)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 
 	log := initLogging(*logLevel)
+
+	var frontendListener net.Listener
+	if *frontend {
+		frontendListener, err = gatewayfrontend.Listen(ctx, *frontendAddr)
+		if err != nil {
+			return err
+		}
+		// This owner also handles startup failures before serving begins.
+		defer func() {
+			if frontendListener != nil {
+				err = errors.Join(err, frontendListener.Close())
+			}
+		}()
+	}
 
 	cfg, err := voicegateway.LoadConfig(*configPath)
 	if err != nil {
@@ -95,35 +113,72 @@ func mainImpl(args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{
+	servers := []*http.Server{{
 		Addr:              cfg.Server.HTTP,
 		Handler:           httplog.Handler{Handler: handler, Logger: log},
 		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	shutdownCtx, stopShutdown := context.WithCancel(ctx)
-	var shutdownWG sync.WaitGroup
-	var shutdownErr error
-	shutdownWG.Go(func() {
-		<-shutdownCtx.Done()
-		shutCtx, shutCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer shutCancel()
-		shutdownErr = srv.Shutdown(shutCtx)
-	})
-	defer func() {
-		stopShutdown()
-		shutdownWG.Wait()
-		err = errors.Join(err, shutdownErr)
-	}()
-
-	log.InfoContext(ctx, "voice-gateway", "http", cfg.Server.HTTP, "udp", cfg.Server.WebRTCUDPPort, "config", *configPath)
-	if ctx.Err() != nil {
-		return context.Cause(ctx)
-	}
-	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+	}}
+	listeners := []net.Listener{}
+	var lc net.ListenConfig
+	apiListener, err := lc.Listen(ctx, "tcp", cfg.Server.HTTP)
+	if err != nil {
 		return err
 	}
-	return context.Cause(ctx)
+	defer func() {
+		if apiListener != nil {
+			err = errors.Join(err, apiListener.Close())
+		}
+	}()
+	listeners = append(listeners, apiListener)
+	if frontendListener != nil {
+		local, err := gatewayfrontend.NewHandler(frontendListener.Addr(), bridge, bridge)
+		if err != nil {
+			return err
+		}
+		servers = append(servers, &http.Server{
+			Addr:              frontendListener.Addr().String(),
+			Handler:           httplog.Handler{Handler: local, Logger: log},
+			ReadHeaderTimeout: 10 * time.Second,
+		})
+		listeners = append(listeners, frontendListener)
+		log.InfoContext(ctx, "voice-gateway frontend", "url", "http://"+frontendListener.Addr().String())
+	}
+	log.InfoContext(ctx, "voice-gateway", "http", cfg.Server.HTTP, "udp", cfg.Server.WebRTCUDPPort, "config", *configPath)
+	// Serve takes ownership of both listeners, including error paths.
+	apiListener = nil
+	frontendListener = nil
+	return serveHTTP(ctx, cancel, servers, listeners)
+}
+
+// serveHTTP owns listeners and shuts down every server when any listener fails
+// or the process is cancelled. http.Server.Serve closes each owned listener.
+func serveHTTP(ctx context.Context, cancel context.CancelCauseFunc, servers []*http.Server, listeners []net.Listener) error {
+	var wg sync.WaitGroup
+	failures := make(chan error, len(servers))
+	var errs []error
+	for i, server := range servers {
+		listener := listeners[i]
+		wg.Go(func() {
+			if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				failures <- err
+				cancel(err)
+			}
+		})
+	}
+	<-ctx.Done()
+	shutdownCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer stop()
+	for _, server := range servers {
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			errs = append(errs, errors.Join(err, server.Close()))
+		}
+	}
+	wg.Wait()
+	close(failures)
+	for err := range failures {
+		errs = append(errs, err)
+	}
+	return errors.Join(append(errs, context.Cause(ctx))...)
 }
 
 func validateStandaloneConfig(cfg *voicegateway.Config) error {

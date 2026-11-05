@@ -11,7 +11,12 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["web/src/**/*.{ts,tsx}", "web/tests/**/*.{ts,tsx}", "e2e/voice-preview/*.tsx"],
+    files: [
+      "e2e/voice-preview/*.tsx",
+      "frontend/src/**/*.{ts,tsx}",
+      "web/src/**/*.{ts,tsx}",
+      "web/tests/**/*.{ts,tsx}",
+    ],
     ...solid,
     plugins: { ...solid.plugins, "jsx-a11y": jsxA11y },
     languageOptions: {
@@ -41,6 +46,6 @@ export default tseslint.config(
   { files: ["web/tests/**/*.{ts,tsx}"], languageOptions: { globals: { ...globals.node } } },
   { files: ["e2e/voice-preview/*.js"], languageOptions: { globals: { ...globals.browser } } },
   { files: ["scripts/*.mjs"], languageOptions: { globals: { ...globals.node } } },
-  { ignores: ["**/*.module.css.d.ts", "sdk/**", "android/**", "node_modules/**"] },
+  { ignores: ["**/*.module.css.d.ts", "android/**", "frontend/dist/**", "node_modules/**", "sdk/**"] },
   prettier,
 );

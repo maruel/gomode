@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -244,4 +246,86 @@ func TestMainImpl(t *testing.T) {
 			t.Fatal("expected error")
 		}
 	})
+	t.Run("frontend flags", func(t *testing.T) {
+		t.Parallel()
+		// Invalid frontend settings are dormant until the feature is enabled.
+		missing := filepath.Join(t.TempDir(), "missing.toml")
+		if err := mainImpl([]string{"-config", missing, "-frontend-http", "0.0.0.0:0"}); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("disabled frontend affected startup: %v", err)
+		}
+		if err := mainImpl([]string{"-config", missing, "-frontend", "-frontend-http", "0.0.0.0:0"}); err == nil || errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("public frontend bind was not rejected: %v", err)
+		}
+	})
+}
+
+func TestServeHTTP(t *testing.T) {
+	t.Parallel()
+	for _, failListener := range []bool{false, true} {
+		name := "cancellation closes both listeners"
+		if failListener {
+			name = "listener failure cancels both servers"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancelCause(t.Context())
+			servers := make([]*http.Server, 0, 2)
+			listeners := make([]net.Listener, 0, 2)
+			for range 2 {
+				var lc net.ListenConfig
+				ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				listeners = append(listeners, ln)
+				servers = append(servers, &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })})
+			}
+			done := make(chan error, 1)
+			var wg sync.WaitGroup
+			wg.Go(func() { done <- serveHTTP(ctx, cancel, servers, listeners) })
+			t.Cleanup(func() { cancel(nil); wg.Wait() })
+			for _, ln := range listeners {
+				req, err := http.NewRequestWithContext(ctx, "GET", "http://"+ln.Addr().String(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := resp.Body.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if resp.StatusCode != 204 {
+					t.Fatalf("status=%d", resp.StatusCode)
+				}
+			}
+			if failListener {
+				if err := listeners[1].Close(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				cancel(nil)
+			}
+			select {
+			case err := <-done:
+				if failListener {
+					if err == nil || isNormalShutdown(err) {
+						t.Fatalf("lost listener failure: %v", err)
+					}
+				} else if !isNormalShutdown(err) {
+					t.Fatalf("shutdown=%v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("servers did not stop")
+			}
+			for _, ln := range listeners {
+				conn, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
+				if err == nil {
+					_ = conn.Close()
+					t.Fatal("listener still open")
+				}
+			}
+		})
+	}
 }

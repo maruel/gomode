@@ -65,6 +65,37 @@ UI and holds no host credentials. It verifies short-lived host-issued tokens
 and brokers media. Use it for shared deployments, separate scaling, or local
 model isolation.
 
+### Local test frontend
+
+The standalone gateway includes an optional browser application built from
+`frontend/`, separate from the reusable components in `web/`. Enable it with:
+
+```sh
+voice-gateway -frontend
+```
+
+Open <http://127.0.0.1:3480/>. The frontend is **disabled by default**. Use
+`-frontend-http 127.0.0.1:4480` to choose another local TCP port; the address must
+be a loopback IP or `localhost`. For remote testing, forward the port with SSH
+(`ssh -L 3480:127.0.0.1:3480 gateway-host`) and open the local URL. Browser
+microphone access requires a secure origin; HTTP loopback is supported. The SSH
+tunnel carries HTTP and browser-speech WebSocket traffic; WebRTC audio still
+requires a reachable gateway ICE/UDP path.
+
+The page uses the same voice controls as caic and mddb: choose a backend and
+speech mode, connect, and inspect the transcript and errors. Ask the assistant
+to echo a phrase through the test MCP server, or to set the test note in the
+browser. Notes belong to the current tab and reset on reload. The frontend
+listener allows local access to the running voice bridge without host tokens;
+it validates the peer address, Host, and browser Origin. The separate signaling
+listener continues to require host-issued authorization and serves no frontend
+routes, whether the frontend is enabled or disabled.
+
+Run `make frontend-build` after changing frontend or shared browser sources to
+regenerate the embedded, hashed, Brotli-compressed assets. `make fix` also
+refreshes them; `make verify` checks freshness without rewriting files. The Go
+binary serves these assets directly and needs no Node process at runtime.
+
 For a Linux user service, install:
 
 - the binary at `~/.local/bin/voice-gateway`

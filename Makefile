@@ -1,6 +1,6 @@
 # Build and verification targets for the standalone Go Mode contracts and shell.
 .DEFAULT_GOAL := help
-.PHONY: help build fix verify test test-race android-check android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-push android-export-lfm android-e2e screenshots-check screenshots-generate screenshots-update generate-sdks refresh-generated benchmark coverage test-smoke upgrade git-hooks
+.PHONY: android-check android-e2e android-export-lfm android-push android-sdk android-setup-emulator android-start-emulator android-stop-emulator benchmark build coverage fix frontend-build generate-sdks git-hooks help refresh-generated screenshots-check screenshots-generate screenshots-update test test-race test-smoke upgrade verify
 
 # Keep Java processes scoped to each build, including Gradle launched by Python helpers.
 # Compile Kotlin inside Gradle's single-use JVM so it cannot leave a compiler daemon.
@@ -16,6 +16,7 @@ help:
 	@echo 'Available targets:'
 	@printf '  %-27s - %s\n' 'make fix' 'Format Go and Android code'
 	@printf '  %-27s - %s\n' 'make verify' 'Check Go, browser, Python, shell, and Android code'
+	@printf '  %-27s - %s\n' 'make frontend-build' 'Rebuild embedded standalone frontend assets'
 	@printf '  %-27s - %s\n' 'make git-hooks' 'Install versioned Git hooks'
 	@printf '  %-27s - %s\n' 'make test' 'Run Go, browser, and Android unit tests'
 	@printf '  %-27s - %s\n' 'make test-race' 'Run race-safe voice gateway concurrency tests'
@@ -41,24 +42,27 @@ help:
 
 fix: node_modules/.modules.yaml
 	@pnpm exec node scripts/css_module_types.mjs --source-path web/src --write
+	@pnpm exec node scripts/css_module_types.mjs --source-path frontend/src --write
 	@go tool golangci-lint fmt
 	@go tool golangci-lint run --show-stats=false --fix ./...
-	@pnpm exec eslint web/src web/tests e2e/voice-preview/*.tsx e2e/voice-preview/*.js scripts/*.mjs --fix
-	@pnpm exec prettier --write --log-level warn web/src web/tests e2e/voice-preview scripts/*.mjs eslint.config.js package.json .github/workflows
+	@pnpm exec eslint e2e/voice-preview/*.js e2e/voice-preview/*.tsx frontend/src scripts/*.mjs web/src web/tests --fix
+	@pnpm exec prettier --write --log-level warn .github/workflows e2e/voice-preview eslint.config.js frontend/index.html frontend/src frontend/tsconfig.json package.json scripts/*.mjs web/src web/tests
 	@uv run --locked ruff check --quiet --fix scripts
 	@uv run --locked ruff format scripts >/dev/null
 	@files=$$(git ls-files '*.sh' 'scripts/hooks/*'); [ -z "$$files" ] || go tool shfmt -w $$files
 	@./scripts/android-checks.sh :gomode:ktlintFormat :halo-sdk:ktlintFormat :car-dial-fixture:ktlintFormat --quiet
+	@pnpm exec node scripts/build_frontend.mjs --write
 	@uv run --locked python scripts/update_agents_file_index.py
 
 verify: node_modules/.modules.yaml
-	@./scripts/run-concurrently.sh sdk,workflows,go,format,lint,ts,python,shell,misc,android \
+	@./scripts/run-concurrently.sh sdk,workflows,go,format,lint,ts,frontend,python,shell,misc,android \
 		'go run ./internal/cmd/gen-sdk -check' \
 		'go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12' \
 		'go test -run=^$$ ./... && go test -race -run=^$$ ./voicegateway/voicertc && go tool golangci-lint run ./... && go mod tidy -diff && go build ./...' \
-		'pnpm exec prettier --check --log-level warn web/src web/tests e2e/voice-preview scripts/*.mjs eslint.config.js package.json .github/workflows' \
-		'pnpm exec eslint --max-warnings 0 web/src web/tests e2e/voice-preview/*.tsx e2e/voice-preview/*.js scripts/*.mjs' \
-		'pnpm exec node scripts/css_module_types.mjs --source-path web/src && pnpm exec tsc --noEmit -p web/tsconfig.json' \
+		'pnpm exec prettier --check --log-level warn .github/workflows e2e/voice-preview eslint.config.js frontend/index.html frontend/src frontend/tsconfig.json package.json scripts/*.mjs web/src web/tests' \
+		'pnpm exec eslint --max-warnings 0 e2e/voice-preview/*.js e2e/voice-preview/*.tsx frontend/src scripts/*.mjs web/src web/tests' \
+		'pnpm exec node scripts/css_module_types.mjs --source-path web/src && pnpm exec node scripts/css_module_types.mjs --source-path frontend/src && pnpm exec tsc --noEmit -p frontend/tsconfig.json' \
+		'pnpm exec node scripts/build_frontend.mjs' \
 		'uv run --locked ruff check --quiet scripts && uv run --locked ruff format --check --quiet scripts && uv run --locked python scripts/generate_thinking_score.py --check' \
 		'files=$$(git ls-files "*.sh" "scripts/hooks/*"); [ -z "$$files" ] || go tool shfmt -d $$files' \
 		'uv run --locked python scripts/lint_binaries.py && uv run --locked python scripts/update_agents_file_index.py --check && git diff --check' \
@@ -70,14 +74,19 @@ git-hooks:
 test: node_modules/.modules.yaml
 	@./scripts/run-concurrently.sh go,browser-scripts,browser,android \
 		'go test ./...' \
-		'pnpm exec node --test --test-reporter=./scripts/quiet-test-reporter.mjs scripts/browser_integration.test.mjs scripts/css_module_types.test.mjs scripts/voice_preview.test.mjs' \
-		'NODE_OPTIONS=--no-experimental-webstorage pnpm exec tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts "web/src/**/*.test.ts" "web/src/**/*.test.tsx"' \
+		'pnpm exec node --test --test-reporter=./scripts/quiet-test-reporter.mjs scripts/browser_integration.test.mjs scripts/build_frontend.test.mjs scripts/css_module_types.test.mjs scripts/voice_preview.test.mjs' \
+		'NODE_OPTIONS=--no-experimental-webstorage pnpm exec tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts "frontend/src/**/*.test.tsx" "web/src/**/*.test.ts" "web/src/**/*.test.tsx"' \
 		'./scripts/android-checks.sh :gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest --quiet'
 
 test-race:
 	@go test -race ./voicegateway/voicertc
 
-build: android-sdk node_modules/.modules.yaml
+frontend-build: node_modules/.modules.yaml
+	@pnpm exec node scripts/css_module_types.mjs --source-path web/src --write
+	@pnpm exec node scripts/css_module_types.mjs --source-path frontend/src --write
+	@pnpm exec node scripts/build_frontend.mjs --write
+
+build: android-sdk node_modules/.modules.yaml frontend-build
 	@pnpm exec node scripts/css_module_types.mjs --source-path web/src
 	@go build ./...
 	@cd ./android && ./gradlew :gomode:assembleDebug :halo-sdk:assembleDebug :gomode-sdk:assemble :mcp-sdk:assemble :oauth-sdk:assemble :voicegateway-sdk:assemble --quiet
