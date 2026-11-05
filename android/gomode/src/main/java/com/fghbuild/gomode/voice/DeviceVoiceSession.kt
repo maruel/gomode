@@ -435,6 +435,7 @@ internal class DeviceVoiceSession(
                                     setup.systemInstruction,
                                     setup.serviceContextText,
                                     languageTag,
+                                    includeReasoning = settingsRepository.settings.value.showReasoning,
                                 ),
                             ),
                             VOICE_MESSAGE_DELIVERY_ERROR,

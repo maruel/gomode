@@ -393,6 +393,13 @@ func TestRealtimeBridgeBackendSetupOptions(t *testing.T) {
 			t.Fatalf("%s effort option = %v", provider, opts[0])
 		}
 	}
+	setup.IncludeReasoning = true
+	for _, provider := range []string{"gemini", "openai"} {
+		opts := (&realtimeBridgeBackend{provider: provider}).setupOptions(setup)
+		if opts[0] != genai.IncludeReasoning {
+			t.Fatalf("%s omitted requested reasoning output: %v", provider, opts)
+		}
+	}
 	if !(&realtimeBridgeBackend{provider: "gemini"}).inputTranscription() || (&realtimeBridgeBackend{provider: "openai"}).inputTranscription() {
 		t.Fatal("input transcription policy differs from the provider contract")
 	}

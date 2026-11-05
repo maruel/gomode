@@ -87,6 +87,9 @@ func (b *realtimeBridgeBackend) newProvider(ctx context.Context) (genai.Provider
 
 func (b *realtimeBridgeBackend) setupOptions(msg *voicev1.SessionSetup) []genai.RealtimeOption {
 	var opts []genai.RealtimeOption
+	if msg.IncludeReasoning {
+		opts = append(opts, genai.IncludeReasoning)
+	}
 	if b.effort != "" {
 		opts = append(opts, b.effort)
 	}

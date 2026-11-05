@@ -560,6 +560,9 @@ public struct SessionSetup: Codable {
     public let tools: [ToolDeclaration]
     /// Context provides initial instructions or text context for the session.
     public let context: Context
+    /// IncludeReasoning requests optional provider reasoning output for this session.
+    /// It does not enable thinking or change reasoning effort.
+    public let includeReasoning: Bool?
 }
 
 /// ContextUpdate is a client message that appends session context.

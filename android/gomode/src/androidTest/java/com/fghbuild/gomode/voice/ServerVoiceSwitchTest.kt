@@ -92,7 +92,8 @@ class ServerVoiceSwitchTest {
                 val repository = SettingsRepository(MemoryPreferences())
                 val id = repository.addService("Local stack", server.url("/").toString())
                 repository.updateVoiceMode(mode)
-                repository.settings.first { it.activeServiceId == id && it.voiceMode == mode }
+                repository.updateShowReasoning(true)
+                repository.settings.first { it.activeServiceId == id && it.voiceMode == mode && it.showReasoning }
                 val context = InstrumentationRegistry.getInstrumentation().targetContext
                 val owner = LocalModelOwner(context, localModelInstallation(ModelDownloadState.Missing(0)))
                 val shellOwner = ServiceShellOwner(context, repository)
@@ -125,6 +126,7 @@ class ServerVoiceSwitchTest {
                     check(capture.isBlank()) { "Loading screenshot failed: $capture" }
                     startup.countDown()
                     waitForConnected()
+                    assertTrue(fixture.setupMessages.single().getBoolean("includeReasoning"))
                     composeRule.waitUntil(10_000) {
                         composeRule.onAllNodesWithText("Loading local stack…").fetchSemanticsNodes().isEmpty()
                     }

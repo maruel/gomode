@@ -100,7 +100,7 @@ type llmConversation interface {
 
 // llmAdapter builds conversations bound to a session's system instruction and tools.
 type llmAdapter interface {
-	newConversation(systemInstruction string, tools []voicev1.ToolDeclaration) llmConversation
+	newConversation(systemInstruction string, tools []voicev1.ToolDeclaration, includeReasoning bool) llmConversation
 }
 
 // ttsAdapter streams S16LE mono PCM at backendOutputSampleRate from text.
@@ -231,7 +231,7 @@ func (s *localStackSession) acceptClientMessage(ctx context.Context, data []byte
 			s.events.Unlock()
 			return errors.New("session is already configured or closed")
 		}
-		s.conv = s.llm.newConversation(msg.Context.SystemInstruction, msg.Tools)
+		s.conv = s.llm.newConversation(msg.Context.SystemInstruction, msg.Tools, msg.IncludeReasoning)
 		if msg.Context.Text != "" {
 			s.conv.addContext(msg.Context.Text)
 		}
@@ -829,7 +829,7 @@ func (placeholderASR) transcribe(_ context.Context, _ []byte) (string, error) {
 // placeholderLLM calls the first declared tool once, then answers with text.
 type placeholderLLM struct{}
 
-func (placeholderLLM) newConversation(_ string, tools []voicev1.ToolDeclaration) llmConversation {
+func (placeholderLLM) newConversation(_ string, tools []voicev1.ToolDeclaration, _ bool) llmConversation {
 	return &placeholderConversation{tools: tools}
 }
 

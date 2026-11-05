@@ -104,6 +104,9 @@ type SessionSetup struct {
 	Tools []ToolDeclaration `json:"tools"`
 	// Context provides initial instructions or text context for the session.
 	Context Context `json:"context"`
+	// IncludeReasoning requests optional provider reasoning output for this session.
+	// It does not enable thinking or change reasoning effort.
+	IncludeReasoning bool `json:"includeReasoning,omitempty"`
 }
 
 // SessionClose is a client message that closes the voice session.

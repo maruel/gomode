@@ -932,7 +932,7 @@ export class VoiceSession {
     this.setState((s) => ({ ...s, languageTag: normalized }));
   }
 
-  /** Show or hide provider reasoning in the transcript. Applies to an active session. */
+  /** Control reasoning display immediately and request provider reasoning on the next connection. */
   setShowReasoning(show: boolean): void {
     localStorage.setItem("gomode.voiceReasoning", show ? "on" : "off");
     this.setState((s) => ({ ...s, showReasoning: show }));
@@ -2038,6 +2038,7 @@ export class VoiceSession {
       serviceContext,
       this.state.languageTag,
       this._sessionVoiceName ?? "",
+      this.state.showReasoning,
     );
     this._send(JSON.stringify(setup));
   }
@@ -2478,9 +2479,11 @@ function gatewaySessionSetup(
   serviceContext: string,
   languageTag: string,
   voiceName: string,
+  includeReasoning: boolean,
 ): SessionSetup {
   return {
     kind: MessageKindSessionSetup,
+    ...(includeReasoning ? { includeReasoning: true } : {}),
     voice: {
       ...(voiceName === "" ? {} : { name: voiceName }),
       language: languageTag,

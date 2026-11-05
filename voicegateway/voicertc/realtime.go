@@ -216,6 +216,9 @@ func (s *llamaRealtimeSession) setup(msg *voicev1.SessionSetup) error {
 	if effort := s.backend.cfg.Effort; effort != "" {
 		opts = append(opts, effort)
 	}
+	if msg.IncludeReasoning {
+		opts = append(opts, genai.IncludeReasoning)
+	}
 	rt, err := s.backend.provider.ConnectRealtime(s.ctx, opts...)
 	if err == nil {
 		err = acceptGatewayRealtimeSession(rt)

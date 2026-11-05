@@ -88,6 +88,29 @@ func TestEnergyVAD(t *testing.T) {
 
 func TestLocalStackSession(t *testing.T) {
 	t.Parallel()
+	t.Run("reasoning output is session scoped", func(t *testing.T) {
+		t.Parallel()
+		p := &fakeGenAIProvider{firstReplies: []genai.Reply{{Text: "Hello."}}}
+		runtime := &localStackRuntime{llm: &genaiLLMAdapter{provider: p}}
+		for _, include := range []bool{true, false} {
+			sess := runtime.newSession(t.Context(), "reasoning", &captureSink{}, true)
+			t.Cleanup(func() { _ = sess.close() })
+			setup := mustJSON(t, voicev1.SessionSetup{Kind: voicev1.MessageKindSessionSetup, IncludeReasoning: include})
+			if err := sess.acceptClientMessage(t.Context(), setup); err != nil {
+				t.Fatal(err)
+			}
+			step, err := sess.conv.user(t.Context(), "Hello")
+			if err != nil {
+				t.Fatal(err)
+			}
+			finishLLMStep(t, step)
+			calls := p.callsSnapshot()
+			call := calls[len(calls)-1]
+			if got := slices.Contains(call.opts, genai.GenOption(genai.IncludeReasoning)); got != include {
+				t.Fatalf("reasoning output requested = %t, want %t", got, include)
+			}
+		}
+	})
 	t.Run("generation failure reaches client", func(t *testing.T) {
 		t.Parallel()
 		for _, cancelled := range []bool{false, true} {
@@ -893,7 +916,7 @@ func TestGenaiConversation(t *testing.T) {
 			Name:        "tasks_list",
 			Description: "List tasks",
 			Parameters:  json.RawMessage(`{"type":"object"}`),
-		}})
+		}}, true)
 		conv.addContext("Project: caic")
 
 		step, err := conv.user(t.Context(), "What is next?")
@@ -938,6 +961,9 @@ func TestGenaiConversation(t *testing.T) {
 			if !slices.Contains(call.opts, genai.GenOption(genai.EffortOff)) {
 				t.Fatal("generation omitted configured effort")
 			}
+			if !slices.Contains(call.opts, genai.GenOption(genai.IncludeReasoning)) {
+				t.Fatal("generation omitted requested reasoning output")
+			}
 		}
 		if got := calls[0].messages[0].String(); got != "Current context:\nProject: caic\n\nUser said:\nWhat is next?" {
 			t.Errorf("first user message = %q", got)
@@ -970,7 +996,7 @@ func TestGenaiConversation(t *testing.T) {
 		// A new utterance cancels the turn in flight, as when speech interrupts
 		// a client greeting or the VAD splits a sentence at a pause.
 		p := &fakeGenAIProvider{}
-		conv := (&genaiLLMAdapter{provider: p}).newConversation("Answer briefly.", nil)
+		conv := (&genaiLLMAdapter{provider: p}).newConversation("Answer briefly.", nil, false)
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		step, err := conv.user(ctx, "Set a timer")
@@ -1376,7 +1402,7 @@ func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			conv := models.llm.newConversation("Answer briefly.", []voicev1.ToolDeclaration{{Name: "tasks_list", Description: "List tasks"}})
+			conv := models.llm.newConversation("Answer briefly.", []voicev1.ToolDeclaration{{Name: "tasks_list", Description: "List tasks"}}, false)
 			step, err := conv.user(t.Context(), "List tasks")
 			if err != nil {
 				t.Fatal(err)
@@ -1635,7 +1661,9 @@ func silencePCM(ms int) []byte {
 
 type echoLLM struct{}
 
-func (echoLLM) newConversation(string, []voicev1.ToolDeclaration) llmConversation { return echoConv{} }
+func (echoLLM) newConversation(string, []voicev1.ToolDeclaration, bool) llmConversation {
+	return echoConv{}
+}
 
 type echoConv struct{}
 
@@ -1652,7 +1680,9 @@ func (echoConv) addContext(string) {}
 // blockingLLM generates until its turn is cancelled and reports each end.
 type blockingLLM struct{ finished chan struct{} }
 
-func (l *blockingLLM) newConversation(string, []voicev1.ToolDeclaration) llmConversation { return l }
+func (l *blockingLLM) newConversation(string, []voicev1.ToolDeclaration, bool) llmConversation {
+	return l
+}
 
 func (l *blockingLLM) user(ctx context.Context, _ string) (llmStep, error) {
 	return llmStep{
@@ -1752,7 +1782,7 @@ func reasoningStep() llmStep {
 
 type fixedConversationLLM struct{ conv llmConversation }
 
-func (l fixedConversationLLM) newConversation(string, []voicev1.ToolDeclaration) llmConversation {
+func (l fixedConversationLLM) newConversation(string, []voicev1.ToolDeclaration, bool) llmConversation {
 	return l.conv
 }
 
@@ -1937,7 +1967,7 @@ type smokeLLM struct {
 	text string
 }
 
-func (l *smokeLLM) newConversation(string, []voicev1.ToolDeclaration) llmConversation {
+func (l *smokeLLM) newConversation(string, []voicev1.ToolDeclaration, bool) llmConversation {
 	return &smokeLLMConversation{text: l.text}
 }
 

@@ -2026,6 +2026,7 @@ describe("VoiceSession", () => {
       '{"items":[{"id":"1","reference":"Item #1","title":"Build feature","state":"running","needsAttention":false}]}',
     );
     const session = new VoiceSession();
+    session.setShowReasoning(true);
 
     await session.connect();
     FakePeerConnection.dataChannels[0]?.onopen?.();
@@ -2034,6 +2035,7 @@ describe("VoiceSession", () => {
     const setup = JSON.parse(sent as string);
     expect(setup).toMatchObject({
       kind: "session.setup",
+      includeReasoning: true,
       context: { text: "Current service items:\n- Item #1: Build feature (running)" },
     });
     expect(setup.context.systemInstruction).toContain('only "Ready"');

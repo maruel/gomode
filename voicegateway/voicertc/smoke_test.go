@@ -138,6 +138,7 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 		conv := llm.newConversation(
 			"Answer with a short plain text sentence.",
 			nil,
+			false,
 		)
 		firstReply := time.Now()
 		step, err := conv.user(t.Context(), "Reply with the word banana.")

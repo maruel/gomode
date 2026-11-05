@@ -112,8 +112,9 @@ class VoiceSessionTest {
 
     @Test
     fun sessionSetupSerializesSelectedVoiceAndOmitsProviderDefault() {
-        val selected = gatewaySessionSetup(emptyList(), "", "", "fr-CA", "Kore")
+        val selected = gatewaySessionSetup(emptyList(), "", "", "fr-CA", "Kore", includeReasoning = true)
         val payload = Json.parseToJsonElement(Json.encodeToString(SessionSetup.serializer(), selected)).jsonObject
+        assertEquals("true", payload.getValue("includeReasoning").jsonPrimitive.content)
         assertEquals(
             "Kore",
             payload
@@ -125,6 +126,7 @@ class VoiceSessionTest {
         assertEquals("fr-CA", selected.voice.language)
         val providerDefault = gatewaySessionSetup(emptyList(), "", "", "en-US")
         val defaultPayload = Json.parseToJsonElement(Json.encodeToString(SessionSetup.serializer(), providerDefault))
+        assertFalse(defaultPayload.jsonObject.containsKey("includeReasoning"))
         assertFalse(
             defaultPayload.jsonObject
                 .getValue("voice")

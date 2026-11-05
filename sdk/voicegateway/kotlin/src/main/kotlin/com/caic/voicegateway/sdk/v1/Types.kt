@@ -840,6 +840,11 @@ data class SessionSetup(
     val tools: List<ToolDeclaration>,
     /** Context provides initial instructions or text context for the session. */
     val context: Context,
+    /**
+     * IncludeReasoning requests optional provider reasoning output for this session.
+     * It does not enable thinking or change reasoning effort.
+     */
+    val includeReasoning: Boolean? = null,
 )
 
 /** ContextUpdate is a client message that appends session context. */

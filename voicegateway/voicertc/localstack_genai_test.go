@@ -402,7 +402,7 @@ func TestGenaiConversationReasoning(t *testing.T) {
 		{Reasoning: "Compare them. "},
 		{Text: "The first date is earlier."},
 	}}
-	conv := (&genaiLLMAdapter{provider: p}).newConversation("Answer briefly.", nil)
+	conv := (&genaiLLMAdapter{provider: p}).newConversation("Answer briefly.", nil, false)
 	step, err := conv.user(t.Context(), "Which date is earlier?")
 	if err != nil {
 		t.Fatal(err)
@@ -430,7 +430,7 @@ func TestGenaiConversationConsecutiveResults(t *testing.T) {
 		{ToolCall: genai.ToolCall{ID: "A", Name: "task_status", Arguments: `{"task_id":3}`}},
 		{ToolCall: genai.ToolCall{ID: "B", Name: "task_status", Arguments: `{"task_id":7}`}},
 	}}
-	conv := (&genaiLLMAdapter{provider: p}).newConversation("", nil)
+	conv := (&genaiLLMAdapter{provider: p}).newConversation("", nil, false)
 	step, err := conv.user(t.Context(), "Check both")
 	if err != nil {
 		t.Fatal(err)

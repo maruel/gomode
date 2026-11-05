@@ -166,6 +166,7 @@ describe("provider reasoning", () => {
   it("drops reasoning while the display setting is off", async () => {
     const socket = await readySocket();
     expect(session.state.showReasoning).toBe(false);
+    expect(JSON.parse(socket.sent[0] ?? "{}")).not.toHaveProperty("includeReasoning");
     socket.message({ kind: "reasoning.delta", text: "Weigh both dates." });
     expect(session.state.transcript).toHaveLength(0);
     finishTurn(socket, "The first date is earlier.");
@@ -175,8 +176,9 @@ describe("provider reasoning", () => {
   });
 
   it("merges reasoning into its own entry without speaking it", async () => {
-    const socket = await readySocket();
     session.setShowReasoning(true);
+    const socket = await readySocket();
+    expect(JSON.parse(socket.sent[0] ?? "{}")).toHaveProperty("includeReasoning", true);
     socket.message({ kind: "reasoning.delta", text: "Weigh both dates. " });
     socket.message({ kind: "reasoning.delta", text: "Compare them." });
     expect(session.state.transcript).toEqual([

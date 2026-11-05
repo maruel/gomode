@@ -431,6 +431,11 @@ export interface SessionSetup {
   tools: ToolDeclaration[];
   /** Context provides initial instructions or text context for the session. */
   context: Context;
+  /**
+   * IncludeReasoning requests optional provider reasoning output for this session.
+   * It does not enable thinking or change reasoning effort.
+   */
+  includeReasoning?: boolean;
 }
 
 /** ContextUpdate is a client message that appends session context. */

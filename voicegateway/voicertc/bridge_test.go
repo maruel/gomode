@@ -2014,7 +2014,7 @@ func TestBackendForConfigChat(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(local.lazy.release)
-	step, err := loaded.(*localStackRuntime).llm.newConversation("Be brief.", nil).user(t.Context(), "Hi")
+	step, err := loaded.(*localStackRuntime).llm.newConversation("Be brief.", nil, false).user(t.Context(), "Hi")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -395,11 +395,12 @@ type genaiLLMAdapter struct {
 	effort   genai.EffortLevel
 }
 
-func (a *genaiLLMAdapter) newConversation(systemInstruction string, tools []voicev1.ToolDeclaration) llmConversation {
+func (a *genaiLLMAdapter) newConversation(systemInstruction string, tools []voicev1.ToolDeclaration, includeReasoning bool) llmConversation {
 	defs, err := genaiToolDefs(tools)
 	return &genaiConversation{
 		provider:          a.provider,
 		effort:            a.effort,
+		includeReasoning:  includeReasoning,
 		systemInstruction: systemInstruction,
 		tools:             defs,
 		initErr:           err,
@@ -409,8 +410,9 @@ func (a *genaiLLMAdapter) newConversation(systemInstruction string, tools []voic
 }
 
 type genaiConversation struct {
-	provider genai.Provider
-	effort   genai.EffortLevel
+	provider         genai.Provider
+	effort           genai.EffortLevel
+	includeReasoning bool
 
 	mu                sync.Mutex
 	messages          genai.Messages
@@ -514,6 +516,9 @@ func (c *genaiConversation) genOptions() []genai.GenOption {
 	}
 	if c.effort != "" {
 		opts = append(opts, c.effort)
+	}
+	if c.includeReasoning {
+		opts = append(opts, genai.IncludeReasoning)
 	}
 	if len(c.tools) != 0 {
 		opts = append(opts, &genai.GenOptionTools{Tools: c.tools})

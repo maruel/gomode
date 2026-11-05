@@ -1124,6 +1124,7 @@ internal class VoiceSession(
                 serviceContextText,
                 languageTag,
                 voiceName,
+                settingsRepository.settings.value.showReasoning,
             )
         Log.i(TAG, "sending setup message")
         // Omit default-null fields such as an unselected voice.
@@ -1657,8 +1658,10 @@ internal fun gatewaySessionSetup(
     serviceContextText: String,
     languageTag: String,
     voiceName: String = "",
+    includeReasoning: Boolean = false,
 ) = SessionSetup(
     kind = MessageKind.SessionSetup,
+    includeReasoning = includeReasoning.takeIf { it },
     voice =
         VoiceConfig(
             name = voiceName.takeIf { it.isNotEmpty() },

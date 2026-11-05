@@ -415,6 +415,8 @@ SessionSetup is the client message that initializes a voice session.
 | `voice` | `VoiceConfig` | Voice contains the requested voice and language. | yes |
 | `tools` | `ToolDeclaration[]` | Tools declares the client-side tools the assistant may call. | yes |
 | `context` | `Context` | Context provides initial instructions or text context for the session. | yes |
+| `includeReasoning` | `boolean` | IncludeReasoning requests optional provider reasoning output for this session.
+It does not enable thinking or change reasoning effort. |  |
 
 ### ContextUpdate
 
