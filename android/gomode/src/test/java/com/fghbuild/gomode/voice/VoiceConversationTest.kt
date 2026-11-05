@@ -158,6 +158,7 @@ class VoiceConversationTest {
                     val id = repository.addService("Gateway", gateway)
                     repository.settings.first { it.activeServiceId == id }
                     repository.updateSpeakingVoice(gateway, "live", voice)
+                    repository.settings.first { it.speakingVoices[gateway]?.get("live") == voice }
                     val key = ServiceShellKey(id, gateway)
                     val page = ServiceShellSession(key) {}.also { authenticate(it, "initial") }
                     val catalog = ServiceCatalog(backgroundScope)
@@ -219,6 +220,9 @@ class VoiceConversationTest {
                 val sponsorID = repository.addService("Gateway sponsor", server.url("/").toString())
                 repository.settings.first { it.activeServiceId == sponsorID }
                 repository.updateSpeakingVoice(server.url("/").toString().trimEnd('/'), "live", "Orus")
+                repository.settings.first {
+                    it.speakingVoices[server.url("/").toString().trimEnd('/')]?.get("live") == "Orus"
+                }
                 val entries =
                     repository.settings.value.services.associate { service ->
                         val key = ServiceShellKey(service.id, service.url)
@@ -241,6 +245,7 @@ class VoiceConversationTest {
                     assertTrue(setup.tools.none { it.name == "product_alias" })
                     assertTrue(setup.serviceContextText.contains(destinationID))
                     repository.updateSpeakingVoice(setup.gatewayEndpointURL, "live", "Kore")
+                    repository.settings.first { it.speakingVoices[setup.gatewayEndpointURL]?.get("live") == "Kore" }
                     owner.begin(true)
                     val recovery = owner.prepare()
                     assertEquals("Orus", recovery.voiceName)
