@@ -215,7 +215,6 @@ func backendChoice(backend backendConnector, id, label string) voicev1.VoiceChoi
 	ch := voicev1.VoiceChoice{ID: id, Label: label, Transports: backendTransports(backend)}
 	if provider, ok := backend.(*realtimeBridgeBackend); ok {
 		ch.Voices = append([]string(nil), provider.voices()...)
-		ch.DefaultVoice = provider.defaultVoice()
 	}
 	return ch
 }

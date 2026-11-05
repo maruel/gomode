@@ -276,11 +276,10 @@ whisper.cpp selects its model on the server; the `whistle` engine selects Whistl
 `defaults` with one `transport` and choice `id` per offered family. The
 WebRTC family is gateway speech; the text family is client speech with a
 gateway LLM. A choice that offers both appears in both families. Audio choices
-that support voice selection also include a `voices` catalog and
-`defaultVoice`. Clients send a selected catalog name in
-`session.setup.voice.name`; omitting it uses the advertised default (Orus for
-Gemini Live). Text-only choices omit voice metadata. Discovery contains no
-credentials or model endpoint addresses.
+that support voice selection also include a `voices` catalog from genai's model
+scoreboard. Clients send a selected catalog name in `session.setup.voice.name`;
+omitting it uses the provider default. Text-only choices omit voice metadata.
+Discovery contains no credentials or model endpoint addresses.
 Standalone gateways allow trusted host origins through CORS; embedded hosts
 apply their existing authentication middleware.
 

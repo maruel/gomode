@@ -82,8 +82,8 @@ The `openai-realtime` backend uses `providers/openairesponses` through the share
 The config selects `gpt-realtime-2.1-mini` or `gpt-realtime-2.1` explicitly. OpenAI reports 24 kHz input; the bridge decodes
 Opus at that negotiated rate, so `acceptMicPCM` receives native PCM with no
 resampling. Input transcription stays disabled because it needs a separate
-transcription model. It advertises no voice catalog because the OpenAI voice
-set is not pinned; an empty voice leaves the provider default.
+transcription model. An empty voice leaves the provider default. Read advertised
+voice catalogs from genai's model scoreboards.
 Sends share the same ordered gateway queue as Gemini. Tool results are batched
 per provider response; the provider starts the continuation. Verify setup
 options against `providers/openaibase` when changing transcription or turn

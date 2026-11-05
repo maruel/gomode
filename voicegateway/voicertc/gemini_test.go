@@ -124,7 +124,7 @@ func TestGeminiBridgeBackend(t *testing.T) {
 		done := make(chan error, 1)
 		var workers sync.WaitGroup
 		workers.Go(func() {
-			done <- s.acceptClientMessage(t.Context(), []byte(`{"kind":"session.setup","voice":{"language":"fr-CA"},"context":{"systemInstruction":"System","text":"Baseline"},"tools":[{"name":"lookup","parameters":{"type":"object"}}]}`))
+			done <- s.acceptClientMessage(t.Context(), []byte(`{"kind":"session.setup","voice":{"name":"orus","language":"fr-CA"},"context":{"systemInstruction":"System","text":"Baseline"},"tools":[{"name":"lookup","parameters":{"type":"object"}}]}`))
 		})
 		t.Cleanup(func() { s.cancel(); workers.Wait() })
 		setup := (<-setupSeen)["setup"].(map[string]any)
@@ -142,8 +142,8 @@ func TestGeminiBridgeBackend(t *testing.T) {
 			t.Fatalf("output transcription must be enabled: %v", setup["outputAudioTranscription"])
 		}
 		voice := generation["speechConfig"].(map[string]any)["voiceConfig"].(map[string]any)["prebuiltVoiceConfig"].(map[string]any)["voiceName"]
-		if voice != "Orus" {
-			t.Fatalf("default voice: %v", voice)
+		if voice != "orus" {
+			t.Fatalf("selected voice: %v", voice)
 		}
 		instruction := setup["systemInstruction"].(map[string]any)["parts"].([]any)[0].(map[string]any)["text"].(string)
 		if !strings.Contains(instruction, "Speak in the selected language: fr-CA.") || !strings.Contains(instruction, "Baseline") {

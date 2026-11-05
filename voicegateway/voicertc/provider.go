@@ -8,28 +8,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers"
 	"github.com/maruel/genai/providers/gemini"
+	"github.com/maruel/genai/providers/openairesponses"
+	"github.com/maruel/genai/scoreboard"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
-
-// geminiVoices is the sorted prebuilt voice catalog supported by Gemini Live.
-// Sources checked 2026-10-18:
-// https://ai.google.dev/gemini-api/docs/live-api/capabilities#change-voice-and-language
-// https://ai.google.dev/gemini-api/docs/speech-generation#prebuilt-voices
-var geminiVoices = []string{
-	"Achernar", "Achird", "Algenib", "Algieba", "Alnilam", "Aoede",
-	"Autonoe", "Callirrhoe", "Charon", "Despina", "Enceladus", "Erinome",
-	"Fenrir", "Gacrux", "Iapetus", "Kore", "Laomedeia", "Leda", "Orus",
-	"Puck", "Pulcherrima", "Rasalgethi", "Sadachbia", "Sadaltager", "Schedar",
-	"Sulafat", "Umbriel", "Vindemiatrix", "Zephyr", "Zubenelgenubi",
-}
-
-const defaultGeminiVoice = "Orus"
 
 // realtimeBridgeBackend retains gateway policy; genai owns provider transport.
 type realtimeBridgeBackend struct {
@@ -65,17 +54,22 @@ func (b *realtimeBridgeBackend) providerName() string {
 }
 
 func (b *realtimeBridgeBackend) voices() []string {
-	if b.provider == "gemini" {
-		return geminiVoices
+	var score scoreboard.Score
+	switch b.provider {
+	case "gemini":
+		score = gemini.Scoreboard()
+	case "openai", "openairesponses":
+		score = openairesponses.Scoreboard()
+	default:
+		return nil
+	}
+	for i := range score.Realtime {
+		r := &score.Realtime[i]
+		if r.Realtime != nil && slices.Contains(r.Models, b.model) {
+			return r.Realtime.Voices
+		}
 	}
 	return nil
-}
-
-func (b *realtimeBridgeBackend) defaultVoice() string {
-	if b.provider == "gemini" {
-		return defaultGeminiVoice
-	}
-	return ""
 }
 
 func (b *realtimeBridgeBackend) newProvider(ctx context.Context) (genai.Provider, error) {
@@ -240,10 +234,6 @@ func (s *realtimeBridgeSession) setup(msg *voicev1.SessionSetup) error {
 	if err != nil {
 		return err
 	}
-	voice := msg.Voice.Name
-	if voice == "" {
-		voice = s.backend.defaultVoice()
-	}
 	instruction := msg.Context.SystemInstruction
 	if msg.Context.Text != "" {
 		instruction += "\n" + msg.Context.Text
@@ -268,7 +258,7 @@ func (s *realtimeBridgeSession) setup(msg *voicev1.SessionSetup) error {
 		&genai.RealtimeOptionTools{Tools: tools},
 		genai.Modalities{genai.ModalityAudio},
 		genai.RealtimeTurnServer,
-		&genai.RealtimeOptionAudio{Voice: voice, InputTranscription: s.backend.inputTranscription(), OutputTranscription: true},
+		&genai.RealtimeOptionAudio{Voice: msg.Voice.Name, InputTranscription: s.backend.inputTranscription(), OutputTranscription: true},
 	)
 	opts = append(opts, s.backend.setupOptions(msg)...)
 	rt, err := s.provider.ConnectRealtime(s.ctx, opts...)

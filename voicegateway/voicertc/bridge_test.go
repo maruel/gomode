@@ -1293,9 +1293,12 @@ func TestBridge(t *testing.T) {
 		for _, tc := range []struct {
 			name    string
 			backend backendConnector
-			voices  bool
+			voice   string
 		}{
-			{name: "Gemini audio", backend: &realtimeBridgeBackend{provider: "gemini", apiKey: "test", model: "gemini-3.8-live"}, voices: true},
+			{name: "Gemini audio", backend: &realtimeBridgeBackend{provider: "gemini", apiKey: "test", model: "gemini-3.8-live"}, voice: "orus"},
+			{name: "OpenAI alias", backend: &realtimeBridgeBackend{provider: "openai", apiKey: "test", model: "gpt-realtime-2.1-mini"}, voice: "marin"},
+			{name: "OpenAI Responses", backend: &realtimeBridgeBackend{provider: "openairesponses", apiKey: "test", model: "gpt-realtime-2.1"}, voice: "cedar"},
+			{name: "unknown model", backend: &realtimeBridgeBackend{provider: "openai", apiKey: "test", model: "unknown"}},
 			{name: "local audio", backend: newTestLocalStackBackend(t, nil, fixedASR{text: "test"}, &smokeLLM{text: "test"}, placeholderTTS{})},
 			{name: "local text", backend: newTestLocalStackBackend(t, nil, nil, &smokeLLM{text: "test"}, nil)},
 		} {
@@ -1308,19 +1311,20 @@ func TestBridge(t *testing.T) {
 				t.Cleanup(func() { b.CloseAll(t.Context()) })
 				first := b.VoiceChoices()
 				ch := first.Choices[0]
-				if !tc.voices {
-					if len(ch.Voices) != 0 || ch.DefaultVoice != "" {
+				if tc.voice == "" {
+					if len(ch.Voices) != 0 {
 						t.Fatalf("unexpected voice metadata: %+v", ch)
 					}
 					return
 				}
-				if len(ch.Voices) != 30 || ch.DefaultVoice != "Orus" || !slices.IsSorted(ch.Voices) || !slices.Contains(ch.Voices, "Kore") || !slices.Contains(ch.Voices, "Orus") {
+				if !slices.IsSorted(ch.Voices) || !slices.Contains(ch.Voices, tc.voice) {
 					t.Fatalf("invalid catalog: %+v", ch)
 				}
+				originalVoice := ch.Voices[0]
 				ch.Voices[0] = "changed"
 				ch.Transports[0] = voicev1.VoiceTransportText
 				next := b.VoiceChoices().Choices[0]
-				if next.Voices[0] != "Achernar" || next.Transports[0] != voicev1.VoiceTransportWebRTC {
+				if next.Voices[0] != originalVoice || next.Transports[0] != voicev1.VoiceTransportWebRTC {
 					t.Fatalf("metadata was mutated through an advertised copy: %+v", next)
 				}
 			})
