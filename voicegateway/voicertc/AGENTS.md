@@ -99,10 +99,10 @@ The common RTP owner schedules native speech boundaries against queued PCM;
 generation completion must not end playback or introduce a backend clock.
 Generated user text must follow any captured active microphone turn.
 
-`realtime_audio.go` streams confirmed speech with bounded preroll. Preserve new
-microphone input across cancellation and tool waits; only a full correlated
-host result batch releases the latter. Bound every pending queue and surface
-its exhaustion as a visible error followed by shutdown. Never fabricate tool
+`realtime_audio.go` streams confirmed speech with bounded preroll. Preserve turn
+boundaries across cancellation and tool waits; only a full correlated
+host result batch releases the latter. Bound every pending queue and report
+dropped microphone turns to the client. Never fabricate tool
 results, silently discard microphone data, clear history, or equate generation
 cancellation with completed tool side effects. Tests use event notifications
 and barriers rather than scheduler delays.

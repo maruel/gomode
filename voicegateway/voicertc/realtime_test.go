@@ -422,6 +422,118 @@ func TestLlamaRealtimeSession(t *testing.T) {
 	})
 
 	t.Run("tools", func(t *testing.T) {
+		t.Run("oversized microphone turn is dropped and session recovers", func(t *testing.T) {
+			for _, boundary := range []string{"silence", "typed text"} {
+				t.Run(boundary, func(t *testing.T) {
+					s, p, sink := newRealtimePolicySession(t, false)
+					s.mu.Lock()
+					s.tools = []genai.ToolCall{{ID: "pending", Name: "slow"}}
+					s.mu.Unlock()
+					for _, pcm := range [][]byte{testPCM(14900, 2000), testPCM(1000, 2000)} {
+						if err := s.acceptMicPCM(t.Context(), pcm); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if boundary == "silence" {
+						if err := s.acceptMicPCM(t.Context(), testPCM(200, 0)); err != nil {
+							t.Fatal(err)
+						}
+					}
+					// Either boundary must end the discarded utterance without committing its tail.
+					if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"user.message","text":"Ready"}`)); err != nil {
+						t.Fatal(err)
+					}
+					sink.waitForKind(t, voicev1.MessageKindError, 1)
+					if sink.wasCanceled() {
+						t.Fatal("microphone overflow ended the session")
+					}
+					var drops int
+					for _, raw := range sink.msgs {
+						var msg voicev1.Error
+						if err := json.Unmarshal(raw, &msg); err != nil {
+							t.Fatal(err)
+						}
+						if msg.Kind == voicev1.MessageKindError {
+							drops++
+							if !msg.Recoverable {
+								t.Fatalf("fatal microphone drop: %+v", msg)
+							}
+						}
+					}
+					if drops != 1 {
+						t.Fatalf("drop notifications = %d, want one per utterance", drops)
+					}
+					if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"tool.result","id":"pending","name":"slow","result":{}}`)); err != nil {
+						t.Fatal(err)
+					}
+					if in := p.next(t); len(in.toolResults) != 1 {
+						t.Fatalf("lost tool result: %+v", in)
+					}
+					p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
+					if in := p.next(t); in.text != "Ready" || !in.generate || in.commit || len(in.audio) != 0 {
+						t.Fatalf("discarded microphone left audio or control records: %+v", in)
+					}
+					p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
+					p.synchronize(t)
+					if err := s.acceptMicPCM(t.Context(), testPCM(120, 3000)); err != nil {
+						t.Fatal(err)
+					}
+					if in := p.next(t); !bytes.Equal(in.audio, testPCM(100, 3000)) {
+						t.Fatal("new microphone turn did not resume cleanly")
+					}
+				})
+			}
+		})
+		t.Run("old unsent microphone turns yield to newer speech", func(t *testing.T) {
+			s, p, sink := newRealtimePolicySession(t, false)
+			s.mu.Lock()
+			s.tools = []genai.ToolCall{{ID: "pending", Name: "slow"}}
+			s.mu.Unlock()
+			if err := s.acceptMicPCM(t.Context(), append(testPCM(8000, 2000), testPCM(200, 0)...)); err != nil {
+				t.Fatal(err)
+			}
+			for _, msg := range []string{`{"kind":"context.update","context":{"text":"keep context"}}`, `{"kind":"user.message","text":"keep text"}`} {
+				if err := s.acceptClientMessage(t.Context(), []byte(msg)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := s.acceptMicPCM(t.Context(), append(testPCM(8000, 3000), testPCM(200, 0)...)); err != nil {
+				t.Fatal(err)
+			}
+			if sink.wasCanceled() || s.pendingBytes > 15*micSampleRate*2 {
+				t.Fatal("overflow failed to retain a bounded live session")
+			}
+			if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"tool.result","id":"pending","name":"slow","result":{}}`)); err != nil {
+				t.Fatal(err)
+			}
+			if in := p.next(t); len(in.toolResults) != 1 {
+				t.Fatalf("lost tool result: %+v", in)
+			}
+			p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
+			if in := p.next(t); in.text != "keep context" || in.generate {
+				t.Fatalf("lost context or retained old microphone: %+v", in)
+			}
+			if in := p.next(t); in.text != "keep text" || !in.generate {
+				t.Fatalf("lost typed turn: %+v", in)
+			}
+			p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
+			var audio []byte
+			var commits int
+			for {
+				in := p.next(t)
+				audio = append(audio, in.audio...)
+				if in.commit {
+					commits++
+				}
+				if in.generate {
+					break
+				}
+			}
+			want := append(testPCM(8000, 3000), testPCM(200, 0)...)
+			if !bytes.Equal(audio, want) || commits != 1 {
+				t.Fatalf("retained audio bytes/commits = %d/%d, want %d/1", len(audio), commits, len(want))
+			}
+		})
 		t.Run("complete batch before pending microphone", func(t *testing.T) {
 			s, p, _ := newRealtimePolicySession(t, false)
 			if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"user.message","text":"start"}`)); err != nil {
@@ -431,6 +543,12 @@ func TestLlamaRealtimeSession(t *testing.T) {
 			p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventContentToolCalls, Content: genai.RealtimeContent{ToolCalls: []genai.ToolCall{{ID: "a", Name: "first", Arguments: "{}"}, {ID: "b", Name: "second", Arguments: "{}"}}}})
 			p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
 			p.synchronize(t)
+			if err := s.acceptMicPCM(t.Context(), testPCM(30000, 0)); err != nil {
+				t.Fatal(err)
+			}
+			if s.pendingBytes != 0 {
+				t.Fatal("silence accumulated during tool wait")
+			}
 			if err := s.acceptMicPCM(t.Context(), testPCM(120, 2000)); err != nil {
 				t.Fatal(err)
 			}
@@ -455,31 +573,37 @@ func TestLlamaRealtimeSession(t *testing.T) {
 			}
 		})
 		t.Run("error", func(t *testing.T) {
-			t.Run("pending microphone overflow stops visibly", func(t *testing.T) {
-				s, _, sink := newRealtimePolicySession(t, false)
+			t.Run("partially streamed microphone cannot be evicted", func(t *testing.T) {
+				s, p, sink := newRealtimePolicySession(t, false)
+				if err := s.acceptMicPCM(t.Context(), testPCM(120, 2000)); err != nil {
+					t.Fatal(err)
+				}
+				if in := p.next(t); len(in.audio) == 0 {
+					t.Fatal("microphone did not start streaming")
+				}
+				// Pause delivery after the turn has already reached the provider.
 				s.mu.Lock()
 				s.tools = []genai.ToolCall{{ID: "pending", Name: "slow"}}
 				s.mu.Unlock()
 				if err := s.acceptMicPCM(t.Context(), testPCM(14900, 2000)); err != nil {
 					t.Fatal(err)
 				}
-				if err := s.acceptMicPCM(t.Context(), testPCM(200, 2000)); err == nil {
-					t.Fatal("accepted overflowing tool-wait audio")
+				if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"context.update","context":{"text":"`+strings.Repeat("x", 4000)+`"}}`)); !errors.Is(err, errSessionClosed) {
+					t.Fatalf("overflow = %v, want visible session termination", err)
 				}
-				if !sink.wasCanceled() {
-					t.Fatal("overflow did not stop session")
+				if !sink.wasCanceled() || s.microphone.dropped || s.pendingBytes != 476800 {
+					t.Fatal("trimmed a microphone turn already visible to the provider")
 				}
-				sink.waitForKind(t, voicev1.MessageKindError, 1)
 			})
 			t.Run("pending client message overflow ends the session once", func(t *testing.T) {
 				s, _, sink := newRealtimePolicySession(t, false)
 				s.mu.Lock()
 				s.tools = []genai.ToolCall{{ID: "pending", Name: "slow"}}
 				s.mu.Unlock()
-				if err := s.acceptMicPCM(t.Context(), testPCM(14900, 2000)); err != nil {
+				if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"context.update","context":{"text":"`+strings.Repeat("x", 480000)+`"}}`)); err != nil {
 					t.Fatal(err)
 				}
-				// The queue is charged but not yet full; a client turn overflows it.
+				// Text cannot be evicted to make room for another client message.
 				for {
 					err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"context.update","context":{"text":"padding"}}`))
 					if errors.Is(err, errSessionClosed) {

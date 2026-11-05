@@ -110,8 +110,16 @@ func (b *llamaRealtimeBackend) connect(ctx context.Context, id string, sink back
 }
 
 type realtimePendingInput struct {
-	input genai.RealtimeInputContent
-	bytes int
+	input      genai.RealtimeInputContent
+	bytes      int
+	microphone *realtimeMicrophoneTurn
+}
+
+// A turn becomes ineligible for eviction as soon as any part reaches the
+// provider. Dropped active turns stay suppressed through their VAD boundary.
+type realtimeMicrophoneTurn struct {
+	sent    bool
+	dropped bool
 }
 
 // llamaRealtimeSession serializes state and provider sends. Receive never holds
@@ -133,6 +141,7 @@ type llamaRealtimeSession struct {
 	configuring  bool
 	rt           genai.RealtimeSession
 	gate         realtimeAudioGate
+	microphone   *realtimeMicrophoneTurn
 	generating   bool
 	cancelling   bool
 	text         realtimeTranscript
@@ -284,19 +293,11 @@ func (s *llamaRealtimeSession) acceptClientMessage(ctx context.Context, data []b
 			return err
 		}
 		if s.gate.active {
-			if tail := s.gate.finish(); len(tail) > 0 {
-				if err := s.enqueueLocked(genai.RealtimeInputContent{Audio: tail}); err != nil {
-					return err
-				}
-			}
-			if err := s.enqueueLocked(genai.RealtimeInputContent{Commit: true}); err != nil {
-				return err
-			}
-			if err := s.enqueueLocked(genai.RealtimeInputContent{Generate: true}); err != nil {
+			if err := s.enqueueMicrophoneLocked(realtimeAudioChunk{audio: s.gate.finish(), end: true}); err != nil {
 				return err
 			}
 		}
-		if err := s.enqueueLocked(genai.RealtimeInputContent{Text: msg.Text, Generate: true}); err != nil {
+		if err := s.enqueueLocked(genai.RealtimeInputContent{Text: msg.Text, Generate: true}, nil); err != nil {
 			return err
 		}
 	case voicev1.MessageKindContextUpdate:
@@ -304,7 +305,7 @@ func (s *llamaRealtimeSession) acceptClientMessage(ctx context.Context, data []b
 		if err := decodeGatewayMessage(data, env.Kind, &msg); err != nil {
 			return err
 		}
-		if err := s.enqueueLocked(genai.RealtimeInputContent{Text: msg.Context.Text}); err != nil {
+		if err := s.enqueueLocked(genai.RealtimeInputContent{Text: msg.Context.Text}, nil); err != nil {
 			return err
 		}
 	default:
@@ -341,16 +342,8 @@ func (s *llamaRealtimeSession) acceptMicPCM(ctx context.Context, pcm []byte) (er
 				return err
 			}
 		}
-		if err := s.enqueueLocked(genai.RealtimeInputContent{Audio: chunk.audio}); err != nil {
+		if err := s.enqueueMicrophoneLocked(chunk); err != nil {
 			return err
-		}
-		if chunk.end {
-			if err := s.enqueueLocked(genai.RealtimeInputContent{Commit: true}); err != nil {
-				return err
-			}
-			if err := s.enqueueLocked(genai.RealtimeInputContent{Generate: true}); err != nil {
-				return err
-			}
 		}
 		if err := s.flushLocked(ctx); err != nil {
 			return err
@@ -359,22 +352,85 @@ func (s *llamaRealtimeSession) acceptMicPCM(ctx context.Context, pcm []byte) (er
 	return nil
 }
 
-// errRealtimeQueueFull reports a poisoned pending-input queue.
+// errRealtimeQueueFull reports exhaustion that cannot be relieved by evicting
+// wholly unsent microphone turns. Text and partially sent turns are preserved.
 var errRealtimeQueueFull = errors.New("input queue exceeded its limit")
 
-func (s *llamaRealtimeSession) enqueueLocked(input genai.RealtimeInputContent) error {
+func (s *llamaRealtimeSession) enqueueMicrophoneLocked(chunk realtimeAudioChunk) error {
+	if chunk.start {
+		s.microphone = &realtimeMicrophoneTurn{}
+	}
+	turn := s.microphone
+	if chunk.end {
+		defer func() { s.microphone = nil }()
+	}
+	if len(chunk.audio) > 0 {
+		if err := s.enqueueLocked(genai.RealtimeInputContent{Audio: chunk.audio}, turn); err != nil {
+			return err
+		}
+	}
+	if chunk.end {
+		if err := s.enqueueLocked(genai.RealtimeInputContent{Commit: true}, turn); err != nil {
+			return err
+		}
+		return s.enqueueLocked(genai.RealtimeInputContent{Generate: true}, turn)
+	}
+	return nil
+}
+
+func (s *llamaRealtimeSession) enqueueLocked(input genai.RealtimeInputContent, turn *realtimeMicrophoneTurn) error {
+	if turn != nil && turn.dropped {
+		return nil
+	}
 	size := len(input.Audio) + len(input.Text)
 	// Share a 15-second PCM budget across audio, text, and control records.
 	// Charge control records as well, bounding allocations even without audio.
 	size = max(size, 64)
-	if s.pendingBytes+size > 15*micSampleRate*2 {
-		// The caller owns the scope of the failure; report it there once.
-		return errRealtimeQueueFull
+	for s.pendingBytes+size > 15*micSampleRate*2 {
+		var oldest *realtimeMicrophoneTurn
+		for i := range s.pending {
+			if mic := s.pending[i].microphone; mic != nil && !mic.sent {
+				oldest = mic
+				break
+			}
+		}
+		if oldest == nil {
+			if turn == nil || turn.sent {
+				// The caller owns the scope of this unrecoverable failure.
+				return errRealtimeQueueFull
+			}
+			oldest = turn
+		}
+		s.dropMicrophoneLocked(oldest)
+		if turn == oldest {
+			return nil
+		}
 	}
 	input.Audio = append([]byte(nil), input.Audio...)
-	s.pending = append(s.pending, realtimePendingInput{input: input, bytes: size})
+	s.pending = append(s.pending, realtimePendingInput{input: input, bytes: size, microphone: turn})
 	s.pendingBytes += size
 	return nil
+}
+
+// dropMicrophoneLocked removes every queued record of an unsent turn, including
+// its commit/generate commands. Keep text and interleaved context in order.
+func (s *llamaRealtimeSession) dropMicrophoneLocked(turn *realtimeMicrophoneTurn) {
+	turn.dropped = true
+	kept := s.pending[:0]
+	var dropped int
+	for i := range s.pending {
+		next := s.pending[i]
+		if next.microphone == turn {
+			dropped += next.bytes
+		} else {
+			kept = append(kept, next)
+		}
+	}
+	clear(s.pending[len(kept):])
+	s.pending = kept
+	s.pendingBytes -= dropped
+	slog.WarnContext(s.ctx, "llama.cpp realtime: dropped unsent microphone turn", "session", s.id, "queued_bytes", dropped)
+	s.sink.sendTurnError(s.ctx, "Microphone input was skipped because the model fell behind. Please repeat it.")
 }
 
 func (s *llamaRealtimeSession) flushLocked(ctx context.Context) error {
@@ -388,6 +444,9 @@ func (s *llamaRealtimeSession) flushLocked(ctx context.Context) error {
 		}
 		if err := s.rt.Send(ctx, next.input); err != nil {
 			return err
+		}
+		if next.microphone != nil {
+			next.microphone.sent = true
 		}
 		s.pending[0] = realtimePendingInput{}
 		s.pending = s.pending[1:]
