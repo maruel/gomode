@@ -104,9 +104,13 @@ type Bridge struct {
 // NewBridge creates a Bridge that multiplexes WebRTC traffic through a single
 // UDP port and eagerly verifies its UPnP publication.
 //
-// Credentials use each provider's native environment variables. Configured
-// choices share the UDP listener selected by cfg.Server.WebRTCUDPPort. Backend initialization is atomic:
-// a failure closes all backends already initialized.
+// Credentials use each provider's native environment variables or, for OpenAI
+// Codex authentication, the file-backed Codex login. Configured choices share
+// the UDP listener selected by cfg.Server.WebRTCUDPPort.
+//
+// Choice discovery and transport setup happen during construction. Managed local
+// model runtimes load on first use through the shared capacity and idle-eviction
+// pool. A construction failure closes all backends already initialized.
 func NewBridge(ctx context.Context, cfg *voicegateway.Config, activityLogDir string) (*Bridge, error) {
 	return newBridgeWithTimeout(ctx, cfg, activityLogDir, defaultUPnPSSDPTimeout)
 }

@@ -13,8 +13,8 @@ import (
 	"sync"
 
 	"github.com/maruel/genai"
-	"github.com/maruel/genai/providers"
 	"github.com/maruel/genai/providers/gemini"
+	"github.com/maruel/gomode/voicegateway"
 	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
@@ -71,18 +71,12 @@ func (b *realtimeBridgeBackend) voices(ctx context.Context) ([]string, error) {
 }
 
 func (b *realtimeBridgeBackend) newProvider(ctx context.Context) (genai.Provider, error) {
-	entry, ok := providers.All[b.provider]
-	if !ok || entry.Factory == nil {
-		return nil, fmt.Errorf("unsupported provider %q", b.provider)
-	}
-	opts := []genai.ProviderOption{genai.ProviderOptionAPIKey(b.apiKey), genai.ProviderOptionModel(b.model)}
-	if b.remote != "" {
-		opts = append(opts, genai.ProviderOptionRemote(b.remote))
-	}
+	opts := []genai.ProviderOption{genai.ProviderOptionAPIKey(b.apiKey)}
 	if b.provider == "gemini" {
 		opts = append(opts, genai.ProviderOptionModalities{genai.ModalityAudio})
 	}
-	return entry.Factory(ctx, opts...)
+	cfg := voicegateway.ModelConfig{Provider: b.provider, Remote: b.remote, Model: b.model}
+	return cfg.NewProvider(ctx, opts...)
 }
 
 func (b *realtimeBridgeBackend) setupOptions(msg *voicev2.SessionSetup) []genai.RealtimeOption {

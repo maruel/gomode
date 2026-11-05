@@ -1103,7 +1103,7 @@ func TestLocalStackModelsForConfig(t *testing.T) {
 		if _, ok := models.llm.(*genaiLLMAdapter); !ok {
 			t.Fatalf("llm = %T, want genaiLLMAdapter", models.llm)
 		}
-		wantModels := []string{"owner/asr", "owner/chat"}
+		wantModels := []string{"owner/chat", "owner/asr"}
 		if !slices.Equal(startedModels, wantModels) {
 			t.Errorf("started models = %v, want %v", startedModels, wantModels)
 		}
@@ -1208,53 +1208,89 @@ data: [DONE]
 	expectTurnStatus(t, ctx, conn, voicev2.TurnStateIdle)
 }
 
-func TestLocalStackProviderCleanup(t *testing.T) { //nolint:paralleltest // The test registers a provider in the process-wide genai registry.
-	const name = "gomode-test-cleanup"
-	t.Cleanup(func() { delete(providers.All, name) })
+func TestLocalStackProviderCleanup(t *testing.T) {
+	const llmName, asrName = "gomode-test-llm-cleanup", "gomode-test-asr-cleanup"
+	t.Cleanup(func() { delete(providers.All, llmName); delete(providers.All, asrName) })
 	closeErr := errors.New("provider close failed")
 	pingErr := errors.New("provider ping failed")
-	for _, tc := range []struct { //nolint:paralleltest // The cases share one registered provider name.
-		name        string
-		pingErr     error
-		llmProvider string
-	}{
-		{name: "shutdown", llmProvider: name},
-		{name: "ping failure", pingErr: pingErr, llmProvider: name},
-		{name: "LLM initialization failure", llmProvider: "unknown"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var created []*cleanupGenAIProvider
+	initErr := errors.New("provider construction failed")
+	create := func(t *testing.T, failure string) (localStackModels, []*cleanupGenAIProvider, error) {
+		var created []*cleanupGenAIProvider
+		for _, role := range []string{"asr", "llm"} {
+			name := asrName
+			if role == "llm" {
+				name = llmName
+			}
 			providers.All[name] = providers.Config{Factory: func(context.Context, ...genai.ProviderOption) (genai.Provider, error) {
-				p := &cleanupGenAIProvider{pingErr: tc.pingErr, closeErr: closeErr}
+				p := &cleanupGenAIProvider{closeErr: closeErr}
 				created = append(created, p)
+				if failure == role+" ping" {
+					p.pingErr = pingErr
+				}
+				if failure == role+" constructor" {
+					return p, initErr
+				}
 				return p, nil
 			}}
-			cfg := &voicegateway.LocalStackConfig{
-				ASR: voicegateway.LocalStackASRConfig{Engine: voicegateway.LocalStackASRGenAI, Provider: name},
-				LLM: voicegateway.ModelConfig{Provider: tc.llmProvider},
-			}
-			models, err := localStackModelsForConfigWithStarter(t.Context(), cfg, nil)
-			if tc.name == "shutdown" {
-				if err != nil {
-					t.Fatal(err)
+		}
+		cfg := &voicegateway.LocalStackConfig{
+			ASR: voicegateway.LocalStackASRConfig{Engine: voicegateway.LocalStackASRGenAI, Provider: asrName},
+			LLM: voicegateway.ModelConfig{Provider: llmName},
+		}
+		models, err := localStackModelsForConfigWithStarter(t.Context(), cfg, nil)
+		return models, created, err
+	}
+	t.Run("shutdown", func(t *testing.T) {
+		models, created, err := create(t, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := models.runtime.Close(); !errors.Is(err, closeErr) {
+			t.Fatalf("runtime close = %v", err)
+		}
+		if len(created) != 2 || !created[0].closed || !created[1].closed {
+			t.Fatal("runtime did not close both model providers")
+		}
+	})
+	t.Run("error", func(t *testing.T) {
+		for _, failure := range []string{"asr constructor", "asr ping", "llm constructor", "llm ping"} {
+			t.Run(failure, func(t *testing.T) {
+				_, created, err := create(t, failure)
+				if !errors.Is(err, closeErr) {
+					t.Fatalf("initialization error = %v, want cleanup error", err)
 				}
-				err = models.runtime.Close()
-			} else if err == nil {
-				t.Fatal("initialization succeeded unexpectedly")
-			}
-			if !errors.Is(err, closeErr) {
-				t.Fatalf("error = %v, want provider close error", err)
-			}
-			if tc.pingErr != nil && !errors.Is(err, pingErr) {
-				t.Fatalf("error = %v, want provider ping error", err)
-			}
-			for _, p := range created {
-				if !p.closed {
-					t.Error("provider was not closed")
+				expected := initErr
+				if strings.HasSuffix(failure, " ping") {
+					expected = pingErr
 				}
+				if !errors.Is(err, expected) {
+					t.Fatalf("initialization error = %v, want %v", err, expected)
+				}
+				want := 1
+				if strings.HasPrefix(failure, "asr ") {
+					want = 2
+				}
+				if len(created) != want {
+					t.Fatalf("created providers = %d, want %d", len(created), want)
+				}
+				for _, p := range created {
+					if !p.closed {
+						t.Error("initialized provider was not closed")
+					}
+				}
+			})
+		}
+		t.Run("unknown LLM prevents ASR startup", func(t *testing.T) {
+			providers.All[asrName] = providers.Config{Factory: func(context.Context, ...genai.ProviderOption) (genai.Provider, error) {
+				t.Fatal("ASR started without an available LLM")
+				return nil, initErr
+			}}
+			cfg := &voicegateway.LocalStackConfig{ASR: voicegateway.LocalStackASRConfig{Engine: voicegateway.LocalStackASRGenAI, Provider: asrName}, LLM: voicegateway.ModelConfig{Provider: "unknown"}}
+			if _, err := localStackModelsForConfigWithStarter(t.Context(), cfg, nil); err == nil || !strings.Contains(err.Error(), "unsupported provider") {
+				t.Fatalf("unknown LLM = %v", err)
 			}
 		})
-	}
+	})
 }
 
 func TestVoiceRTCLocalStackPlaceholders(t *testing.T) {

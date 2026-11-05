@@ -438,7 +438,10 @@ export interface SessionSetup {
   includeReasoning?: boolean;
 }
 
-/** ContextUpdate is a client message that appends session context. */
+/**
+ * ContextUpdate is a client message that appends session context.
+ * It is passive: appending context does not request an assistant response.
+ */
 export interface ContextUpdate {
   /** Kind must be "context.update". */
   kind: MessageKind;
@@ -500,7 +503,10 @@ export interface SessionStatus {
   message: string;
 }
 
-/** TranscriptDelta is a gateway message that streams transcript text. */
+/**
+ * TranscriptDelta is a gateway message that streams transcript text.
+ * Each fragment appends to previously emitted text; it never replaces it.
+ */
 export interface TranscriptDelta {
   /** Kind is "transcript.delta". */
   kind: MessageKind;
@@ -510,7 +516,10 @@ export interface TranscriptDelta {
   text: string;
 }
 
-/** AssistantTextDelta is a gateway message that streams assistant text. */
+/**
+ * AssistantTextDelta is a gateway message that streams assistant text.
+ * Each fragment appends to previously emitted text; it never replaces it.
+ */
 export interface AssistantTextDelta {
   /** Kind is "assistant.text.delta". */
   kind: MessageKind;
@@ -522,7 +531,8 @@ export interface AssistantTextDelta {
  * ReasoningDelta is a gateway message that streams provider reasoning text.
  *
  * Reasoning is not speech and not a transcript statement. A client decides
- * whether to display it.
+ * whether to display it, but must not speak it or replay it as recovery context.
+ * The gateway includes it in the session activity log.
  */
 export interface ReasoningDelta {
   /** Kind is "reasoning.delta". */

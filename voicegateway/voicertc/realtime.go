@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/maruel/genai"
-	"github.com/maruel/genai/providers"
 	"github.com/maruel/genai/providers/llamacpp"
 	"github.com/maruel/genai/providers/llamacpp/llamacppsrv"
 	"github.com/maruel/gomode/voicegateway"
@@ -77,7 +76,8 @@ func newLlamaRealtimeBackend(ctx context.Context, cfg voicegateway.RealtimeConfi
 		b.runtime = server
 		remote = server.URL()
 	}
-	provider, err := providers.All["llamacpp"].Factory(ctx, genai.ProviderOptionRemote(remote))
+	model := voicegateway.ModelConfig{Provider: "llamacpp", Remote: remote}
+	provider, err := model.NewProvider(ctx)
 	if err != nil {
 		if b.runtime != nil {
 			err = errors.Join(err, b.runtime.Close())

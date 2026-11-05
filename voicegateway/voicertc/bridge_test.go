@@ -1398,7 +1398,7 @@ func TestBridge(t *testing.T) {
 				}
 			}))
 			t.Cleanup(llmServer.Close)
-			endpoint, err := localStackGenAIEndpoint(t.Context(), "openaicompatible", llmServer.URL+"/v1/chat/completions", "test-model")
+			endpoint, err := localStackGenAIEndpoint(t.Context(), voicegateway.ModelConfig{Provider: "openaicompatible", Remote: llmServer.URL + "/v1/chat/completions", Model: "test-model"})
 			if err != nil {
 				t.Fatal(err)
 			}

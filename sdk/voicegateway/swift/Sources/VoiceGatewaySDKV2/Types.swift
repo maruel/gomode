@@ -566,6 +566,7 @@ public struct SessionSetup: Codable {
 }
 
 /// ContextUpdate is a client message that appends session context.
+/// It is passive: appending context does not request an assistant response.
 public struct ContextUpdate: Codable {
     /// Kind must be "context.update".
     public let kind: MessageKind
@@ -626,6 +627,7 @@ public struct SessionStatus: Codable {
 }
 
 /// TranscriptDelta is a gateway message that streams transcript text.
+/// Each fragment appends to previously emitted text; it never replaces it.
 public struct TranscriptDelta: Codable {
     /// Kind is "transcript.delta".
     public let kind: MessageKind
@@ -636,6 +638,7 @@ public struct TranscriptDelta: Codable {
 }
 
 /// AssistantTextDelta is a gateway message that streams assistant text.
+/// Each fragment appends to previously emitted text; it never replaces it.
 public struct AssistantTextDelta: Codable {
     /// Kind is "assistant.text.delta".
     public let kind: MessageKind
@@ -646,7 +649,8 @@ public struct AssistantTextDelta: Codable {
 /// ReasoningDelta is a gateway message that streams provider reasoning text.
 ///
 /// Reasoning is not speech and not a transcript statement. A client decides
-/// whether to display it.
+/// whether to display it, but must not speak it or replay it as recovery context.
+/// The gateway includes it in the session activity log.
 public struct ReasoningDelta: Codable {
     /// Kind is "reasoning.delta".
     public let kind: MessageKind

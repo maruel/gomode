@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/maruel/genai/providers/openairesponses"
 )
 
 // RealtimeConfig configures a native audio pipeline. For llama.cpp, endpoint
@@ -79,6 +81,9 @@ func validRealtimeModel(model string) bool {
 }
 
 func (c *RealtimeConfig) validate() error {
+	if c.Auth == openairesponses.AuthCodex {
+		return errors.Join(c.ModelConfig.validate("realtime"), errors.New("realtime.auth=codex does not support native audio"))
+	}
 	if c.Provider != "llamacpp" {
 		if c.Staged {
 			return errors.New("realtime.staged requires provider llamacpp")

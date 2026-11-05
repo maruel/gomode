@@ -4,6 +4,7 @@ package voicertc
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +12,10 @@ import (
 	"iter"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -19,8 +23,87 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/maruel/genai"
+	"github.com/maruel/genai/base"
+	"github.com/maruel/genai/providers/openairesponses"
+	"github.com/maruel/gomode/voicegateway"
 	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
+
+func TestLocalStackModelsForConfigCodex(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	dir := t.TempDir()
+	t.Setenv("CODEX_HOME", dir)
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"exp":4102444800,"https://api.openai.com/auth":{"chatgpt_account_id":"runtime-account","chatgpt_user_id":"runtime-user"}}`))
+	doc := fmt.Sprintf(`{"auth_mode":"chatgpt","tokens":{"access_token":"header.%s.signature","account_id":"runtime-account"}}`, payload)
+	if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	transport := &codexModelTransport{test: t}
+	previousTransport := base.DefaultTransport
+	base.DefaultTransport = transport
+	t.Cleanup(func() { base.DefaultTransport = previousTransport })
+	cfg := &voicegateway.LocalStackConfig{TextOnly: true, LLM: voicegateway.ModelConfig{Provider: "openai", Auth: openairesponses.AuthCodex, Model: "gpt-6-luna", Effort: genai.EffortLow}}
+	models, err := localStackModelsForConfigWithStarter(t.Context(), cfg, func(context.Context, string) (managedLlamaServer, error) {
+		t.Fatal("subscription LLM started a managed runtime")
+		return nil, errors.New("unexpected managed runtime")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := models.runtime.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	step, err := models.llm.newConversation("Be brief.", nil, false).user(t.Context(), "Hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text strings.Builder
+	step.stream(func(fragment llmFragment) bool { text.WriteString(fragment.text); return true })
+	reply, err := step.finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply.text != "Luna works." || text.String() != reply.text || transport.requests != 2 {
+		t.Fatalf("subscription reply = %q, stream = %q, requests = %d", reply.text, text.String(), transport.requests)
+	}
+}
+
+type codexModelTransport struct {
+	test     *testing.T
+	requests int
+}
+
+func (t *codexModelTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	t.requests++
+	if r.URL.Host != "chatgpt.com" || r.Header.Get("Originator") != "gomode" || r.Header.Get("User-Agent") != "gomode" || r.Header.Get("ChatGPT-Account-ID") != "runtime-account" {
+		t.test.Error("runtime request lost subscription endpoint or gomode/account identity")
+	}
+	contentType, body := "application/json", `{"models":[{"slug":"gpt-6-luna","display_name":"Luna"}]}`
+	if r.URL.Path == "/backend-api/codex/responses" {
+		var request struct {
+			Model        string `json:"model"`
+			Instructions string `json:"instructions"`
+			Store        bool   `json:"store"`
+			Stream       bool   `json:"stream"`
+			Reasoning    struct {
+				Effort string `json:"effort"`
+			} `json:"reasoning"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.test.Error(err)
+		}
+		if request.Model != "gpt-6-luna" || request.Store || !request.Stream || request.Instructions != "Be brief." || request.Reasoning.Effort != "low" {
+			t.test.Errorf("runtime request policy = %+v", request)
+		}
+		contentType = "text/event-stream"
+		body = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Luna works.\"}\n\ndata: {\"type\":\"response.metadata\",\"metadata\":{}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":10,\"output_tokens\":3,\"total_tokens\":13}}}\n\n"
+	} else if r.URL.Path != "/backend-api/codex/models" {
+		t.test.Errorf("unexpected subscription path %q", r.URL.Path)
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {contentType}}, Body: io.NopCloser(strings.NewReader(body))}, nil
+}
 
 func TestManagedLlamaReleaseCache(t *testing.T) {
 	t.Parallel()
@@ -165,7 +248,7 @@ func TestLocalStackChronologicalTransport(t *testing.T) {
 				}
 			}))
 			t.Cleanup(server.Close)
-			endpoint, err := localStackGenAIEndpoint(ctx, "openaicompatible", server.URL+"/v1/chat/completions", "fake-supported")
+			endpoint, err := localStackGenAIEndpoint(ctx, voicegateway.ModelConfig{Provider: "openaicompatible", Remote: server.URL + "/v1/chat/completions", Model: "fake-supported"})
 			if err != nil {
 				t.Fatal(err)
 			}

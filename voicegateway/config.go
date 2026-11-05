@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers"
+	"github.com/maruel/genai/providers/openairesponses"
 	"github.com/maruel/genai/providers/openrouter"
 	"github.com/pelletier/go-toml/v2"
 
@@ -34,6 +36,11 @@ type Config struct {
 	Realtime          []RealtimeConfig        `toml:"realtime"`
 	Chat              []ChatConfig            `toml:"chat"`
 	LocalStack        []LocalStackConfig      `toml:"local_stack"`
+}
+
+type providerProbeKey struct {
+	provider string
+	auth     openairesponses.Auth
 }
 
 // Choice is a typed pipeline configuration: *RealtimeConfig, *ChatConfig, or
@@ -77,10 +84,10 @@ func (c *Config) Choices() iter.Seq2[string, Choice] {
 func (c *Config) Available(ctx context.Context) Config {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
-	configured := make(map[string]providers.Config)
+	configured := make(map[providerProbeKey]struct{})
 	add := func(c *ModelConfig) {
 		if c.usesDefaultProviderEndpoint() {
-			configured[c.Provider] = providers.All[c.Provider]
+			configured[providerProbeKey{c.Provider, c.Auth}] = struct{}{}
 		}
 	}
 	for _, c := range c.Realtime {
@@ -96,25 +103,24 @@ func (c *Config) Available(ctx context.Context) Config {
 			add(&asr)
 		}
 	}
-	available := make(map[string]providers.Config)
+	results := make(map[providerProbeKey]error)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	for name, entry := range configured {
+	for key := range configured {
 		wg.Go(func() {
-			p, err := entry.Factory(ctx)
+			probe := ModelConfig{Provider: key.provider, Auth: key.auth}
+			p, err := probe.NewProvider(ctx)
 			if err == nil {
 				if ping, ok := p.(genai.ProviderPing); ok {
 					err = ping.Ping(ctx)
 				}
-				if err == nil {
-					mu.Lock()
-					available[name] = entry
-					mu.Unlock()
-				}
 			}
+			mu.Lock()
+			results[key] = err
+			mu.Unlock()
 			if p != nil {
 				if err := p.Close(); err != nil {
-					slog.WarnContext(ctx, "close provider availability probe", "provider", name, "err", err)
+					slog.WarnContext(ctx, "close provider availability probe", "provider", key.provider, "auth", key.auth, "err", err)
 				}
 			}
 		})
@@ -122,17 +128,17 @@ func (c *Config) Available(ctx context.Context) Config {
 	wg.Wait()
 
 	unavailable := func(label string, c *ModelConfig) bool {
-		_, ok := available[c.Provider]
+		err := results[providerProbeKey{c.Provider, c.Auth}]
 		if !c.usesDefaultProviderEndpoint() {
-			ok = true
+			err = nil
 		}
 		if c.APIKeyName != "" && os.Getenv(c.APIKeyName) == "" {
-			ok = false
+			err = fmt.Errorf("environment variable %s named by api_key_name is empty", c.APIKeyName)
 		}
-		if !ok {
-			slog.WarnContext(ctx, "hiding voice choice: provider unavailable", "label", label, "provider", c.Provider)
+		if err != nil {
+			slog.WarnContext(ctx, "hiding voice choice: provider unavailable", "label", label, "provider", c.Provider, "auth", c.Auth, "err", err)
 		}
-		return !ok
+		return err != nil
 	}
 	out := *c
 	out.Realtime = nil
@@ -178,11 +184,15 @@ func (c *ModelConfig) usesDefaultProviderEndpoint() bool {
 // ModelConfig selects a provider, model, and managed or remote endpoint.
 //
 // Model is required. Providers use their native API-key environment variables
-// unless APIKeyName selects a token for an openaicompatible endpoint.
+// unless Auth selects the Codex subscription or APIKeyName selects a token for
+// an openaicompatible endpoint.
 type ModelConfig struct {
 	// LlamaCPPServer starts a managed llama.cpp server instead of connecting to Remote.
 	LlamaCPPServer bool   `toml:"llamacppsrv" json:"llamacppsrv"`
 	Provider       string `toml:"provider" json:"provider"`
+	// Auth selects the existing Codex subscription when set to "codex" on
+	// openai or openairesponses. Empty preserves API-key authentication.
+	Auth openairesponses.Auth `toml:"auth" json:"auth,omitempty"`
 	// Remote is a server origin, except for openaicompatible, which requires the
 	// complete chat completions endpoint URL, including its path.
 	Remote string `toml:"remote" json:"remote"`
@@ -201,8 +211,86 @@ type ModelConfig struct {
 	APIKeyName string `toml:"api_key_name" json:"-"`
 }
 
+// NewProvider constructs the configured client and identifies subscription
+// requests as gomode. Model may be omitted for discovery. Managed llama.cpp
+// runtimes must resolve their endpoint before constructing their client.
+// Effort and provider routing preferences apply to individual generation calls.
+// A client returned with a constructor error is closed before returning.
+func (c *ModelConfig) NewProvider(ctx context.Context, opts ...genai.ProviderOption) (genai.Provider, error) {
+	if err := c.validateAuthentication("model"); err != nil {
+		return nil, err
+	}
+	if c.LlamaCPPServer {
+		return nil, errors.New("start the managed llama.cpp runtime before constructing its client")
+	}
+	entry, ok := providers.All[c.Provider]
+	if !ok || entry.Factory == nil {
+		return nil, fmt.Errorf("unsupported provider %q", c.Provider)
+	}
+	if c.Model != "" {
+		opts = append(opts, genai.ProviderOptionModel(c.Model))
+	}
+	if c.Remote != "" {
+		opts = append(opts, genai.ProviderOptionRemote(c.Remote))
+	}
+	if c.Provider == "openai" || c.Provider == "openairesponses" {
+		opts = append(opts, &openairesponses.ProviderOption{Auth: c.Auth, AppName: "gomode"})
+	}
+	if c.APIKeyName != "" {
+		key := os.Getenv(c.APIKeyName)
+		if key == "" {
+			return nil, fmt.Errorf("environment variable %s named by api_key_name is empty", c.APIKeyName)
+		}
+		opts = append(opts, genai.ProviderOptionTransportWrapper(func(t http.RoundTripper) http.RoundTripper {
+			return &modelBearerTransport{remote: c.Remote, key: key, transport: t}
+		}))
+	}
+	p, err := entry.Factory(ctx, opts...)
+	if err != nil && p != nil {
+		return nil, errors.Join(err, p.Close())
+	}
+	return p, err
+}
+
+func (c *ModelConfig) validateAuthentication(prefix string) error {
+	var errs []error
+	if err := c.Auth.Validate(); err != nil {
+		errs = append(errs, fmt.Errorf("%s.auth: %w", prefix, err))
+	}
+	if c.Auth == openairesponses.AuthCodex {
+		if c.Provider != "openai" && c.Provider != "openairesponses" {
+			errs = append(errs, fmt.Errorf("%s.auth=codex requires provider openai or openairesponses", prefix))
+		}
+		if c.Remote != "" {
+			errs = append(errs, fmt.Errorf("%s.auth=codex cannot be combined with remote", prefix))
+		}
+	}
+	if c.APIKeyName != "" && c.Provider != "openaicompatible" {
+		errs = append(errs, fmt.Errorf("%s.api_key_name requires provider openaicompatible", prefix))
+	}
+	return errors.Join(errs...)
+}
+
+// modelBearerTransport confines the credential to the complete configured URL,
+// including when the HTTP client follows a redirect.
+type modelBearerTransport struct {
+	remote    string
+	key       string
+	transport http.RoundTripper
+}
+
+func (t *modelBearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.String() != t.remote {
+		return nil, errors.New("refusing to send LLM bearer token to a different endpoint")
+	}
+	r := req.Clone(req.Context())
+	r.Header.Set("Authorization", "Bearer "+t.key)
+	return t.transport.RoundTrip(r)
+}
+
 func (c *ModelConfig) validate(prefix string) error {
 	var errs []error
+	errs = append(errs, c.validateAuthentication(prefix))
 	if err := c.OpenRouterSort.Validate(); err != nil {
 		errs = append(errs, fmt.Errorf("%s.openrouter_sort: %w", prefix, err))
 	}
@@ -229,9 +317,6 @@ func (c *ModelConfig) validate(prefix string) error {
 	}
 	if c.Provider == "openaicompatible" && c.Remote == "" {
 		errs = append(errs, fmt.Errorf("%s.remote is required for openaicompatible", prefix))
-	}
-	if c.APIKeyName != "" && c.Provider != "openaicompatible" {
-		errs = append(errs, fmt.Errorf("%s.api_key_name requires provider openaicompatible", prefix))
 	}
 	return errors.Join(errs...)
 }

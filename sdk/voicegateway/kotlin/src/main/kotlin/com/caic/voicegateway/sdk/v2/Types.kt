@@ -847,7 +847,10 @@ data class SessionSetup(
     val includeReasoning: Boolean? = null,
 )
 
-/** ContextUpdate is a client message that appends session context. */
+/**
+ * ContextUpdate is a client message that appends session context.
+ * It is passive: appending context does not request an assistant response.
+ */
 @Serializable
 data class ContextUpdate(
     /** Kind must be "context.update". */
@@ -916,7 +919,10 @@ data class SessionStatus(
     val message: String,
 )
 
-/** TranscriptDelta is a gateway message that streams transcript text. */
+/**
+ * TranscriptDelta is a gateway message that streams transcript text.
+ * Each fragment appends to previously emitted text; it never replaces it.
+ */
 @Serializable
 data class TranscriptDelta(
     /** Kind is "transcript.delta". */
@@ -927,7 +933,10 @@ data class TranscriptDelta(
     val text: String,
 )
 
-/** AssistantTextDelta is a gateway message that streams assistant text. */
+/**
+ * AssistantTextDelta is a gateway message that streams assistant text.
+ * Each fragment appends to previously emitted text; it never replaces it.
+ */
 @Serializable
 data class AssistantTextDelta(
     /** Kind is "assistant.text.delta". */
@@ -940,7 +949,8 @@ data class AssistantTextDelta(
  * ReasoningDelta is a gateway message that streams provider reasoning text.
  *
  * Reasoning is not speech and not a transcript statement. A client decides
- * whether to display it.
+ * whether to display it, but must not speak it or replay it as recovery context.
+ * The gateway includes it in the session activity log.
  */
 @Serializable
 data class ReasoningDelta(

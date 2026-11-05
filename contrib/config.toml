@@ -92,9 +92,18 @@ context_size = 65536
 # voice-gateway.env.example, using genai's provider environment variables.
 
 [[chat]]
+# Uses the existing Codex login and subscription quota.
+label = "GPT 6 Luna (Codex)"
+provider = "openai"
+auth = "codex"
+model = "gpt-6-luna"
+effort = "low"
+
+[[chat]]
 # https://developers.openai.com/api/docs/models/gpt-6-luna
 # $0.10/MTok in, $0.50/MTok out; prompts >272K tokens: $0.20/MTok in, $0.75/MTok out.
-label = "GPT 6 Luna"
+# Uses OPENAI_API_KEY and API billing, independently of the Codex login.
+label = "GPT 6 Luna (API)"
 provider = "openai"
 model = "gpt-6-luna"
 effort = "low"

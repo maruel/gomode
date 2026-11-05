@@ -5,12 +5,21 @@ package voicegateway
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/maruel/genai/providers/openairesponses"
 )
 
 const testRealtimeModel = "LiquidAI/LFM3-Audio-2B-GGUF/LFM3-Audio-2B-Q4_K_M.gguf"
 
 func TestRealtimeConfig(t *testing.T) {
+	t.Run("Codex authentication cannot serve native audio", func(t *testing.T) {
+		cfg := RealtimeConfig{ModelConfig: ModelConfig{Provider: "openai", Auth: openairesponses.AuthCodex, Model: "gpt-6-luna"}}
+		if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "realtime.auth=codex") {
+			t.Fatalf("native audio validation = %v", err)
+		}
+	})
 	t.Run("ID", func(t *testing.T) {
 		t.Run("equivalent settings", func(t *testing.T) {
 			for _, pair := range [][2]RealtimeConfig{

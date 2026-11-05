@@ -421,6 +421,7 @@ It does not enable thinking or change reasoning effort. |  |
 ### ContextUpdate
 
 ContextUpdate is a client message that appends session context.
+It is passive: appending context does not request an assistant response.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
@@ -487,6 +488,7 @@ setup timeout on receipt; only session.ready enables microphone input.
 ### TranscriptDelta
 
 TranscriptDelta is a gateway message that streams transcript text.
+Each fragment appends to previously emitted text; it never replaces it.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
@@ -497,6 +499,7 @@ TranscriptDelta is a gateway message that streams transcript text.
 ### AssistantTextDelta
 
 AssistantTextDelta is a gateway message that streams assistant text.
+Each fragment appends to previously emitted text; it never replaces it.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
@@ -508,7 +511,8 @@ AssistantTextDelta is a gateway message that streams assistant text.
 ReasoningDelta is a gateway message that streams provider reasoning text.
 
 Reasoning is not speech and not a transcript statement. A client decides
-whether to display it.
+whether to display it, but must not speak it or replay it as recovery context.
+The gateway includes it in the session activity log.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|

@@ -3,9 +3,15 @@
 package voicegateway
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,11 +22,57 @@ import (
 	"time"
 
 	"github.com/maruel/genai"
+	"github.com/maruel/genai/base"
 	"github.com/maruel/genai/providers"
+	"github.com/maruel/genai/providers/openairesponses"
 	"github.com/maruel/genai/providers/openrouter"
 )
 
 func TestLoadConfig(t *testing.T) {
+	t.Run("Codex authentication", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(path, []byte(`[[chat]]
+label = "Subscription"
+provider = "openai"
+auth = "codex"
+model = "gpt-6-luna"
+[[local_stack]]
+label = "Stack"
+text_only = true
+[local_stack.llm]
+provider = "openairesponses"
+auth = "codex"
+model = "gpt-6-luna"
+`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.ValidateEmbedded(); err != nil {
+			t.Fatal(err)
+		}
+		for _, model := range []*ModelConfig{&cfg.Chat[0].ModelConfig, &cfg.LocalStack[0].LLM} {
+			if model.Auth != openairesponses.AuthCodex {
+				t.Fatalf("decoded auth = %q", model.Auth)
+			}
+		}
+		for _, choice := range cfg.Choices() {
+			id, err := choice.ID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Chat[0].Auth = ""
+			cfg.LocalStack[0].LLM.Auth = ""
+			apiID, err := choice.ID()
+			if err != nil || id == apiID {
+				t.Fatalf("subscription identity %q, API identity %q, error %v", id, apiID, err)
+			}
+			cfg.Chat[0].Auth = openairesponses.AuthCodex
+			cfg.LocalStack[0].LLM.Auth = openairesponses.AuthCodex
+		}
+	})
 	t.Run("OpenRouter sorting", func(t *testing.T) {
 		t.Run("valid", func(t *testing.T) {
 			for _, sort := range []string{"", "latency", "price", "throughput"} {
@@ -571,6 +623,7 @@ voice = "af_heart"
 
 func TestConfig(t *testing.T) {
 	t.Run("Available", func(t *testing.T) {
+		t.Run("authentication", testConfigAvailableAuthentication)
 		for _, tc := range []struct {
 			name          string
 			callerTimeout time.Duration
@@ -982,6 +1035,10 @@ func TestConfig(t *testing.T) {
 			{Provider: "llamacpp"},
 			{Provider: "deepseek", LlamaCPPServer: true},
 			{Provider: "llamacpp", LlamaCPPServer: true, Remote: "http://localhost:8080"},
+			{Provider: "openai", Auth: "invalid", Model: "gpt-6-luna"},
+			{Provider: "deepseek", Auth: openairesponses.AuthCodex, Model: "deepseek-flash"},
+			{Provider: "openai", Auth: openairesponses.AuthCodex, Model: "gpt-6-luna", Remote: "https://example.com"},
+			{Provider: "openai", Auth: openairesponses.AuthCodex, Model: "gpt-6-luna", APIKeyName: "UNUSED_KEY"},
 		} {
 			cfg := Config{Chat: []ChatConfig{{Label: "Bad", ModelConfig: model}}}
 			if err := cfg.ValidateEmbedded(); err == nil {
@@ -997,6 +1054,100 @@ func TestConfig(t *testing.T) {
 	})
 	t.Run("Choices", testConfigChoices)
 }
+
+func TestModelConfig(t *testing.T) {
+	t.Run("NewProvider", func(t *testing.T) {
+		t.Run("managed runtime must resolve its endpoint", func(t *testing.T) {
+			cfg := ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "test/model"}
+			if _, err := cfg.NewProvider(t.Context()); err == nil {
+				t.Fatal("constructed unresolved managed runtime")
+			}
+		})
+	})
+}
+
+func testConfigAvailableAuthentication(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		apiKey     string
+		codexLogin bool
+		wantAuth   openairesponses.Auth
+		wantError  string
+	}{
+		{name: "subscription without API key", codexLogin: true, wantAuth: openairesponses.AuthCodex, wantError: "OPENAI_API_KEY"},
+		{name: "API key without subscription", apiKey: "test-api-key", wantAuth: openairesponses.AuthAPIKey, wantError: "codex login"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("OPENAI_API_KEY", tc.apiKey)
+			dir := t.TempDir()
+			t.Setenv("CODEX_HOME", dir)
+			if tc.codexLogin {
+				payload := base64.RawURLEncoding.EncodeToString([]byte(`{"exp":4102444800,"https://api.openai.com/auth":{"chatgpt_account_id":"test-account","chatgpt_user_id":"test-user"}}`))
+				doc := fmt.Sprintf(`{"auth_mode":"chatgpt","tokens":{"access_token":"header.%s.signature","account_id":"test-account"}}`, payload)
+				if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte(doc), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			previousTransport := base.DefaultTransport
+			base.DefaultTransport = configTestTransport(func(r *http.Request) (*http.Response, error) {
+				var body string
+				switch r.URL.Host {
+				case "chatgpt.com":
+					if r.Header.Get("Originator") != "gomode" || r.Header.Get("User-Agent") != "gomode" || r.Header.Get("ChatGPT-Account-ID") != "test-account" {
+						t.Error("subscription request lost gomode or account identity")
+					}
+					body = `{"models":[{"slug":"gpt-6-luna","display_name":"Luna"}]}`
+				case "api.openai.com":
+					if r.Header.Get("Authorization") != "Bearer test-api-key" {
+						t.Error("API request lost its API key")
+					}
+					body = `{"data":[{"id":"gpt-6-luna","object":"model"}]}`
+				default:
+					t.Errorf("unexpected provider host %q", r.URL.Host)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}, nil
+			})
+			t.Cleanup(func() { base.DefaultTransport = previousTransport })
+			var logs bytes.Buffer
+			previousLogger := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previousLogger) })
+			cfg, err := LoadConfig("../contrib/config.toml")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var luna []ChatConfig
+			for _, choice := range cfg.Chat {
+				if choice.Provider == "openai" && choice.Model == "gpt-6-luna" {
+					luna = append(luna, choice)
+				}
+			}
+			cfg.Realtime, cfg.LocalStack, cfg.Chat = nil, nil, luna
+			if err := cfg.ValidateEmbedded(); err != nil {
+				t.Fatal(err)
+			}
+			got := cfg.Available(t.Context())
+			if len(got.Chat) != 1 || got.Chat[0].Auth != tc.wantAuth {
+				t.Fatalf("available choices = %+v", got.Chat)
+			}
+			var warning struct {
+				Message string `json:"msg"`
+				Label   string `json:"label"`
+				Error   string `json:"err"`
+			}
+			if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &warning); err != nil {
+				t.Fatal(err)
+			}
+			if warning.Message != "hiding voice choice: provider unavailable" || warning.Label == got.Chat[0].Label || !strings.Contains(warning.Error, tc.wantError) {
+				t.Fatalf("unavailable choice warning = %+v", warning)
+			}
+		})
+	}
+}
+
+type configTestTransport func(*http.Request) (*http.Response, error)
+
+func (f configTestTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func testLocalStackKittenTTSConfiguration(t *testing.T) {
 	t.Parallel()

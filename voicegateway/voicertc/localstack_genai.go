@@ -25,7 +25,6 @@ import (
 	"github.com/maruel/genaipy/whistle"
 
 	"github.com/maruel/genai"
-	"github.com/maruel/genai/providers"
 	"github.com/maruel/genai/providers/llamacpp/llamacppsrv"
 	"github.com/maruel/genai/providers/openrouter"
 
@@ -94,15 +93,11 @@ func localStackModelsForConfigWithStarter(
 	cfg *voicegateway.LocalStackConfig,
 	start managedLlamaStarter,
 ) (localStackModels, error) {
-	var llmOpts []genai.ProviderOption
-	if name := cfg.LLM.APIKeyName; name != "" {
-		key := os.Getenv(name)
-		if key == "" {
-			return localStackModels{}, fmt.Errorf("environment variable %s named by local_stack.llm.api_key_name is empty", name)
-		}
-		llmOpts = append(llmOpts, genai.ProviderOptionTransportWrapper(func(t http.RoundTripper) http.RoundTripper {
-			return &localStackBearerTransport{remote: cfg.LLM.Remote, key: key, transport: t}
-		}))
+	// Resolve credentials before starting speech models. The LLM is owned here
+	// until all ASR initialization succeeds and ownership transfers to the runtime.
+	llm, err := resolveLocalStackEndpoint(ctx, cfg.LLM, start)
+	if err != nil {
+		return localStackModels{}, err
 	}
 	var asr localStackEndpoint
 	var asrAdapter asrAdapter
@@ -119,7 +114,7 @@ func localStackModelsForConfigWithStarter(
 			// preserves the model for subsequent requests.
 			w, err := whistle.New(ctx, cfg.ASR.Model)
 			if err != nil {
-				return localStackModels{}, err
+				return localStackModels{}, errors.Join(err, llm.runtime.Close())
 			}
 			asr.runtime = w
 			asrAdapter = &speechASRAdapter{recognizer: w}
@@ -130,25 +125,21 @@ func localStackModelsForConfigWithStarter(
 			}
 			recognizer, err := speech.NewHTTPRecognizer(http.DefaultClient, cfg.ASR.Remote, cfg.ASR.Model, protocol)
 			if err != nil {
-				return localStackModels{}, err
+				return localStackModels{}, errors.Join(err, llm.runtime.Close())
 			}
 			asrAdapter = &speechASRAdapter{recognizer: recognizer}
 		default:
 			var err error
-			asr, err = resolveLocalStackEndpoint(ctx, cfg.ASR.Provider, cfg.ASR.Remote, cfg.ASR.Model, start)
+			asr, err = resolveLocalStackEndpoint(ctx, voicegateway.ModelConfig{Provider: cfg.ASR.Provider, Remote: cfg.ASR.Remote, Model: cfg.ASR.Model}, start)
 			if err != nil {
-				return localStackModels{}, err
+				return localStackModels{}, errors.Join(err, llm.runtime.Close())
 			}
 			recognizer, err := speech.NewProviderRecognizer(asr.provider)
 			if err != nil {
-				return localStackModels{}, errors.Join(err, asr.runtime.Close())
+				return localStackModels{}, errors.Join(err, asr.runtime.Close(), llm.runtime.Close())
 			}
 			asrAdapter = &speechASRAdapter{recognizer: recognizer}
 		}
-	}
-	llm, err := resolveLocalStackEndpoint(ctx, cfg.LLM.Provider, cfg.LLM.Remote, cfg.LLM.Model, start, llmOpts...)
-	if err != nil {
-		return localStackModels{}, errors.Join(err, joinClosers(asr.runtime).Close())
 	}
 	return localStackModels{
 		asr:     asrAdapter,
@@ -158,11 +149,11 @@ func localStackModelsForConfigWithStarter(
 }
 
 // resolveLocalStackEndpoint wires one local stack adapter to its configured provider.
-func resolveLocalStackEndpoint(ctx context.Context, provider, remote, model string, start managedLlamaStarter, opts ...genai.ProviderOption) (localStackEndpoint, error) {
-	if provider == "llamacpp" {
-		return localStackLlamaEndpoint(ctx, remote, model, start)
+func resolveLocalStackEndpoint(ctx context.Context, cfg voicegateway.ModelConfig, start managedLlamaStarter) (localStackEndpoint, error) {
+	if cfg.Provider == "llamacpp" {
+		return localStackLlamaEndpoint(ctx, cfg.Remote, cfg.Model, start)
 	}
-	return localStackGenAIEndpoint(ctx, provider, remote, model, opts...)
+	return localStackGenAIEndpoint(ctx, cfg)
 }
 
 // localStackLlamaEndpoint wires the managed (or remote) llama.cpp runtime. A
@@ -179,7 +170,8 @@ func localStackLlamaEndpoint(ctx context.Context, remote, model string, start ma
 		runtime = srv
 		model = "" // The managed server is already pinned to the configured model.
 	}
-	p, err := newLlamaProvider(ctx, remote, model)
+	cfg := voicegateway.ModelConfig{Provider: "llamacpp", Remote: remote, Model: model}
+	p, err := cfg.NewProvider(ctx)
 	if err != nil {
 		return localStackEndpoint{}, errors.Join(err, joinClosers(runtime).Close())
 	}
@@ -194,40 +186,15 @@ func localStackLlamaEndpoint(ctx context.Context, remote, model string, start ma
 // localStackGenAIEndpoint wires any provider registered in providers.All (e.g.
 // ollama, openaicompatible pointed at a local server). We don't manage the
 // provider's process, so ping it when loading the choice to detect unreachable endpoints.
-func localStackGenAIEndpoint(ctx context.Context, provider, remote, model string, opts ...genai.ProviderOption) (localStackEndpoint, error) {
-	entry, ok := providers.All[provider]
-	if !ok || entry.Factory == nil {
-		return localStackEndpoint{}, fmt.Errorf("unsupported local stack provider %q", provider)
-	}
-	if remote != "" {
-		opts = append(opts, genai.ProviderOptionRemote(remote))
-	}
-	opts = append(opts, genai.ProviderOptionModel(model))
-	p, err := entry.Factory(ctx, opts...)
+func localStackGenAIEndpoint(ctx context.Context, cfg voicegateway.ModelConfig) (localStackEndpoint, error) {
+	p, err := cfg.NewProvider(ctx)
 	if err != nil {
-		return localStackEndpoint{}, fmt.Errorf("create %s provider: %w", provider, err)
+		return localStackEndpoint{}, fmt.Errorf("create %s provider: %w", cfg.Provider, err)
 	}
 	if err := pingLocalStackProvider(ctx, p); err != nil {
 		return localStackEndpoint{}, errors.Join(err, p.Close())
 	}
 	return localStackEndpoint{provider: p, runtime: p}, nil
-}
-
-// localStackBearerTransport confines the credential to the configured endpoint,
-// including when the HTTP client follows a redirect.
-type localStackBearerTransport struct {
-	remote    string
-	key       string
-	transport http.RoundTripper
-}
-
-func (t *localStackBearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.URL.String() != t.remote {
-		return nil, errors.New("refusing to send LLM bearer token to a different endpoint")
-	}
-	r := req.Clone(req.Context())
-	r.Header.Set("Authorization", "Bearer "+t.key)
-	return t.transport.RoundTrip(r)
 }
 
 // joinClosers combines closers into one that closes all of them, joining any
@@ -357,18 +324,6 @@ func localStackLlamaCacheDir() (string, error) {
 		return "", fmt.Errorf("get user cache dir: %w", err)
 	}
 	return filepath.Join(cacheBase, "caic", "llama-server"), nil
-}
-
-func newLlamaProvider(ctx context.Context, remote, model string) (genai.Provider, error) {
-	opts := []genai.ProviderOption{genai.ProviderOptionRemote(remote)}
-	if model != "" {
-		opts = append(opts, genai.ProviderOptionModel(model))
-	}
-	p, err := providers.All["llamacpp"].Factory(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("create llama.cpp client: %w", err)
-	}
-	return p, nil
 }
 
 // speechASRAdapter binds the gateway's capture sample rate to a shared recognizer.

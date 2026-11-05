@@ -78,6 +78,10 @@ func NewHandler(
 
 // NewEmbeddedHandler returns voice gateway routes for a caller that already
 // enforces request authentication before dispatch. textSessions may be nil.
+//
+// Hosts may exempt only the browser text ticket redemption GET from their
+// authentication middleware: that handler authenticates its single-use ticket.
+// Ticket issuance and native text WebSocket handshakes require host authentication.
 func NewEmbeddedHandler(bridge MediaBridgeProvider, textSessions TextSessionServer) http.Handler {
 	return newHandler(nil, bridge, textSessions, false, false, nil)
 }

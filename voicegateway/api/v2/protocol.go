@@ -142,6 +142,7 @@ type Context struct {
 }
 
 // ContextUpdate is a client message that appends session context.
+// It is passive: appending context does not request an assistant response.
 type ContextUpdate struct {
 	// Kind must be "context.update".
 	Kind MessageKind `json:"kind"`
@@ -201,6 +202,7 @@ type TurnCancel struct {
 }
 
 // TranscriptDelta is a gateway message that streams transcript text.
+// Each fragment appends to previously emitted text; it never replaces it.
 type TranscriptDelta struct {
 	// Kind is "transcript.delta".
 	Kind MessageKind `json:"kind"`
@@ -211,6 +213,7 @@ type TranscriptDelta struct {
 }
 
 // AssistantTextDelta is a gateway message that streams assistant text.
+// Each fragment appends to previously emitted text; it never replaces it.
 type AssistantTextDelta struct {
 	// Kind is "assistant.text.delta".
 	Kind MessageKind `json:"kind"`
@@ -221,7 +224,8 @@ type AssistantTextDelta struct {
 // ReasoningDelta is a gateway message that streams provider reasoning text.
 //
 // Reasoning is not speech and not a transcript statement. A client decides
-// whether to display it.
+// whether to display it, but must not speak it or replay it as recovery context.
+// The gateway includes it in the session activity log.
 type ReasoningDelta struct {
 	// Kind is "reasoning.delta".
 	Kind MessageKind `json:"kind"`
