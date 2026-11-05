@@ -6,9 +6,9 @@ import { createSignal } from "solid-js";
 import { FakeAudioContext } from "../tests/thinking-audio";
 import userEvent from "@testing-library/user-event";
 import { expect, vi } from "../tests/expect";
-import { installBrowserSpeech } from "../tests/browser-speech";
+import { fakeSynthesis, installBrowserSpeech } from "../tests/browser-speech";
 import VoiceSettings from "./VoiceSettings";
-import { voiceSession } from "./VoiceSession";
+import { VoiceSession, voiceSession } from "./VoiceSession";
 
 vi.spyOn(voiceSession, "loadVoiceChoices").mockResolvedValue();
 
@@ -23,6 +23,7 @@ beforeEach(() => {
     choicesStatus: "ready",
     choicesError: null,
     voiceName: null,
+    browserVoiceURI: "",
     voiceError: null,
     voiceStatus: "idle",
     mode: "cloud",
@@ -38,6 +39,78 @@ afterEach(() => {
 });
 
 describe("VoiceSettings", () => {
+  it("loads browser voices asynchronously, saves a selection, and retains it across settings mounts", async () => {
+    const user = userEvent.setup();
+    voiceSession.selectMode("browser");
+    const view = render(() => <VoiceSettings />);
+    const select = screen.getByRole("combobox", { name: "Speaking voice" });
+    expect(select).toHaveValue("");
+    fakeSynthesis.voices = [{ name: "Samantha", lang: "en-US", voiceURI: "samantha" } as SpeechSynthesisVoice];
+    fakeSynthesis.dispatchEvent(new Event("voiceschanged"));
+    await user.selectOptions(select, "samantha");
+    expect(localStorage.getItem("gomode.browserVoiceURI")).toBe("samantha");
+    expect(voiceSession.state.browserVoiceURI).toBe("samantha");
+    expect(new VoiceSession().state.browserVoiceURI).toBe("samantha");
+    view.unmount();
+    render(() => <VoiceSettings />);
+    expect(screen.getByRole("combobox", { name: "Speaking voice" })).toHaveValue("samantha");
+    fakeSynthesis.voices = [...fakeSynthesis.voices];
+    fakeSynthesis.dispatchEvent(new Event("voiceschanged"));
+    expect(screen.getByRole("combobox", { name: "Speaking voice" })).toHaveValue("samantha");
+    await user.click(screen.getByRole("radio", { name: "Cloud voice" }));
+    await user.click(screen.getByRole("radio", { name: "Browser speech" }));
+    expect(screen.getByRole("combobox", { name: "Speaking voice" })).toHaveValue("samantha");
+    voiceSession.setState((s) => ({ ...s, connected: true }));
+    expect(screen.getByRole("combobox", { name: "Speaking voice" })).toBeDisabled();
+  });
+
+  it("keeps an unavailable saved browser voice visible and allows returning to the default", async () => {
+    const user = userEvent.setup();
+    voiceSession.setState((s) => ({ ...s, mode: "browser", browserVoiceURI: "missing" }));
+    render(() => <VoiceSettings />);
+    const select = screen.getByRole("combobox", { name: "Speaking voice" });
+    expect(select).toHaveValue("missing");
+    expect(screen.getByRole("option", { name: "Choose an available speaking voice" })).toBeDisabled();
+    await user.selectOptions(select, "");
+    expect(voiceSession.state.browserVoiceURI).toBe("");
+  });
+
+  it("shows the missing saved selection when a voice-list refresh removes the active option", async () => {
+    const user = userEvent.setup();
+    voiceSession.selectMode("browser");
+    const first = { name: "First", lang: "en-US", voiceURI: "first" } as SpeechSynthesisVoice;
+    fakeSynthesis.voices = [first, { name: "Selected", lang: "en-US", voiceURI: "selected" } as SpeechSynthesisVoice];
+    render(() => <VoiceSettings />);
+    const select = screen.getByRole("combobox", { name: "Speaking voice" });
+    await user.selectOptions(select, "selected");
+    for (const voices of [[first], []]) {
+      fakeSynthesis.voices = voices;
+      fakeSynthesis.dispatchEvent(new Event("voiceschanged"));
+      await waitFor(() => expect(select).toHaveValue("selected"));
+      expect(screen.getByRole("option", { name: "Choose an available speaking voice" })).toBeDisabled();
+      expect(voiceSession.state.browserVoiceURI).toBe("selected");
+    }
+  });
+
+  it("restores the browser voice selection if saving fails", async () => {
+    const user = userEvent.setup();
+    voiceSession.selectMode("browser");
+    fakeSynthesis.voices = [{ name: "Samantha", lang: "en-US", voiceURI: "samantha" } as SpeechSynthesisVoice];
+    render(() => <VoiceSettings />);
+    const save = vi.spyOn(window.Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    try {
+      const select = screen.getByRole("combobox", { name: "Speaking voice" });
+      await user.selectOptions(select, "samantha");
+      expect(select).toHaveValue("");
+      expect(voiceSession.state.browserVoiceURI).toBe("");
+      expect(screen.getByRole("alert")).toHaveTextContent("Storage unavailable");
+    } finally {
+      save.mockRestore();
+    }
+  });
+
   it("stops the music preview when credits collapse, settings hide, or a voice session starts", async () => {
     FakeAudioContext.instances = [];
     vi.stubGlobal("AudioContext", FakeAudioContext);

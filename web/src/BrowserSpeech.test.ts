@@ -12,7 +12,7 @@ const callbacks = { listening: vi.fn(), speaking: vi.fn(), interim: vi.fn(), fin
 beforeEach(() => {
   vi.clearAllMocks();
   restore = installBrowserSpeech("Chrome desktop");
-  speech = new BrowserSpeech("en-US", callbacks);
+  speech = new BrowserSpeech("en-US", "", callbacks);
 });
 afterEach(() => {
   speech.close();
@@ -21,6 +21,84 @@ afterEach(() => {
 });
 
 describe("BrowserSpeech", () => {
+  it("prefers the browser default in the same language over an arbitrary exact regional voice", () => {
+    const novelty = { name: "Odd voice", lang: "en-US", localService: true, default: false } as SpeechSynthesisVoice;
+    const preferred = { name: "Preferred", lang: "en-CA", localService: true, default: true } as SpeechSynthesisVoice;
+    fakeSynthesis.voices = [novelty, preferred];
+    speech.speak("Hello.");
+    expect(fakeSynthesis.spoken[0]?.voice).toBe(preferred);
+  });
+
+  it("uses an explicitly selected voice even when another voice is the default", () => {
+    const preferred = { voiceURI: "selected", name: "Selected", lang: "en-US" } as SpeechSynthesisVoice;
+    fakeSynthesis.voices = [{ voiceURI: "other", lang: "en-US", default: true } as SpeechSynthesisVoice, preferred];
+    speech.close();
+    speech = new BrowserSpeech("en-US", "selected", callbacks);
+    speech.speak("Hello.");
+    expect(fakeSynthesis.spoken[0]?.voice).toBe(preferred);
+  });
+
+  it("leaves selection to the browser when no default matches the language", () => {
+    fakeSynthesis.voices = [{ lang: "en-US", localService: true, default: false } as SpeechSynthesisVoice];
+    speech.speak("Hello.");
+    expect(fakeSynthesis.spoken[0]?.voice).toBeNull();
+  });
+
+  it("reports a missing saved voice instead of silently changing it", () => {
+    fakeSynthesis.voices = [{ voiceURI: "other" } as SpeechSynthesisVoice];
+    speech.close();
+    speech = new BrowserSpeech("en-US", "missing", callbacks);
+    speech.speak("Hello.");
+    expect(fakeSynthesis.spoken).toHaveLength(0);
+    expect(callbacks.error).toHaveBeenCalledWith(expect.stringContaining("unavailable"));
+  });
+
+  it("waits for the saved voice to load on a fresh page and preserves queued fragments", () => {
+    speech.close();
+    speech = new BrowserSpeech("en-US", "selected", callbacks);
+    speech.speak("First.");
+    speech.speak("Second.");
+    expect(fakeSynthesis.spoken).toHaveLength(0);
+    const selected = { voiceURI: "selected" } as SpeechSynthesisVoice;
+    fakeSynthesis.voices = [selected];
+    fakeSynthesis.dispatchEvent(new Event("voiceschanged"));
+    expect(fakeSynthesis.spoken[0]).toMatchObject({ text: "First.", voice: selected });
+    fakeSynthesis.complete();
+    expect(fakeSynthesis.spoken[1]).toMatchObject({ text: "Second.", voice: selected });
+  });
+
+  it("bounds voice discovery and cancels it when speech stops", () => {
+    vi.useFakeTimers();
+    speech.close();
+    speech = new BrowserSpeech("en-US", "selected", callbacks);
+    speech.speak("First.");
+    vi.advanceTimersByTime(5000);
+    expect(callbacks.error).toHaveBeenCalledWith(expect.stringContaining("did not load"));
+    callbacks.error.mockClear();
+    speech.speak("Cancelled.");
+    speech.stopSpeaking();
+    fakeSynthesis.voices = [{ voiceURI: "selected" } as SpeechSynthesisVoice];
+    fakeSynthesis.dispatchEvent(new Event("voiceschanged"));
+    vi.advanceTimersByTime(5000);
+    expect(callbacks.error).not.toHaveBeenCalled();
+    expect(fakeSynthesis.spoken).toHaveLength(0);
+  });
+
+  it("keeps discovery in charge when another fragment arrives before voiceschanged", () => {
+    speech.close();
+    speech = new BrowserSpeech("en-US", "selected", callbacks);
+    speech.speak("First.");
+    fakeSynthesis.voices = [{ voiceURI: "selected" } as SpeechSynthesisVoice];
+    speech.speak("Second.");
+    expect(fakeSynthesis.spoken).toHaveLength(0);
+    fakeSynthesis.dispatchEvent(new Event("voiceschanged"));
+    expect(fakeSynthesis.spoken.map((utterance) => utterance.text)).toEqual(["First."]);
+    fakeSynthesis.complete();
+    expect(fakeSynthesis.spoken.map((utterance) => utterance.text)).toEqual(["First.", "Second."]);
+    fakeSynthesis.complete();
+    expect(callbacks.speaking).toHaveBeenLastCalledWith(false);
+  });
+
   it("uses desktop continuous recognition and an explicit regional language", () => {
     speech.listen();
     const recognition = FakeRecognition.instances[0];

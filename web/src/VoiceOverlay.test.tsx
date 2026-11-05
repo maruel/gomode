@@ -593,7 +593,7 @@ describe("VoiceOverlay settings", () => {
     expect(screen.getByRole("radio", { name: "Cloud voice" })).toBeDisabled();
     expect(screen.getByRole("textbox", { name: "Voice language (e.g. en-US)" })).toBeDisabled();
     expect(
-      screen.getByText("End the voice session to change voice mode, gateway model, or language."),
+      screen.getByText("End the voice session to change voice mode, speaking voice, gateway model, or language."),
     ).toBeInTheDocument();
   });
 

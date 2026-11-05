@@ -62,6 +62,7 @@ export class BrowserSpeech {
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private startupTimer: ReturnType<typeof setTimeout> | null = null;
   private utterance: SpeechSynthesisUtterance | null = null;
+  private voicesCleanup: (() => void) | null = null;
   // Includes active speech, not just pending fragments. Fail visibly rather
   // than let a fast generation build an unbounded synthesis backlog.
   private speechQueue: string[] = [];
@@ -72,6 +73,7 @@ export class BrowserSpeech {
 
   constructor(
     private readonly languageTag: string,
+    private readonly voiceURI: string,
     private readonly callbacks: SpeechCallbacks,
   ) {}
 
@@ -108,10 +110,12 @@ export class BrowserSpeech {
       throw new Error("Browser speech queue is full. Retry with a shorter reply.");
     this.speechQueue.push(text);
     this.speechChars += text.length;
-    if (this.utterance === null) this.startSpeaking();
+    if (this.utterance === null && this.voicesCleanup === null) this.startSpeaking();
   }
 
   stopSpeaking(): void {
+    this.voicesCleanup?.();
+    this.voicesCleanup = null;
     const active = this.utterance !== null;
     // Revoke playback identity before cancel(), which may dispatch callbacks.
     this.utterance = null;
@@ -121,7 +125,7 @@ export class BrowserSpeech {
   }
 
   private startSpeaking(): void {
-    const text = this.speechQueue.shift();
+    const text = this.speechQueue[0];
     if (text === undefined) {
       this.callbacks.speaking(false);
       return;
@@ -131,10 +135,39 @@ export class BrowserSpeech {
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = this.languageTag;
       const voices = window.speechSynthesis.getVoices();
-      const language = this.languageTag.toLowerCase();
-      const exact = voices.filter((candidate) => candidate.lang.toLowerCase() === language);
-      const voice = exact.find((candidate) => candidate.localService) ?? exact[0];
+      if (this.voiceURI !== "" && voices.length === 0) {
+        // Chrome loads voices asynchronously on a fresh page. Keep the first
+        // fragment queued until discovery completes, with bounded recovery.
+        if (this.voicesCleanup !== null) return;
+        const ready = () => {
+          if (window.speechSynthesis.getVoices().length === 0) return;
+          this.voicesCleanup?.();
+          this.voicesCleanup = null;
+          this.startSpeaking();
+        };
+        const timer = setTimeout(() => {
+          this.stopSpeaking();
+          this.callbacks.error("Browser voices did not load. Retry or choose another speaking voice in settings.");
+        }, 5000);
+        window.speechSynthesis.addEventListener("voiceschanged", ready);
+        this.voicesCleanup = () => {
+          clearTimeout(timer);
+          window.speechSynthesis.removeEventListener("voiceschanged", ready);
+        };
+        this.callbacks.speaking(true);
+        return;
+      }
+      const language = this.languageTag.toLowerCase().split("-")[0];
+      // macOS includes novelty voices. Enumeration order and localService do
+      // not indicate quality; honor the user's selection or browser default.
+      const voice =
+        this.voiceURI === ""
+          ? voices.find((candidate) => candidate.default && candidate.lang.toLowerCase().split("-")[0] === language)
+          : voices.find((candidate) => candidate.voiceURI === this.voiceURI);
+      if (this.voiceURI !== "" && !voice)
+        throw new Error("The saved browser voice is unavailable. Choose another speaking voice in settings.");
       if (voice) utterance.voice = voice;
+      this.speechQueue.shift();
       this.utterance = utterance;
       utterance.onend = () => {
         if (this.utterance !== utterance || this.disposed) return;

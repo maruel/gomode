@@ -172,7 +172,7 @@ describe("voice choices", () => {
     expect(screen.queryByRole("combobox", { name: "Model" })).not.toBeInTheDocument();
   });
 
-  it("saves speaking voices per gateway and choice and hides them during browser speech", async () => {
+  it("saves gateway speaking voices independently of browser speech", async () => {
     render(() => <VoiceSettings />);
     await readySelect("Model");
     const user = userEvent.setup();
@@ -195,7 +195,9 @@ describe("voice choices", () => {
     expect(speaking()).toHaveValue("Aoede");
     await user.click(screen.getByRole("radio", { name: "Browser speech" }));
     await readySelect("LLM");
-    expect(screen.queryByRole("combobox", { name: "Speaking voice" })).not.toBeInTheDocument();
+    expect(speaking()).toHaveValue("");
+    expect(screen.queryByRole("option", { name: "Aoede" })).not.toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Browser default" })).toBeInTheDocument();
     expect(voiceSession.state.voiceName).toBe("");
     await user.click(screen.getByRole("radio", { name: "Cloud voice" }));
     await readySelect("Model");

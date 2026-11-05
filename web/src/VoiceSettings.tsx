@@ -20,6 +20,7 @@ export interface VoiceSettingsMessages {
   endSessionToChange: string;
   speakingVoice: string;
   speakingVoiceDefault: string;
+  browserVoiceDefault: string;
   speakingVoiceUnavailable: string;
   choicesLoading: string;
   choicesRetry: string;
@@ -47,9 +48,10 @@ export const defaultVoiceSettingsMessages: VoiceSettingsMessages = {
   cloudVoice: "Cloud voice",
   cloudVoiceDescription: "The voice gateway receives your microphone audio and sends back spoken replies.",
   cloudVoiceModel: "Model",
-  endSessionToChange: "End the voice session to change voice mode, gateway model, or language.",
+  endSessionToChange: "End the voice session to change voice mode, speaking voice, gateway model, or language.",
   speakingVoice: "Speaking voice",
   speakingVoiceDefault: "Provider default",
+  browserVoiceDefault: "Browser default",
   speakingVoiceUnavailable: "Choose an available speaking voice",
   choicesLoading: "Loading voice choices…",
   choicesRetry: "Retry loading voice choices",
@@ -125,6 +127,21 @@ export default function VoiceSettings(props: {
   const browserDescriptionId = createUniqueId();
   const active = () => voiceSession.state.connected || voiceSession.state.connectStatus !== null;
   const supported = browserSpeechAvailable();
+  const [browserVoices, setBrowserVoices] = createSignal<SpeechSynthesisVoice[]>([]);
+  createEffect(() => {
+    if (voiceSession.state.mode !== "browser" || props.visible === false || !supported) return;
+    const synthesis = window.speechSynthesis;
+    const refresh = () =>
+      setBrowserVoices(
+        [...synthesis.getVoices()].sort(
+          (a, b) =>
+            a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name) || a.voiceURI.localeCompare(b.voiceURI),
+        ),
+      );
+    synthesis.addEventListener("voiceschanged", refresh);
+    refresh();
+    onCleanup(() => synthesis.removeEventListener("voiceschanged", refresh));
+  });
   let pendingSave: ReturnType<typeof setTimeout> | null = null;
   const saveLanguage = () => {
     if (pendingSave !== null) {
@@ -220,6 +237,61 @@ export default function VoiceSettings(props: {
           />
         </div>
       </fieldset>
+      <Show when={voiceSession.state.mode === "browser" && supported}>
+        <label>
+          {messages().speakingVoice}
+          <select
+            ref={(select) => {
+              createEffect(() => {
+                browserVoices();
+                const selected = voiceSession.state.browserVoiceURI;
+                let cancelled = false;
+                // Removing the selected option can reset native selection
+                // after the unavailable placeholder has already been inserted.
+                queueMicrotask(() => {
+                  if (!cancelled) select.value = selected;
+                });
+                onCleanup(() => {
+                  cancelled = true;
+                });
+              });
+            }}
+            disabled={active()}
+            value={voiceSession.state.browserVoiceURI}
+            onChange={(event) => {
+              try {
+                voiceSession.selectBrowserVoice(event.currentTarget.value);
+                setVoiceSaveError(null);
+              } catch (err) {
+                event.currentTarget.value = voiceSession.state.browserVoiceURI;
+                setVoiceSaveError(err instanceof Error ? err.message : String(err));
+              }
+            }}
+            aria-describedby={error() === null ? undefined : errorId}
+          >
+            <Show
+              when={
+                voiceSession.state.browserVoiceURI !== "" &&
+                !browserVoices().some((voice) => voice.voiceURI === voiceSession.state.browserVoiceURI)
+              }
+            >
+              <option value={voiceSession.state.browserVoiceURI} selected disabled>
+                {messages().speakingVoiceUnavailable}
+              </option>
+            </Show>
+            <option value="" selected={voiceSession.state.browserVoiceURI === ""}>
+              {messages().browserVoiceDefault}
+            </option>
+            <For each={browserVoices()}>
+              {(voice) => (
+                <option value={voice.voiceURI} selected={voiceSession.state.browserVoiceURI === voice.voiceURI}>
+                  {voice.name} ({voice.lang})
+                </option>
+              )}
+            </For>
+          </select>
+        </label>
+      </Show>
       <Show when={voiceSession.speakingVoices.length > 0}>
         <label>
           {messages().speakingVoice}

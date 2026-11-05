@@ -47,9 +47,10 @@ class FakeUtterance extends EventTarget {
   }
 }
 
-export const fakeSynthesis = {
+export const fakeSynthesis = Object.assign(new EventTarget(), {
+  voices: [] as SpeechSynthesisVoice[],
   spoken: [] as SpeechSynthesisUtterance[],
-  getVoices: (): SpeechSynthesisVoice[] => [],
+  getVoices: (): SpeechSynthesisVoice[] => fakeSynthesis.voices,
   speak: vi.fn((utterance: SpeechSynthesisUtterance) => {
     fakeSynthesis.spoken.push(utterance);
   }),
@@ -59,7 +60,7 @@ export const fakeSynthesis = {
     const utterance = fakeSynthesis.spoken.at(-1);
     utterance?.onend?.call(utterance, new Event("end") as SpeechSynthesisEvent);
   },
-};
+});
 
 export function installBrowserSpeech(userAgent: string): () => void {
   const descriptors = [
@@ -76,6 +77,7 @@ export function installBrowserSpeech(userAgent: string): () => void {
   FakeRecognition.instances = [];
   FakeRecognition.signalsStart = true;
   fakeSynthesis.spoken = [];
+  fakeSynthesis.voices = [];
   return () => {
     descriptors.forEach(([host, key], index) => {
       const descriptor = previous[index];

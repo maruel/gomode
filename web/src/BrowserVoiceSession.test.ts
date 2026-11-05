@@ -195,6 +195,16 @@ describe("provider reasoning", () => {
 });
 
 describe("browser voice sessions", () => {
+  it("uses the saved browser voice for gateway replies and prevents changes during the session", async () => {
+    const selected = { name: "Selected", lang: "en-US", voiceURI: "selected" } as SpeechSynthesisVoice;
+    fakeSynthesis.voices = [selected];
+    session.selectBrowserVoice("selected");
+    const socket = await readySocket();
+    socket.message({ kind: "assistant.text.delta", text: "Hello. " });
+    expect(fakeSynthesis.spoken[0]?.voice).toBe(selected);
+    expect(() => session.selectBrowserVoice("")).toThrow("End the session");
+  });
+
   it("streams ordered sentences before idle, preserves decimals and finalizes text before playback drains", async () => {
     const socket = await readySocket();
     socket.message({ kind: "turn.status", state: "thinking" });

@@ -425,6 +425,8 @@ export interface VoiceState {
   audioSwitching: "input" | "output" | null;
   /** Saved BCP 47 speech language, independent of the browser locale. */
   languageTag: string;
+  /** Saved browser synthesis voice URI; empty string uses the browser default. */
+  browserVoiceURI: string;
 }
 
 const DEFAULT_VOICE_LANGUAGE = "en-US";
@@ -454,6 +456,15 @@ function savedVoiceLanguage(): string {
   } catch (err) {
     console.warn("Could not load voice language; using en-US", err);
     return DEFAULT_VOICE_LANGUAGE;
+  }
+}
+
+function savedBrowserVoiceURI(): string {
+  try {
+    return localStorage.getItem("gomode.browserVoiceURI") ?? "";
+  } catch (error) {
+    console.warn("Could not load browser speaking voice; using browser default", error);
+    return "";
   }
 }
 
@@ -699,6 +710,7 @@ export class VoiceSession {
       selectedInputId: "",
       selectedOutputId: "",
       languageTag: savedVoiceLanguage(),
+      browserVoiceURI: savedBrowserVoiceURI(),
     });
     this.state = state;
     this.setState = setState as (fn: (s: VoiceState) => VoiceState) => void;
@@ -921,6 +933,16 @@ export class VoiceSession {
     if (this._choicesVersion === untrack(gatewayVersion) && this.state.choicesStatus === "ready") {
       void this.loadVoiceChoices();
     }
+  }
+
+  /** Save the browser's speaking voice independently of gateway voices. */
+  selectBrowserVoice(uri: string): void {
+    if (this.state.connected || this.state.connectStatus !== null)
+      throw new Error("End the session before changing speaking voice");
+    if (uri !== "" && !window.speechSynthesis.getVoices().some((voice) => voice.voiceURI === uri))
+      throw new Error("Choose an available speaking voice");
+    localStorage.setItem("gomode.browserVoiceURI", uri);
+    this.setState((s) => ({ ...s, browserVoiceURI: uri }));
   }
 
   /** Save the language for the next session. An active session keeps its language. */
@@ -1599,7 +1621,7 @@ export class VoiceSession {
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       const socket = new WebSocket(url, ["gomode.text.v2", `gomode.ticket.${response.ticket}`]);
       this._textSocket = socket;
-      const speech = new BrowserSpeech(this.state.languageTag, {
+      const speech = new BrowserSpeech(this.state.languageTag, this.state.browserVoiceURI, {
         listening: (value) => {
           if (this._ownsChannel(attempt, socket))
             this._update((s) => {
