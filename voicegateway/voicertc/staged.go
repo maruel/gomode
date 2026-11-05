@@ -12,6 +12,7 @@ import (
 	"iter"
 	"math"
 	"mime"
+	"strings"
 
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers/llamacpp"
@@ -23,6 +24,73 @@ import (
 type stagedLlamaSession struct {
 	backendSession
 	slots chan struct{}
+}
+
+// separateStagedReasoning handles LFM3's explicit thinking prefill when
+// llama.cpp returns the continuation in content instead of reasoning_content.
+// Normalize the completed message before history admission or speech, including
+// a closing tag split across provider text blocks. Structured tool calls and
+// reasoning remain intact. The returned reasoning has not been streamed yet.
+func separateStagedReasoning(msg *genai.Message, thinkingPrefilled bool) (string, error) {
+	var content strings.Builder
+	for i := range msg.Replies {
+		content.WriteString(msg.Replies[i].Text)
+	}
+	text := content.String()
+	open, close := strings.Index(text, "<think>"), strings.Index(text, "</think>")
+	if open == -1 && close == -1 {
+		return "", nil
+	}
+	// A leading close completes the request's open prefill. Otherwise the
+	// runtime has supplied explicit blocks. Repeated boundary markers do not
+	// nest: a runtime can echo a prefill or leave delimiters after extracting
+	// reasoning_content. Keep answer text outside every thinking block.
+	thinking := thinkingPrefilled && close >= 0 && (open == -1 || close < open)
+	var thoughts, answer strings.Builder
+	for text != "" {
+		out := &answer
+		if thinking {
+			out = &thoughts
+		}
+		i := strings.IndexByte(text, '<')
+		if i == -1 {
+			out.WriteString(text)
+			break
+		}
+		out.WriteString(text[:i])
+		text = text[i:]
+		switch {
+		case strings.HasPrefix(text, "<think>"):
+			thinking = true
+			text = text[len("<think>"):]
+		case strings.HasPrefix(text, "</think>"):
+			thinking = false
+			text = text[len("</think>"):]
+		default:
+			out.WriteByte('<')
+			text = text[1:]
+		}
+	}
+	if thinking {
+		return "", errors.New("staged reasoning did not finish; refusing to synthesize it")
+	}
+	reasoning := strings.TrimSpace(thoughts.String())
+	var replies []genai.Reply
+	if reasoning != "" {
+		replies = append(replies, genai.Reply{Reasoning: reasoning})
+	}
+	for i := range msg.Replies {
+		reply := msg.Replies[i]
+		reply.Text = ""
+		if !reply.IsZero() {
+			replies = append(replies, reply)
+		}
+	}
+	if text := strings.TrimSpace(answer.String()); text != "" {
+		replies = append(replies, genai.Reply{Text: text})
+	}
+	msg.Replies = replies
+	return reasoning, nil
 }
 
 func (s *stagedLlamaSession) close() error {

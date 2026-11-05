@@ -530,6 +530,13 @@ func (c *genaiConversation) startGenerationLocked(ctx context.Context) llmStep {
 				}
 			}
 			res, err = done()
+			if err == nil && c.audioInput {
+				var reasoning string
+				reasoning, err = separateStagedReasoning(&res.Message, c.effort != genai.EffortOff)
+				if err == nil && reasoning != "" && c.includeReasoning && ctx.Err() == nil {
+					yield(llmFragment{reasoning: reasoning})
+				}
+			}
 		},
 		finish: func() (llmReply, error) {
 			c.mu.Lock()
