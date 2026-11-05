@@ -88,6 +88,31 @@ quality need the target Mac. Do not measure RSS.
 
 ## Further alternatives
 
+### Single-model LFM3 audio with thinking
+
+Select `LFM3 audio thinking (staged)` from the contributed configuration, or
+add `staged = true` to an LFM3 `[[realtime]]` choice. The gateway manages one
+llama.cpp model, or uses the choice's `remote` server. It sends each completed
+English utterance as audio to chat generation, prefills `<think>` (or
+`<think></think>` with `effort = "off"`), and supplies
+the current tool schemas on every request, including tool-result continuations.
+This combination of thinking and tool calling is experimental.
+
+The final text answer is synthesized through the same model's `/tts` endpoint.
+Generation completes before synthesis starts, so a single server slot is
+sufficient. Native realtime and staged choices have distinct IDs and can be
+selected independently. Residency limits still apply to both choices.
+
+Thinking defaults to `effort = "medium"`. `max_output_tokens` defaults to zero,
+leaving generation unlimited by the gateway and using the server default.
+Reasoning is returned only
+when the client requests it and is never spoken. Audio input is retained in
+conversation history; this path does not produce user transcripts. Each utterance
+is limited to 30 seconds and overlong input is reported as an error. Retained
+audio is bounded to 8 MiB per session; reaching that limit requires a new session.
+Voice selection is unsupported. This path waits for end of speech and adds a separate
+synthesis stage; it does not have the native path's incremental audio prefill.
+
 Evaluate these after measuring the target hardware:
 
 - **ASR:** Parakeet through NeMo, `mudler/parakeet.cpp`, or ONNX. Gemma audio

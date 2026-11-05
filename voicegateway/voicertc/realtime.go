@@ -39,6 +39,7 @@ type llamaRealtimeBackend struct {
 	runtime  io.Closer
 	cfg      voicegateway.RealtimeConfig
 	slots    chan struct{}
+	staged   *localStackRuntime
 }
 
 func newLlamaRealtimeBackend(ctx context.Context, cfg voicegateway.RealtimeConfig) (*llamaRealtimeBackend, error) {
@@ -84,6 +85,14 @@ func newLlamaRealtimeBackend(ctx context.Context, cfg voicegateway.RealtimeConfi
 		return nil, err
 	}
 	b.provider = provider
+	if cfg.Staged {
+		b.staged = &localStackRuntime{
+			directAudio: true,
+			newVAD:      func() vadSegmenter { return &energyVAD{maxUtteranceBytes: 30 * micSampleRate * 2} },
+			llm:         &genaiLLMAdapter{provider: provider, effort: cfg.Effort, audioInput: true, maxOutputTokens: cfg.MaxOutputTokens},
+			tts:         &llamaSpeechAdapter{client: provider.(*llamacpp.Client)},
+		}
+	}
 	return b, nil
 }
 
@@ -104,6 +113,9 @@ func (b *llamaRealtimeBackend) connect(ctx context.Context, id string, sink back
 	case b.slots <- struct{}{}:
 	default:
 		return nil, errors.New("realtime capacity exhausted; all configured slots are reserved")
+	}
+	if b.staged != nil {
+		return &stagedLlamaSession{backendSession: b.staged.newSession(ctx, id, sink, false), slots: b.slots}, nil
 	}
 	life, cancel := context.WithCancel(ctx)
 	return &llamaRealtimeSession{backend: b, id: id, sink: sink, playback: playback, ctx: life, cancel: cancel, gate: newRealtimeAudioGate(micSampleRate, realtimeAudioManual)}, nil

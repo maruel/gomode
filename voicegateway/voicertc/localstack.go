@@ -128,11 +128,12 @@ func (b *localStackBackend) newTextSession(ctx context.Context, sessionID string
 
 // localStackRuntime owns the loaded VAD→ASR→LLM→TTS adapters and their clients.
 type localStackRuntime struct {
-	newVAD  func() vadSegmenter
-	asr     asrAdapter
-	llm     llmAdapter
-	tts     ttsAdapter
-	runtime io.Closer
+	directAudio bool
+	newVAD      func() vadSegmenter
+	asr         asrAdapter
+	llm         llmAdapter
+	tts         ttsAdapter
+	runtime     io.Closer
 }
 
 func (b *localStackRuntime) Close() error {
@@ -159,6 +160,7 @@ func (b *localStackRuntime) newSession(ctx context.Context, sessionID string, si
 		llm:           b.llm,
 		tts:           b.tts,
 		clientSpeech:  clientSpeech,
+		directAudio:   b.directAudio,
 		outstanding:   make(map[string]sessionToolCall),
 	}
 	if !clientSpeech {
@@ -195,6 +197,7 @@ type localStackSession struct {
 	// clientSpeech reports that the client performs speech recognition and
 	// synthesis, so this session only runs the text LLM turn.
 	clientSpeech bool
+	directAudio  bool
 
 	turns *errgroup.Group
 	// events serializes admission, generation commits and tool dispatch, never streaming.
@@ -223,6 +226,14 @@ func (s *localStackSession) acceptClientMessage(ctx context.Context, data []byte
 		}
 		if err := applySessionLanguage(&msg); err != nil {
 			return err
+		}
+		if s.directAudio {
+			if msg.Voice.Name != "" {
+				return errors.New("staged LFM3 audio does not support voice selection")
+			}
+			if msg.Voice.Language != "en" && !strings.HasPrefix(msg.Voice.Language, "en-") {
+				return errors.New("staged LFM3 conversation supports English only")
+			}
 		}
 		s.events.Lock()
 		s.mu.Lock()
@@ -367,6 +378,19 @@ func (s *localStackSession) startTurn(ctx context.Context, utterance []byte) {
 		s.mu.Unlock()
 		return
 	}
+	if s.directAudio {
+		conv := s.conv.(*genaiConversation)
+		s.mu.Unlock()
+		turnCtx, cancel := context.WithCancel(ctx)
+		step, err := conv.userAudio(turnCtx, utterance)
+		if err != nil {
+			cancel()
+			s.reportTurnError("audio", err)
+			return
+		}
+		s.startAdmittedStep(turnCtx, conv, step, cancel, true)
+		return
+	}
 	if s.turnCancel != nil {
 		s.turnCancel()
 		s.turnCancel = nil
@@ -458,6 +482,24 @@ func (s *localStackSession) handleTextStep(ctx context.Context, conv llmConversa
 }
 
 func (s *localStackSession) handleLLMStep(ctx context.Context, conv llmConversation, step llmStep) {
+	if s.directAudio {
+		// The same model slot serves chat and TTS. Drain and release generation
+		// before synthesis, and speak only a final answer without tool calls.
+		for output := range step.stream {
+			if ctx.Err() == nil && output.reasoning != "" {
+				s.emit(&voicev2.ReasoningDelta{Kind: voicev2.MessageKindReasoningDelta, Text: output.reasoning})
+			}
+		}
+		reply, err := s.finishStep(ctx, conv, step)
+		if err != nil {
+			s.warnTurn(ctx, "llm", err)
+			return
+		}
+		if len(reply.toolCalls) == 0 && ctx.Err() == nil {
+			s.speak(ctx, reply.text)
+		}
+		return
+	}
 	speech := s.startSpeechQueue(ctx)
 	defer speech.close()
 	if _, err := s.forwardLLMText(ctx, conv, speech, step); err != nil {
@@ -758,11 +800,14 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 // energyVAD is a simple RMS-energy voice activity detector with a silence
 // hangover. It is a placeholder until a real VAD/segmentation model is wired in.
 type energyVAD struct {
-	leftover  []byte
-	utterance []byte
-	speaking  bool
-	speechMS  int
-	silenceMS int
+	// A bounded utterance retains one excess frame so its consumer can reject
+	// overlong speech explicitly instead of accepting a truncated command.
+	maxUtteranceBytes int
+	leftover          []byte
+	utterance         []byte
+	speaking          bool
+	speechMS          int
+	silenceMS         int
 }
 
 func (v *energyVAD) push(pcm []byte) ([]byte, bool) {
@@ -774,14 +819,18 @@ func (v *energyVAD) push(pcm []byte) ([]byte, bool) {
 			v.speaking = true
 			v.speechMS += vadFrameMS
 			v.silenceMS = 0
-			v.utterance = append(v.utterance, frame...)
+			if v.maxUtteranceBytes == 0 || len(v.utterance) <= v.maxUtteranceBytes {
+				v.utterance = append(v.utterance, frame...)
+			}
 			continue
 		}
 		if !v.speaking {
 			continue // drop leading silence
 		}
 		v.silenceMS += vadFrameMS
-		v.utterance = append(v.utterance, frame...)
+		if v.maxUtteranceBytes == 0 || len(v.utterance) <= v.maxUtteranceBytes {
+			v.utterance = append(v.utterance, frame...)
+		}
 		if v.silenceMS >= vadSilenceHangoverMS {
 			done := v.utterance
 			hadSpeech := v.speechMS >= vadMinSpeechMS

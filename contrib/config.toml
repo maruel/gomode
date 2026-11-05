@@ -76,6 +76,17 @@ model = "LiquidAI/LFM3-Audio-2B-GGUF/LFM3-Audio-2B-Q4_K_M.gguf"
 context_size = 65536
 # remote = "http://127.0.0.1:8080" directly on the choice.
 
+# Single-model alternative: speech input -> text thinking/tools -> LFM3 speech.
+# Chat generation completes before synthesis, sharing one loaded model and slot.
+[[realtime]]
+label = "LFM3 audio thinking (staged)"
+provider = "llamacpp"
+llamacppsrv = true
+model = "LiquidAI/LFM3-Audio-2B-GGUF/LFM3-Audio-2B-Q4_K_M.gguf"
+staged = true
+effort = "medium"
+context_size = 65536
+
 # Remote LLMs
 # Clients transcribe and speak for all chat choices. Credentials are listed in
 # voice-gateway.env.example, using genai's provider environment variables.

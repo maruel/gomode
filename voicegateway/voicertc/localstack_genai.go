@@ -3,6 +3,7 @@
 package voicertc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -392,9 +393,11 @@ func (a *speechTTSAdapter) synthesize(ctx context.Context, text string) iter.Seq
 }
 
 type genaiLLMAdapter struct {
-	provider       genai.Provider
-	effort         genai.EffortLevel
-	openRouterSort openrouter.ProviderSort
+	provider        genai.Provider
+	effort          genai.EffortLevel
+	openRouterSort  openrouter.ProviderSort
+	audioInput      bool
+	maxOutputTokens int64
 }
 
 func (a *genaiLLMAdapter) newConversation(systemInstruction string, tools []voicev2.ToolDeclaration, includeReasoning bool) llmConversation {
@@ -409,6 +412,8 @@ func (a *genaiLLMAdapter) newConversation(systemInstruction string, tools []voic
 		initErr:           err,
 		pendingCalls:      make(map[string]string),
 		seenCalls:         make(map[string]struct{}),
+		audioInput:        a.audioInput,
+		maxOutputTokens:   a.maxOutputTokens,
 	}
 }
 
@@ -417,6 +422,8 @@ type genaiConversation struct {
 	effort           genai.EffortLevel
 	openRouterSort   openrouter.ProviderSort
 	includeReasoning bool
+	audioInput       bool
+	maxOutputTokens  int64
 
 	mu                sync.Mutex
 	messages          genai.Messages
@@ -439,6 +446,9 @@ func (c *genaiConversation) user(ctx context.Context, text string) (llmStep, err
 		return llmStep{}, c.initErr
 	}
 	c.messages = append(c.messages, genai.NewTextMessage(c.userText(text)))
+	if c.audioInput && len(c.pendingCalls) != 0 {
+		return newLLMStep(nil, llmReply{}, nil), nil
+	}
 	return c.startGenerationLocked(ctx), nil
 }
 
@@ -457,6 +467,11 @@ func (c *genaiConversation) toolResult(ctx context.Context, id, name string, res
 	}
 	c.messages = append(c.messages, genai.Message{ToolCallResults: []genai.ToolCallResult{{ID: id, Name: name, Result: resultText}}})
 	delete(c.pendingCalls, id)
+	if c.audioInput && len(c.pendingCalls) != 0 {
+		// Keep the batch in history, but wait for every host result before
+		// asking LFM3 to continue or synthesize a final answer.
+		return newLLMStep(nil, llmReply{}, nil), nil
+	}
 	return c.startGenerationLocked(ctx), nil
 }
 
@@ -477,6 +492,26 @@ func (c *genaiConversation) startGenerationLocked(ctx context.Context) llmStep {
 	// History is append-only. Give each request its own outer slice so later
 	// events cannot overwrite it. Provider responses are owned only after finish.
 	snapshot := slices.Clone(c.messages)
+	if c.audioInput {
+		// Requests may overlap during cancellation. Each generation owns its
+		// document cursors; the immutable audio payload is shared with history.
+		for i := range snapshot {
+			snapshot[i].Requests = slices.Clone(snapshot[i].Requests)
+			for j := range snapshot[i].Requests {
+				if src, ok := snapshot[i].Requests[j].Doc.Src.(*bytes.Reader); ok {
+					reader := *src
+					snapshot[i].Requests[j].Doc.Src = &reader
+				}
+			}
+		}
+		// LFM3-Audio uses an open think block for reasoning and a closed one
+		// for direct answers. Keep the prefill out of committed history.
+		prefix := "<think>"
+		if c.effort == genai.EffortOff {
+			prefix = "<think></think>"
+		}
+		snapshot = append(snapshot, genai.Message{Replies: []genai.Reply{{Text: prefix}}})
+	}
 	opts := c.genOptions()
 	c.revision++
 	revision := c.revision
@@ -486,7 +521,11 @@ func (c *genaiConversation) startGenerationLocked(ctx context.Context) llmStep {
 		stream: func(yield func(llmFragment) bool) {
 			replies, done := c.provider.GenStream(ctx, snapshot, opts...)
 			for reply := range replies {
-				if (reply.Text != "" || reply.Reasoning != "") && !yield(llmFragment{text: reply.Text, reasoning: reply.Reasoning}) {
+				reasoning := reply.Reasoning
+				if c.audioInput && !c.includeReasoning {
+					reasoning = ""
+				}
+				if (reply.Text != "" || reasoning != "") && !yield(llmFragment{text: reply.Text, reasoning: reasoning}) {
 					break
 				}
 			}
@@ -497,6 +536,9 @@ func (c *genaiConversation) startGenerationLocked(ctx context.Context) llmStep {
 			defer c.mu.Unlock()
 			if err != nil {
 				return llmReply{}, err
+			}
+			if c.audioInput && res.Usage.FinishReason == genai.FinishedLength {
+				return llmReply{}, errors.New("staged generation reached its token limit; increase max_output_tokens")
 			}
 			if ctx.Err() != nil {
 				return llmReply{}, ctx.Err()
@@ -515,16 +557,22 @@ func (c *genaiConversation) startGenerationLocked(ctx context.Context) llmStep {
 }
 
 func (c *genaiConversation) genOptions() []genai.GenOption {
-	opts := []genai.GenOption{
-		&genai.GenOptionText{SystemPrompt: c.systemInstruction},
+	system := c.systemInstruction
+	if c.audioInput {
+		system += "\n\nRespond in text or function calls only.\n\nList of tools:"
 	}
+	text := &genai.GenOptionText{SystemPrompt: system, MaxTokens: c.maxOutputTokens}
+	if c.audioInput {
+		text.Stop = []string{"<|mixed_start|>", "<|audio_start|>"}
+	}
+	opts := []genai.GenOption{text}
 	if c.effort != "" {
 		opts = append(opts, c.effort)
 	}
 	if c.openRouterSort != "" {
 		opts = append(opts, &openrouter.GenOption{Provider: &openrouter.ProviderPreferences{Sort: c.openRouterSort}})
 	}
-	if c.includeReasoning {
+	if c.includeReasoning || c.audioInput {
 		opts = append(opts, genai.IncludeReasoning)
 	}
 	if len(c.tools) != 0 {
@@ -564,11 +612,18 @@ func (c *genaiConversation) toReplyLocked(msg *genai.Message) (llmReply, error) 
 		}
 		text.WriteString(reply.Text)
 	}
+	answer := text.String()
+	if c.audioInput && answer == "" && len(calls) == 0 {
+		return llmReply{}, errors.New("staged generation returned no text or tool calls")
+	}
+	if c.audioInput && (strings.Contains(answer, "<think>") || strings.Contains(answer, "</think>")) {
+		return llmReply{}, errors.New("staged generation returned unparsed reasoning; refusing to synthesize it")
+	}
 	for _, call := range calls {
 		c.seenCalls[call.id] = struct{}{}
 		c.pendingCalls[call.id] = call.name
 	}
-	return llmReply{text: text.String(), toolCalls: calls}, nil
+	return llmReply{text: answer, toolCalls: calls}, nil
 }
 
 func (c *genaiConversation) userText(text string) string {

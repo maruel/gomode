@@ -15,6 +15,10 @@ type RealtimeConfig struct {
 	Label string `toml:"label" json:"-"`
 	ModelConfig
 
+	// Staged uses llama.cpp chat generation with audio input and thinking,
+	// followed by speech synthesis on the same model instead of realtime output.
+	Staged bool `toml:"staged" json:"staged,omitzero"`
+
 	CacheDir        string `toml:"cache_dir" json:"cache_dir"`
 	Threads         int    `toml:"threads" json:"threads"`
 	Slots           int    `toml:"slots" json:"slots"`
@@ -60,6 +64,9 @@ func (c RealtimeConfig) WithDefaults() RealtimeConfig {
 	if c.ContextSize == 0 {
 		c.ContextSize = 8192
 	}
+	if c.Staged && c.Effort == "" {
+		c.Effort = "medium"
+	}
 	return c
 }
 
@@ -73,6 +80,9 @@ func validRealtimeModel(model string) bool {
 
 func (c *RealtimeConfig) validate() error {
 	if c.Provider != "llamacpp" {
+		if c.Staged {
+			return errors.New("realtime.staged requires provider llamacpp")
+		}
 		return c.ModelConfig.validate("realtime")
 	}
 	v := c.WithDefaults()
