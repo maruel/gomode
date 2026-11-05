@@ -139,7 +139,7 @@ type realtimeBridgeSession struct {
 	tools             gatewayRealtimeTools
 	sendMu            sync.Mutex
 	audioMu           sync.Mutex
-	audioGate         serverAudioGate
+	audioGate         realtimeAudioGate
 }
 
 // send serializes every provider write so microphone chunks, user turns and
@@ -286,7 +286,7 @@ func (s *realtimeBridgeSession) setup(msg *voicev1.SessionSetup) error {
 		return errors.Join(errSessionClosed, rt.Close())
 	}
 	s.realtime = rt
-	s.audioGate = newServerAudioGate(rt.Info().InputFormat.SampleRate)
+	s.audioGate = newRealtimeAudioGate(rt.Info().InputFormat.SampleRate, realtimeAudioServer)
 	// Ready precedes receive delivery and cannot be emitted after close wins.
 	s.sink.backendReady(s.ctx)
 	s.workers.Go(func() { s.rxLoop(rt) })
@@ -306,16 +306,17 @@ func (s *realtimeBridgeSession) acceptMicPCM(ctx context.Context, pcm []byte) er
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
 	commit := rt.Info().Capabilities.AudioCommit
-	for audio, end := range s.audioGate.push(pcm) {
-		if end && !commit {
-			continue
-		}
-		input := genai.RealtimeInputContent{Audio: audio}
-		if end {
-			input = genai.RealtimeInputContent{Commit: true}
-		}
-		if err := s.sendLocked(ctx, input); err != nil {
+	for chunk := range s.audioGate.push(pcm) {
+		if err := s.sendLocked(ctx, genai.RealtimeInputContent{Audio: chunk.audio}); err != nil {
 			return err
+		}
+		if chunk.end && commit {
+			// Gemini maps Commit under server VAD to audioStreamEnd, allowing
+			// a pause without disabling automatic activity detection. OpenAI
+			// server VAD detects the quiet tail and requires no explicit commit.
+			if err := s.sendLocked(ctx, genai.RealtimeInputContent{Commit: true}); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

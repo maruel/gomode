@@ -106,7 +106,7 @@ func (b *llamaRealtimeBackend) connect(ctx context.Context, id string, sink back
 		return nil, errors.New("realtime capacity exhausted; all configured slots are reserved")
 	}
 	life, cancel := context.WithCancel(ctx)
-	return &llamaRealtimeSession{backend: b, id: id, sink: sink, playback: playback, ctx: life, cancel: cancel}, nil
+	return &llamaRealtimeSession{backend: b, id: id, sink: sink, playback: playback, ctx: life, cancel: cancel, gate: newRealtimeAudioGate(micSampleRate, realtimeAudioManual)}, nil
 }
 
 type realtimePendingInput struct {

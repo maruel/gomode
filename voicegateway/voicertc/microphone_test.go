@@ -65,7 +65,7 @@ func TestMicAudioClock(t *testing.T) {
 	})
 	t.Run("turn endings during sparse packets", func(t *testing.T) {
 		var c micAudioClock
-		var g serverAudioGate
+		g := newRealtimeAudioGate(micSampleRate, realtimeAudioServer)
 		var v energyVAD
 		now := time.Now()
 		for i := range 10 {
@@ -85,8 +85,8 @@ func TestMicAudioClock(t *testing.T) {
 				if utt, _ := v.push(pcm); utt != nil {
 					utteranceAt = elapsed
 				}
-				for _, end := range g.push(pcm) {
-					if end {
+				for chunk := range g.push(pcm) {
+					if chunk.end {
 						ends++
 						endedAt = elapsed
 					}
@@ -100,8 +100,8 @@ func TestMicAudioClock(t *testing.T) {
 				gap := c.receive(sequence+10, uint32(elapsed/time.Millisecond*48), 320, now.Add(elapsed)) //nolint:gosec // Bounded fixture time.
 				pcm := make([]byte, (gap+320)*2)
 				v.push(pcm)
-				for _, end := range g.push(pcm) {
-					if end {
+				for chunk := range g.push(pcm) {
+					if chunk.end {
 						ends++
 						endedAt = elapsed
 					}

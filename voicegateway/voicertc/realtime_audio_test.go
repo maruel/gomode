@@ -2,11 +2,48 @@
 
 package voicertc
 
-import "testing"
+import (
+	"encoding/binary"
+	"testing"
+)
+
+const realtimeFrameBytes = micSampleRate * 2 / 50
 
 func TestRealtimeAudioGate(t *testing.T) {
+	t.Run("activity policies", func(t *testing.T) {
+		sparse := testPCM(100, 0)
+		for i := 0; i < len(sparse); i += 40 {
+			binary.LittleEndian.PutUint16(sparse[i:], 1000)
+		}
+		for _, tc := range []struct {
+			name   string
+			mode   realtimeAudioMode
+			pcm    []byte
+			active bool
+		}{
+			{"manual below threshold", realtimeAudioManual, testPCM(100, 499), false},
+			{"manual threshold", realtimeAudioManual, testPCM(100, 500), true},
+			{"manual sparse noise", realtimeAudioManual, sparse, false},
+			{"server threshold", realtimeAudioServer, testPCM(100, 100), false},
+			{"server quiet speech", realtimeAudioServer, testPCM(100, 101), true},
+			{"server sparse noise", realtimeAudioServer, sparse, true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				g := newRealtimeAudioGate(micSampleRate, tc.mode)
+				var starts int
+				for chunk := range g.push(tc.pcm) {
+					if chunk.start {
+						starts++
+					}
+				}
+				if g.active != tc.active || (starts == 1) != tc.active || starts > 1 {
+					t.Fatalf("active/starts = %v/%d, want activity %v", g.active, starts, tc.active)
+				}
+			})
+		}
+	})
 	t.Run("push", func(t *testing.T) {
-		var g realtimeAudioGate
+		g := newRealtimeAudioGate(micSampleRate, realtimeAudioManual)
 		for range g.push(testPCM(2000, 0)) {
 			t.Fatal("silence opened a turn")
 		}

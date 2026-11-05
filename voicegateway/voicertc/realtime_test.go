@@ -194,7 +194,7 @@ func newRealtimePolicySession(t *testing.T, paused bool) (*llamaRealtimeSession,
 	b := &llamaRealtimeBackend{slots: make(chan struct{}, 1)}
 	b.slots <- struct{}{}
 	sink := &realtimeEventSink{events: make(chan struct{}, 1)}
-	s := &llamaRealtimeSession{backend: b, ctx: ctx, cancel: cancel, sink: sink, playback: sink, rt: p}
+	s := &llamaRealtimeSession{backend: b, ctx: ctx, cancel: cancel, sink: sink, playback: sink, rt: p, gate: newRealtimeAudioGate(micSampleRate, realtimeAudioManual)}
 	s.workers.Go(s.receive)
 	t.Cleanup(func() {
 		if err := s.close(); err != nil {
@@ -292,7 +292,7 @@ func TestLlamaRealtimeSession(t *testing.T) {
 		sink := &realtimePacedSink{realtimeEventSink: realtimeEventSink{events: make(chan struct{}, 1)}}
 		backend := &llamaRealtimeBackend{slots: make(chan struct{}, 1)}
 		backend.slots <- struct{}{}
-		s := &llamaRealtimeSession{backend: backend, ctx: ctx, cancel: cancel, sink: sink, playback: sink, rt: peer}
+		s := &llamaRealtimeSession{backend: backend, ctx: ctx, cancel: cancel, sink: sink, playback: sink, rt: peer, gate: newRealtimeAudioGate(micSampleRate, realtimeAudioManual)}
 		s.workers.Go(s.receive)
 		t.Cleanup(func() {
 			if err := s.close(); err != nil {

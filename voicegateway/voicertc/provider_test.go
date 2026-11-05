@@ -304,7 +304,7 @@ func TestRealtimeBridgeSessionSerializesSends(t *testing.T) {
 	release := make(chan struct{})
 	peer.sendRelease = release
 	peer.sendStarted = make(chan struct{}, 1)
-	s := &realtimeBridgeSession{ctx: t.Context(), realtime: peer}
+	s := &realtimeBridgeSession{ctx: t.Context(), realtime: peer, audioGate: newRealtimeAudioGate(micSampleRate, realtimeAudioServer)}
 	micDone := make(chan error, 1)
 	go func() { micDone <- s.acceptMicPCM(t.Context(), testPCM(120, 2000)) }()
 	select {
@@ -396,7 +396,7 @@ func TestRealtimeBridgeSessionUsesNegotiatedMicrophoneRate(t *testing.T) {
 	t.Parallel()
 	peer := newRealtimePeer()
 	peer.info.InputFormat = genai.AudioFormat{SampleRate: 24000}
-	s := &realtimeBridgeSession{ctx: t.Context(), realtime: peer, audioGate: newServerAudioGate(24000)}
+	s := &realtimeBridgeSession{ctx: t.Context(), realtime: peer, audioGate: newRealtimeAudioGate(24000, realtimeAudioServer)}
 	if got := s.inputSampleRate(); got != 24000 {
 		t.Fatalf("input rate = %d, want 24000", got)
 	}
@@ -427,7 +427,7 @@ func TestRealtimeBridgeSessionHonorsAudioCommit(t *testing.T) {
 			peer := newRealtimePeer()
 			peer.info.InputFormat = genai.AudioFormat{SampleRate: 24000}
 			peer.info.Capabilities.AudioCommit = tc.commit
-			s := &realtimeBridgeSession{ctx: t.Context(), realtime: peer, audioGate: newServerAudioGate(24000)}
+			s := &realtimeBridgeSession{ctx: t.Context(), realtime: peer, audioGate: newRealtimeAudioGate(24000, realtimeAudioServer)}
 			pcm := append(testPCMAtRate(100, 2000, 24000), testPCMAtRate(1000, 0, 24000)...)
 			if err := s.acceptMicPCM(t.Context(), pcm); err != nil {
 				t.Fatal(err)
