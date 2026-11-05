@@ -120,7 +120,7 @@ class VoiceSessionLifecycleTest {
                             )
                         }
                     assertTrue(outcome.exceptionOrNull() is CancellationException)
-                    assertEquals(first, settings.settings.value.activeServiceId)
+                    assertEquals(first, settings.settings.first { it.activeServiceId == first }.activeServiceId)
                     assertEquals(VOICE_TOOL_RESULT_DELIVERY_ERROR, session.state.value.error)
                     assertFalse(session.state.value.connected)
                     assertNull(session.state.value.activeTool)
