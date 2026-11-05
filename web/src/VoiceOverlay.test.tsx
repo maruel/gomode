@@ -288,6 +288,8 @@ describe("VoiceOverlay status", () => {
     expect(input).toHaveFocus();
     expect(inputScroll).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
     await user.tab();
+    expect(screen.getByRole("button", { name: "Speaker" })).toHaveFocus();
+    await user.tab();
     await user.tab();
     expect(end).toHaveFocus();
     expect(scroll).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
@@ -429,7 +431,39 @@ describe("VoiceOverlay status", () => {
     }
   });
 
-  it("shows the current microphone and explains system-managed output", () => {
+  it("shows local audio controls with system routing help even when media elements support output selection", async () => {
+    Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true, value: vi.fn() });
+    try {
+      voiceSession.setState((s) => ({ ...s, mode: "browser" }));
+      render(() => <VoiceOverlay />);
+      const devices = screen.getByRole("group", { name: "Audio devices" });
+      const mic = within(devices).getByRole("button", { name: "Microphone" });
+      const speaker = within(devices).getByRole("button", { name: "Speaker" });
+      expect(mic.querySelector('[data-icon="mic"]')).not.toBeNull();
+      expect(speaker.querySelector('[data-icon="volumeUp"]')).not.toBeNull();
+      expect(within(devices).queryByRole("combobox")).toBeNull();
+      const user = userEvent.setup();
+      mic.focus();
+      await user.keyboard("{Enter}");
+      expect(mic).toHaveAttribute("aria-expanded", "true");
+      expect(mic).toHaveAccessibleDescription("Use your device’s sound settings to change the microphone.");
+      await user.click(speaker);
+      expect(mic).toHaveAttribute("aria-expanded", "false");
+      expect(speaker).toHaveAccessibleDescription("Use your device’s sound settings to change the speaker.");
+      await user.keyboard("{Escape}");
+      expect(speaker).toHaveAttribute("aria-expanded", "false");
+      expect(speaker).toHaveFocus();
+      await user.click(mic);
+      voiceSession.setState((s) => ({ ...s, mode: "cloud" }));
+      expect(screen.getByRole("combobox", { name: "Microphone" })).toBeInTheDocument();
+      expect(screen.getByRole("combobox", { name: "Speaker" })).toBeInTheDocument();
+      expect(screen.queryByText("Use your device’s sound settings to change the microphone.")).toBeNull();
+    } finally {
+      Reflect.deleteProperty(HTMLMediaElement.prototype, "setSinkId");
+    }
+  });
+
+  it("shows the current microphone and explains system-managed output", async () => {
     voiceSession.setState((s) => ({
       ...s,
       connected: true,
@@ -438,13 +472,10 @@ describe("VoiceOverlay status", () => {
     }));
     render(() => <VoiceOverlay />);
     expect(screen.getByRole("combobox", { name: "Microphone" })).toHaveValue("usb");
+    const speaker = screen.getByRole("button", { name: "Speaker" });
+    expect(speaker.querySelector('[data-icon="volumeUp"]')).not.toBeNull();
+    await userEvent.setup().click(speaker);
     expect(screen.getByText("Use your device’s sound settings to change the speaker.")).toBeInTheDocument();
-    expect(
-      screen
-        .getByText("Use your device’s sound settings to change the speaker.")
-        .parentElement?.querySelector("[data-icon]")
-        ?.getAttribute("data-icon"),
-    ).toBe("volumeUp");
     voiceSession.setState((s) => ({ ...s, audioSwitching: "input", audioInputError: "Microphone permission denied" }));
     expect(screen.getByRole("combobox", { name: "Microphone" })).toBeDisabled();
     expect(screen.getByRole("alert")).toHaveTextContent("Microphone permission denied");

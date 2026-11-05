@@ -67,6 +67,7 @@ export interface VoiceOverlayMessages extends Partial<VoiceSettingsMessages> {
   speaker: string;
   systemDefault?: string;
   systemAudioSettings?: string;
+  systemMicrophoneSettings?: string;
   unavailableDevice?: string;
   speaking: string;
   thinking: string;
@@ -122,6 +123,7 @@ export const defaultVoiceOverlayMessages: VoiceOverlayMessages = {
   speaker: "Speaker",
   systemDefault: "System default",
   systemAudioSettings: "Use your device’s sound settings to change the speaker.",
+  systemMicrophoneSettings: "Use your device’s sound settings to change the microphone.",
   unavailableDevice: "Device unavailable",
   speaking: "Speaking…",
   thinking: "Thinking…",
@@ -195,6 +197,18 @@ export default function VoiceOverlay(props: {
   const [settingsError, setSettingsError] = createSignal<string | null>(null);
   const [languageError, setLanguageError] = createSignal<string | null>(null);
   const settingsId = createUniqueId();
+  const audioHelpId = createUniqueId();
+  const [audioHelp, setAudioHelp] = createSignal<"input" | "output" | null>(null);
+  createEffect(
+    on(
+      () => session.state.mode,
+      () => setAudioHelp(null),
+    ),
+  );
+  const audioHelpMessage = () =>
+    audioHelp() === "input"
+      ? (messages().systemMicrophoneSettings ?? defaultVoiceOverlayMessages.systemMicrophoneSettings)
+      : (messages().systemAudioSettings ?? defaultVoiceOverlayMessages.systemAudioSettings);
   const closeSettings = () => {
     setSettingsOpen(false);
     if (settingsTrigger?.isConnected) settingsTrigger.focus();
@@ -358,18 +372,21 @@ export default function VoiceOverlay(props: {
           >
             <div class={styles.toolbarActions}>
               <AppControls />
-              <Show when={session.state.mode === "cloud"}>
-                <AudioDevicePicker
-                  inputs={session.state.audioInputs}
-                  outputs={session.state.audioOutputs}
-                  selectedInputId={session.state.selectedInputId}
-                  selectedOutputId={session.state.selectedOutputId}
-                  messages={messages}
-                  switching={session.state.audioSwitching !== null || session.state.connectStatus !== null}
-                  onSelectInput={(id) => session.selectInputDevice(id)}
-                  onSelectOutput={(id) => session.selectOutputDevice(id)}
-                />
-              </Show>
+              <AudioDevicePicker
+                cloud={session.state.mode === "cloud"}
+                help={audioHelp()}
+                helpId={audioHelpId}
+                onHelp={(direction) => setAudioHelp((current) => (current === direction ? null : direction))}
+                onCloseHelp={() => setAudioHelp(null)}
+                inputs={session.state.audioInputs}
+                outputs={session.state.audioOutputs}
+                selectedInputId={session.state.selectedInputId}
+                selectedOutputId={session.state.selectedOutputId}
+                messages={messages}
+                switching={session.state.audioSwitching !== null || session.state.connectStatus !== null}
+                onSelectInput={(id) => session.selectInputDevice(id)}
+                onSelectOutput={(id) => session.selectOutputDevice(id)}
+              />
               <Show when={isConnected()}>
                 <MicrophoneControls
                   state={session.state}
@@ -401,6 +418,11 @@ export default function VoiceOverlay(props: {
               </button>
             </div>
           </div>
+          <Show when={audioHelp()}>
+            <p id={audioHelpId} role="status" class={styles.deviceHint}>
+              {audioHelpMessage()}
+            </p>
+          </Show>
           <Show when={session.state.microphoneAccess === "denied"}>
             <div role="status" class={styles.accessNotice}>
               <span>{messages().microphoneAccessOff ?? defaultVoiceOverlayMessages.microphoneAccessOff}</span>
@@ -712,6 +734,11 @@ function AudioErrors(props: { state: VoiceState }) {
 }
 
 function AudioDevicePicker(props: {
+  cloud: boolean;
+  help: "input" | "output" | null;
+  helpId: string;
+  onHelp: (direction: "input" | "output") => void;
+  onCloseHelp: () => void;
   inputs: Array<{ deviceId: string; label: string }>;
   outputs: Array<{ deviceId: string; label: string }>;
   selectedInputId: string;
@@ -721,7 +748,26 @@ function AudioDevicePicker(props: {
   onSelectOutput: (id: string) => Promise<void>;
   switching: boolean;
 }) {
-  const canSelectOutput = "setSinkId" in HTMLMediaElement.prototype;
+  const canSelectOutput = () => props.cloud && "setSinkId" in HTMLMediaElement.prototype;
+  const SystemDevice = (device: { direction: "input" | "output" }) => (
+    <button
+      type="button"
+      class={`${styles.deviceControl} ${controls.control}`}
+      aria-label={device.direction === "input" ? props.messages().microphone : props.messages().speaker}
+      aria-expanded={props.help === device.direction}
+      aria-controls={props.helpId}
+      aria-describedby={props.help === device.direction ? props.helpId : undefined}
+      onClick={() => props.onHelp(device.direction)}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && props.help === device.direction) {
+          event.stopPropagation();
+          props.onCloseHelp();
+        }
+      }}
+    >
+      <VoiceIcon name={device.direction === "input" ? "mic" : "volumeUp"} />
+    </button>
+  );
   return (
     <div
       class={styles.deviceGroup}
@@ -730,62 +776,53 @@ function AudioDevicePicker(props: {
     >
       <div class={styles.deviceRow}>
         <div class={styles.deviceField}>
-          <span class={`${styles.deviceControl} ${controls.control}`}>
-            <VoiceIcon
-              name={audioDeviceIcon(
-                props.inputs.find((d) => d.deviceId === (props.selectedInputId || "default"))?.label ?? "",
-                "input",
-              )}
-            />
-            <select
-              class={styles.deviceSelect}
-              value={props.selectedInputId}
-              onChange={async (e) => {
-                const select = e.currentTarget;
-                await props.onSelectInput(select.value);
-                select.value = props.selectedInputId;
-              }}
-              title={`${props.messages().microphone}: ${
-                props.inputs.find((d) => d.deviceId === (props.selectedInputId || "default"))?.label ??
-                (props.selectedInputId
-                  ? (props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice)
-                  : (props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault))
-              }`}
-              aria-label={props.messages().microphone}
-              disabled={props.switching}
-            >
-              <option value="">{props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault}</option>
-              <Show when={props.selectedInputId && !props.inputs.some((d) => d.deviceId === props.selectedInputId)}>
-                <option value={props.selectedInputId}>
-                  {props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice}
-                </option>
-              </Show>
-              <For each={props.inputs.filter((d) => d.deviceId !== "" && d.deviceId !== "default")}>
-                {(d) => <option value={d.deviceId}>{d.label}</option>}
-              </For>
-            </select>
-          </span>
+          <Show when={props.cloud} fallback={<SystemDevice direction="input" />}>
+            <span class={`${styles.deviceControl} ${controls.control}`}>
+              <VoiceIcon
+                name={audioDeviceIcon(
+                  props.inputs.find((d) => d.deviceId === (props.selectedInputId || "default"))?.label ?? "",
+                  "input",
+                )}
+              />
+              <select
+                class={styles.deviceSelect}
+                value={props.selectedInputId}
+                onChange={async (e) => {
+                  const select = e.currentTarget;
+                  await props.onSelectInput(select.value);
+                  select.value = props.selectedInputId;
+                }}
+                title={`${props.messages().microphone}: ${
+                  props.inputs.find((d) => d.deviceId === (props.selectedInputId || "default"))?.label ??
+                  (props.selectedInputId
+                    ? (props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice)
+                    : (props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault))
+                }`}
+                aria-label={props.messages().microphone}
+                disabled={props.switching}
+              >
+                <option value="">{props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault}</option>
+                <Show when={props.selectedInputId && !props.inputs.some((d) => d.deviceId === props.selectedInputId)}>
+                  <option value={props.selectedInputId}>
+                    {props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice}
+                  </option>
+                </Show>
+                <For each={props.inputs.filter((d) => d.deviceId !== "" && d.deviceId !== "default")}>
+                  {(d) => <option value={d.deviceId}>{d.label}</option>}
+                </For>
+              </select>
+            </span>
+          </Show>
         </div>
         <div class={styles.deviceField}>
-          <span class={canSelectOutput ? `${styles.deviceControl} ${controls.control}` : styles.deviceControl}>
-            <VoiceIcon
-              name={
-                canSelectOutput
-                  ? audioDeviceIcon(
-                      props.outputs.find((d) => d.deviceId === (props.selectedOutputId || "default"))?.label ?? "",
-                      "output",
-                    )
-                  : "volumeUp"
-              }
-            />
-            <Show
-              when={canSelectOutput}
-              fallback={
-                <span class={styles.deviceHint}>
-                  {props.messages().systemAudioSettings ?? defaultVoiceOverlayMessages.systemAudioSettings}
-                </span>
-              }
-            >
+          <Show when={canSelectOutput()} fallback={<SystemDevice direction="output" />}>
+            <span class={`${styles.deviceControl} ${controls.control}`}>
+              <VoiceIcon
+                name={audioDeviceIcon(
+                  props.outputs.find((d) => d.deviceId === (props.selectedOutputId || "default"))?.label ?? "",
+                  "output",
+                )}
+              />
               <select
                 class={styles.deviceSelect}
                 value={props.selectedOutputId}
@@ -815,8 +852,8 @@ function AudioDevicePicker(props: {
                   {(d) => <option value={d.deviceId}>{d.label}</option>}
                 </For>
               </select>
-            </Show>
-          </span>
+            </span>
+          </Show>
         </div>
       </div>
     </div>
