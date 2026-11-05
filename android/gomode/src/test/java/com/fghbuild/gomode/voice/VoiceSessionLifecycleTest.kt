@@ -18,6 +18,7 @@ import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellRegistry
 import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.ui.web.completeFrontendPreparation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -85,6 +86,81 @@ class VoiceSessionLifecycleTest {
         cleanup.asReversed().forEach { it() }
         Dispatchers.resetMain()
     }
+
+    @Test
+    fun toolResultDeliveryFailureStopsTheAttemptWithoutRepeatingTheAction() =
+        runTest {
+            for (failure in listOf("closed", "rejected", "exception")) {
+                val settings = SettingsRepository(InMemoryPreferencesDataStore())
+                val first = settings.addService("First", "https://first.example")
+                val second = settings.addService("Second", "https://second.example")
+                settings.settings.first { it.activeServiceId == second }
+                val session = createCloudSession(settings)
+                val channel = RecordingDataChannel()
+                attachAuthorizedChannel(session, channel)
+                VoiceSession::class.java.getDeclaredField("_state").apply {
+                    isAccessible = true
+                    @Suppress("UNCHECKED_CAST") // Preserve the controller's exposed state flow.
+                    val state = get(session) as MutableStateFlow<VoiceState>
+                    state.value = VoiceState(connected = true)
+                }
+                when (failure) {
+                    "closed" -> channel.channelState = DataChannel.State.CLOSED
+                    "rejected" -> channel.accepted = false
+                    "exception" -> channel.sendFailure = IllegalStateException("private result")
+                }
+                try {
+                    invokeHandleServerMessage(session, """{"kind":"turn.status","state":"thinking"}""", channel)
+                    val outcome =
+                        runCatching {
+                            invokeHandleServerMessage(
+                                session,
+                                """{"kind":"tool.call","id":"switch","name":"switch_server","args":{"server_id":"$first"}}""",
+                                channel,
+                            )
+                        }
+                    assertTrue(outcome.exceptionOrNull() is CancellationException)
+                    assertEquals(first, settings.settings.value.activeServiceId)
+                    assertEquals(VOICE_TOOL_RESULT_DELIVERY_ERROR, session.state.value.error)
+                    assertFalse(session.state.value.connected)
+                    assertNull(session.state.value.activeTool)
+                    assertEquals(com.caic.voicegateway.sdk.v1.TurnState.Idle, session.state.value.turnState)
+                    assertEquals(if (failure == "closed") 0 else 1, channel.sendAttempts)
+                    assertTrue(channel.sent.isEmpty())
+                    assertFalse(ShadowLog.getLogsForTag("GoModeVoiceSession").any { it.msg.contains("private result") })
+                } finally {
+                    session.close()
+                }
+            }
+        }
+
+    @Test
+    fun rejectedContextDeliveryUsesTheExistingErrorState() =
+        runTest {
+            val settings = SettingsRepository(InMemoryPreferencesDataStore())
+            val id = settings.addService("Home", "https://home.example")
+            settings.settings.first { it.activeServiceId == id }
+            val session = createCloudSession(settings)
+            val channel = RecordingDataChannel()
+            attachAuthorizedChannel(session, channel)
+            VoiceSession::class.java.getDeclaredField("_state").apply {
+                isAccessible = true
+                @Suppress("UNCHECKED_CAST") // Preserve the controller's exposed state flow.
+                val state = get(session) as MutableStateFlow<VoiceState>
+                state.value = VoiceState(connected = true)
+            }
+            channel.accepted = false
+            try {
+                session.injectText("Private context")
+                assertEquals(VOICE_MESSAGE_DELIVERY_ERROR, session.state.value.error)
+                assertFalse(session.state.value.connected)
+                session.injectText("Late context")
+                assertEquals(1, channel.sendAttempts)
+                assertEquals(VOICE_MESSAGE_DELIVERY_ERROR, session.state.value.error)
+            } finally {
+                session.close()
+            }
+        }
 
     @Test
     fun disconnectCancelsPendingToolWorkBeforeItCanCommitToAnotherCall() =
@@ -974,10 +1050,17 @@ class VoiceSessionLifecycleTest {
 
     private class RecordingDataChannel : DataChannel(1L) {
         val sent = mutableListOf<String>()
+        var channelState = State.OPEN
+        var accepted = true
+        var sendFailure: RuntimeException? = null
+        var sendAttempts = 0
 
-        override fun state(): State = State.OPEN
+        override fun state(): State = channelState
 
         override fun send(buffer: Buffer): Boolean {
+            sendAttempts++
+            sendFailure?.let { throw it }
+            if (!accepted) return false
             val bytes = ByteArray(buffer.data.remaining())
             buffer.data.get(bytes)
             sent += bytes.toString(Charsets.UTF_8)

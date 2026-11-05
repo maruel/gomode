@@ -69,6 +69,15 @@ afterEach(() => {
 });
 
 describe("VoiceOverlay status", () => {
+  it("shows a delivery failure with the existing reconnect action", async () => {
+    const message =
+      "Couldn't deliver the action's result. Reconnect voice. The action may have completed; check before repeating it.";
+    voiceSession.setState((state) => ({ ...state, error: message }));
+    render(() => <VoiceOverlay />);
+    expect(screen.getByRole("alert")).toHaveTextContent(message);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Connect voice assistant" }));
+    expect(connectMock).toHaveBeenCalledOnce();
+  });
   it("offers a gesture retry for a paused level meter while keeping voice connected", async () => {
     const enable = vi.spyOn(voiceSession, "enableMicrophoneMeter").mockImplementation(async () => {
       voiceSession.setState((s) => ({ ...s, micLevelError: null }));

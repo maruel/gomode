@@ -1485,6 +1485,51 @@ describe("VoiceSession", () => {
     }
   });
 
+  it("surfaces tool result delivery failures without replaying the action", async () => {
+    for (const failure of ["closed", "exception"]) {
+      const session = new VoiceSession();
+      await session.connect();
+      const channel = FakePeerConnection.dataChannels.at(-1);
+      if (!channel) throw new Error("Missing voice channel");
+      session.setState((state) => ({ ...state, connected: true, turnState: TurnStateThinking }));
+      mcpMocks.mcpCallTool.mockResolvedValue({ structuredContent: { private: "private result" } });
+      const calls = mcpMocks.mcpCallTool.mock.calls.length;
+      if (failure === "closed") channel.readyState = "closed";
+      else
+        channel.send.mockImplementation(() => {
+          throw new Error("private result");
+        });
+      dispatchToolCall(channel, "delivery", "save");
+      await vi.waitFor(() =>
+        expect(session.state.error).toBe(
+          "Couldn't deliver the action's result. Reconnect voice. The action may have completed; check before repeating it.",
+        ),
+      );
+      expect(session.state.connected).toBe(false);
+      expect(session.state.turnState).toBe(TurnStateIdle);
+      expect(session.state.activeTool).toBeNull();
+      expect(mcpMocks.mcpCallTool.mock.calls.length).toBe(calls + 1);
+      expect(session.state.errorHistory[0]?.message).toBe(session.state.error);
+      const sends = channel.send.mock.calls.length;
+      dispatchToolCall(channel, "late", "save");
+      expect(channel.send.mock.calls.length).toBe(sends);
+      expect(mcpMocks.mcpCallTool.mock.calls.length).toBe(calls + 1);
+      session.disconnect();
+    }
+  });
+
+  it("surfaces a rejected current context send", async () => {
+    const session = new VoiceSession();
+    await session.connect();
+    const channel = FakePeerConnection.dataChannels.at(-1);
+    if (!channel) throw new Error("Missing voice channel");
+    channel.readyState = "closed";
+    session.injectText("private context");
+    expect(session.state.error).toBe("Couldn't send a voice message. Reconnect voice.");
+    expect(session.state.connected).toBe(false);
+    session.disconnect();
+  });
+
   it("retains a failure through a reconnect and bounds the record", async () => {
     const session = new VoiceSession();
     for (let index = 0; index <= 5; index++) {
@@ -2266,6 +2311,30 @@ function triggerIceState(state: RTCIceConnectionState): void {
 }
 
 describe("voice network recovery", () => {
+  it("retains a fatal delivery error when ICE recovery was pending", async () => {
+    vi.useFakeTimers();
+    const session = new VoiceSession();
+    try {
+      await session.connect();
+      const channel = FakePeerConnection.dataChannels[0]!;
+      channel.onopen?.();
+      triggerIceState("disconnected");
+      channel.send.mockImplementation(() => {
+        throw new Error("private context");
+      });
+      session.injectText("context");
+      const failure = session.state.error;
+      expect(failure).toContain("Reconnect voice");
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(FakePeerConnection.instances).toHaveLength(1);
+      expect(session.state.error).toBe(failure);
+      expect(session.state.connected).toBe(false);
+    } finally {
+      session.disconnect();
+      vi.useRealTimers();
+    }
+  });
+
   it("fetches a fresh service-item snapshot for reconnect setup", async () => {
     vi.useFakeTimers();
     mcpMocks.mcpReadAdvertisedTextResource

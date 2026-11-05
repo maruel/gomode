@@ -136,6 +136,27 @@ async function readySocket(): Promise<FakeWebSocket> {
   return socket;
 }
 
+it("ends text voice visibly when a tool result cannot be sent", async () => {
+  const socket = await readySocket();
+  callTool.mockResolvedValue({ structuredContent: { value: "private result" } });
+  socket.message({ kind: "turn.status", state: "thinking" });
+  const send = vi.spyOn(socket, "send").mockImplementation(() => {
+    throw new Error("private result");
+  });
+  socket.message({ kind: "tool.call", id: "delivery", name: "save", args: {} });
+  await vi.waitFor(() =>
+    expect(session.state.error).toBe(
+      "Couldn't deliver the action's result. Reconnect voice. The action may have completed; check before repeating it.",
+    ),
+  );
+  expect(socket.readyState).toBe(3);
+  expect(session.state.connected).toBe(false);
+  expect(session.state.activeTool).toBeNull();
+  expect(earcon.setThinking).toHaveBeenLastCalledWith(false);
+  expect(send).toHaveBeenCalledOnce();
+  expect(callTool).toHaveBeenCalledOnce();
+});
+
 function finishTurn(socket: FakeWebSocket, text: string): void {
   socket.message({ kind: "assistant.text.delta", text });
   socket.message({ kind: "turn.status", state: "idle" });

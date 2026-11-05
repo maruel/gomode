@@ -395,6 +395,7 @@ internal class DeviceVoiceSession(
         callController.activate()
         voiceModeChime.connected()
         flushPendingNotifications()
+        if (!ownsAttempt(attempt)) return
         turnIdle = true
         speak("Ready")
         maybeStartListening()
@@ -436,6 +437,7 @@ internal class DeviceVoiceSession(
                                     languageTag,
                                 ),
                             ),
+                            VOICE_MESSAGE_DELIVERY_ERROR,
                         )
                     }
                 }
@@ -529,6 +531,7 @@ internal class DeviceVoiceSession(
                     callController.activate()
                     voiceModeChime.connected()
                     flushPendingNotifications()
+                    if (!ownsAttempt(attempt) || webSocket !== origin) return
                     sendUserMessage("Say exactly one word: Ready")
                     maybeStartListening()
                 }
@@ -555,6 +558,7 @@ internal class DeviceVoiceSession(
                     if (msg.state == TurnState.Idle && !awaitingReply && pendingCancellations == 0) {
                         if (!pendingGatewayTools.containsKey(attempt)) awaitingModelTurn = false
                         flushPendingNotifications()
+                        if (!ownsAttempt(attempt) || webSocket !== origin) return
                         finalizeAssistantReply()
                         segmenter.push(speechTextFilter.finish()).forEach(::speak)
                         speak(segmenter.flush())
@@ -588,6 +592,7 @@ internal class DeviceVoiceSession(
                     stopPlayback()
                     turnIdle = !remoteTurnActive
                     flushAfterRemoteInterruption()
+                    if (!ownsAttempt(attempt) || webSocket !== origin) return
                     _state.update {
                         it.copy(
                             speaking = false,
@@ -690,6 +695,7 @@ internal class DeviceVoiceSession(
         speakerActive = false
         _state.update { it.copy(speaking = false) }
         flushPendingNotifications()
+        if (!ownsAttempt(attempt)) return
         finishReply()
     }
 
@@ -722,7 +728,9 @@ internal class DeviceVoiceSession(
             onPartial = { text ->
                 if (currentRecognition()) {
                     if (text.isNotBlank()) interruptReply()
-                    _state.update { it.copy(transcript = it.transcript.replaceUserDraft(text, final = false)) }
+                    if (currentRecognition()) {
+                        _state.update { it.copy(transcript = it.transcript.replaceUserDraft(text, final = false)) }
+                    }
                 }
             },
             onIdle = { if (currentRecognition()) handleListeningIdle(attempt) },
@@ -749,6 +757,7 @@ internal class DeviceVoiceSession(
     ) {
         if (attempt != attemptGeneration.get()) return
         interruptReply()
+        if (!ownsAttempt(attempt)) return
         turnIdle = false
         segmenter.clear()
         speechTextFilter.clear()
@@ -782,6 +791,7 @@ internal class DeviceVoiceSession(
     }
 
     private fun interruptReply() {
+        val attempt = attemptGeneration.get()
         val remote = engine == null || engine?.engineType == OnDeviceEngine.REMOTE_GATEWAY
         if (suppressReply && (!remote || !remoteTurnActive)) return
         val generating =
@@ -805,6 +815,7 @@ internal class DeviceVoiceSession(
         // Playback may be the last owner holding context after generation finishes.
         // Active model turns and tools keep their existing notification guards.
         flushPendingNotifications()
+        if (!ownsAttempt(attempt)) return
         if (remote) {
             pendingCancellations++
             send(json.encodeToString(TurnCancel.serializer(), TurnCancel(MessageKind.TurnCancel, "user speech")))
@@ -1149,6 +1160,10 @@ internal class DeviceVoiceSession(
         speech.stopSpeaking()
         pendingSpeech = 0
         speakerActive = false
+        suppressReply = true
+        pendingNotifications.clear()
+        segmenter.clear()
+        speechTextFilter.clear()
         callController.endLocal()
         foreground.stop()
         otherSetup = null
@@ -1160,6 +1175,7 @@ internal class DeviceVoiceSession(
                 listening = false,
                 speaking = false,
                 turnState = TurnState.Idle,
+                activeTool = null,
                 error = message,
                 micLevel = 0f,
                 errorId = it.errorId + 1,
@@ -1212,6 +1228,7 @@ internal class DeviceVoiceSession(
     }
 
     override fun injectText(text: String) {
+        if (_state.value.error != null) return
         if (voiceConversation?.isCurrent() == false) {
             disconnect()
             return
@@ -1258,6 +1275,7 @@ internal class DeviceVoiceSession(
             if (text.isBlank()) emptyList() else listOf(TranscriptEntry(TranscriptSpeaker.USER, text, final))
 
     private fun flushPendingNotifications() {
+        val attempt = attemptGeneration.get()
         if (voiceConversation?.isCurrent() == false) {
             disconnect()
             return
@@ -1282,6 +1300,7 @@ internal class DeviceVoiceSession(
                 sendContextUpdate(text)
             }
         }
+        if (!ownsAttempt(attempt)) return
         pendingUserUtterance?.let { text ->
             pendingUserUtterance = null
             awaitingReply = true
@@ -1304,14 +1323,30 @@ internal class DeviceVoiceSession(
     }
 
     private fun send(text: String) {
-        webSocket?.let { sendOn(it, text) }
+        val socket = webSocket
+        if (socket != null) {
+            sendOn(socket, text, VOICE_MESSAGE_DELIVERY_ERROR)
+        }
     }
 
+    @Suppress("TooGenericExceptionCaught") // Transport boundary: terminate visibly without replaying a failed send.
     private fun sendOn(
         webSocket: WebSocket,
         text: String,
+        failureMessage: String,
     ) {
-        webSocket.send(text)
+        if (this.webSocket !== webSocket) return
+        val accepted =
+            try {
+                webSocket.send(text)
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "WebSocket send failed: ${e.javaClass.simpleName}")
+                false
+            }
+        if (!accepted) {
+            Log.w(TAG, "Voice message delivery failed: bytes=${text.toByteArray(Charsets.UTF_8).size}")
+            setError(failureMessage)
+        }
     }
 
     private fun sendUserMessage(text: String) {
@@ -1329,7 +1364,12 @@ internal class DeviceVoiceSession(
         name: String,
         result: JsonElement,
     ) {
-        send(json.encodeToString(ToolResult.serializer(), gatewayToolResult(id, name, result)))
+        val socket = webSocket ?: return
+        sendOn(
+            socket,
+            json.encodeToString(ToolResult.serializer(), gatewayToolResult(id, name, result)),
+            VOICE_TOOL_RESULT_DELIVERY_ERROR,
+        )
     }
 
     private fun releaseEngine() {

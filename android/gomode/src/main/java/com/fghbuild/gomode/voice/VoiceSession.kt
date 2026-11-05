@@ -284,6 +284,7 @@ internal class VoiceSession(
                 listening = false,
                 speaking = false,
                 turnState = TurnState.Idle,
+                activeTool = null,
                 error = message,
                 errorId = it.errorId + 1,
             )
@@ -1035,6 +1036,7 @@ internal class VoiceSession(
     }
 
     override fun injectText(text: String) {
+        if (_state.value.error != null) return
         if (!voiceConversation.isCurrent()) {
             disconnect()
             return
@@ -1059,16 +1061,30 @@ internal class VoiceSession(
 
     /** Send a message via the WebRTC data channel. */
     private fun send(text: String) {
-        dataChannel?.let { sendOnChannel(it, text) }
+        val channel = dataChannel
+        if (channel != null) {
+            sendOnChannel(channel, text, VOICE_MESSAGE_DELIVERY_ERROR)
+        }
     }
 
+    @Suppress("TooGenericExceptionCaught") // Transport boundary: terminate visibly without replaying a failed send.
     private fun sendOnChannel(
         dc: DataChannel,
         text: String,
+        failureMessage: String,
     ) {
-        if (dc.state() == DataChannel.State.OPEN) {
-            val buf = ByteBuffer.wrap(text.toByteArray(StandardCharsets.UTF_8))
-            dc.send(DataChannel.Buffer(buf, false))
+        if (dataChannel !== dc) return
+        val bytes = text.toByteArray(StandardCharsets.UTF_8)
+        val accepted =
+            try {
+                dc.state() == DataChannel.State.OPEN && dc.send(DataChannel.Buffer(ByteBuffer.wrap(bytes), false))
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "Data channel send failed: ${e.javaClass.simpleName}")
+                false
+            }
+        if (!accepted) {
+            Log.w(TAG, "Voice message delivery failed: bytes=${bytes.size}")
+            setError(failureMessage)
         }
     }
 
@@ -1371,7 +1387,11 @@ internal class VoiceSession(
         originChannel: DataChannel,
     ) {
         if (!ownsAttempt(attempt) || dataChannel !== originChannel) return
-        sendOnChannel(originChannel, json.encodeToString(ToolResult.serializer(), gatewayToolResult(id, name, result)))
+        sendOnChannel(
+            originChannel,
+            json.encodeToString(ToolResult.serializer(), gatewayToolResult(id, name, result)),
+            VOICE_TOOL_RESULT_DELIVERY_ERROR,
+        )
     }
 
     // -----------------------------------------------------------------------

@@ -22,6 +22,10 @@ import java.io.File
 /** Count of retained failures. */
 internal const val MAX_VOICE_ERRORS = 5
 
+internal const val VOICE_MESSAGE_DELIVERY_ERROR = "Couldn't send a voice message. Reconnect voice."
+internal const val VOICE_TOOL_RESULT_DELIVERY_ERROR =
+    "Couldn't deliver the action's result. Reconnect voice. The action may have completed; check before repeating it."
+
 /** Bound on one retained failure message, in characters. */
 internal const val MAX_VOICE_ERROR_CHARS = 300
 

@@ -364,6 +364,9 @@ export interface VoiceErrorEntry {
 
 /** Count of retained failures the overlay keeps reviewable. */
 export const MAX_VOICE_ERRORS = 5;
+const VOICE_MESSAGE_DELIVERY_ERROR = "Couldn't send a voice message. Reconnect voice.";
+const VOICE_TOOL_RESULT_DELIVERY_ERROR =
+  "Couldn't deliver the action's result. Reconnect voice. The action may have completed; check before repeating it.";
 
 /** Failures before the one the panel shows, newest first. */
 export function previousErrors(state: VoiceState): VoiceErrorEntry[] {
@@ -1780,7 +1783,20 @@ export class VoiceSession {
   /** Send a message via the WebRTC data channel. */
   private _send(msg: string): void {
     const channel = this._textSocket ?? this._dc;
-    if (channel !== null && voiceChannelOpen(channel)) channel.send(msg);
+    if (channel !== null) this._sendOn(channel, msg, VOICE_MESSAGE_DELIVERY_ERROR);
+  }
+
+  private _sendOn(channel: VoiceChannel, msg: string, failureMessage: string): void {
+    if (channel !== this._textSocket && channel !== this._dc) return;
+    try {
+      if (voiceChannelOpen(channel)) {
+        channel.send(msg);
+        return;
+      }
+    } catch (error: unknown) {
+      console.warn("Voice message send failed", error instanceof Error ? error.name : "unknown error");
+    }
+    this._setError(failureMessage);
   }
 
   /** Release WebRTC transport and audio resources. */
@@ -1917,6 +1933,9 @@ export class VoiceSession {
   }
 
   private _setError(message: string): void {
+    this._reconnectEnabled = false;
+    if (this._reconnectTimer !== null) clearTimeout(this._reconnectTimer);
+    this._reconnectTimer = null;
     this._recordError(message);
     this._frontendInvocationLifetime.abort();
     this._leaveVoiceMode();
@@ -1934,6 +1953,8 @@ export class VoiceSession {
       s.connected = false;
       s.listening = false;
       s.speaking = false;
+      s.turnState = TurnStateIdle;
+      s.activeTool = null;
       s.error = message;
       s.audioSwitching = null;
     });
@@ -2275,7 +2296,7 @@ export class VoiceSession {
   }
 
   private _sendToolResult(channel: VoiceChannel, id: string, name: string, result: Record<string, unknown>): void {
-    if (voiceChannelOpen(channel)) channel.send(JSON.stringify(gatewayToolResult(id, name, result)));
+    this._sendOn(channel, JSON.stringify(gatewayToolResult(id, name, result)), VOICE_TOOL_RESULT_DELIVERY_ERROR);
   }
 
   // -----------------------------------------------------------------------

@@ -648,11 +648,12 @@ class VoicePanelTest {
     @Test
     fun gatewayFailureShowsTheCauseAndCanBeRetried() {
         var retries = 0
+        val error = mutableStateOf("Voice gateway unavailable (HTTP 502).")
         composeRule.setContent {
             MaterialTheme {
                 VoicePanel(
                     VoiceState(
-                        error = "Voice gateway unavailable (HTTP 502).",
+                        error = error.value,
                     ),
                     true,
                     { retries++ },
@@ -673,6 +674,11 @@ class VoicePanelTest {
         composeRule.onNodeWithText("Voice connection unavailable").assertDoesNotExist()
         composeRule.onNodeWithContentDescription("Connect voice assistant").performClick()
         composeRule.runOnIdle { assertEquals(1, retries) }
+        composeRule.runOnIdle { error.value = VOICE_TOOL_RESULT_DELIVERY_ERROR }
+        composeRule.onNodeWithText(VOICE_TOOL_RESULT_DELIVERY_ERROR).assertIsDisplayed()
+        capture("delivery-error")
+        composeRule.onNodeWithContentDescription("Connect voice assistant").performClick()
+        composeRule.runOnIdle { assertEquals(2, retries) }
     }
 
     @Test
@@ -684,9 +690,7 @@ class VoicePanelTest {
                     Box(Modifier.width(320.dp)) {
                         VoicePanel(
                             VoiceState(
-                                error =
-                                    "Voice gateway unavailable (HTTP 502). " +
-                                        "The server couldn't reach the voice gateway.",
+                                error = VOICE_TOOL_RESULT_DELIVERY_ERROR,
                             ),
                             true,
                             {},
@@ -713,6 +717,7 @@ class VoicePanelTest {
         assertEquals(actions.right, message.right, 1f)
         assertTrue(actions.bottom <= message.top)
         composeRule.onNodeWithContentDescription("Connect voice assistant").assertIsDisplayed()
+        capture("delivery-error-large-text")
     }
 
     @Test

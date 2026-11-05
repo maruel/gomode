@@ -88,6 +88,103 @@ class DeviceVoiceSessionTest {
     }
 
     @Test
+    fun `failed barge in cancellation leaves the terminal state intact`() {
+        for (partial in listOf(false, true)) {
+            for (throws in listOf(false, true)) {
+                val speech = FakeSpeech(completeSpeechImmediately = false)
+                val socket = FakeWebSocket()
+                var listener: WebSocketListener? = null
+                val session =
+                    createSession(speech) { _, captured ->
+                        listener = captured
+                        socket
+                    }
+                try {
+                    session.connect()
+                    val backend = requireNotNull(listener)
+                    backend.onOpen(socket, upgradeResponse())
+                    backend.onMessage(socket, """{"kind":"session.ready"}""")
+                    backend.onMessage(socket, """{"kind":"assistant.text.delta","text":"Reply."}""")
+                    val transcript = session.state.value.transcript
+                    socket.accepted = false
+                    if (throws) socket.sendFailure = IllegalStateException("private cancellation")
+                    if (partial) {
+                        requireNotNull(
+                            speech.partialCallback,
+                        )("Stop")
+                    } else {
+                        requireNotNull(speech.resultCallback)("Stop")
+                    }
+                    assertEquals(VOICE_MESSAGE_DELIVERY_ERROR, session.state.value.error)
+                    assertEquals(com.caic.voicegateway.sdk.v1.TurnState.Idle, session.state.value.turnState)
+                    assertFalse(session.state.value.connected)
+                    assertFalse(session.state.value.listening)
+                    assertFalse(
+                        session.state.value.transcript
+                            .any { it.text == "Stop" },
+                    )
+                    assertEquals(
+                        transcript.map { it.text },
+                        session.state.value.transcript
+                            .map { it.text },
+                    )
+                } finally {
+                    session.close()
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `rejected gateway sends end the attempt and retain a visible error`() =
+        runTest {
+            Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
+            for (toolResult in listOf(false, true)) {
+                val speech = FakeSpeech()
+                val socket = FakeWebSocket()
+                val earcon = RecordingThinkingEarcon()
+                var listener: WebSocketListener? = null
+                val session =
+                    createSession(speech, thinkingEarcon = earcon) { _, captured ->
+                        listener = captured
+                        socket
+                    }
+                try {
+                    session.connect()
+                    val backend = requireNotNull(listener)
+                    if (!toolResult) socket.accepted = false
+                    backend.onOpen(socket, upgradeResponse())
+                    if (toolResult) {
+                        backend.onMessage(socket, """{"kind":"session.ready"}""")
+                        backend.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
+                        advanceTimeBy(1_000)
+                        runCurrent()
+                        assertTrue(earcon.playing)
+                        socket.accepted = false
+                        backend.onMessage(
+                            socket,
+                            """{"kind":"tool.call","id":"list","name":"list_servers","args":{}}""",
+                        )
+                    }
+                    runCurrent()
+                    assertEquals(
+                        if (toolResult) VOICE_TOOL_RESULT_DELIVERY_ERROR else VOICE_MESSAGE_DELIVERY_ERROR,
+                        session.state.value.error,
+                    )
+                    assertFalse(session.state.value.connected)
+                    assertNull(session.state.value.activeTool)
+                    assertFalse(earcon.playing)
+                    assertTrue(socket.closed)
+                    val attempts = socket.sendAttempts
+                    backend.onMessage(socket, """{"kind":"session.ready"}""")
+                    assertEquals(attempts, socket.sendAttempts)
+                } finally {
+                    session.close()
+                }
+            }
+        }
+
+    @Test
     fun `startup progress stays disconnected until ready and ignores late status`() {
         val socket = FakeWebSocket()
         var listener: WebSocketListener? = null
@@ -728,8 +825,25 @@ class DeviceVoiceSessionTest {
                     assertEquals(1, call.activated)
                     assertEquals(0, call.endedLocal)
                     assertTrue(session.state.value.connected)
-                    session.disconnect()
+                    backend.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
+                    backend.onMessage(
+                        socket,
+                        """{"kind":"tool.call","id":"final-list","name":"list_servers","args":{}}""",
+                    )
+                    socket.awaitSent { frames ->
+                        frames.any { it.contains("tool.result") && it.contains("final-list") }
+                    }
+                    backend.onMessage(socket, """{"kind":"assistant.text.delta","text":"Buffered tail"}""")
+                    session.injectText("Queued context")
+                    val spokenBefore = speech.spoken.toList()
+                    socket.accepted = false
+                    backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+                    assertEquals(VOICE_MESSAGE_DELIVERY_ERROR, session.state.value.error)
+                    assertFalse(session.state.value.speaking)
+                    assertEquals(spokenBefore, speech.spoken)
                     assertEquals(1, call.endedLocal)
+                    session.disconnect()
+                    assertEquals(2, call.endedLocal)
                 } finally {
                     session.close()
                     entries.values.forEach { it.close() }
@@ -2773,6 +2887,9 @@ class DeviceVoiceSessionTest {
     }
 
     private class FakeWebSocket : WebSocket {
+        var accepted = true
+        var sendFailure: RuntimeException? = null
+        var sendAttempts = 0
         private val sentMessages = MutableStateFlow<List<String>>(emptyList())
         val sent: List<String> get() = sentMessages.value
 
@@ -2788,6 +2905,9 @@ class DeviceVoiceSessionTest {
         override fun queueSize(): Long = 0
 
         override fun send(text: String): Boolean {
+            sendAttempts++
+            sendFailure?.let { throw it }
+            if (!accepted) return false
             sentMessages.update { it + text }
             return true
         }
