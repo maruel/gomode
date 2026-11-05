@@ -169,6 +169,16 @@ effort = "low"
 # model = "your-model"
 # api_key_name = "REMOTE_LLM_API_KEY"
 
+# Local GGUF LLMs with client speech.
+[[local_stack]]
+label = "Gemma 4 26B A4B"
+text_only = true
+[local_stack.llm]
+provider = "llamacpp"
+llamacppsrv = true
+model = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
+effort = "low"
+
 # Local ASR/LLM/TTS stack. Prerequisites: docs/VOICE_LOCAL_STACK.md.
 # Set text_only = true on the local_stack entry and omit ASR/TTS to use client speech.
 # [[local_stack]]
