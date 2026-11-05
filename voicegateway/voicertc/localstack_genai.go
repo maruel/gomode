@@ -150,7 +150,7 @@ func localStackModelsForConfigWithStarter(
 	}
 	return localStackModels{
 		asr:     asrAdapter,
-		llm:     &genaiLLMAdapter{provider: llm.provider},
+		llm:     &genaiLLMAdapter{provider: llm.provider, effort: cfg.LLM.Effort},
 		runtime: joinClosers(asr.runtime, llm.runtime),
 	}, nil
 }
@@ -392,12 +392,14 @@ func (a *speechTTSAdapter) synthesize(ctx context.Context, text string) iter.Seq
 
 type genaiLLMAdapter struct {
 	provider genai.Provider
+	effort   genai.EffortLevel
 }
 
 func (a *genaiLLMAdapter) newConversation(systemInstruction string, tools []voicev1.ToolDeclaration) llmConversation {
 	defs, err := genaiToolDefs(tools)
 	return &genaiConversation{
 		provider:          a.provider,
+		effort:            a.effort,
 		systemInstruction: systemInstruction,
 		tools:             defs,
 		initErr:           err,
@@ -408,6 +410,7 @@ func (a *genaiLLMAdapter) newConversation(systemInstruction string, tools []voic
 
 type genaiConversation struct {
 	provider genai.Provider
+	effort   genai.EffortLevel
 
 	mu                sync.Mutex
 	messages          genai.Messages
@@ -508,6 +511,9 @@ func (c *genaiConversation) startGenerationLocked(ctx context.Context) llmStep {
 func (c *genaiConversation) genOptions() []genai.GenOption {
 	opts := []genai.GenOption{
 		&genai.GenOptionText{SystemPrompt: c.systemInstruction},
+	}
+	if c.effort != "" {
+		opts = append(opts, c.effort)
 	}
 	if len(c.tools) != 0 {
 		opts = append(opts, &genai.GenOptionTools{Tools: c.tools})

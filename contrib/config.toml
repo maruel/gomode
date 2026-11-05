@@ -9,6 +9,10 @@
 # At standalone startup, unavailable providers are hidden with a warning.
 # Managed llama.cpp and explicit local endpoints remain selectable without
 # default-endpoint probes.
+# Set effort on [[realtime]], [[chat]], or [local_stack.llm]:
+# Omit effort to send no effort option; "off" requests minimal thinking;
+# "low", "medium", "high", "xhigh", and "max" request increasing effort.
+# Supported levels depend on the model. Omit it for models that reject effort.
 
 [server]
 # Use an HTTPS reverse proxy for secure signaling.
@@ -45,11 +49,13 @@ model = "gemini-3.8-live-extended-thinking"
 label = "GPT Realtime mini"
 provider = "openai"
 model = "gpt-realtime-2.1-mini"
+effort = "low"
 
 [[realtime]]
 label = "GPT Realtime ($)"
 provider = "openai"
 model = "gpt-realtime-2.1"
+effort = "low"
 
 # Native audio-to-audio LFM3, independent of the ASR/LLM/TTS stack.
 # llamacppsrv downloads and starts the managed llama.cpp audio server.
@@ -69,31 +75,37 @@ context_size = 65536
 label = "GPT 6 Luna"
 provider = "openai"
 model = "gpt-6-luna"
+effort = "low"
 
 [[chat]]
 label = "Claude Haiku 5.5"
 provider = "anthropic"
 model = "claude-haiku-5-5"
+effort = "low"
 
 [[chat]]
 label = "Gemini Flash 3.8"
 provider = "gemini"
 model = "gemini-3.8-flash"
+effort = "low"
 
 [[chat]]
 label = "Gemini Flash Lite"
 provider = "gemini"
 model = "gemini-flash-lite-latest"
+effort = "low"
 
 [[chat]]
 label = "DeepSeek Flash"
 provider = "deepseek"
 model = "deepseek-flash"
+effort = "low"
 
 [[chat]]
 label = "Groq Qwen3.8-27B"
 provider = "groq"
 model = "qwen/qwen3.8-27b"
+effort = "low"
 
 [[chat]]
 label = "Openrouter Gemma-4-26B-A4B (free)"
@@ -104,16 +116,19 @@ model = "google/gemma-4-26b-a4b-it:free"
 label = "Cerebras GPT OSS 120B"
 provider = "cerebras"
 model = "gpt-oss-120b"
+effort = "low"
 
 [[chat]]
 label = "Mistral Small"
 provider = "mistral"
 model = "mistral-small-latest"
+effort = "low"
 
 [[chat]]
 label = "Alibaba Qwen3.8 Flash"
 provider = "alibaba"
 model = "qwen3.8-flash"
+effort = "low"
 
 [[chat]]
 label = "Cohere Command A"
@@ -124,6 +139,7 @@ model = "command-a-03-2025"
 label = "Together Qwen3.8 Flash"
 provider = "togetherai"
 model = "Qwen/Qwen3.8-Flash"
+effort = "low"
 
 # An arbitrary OpenAI-compatible chat endpoint:
 # [[chat]]
@@ -141,6 +157,7 @@ model = "Qwen/Qwen3.8-Flash"
 # provider = "llamacpp"
 # llamacppsrv = true
 # model = "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"
+# effort = "low"
 # [local_stack.asr]
 # engine = "openai-audio"
 # remote = "http://127.0.0.1:8000"

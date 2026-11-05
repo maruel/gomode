@@ -186,6 +186,10 @@ type ModelConfig struct {
 	// complete chat completions endpoint URL, including its path.
 	Remote string `toml:"remote" json:"remote"`
 	Model  string `toml:"model" json:"model"`
+	// Effort selects off, low, medium, high, xhigh, or max. Empty
+	// omits the effort option, preserving provider defaults. Supported levels
+	// depend on the provider and model; off requests the lowest supported effort.
+	Effort genai.EffortLevel `toml:"effort" json:"effort,omitempty"`
 	// APIKeyName names the environment variable containing the bearer token
 	// for an openaicompatible endpoint. The credential is never stored in TOML.
 	// A named variable must be nonempty in the gateway process environment.
@@ -195,6 +199,9 @@ type ModelConfig struct {
 
 func (c *ModelConfig) validate(prefix string) error {
 	var errs []error
+	if err := c.Effort.Validate(); err != nil {
+		errs = append(errs, fmt.Errorf("%s.effort: %w", prefix, err))
+	}
 	if strings.TrimSpace(c.Model) == "" {
 		errs = append(errs, fmt.Errorf("%s.model is required", prefix))
 	}

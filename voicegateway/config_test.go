@@ -20,6 +20,73 @@ import (
 )
 
 func TestLoadConfig(t *testing.T) {
+	t.Run("effort", func(t *testing.T) {
+		for _, effort := range []genai.EffortLevel{"", "off", "low", "medium", "high", "xhigh", "max", "typo"} {
+			t.Run(string(effort), func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "config.toml")
+				data := fmt.Sprintf(`[[realtime]]
+label = "Live"
+provider = "gemini"
+model = "gemini-3.8-live"
+effort = %q
+[[chat]]
+label = "Chat"
+provider = "openai"
+model = "gpt-6-luna"
+effort = %q
+[[local_stack]]
+label = "Local"
+text_only = true
+[local_stack.llm]
+provider = "llamacpp"
+remote = "http://localhost:8080"
+model = "chat"
+effort = %q
+`, effort, effort, effort)
+				if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				cfg, err := LoadConfig(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if effort == "typo" {
+					if err := cfg.Validate(); err == nil {
+						t.Fatal("accepted invalid effort")
+					}
+					return
+				}
+				if err := cfg.Validate(); err != nil {
+					t.Fatal(err)
+				}
+				models := []*ModelConfig{&cfg.Realtime[0].ModelConfig, &cfg.Chat[0].ModelConfig, &cfg.LocalStack[0].LLM}
+				for _, model := range models {
+					if model.Effort != effort {
+						t.Fatalf("decoded effort = %q, want %q", model.Effort, effort)
+					}
+				}
+				for _, choice := range cfg.Choices() {
+					id, err := choice.ID()
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, model := range models {
+						model.Effort = ""
+					}
+					defaultID, err := choice.ID()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if (id == defaultID) != (effort == "") {
+						t.Fatalf("effort %q identity = %s, default = %s", effort, id, defaultID)
+					}
+					for _, model := range models {
+						model.Effort = effort
+					}
+				}
+			})
+		}
+	})
 	t.Run("syntax error location", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config.toml")
 		if err := os.WriteFile(path, []byte("[server]\nhttp = ':3479'\n[realtime]]\n"), 0o600); err != nil {

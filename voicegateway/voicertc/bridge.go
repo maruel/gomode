@@ -811,7 +811,7 @@ func backendForConfig(cfg voicegateway.Choice, pool *localStackPool) (backendCon
 		if entry.APIKeyEnvVar != "" && key == "" {
 			return nil, fmt.Errorf("%s not configured", entry.APIKeyEnvVar)
 		}
-		return &realtimeBridgeBackend{provider: resolved.Provider, remote: resolved.Remote, apiKey: key, model: resolved.Model}, nil
+		return &realtimeBridgeBackend{provider: resolved.Provider, remote: resolved.Remote, apiKey: key, model: resolved.Model, effort: resolved.Effort}, nil
 	default:
 		return nil, fmt.Errorf("unsupported pipeline configuration %T", cfg)
 	}

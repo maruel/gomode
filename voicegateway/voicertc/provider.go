@@ -24,6 +24,7 @@ type realtimeBridgeBackend struct {
 	remote   string
 	apiKey   string
 	model    string
+	effort   genai.EffortLevel
 }
 
 func (b *realtimeBridgeBackend) Close() error { return nil }
@@ -85,10 +86,14 @@ func (b *realtimeBridgeBackend) newProvider(ctx context.Context) (genai.Provider
 }
 
 func (b *realtimeBridgeBackend) setupOptions(msg *voicev1.SessionSetup) []genai.RealtimeOption {
-	if b.provider == "gemini" {
-		return []genai.RealtimeOption{&gemini.RealtimeOption{InputLanguages: []string{msg.Voice.Language}}}
+	var opts []genai.RealtimeOption
+	if b.effort != "" {
+		opts = append(opts, b.effort)
 	}
-	return nil
+	if b.provider == "gemini" {
+		opts = append(opts, &gemini.RealtimeOption{InputLanguages: []string{msg.Voice.Language}})
+	}
+	return opts
 }
 
 // inputTranscription reports whether the provider needs a separate input

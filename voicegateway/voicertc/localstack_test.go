@@ -889,7 +889,7 @@ func TestGenaiConversation(t *testing.T) {
 	t.Run("toolResult", func(t *testing.T) {
 		t.Parallel()
 		p := &fakeGenAIProvider{}
-		conv := (&genaiLLMAdapter{provider: p}).newConversation("Answer briefly.", []voicev1.ToolDeclaration{{
+		conv := (&genaiLLMAdapter{provider: p, effort: genai.EffortOff}).newConversation("Answer briefly.", []voicev1.ToolDeclaration{{
 			Name:        "tasks_list",
 			Description: "List tasks",
 			Parameters:  json.RawMessage(`{"type":"object"}`),
@@ -933,6 +933,11 @@ func TestGenaiConversation(t *testing.T) {
 		calls := p.callsSnapshot()
 		if len(calls) != 2 {
 			t.Fatalf("calls = %d, want 2", len(calls))
+		}
+		for _, call := range calls {
+			if !slices.Contains(call.opts, genai.GenOption(genai.EffortOff)) {
+				t.Fatal("generation omitted configured effort")
+			}
 		}
 		if got := calls[0].messages[0].String(); got != "Current context:\nProject: caic\n\nUser said:\nWhat is next?" {
 			t.Errorf("first user message = %q", got)

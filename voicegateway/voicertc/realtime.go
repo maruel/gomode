@@ -205,13 +205,18 @@ func (s *llamaRealtimeSession) setup(msg *voicev1.SessionSetup) error {
 	defer s.workers.Done()
 	// Bound cold model setup without limiting the accepted session lifetime.
 	deadline := time.AfterFunc(2*time.Minute, s.expireSetup)
-	rt, err := s.backend.provider.ConnectRealtime(s.ctx,
+	opts := []genai.RealtimeOption{
 		genai.RealtimeOptionInstructions(instruction),
 		&genai.RealtimeOptionTools{Tools: tools},
 		// Leave output mode automatic: explicit speech modalities prefill LFM3's
 		// speech token before it can choose a tool call.
 		genai.RealtimeTurnManual,
-		&llamacpp.RealtimeOption{MaxOutputTokens: s.backend.cfg.MaxOutputTokens})
+		&llamacpp.RealtimeOption{MaxOutputTokens: s.backend.cfg.MaxOutputTokens},
+	}
+	if effort := s.backend.cfg.Effort; effort != "" {
+		opts = append(opts, effort)
+	}
+	rt, err := s.backend.provider.ConnectRealtime(s.ctx, opts...)
 	if err == nil {
 		err = acceptGatewayRealtimeSession(rt)
 	}

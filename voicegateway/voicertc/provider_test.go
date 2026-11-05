@@ -387,6 +387,12 @@ func TestRealtimeBridgeBackendSetupOptions(t *testing.T) {
 	if openAIOpts := (&realtimeBridgeBackend{provider: "openai"}).setupOptions(setup); len(openAIOpts) != 0 {
 		t.Fatalf("OpenAI options = %+v", openAIOpts)
 	}
+	for _, provider := range []string{"gemini", "openai"} {
+		opts := (&realtimeBridgeBackend{provider: provider, effort: genai.EffortLow}).setupOptions(setup)
+		if opts[0] != genai.EffortLow {
+			t.Fatalf("%s effort option = %v", provider, opts[0])
+		}
+	}
 	if !(&realtimeBridgeBackend{provider: "gemini"}).inputTranscription() || (&realtimeBridgeBackend{provider: "openai"}).inputTranscription() {
 		t.Fatal("input transcription policy differs from the provider contract")
 	}
