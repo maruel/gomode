@@ -796,8 +796,8 @@ data class MessageEnvelope(
 /** VoiceConfig describes provider-neutral voice preferences. */
 @Serializable
 data class VoiceConfig(
-    /** Name is the requested provider-specific voice name. */
-    val name: String,
+    /** Name is the requested provider-specific voice name. Empty uses the provider default. */
+    val name: String? = null,
     /**
      * Language is the requested BCP 47 language tag, such as "en-US" or "fr-CA".
      * Empty defaults to "en-US". Invalid tags fail session setup. The gateway

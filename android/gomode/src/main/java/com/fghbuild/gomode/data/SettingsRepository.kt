@@ -339,7 +339,7 @@ class SettingsRepository(
         choiceID: String,
         voiceName: String,
     ) {
-        require(choiceID.isNotBlank() && voiceName.isNotBlank()) { "Select a speaking voice" }
+        require(choiceID.isNotBlank() && (voiceName.isEmpty() || voiceName.isNotBlank())) { "Select a speaking voice" }
         dataStore.edit { prefs ->
             val gateway = normalizeURL(gatewayURL)
             val saved = decodeSpeakingVoices(prefs)

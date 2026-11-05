@@ -58,17 +58,20 @@ internal fun SpeakingVoiceSetting(
                 enabled = enabled && !saving && settings.loadState == SettingsLoadState.Ready,
                 modifier = Modifier.testTag("gomode-speaking-voice"),
             ) {
-                Text(selection.getOrNull() ?: "Select a speaking voice")
+                Text(selection.getOrNull()?.ifEmpty { "Provider default" } ?: "Select a speaking voice")
             }
             DropdownMenu(
                 expanded = expanded,
                 onDismissRequest = { expanded = false },
                 modifier = Modifier.heightIn(max = 320.dp).testTag("gomode-speaking-voices"),
             ) {
-                voices.forEach { name ->
+                (listOf("") + voices).forEach { name ->
                     DropdownMenuItem(
-                        text = { Text(name) },
-                        modifier = Modifier.testTag("gomode-speaking-voice-$name"),
+                        text = { Text(name.ifEmpty { "Provider default" }) },
+                        modifier =
+                            Modifier.testTag(
+                                if (name.isEmpty()) "gomode-speaking-voice-default" else "gomode-speaking-voice-$name",
+                            ),
                         onClick = {
                             expanded = false
                             scope.launch {

@@ -222,6 +222,12 @@ class SettingsRepositoryTest {
             assertEquals("Orus", restored.speakingVoices["https://first.example"]?.get("other"))
             assertEquals("Puck", restored.speakingVoices["https://second.example"]?.get("live"))
             assertEquals("live", restored.voiceChoices["https://first.example"]?.get("webrtc"))
+            repository.updateSpeakingVoice("https://first.example", "live", "")
+            val providerDefault =
+                SettingsRepository(store).awaitSettings("provider default") {
+                    it.speakingVoices["https://first.example"]?.get("live") == ""
+                }
+            assertEquals("", providerDefault.speakingVoices["https://first.example"]?.get("live"))
         }
 
     @Test

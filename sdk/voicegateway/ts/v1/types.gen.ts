@@ -390,8 +390,8 @@ export interface MessageEnvelope {
 
 /** VoiceConfig describes provider-neutral voice preferences. */
 export interface VoiceConfig {
-  /** Name is the requested provider-specific voice name. */
-  name: string;
+  /** Name is the requested provider-specific voice name. Empty uses the provider default. */
+  name?: string;
   /**
    * Language is the requested BCP 47 language tag, such as "en-US" or "fr-CA".
    * Empty defaults to "en-US". Invalid tags fail session setup. The gateway

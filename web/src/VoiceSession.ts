@@ -492,8 +492,9 @@ function validVoiceCatalog(choice: VoiceChoice): boolean {
   return (
     choice.voices.every((name) => typeof name === "string" && name.trim() !== "") &&
     new Set(choice.voices).size === choice.voices.length &&
-    typeof choice.defaultVoice === "string" &&
-    choice.voices.includes(choice.defaultVoice)
+    (choice.defaultVoice === undefined ||
+      choice.defaultVoice === "" ||
+      (typeof choice.defaultVoice === "string" && choice.voices.includes(choice.defaultVoice)))
   );
 }
 
@@ -503,11 +504,11 @@ function speakingVoiceStorageKey(origin: string, choiceID: string): string {
 
 function savedSpeakingVoice(origin: string, choice: VoiceChoice, mode: VoiceMode): string {
   if (mode !== "cloud" || !choice.voices?.length) return "";
-  return localStorage.getItem(speakingVoiceStorageKey(origin, choice.id)) ?? choice.defaultVoice!;
+  return localStorage.getItem(speakingVoiceStorageKey(origin, choice.id)) ?? choice.defaultVoice ?? "";
 }
 
 function speakingVoiceError(choice: VoiceChoice, name: string): string | null {
-  const available = choice.voices?.length ? choice.voices.includes(name) : name === "";
+  const available = name === "" || choice.voices?.includes(name) === true;
   return available ? null : "The saved speaking voice is unavailable. Choose another speaking voice.";
 }
 
@@ -755,7 +756,7 @@ export class VoiceSession {
       this._choicesVersion !== untrack(gatewayVersion) ||
       this.state.choicesStatus !== "ready" ||
       this.state.voiceStatus !== "ready" ||
-      !this.speakingVoices.includes(name)
+      (name !== "" && !this.speakingVoices.includes(name))
     )
       throw new Error("Choose an available speaking voice");
     const choiceID = this.state.choiceIDs.webrtc!;
@@ -2485,7 +2486,7 @@ function gatewaySessionSetup(
   return {
     kind: MessageKindSessionSetup,
     voice: {
-      name: voiceName,
+      ...(voiceName === "" ? {} : { name: voiceName }),
       language: languageTag,
     },
     tools,

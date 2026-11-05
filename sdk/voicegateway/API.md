@@ -379,7 +379,7 @@ VoiceConfig describes provider-neutral voice preferences.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `name` | `string` | Name is the requested provider-specific voice name. | yes |
+| `name` | `string` | Name is the requested provider-specific voice name. Empty uses the provider default. |  |
 | `language` | `string` | Language is the requested BCP 47 language tag, such as "en-US" or "fr-CA".
 Empty defaults to "en-US". Invalid tags fail session setup. The gateway
 instructs the assistant to use this language and supplies recognition hints

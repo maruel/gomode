@@ -107,16 +107,16 @@ internal data class GatewayVoiceChoices(
         val voices = speakingVoices(choice)
         if (voices.isEmpty()) return ""
         val saved = settings.speakingVoices[gatewayURL]?.get(choice.id)
-        if (saved != null && saved !in voices) {
+        if (!saved.isNullOrEmpty() && saved !in voices) {
             throw VoiceSetupException("Saved speaking voice is unavailable. Select a speaking voice in Settings.")
         }
-        return saved ?: requireNotNull(choice.defaultVoice)
+        return saved ?: choice.defaultVoice.orEmpty()
     }
 
     fun speakingVoices(choice: VoiceChoice): List<String> {
         val voices = choice.voices.orEmpty()
-        if (voices.isNotEmpty() &&
-            (voices.any { it.isBlank() } || voices.toSet().size != voices.size || choice.defaultVoice !in voices)
+        if (voices.any { it.isBlank() } || voices.toSet().size != voices.size ||
+            (!choice.defaultVoice.isNullOrEmpty() && choice.defaultVoice !in voices)
         ) {
             throw VoiceSetupException("Gateway returned invalid speaking voices")
         }

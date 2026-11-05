@@ -523,8 +523,8 @@ public struct MessageEnvelope: Codable {
 
 /// VoiceConfig describes provider-neutral voice preferences.
 public struct VoiceConfig: Codable {
-    /// Name is the requested provider-specific voice name.
-    public let name: String
+    /// Name is the requested provider-specific voice name. Empty uses the provider default.
+    public let name: String?
     /// Language is the requested BCP 47 language tag, such as "en-US" or "fr-CA".
     /// Empty defaults to "en-US". Invalid tags fail session setup. The gateway
     /// instructs the assistant to use this language and supplies recognition hints

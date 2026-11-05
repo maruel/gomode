@@ -1126,7 +1126,8 @@ internal class VoiceSession(
                 voiceName,
             )
         Log.i(TAG, "sending setup message")
-        send(json.encodeToString(SessionSetup.serializer(), setup))
+        // Omit default-null fields such as an unselected voice.
+        send(Json.encodeToString(SessionSetup.serializer(), setup))
     }
 
     @Suppress("TooGenericExceptionCaught") // Error boundary: malformed messages must not crash.
@@ -1660,7 +1661,7 @@ internal fun gatewaySessionSetup(
     kind = MessageKind.SessionSetup,
     voice =
         VoiceConfig(
-            name = voiceName,
+            name = voiceName.takeIf { it.isNotEmpty() },
             language = languageTag,
         ),
     tools = tools,

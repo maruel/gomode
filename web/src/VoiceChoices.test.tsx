@@ -51,6 +51,29 @@ async function readySelect(name: "LLM" | "Model"): Promise<HTMLElement> {
 }
 
 describe("voice choices", () => {
+  it("accepts catalogs without a default and persists the provider-default selection", async () => {
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          choices: [{ id: "gemini", label: "Gemini Live", transports: ["webrtc"], voices: ["Aoede", "Orus"] }],
+          defaults: [{ transport: "webrtc", id: "gemini" }],
+        }),
+      );
+    render(() => <VoiceSettings />);
+    await readySelect("Model");
+    const speaking = screen.getByRole("combobox", { name: "Speaking voice" });
+    expect(speaking).toHaveValue("");
+    expect(screen.getByRole("option", { name: "Provider default" })).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.selectOptions(speaking, "Aoede");
+    await user.selectOptions(speaking, "");
+    globalThis.fetch = async () => new Response(JSON.stringify(metadata));
+    const restored = new VoiceSession();
+    await restored.loadVoiceChoices();
+    expect(restored.state.voiceName).toBe("");
+    expect(restored.state.voiceError).toBeNull();
+  });
+
   it("shows each family's default and keeps both selections across mode switches", async () => {
     const user = userEvent.setup();
     render(() => <VoiceSettings />);

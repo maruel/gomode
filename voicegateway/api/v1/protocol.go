@@ -84,8 +84,8 @@ type MessageEnvelope struct {
 
 // VoiceConfig describes provider-neutral voice preferences.
 type VoiceConfig struct {
-	// Name is the requested provider-specific voice name.
-	Name string `json:"name"`
+	// Name is the requested provider-specific voice name. Empty uses the provider default.
+	Name string `json:"name,omitempty"`
 	// Language is the requested BCP 47 language tag, such as "en-US" or "fr-CA".
 	// Empty defaults to "en-US". Invalid tags fail session setup. The gateway
 	// instructs the assistant to use this language and supplies recognition hints

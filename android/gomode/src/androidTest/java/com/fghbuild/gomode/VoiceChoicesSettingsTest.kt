@@ -17,6 +17,8 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.UiDevice
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.ui.settings.SettingsScreen
@@ -30,8 +32,10 @@ import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import java.io.File
 
 class VoiceChoicesSettingsTest {
     @get:Rule
@@ -56,7 +60,7 @@ class VoiceChoicesSettingsTest {
                 val catalog =
                     """
                     {"choices":[{"id":"live","label":"Gemini Live","transports":["webrtc"],
-                    "voices":["Kore","Orus"],"defaultVoice":"Orus"},
+                    "voices":["Kore","Orus"]},
                     {"id":"remote","label":"Remote LLM","transports":["webrtc","text"]},
                     {"id":"local","label":"Local LLM","transports":["text"]}],
                     "defaults":[{"transport":"text","id":"remote"},{"transport":"webrtc","id":"live"}]}
@@ -98,7 +102,11 @@ class VoiceChoicesSettingsTest {
                 composeRule.onNodeWithTag("gomode-voice-choice-live").performScrollTo().assertIsSelected()
                 composeRule.onNodeWithText("Model").assertExists()
                 composeRule.onNodeWithTag("gomode-voice-choice-local").assertDoesNotExist()
-                composeRule.onNodeWithTag("gomode-speaking-voice").performScrollTo().assertTextContains("Orus")
+                composeRule
+                    .onNodeWithTag(
+                        "gomode-speaking-voice",
+                    ).performScrollTo()
+                    .assertTextContains("Provider default")
                 composeRule.runOnIdle { store.failWrites = true }
                 composeRule.onNodeWithTag("gomode-speaking-voice").performClick()
                 composeRule.onNodeWithTag("gomode-speaking-voice-Kore").performClick()
@@ -108,7 +116,7 @@ class VoiceChoicesSettingsTest {
                         .fetchSemanticsNodes()
                         .isNotEmpty()
                 }
-                composeRule.onNodeWithTag("gomode-speaking-voice").assertTextContains("Orus")
+                composeRule.onNodeWithTag("gomode-speaking-voice").assertTextContains("Provider default")
                 composeRule.runOnIdle { store.failWrites = false }
                 composeRule.onNodeWithTag("gomode-speaking-voice").performClick()
                 composeRule.onNodeWithTag("gomode-speaking-voice-Kore").performClick()
@@ -160,6 +168,27 @@ class VoiceChoicesSettingsTest {
                     repository.settings.value.voiceChoices[base]
                         ?.get("text"),
                 )
+                composeRule.onNodeWithTag("gomode-voice-choice-live").performScrollTo().performClick()
+                composeRule.waitUntil {
+                    repository.settings.value.voiceChoices[base]
+                        ?.get("webrtc") == "live"
+                }
+                composeRule.onNodeWithTag("gomode-speaking-voice").performScrollTo().performClick()
+                val instrumentation = InstrumentationRegistry.getInstrumentation()
+                val device = UiDevice.getInstance(instrumentation)
+                val directory = requireNotNull(instrumentation.targetContext.getExternalFilesDir(null))
+                composeRule.waitForIdle()
+                device.waitForIdle()
+                assertTrue(device.takeScreenshot(File(directory, "provider-default-menu.png")))
+                composeRule.onNodeWithTag("gomode-speaking-voice-default").performClick()
+                composeRule.waitUntil {
+                    repository.settings.value.speakingVoices[base]
+                        ?.get("live") == ""
+                }
+                composeRule.onNodeWithTag("gomode-speaking-voice").assertTextContains("Provider default")
+                composeRule.waitForIdle()
+                device.waitForIdle()
+                assertTrue(device.takeScreenshot(File(directory, "provider-default-selected.png")))
                 assertEquals(4, server.requestCount)
             }
         }

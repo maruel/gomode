@@ -19,6 +19,7 @@ export interface VoiceSettingsMessages {
   cloudVoiceModel: string;
   endSessionToChange: string;
   speakingVoice: string;
+  speakingVoiceDefault: string;
   speakingVoiceUnavailable: string;
   choicesLoading: string;
   choicesRetry: string;
@@ -48,6 +49,7 @@ export const defaultVoiceSettingsMessages: VoiceSettingsMessages = {
   cloudVoiceModel: "Model",
   endSessionToChange: "End the voice session to change voice mode, gateway model, or language.",
   speakingVoice: "Speaking voice",
+  speakingVoiceDefault: "Provider default",
   speakingVoiceUnavailable: "Choose an available speaking voice",
   choicesLoading: "Loading voice choices…",
   choicesRetry: "Retry loading voice choices",
@@ -237,11 +239,18 @@ export default function VoiceSettings(props: {
             }}
             aria-describedby={error() === null ? undefined : errorId}
           >
-            <Show when={!voiceSession.speakingVoices.includes(voiceSession.state.voiceName ?? "")}>
+            <Show
+              when={
+                voiceSession.state.voiceName !== null &&
+                voiceSession.state.voiceName !== "" &&
+                !voiceSession.speakingVoices.includes(voiceSession.state.voiceName ?? "")
+              }
+            >
               <option value={voiceSession.state.voiceName ?? ""} disabled>
                 {messages().speakingVoiceUnavailable}
               </option>
             </Show>
+            <option value="">{messages().speakingVoiceDefault}</option>
             <For each={voiceSession.speakingVoices}>{(name) => <option value={name}>{name}</option>}</For>
           </select>
         </label>

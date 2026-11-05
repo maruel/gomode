@@ -167,6 +167,7 @@ let diagnosticRequests: Array<{ url: string; authorization: string | null }> = [
 let offerResponse: Promise<Response> | null = null;
 let diagnosticResponse: VoiceRTCDiagnosticsResp | null = null;
 let offeredVoices: string[] | null = null;
+let offeredVoiceDefault: string | null = "Orus";
 
 function serviceToken(subject: string, serial: number): string {
   const claims = {
@@ -197,6 +198,7 @@ beforeEach(() => {
   offerResponse = null;
   diagnosticResponse = null;
   offeredVoices = null;
+  offeredVoiceDefault = "Orus";
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     const authorization = new Headers(init?.headers).get("Authorization");
@@ -210,7 +212,12 @@ beforeEach(() => {
               transports: ["webrtc", "text"],
               ...(offeredVoices === null
                 ? {}
-                : { voices: offeredVoices, ...(offeredVoices.length === 0 ? {} : { defaultVoice: "Orus" }) }),
+                : {
+                    voices: offeredVoices,
+                    ...(offeredVoices.length === 0 || offeredVoiceDefault === null
+                      ? {}
+                      : { defaultVoice: offeredVoiceDefault }),
+                  }),
             },
           ],
           defaults: [
@@ -2046,15 +2053,21 @@ describe("VoiceSession", () => {
   });
 
   it("uses metadata speaking defaults and leaves catalog-less setup to the gateway", async () => {
-    for (const catalog of [null, ["Aoede", "Orus"]]) {
+    for (const { catalog, defaultVoice } of [
+      { catalog: null, defaultVoice: null },
+      { catalog: ["Aoede", "Orus"], defaultVoice: null },
+      { catalog: ["Aoede", "Orus"], defaultVoice: "" },
+      { catalog: ["Aoede", "Orus"], defaultVoice: "Orus" },
+    ]) {
       offeredVoices = null;
       const session = new VoiceSession();
       await session.loadVoiceChoices();
       offeredVoices = catalog;
+      offeredVoiceDefault = defaultVoice;
       await session.connect();
       const channel = FakePeerConnection.dataChannels.at(-1);
       channel?.onopen?.();
-      expect(JSON.parse(channel?.send.mock.calls[0]?.[0] as string).voice.name).toBe(catalog === null ? "" : "Orus");
+      expect(JSON.parse(channel?.send.mock.calls[0]?.[0] as string).voice.name).toBe(defaultVoice || undefined);
       session.disconnect();
     }
   });
@@ -2118,7 +2131,7 @@ describe("VoiceSession", () => {
     });
   }
 
-  it("blocks a catalog-less recovery if metadata newly requires a named voice", async () => {
+  it("keeps provider-default selection during recovery when a catalog is introduced", async () => {
     const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
     await session.connect();
     FakePeerConnection.dataChannels[0]?.onopen?.();
@@ -2127,8 +2140,10 @@ describe("VoiceSession", () => {
     try {
       triggerIceState("failed");
       await vi.advanceTimersByTimeAsync(0);
-      await vi.waitFor(() => expect(session.state.error).toContain("speaking voice is unavailable"));
-      expect(offerRequests).toHaveLength(1);
+      await vi.waitFor(() => expect(offerRequests).toHaveLength(2));
+      const channel = FakePeerConnection.dataChannels.at(-1);
+      channel?.onopen?.();
+      expect(JSON.parse(channel?.send.mock.calls[0]?.[0] as string).voice).not.toHaveProperty("name");
       expect(session.state.voiceName).toBe("");
     } finally {
       session.disconnect();

@@ -117,6 +117,14 @@ class VoiceChoicesTest {
     )
 
     @Test
+    fun `catalog without default uses provider default and restores an explicit empty selection`() {
+        val catalog = audioCatalog(default = null)
+        assertEquals("", catalog.resolve(settings).voiceName)
+        val saved = settings.copy(speakingVoices = mapOf(gateway to mapOf("live" to "")))
+        assertEquals("", audioCatalog().resolve(saved).voiceName)
+    }
+
+    @Test
     fun `speaking voice uses advertised default and restores each choice preference`() {
         val catalog = audioCatalog()
         assertEquals("Orus", catalog.resolve(settings).voiceName)
@@ -153,12 +161,12 @@ class VoiceChoicesTest {
     }
 
     @Test
-    fun `voice catalog requires unique nonempty names and a supported default`() {
+    fun `voice catalog requires unique nonempty names and validates a provided default`() {
         listOf(
             audioCatalog(listOf("Kore", "Kore"), "Kore"),
             audioCatalog(listOf(""), ""),
             audioCatalog(listOf("Kore"), "Orus"),
-            audioCatalog(listOf("Kore"), null),
+            audioCatalog(emptyList(), "Kore"),
         ).forEach { catalog ->
             assertThrows(VoiceSetupException::class.java) { catalog.resolve(settings) }
         }

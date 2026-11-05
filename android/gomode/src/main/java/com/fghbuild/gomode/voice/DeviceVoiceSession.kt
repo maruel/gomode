@@ -428,7 +428,7 @@ internal class DeviceVoiceSession(
                         frontendToolNames = frontendTools.declarations.map { it.name }.toSet()
                         sendOn(
                             webSocket,
-                            json.encodeToString(
+                            Json.encodeToString(
                                 SessionSetup.serializer(),
                                 gatewaySessionSetup(
                                     voiceToolDeclarations(sessionTools, frontendTools.declarations),
