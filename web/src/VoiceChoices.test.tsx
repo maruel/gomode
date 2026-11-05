@@ -1,5 +1,6 @@
 // Tests gateway choice discovery, per-family selection, persistence, and settings request ownership.
 
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { render, screen, waitFor } from "@solidjs/testing-library";
 import userEvent from "@testing-library/user-event";
@@ -10,13 +11,12 @@ import { configureVoiceGateway, voiceSession, VoiceSession } from "./VoiceSessio
 
 const metadata = {
   choices: [
-    { id: "gemini", label: "Gemini Live", transports: ["webrtc"], voices: ["Aoede", "Orus"], defaultVoice: "Orus" },
+    { id: "gemini", label: "Gemini Live", transports: ["webrtc"], voices: ["Aoede", "Orus"] },
     {
       id: "remote",
       label: "Remote LLM",
       transports: ["text", "webrtc"],
       voices: ["Kore", "Leda"],
-      defaultVoice: "Kore",
     },
     { id: "local", label: "Local LLM", transports: ["text"] },
   ],
@@ -51,7 +51,47 @@ async function readySelect(name: "LLM" | "Model"): Promise<HTMLElement> {
 }
 
 describe("voice choices", () => {
-  it("accepts catalogs without a default and persists the provider-default selection", async () => {
+  const fixtures = JSON.parse(
+    readFileSync(new URL("../../testdata/voice-choices/selection.json", import.meta.url), "utf8"),
+  ) as {
+    selection: Array<{
+      name: string;
+      catalog: { voices?: unknown };
+      savedVoice?: string;
+      mode?: "text";
+      voice?: string;
+      error?: "catalog" | "voice";
+    }>;
+  };
+  for (const row of fixtures.selection) {
+    it(`shared voice selection: ${row.name}`, async () => {
+      voiceSession.setState((s) => ({ ...s, mode: row.mode === "text" ? "browser" : "cloud" }));
+      if (row.savedVoice !== undefined) {
+        localStorage.setItem('gomode.speakingVoice.["https://voice.example","gemini"]', row.savedVoice);
+      }
+      globalThis.fetch = async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ id: "gemini", label: "Gemini Live", transports: ["text", "webrtc"], ...row.catalog }],
+            defaults: [
+              { transport: "webrtc", id: "gemini" },
+              { transport: "text", id: "gemini" },
+            ],
+          }),
+        );
+      await voiceSession.loadVoiceChoices();
+      expect(voiceSession.state.choicesStatus).toBe(row.error === "catalog" ? "error" : "ready");
+      if (row.error === "catalog") return;
+      if (row.error === "voice") {
+        expect(voiceSession.state.voiceError).toContain("speaking voice is unavailable");
+      } else {
+        expect(voiceSession.state.voiceError).toBeNull();
+        expect(voiceSession.state.voiceName).toBe(row.voice);
+      }
+    });
+  }
+
+  it("persists the provider-default selection across catalog updates", async () => {
     globalThis.fetch = async () =>
       new Response(
         JSON.stringify({
@@ -137,19 +177,19 @@ describe("voice choices", () => {
     await readySelect("Model");
     const user = userEvent.setup();
     const speaking = () => screen.getByRole("combobox", { name: "Speaking voice" });
-    expect(speaking()).toHaveValue("Orus");
+    expect(speaking()).toHaveValue("");
     await user.selectOptions(speaking(), "Aoede");
     const restored = new VoiceSession();
     await restored.loadVoiceChoices();
     expect(restored.state.voiceName).toBe("Aoede");
     await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), "remote");
-    expect(speaking()).toHaveValue("Kore");
+    expect(speaking()).toHaveValue("");
     await user.selectOptions(speaking(), "Leda");
     await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), "gemini");
     expect(speaking()).toHaveValue("Aoede");
     configureVoiceGateway("https://other.example", null);
     await readySelect("Model");
-    expect(speaking()).toHaveValue("Orus");
+    expect(speaking()).toHaveValue("");
     configureVoiceGateway("https://voice.example", null);
     await readySelect("Model");
     expect(speaking()).toHaveValue("Aoede");
@@ -212,8 +252,8 @@ describe("voice choices", () => {
     });
     try {
       await userEvent.setup().selectOptions(screen.getByRole("combobox", { name: "Speaking voice" }), "Aoede");
-      expect(voiceSession.state.voiceName).toBe("Orus");
-      expect(screen.getByRole("combobox", { name: "Speaking voice" })).toHaveValue("Orus");
+      expect(voiceSession.state.voiceName).toBe("");
+      expect(screen.getByRole("combobox", { name: "Speaking voice" })).toHaveValue("");
       expect(screen.getByRole("alert")).toHaveTextContent("Voice write failed");
     } finally {
       save.mockRestore();
@@ -237,28 +277,6 @@ describe("voice choices", () => {
     await userEvent.setup().selectOptions(choice, "other");
     expect(screen.queryByRole("combobox", { name: "Speaking voice" })).not.toBeInTheDocument();
     expect(voiceSession.state.voiceName).toBe("");
-  });
-
-  it("rejects invalid gateway speaking-voice catalogs", async () => {
-    for (const catalog of [
-      { voices: ["Orus", "Orus"], defaultVoice: "Orus" },
-      { voices: ["Orus"], defaultVoice: "Retired" },
-      { voices: [""], defaultVoice: "" },
-      { voices: "Orus", defaultVoice: "Orus" },
-      { voices: "", defaultVoice: "" },
-    ]) {
-      configureVoiceGateway("https://voice.example", null);
-      globalThis.fetch = async () =>
-        new Response(
-          JSON.stringify({
-            choices: [{ id: "gemini", label: "Gemini Live", transports: ["webrtc"], ...catalog }],
-            defaults: [{ transport: "webrtc", id: "gemini" }],
-          }),
-        );
-      await voiceSession.loadVoiceChoices();
-      expect(voiceSession.state.choicesStatus).toBe("error");
-      expect(voiceSession.state.choicesError).toBe("The voice gateway returned invalid choices");
-    }
   });
 
   it("rejects invalid per-family defaults", async () => {

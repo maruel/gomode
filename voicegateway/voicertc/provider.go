@@ -15,8 +15,6 @@ import (
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers"
 	"github.com/maruel/genai/providers/gemini"
-	"github.com/maruel/genai/providers/openairesponses"
-	"github.com/maruel/genai/scoreboard"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 )
 
@@ -53,23 +51,22 @@ func (b *realtimeBridgeBackend) providerName() string {
 	}
 }
 
-func (b *realtimeBridgeBackend) voices() []string {
-	var score scoreboard.Score
-	switch b.provider {
-	case "gemini":
-		score = gemini.Scoreboard()
-	case "openai", "openairesponses":
-		score = openairesponses.Scoreboard()
-	default:
-		return nil
+func (b *realtimeBridgeBackend) voices(ctx context.Context) ([]string, error) {
+	p, err := b.newProvider(ctx)
+	if err != nil {
+		return nil, err
+	}
+	score := p.Scoreboard()
+	if err := p.Close(); err != nil {
+		return nil, err
 	}
 	for i := range score.Realtime {
 		r := &score.Realtime[i]
 		if r.Realtime != nil && slices.Contains(r.Models, b.model) {
-			return r.Realtime.Voices
+			return r.Realtime.Voices, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 func (b *realtimeBridgeBackend) newProvider(ctx context.Context) (genai.Provider, error) {

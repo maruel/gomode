@@ -50,7 +50,6 @@ VOICE_CHOICES = {
             "label": "Gemini Live",
             "transports": ["webrtc"],
             "voices": ["Orus", "Puck"],
-            "defaultVoice": "Orus",
         },
         {"id": "remote", "label": "Remote LLM", "transports": ["text"]},
         {"id": "local", "label": "Local LLM", "transports": ["text"]},

@@ -362,8 +362,6 @@ public struct VoiceChoice: Codable {
     public let transports: [VoiceTransport]
     /// Voices lists supported audio voice names. Omitted when the choice does not offer voice selection.
     public let voices: [String]?
-    /// DefaultVoice is the voice used when session.setup.voice.name is omitted.
-    public let defaultVoice: String?
 }
 
 /// VoiceChoiceDefault names the choice a transport family uses when a session

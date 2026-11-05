@@ -486,15 +486,11 @@ function compatibleChoices(choices: VoiceChoice[], transport: VoiceTransport): V
 }
 
 function validVoiceCatalog(choice: VoiceChoice): boolean {
-  if (choice.voices === undefined) return choice.defaultVoice === undefined || choice.defaultVoice === "";
-  if (!Array.isArray(choice.voices)) return false;
-  if (choice.voices.length === 0) return choice.defaultVoice === undefined || choice.defaultVoice === "";
+  if (choice.voices == null) return true;
   return (
+    Array.isArray(choice.voices) &&
     choice.voices.every((name) => typeof name === "string" && name.trim() !== "") &&
-    new Set(choice.voices).size === choice.voices.length &&
-    (choice.defaultVoice === undefined ||
-      choice.defaultVoice === "" ||
-      (typeof choice.defaultVoice === "string" && choice.voices.includes(choice.defaultVoice)))
+    new Set(choice.voices).size === choice.voices.length
   );
 }
 
@@ -504,7 +500,7 @@ function speakingVoiceStorageKey(origin: string, choiceID: string): string {
 
 function savedSpeakingVoice(origin: string, choice: VoiceChoice, mode: VoiceMode): string {
   if (mode !== "cloud" || !choice.voices?.length) return "";
-  return localStorage.getItem(speakingVoiceStorageKey(origin, choice.id)) ?? choice.defaultVoice ?? "";
+  return localStorage.getItem(speakingVoiceStorageKey(origin, choice.id)) ?? "";
 }
 
 function speakingVoiceError(choice: VoiceChoice, name: string): string | null {

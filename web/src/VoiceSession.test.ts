@@ -1,5 +1,6 @@
 // Tests for the browser voice gateway session manager.
 
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect, vi } from "../tests/expect";
 import { FakeMicrophoneContext, microphoneFrames } from "../tests/microphone-audio";
@@ -167,7 +168,6 @@ let diagnosticRequests: Array<{ url: string; authorization: string | null }> = [
 let offerResponse: Promise<Response> | null = null;
 let diagnosticResponse: VoiceRTCDiagnosticsResp | null = null;
 let offeredVoices: string[] | null = null;
-let offeredVoiceDefault: string | null = "Orus";
 
 function serviceToken(subject: string, serial: number): string {
   const claims = {
@@ -198,7 +198,6 @@ beforeEach(() => {
   offerResponse = null;
   diagnosticResponse = null;
   offeredVoices = null;
-  offeredVoiceDefault = "Orus";
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     const authorization = new Headers(init?.headers).get("Authorization");
@@ -210,14 +209,7 @@ beforeEach(() => {
               id: "gemini",
               label: "Gemini Live",
               transports: ["webrtc", "text"],
-              ...(offeredVoices === null
-                ? {}
-                : {
-                    voices: offeredVoices,
-                    ...(offeredVoices.length === 0 || offeredVoiceDefault === null
-                      ? {}
-                      : { defaultVoice: offeredVoiceDefault }),
-                  }),
+              ...(offeredVoices === null ? {} : { voices: offeredVoices }),
             },
           ],
           defaults: [
@@ -2052,22 +2044,14 @@ describe("VoiceSession", () => {
     expect(setup.context.systemInstruction).toMatch(/\n\ninstructions$/);
   });
 
-  it("uses metadata speaking defaults and leaves catalog-less setup to the gateway", async () => {
-    for (const { catalog, defaultVoice } of [
-      { catalog: null, defaultVoice: null },
-      { catalog: ["Aoede", "Orus"], defaultVoice: null },
-      { catalog: ["Aoede", "Orus"], defaultVoice: "" },
-      { catalog: ["Aoede", "Orus"], defaultVoice: "Orus" },
-    ]) {
-      offeredVoices = null;
-      const session = new VoiceSession();
-      await session.loadVoiceChoices();
+  it("leaves voice selection to the provider unless a named preference is saved", async () => {
+    for (const catalog of [null, [], ["Aoede", "Orus"]]) {
       offeredVoices = catalog;
-      offeredVoiceDefault = defaultVoice;
+      const session = new VoiceSession();
       await session.connect();
       const channel = FakePeerConnection.dataChannels.at(-1);
       channel?.onopen?.();
-      expect(JSON.parse(channel?.send.mock.calls[0]?.[0] as string).voice.name).toBe(defaultVoice || undefined);
+      expect(JSON.parse(channel?.send.mock.calls[0]?.[0] as string).voice).not.toHaveProperty("name");
       session.disconnect();
     }
   });
@@ -2105,59 +2089,49 @@ describe("VoiceSession", () => {
     }
   });
 
-  for (const catalog of [null, []]) {
-    it(`blocks reconnect when a named voice catalog becomes ${catalog === null ? "omitted" : "empty"}`, async () => {
-      offeredVoices = ["Aoede", "Orus"];
+  const recoveryFixtures = JSON.parse(
+    readFileSync(new URL("../../testdata/voice-choices/selection.json", import.meta.url), "utf8"),
+  ) as {
+    recovery: Array<{
+      name: string;
+      initialVoices: string[] | null;
+      voice: string;
+      voices: string[] | null;
+      browserError: boolean;
+    }>;
+  };
+  for (const row of recoveryFixtures.recovery) {
+    it(`shared voice recovery: ${row.name}`, async () => {
+      offeredVoices = row.initialVoices;
       const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
       await session.loadVoiceChoices();
-      session.selectSpeakingVoice("Aoede");
+      if (row.voice !== "") session.selectSpeakingVoice(row.voice);
       await session.connect();
       const channel = FakePeerConnection.dataChannels[0];
       channel?.onopen?.();
       channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindSessionReady }) }));
       expect(session.state.connected).toBe(true);
-      offeredVoices = catalog;
+      offeredVoices = row.voices;
       vi.useFakeTimers();
       try {
         triggerIceState("failed");
         await vi.advanceTimersByTimeAsync(0);
-        await vi.waitFor(() => expect(session.state.error).toContain("speaking voice is unavailable"));
-        expect(offerRequests).toHaveLength(1);
-        expect(session.state.voiceName).toBe("Aoede");
+        if (row.browserError) {
+          await vi.waitFor(() => expect(session.state.error).toContain("speaking voice is unavailable"));
+          expect(offerRequests).toHaveLength(1);
+        } else {
+          await vi.waitFor(() => expect(offerRequests).toHaveLength(2));
+          const recovered = FakePeerConnection.dataChannels.at(-1);
+          recovered?.onopen?.();
+          expect(JSON.parse(recovered?.send.mock.calls[0]?.[0] as string).voice.name).toBe(row.voice || undefined);
+        }
+        expect(session.state.voiceName).toBe(row.voice);
       } finally {
         session.disconnect();
         vi.useRealTimers();
       }
     });
   }
-
-  it("keeps provider-default selection during recovery when a catalog is introduced", async () => {
-    const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
-    await session.connect();
-    FakePeerConnection.dataChannels[0]?.onopen?.();
-    offeredVoices = ["Aoede", "Orus"];
-    vi.useFakeTimers();
-    try {
-      triggerIceState("failed");
-      await vi.advanceTimersByTimeAsync(0);
-      await vi.waitFor(() => expect(offerRequests).toHaveLength(2));
-      const channel = FakePeerConnection.dataChannels.at(-1);
-      channel?.onopen?.();
-      expect(JSON.parse(channel?.send.mock.calls[0]?.[0] as string).voice).not.toHaveProperty("name");
-      expect(session.state.voiceName).toBe("");
-    } finally {
-      session.disconnect();
-      vi.useRealTimers();
-    }
-    // A new connection can resolve the newly advertised default explicitly.
-    await session.loadVoiceChoices();
-    await session.connect();
-    FakePeerConnection.dataChannels.at(-1)?.onopen?.();
-    expect(JSON.parse(FakePeerConnection.dataChannels.at(-1)?.send.mock.calls[0]?.[0] as string).voice.name).toBe(
-      "Orus",
-    );
-    session.disconnect();
-  });
 
   it("blocks removed speaking voices until an available replacement is saved", async () => {
     offeredVoices = ["Aoede", "Orus"];
@@ -2195,7 +2169,7 @@ describe("VoiceSession", () => {
       session.disconnect();
     }
     await session.loadVoiceChoices();
-    expect(session.state.voiceName).toBe("Orus");
+    expect(session.state.voiceName).toBe("");
     expect(session.state.voiceError).toBeNull();
   });
 

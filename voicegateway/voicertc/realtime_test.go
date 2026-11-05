@@ -841,8 +841,11 @@ func TestLlamaRealtimeSession(t *testing.T) {
 			if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"context.update","context":{"text":"healthy after setup deadline"}}`)); err != nil {
 				t.Fatal(err)
 			}
-			ch := backendChoice(b, "local", "Local")
-			if len(ch.Voices) != 0 || ch.DefaultVoice != "" {
+			ch, err := backendChoice(t.Context(), b, "local", "Local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(ch.Voices) != 0 {
 				t.Fatalf("unsupported voice advertised: %+v", ch)
 			}
 			waitRealtimeSignal(t, s.ctx.Done())

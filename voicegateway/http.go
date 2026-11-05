@@ -189,7 +189,6 @@ func (h *handler) voiceChoices() voicev1.VoiceChoicesResp {
 			// server supplies its capabilities below.
 			ch.Transports = nil
 			ch.Voices = nil
-			ch.DefaultVoice = ""
 		}
 		choices.Choices = append(choices.Choices, ch)
 	}

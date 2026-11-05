@@ -16,6 +16,14 @@ import com.fghbuild.gomode.sdk.v1.Settings
 import com.fghbuild.gomode.sdk.v1.VoiceGatewaySettings
 import com.fghbuild.gomode.sdk.v1.WebShellSettings
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
@@ -105,99 +113,76 @@ class VoiceChoicesTest {
         )
     private val settings = SettingsState(loadState = SettingsLoadState.Ready)
 
-    private fun audioCatalog(
-        voices: List<String>? = listOf("Kore", "Orus"),
-        default: String? = "Orus",
-    ) = GatewayVoiceChoices(
-        gateway,
-        VoiceChoicesResp(
-            listOf(VoiceChoice("live", "Gemini Live", listOf(VoiceTransport.WebRTC), voices, default)),
-            listOf(VoiceChoiceDefault(VoiceTransport.WebRTC, "live")),
-        ),
-    )
-
-    @Test
-    fun `catalog without default uses provider default and restores an explicit empty selection`() {
-        val catalog = audioCatalog(default = null)
-        assertEquals("", catalog.resolve(settings).voiceName)
-        val saved = settings.copy(speakingVoices = mapOf(gateway to mapOf("live" to "")))
-        assertEquals("", audioCatalog().resolve(saved).voiceName)
-    }
-
-    @Test
-    fun `speaking voice uses advertised default and restores each choice preference`() {
-        val catalog = audioCatalog()
-        assertEquals("Orus", catalog.resolve(settings).voiceName)
-        val saved = settings.copy(speakingVoices = mapOf(gateway to mapOf("live" to "Kore", "other" to "Orus")))
-        assertEquals("Kore", catalog.resolve(saved).voiceName)
-        assertEquals(
-            "Orus",
-            catalog
-                .resolve(
-                    saved.copy(
-                        speakingVoices =
-                            mapOf(
-                                "https://other.example" to
-                                    mapOf("live" to "Kore"),
-                            ),
-                    ),
-                ).voiceName,
-        )
-    }
-
-    @Test
-    fun `removed voice blocks cloud but client speech and absent catalogs use no voice`() {
-        val saved = settings.copy(speakingVoices = mapOf(gateway to mapOf("live" to "removed")))
-        assertThrows(VoiceSetupException::class.java) { audioCatalog().resolve(saved) }
-        assertEquals("", audioCatalog(null, null).resolve(saved).voiceName)
-        assertEquals("", audioCatalog(emptyList(), null).resolve(saved).voiceName)
-        assertEquals(
-            "",
-            audioCatalog().speakingVoice(
-                saved.copy(voiceMode = VoiceMode.DEVICE),
-                audioCatalog().catalog.choices.single(),
+    private fun audioCatalog(voices: List<String>?) =
+        GatewayVoiceChoices(
+            gateway,
+            VoiceChoicesResp(
+                listOf(VoiceChoice("live", "Gemini Live", listOf(VoiceTransport.WebRTC), voices)),
+                listOf(VoiceChoiceDefault(VoiceTransport.WebRTC, "live")),
             ),
         )
-    }
+
+    private val voiceFixtures =
+        Json
+            .parseToJsonElement(
+                checkNotNull(javaClass.getResource("/selection.json")).readText(),
+            ).jsonObject
 
     @Test
-    fun `voice catalog requires unique nonempty names and validates a provided default`() {
-        listOf(
-            audioCatalog(listOf("Kore", "Kore"), "Kore"),
-            audioCatalog(listOf(""), ""),
-            audioCatalog(listOf("Kore"), "Orus"),
-            audioCatalog(emptyList(), "Kore"),
-        ).forEach { catalog ->
-            assertThrows(VoiceSetupException::class.java) { catalog.resolve(settings) }
-        }
-    }
+    fun `shared voice selection contract`() {
+        for (entry in voiceFixtures.getValue("selection").jsonArray) {
+            val row = entry.jsonObject
+            val name = row.getValue("name").jsonPrimitive.content
+            val error = row["error"]?.jsonPrimitive?.content
+            val result =
+                runCatching {
+                    val choice =
+                        Json.decodeFromJsonElement(
+                            VoiceChoice.serializer(),
+                            JsonObject(
+                                mapOf(
+                                    "id" to JsonPrimitive("live"),
+                                    "label" to JsonPrimitive("Gemini Live"),
+                                    "transports" to JsonArray(listOf(JsonPrimitive("text"), JsonPrimitive("webrtc"))),
+                                ) + row.getValue("catalog").jsonObject,
+                            ),
+                        )
+                    val catalog = GatewayVoiceChoices(gateway, VoiceChoicesResp(listOf(choice), emptyList()))
+                    val saved = row["savedVoice"]?.jsonPrimitive?.content
+                    val mode = if (row["mode"]?.jsonPrimitive?.content == "text") VoiceMode.DEVICE else VoiceMode.CLOUD
+                    val preferences = if (saved == null) emptyMap() else mapOf(gateway to mapOf("live" to saved))
+                    catalog.resolve(settings.copy(voiceMode = mode, speakingVoices = preferences)).voiceName
+                }
+            when (error) {
+                "catalog" -> {
+                    assertTrue(
+                        name,
+                        result.exceptionOrNull() is SerializationException ||
+                            result.exceptionOrNull() is VoiceSetupException,
+                    )
+                }
 
-    @Test
-    fun `recovery retains resolved voice and fails when scope or voice catalog disappears`() {
-        val pinned = audioCatalog().resolve(settings)
-        assertEquals("Orus", audioCatalog(default = "Kore").resolve(settings, pinned).voiceName)
-        listOf(audioCatalog(null, null), audioCatalog(emptyList(), null), audioCatalog(listOf("Kore"), "Kore"))
-            .forEach { catalog ->
-                assertThrows(VoiceSetupException::class.java) { catalog.resolve(settings, pinned) }
+                "voice" -> {
+                    assertTrue(name, result.exceptionOrNull() is VoiceSetupException)
+                }
+
+                else -> {
+                    assertEquals(name, row.getValue("voice").jsonPrimitive.content, result.getOrThrow())
+                }
             }
-        assertThrows(VoiceSetupException::class.java) {
-            audioCatalog().copy(gatewayURL = "https://other.example").resolve(settings, pinned)
         }
-        assertThrows(VoiceSetupException::class.java) {
-            audioCatalog().resolve(settings, pinned.copy(choiceID = "other"))
-        }
-        assertEquals("Kore", audioCatalog(default = "Kore").resolve(settings).voiceName)
     }
 
     @Test
     fun `recovery uses pinned choice and voice after advertised defaults change`() {
-        val original = audioCatalog()
-        val pinned = original.resolve(settings)
-        val oldChoice =
-            original.catalog.choices
-                .single()
-                .copy(defaultVoice = "Kore")
-        val alternative = oldChoice.copy(id = "alternative", defaultVoice = "Kore")
+        val original = audioCatalog(listOf("Kore", "Orus"))
+        val saved = settings.copy(speakingVoices = mapOf(gateway to mapOf("live" to "Orus")))
+        val pinned = original.resolve(saved)
+        assertThrows(VoiceSetupException::class.java) {
+            original.copy(gatewayURL = "https://other.example").resolve(settings, pinned)
+        }
+        val oldChoice = original.catalog.choices.single()
+        val alternative = oldChoice.copy(id = "alternative")
         val updated =
             original.copy(
                 catalog =
@@ -210,7 +195,7 @@ class VoiceChoicesTest {
         assertEquals("live", recovered.choiceID)
         assertEquals("Orus", recovered.voiceName)
         assertEquals("alternative", updated.resolve(settings).choiceID)
-        assertEquals("Kore", updated.resolve(settings).voiceName)
+        assertEquals("", updated.resolve(settings).voiceName)
         val incompatible = oldChoice.copy(transports = listOf(VoiceTransport.Text))
         assertThrows(VoiceSetupException::class.java) {
             updated

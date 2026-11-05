@@ -214,7 +214,7 @@ class VoiceChoicesSettingsTest {
                     MockResponse().setBody(
                         """
                         {"choices":[{"id":"live","label":"Gemini Live","transports":["webrtc"],
-                        "voices":["Kore","Orus"],"defaultVoice":"Orus"},
+                        "voices":["Kore","Orus"]},
                         {"id":"local","label":"Local LLM","transports":["text"]}],
                         "defaults":[{"transport":"text","id":"local"},{"transport":"webrtc","id":"live"}]}
                         """.trimIndent(),
@@ -239,7 +239,11 @@ class VoiceChoicesSettingsTest {
                 composeRule.onNodeWithText("Model").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-voice-choice-live").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-voice-choice-local").assertDoesNotExist()
-                composeRule.onNodeWithTag("gomode-speaking-voice").performScrollTo().assertTextContains("Orus")
+                composeRule
+                    .onNodeWithTag(
+                        "gomode-speaking-voice",
+                    ).performScrollTo()
+                    .assertTextContains("Provider default")
                 composeRule.onNodeWithTag("gomode-speaking-voice").performClick()
                 composeRule.onNodeWithTag("gomode-speaking-voice-Kore").performClick()
                 composeRule.waitUntil {

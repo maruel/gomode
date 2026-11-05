@@ -25,7 +25,11 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -40,6 +44,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 @RunWith(RobolectricTestRunner::class)
 class VoiceConversationTest {
@@ -114,6 +119,70 @@ class VoiceConversationTest {
         }
 
     @Test
+    fun sharedRecoveryCasesReusePreparedSetup() =
+        runTest {
+            val fixtures = Json.parseToJsonElement(checkNotNull(javaClass.getResource("/selection.json")).readText())
+            // Native recovery reuses prepared setup; browser recovery rediscovers the catalog.
+            for (entry in fixtures.jsonObject.getValue("recovery").jsonArray) {
+                val row = entry.jsonObject
+                val name = row.getValue("name").jsonPrimitive.content
+                val voice = row.getValue("voice").jsonPrimitive.content
+                val voices = AtomicReference(row.getValue("initialVoices"))
+                MockWebServer().use { server ->
+                    server.dispatcher =
+                        object : Dispatcher() {
+                            override fun dispatch(request: RecordedRequest): MockResponse =
+                                when (request.requestUrl?.encodedPath) {
+                                    "/.well-known/gomode.json" -> {
+                                        MockResponse().setBody(
+                                            """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":3,
+                            "toolGroups":[],"voiceGateway":{"url":"/","required":false,"authRequired":false}}}""",
+                                        )
+                                    }
+
+                                    "/api/voicegateway/v1/voice/choices" -> {
+                                        MockResponse().setBody(
+                                            """{"choices":[{"id":"live","label":"Live","transports":["webrtc"],
+                            "voices":${voices.get()}}],"defaults":[{"transport":"webrtc","id":"live"}]}""",
+                                        )
+                                    }
+
+                                    else -> {
+                                        MockResponse().setResponseCode(500)
+                                    }
+                                }
+                        }
+                    server.start()
+                    val gateway = server.url("/").toString().trimEnd('/')
+                    val repository = SettingsRepository(MemoryPreferences())
+                    val id = repository.addService("Gateway", gateway)
+                    repository.settings.first { it.activeServiceId == id }
+                    repository.updateSpeakingVoice(gateway, "live", voice)
+                    val key = ServiceShellKey(id, gateway)
+                    val page = ServiceShellSession(key) {}.also { authenticate(it, "initial") }
+                    val catalog = ServiceCatalog(backgroundScope)
+                    val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { mapOf(key to page) }
+                    try {
+                        owner.begin(false)
+                        val initial = owner.prepare()
+                        assertEquals(name, voice, initial.voiceName)
+                        voices.set(row.getValue("voices"))
+                        owner.begin(true)
+                        val recovered = owner.prepare(GatewayVoiceSelection(gateway, "live", initial.voiceName))
+                        assertEquals(name, voice, recovered.voiceName)
+                        assertEquals(name, initial.choiceID, recovered.choiceID)
+                        assertEquals(name, initial.gatewayEndpointURL, recovered.gatewayEndpointURL)
+                        assertEquals(name, 2, server.requestCount)
+                    } finally {
+                        owner.finish()
+                        page.close()
+                        catalog.close()
+                    }
+                }
+            }
+        }
+
+    @Test
     fun selectionDuringSetupAndRecoveryKeepsSponsorAndResolvedVoice() =
         runTest {
             val choicesStarted = CountDownLatch(1)
@@ -135,7 +204,7 @@ class VoiceConversationTest {
                                     check(releaseChoices.await(10, TimeUnit.SECONDS))
                                     MockResponse().setBody(
                                         """{"choices":[{"id":"live","label":"Live","transports":["webrtc"],
-                            "voices":["Orus","Kore"],"defaultVoice":"Orus"}],"defaults":[{"transport":"webrtc","id":"live"}]}""",
+                            "voices":["Orus","Kore"]}],"defaults":[{"transport":"webrtc","id":"live"}]}""",
                                     )
                                 }
 
@@ -149,6 +218,7 @@ class VoiceConversationTest {
                 val destinationID = repository.addService("Tools only", "https://tools.invalid")
                 val sponsorID = repository.addService("Gateway sponsor", server.url("/").toString())
                 repository.settings.first { it.activeServiceId == sponsorID }
+                repository.updateSpeakingVoice(server.url("/").toString().trimEnd('/'), "live", "Orus")
                 val entries =
                     repository.settings.value.services.associate { service ->
                         val key = ServiceShellKey(service.id, service.url)

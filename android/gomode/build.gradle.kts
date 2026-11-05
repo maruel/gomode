@@ -54,6 +54,7 @@ android {
     sourceSets.getByName("main").assets.srcDir(rootProject.file("../assets"))
     sourceSets.getByName("test").resources.srcDir(rootProject.file("../assets"))
     sourceSets.getByName("test").resources.srcDir(rootProject.file("../testdata/speech-text"))
+    sourceSets.getByName("test").resources.srcDir(rootProject.file("../testdata/voice-choices"))
     sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("../e2e/voice-preview/scene"))
 
     testOptions {

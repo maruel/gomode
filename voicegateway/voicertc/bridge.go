@@ -139,7 +139,11 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, activit
 			return nil, errors.Join(fmt.Errorf("initialize choice %q: %w", id, err), cleanup())
 		}
 		backends[id] = backend
-		advertised.Choices = append(advertised.Choices, backendChoice(backend, id, label))
+		choice, err := backendChoice(ctx, backend, id, label)
+		if err != nil {
+			return nil, errors.Join(fmt.Errorf("discover choice %q: %w", id, err), cleanup())
+		}
+		advertised.Choices = append(advertised.Choices, choice)
 		if defaultID == "" {
 			defaultID = id
 		}
@@ -169,6 +173,10 @@ func newBridgeWithBackendAndTimeout(ctx context.Context, backend backendConnecto
 	if upnpSSDPTimeout <= 0 {
 		upnpSSDPTimeout = defaultUPnPSSDPTimeout
 	}
+	choices, err := defaultBackendChoices(ctx, backend)
+	if err != nil {
+		return nil, fmt.Errorf("discover default voice choice: %w", err)
+	}
 	// Discover the host's default IPv4 address without netlink (which fails
 	// on hosts without IPv6 due to pion/anet's netlinkrib call).
 	hostIP, err := defaultIPv4(ctx)
@@ -192,7 +200,7 @@ func newBridgeWithBackendAndTimeout(ctx context.Context, backend backendConnecto
 	textCtx, textCancel := context.WithCancel(context.WithoutCancel(ctx))
 	return &Bridge{
 		backends:            map[string]backendConnector{"default": backend},
-		choices:             defaultBackendChoices(backend),
+		choices:             choices,
 		activityLogDir:      activityLogDir,
 		udpMux:              mux,
 		voiceNet:            voiceNet,
@@ -206,17 +214,25 @@ func newBridgeWithBackendAndTimeout(ctx context.Context, backend backendConnecto
 	}, nil
 }
 
-func defaultBackendChoices(backend backendConnector) voicev1.VoiceChoicesResp {
-	choices := []voicev1.VoiceChoice{backendChoice(backend, "default", "Default")}
-	return voicev1.VoiceChoicesResp{Choices: choices, Defaults: voicev1.DefaultChoices(choices, nil)}
+func defaultBackendChoices(ctx context.Context, backend backendConnector) (voicev1.VoiceChoicesResp, error) {
+	ch, err := backendChoice(ctx, backend, "default", "Default")
+	if err != nil {
+		return voicev1.VoiceChoicesResp{}, err
+	}
+	choices := []voicev1.VoiceChoice{ch}
+	return voicev1.VoiceChoicesResp{Choices: choices, Defaults: voicev1.DefaultChoices(choices, nil)}, nil
 }
 
-func backendChoice(backend backendConnector, id, label string) voicev1.VoiceChoice {
+func backendChoice(ctx context.Context, backend backendConnector, id, label string) (voicev1.VoiceChoice, error) {
 	ch := voicev1.VoiceChoice{ID: id, Label: label, Transports: backendTransports(backend)}
 	if provider, ok := backend.(*realtimeBridgeBackend); ok {
-		ch.Voices = append([]string(nil), provider.voices()...)
+		voices, err := provider.voices(ctx)
+		if err != nil {
+			return voicev1.VoiceChoice{}, err
+		}
+		ch.Voices = append([]string(nil), voices...)
 	}
-	return ch
+	return ch, nil
 }
 
 func backendTransports(backend backendConnector) []voicev1.VoiceTransport {

@@ -1612,7 +1612,11 @@ func TestBridge(t *testing.T) {
 		})
 		t.Run("rejects a backend without text support", func(t *testing.T) {
 			t.Parallel()
-			bridge := &Bridge{backends: map[string]backendConnector{"default": textlessBackend{}}, choices: defaultBackendChoices(textlessBackend{})}
+			choices, choiceErr := defaultBackendChoices(t.Context(), textlessBackend{})
+			if choiceErr != nil {
+				t.Fatal(choiceErr)
+			}
+			bridge := &Bridge{backends: map[string]backendConnector{"default": textlessBackend{}}, choices: choices}
 			rec := httptest.NewRecorder()
 			err := bridge.ServeTextSession(t.Context(), rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", http.NoBody))
 			if err == nil {
@@ -1736,9 +1740,13 @@ func TestBridge(t *testing.T) {
 			backend.lazy.loaded.(*localStackRuntime).runtime = recordingBackendRuntime{rec: rec}
 			textCtx, textCancel := context.WithCancel(t.Context())
 			t.Cleanup(textCancel)
+			choices, choiceErr := defaultBackendChoices(t.Context(), backend)
+			if choiceErr != nil {
+				t.Fatal(choiceErr)
+			}
 			bridge := &Bridge{
 				backends:       map[string]backendConnector{"default": backend},
-				choices:        defaultBackendChoices(backend),
+				choices:        choices,
 				activityLogDir: t.TempDir(),
 				textCtx:        textCtx,
 				textCancel:     textCancel,
@@ -1829,9 +1837,13 @@ func TestBridge(t *testing.T) {
 		backend := &fakeBackendConnector{}
 		textCtx, textCancel := context.WithCancel(t.Context())
 		t.Cleanup(textCancel)
+		choices, choiceErr := defaultBackendChoices(t.Context(), backend)
+		if choiceErr != nil {
+			t.Fatal(choiceErr)
+		}
 		b := &Bridge{
 			backends:   map[string]backendConnector{"default": backend},
-			choices:    defaultBackendChoices(backend),
+			choices:    choices,
 			textCtx:    textCtx,
 			textCancel: textCancel,
 			sessions:   make(map[string]*session),

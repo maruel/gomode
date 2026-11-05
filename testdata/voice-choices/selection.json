@@ -1,0 +1,27 @@
+{
+  "selection": [
+    { "name": "omitted catalog", "catalog": {}, "voice": "" },
+    { "name": "null catalog", "catalog": { "voices": null }, "voice": "" },
+    { "name": "empty catalog", "catalog": { "voices": [] }, "voice": "" },
+    { "name": "catalog without preference", "catalog": { "voices": ["Kore", "Orus"] }, "voice": "" },
+    { "name": "saved provider default", "catalog": { "voices": ["Kore", "Orus"] }, "savedVoice": "", "voice": "" },
+    { "name": "saved named voice", "catalog": { "voices": ["Kore", "Orus"] }, "savedVoice": "Kore", "voice": "Kore" },
+    { "name": "removed named voice", "catalog": { "voices": ["Orus"] }, "savedVoice": "Kore", "error": "voice" },
+    { "name": "omitted catalog ignores saved voice", "catalog": {}, "savedVoice": "Kore", "voice": "" },
+    { "name": "empty catalog ignores saved voice", "catalog": { "voices": [] }, "savedVoice": "Kore", "voice": "" },
+    { "name": "client speech ignores saved voice", "catalog": { "voices": ["Orus"] }, "savedVoice": "Kore", "mode": "text", "voice": "" },
+    { "name": "duplicate names", "catalog": { "voices": ["Kore", "Kore"] }, "error": "catalog" },
+    { "name": "empty name", "catalog": { "voices": [""] }, "error": "catalog" },
+    { "name": "blank name", "catalog": { "voices": [" "] }, "error": "catalog" },
+    { "name": "non-string name", "catalog": { "voices": [42] }, "error": "catalog" },
+    { "name": "non-array catalog", "catalog": { "voices": "Kore" }, "error": "catalog" }
+  ],
+  "recovery": [
+    { "name": "named voice survives catalog reorder", "initialVoices": ["Kore", "Orus"], "voice": "Kore", "voices": ["Orus", "Kore"], "browserError": false },
+    { "name": "named voice removed", "initialVoices": ["Kore", "Orus"], "voice": "Kore", "voices": ["Orus"], "browserError": true },
+    { "name": "named voice catalog omitted", "initialVoices": ["Kore", "Orus"], "voice": "Kore", "voices": null, "browserError": true },
+    { "name": "named voice catalog emptied", "initialVoices": ["Kore", "Orus"], "voice": "Kore", "voices": [], "browserError": true },
+    { "name": "provider default survives introduced catalog", "initialVoices": null, "voice": "", "voices": ["Kore", "Orus"], "browserError": false },
+    { "name": "provider default survives removed catalog", "initialVoices": ["Kore", "Orus"], "voice": "", "voices": null, "browserError": false }
+  ]
+}

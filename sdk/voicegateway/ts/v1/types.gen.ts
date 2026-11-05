@@ -221,8 +221,6 @@ export interface VoiceChoice {
   transports: VoiceTransport[];
   /** Voices lists supported audio voice names. Omitted when the choice does not offer voice selection. */
   voices?: string[];
-  /** DefaultVoice is the voice used when session.setup.voice.name is omitted. */
-  defaultVoice?: string;
 }
 
 /**
