@@ -7,8 +7,7 @@
 # Provider names come from genai's providers.All registry at https://github.com/maruel/genai
 #
 # At standalone startup, unavailable providers are hidden with a warning.
-# Managed llama.cpp and explicit local endpoints remain selectable without
-# default-endpoint probes.
+#
 # Set effort on [[realtime]], [[chat]], or [local_stack.llm]:
 # Omit effort to send no effort option; "off" requests minimal thinking;
 # "low", "medium", "high", "xhigh", and "max" request increasing effort.
@@ -36,22 +35,26 @@ max_instances = 1
 # Realtime Audio models.
 
 [[realtime]]
+# https://aistudio.google.com/docs/pricing#gemini-3.8-live
 label = "Gemini Live"
 provider = "gemini"
 model = "gemini-3.8-live"
 
 [[realtime]]
+# https://aistudio.google.com/docs/models/gemini-3.8-live-extended-thinking
 label = "Gemini Live Thinking ($)"
 provider = "gemini"
 model = "gemini-3.8-live-extended-thinking"
 
 [[realtime]]
+# https://developers.openai.com/api/docs/models/gpt-realtime-2.1-mini
 label = "GPT Realtime mini"
 provider = "openai"
 model = "gpt-realtime-2.1-mini"
 effort = "low"
 
 [[realtime]]
+# https://developers.openai.com/api/docs/models/gpt-realtime-2.1
 label = "GPT Realtime ($)"
 provider = "openai"
 model = "gpt-realtime-2.1"
@@ -72,73 +75,70 @@ context_size = 65536
 # voice-gateway.env.example, using genai's provider environment variables.
 
 [[chat]]
+# https://developers.openai.com/api/docs/models/gpt-6-luna
 label = "GPT 6 Luna"
 provider = "openai"
 model = "gpt-6-luna"
 effort = "low"
 
 [[chat]]
+# https://platform.claude.com/docs/en/models/haiku-5-5/overview
 label = "Claude Haiku 5.5"
 provider = "anthropic"
 model = "claude-haiku-5-5"
 effort = "low"
 
 [[chat]]
+# https://aistudio.google.com/docs/pricing#gemini-3.8-flash
 label = "Gemini Flash 3.8"
 provider = "gemini"
 model = "gemini-3.8-flash"
 effort = "low"
 
 [[chat]]
+# https://aistudio.google.com/docs/pricing#gemini-3.5-flash-lite
 label = "Gemini Flash Lite"
 provider = "gemini"
 model = "gemini-flash-lite-latest"
 effort = "low"
 
 [[chat]]
+# https://api-docs.deepseek.com/quick_start/pricing/
 label = "DeepSeek Flash"
 provider = "deepseek"
 model = "deepseek-flash"
 effort = "low"
 
 [[chat]]
-label = "Groq Qwen3.8-27B"
-provider = "groq"
-model = "qwen/qwen3.8-27b"
-effort = "low"
-
-[[chat]]
-label = "Openrouter Gemma-4-26B-A4B (free)"
+# https://openrouter.ai/minimax/minimax-m3.1-flash
+label = "Openrouter Minimax M3.1 Flash"
 provider = "openrouter"
-model = "google/gemma-4-26b-a4b-it:free"
+model = "minimax/minimax-m3.1-flash"
 
 [[chat]]
-label = "Cerebras GPT OSS 120B"
-provider = "cerebras"
-model = "gpt-oss-120b"
-effort = "low"
+# https://openrouter.ai/xiaomi/mimo-v2.6-flash
+label = "Openrouter MiMo-V2.6-Flash"
+provider = "openrouter"
+model = "xiaomi/mimo-v2.6-flash"
 
 [[chat]]
-label = "Mistral Small"
+# https://openrouter.ai/mistralai/mistral-nemo
+label = "Openrouter Mistral Nemo"
+provider = "openrouter"
+model = "Mistral Nemo"
+
+[[chat]]
+# https://docs.mistral.ai/models/ministral-3-14b-25-12
+label = "Mistral Ministral 3 8B"
 provider = "mistral"
-model = "mistral-small-latest"
+model = "ministral-3-8b-25-12"
 effort = "low"
 
 [[chat]]
+# https://www.qwencloud.com/models/qwen3.8-flash?region=us-east-1
 label = "Alibaba Qwen3.8 Flash"
 provider = "alibaba"
 model = "qwen3.8-flash"
-effort = "low"
-
-[[chat]]
-label = "Cohere Command A"
-provider = "cohere"
-model = "command-a-03-2025"
-
-[[chat]]
-label = "Together Qwen3.8 Flash"
-provider = "togetherai"
-model = "Qwen/Qwen3.8-Flash"
 effort = "low"
 
 # An arbitrary OpenAI-compatible chat endpoint:
