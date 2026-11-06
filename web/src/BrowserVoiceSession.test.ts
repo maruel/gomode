@@ -195,6 +195,142 @@ describe("provider reasoning", () => {
 });
 
 describe("browser voice sessions", () => {
+  it("interrupts playback on interim speech and discards in-flight output until cancellation is acknowledged", async () => {
+    const socket = await readySocket();
+    socket.message({ kind: "assistant.text.delta", text: "First. Queued. **unfinished" });
+    const old = fakeSynthesis.spoken[0];
+    ok(old);
+    expect(session.state.listening).toBe(true);
+    const recognition = FakeRecognition.instances.at(-1);
+    ok(recognition);
+    recognition.result([["Actually", false]]);
+    expect(fakeSynthesis.cancel).toHaveBeenCalledOnce();
+    expect(session.state.speaking).toBe(false);
+    expect(session.state.listening).toBe(true);
+    expect(socket.sent.at(-1)).toBe(JSON.stringify({ kind: "turn.cancel" }));
+    recognition.result([["Actually, stop", false]]);
+    expect(socket.sent.filter((text) => JSON.parse(text).kind === "turn.cancel")).toHaveLength(1);
+    socket.message({ kind: "assistant.text.delta", text: "Stale. " });
+    socket.message({ kind: "turn.status", state: "idle" });
+    expect(fakeSynthesis.spoken).toHaveLength(1);
+    recognition.result([["Actually, stop", true]]);
+    recognition.end();
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toEqual({ kind: "user.message", text: "Actually, stop" });
+    socket.message({ kind: "interrupted", source: "user" });
+    socket.message({ kind: "turn.status", state: "idle" });
+    expect(session.state.listening).toBe(false);
+    socket.message({ kind: "turn.status", state: "thinking" });
+    finishTurn(socket, "Okay.");
+    old.onend?.call(old, new Event("end") as SpeechSynthesisEvent);
+    expect(fakeSynthesis.spoken.map((entry) => entry.text)).toEqual(["First.", "Okay."]);
+    expect(session.state.transcript.map((entry) => entry.text)).toEqual([
+      "First. Queued. **unfinished",
+      "Actually, stop",
+      "Okay.",
+    ]);
+    expect(session.state.error).toBeNull();
+  });
+
+  it("can interrupt queued playback after generation has finished and preserves interim text across the acknowledgement", async () => {
+    const socket = await readySocket();
+    finishTurn(socket, "First. Queued.");
+    const recognition = FakeRecognition.instances.at(-1);
+    ok(recognition);
+    recognition.result([["Change", false]]);
+    socket.message({ kind: "interrupted", source: "user" });
+    socket.message({ kind: "turn.status", state: "idle" });
+    expect(session.state.transcript.at(-1)).toMatchObject({ speaker: "user", text: "Change", final: false });
+    recognition.result([["Change direction", true]]);
+    recognition.end();
+    expect(session.state.transcript.filter((entry) => entry.speaker === "user")).toEqual([
+      { kind: "transcript", speaker: "user", text: "Change direction", final: true },
+    ]);
+    expect(fakeSynthesis.cancel).toHaveBeenCalledOnce();
+    expect(fakeSynthesis.spoken).toHaveLength(1);
+  });
+
+  for (const isError of [false, true]) {
+    it(`delivers a ${isError ? "failed" : "successful"} tool result during interruption without duplicating user text`, async () => {
+      const socket = await readySocket();
+      socket.message({ kind: "assistant.text.delta", text: "Checking. Queued. " });
+      const recognition = FakeRecognition.instances.at(-1);
+      ok(recognition);
+      recognition.result([["Wait", false]]);
+      const result = isError ? { error: "Save failed" } : { saved: true };
+      callTool.mockResolvedValueOnce({ isError, structuredContent: result });
+      socket.message({ kind: "tool.call", id: "dispatched", name: "save", args: { value: 3 } });
+      expect(callTool).toHaveBeenCalledOnce();
+      await Promise.resolve();
+      expect(socket.sent).toContain(JSON.stringify({ kind: "tool.result", id: "dispatched", name: "save", result }));
+      socket.message({ kind: "interrupted", source: "user" });
+      socket.message({ kind: "turn.status", state: "idle" });
+      expect(session.state.transcript.filter((entry) => entry.speaker === "user")).toEqual([
+        { kind: "transcript", speaker: "user", text: "Wait", final: false },
+      ]);
+      recognition.result([["Wait, change", false]]);
+      recognition.result([["Wait, change that", true]]);
+      recognition.end();
+      expect(session.state.transcript.filter((entry) => entry.speaker === "user")).toEqual([
+        { kind: "transcript", speaker: "user", text: "Wait, change that", final: true },
+      ]);
+      if (isError) expect(session.state.transcript.at(-1)?.text).toBe("[save] Save failed");
+      socket.message({ kind: "turn.status", state: "thinking" });
+      finishTurn(socket, "Okay.");
+      fakeSynthesis.complete();
+      expect(session.state.listening).toBe(true);
+      expect(session.state.activeTool).toBeNull();
+      expect(fakeSynthesis.spoken.map((entry) => entry.text)).toEqual(["Checking.", "Okay."]);
+    });
+  }
+
+  it("does not start playback if enabling recognition tears down the session", async () => {
+    const socket = await readySocket();
+    vi.spyOn(FakeRecognition.prototype, "start").mockImplementationOnce(() => {
+      throw new Error("Recognition unavailable");
+    });
+    socket.message({ kind: "assistant.text.delta", text: "Hello. " });
+    await Promise.resolve();
+    expect(session.state.connected).toBe(false);
+    expect(session.state.error).toBe("Recognition unavailable");
+    expect(fakeSynthesis.spoken).toHaveLength(0);
+  });
+
+  it("restarts recognition during playback and accepts Android's one-shot interruption", async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Chrome Android" });
+    const socket = await readySocket();
+    socket.message({ kind: "assistant.text.delta", text: "First. Queued. " });
+    const original = FakeRecognition.instances.at(-1);
+    ok(original);
+    original.end();
+    vi.advanceTimersByTime(250);
+    const recognition = FakeRecognition.instances.at(-1);
+    ok(recognition);
+    expect(recognition).not.toBe(original);
+    expect(session.state.speaking).toBe(true);
+    expect(session.state.listening).toBe(true);
+    recognition.result([["Stop", true]]);
+    expect(session.state.speaking).toBe(false);
+    expect(session.state.listening).toBe(false);
+    expect(socket.sent.slice(-2).map((text) => JSON.parse(text))).toEqual([
+      { kind: "turn.cancel" },
+      { kind: "user.message", text: "Stop" },
+    ]);
+  });
+
+  it("releases a pending interruption on disconnect and ignores the old acknowledgement after reconnect", async () => {
+    const socket = await readySocket();
+    finishTurn(socket, "First reply.");
+    FakeRecognition.instances.at(-1)?.result([["Stop", false]]);
+    session.disconnect();
+    const replacement = await readySocket();
+    socket.message({ kind: "interrupted", source: "user" });
+    finishTurn(replacement, "Fresh reply.");
+    expect(session.state.connected).toBe(true);
+    expect(session.state.speaking).toBe(true);
+    expect(fakeSynthesis.spoken.at(-1)?.text).toBe("Fresh reply.");
+  });
+
   it("uses the saved browser voice for gateway replies and prevents changes during the session", async () => {
     const selected = { name: "Selected", lang: "en-US", voiceURI: "selected" } as SpeechSynthesisVoice;
     fakeSynthesis.voices = [selected];
@@ -242,7 +378,7 @@ describe("browser voice sessions", () => {
     expect(session.state.listening).toBe(true);
   });
 
-  it("keeps capture and notifications gated across playback gaps and tool waits", async () => {
+  it("keeps capture through playback gaps, pauses for tool waits, and buffers notifications until playback drains", async () => {
     const socket = await readySocket();
     socket.message({ kind: "turn.status", state: "thinking" });
     session.injectText("Notification");
@@ -250,11 +386,11 @@ describe("browser voice sessions", () => {
     socket.message({ kind: "assistant.text.delta", text: "One. " });
     fakeSynthesis.complete();
     expect(session.state.speaking).toBe(false);
-    expect(session.state.listening).toBe(false);
-    expect(FakeRecognition.instances).toHaveLength(0);
-    expect(earcon.setThinking).toHaveBeenLastCalledWith(true);
+    expect(session.state.listening).toBe(true);
+    expect(FakeRecognition.instances).toHaveLength(1);
+    expect(earcon.setThinking).toHaveBeenLastCalledWith(false);
     const stream = await vi.mocked(navigator.mediaDevices.getUserMedia).mock.results[0]!.value;
-    expect(stream.getAudioTracks()[0]!.enabled).toBe(false);
+    expect(stream.getAudioTracks()[0]!.enabled).toBe(true);
     let finish!: (value: Awaited<ReturnType<typeof mcpClient.callTool>>) => void;
     callTool.mockImplementationOnce(
       () =>
@@ -265,6 +401,7 @@ describe("browser voice sessions", () => {
     socket.message({ kind: "tool.call", id: "wait", name: "items_list", args: {} });
     socket.message({ kind: "turn.status", state: "thinking" });
     expect(session.state.listening).toBe(false);
+    FakeRecognition.instances.at(-1)?.end();
     expect(socket.sent.some((text) => text.includes("Notification"))).toBe(false);
     finish({ structuredContent: {}, isError: false });
     await Promise.resolve();
@@ -285,7 +422,6 @@ describe("browser voice sessions", () => {
     socket.message({ kind: "interrupted", source: "user" });
     expect(fakeSynthesis.cancel).toHaveBeenCalledOnce();
     expect(session.state.speaking).toBe(false);
-    FakeRecognition.instances.at(-1)?.end();
     socket.message({ kind: "assistant.text.delta", text: "Fresh. Next. " });
     const fresh = fakeSynthesis.spoken.at(-1);
     ok(fresh);
@@ -364,7 +500,9 @@ describe("browser voice sessions", () => {
     session.disconnect();
     old.onend?.call(old, new Event("end") as SpeechSynthesisEvent);
     expect(fakeSynthesis.spoken).toHaveLength(1);
-    expect(FakeRecognition.instances).toHaveLength(0);
+    expect(FakeRecognition.instances).toHaveLength(1);
+    expect(FakeRecognition.instances[0]?.aborted).toBe(true);
+    expect(session.state.listening).toBe(false);
     expect(session.state.speaking).toBe(false);
   });
 
@@ -403,7 +541,7 @@ describe("browser voice sessions", () => {
     expect(fakeSynthesis.spoken.at(-1)?.text).toBe("New reply");
   });
 
-  it("meters quiet speech and silence, resets for mute and replies, and releases capture", async () => {
+  it("meters quiet speech and silence, keeps capture during replies, and releases capture", async () => {
     const poll = microphoneFrames();
     const socket = await readySocket();
     socket.message({ kind: "turn.status", state: "idle" });
@@ -430,7 +568,7 @@ describe("browser voice sessions", () => {
     expect(session.state.micLevel).toBe(0);
     finishTurn(socket, "Hello back");
     poll();
-    expect(session.state.micLevel).toBe(0);
+    expect(session.state.micLevel).toBeGreaterThan(0.3);
     fakeSynthesis.complete();
     poll();
     expect(session.state.micLevel).toBeGreaterThan(0.3);
@@ -658,12 +796,13 @@ describe("browser voice sessions", () => {
     expect(requests[0]?.body).toEqual({ choiceID: "remote" });
   });
 
-  it("listens only after the assistant finishes speaking and keeps one copy of user text", async () => {
+  it("listens during playback and keeps one copy of user text", async () => {
     const socket = await readySocket();
     expect(FakeRecognition.instances).toHaveLength(0);
     finishTurn(socket, "Ready");
     expect(session.state.speaking).toBe(true);
-    expect(FakeRecognition.instances).toHaveLength(0);
+    expect(session.state.listening).toBe(true);
+    expect(FakeRecognition.instances).toHaveLength(1);
     expect(fakeSynthesis.spoken[0]?.lang).toBe("en-US");
     fakeSynthesis.complete();
     expect(session.state.listening).toBe(true);
@@ -715,15 +854,23 @@ describe("browser voice sessions", () => {
     expect(session.state.listening).toBe(true);
   });
 
-  it("mutes recognition and unmuting resumes only while the assistant is idle", async () => {
+  it("mutes recognition and resumes during playback when unmuted", async () => {
     const socket = await readySocket();
     finishTurn(socket, "Ready");
     session.setMicrophoneMode("muted");
-    fakeSynthesis.complete();
-    expect(FakeRecognition.instances).toHaveLength(0);
+    const recognition = FakeRecognition.instances.at(-1);
+    ok(recognition);
+    expect(recognition.aborted).toBe(true);
+    recognition.result([["Ignored", true]]);
+    recognition.end();
+    expect(session.state.listening).toBe(false);
+    expect(socket.sent.some((text) => JSON.parse(text).kind === "turn.cancel")).toBe(false);
     session.setMicrophoneMode("listening");
     expect(session.state.listening).toBe(true);
-    expect(FakeRecognition.instances).toHaveLength(1);
+    expect(session.state.speaking).toBe(true);
+    expect(FakeRecognition.instances).toHaveLength(2);
+    FakeRecognition.instances.at(-1)?.result([["Stop", false]]);
+    expect(session.state.speaking).toBe(false);
   });
 
   it("hang_up closes speech and ignores late transport or speech callbacks", async () => {
@@ -734,7 +881,9 @@ describe("browser voice sessions", () => {
     expect(socket.readyState).toBe(3);
     fakeSynthesis.complete();
     socket.message({ kind: "assistant.text.delta", text: "stale" });
-    expect(FakeRecognition.instances).toHaveLength(0);
+    expect(FakeRecognition.instances).toHaveLength(1);
+    expect(FakeRecognition.instances[0]?.aborted).toBe(true);
+    expect(session.state.listening).toBe(false);
     expect(session.state.transcript.some((entry) => entry.text === "stale")).toBe(false);
   });
 
@@ -799,7 +948,6 @@ describe("browser voice sessions", () => {
     expect(fakeSynthesis.spoken.map((entry) => entry.text)).toEqual(["First.", "Queued.", "tail **unfinished"]);
 
     finishTurn(socket, "**Fresh**. Next. ");
-    FakeRecognition.instances.at(-1)?.end();
     first.onend?.call(first, new Event("end") as SpeechSynthesisEvent);
     first.onerror?.call(first, { error: "synthesis-failed" } as SpeechSynthesisErrorEvent);
     expect(session.state.connected).toBe(true);

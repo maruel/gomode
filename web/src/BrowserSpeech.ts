@@ -131,7 +131,6 @@ export class BrowserSpeech {
       this.callbacks.speaking(false);
       return;
     }
-    this.stopListening();
     try {
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = this.languageTag;
@@ -183,6 +182,8 @@ export class BrowserSpeech {
         this.callbacks.error(`Browser speech synthesis failed: ${event.error}`);
       };
       this.callbacks.speaking(true);
+      // Starting capture from the callback can fail and revoke this playback.
+      if (this.disposed || this.utterance !== utterance) return;
       window.speechSynthesis.speak(utterance);
     } catch (error) {
       this.stopSpeaking();

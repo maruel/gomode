@@ -41,6 +41,7 @@ import {
   MessageKindToolResult,
   MessageKindTranscriptDelta,
   MessageKindTurnStatus,
+  MessageKindTurnCancel,
   TurnStateIdle,
   TurnStateThinking,
   type ServiceAuthorization,
@@ -654,6 +655,9 @@ export class VoiceSession {
   private readonly _sentenceSegmenter = new SentenceSegmenter();
   private _speechTextFilter = new SpeechTextFilter();
   private _browserTurnIdle = false;
+  // The cancelled generation can still report idle after its interruption.
+  // Admit output again only when the next submitted user turn starts thinking.
+  private _browserCancellation: "none" | "pending" | "acknowledged" = "none";
   private _rtcSessionID: string | null = null;
   private _rtcGatewaySnapshot: GatewaySnapshot | null = null;
   private _rtcOfferService: ServiceAuthorization | null = null;
@@ -1666,10 +1670,14 @@ export class VoiceSession {
             this._update((s) => {
               s.speaking = value;
             });
+            if (microphoneMuted(this.state)) speech.stopListening();
+            else this._startBrowserListening();
             if (!value) this._drainBrowserTurn();
           },
           interim: (text) => {
-            if (this._ownsChannel(attempt, socket)) this._browserUserText(text, false);
+            if (!this._ownsChannel(attempt, socket)) return;
+            if (text !== "" && this._speakerActive) this._interruptBrowserTurn();
+            this._browserUserText(text, false);
           },
           final: (text) => {
             if (!this._ownsChannel(attempt, socket)) return;
@@ -1719,15 +1727,39 @@ export class VoiceSession {
 
   private _browserUserText(text: string, final: boolean): void {
     this._update((s) => {
-      const last = s.transcript.at(-1);
-      const entries = last?.speaker === "user" && !last.final ? s.transcript.slice(0, -1) : s.transcript;
-      s.transcript = text === "" ? entries : [...entries, { kind: "transcript", speaker: "user", text, final }];
+      // Tool diagnostics can arrive while recognition is still revising a draft.
+      const draft = s.transcript.findIndex((entry) => entry.speaker === "user" && !entry.final);
+      if (text === "") {
+        if (draft !== -1) s.transcript = s.transcript.filter((_, index) => index !== draft);
+        return;
+      }
+      const entry: TranscriptEntry = { kind: "transcript", speaker: "user", text, final };
+      s.transcript =
+        draft === -1
+          ? [...s.transcript, entry]
+          : s.transcript.map((current, index) => (index === draft ? entry : current));
     });
   }
 
-  // Normal mode adds no user mute; browser speech still owns its half-duplex capture lifecycle.
+  private _interruptBrowserTurn(): void {
+    if (this._browserCancellation !== "none") return;
+    this._browserCancellation = "pending";
+    this._browserTurnIdle = true;
+    this._speakerActive = false;
+    this._sentenceSegmenter.clear();
+    this._speechTextFilter.clear();
+    this._browserSpeech?.stopSpeaking();
+    this._update((s) => {
+      s.speaking = false;
+      s.activeTool = null;
+      s.turnState = TurnStateIdle;
+      s.transcript = s.transcript.map((entry) => ({ ...entry, final: true }));
+    });
+    this._send(JSON.stringify({ kind: MessageKindTurnCancel }));
+  }
+
   private _startBrowserListening(): void {
-    if (this.state.connected && !microphoneMuted(this.state) && !this.state.speaking && this._browserTurnIdle) {
+    if (this.state.connected && !microphoneMuted(this.state) && (this.state.speaking || this._browserTurnIdle)) {
       this._thinkingEarcon.setThinking(false);
       this._browserSpeech?.listen();
     }
@@ -1870,6 +1902,7 @@ export class VoiceSession {
     this._sentenceSegmenter.clear();
     this._speechTextFilter.clear();
     this._browserTurnIdle = false;
+    this._browserCancellation = "none";
     speech?.close();
     socket?.close(1000);
     const sessionID = this._rtcSessionID;
@@ -2116,6 +2149,29 @@ export class VoiceSession {
       return;
     }
 
+    if (this.state.mode === "browser" && this._browserCancellation !== "none") {
+      if (env.kind === MessageKindInterrupted) {
+        this._browserCancellation = "acknowledged";
+        this._drainBrowserTurn();
+        return;
+      }
+      if (
+        env.kind === MessageKindTurnStatus &&
+        this._browserCancellation === "acknowledged" &&
+        !this._browserTurnIdle &&
+        (JSON.parse(text) as TurnStatus).state === TurnStateThinking
+      )
+        this._browserCancellation = "none";
+      else if (
+        env.kind === MessageKindAssistantTextDelta ||
+        env.kind === MessageKindReasoningDelta ||
+        env.kind === MessageKindTranscriptDelta ||
+        env.kind === MessageKindTurnStatus
+      )
+        return;
+      // Dispatched tool calls belong to the session and still need a result.
+    }
+
     if (env.kind === MessageKindSessionStatus && !this.state.connected) {
       const msg = JSON.parse(text) as SessionStatus;
       if (typeof msg.message !== "string") return;
@@ -2164,7 +2220,6 @@ export class VoiceSession {
 
     if (env.kind === MessageKindAssistantTextDelta && this.state.mode === "browser") {
       const delta = JSON.parse(text) as AssistantTextDelta;
-      this._browserSpeech?.stopListening();
       this._browserTurnIdle = false;
       this._speakerActive = true;
       this._update((s) => {
@@ -2239,7 +2294,7 @@ export class VoiceSession {
         else {
           this._browserTurnIdle = false;
           this._speakerActive = true;
-          this._browserSpeech?.stopListening();
+          if (!this.state.speaking) this._browserSpeech?.stopListening();
         }
       }
       return;
