@@ -45,6 +45,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Protocol
@@ -847,20 +848,38 @@ class DeviceVoiceSessionTest {
                     session.connect()
                     val backend = listener.await()
                     backend.onOpen(socket, upgradeResponse())
+                    val beforeReady = socket.sent.size
+                    session.injectText("Startup alert", generate = true)
                     backend.onMessage(socket, """{"kind":"session.ready"}""")
+                    val startup = socket.sent.drop(beforeReady)
+                    assertEquals(1, startup.size)
+                    val startupContext = Json.parseToJsonElement(startup.single()).jsonObject
+                    assertEquals("context.update", startupContext.getValue("kind").jsonPrimitive.content)
+                    assertEquals(true, startupContext.getValue("generate").jsonPrimitive.booleanOrNull)
+                    backend.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
                     backend.onMessage(socket, """{"kind":"assistant.text.delta","text":"Remember cedar."}""")
                     backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
                     assertTrue(session.state.value.speaking)
                     repository.switchService(second)
                     repository.settings.first { it.activeServiceId == second }
+                    session.injectText("Build is waiting", generate = true)
                     session.injectText(owner.contextText())
                     val queuedAt = socket.sent.size
                     requireNotNull(speech.partialCallback)("Continue")
                     requireNotNull(speech.resultCallback)("Continue")
                     val admitted = socket.sent.drop(queuedAt)
-                    assertTrue(admitted.first().contains("context.update"))
-                    assertTrue(admitted.first().contains(second))
+                    val context = admitted.single { it.contains("context.update") }
+                    assertTrue(context.contains(second))
+                    assertTrue(context.contains("Build is waiting"))
+                    assertFalse(
+                        Json
+                            .parseToJsonElement(context)
+                            .jsonObject["generate"]
+                            ?.jsonPrimitive
+                            ?.booleanOrNull == true,
+                    )
                     assertTrue(admitted.last().contains("user.message"))
+                    assertTrue(admitted.indexOf(context) < admitted.lastIndex)
                     backend.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
                     backend.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
                     backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
@@ -1668,10 +1687,11 @@ class DeviceVoiceSessionTest {
             session.connect()
             requireNotNull(speech.resultCallback)("First")
             requireNotNull(speech.partialCallback)("Second")
+            session.injectText("Focus while canceling", generate = true)
             requireNotNull(speech.resultCallback)("Second")
             assertEquals(listOf("First"), turns)
             release.complete(Unit)
-            assertEquals(listOf("First", "Second"), turns)
+            assertEquals(listOf("First", "context:Focus while canceling", "Second"), turns)
             assertTrue(staleToolRequested)
             assertTrue(session.state.value.connected)
             assertTrue(session.state.value.listening)
@@ -1685,6 +1705,56 @@ class DeviceVoiceSessionTest {
             requireNotNull(speech.partialCallback)("Third")
             requireNotNull(speech.resultCallback)("Third")
             assertEquals(listOf("context:New focus", "Third"), turns.takeLast(2))
+            session.close()
+        }
+
+    @Test
+    fun `canceled local inference releases queued alerts when recognition ends without final speech`() =
+        runTest {
+            val speech = FakeSpeech()
+            val repo = SettingsRepository(InMemoryPreferencesDataStore())
+            selectEngine(repo, OnDeviceEngine.NEEDLE_WHISTLE)
+            val release = CompletableDeferred<Unit>()
+            val turns = mutableListOf<String>()
+            val session =
+                createSession(
+                    speech = speech,
+                    settingsRepo = repo,
+                    engineFactory = { type ->
+                        object : OnDeviceVoiceEngine {
+                            override val engineType = type
+
+                            override suspend fun initialize(context: EngineSessionContext) = Unit
+
+                            override suspend fun injectContext(text: String) = Unit
+
+                            override fun close() = Unit
+
+                            override suspend fun processTurn(
+                                input: UserTurnInput,
+                                onDelta: (String) -> Unit,
+                                onUsage: suspend (EngineUsage) -> Unit,
+                                onToolCall: suspend (
+                                    com.caic.voicegateway.sdk.v2.ToolCall,
+                                ) -> kotlinx.serialization.json.JsonElement?,
+                            ): EngineTurnResult {
+                                turns.add(input.text)
+                                if (input.text == "First") release.await()
+                                return EngineTurnResult()
+                            }
+                        }
+                    },
+                )
+            session.connect()
+            requireNotNull(speech.resultCallback)("First")
+            requireNotNull(speech.partialCallback)("Unfinished")
+            session.injectText("Alert after cancellation", generate = true)
+            requireNotNull(speech.idle)()
+            assertEquals(listOf("First"), turns)
+            release.complete(Unit)
+            assertEquals(listOf("First", "Alert after cancellation"), turns)
+            session.injectText("Next alert", generate = true)
+            assertEquals("Next alert", turns.last())
             session.close()
         }
 
@@ -2142,25 +2212,40 @@ class DeviceVoiceSessionTest {
                     .last()
             assertEquals(usage.totals, reply.responseUsage)
             assertEquals(usage.latest.responseID, reply.responseID)
+            session.injectText("Build needs attention", generate = true)
+            testScheduler.runCurrent()
+            val alertUsage = requireNotNull(session.state.value.usage)
+            assertEquals(24L, alertUsage.totals.inputTokens)
+            assertEquals(6L, alertUsage.totals.outputTokens)
+            assertTrue(alertUsage.latest.responseID != usage.latest.responseID)
+            val alertReply =
+                session.state.value.transcript
+                    .last()
+            assertEquals(alertUsage.latest.responseID, alertReply.responseID)
+            assertEquals(12L, alertReply.responseUsage?.inputTokens)
+            assertFalse(
+                session.state.value.transcript
+                    .any { it.text == "Build needs attention" },
+            )
             failTurn = true
             requireNotNull(speech.resultCallback)("Fail this turn")
             testScheduler.runCurrent()
             assertEquals("llm: Local model repeated a malformed tool-call prefix", session.state.value.error)
             assertEquals(
-                36L,
+                48L,
                 session.state.value.usage
                     ?.totals
                     ?.inputTokens,
             )
             assertEquals(
-                9L,
+                12L,
                 session.state.value.usage
                     ?.totals
                     ?.outputTokens,
             )
             session.disconnect()
             assertEquals(
-                36L,
+                48L,
                 session.state.value.usage
                     ?.totals
                     ?.inputTokens,

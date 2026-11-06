@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/invopop/jsonschema"
 
@@ -145,6 +146,15 @@ type Handler struct {
 	// (RFC 6749 §4.4), letting machine-to-machine clients skip interactive
 	// user authorization.
 	OAuthClientCredentials bool
+	// SessionOwner returns a stable, opaque authenticated principal key for a
+	// released-protocol session. Include authorization boundaries such as task
+	// scope in the key. It must not return credentials. The host must authenticate
+	// every request before HandleMCP. A nil callback keeps released clients
+	// stateless; configuring it enables their resource notification streams.
+	SessionOwner func(context.Context) (string, error)
+
+	compatMu       sync.Mutex
+	compatSessions map[string]*compatSession
 }
 
 // HandleMCP handles one MCP HTTP request, dispatching to caic's native
@@ -153,8 +163,7 @@ type Handler struct {
 func (h *Handler) HandleMCP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		// The native 2026-07-28 transport is POST-only; a GET is a released
-		// client opening an SSE stream, which the released handler answers
-		// with 405.
+		// client opening a session's notification stream.
 		h.handleCompat(w, r)
 		return
 	}
@@ -715,14 +724,11 @@ func (h *Handler) validateToolParamHeaders(ctx context.Context, header http.Head
 	return nil
 }
 
-// handleCompat serves one released Streamable HTTP request. caic runs as a
-// stateless server: it does not issue an Mcp-Session-Id and offers no
-// server-initiated SSE stream, so a GET returns 405 (permitted by the released
-// transport spec) and clients fall back to plain POST request/response.
+// handleCompat serves released Streamable HTTP requests and optional
+// owner-bound resource notification sessions.
 func (h *Handler) handleCompat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		http.Error(w, "no server-initiated SSE stream", http.StatusMethodNotAllowed)
+		h.handleCompatStream(w, r)
 		return
 	}
 	var req JSONRPCRequest
@@ -730,10 +736,21 @@ func (h *Handler) handleCompat(w http.ResponseWriter, r *http.Request) {
 		h.writeResponse(w, http.StatusOK, JSONRPCResponse{JSONRPC: jsonRPCVersion, Error: rpcError(ParseErrorCode, "Parse error")})
 		return
 	}
+	var session *compatSession
+	if r.Header.Get("Mcp-Session-Id") != "" {
+		var ok bool
+		if session, ok = h.compatRequestSession(w, r); !ok {
+			return
+		}
+	}
 	// Requests without a valid id are notifications (e.g.
 	// notifications/initialized); they take no response body.
 	if !validJSONRPCRequestID(req.ID) {
 		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if req.Method == "resources/subscribe" || req.Method == "resources/unsubscribe" {
+		h.handleCompatResourceSubscription(w, r, &req, session)
 		return
 	}
 	result, rpcErr := h.dispatchCompat(r.Context(), req.Method, req.Params)
@@ -741,6 +758,23 @@ func (h *Handler) handleCompat(w http.ResponseWriter, r *http.Request) {
 		logMCPFailure(r, http.StatusOK, &req, rpcErr, nil)
 		h.writeResponse(w, http.StatusOK, JSONRPCResponse{JSONRPC: jsonRPCVersion, ID: req.ID, Error: rpcErr})
 		return
+	}
+	if req.Method == "initialize" && h.compatStreamingEnabled() {
+		if session != nil {
+			http.Error(w, "initialize must not reuse a session", http.StatusBadRequest)
+			return
+		}
+		if !h.createCompatSession(w, r) {
+			return
+		}
+	}
+	if req.Method == MethodResourcesList && session != nil {
+		h.compatMu.Lock()
+		if !session.listChanged {
+			session.listChanged = true
+			session.notifyLocked()
+		}
+		h.compatMu.Unlock()
 	}
 	h.writeResponse(w, http.StatusOK, JSONRPCResponse{JSONRPC: jsonRPCVersion, ID: req.ID, Result: result})
 }
@@ -758,7 +792,7 @@ func (h *Handler) dispatchCompat(ctx context.Context, method Method, params json
 		}
 		return compatInitializeResult{
 			ProtocolVersion: negotiateCompatVersion(p.ProtocolVersion),
-			Capabilities:    compatServerCapabilities{},
+			Capabilities:    h.compatCapabilities(),
 			ServerInfo:      h.serverInfo(),
 			Instructions:    instructions,
 		}, nil

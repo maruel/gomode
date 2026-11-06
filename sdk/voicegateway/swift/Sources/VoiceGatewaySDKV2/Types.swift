@@ -567,8 +567,10 @@ public struct SessionSetup: Codable {
 }
 
 /// ContextUpdate is a client message that appends session context.
-/// It is passive: appending context does not request an assistant response.
+/// Context is passive unless Generate explicitly requests an assistant response.
 public struct ContextUpdate: Codable {
+    /// Generate requests a response to this service update, without recording user speech.
+    public let generate: Bool?
     /// Kind must be "context.update".
     public let kind: MessageKind
     /// Context contains the instructions or text to append.

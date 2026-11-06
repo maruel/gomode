@@ -97,6 +97,7 @@ type llmConversation interface {
 	user(ctx context.Context, text string) (llmStep, error)
 	toolResult(ctx context.Context, id, name string, result json.RawMessage) (llmStep, error)
 	addContext(text string)
+	respond(ctx context.Context) (llmStep, error)
 }
 
 // llmAdapter builds conversations bound to a session's system instruction and tools.
@@ -263,6 +264,16 @@ func (s *localStackSession) acceptClientMessage(ctx context.Context, data []byte
 		s.mu.Unlock()
 		if conv != nil && msg.Context.Text != "" {
 			conv.addContext(msg.Context.Text)
+			if msg.Generate {
+				turnCtx, cancel := context.WithCancel(ctx)
+				step, err := conv.respond(turnCtx)
+				if err != nil {
+					cancel()
+					s.events.Unlock()
+					return err
+				}
+				s.startAdmittedStep(turnCtx, conv, step, cancel, true)
+			}
 		}
 		s.events.Unlock()
 		return nil
@@ -922,6 +933,10 @@ func (c *placeholderConversation) toolResult(context.Context, string, string, js
 }
 
 func (c *placeholderConversation) addContext(_ string) {}
+
+func (c *placeholderConversation) respond(context.Context) (llmStep, error) {
+	return newLLMStep([]string{"Service update received."}, llmReply{text: "Service update received."}, nil), nil
+}
 
 // placeholderTTS emits a quiet tone whose length scales with the text. Real TTS
 // is wired in a later phase.

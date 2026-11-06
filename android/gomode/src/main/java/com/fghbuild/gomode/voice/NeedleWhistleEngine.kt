@@ -52,6 +52,9 @@ internal class NeedleWhistleEngine(
         onUsage: suspend (EngineUsage) -> Unit,
         onToolCall: suspend (ToolCall) -> JsonElement?,
     ): EngineTurnResult {
+        // External service data must never be interpreted as a user's action command.
+        if (input.serviceUpdate) return EngineTurnResult()
+
         val query = input.text.trim()
         if (query.isEmpty()) return EngineTurnResult()
 

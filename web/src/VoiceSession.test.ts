@@ -1517,6 +1517,33 @@ describe("VoiceSession", () => {
     }
   });
 
+  it("wakes for a queued alert after a silent model turn becomes idle", async () => {
+    const session = new VoiceSession();
+    try {
+      await session.connect();
+      const channel = FakePeerConnection.dataChannels.at(-1);
+      if (!channel) throw new Error("Missing voice channel");
+      const event = (state: string) =>
+        channel.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: "turn.status", state }) }));
+      event("thinking");
+      for (let index = 0; index <= 100; index++) session.setServiceContext(`Overview ${index}`);
+      session.injectText("Build is waiting", true);
+      expect(channel.send.mock.calls.some(([text]) => text.includes("Build is waiting"))).toBe(false);
+      event("idle");
+      expect(channel.send).toHaveBeenLastCalledWith(
+        JSON.stringify({ kind: "context.update", context: { text: "Overview 100\nBuild is waiting" }, generate: true }),
+      );
+      session.injectText("Review has a question", true);
+      expect(channel.send.mock.calls.some(([text]) => text.includes("Review has a question"))).toBe(false);
+      event("idle");
+      expect(channel.send).toHaveBeenLastCalledWith(
+        JSON.stringify({ kind: "context.update", context: { text: "Review has a question" }, generate: true }),
+      );
+    } finally {
+      session.disconnect();
+    }
+  });
+
   it("surfaces a rejected current context send", async () => {
     const session = new VoiceSession();
     await session.connect();

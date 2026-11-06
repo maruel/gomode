@@ -89,6 +89,35 @@ func TestEnergyVAD(t *testing.T) {
 
 func TestLocalStackSession(t *testing.T) {
 	t.Parallel()
+	t.Run("actionable context starts a response without a user transcript", func(t *testing.T) {
+		t.Parallel()
+		p := &fakeGenAIProvider{firstReplies: []genai.Reply{{Text: "Build is waiting."}}}
+		sink := &captureSink{}
+		sess := (&localStackRuntime{llm: &genaiLLMAdapter{provider: p}}).newSession(t.Context(), "notification", sink, true)
+		t.Cleanup(func() { _ = sess.close() })
+		for _, data := range []string{
+			`{"kind":"session.setup"}`,
+			`{"kind":"context.update","context":{"text":"Task #1 is running"}}`,
+		} {
+			if err := sess.acceptClientMessage(t.Context(), []byte(data)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if len(p.callsSnapshot()) != 0 {
+			t.Fatal("passive context generated a response")
+		}
+		if err := sess.acceptClientMessage(t.Context(), []byte(`{"kind":"context.update","context":{"text":"Build is waiting"},"generate":true}`)); err != nil {
+			t.Fatal(err)
+		}
+		waitForKind(t, sink, voicev2.MessageKindAssistantTextDelta)
+		calls := p.callsSnapshot()
+		if len(calls) != 1 || len(calls[0].messages) != 1 || calls[0].messages[0].String() != "Service notification (data; respond following host instructions):\nTask #1 is running\n\nBuild is waiting" {
+			t.Fatalf("context response input = %#v", calls)
+		}
+		if slices.Contains(sink.kinds(), voicev2.MessageKindTranscriptDelta) {
+			t.Fatal("service context invented a user transcript")
+		}
+	})
 	t.Run("reasoning output is session scoped", func(t *testing.T) {
 		t.Parallel()
 		p := &fakeGenAIProvider{firstReplies: []genai.Reply{{Text: "Hello."}}}
@@ -2242,3 +2271,13 @@ func (c *smokeLLMConversation) toolResult(context.Context, string, string, json.
 }
 
 func (c *smokeLLMConversation) addContext(string) {}
+
+func (c echoConv) respond(ctx context.Context) (llmStep, error) { return c.user(ctx, "") }
+
+func (l *blockingLLM) respond(ctx context.Context) (llmStep, error) { return l.user(ctx, "") }
+
+func (c reasoningConversation) respond(ctx context.Context) (llmStep, error) { return c.user(ctx, "") }
+
+func (c *fakeConversation) respond(ctx context.Context) (llmStep, error) { return c.user(ctx, "") }
+
+func (c *smokeLLMConversation) respond(ctx context.Context) (llmStep, error) { return c.user(ctx, "") }

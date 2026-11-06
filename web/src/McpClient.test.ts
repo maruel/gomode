@@ -179,6 +179,9 @@ describe("subscribeResources", () => {
           start(controller) {
             controller.enqueue(encoder.encode(": keepalive\n\n"));
             controller.enqueue(
+              encoder.encode('data: {"jsonrpc":"2.0","method":"notifications/subscriptions/acknowledged"}\n\n'),
+            );
+            controller.enqueue(
               encoder.encode(
                 'data: {"jsonrpc":"2.0","method":"notifications/resources/updated","params":{"uri":"mddb://node/1"}}\n\n',
               ),
@@ -220,6 +223,56 @@ describe("subscribeResources", () => {
       resourceSubscriptions: ["mddb://node/1"],
       resourcesListChanged: true,
     });
+  });
+
+  it("waits for the server acknowledgment before reporting a subscription ready", async () => {
+    configureMcpClient("/mcp", "host");
+    let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+    globalThis.fetch = async () =>
+      new Response(
+        new ReadableStream({
+          start(value) {
+            controller = value;
+          },
+        }),
+      );
+    let ready = 0;
+    let resolveUpdate: (() => void) | undefined;
+    let received = new Promise<void>((resolve) => {
+      resolveUpdate = resolve;
+    });
+    const subscription = mcpClient.subscribeResources(
+      {
+        resourceSubscriptions: ["test://resource"],
+        onReady: () => {
+          ready++;
+        },
+      },
+      () => resolveUpdate?.(),
+    );
+    // Await body parsing through a pre-ack update, rather than a scheduler delay.
+    await Promise.resolve();
+    ok(controller);
+    const encoder = new TextEncoder();
+    controller.enqueue(
+      encoder.encode(
+        'data: {"jsonrpc":"2.0","method":"notifications/resources/updated","params":{"uri":"test://resource"}}\n\n',
+      ),
+    );
+    await received;
+    expect(ready).toBe(0);
+    received = new Promise<void>((resolve) => {
+      resolveUpdate = resolve;
+    });
+    controller.enqueue(
+      encoder.encode(
+        'data: {"jsonrpc":"2.0","method":"notifications/subscriptions/acknowledged"}\n\ndata: {"jsonrpc":"2.0","method":"notifications/subscriptions/acknowledged"}\n\ndata: {"jsonrpc":"2.0","method":"notifications/resources/updated","params":{"uri":"test://resource"}}\n\n',
+      ),
+    );
+    await received;
+    expect(ready).toBe(1);
+    subscription.close();
+    controller.close();
   });
 
   it("closes active subscriptions when the host is reconfigured", async () => {

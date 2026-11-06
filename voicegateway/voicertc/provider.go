@@ -200,7 +200,7 @@ func (s *realtimeBridgeSession) acceptClientMessage(ctx context.Context, data []
 		if err := decodeGatewayMessage(data, env.Kind, &msg); err != nil {
 			return err
 		}
-		input = genai.RealtimeInputContent{Text: msg.Context.Text}
+		input = genai.RealtimeInputContent{Text: msg.Context.Text, Generate: msg.Generate}
 	case voicev2.MessageKindUserMessage:
 		var msg voicev2.UserMessage
 		if err := decodeGatewayMessage(data, env.Kind, &msg); err != nil {

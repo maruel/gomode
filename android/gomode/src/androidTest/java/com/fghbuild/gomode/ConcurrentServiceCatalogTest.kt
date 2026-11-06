@@ -80,6 +80,8 @@ class ConcurrentServiceCatalogTest {
                 lateinit var catalog: ServiceCatalog
                 val observed = CopyOnWriteArrayList<CatalogNotification>()
                 var serviceVisible by mutableStateOf(true)
+                var voiceActive by mutableStateOf(false)
+                val voiceAlerts = CopyOnWriteArrayList<CatalogNotification>()
                 composeRule.setContent {
                     val scope = rememberCoroutineScope()
                     catalog = remember { ServiceCatalog(scope) }
@@ -88,9 +90,10 @@ class ConcurrentServiceCatalogTest {
                         catalog,
                         entries.first().key,
                         serviceVisible,
-                        false,
+                        voiceActive,
                         false,
                         entries.map { it.key }.toSet(),
+                        onVoiceNotification = { voiceAlerts += it },
                     )
                     DisposableEffect(catalog) {
                         val job = scope.launch { catalog.notifications.collect { observed += it } }
@@ -174,6 +177,11 @@ class ConcurrentServiceCatalogTest {
                 composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { manager.serviceAlerts.isEmpty() }
                 second.notificationVersion.set(2)
                 composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { manager.serviceAlerts.size == 1 }
+                composeRule.runOnIdle { voiceActive = true }
+                first.notificationVersion.set(4)
+                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { voiceAlerts.size == 1 }
+                assertEquals(entries.first().key, voiceAlerts.single().source)
+                assertEquals(1, manager.serviceAlerts.size)
                 composeRule.runOnIdle {
                     assertTrue(
                         entries[1].bearerStore.receive(

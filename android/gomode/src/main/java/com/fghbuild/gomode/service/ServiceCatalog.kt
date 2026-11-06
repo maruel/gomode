@@ -149,7 +149,8 @@ internal class ServiceCatalog(
     fun contextText(): String =
         buildString {
             append(
-                "Use discover_service and dispatch_service_tool. Instructions apply only to their server.\n",
+                "This replaces the previous service overview; absent items are no longer visible.\n" +
+                    "Use discover_service and dispatch_service_tool. Instructions apply only to their server.\n",
             )
             for (entry in state.value.values) {
                 val participant = members[entry.key]

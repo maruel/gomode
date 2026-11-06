@@ -226,6 +226,43 @@ describe("provider reasoning", () => {
 });
 
 describe("browser voice sessions", () => {
+  it("keeps alerts behind unfinished recognition and supplies context before its final user request", async () => {
+    const socket = await readySocket();
+    socket.message({ kind: "turn.status", state: "idle" });
+    const recognition = FakeRecognition.instances.at(-1);
+    ok(recognition);
+    recognition.result([["Please", false]]);
+    const before = socket.sent.length;
+    session.injectText("Task needs attention", true);
+    socket.message({ kind: "interrupted", source: "user" });
+    socket.message({ kind: "turn.status", state: "idle" });
+    expect(socket.sent).toHaveLength(before);
+    recognition.result([["Please continue", true]]);
+    recognition.end();
+    expect(socket.sent.slice(-2).map((text) => JSON.parse(text))).toEqual([
+      { kind: "context.update", context: { text: "Task needs attention" } },
+      { kind: "user.message", text: "Please continue" },
+    ]);
+  });
+
+  it("announces queued alerts when recognition ends without a final utterance", async () => {
+    const socket = await readySocket();
+    socket.message({ kind: "turn.status", state: "idle" });
+    const recognition = FakeRecognition.instances.at(-1);
+    ok(recognition);
+    recognition.result([["Unfinished", false]]);
+    session.injectText("Task needs attention", true);
+    const before = socket.sent.length;
+    recognition.end();
+    await Promise.resolve();
+    expect(socket.sent).toHaveLength(before + 1);
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toEqual({
+      kind: "context.update",
+      context: { text: "Task needs attention" },
+      generate: true,
+    });
+  });
+
   it("interrupts playback on interim speech and discards in-flight output until cancellation is acknowledged", async () => {
     const socket = await readySocket();
     socket.message({ kind: "assistant.text.delta", text: "First. Queued. **unfinished" });
@@ -409,10 +446,22 @@ describe("browser voice sessions", () => {
     expect(session.state.listening).toBe(true);
   });
 
+  it("queues an alert behind the submitted greeting before the gateway reports thinking", async () => {
+    const socket = await readySocket();
+    session.injectText("Build is waiting", true);
+    expect(socket.sent.some((text) => text.includes("Build is waiting"))).toBe(false);
+    socket.message({ kind: "turn.status", state: "idle" });
+    expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toEqual({
+      kind: "context.update",
+      context: { text: "Build is waiting" },
+      generate: true,
+    });
+  });
+
   it("keeps capture through playback gaps, pauses for tool waits, and buffers notifications until playback drains", async () => {
     const socket = await readySocket();
     socket.message({ kind: "turn.status", state: "thinking" });
-    session.injectText("Notification");
+    session.injectText("Notification", true);
     expect(socket.sent.some((text) => text.includes("Notification"))).toBe(false);
     socket.message({ kind: "assistant.text.delta", text: "One. " });
     fakeSynthesis.complete();
@@ -441,7 +490,9 @@ describe("browser voice sessions", () => {
     socket.message({ kind: "turn.status", state: "idle" });
     expect(socket.sent.some((text) => text.includes("Notification"))).toBe(false);
     fakeSynthesis.complete();
-    expect(socket.sent.at(-1)).toBe(JSON.stringify({ kind: "context.update", context: { text: "Notification" } }));
+    expect(socket.sent.at(-1)).toBe(
+      JSON.stringify({ kind: "context.update", context: { text: "Notification" }, generate: true }),
+    );
     expect(session.state.listening).toBe(true);
   });
 

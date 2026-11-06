@@ -422,10 +422,11 @@ It does not enable thinking or change reasoning effort. |  |
 ### ContextUpdate
 
 ContextUpdate is a client message that appends session context.
-It is passive: appending context does not request an assistant response.
+Context is passive unless Generate explicitly requests an assistant response.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
+| `generate` | `boolean` | Generate requests a response to this service update, without recording user speech. |  |
 | `kind` | `MessageKind` | Kind must be "context.update". | yes |
 | `context` | `Context` | Context contains the instructions or text to append. | yes |
 

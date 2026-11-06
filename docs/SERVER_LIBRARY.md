@@ -53,6 +53,28 @@ at `/api/caic/v1/mcp`, and mounts the embedded gateway when configured. mddb
 exposes the `workspace` skill. Gateway token rules are in
 [VOICE_GATEWAY.md](VOICE_GATEWAY.md#authorization).
 
+### MCP resource notifications
+
+Implement `mcp.SubscriptionRegistry` to publish resource changes. Draft clients
+use `subscriptions/listen`. For released Streamable HTTP clients, configure
+`mcp.Handler.SessionOwner` to return the host's stable authenticated principal
+key, including task or authorization scope boundaries. Authenticate every
+request before dispatch; the session ID does not grant authorization. A nil
+owner callback leaves released requests stateless.
+
+Released clients initialize an owner-bound `Mcp-Session-Id`, subscribe with
+`resources/subscribe`, and open a GET with `Accept: text/event-stream`. Resource
+discovery activates resource-list notifications. Subscriptions survive stream
+reconnection; each reconnect invalidates current subscribed snapshots so clients
+can catch up with `resources/read`. Unsubscribe with `resources/unsubscribe` and
+close the session with HTTP DELETE. Disconnected sessions expire after fifteen
+idle minutes. Streams deliver snapshot invalidations rather than a durable event
+log, so clients must read the resource and compare stable item IDs/references.
+
+The MCP host decides whether a notification becomes model context or starts a
+model turn. Receiving a resource update does not itself wake an LLM. Voice
+clients explicitly distinguish passive context from alerts requiring a response.
+
 ## Device sign-in
 
 `devicelogin.New` supplies the expiring code store and start, poll, lookup, and

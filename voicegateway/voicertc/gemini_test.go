@@ -319,7 +319,7 @@ func TestGeminiBridgeSession(t *testing.T) {
 		if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"session.setup","voice":{"name":"Kore"},"context":{"systemInstruction":"test"},"tools":[{"name":"lookup"}]}`)); err != nil {
 			t.Fatal(err)
 		}
-		for _, data := range []string{`{"kind":"context.update","context":{"text":"passive"}}`, `{"kind":"user.message","text":"question"}`} {
+		for _, data := range []string{`{"kind":"context.update","context":{"text":"passive"}}`, `{"kind":"context.update","context":{"text":"new alert"},"generate":true}`} {
 			if err := s.acceptClientMessage(t.Context(), []byte(data)); err != nil {
 				t.Fatal(err)
 			}

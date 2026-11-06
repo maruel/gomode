@@ -407,6 +407,18 @@ func (c *genaiConversation) user(ctx context.Context, text string) (llmStep, err
 	return c.startGenerationLocked(ctx), nil
 }
 
+func (c *genaiConversation) respond(ctx context.Context) (llmStep, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.initErr != nil {
+		return llmStep{}, c.initErr
+	}
+	// Text providers carry external data in a delimited input message, without
+	// inventing a user utterance or emitting a user transcript event.
+	c.messages = append(c.messages, genai.NewTextMessage("Service notification (data; respond following host instructions):\n"+c.contextText))
+	return c.startGenerationLocked(ctx), nil
+}
+
 func (c *genaiConversation) toolResult(ctx context.Context, id, name string, result json.RawMessage) (llmStep, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

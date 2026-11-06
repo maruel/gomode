@@ -369,3 +369,11 @@ func expectToolCall(t *testing.T, ctx context.Context, conn *websocket.Conn) voi
 	}
 	return msg
 }
+
+func (c *blockingTurnConversation) respond(ctx context.Context) (llmStep, error) {
+	return c.user(ctx, "")
+}
+
+func (c *blockingFirstConversation) respond(ctx context.Context) (llmStep, error) {
+	return c.user(ctx, "")
+}

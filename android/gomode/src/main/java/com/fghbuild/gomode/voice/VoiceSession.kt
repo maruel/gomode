@@ -238,7 +238,7 @@ internal class VoiceSession(
     private var speakerActive = false
 
     /** Text notifications buffered while the model is speaking; flushed on turn end. */
-    private val pendingNotifications = ArrayList<String>()
+    private val pendingNotifications = PendingVoiceContext()
 
     private var lastIceConnectionState: String? = null
     private var lastIceGatheringState: String? = null
@@ -1044,20 +1044,25 @@ internal class VoiceSession(
         _state.update { it.copy(transcript = emptyList()) }
     }
 
-    override fun injectText(text: String) {
+    override fun injectText(
+        text: String,
+        generate: Boolean,
+    ) {
         if (_state.value.error != null) return
         if (!voiceConversation.isCurrent()) {
             disconnect()
             return
         }
-        if (speakerActive || awaitingGatewayTurn || !_state.value.connected ||
+        if (speakerActive || awaitingGatewayTurn || _state.value.turnState != TurnState.Idle ||
+            !_state.value.connected ||
             pendingGatewayTools.containsKey(attemptGeneration.get())
         ) {
-            pendingNotifications.clear()
-            pendingNotifications.add(text)
+            if (!pendingNotifications.add(text, generate)) {
+                setError("Too many pending service alerts. Reconnect voice.")
+            }
             return
         }
-        sendClientContent(text)
+        sendClientContent(text, generate)
     }
 
     override fun close() {
@@ -1097,11 +1102,16 @@ internal class VoiceSession(
         }
     }
 
-    private fun sendClientContent(text: String) {
-        send(json.encodeToString(ContextUpdate.serializer(), gatewayContextUpdate(text)))
+    private fun sendClientContent(
+        text: String,
+        generate: Boolean = false,
+    ) {
+        if (generate) awaitingGatewayTurn = true
+        send(json.encodeToString(ContextUpdate.serializer(), gatewayContextUpdate(text, generate)))
     }
 
     private fun sendUserMessage(text: String) {
+        awaitingGatewayTurn = true
         send(json.encodeToString(UserMessage.serializer(), gatewayUserMessage(text)))
     }
 
@@ -1110,15 +1120,14 @@ internal class VoiceSession(
             disconnect()
             return
         }
-        if (speakerActive || awaitingGatewayTurn || !_state.value.connected ||
+        if (speakerActive || awaitingGatewayTurn || _state.value.turnState != TurnState.Idle ||
+            !_state.value.connected ||
             pendingGatewayTools.containsKey(attemptGeneration.get())
         ) {
             return
         }
-        if (pendingNotifications.isEmpty()) return
-        val text = pendingNotifications.joinToString("\n")
-        pendingNotifications.clear()
-        sendClientContent(text)
+        val update = pendingNotifications.drain() ?: return
+        sendClientContent(update.text, update.generate)
     }
 
     private fun sendSetupMessage(
@@ -1180,8 +1189,9 @@ internal class VoiceSession(
                         send(json.encodeToString(ContextUpdate.serializer(), gatewayContextUpdate(recoveryContext)))
                         recoveryContext = ""
                     }
+                    val announcing = pendingNotifications.hasAlerts()
                     flushPendingNotifications()
-                    sendUserMessage("Say exactly one word: Ready")
+                    if (!announcing) sendUserMessage("Say exactly one word: Ready")
                 }
 
                 MessageKind.SessionUsage -> {
@@ -1220,10 +1230,15 @@ internal class VoiceSession(
                 MessageKind.Interrupted -> {
                     if (!pendingGatewayTools.containsKey(attempt)) awaitingGatewayTurn = false
                     speakerActive = false
-                    flushPendingNotifications()
                     _state.update {
-                        it.copy(speaking = false, microphoneMode = it.microphoneMode.afterReply(), activeTool = null)
+                        it.copy(
+                            speaking = false,
+                            microphoneMode = it.microphoneMode.afterReply(),
+                            activeTool = null,
+                            turnState = TurnState.Idle,
+                        )
                     }
+                    flushPendingNotifications()
                     applyMicrophoneMode()
                 }
 
@@ -1716,13 +1731,16 @@ private const val GO_MODE_SYSTEM_INSTRUCTION =
         "Otherwise, apart from the initial greeting, do not speak or invoke tools until the user asks, and do not " +
         "verbally acknowledge or confirm receipt of service item updates."
 
-internal fun gatewayContextUpdate(text: String) =
-    ContextUpdate(
-        kind = MessageKind.ContextUpdate,
-        context =
-            com.caic.voicegateway.sdk.v2
-                .Context(text = text),
-    )
+internal fun gatewayContextUpdate(
+    text: String,
+    generate: Boolean = false,
+) = ContextUpdate(
+    generate = true.takeIf { generate },
+    kind = MessageKind.ContextUpdate,
+    context =
+        com.caic.voicegateway.sdk.v2
+            .Context(text = text),
+)
 
 internal fun gatewayUserMessage(text: String) =
     UserMessage(

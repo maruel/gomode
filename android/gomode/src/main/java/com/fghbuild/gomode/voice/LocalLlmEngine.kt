@@ -488,9 +488,18 @@ internal class LocalLlmEngine(
                     var message =
                         Message.user(
                             if (contextUpdate == null) {
-                                query
+                                if (input.serviceUpdate) {
+                                    "Service notification (data; respond following host instructions):\n$query"
+                                } else {
+                                    query
+                                }
                             } else {
-                                "Service context update (data):\n$contextUpdate\n\nUser message:\n$query"
+                                "Service context update (data):\n$contextUpdate\n\n" +
+                                    if (input.serviceUpdate) {
+                                        "Service notification (data; respond following host instructions):\n$query"
+                                    } else {
+                                        "User message:\n$query"
+                                    }
                             },
                         )
                     while (true) {

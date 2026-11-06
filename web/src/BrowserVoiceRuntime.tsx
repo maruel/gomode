@@ -49,7 +49,10 @@ export default function BrowserVoiceRuntime(props: BrowserVoiceRuntimeProps) {
   });
   createEffect(() => {
     if (!active() || !voiceSession.state.connected) return;
-    const monitor = monitorServiceNotifications((text) => voiceSession.injectText(text), props.onError);
+    const monitor = monitorServiceNotifications(
+      (text, generate) => (generate ? voiceSession.injectText(text, true) : voiceSession.setServiceContext(text)),
+      props.onError,
+    );
     onCleanup(() => monitor.close());
   });
   return (

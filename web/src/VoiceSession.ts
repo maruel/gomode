@@ -679,6 +679,7 @@ export class VoiceSession {
   private _browserSpeech: BrowserSpeech | null = null;
   private readonly _browserSpeechBuffer = new BrowserSpeechBuffer();
   private _browserTurnIdle = false;
+  private _browserUserSpeechActive = false;
   // The cancelled generation can still report idle after its interruption.
   // Admit output again only when the next submitted user turn starts thinking.
   private _browserCancellation: "none" | "pending" | "acknowledged" = "none";
@@ -703,7 +704,8 @@ export class VoiceSession {
   /** True while the model is speaking — injected text is buffered and flushed after the turn ends. */
   private _speakerActive = false;
   /** Text notifications buffered while the model is speaking; flushed on turn end. */
-  private _pendingNotifications: string[] = [];
+  private _pendingNotifications: Array<{ text: string; generate: boolean }> = [];
+  private _pendingServiceContext: string | null = null;
   private _setupTimer: ReturnType<typeof setTimeout> | null = null;
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private _reconnectEnabled = false;
@@ -1648,6 +1650,7 @@ export class VoiceSession {
     this._releaseAll(true);
     this._speakerActive = false;
     this._pendingNotifications = [];
+    this._pendingServiceContext = null;
     if (!preserveTranscript) {
       this._clearTranscript();
       this._update((s) => {
@@ -1706,6 +1709,12 @@ export class VoiceSession {
               this._update((s) => {
                 s.listening = value;
               });
+            if (!value)
+              queueMicrotask(() => {
+                if (!this._ownsChannel(attempt, socket) || this.state.listening) return;
+                this._browserUserSpeechActive = false;
+                this._flushPendingNotifications(true);
+              });
           },
           speaking: (value) => {
             if (!this._ownsChannel(attempt, socket)) return;
@@ -1718,11 +1727,14 @@ export class VoiceSession {
           },
           interim: (text) => {
             if (!this._ownsChannel(attempt, socket)) return;
+            if (text !== "") this._browserUserSpeechActive = true;
             if (text !== "" && this._speakerActive) this._interruptBrowserTurn();
             this._browserUserText(text, false);
           },
           final: (text) => {
             if (!this._ownsChannel(attempt, socket)) return;
+            this._browserUserSpeechActive = false;
+            this._flushPendingNotifications(false);
             this._browserTurnIdle = false;
             this._speakerActive = true;
             this._browserUserText(text, true);
@@ -1823,7 +1835,7 @@ export class VoiceSession {
     this._update((s) => {
       if (s.microphoneMode === "muteOnce") s.microphoneMode = "listening";
     });
-    this._flushPendingNotifications();
+    this._flushPendingNotifications(true);
     this._startBrowserListening();
   }
 
@@ -1875,19 +1887,54 @@ export class VoiceSession {
     }
   }
 
-  injectText(text: string): void {
-    if (this._speakerActive) {
-      this._pendingNotifications.push(text);
+  /** Replace the authoritative service overview without replaying obsolete snapshots. */
+  setServiceContext(text: string): void {
+    if (this._contextUpdateBlocked()) {
+      this._pendingServiceContext = text;
       return;
     }
-    this._send(JSON.stringify(gatewayContextUpdate(text)));
+    this._sendContextUpdate(text, false);
   }
 
-  private _flushPendingNotifications(): void {
-    if (this._pendingNotifications.length === 0) return;
-    const text = this._pendingNotifications.join("\n");
+  injectText(text: string, generate?: boolean): void {
+    if (this._contextUpdateBlocked()) {
+      if (this._pendingNotifications.length >= 64) {
+        this._setError("Too many pending service updates. Reconnect voice.");
+        return;
+      }
+      this._pendingNotifications.push({ text, generate: generate === true });
+      return;
+    }
+    this._sendContextUpdate(text, generate === true);
+  }
+
+  private _contextUpdateBlocked(): boolean {
+    return (
+      this._browserUserSpeechActive ||
+      this._speakerActive ||
+      this.state.turnState !== TurnStateIdle ||
+      this.state.activeTool !== null
+    );
+  }
+
+  private _sendContextUpdate(text: string, generate: boolean): void {
+    if (generate) {
+      this._speakerActive = true;
+      if (this.state.mode === "browser") this._browserTurnIdle = false;
+    }
+    this._send(JSON.stringify(gatewayContextUpdate(text, generate)));
+  }
+
+  private _flushPendingNotifications(allowResponse: boolean): void {
+    if (this._contextUpdateBlocked()) return;
+    if (this._pendingNotifications.length === 0 && this._pendingServiceContext === null) return;
+    const text = [this._pendingServiceContext, ...this._pendingNotifications.map((update) => update.text)]
+      .filter((value): value is string => value !== null)
+      .join("\n");
+    const generate = allowResponse && this._pendingNotifications.some((update) => update.generate);
     this._pendingNotifications = [];
-    this.injectText(text);
+    this._pendingServiceContext = null;
+    this._sendContextUpdate(text, generate);
   }
 
   clearTranscript(): void {
@@ -1934,6 +1981,7 @@ export class VoiceSession {
     this._browserSpeech = null;
     this._browserSpeechBuffer.clear();
     this._browserTurnIdle = false;
+    this._browserUserSpeechActive = false;
     this._browserCancellation = "none";
     speech?.close();
     socket?.close(1000);
@@ -2252,7 +2300,8 @@ export class VoiceSession {
         this._send(JSON.stringify(gatewayContextUpdate(this._recoveryContext)));
         this._recoveryContext = "";
       }
-      this._flushPendingNotifications();
+      this._flushPendingNotifications(true);
+      this._speakerActive = true;
       this._send(JSON.stringify(gatewayUserMessage("Say exactly one word: Ready")));
       // Audio capture is handled via WebRTC RTP tracks; no separate audio setup needed.
       return;
@@ -2298,7 +2347,7 @@ export class VoiceSession {
 
     if (env.kind === MessageKindSpeechEnded) {
       this._speakerActive = false;
-      this._flushPendingNotifications();
+      this._flushPendingNotifications(true);
       this._update((s) => {
         s.speaking = false;
         if (s.microphoneMode === "muteOnce") s.microphoneMode = "listening";
@@ -2321,13 +2370,13 @@ export class VoiceSession {
         return;
       }
       this._speakerActive = false;
-      this._flushPendingNotifications();
       this._update((s) => {
         s.speaking = false;
         if (s.microphoneMode === "muteOnce") s.microphoneMode = "listening";
         s.activeTool = null;
         s.turnState = TurnStateIdle;
       });
+      this._flushPendingNotifications(true);
       return;
     }
 
@@ -2343,6 +2392,9 @@ export class VoiceSession {
           this._speakerActive = true;
           if (!this.state.speaking) this._browserSpeech?.stopListening();
         }
+      } else if (msg.state === TurnStateIdle) {
+        if (!this.state.speaking) this._speakerActive = false;
+        this._flushPendingNotifications(true);
       }
       return;
     }
@@ -2477,6 +2529,7 @@ export class VoiceSession {
     this._microphoneMeter.stop(keepMeterContext);
     this._speakerActive = false;
     this._pendingNotifications = [];
+    this._pendingServiceContext = null;
   }
 }
 
@@ -2621,10 +2674,11 @@ export function buildRecoveryContext(transcript: TranscriptEntry[]): string {
   return `${prefix}${transcriptSection}`;
 }
 
-function gatewayContextUpdate(text: string): ContextUpdate {
+function gatewayContextUpdate(text: string, generate?: boolean): ContextUpdate {
   return {
     kind: MessageKindContextUpdate,
     context: { text },
+    ...(generate ? { generate: true } : {}),
   };
 }
 

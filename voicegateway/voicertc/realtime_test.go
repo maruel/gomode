@@ -360,6 +360,259 @@ func TestLlamaRealtimeSession(t *testing.T) {
 		}
 	})
 
+	t.Run("context generation follows active microphone and its response", func(t *testing.T) {
+		for _, phase := range []string{"idle", "cancellation"} {
+			t.Run(phase, func(t *testing.T) {
+				s, p, _ := newRealtimePolicySession(t, false)
+				if phase == "cancellation" {
+					if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"user.message","text":"start"}`)); err != nil {
+						t.Fatal(err)
+					}
+					p.next(t)
+				}
+				if err := s.acceptMicPCM(t.Context(), testPCM(120, 2000)); err != nil {
+					t.Fatal(err)
+				}
+				first := p.next(t)
+				if phase == "cancellation" && !first.cancel || phase == "idle" && len(first.audio) == 0 {
+					t.Fatalf("unexpected microphone admission: %+v", first)
+				}
+				if phase == "idle" {
+				drainInitial:
+					for {
+						select {
+						case in := <-p.sent:
+							if len(in.audio) == 0 {
+								t.Fatalf("unexpected input before alert: %+v", in)
+							}
+						default:
+							break drainInitial
+						}
+					}
+				}
+				if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"context.update","generate":true,"context":{"text":"task needs attention"}}`)); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case in := <-p.sent:
+					t.Fatalf("alert overtook active microphone: %+v", in)
+				default:
+				}
+				if err := s.acceptMicPCM(t.Context(), testPCM(120, 3000)); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.acceptMicPCM(t.Context(), testPCM(200, 0)); err != nil {
+					t.Fatal(err)
+				}
+				if phase == "cancellation" {
+					p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
+				}
+				var audio []byte
+				for {
+					in := p.next(t)
+					if len(in.audio) != 0 {
+						audio = append(audio, in.audio...)
+						continue
+					}
+					if !in.commit || in.text != "" {
+						t.Fatalf("alert overtook microphone commit: %+v", in)
+					}
+					break
+				}
+				if !bytes.Contains(audio, testPCM(100, 3000)) {
+					t.Fatal("later captured speech was not forwarded before the alert")
+				}
+				if in := p.next(t); !in.generate || in.text != "" {
+					t.Fatalf("microphone response must start before alert generation: %+v", in)
+				}
+				select {
+				case in := <-p.sent:
+					t.Fatalf("alert overlapped microphone response: %+v", in)
+				default:
+				}
+				p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
+				if in := p.next(t); in.text != "task needs attention" || !in.generate {
+					t.Fatalf("deferred alert was not generated after microphone response: %+v", in)
+				}
+			})
+		}
+	})
+
+	t.Run("later speech preserves the earlier microphone boundary during cancellation", func(t *testing.T) {
+		s, p, _ := newRealtimePolicySession(t, false)
+		if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"user.message","text":"start"}`)); err != nil {
+			t.Fatal(err)
+		}
+		p.next(t)
+		if err := s.acceptMicPCM(t.Context(), testPCM(120, 2000)); err != nil {
+			t.Fatal(err)
+		}
+		if in := p.next(t); !in.cancel {
+			t.Fatalf("expected cancellation before queued speech: %+v", in)
+		}
+		if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"context.update","generate":true,"context":{"text":"queued alert"}}`)); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.acceptMicPCM(t.Context(), testPCM(200, 0)); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.acceptMicPCM(t.Context(), testPCM(120, 3000)); err != nil {
+			t.Fatal(err)
+		}
+		p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
+		var first []byte
+		for {
+			in := p.next(t)
+			if len(in.audio) != 0 {
+				first = append(first, in.audio...)
+				continue
+			}
+			if !in.commit {
+				t.Fatalf("expected the first microphone commit: %+v", in)
+			}
+			break
+		}
+		if bytes.Contains(first, testPCM(100, 3000)) {
+			t.Fatal("later speech crossed the first microphone commit boundary")
+		}
+		if !bytes.Contains(first, testPCM(100, 2000)) {
+			t.Fatal("first microphone speech was lost")
+		}
+		if in := p.next(t); !in.generate || in.text != "" {
+			t.Fatalf("first microphone response was not generated: %+v", in)
+		}
+		if err := s.acceptMicPCM(t.Context(), testPCM(200, 0)); err != nil {
+			t.Fatal(err)
+		}
+		p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
+		if in := p.next(t); in.text != "queued alert" || !in.generate {
+			t.Fatalf("alert was not preserved between microphone turns: %+v", in)
+		}
+		p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
+		var second []byte
+		for {
+			in := p.next(t)
+			if len(in.audio) != 0 {
+				second = append(second, in.audio...)
+				continue
+			}
+			if !in.commit {
+				t.Fatalf("expected the second microphone commit: %+v", in)
+			}
+			break
+		}
+		if !bytes.Contains(second, testPCM(100, 3000)) {
+			t.Fatal("later microphone speech was lost")
+		}
+		if in := p.next(t); !in.generate || in.text != "" {
+			t.Fatalf("second microphone response was not generated: %+v", in)
+		}
+	})
+
+	t.Run("queued microphone turns stay FIFO when later capture extends an alert barrier", func(t *testing.T) {
+		s, p, _ := newRealtimePolicySession(t, false)
+		if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"user.message","text":"start"}`)); err != nil {
+			t.Fatal(err)
+		}
+		p.next(t)
+		if err := s.acceptMicPCM(t.Context(), testPCM(120, 2000)); err != nil {
+			t.Fatal(err)
+		}
+		if in := p.next(t); !in.cancel {
+			t.Fatalf("expected cancellation: %+v", in)
+		}
+		if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"context.update","generate":true,"context":{"text":"queued alert"}}`)); err != nil {
+			t.Fatal(err)
+		}
+		for _, pcm := range [][]byte{testPCM(200, 0), testPCM(120, 3000), testPCM(200, 0), testPCM(120, 4000)} {
+			if err := s.acceptMicPCM(t.Context(), pcm); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, sample := range []uint16{2000, 3000, 4000} {
+			p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
+			first := p.next(t)
+			if !bytes.Contains(first.audio, testPCM(20, sample)) {
+				t.Fatalf("expected microphone sample %d next, got %d audio bytes", sample, len(first.audio))
+			}
+			audio := first.audio
+			if sample == 4000 {
+				if err := s.acceptMicPCM(t.Context(), testPCM(200, 0)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for {
+				in := p.next(t)
+				if len(in.audio) != 0 {
+					audio = append(audio, in.audio...)
+					continue
+				}
+				if !in.commit {
+					t.Fatalf("expected microphone %d commit, got %+v", sample, in)
+				}
+				break
+			}
+			if !bytes.Contains(audio, testPCM(100, sample)) {
+				t.Fatalf("microphone %d lost captured speech", sample)
+			}
+			for _, other := range []uint16{2000, 3000, 4000} {
+				if other != sample && bytes.Contains(audio, testPCM(20, other)) {
+					t.Fatalf("microphone %d contains speech from %d", sample, other)
+				}
+			}
+			if in := p.next(t); !in.generate || in.text != "" {
+				t.Fatalf("expected microphone %d generation, got %+v", sample, in)
+			}
+		}
+		p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
+		if in := p.next(t); in.text != "queued alert" || !in.generate {
+			t.Fatalf("expected retained alert after microphone turns, got %+v", in)
+		}
+	})
+
+	t.Run("dropped microphone releases alert at its speech boundary", func(t *testing.T) {
+		s, p, sink := newRealtimePolicySession(t, false)
+		if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"user.message","text":"start"}`)); err != nil {
+			t.Fatal(err)
+		}
+		p.next(t)
+		p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventContentToolCalls, Content: genai.RealtimeContent{ToolCalls: []genai.ToolCall{{ID: "pending", Name: "slow", Arguments: "{}"}}}})
+		p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
+		p.synchronize(t)
+		if err := s.acceptMicPCM(t.Context(), testPCM(120, 2000)); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"context.update","generate":true,"context":{"text":"retained alert"}}`)); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.acceptMicPCM(t.Context(), testPCM(16000, 2000)); err != nil {
+			t.Fatal(err)
+		}
+		sink.waitForKind(t, voicev2.MessageKindError, 1)
+		if sink.wasCanceled() {
+			t.Fatal("dropping an unsent microphone turn closed the session")
+		}
+		if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"tool.result","id":"pending","name":"slow","result":{}}`)); err != nil {
+			t.Fatal(err)
+		}
+		if in := p.next(t); len(in.toolResults) != 1 {
+			t.Fatalf("lost tool result: %+v", in)
+		}
+		p.deliver(genai.RealtimeEvent{Kind: genai.RealtimeEventGenerationDone})
+		p.synchronize(t)
+		select {
+		case in := <-p.sent:
+			t.Fatalf("alert overtook ongoing speech after microphone eviction: %+v", in)
+		default:
+		}
+		if err := s.acceptMicPCM(t.Context(), testPCM(200, 0)); err != nil {
+			t.Fatal(err)
+		}
+		if in := p.next(t); in.text != "retained alert" || !in.generate {
+			t.Fatalf("dropped microphone stranded the alert: %+v", in)
+		}
+	})
+
 	t.Run("acceptMicPCM error", func(t *testing.T) {
 		s, p, sink := newRealtimePolicySession(t, false)
 		transport := errors.New("socket write failed")

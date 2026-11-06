@@ -486,6 +486,7 @@ class ServiceCatalogTest {
                     },
                 )
                 val context = catalog.contextText()
+                assertTrue(context.contains("replaces the previous service overview"))
                 assertTrue(context.length <= 12_000)
                 assertTrue(context.contains("More servers omitted"))
                 assertTrue(context.contains("id-1"))

@@ -54,10 +54,11 @@ fun OnDeviceEngine.descriptor(): EngineDescriptor =
         }
     }
 
-/** UserTurnInput provides user speech as recognized text and optional raw PCM audio. */
+/** UserTurnInput provides recognized user text or an explicit service update to respond to. */
 data class UserTurnInput(
     val text: String,
     val audioPcm: ByteArray? = null,
+    val serviceUpdate: Boolean = false,
 )
 
 /** EngineSessionContext encapsulates active tools and system instructions for a voice session. */

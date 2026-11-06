@@ -1,4 +1,4 @@
-// Native llama.cpp audio-to-audio gateway policy over genai realtime sessions.
+// Native llama.cpp realtime gateway policy with microphone-safe service updates.
 
 package voicertc
 
@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -122,16 +123,18 @@ func (b *llamaRealtimeBackend) connect(ctx context.Context, id string, sink back
 }
 
 type realtimePendingInput struct {
-	input      genai.RealtimeInputContent
-	bytes      int
-	microphone *realtimeMicrophoneTurn
+	input           genai.RealtimeInputContent
+	bytes           int
+	microphone      *realtimeMicrophoneTurn
+	afterMicrophone *realtimeMicrophoneTurn
 }
 
 // A turn becomes ineligible for eviction as soon as any part reaches the
 // provider. Dropped active turns stay suppressed through their VAD boundary.
 type realtimeMicrophoneTurn struct {
-	sent    bool
-	dropped bool
+	sent            bool
+	dropped         bool
+	responseStarted bool
 }
 
 // llamaRealtimeSession serializes state and provider sends. Receive never holds
@@ -326,7 +329,7 @@ func (s *llamaRealtimeSession) acceptClientMessage(ctx context.Context, data []b
 		if err := decodeGatewayMessage(data, env.Kind, &msg); err != nil {
 			return err
 		}
-		if err := s.enqueueLocked(genai.RealtimeInputContent{Text: msg.Context.Text}, nil); err != nil {
+		if err := s.enqueueLocked(genai.RealtimeInputContent{Text: msg.Context.Text, Generate: msg.Generate}, nil); err != nil {
 			return err
 		}
 	default:
@@ -428,7 +431,11 @@ func (s *llamaRealtimeSession) enqueueLocked(input genai.RealtimeInputContent, t
 		}
 	}
 	input.Audio = append([]byte(nil), input.Audio...)
-	s.pending = append(s.pending, realtimePendingInput{input: input, bytes: size, microphone: turn})
+	var afterMicrophone *realtimeMicrophoneTurn
+	if input.Generate && turn == nil && s.microphone != nil {
+		afterMicrophone = s.microphone
+	}
+	s.pending = append(s.pending, realtimePendingInput{input: input, bytes: size, microphone: turn, afterMicrophone: afterMicrophone})
 	s.pendingBytes += size
 	return nil
 }
@@ -459,18 +466,53 @@ func (s *llamaRealtimeSession) flushLocked(ctx context.Context) error {
 		return nil
 	}
 	for len(s.pending) > 0 {
-		next := s.pending[0]
 		if s.generating {
 			return nil
 		}
+		i := 0
+		head := &s.pending[0]
+		if head.input.Generate && head.microphone == nil {
+			// Finish an earlier barrier before adopting newer captured speech.
+			// Otherwise the later audio could cross the earlier turn's commit.
+			prior := head.afterMicrophone
+			if s.microphone != nil && (prior == nil || prior.responseStarted || prior.dropped && s.microphone != prior) {
+				head.afterMicrophone = s.microphone
+				// An active capture can extend the speech barrier, but older
+				// queued utterances must reach their own commit and response first.
+				for _, queued := range s.pending {
+					if queued.microphone != nil {
+						head.afterMicrophone = queued.microphone
+						break
+					}
+				}
+			}
+			mic := head.afterMicrophone
+			if mic != nil && !mic.responseStarted && (!mic.dropped || s.microphone == mic) {
+				// Let captured speech reach Commit and Generate before this text.
+				// Its response then owns the turn until GenerationDone. Keeping
+				// the barrier after VAD ends also handles cancellation/tool waits.
+				i = slices.IndexFunc(s.pending, func(input realtimePendingInput) bool { return input.microphone == mic })
+				if i < 0 {
+					return nil
+				}
+			}
+		}
+		next := s.pending[i]
 		if err := s.rt.Send(ctx, next.input); err != nil {
 			return err
 		}
 		if next.microphone != nil {
 			next.microphone.sent = true
+			if next.input.Generate {
+				next.microphone.responseStarted = true
+			}
 		}
-		s.pending[0] = realtimePendingInput{}
-		s.pending = s.pending[1:]
+		if i == 0 {
+			s.pending[0] = realtimePendingInput{}
+			s.pending = s.pending[1:]
+		} else {
+			s.pending = slices.Delete(s.pending, i, i+1)
+		}
 		s.pendingBytes -= next.bytes
 		if next.input.Generate {
 			s.generating = true

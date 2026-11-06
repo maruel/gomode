@@ -5,8 +5,8 @@
 //     Mcp-Method/Mcp-Name headers, _meta-nested params, resultType, ttlMs, and
 //     cacheScope.
 //   - 2025-11-25: Claude Code 2.1.177 fixture. Needs this file's released
-//     initialize handshake, notifications/initialized, GET -> 405 SSE probe,
-//     flat request params, and released list/call/read result envelopes.
+//     initialize handshake, notifications/initialized, optional owner-bound
+//     notification sessions, flat request params, and released result envelopes.
 //   - 2025-06-18: Codex 0.137.0 fixture. Needs the same released wire shape as
 //     2025-11-25.
 //   - 2025-03-26 and 2024-11-05: recognized only for protocol negotiation. We

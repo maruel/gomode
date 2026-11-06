@@ -824,6 +824,13 @@ class VoiceSessionLifecycleTest {
                 invokeHandleServerMessage(session, """{"kind":"speech.ended"}""", channel)
                 assertEquals(3, channel.sent.size)
                 assertTrue(channel.sent.last().contains("Participant context during playback"))
+
+                invokeHandleServerMessage(session, """{"kind":"turn.status","state":"thinking"}""", channel)
+                session.injectText("Alert during microphone turn", generate = true)
+                assertEquals(3, channel.sent.size)
+                invokeHandleServerMessage(session, """{"kind":"turn.status","state":"idle"}""", channel)
+                assertEquals(4, channel.sent.size)
+                assertTrue(channel.sent.last().contains("Alert during microphone turn"))
             } finally {
                 session.close()
             }

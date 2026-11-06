@@ -194,7 +194,10 @@ class PendingMicrophoneVoiceStartTest {
 
         override fun clearTranscript() = Unit
 
-        override fun injectText(text: String) = Unit
+        override fun injectText(
+            text: String,
+            generate: Boolean,
+        ) = Unit
 
         override fun setError(message: String) = Unit
 

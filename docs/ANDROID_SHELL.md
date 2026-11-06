@@ -316,6 +316,10 @@ globally bounded, sourced catalog overview and selected-server focus in
 the model's tool-response turn. Local engines diff generic items and reset their
 baseline when session or service identity changes.
 
+Browser voice subscribes to item changes too. Reference-only changes update
+context even when an item's state is unchanged. These updates stay passive;
+they do not request a model response or a spoken acknowledgment.
+
 ## Service Notifications
 
 A host may expose `gomode://notifications`: an authoritative JSON array of
@@ -342,6 +346,13 @@ quiet context so the user can ask to hear them. Resource changes provide new
 alerts for spoken delivery under the host's instructions; repeated occurrence
 IDs stay quiet, and withdrawals and expiry replace the current context. Ending
 voice or replacing the authenticated scope stops monitoring.
+
+An actionable occurrence is distinct from passive context. Connected browser and
+native voice request a response with `context.update.generate: true`, without
+inventing a user utterance. Updates wait for the active model/tool/playback turn;
+buffering retains each new alert alongside the latest quiet overview. The host's
+instructions decide what the assistant announces. MCP resource invalidations
+deliver changes to a client; that client's host owns their admission to its model.
 
 ## Voice Modes
 

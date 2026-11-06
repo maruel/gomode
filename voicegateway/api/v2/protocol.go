@@ -188,8 +188,10 @@ type Context struct {
 }
 
 // ContextUpdate is a client message that appends session context.
-// It is passive: appending context does not request an assistant response.
+// Context is passive unless Generate explicitly requests an assistant response.
 type ContextUpdate struct {
+	// Generate requests a response to this service update, without recording user speech.
+	Generate bool `json:"generate,omitempty"`
 	// Kind must be "context.update".
 	Kind MessageKind `json:"kind"`
 	// Context contains the instructions or text to append.

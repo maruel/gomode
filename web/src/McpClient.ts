@@ -329,8 +329,15 @@ function subscribeMcpResources(
         scheduleRetry(new Error(`MCP subscriptions/listen returned HTTP ${resp.status}`));
         return;
       }
-      options.onReady?.();
+      let acknowledged = false;
       await readMcpNotificationStream(resp.body, (notification) => {
+        if (notification.method === "notifications/subscriptions/acknowledged") {
+          if (!acknowledged) {
+            acknowledged = true;
+            options.onReady?.();
+          }
+          return;
+        }
         if (notification.method === "notifications/resources/list_changed") {
           report({ listChanged: true });
           return;

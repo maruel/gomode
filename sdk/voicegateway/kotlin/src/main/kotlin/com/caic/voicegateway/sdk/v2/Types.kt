@@ -854,10 +854,12 @@ data class SessionSetup(
 
 /**
  * ContextUpdate is a client message that appends session context.
- * It is passive: appending context does not request an assistant response.
+ * Context is passive unless Generate explicitly requests an assistant response.
  */
 @Serializable
 data class ContextUpdate(
+    /** Generate requests a response to this service update, without recording user speech. */
+    val generate: Boolean? = null,
     /** Kind must be "context.update". */
     val kind: MessageKind,
     /** Context contains the instructions or text to append. */

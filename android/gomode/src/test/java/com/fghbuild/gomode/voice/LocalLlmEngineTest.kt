@@ -1000,6 +1000,26 @@ class LocalLlmEngineTest {
         }
 
     @Test
+    fun `service alerts generate a distinct context turn without claiming user speech`() =
+        runTest {
+            val messages = mutableListOf<Message>()
+            val engine =
+                engine { message ->
+                    messages += message
+                    flowOf(Message.model("Build is waiting."))
+                }
+            engine.initialize(sessionContext)
+            engine.processTurn(UserTurnInput("Build is waiting", serviceUpdate = true), {}, {}) { error("No tool") }
+            assertTrue(
+                messages.single().toString().contains(
+                    "Service notification (data; respond following host instructions)",
+                ),
+            )
+            assertFalse(messages.single().toString().contains("User message"))
+            engine.closeAndJoin()
+        }
+
+    @Test
     fun `focus context waits for the original tool result and preserves native history`() =
         runTest {
             val configs = mutableListOf<ConversationConfig>()
