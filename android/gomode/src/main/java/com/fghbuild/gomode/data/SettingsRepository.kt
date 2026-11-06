@@ -141,6 +141,7 @@ data class SettingsState(
     val voiceMode: VoiceMode = VoiceMode.CLOUD,
     val voiceLanguageTag: String = DEFAULT_VOICE_LANGUAGE_TAG,
     val showReasoning: Boolean = false,
+    val showUsageStats: Boolean = false,
     val onDeviceEngine: OnDeviceEngine = OnDeviceEngine.REMOTE_GATEWAY,
     val localLlmModel: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
     val voiceAudioDeviceType: Int? = null,
@@ -170,6 +171,7 @@ class SettingsRepository(
         val VOICE_MODE = stringPreferencesKey("VOICE_MODE")
         val VOICE_LANGUAGE_TAG = stringPreferencesKey("VOICE_LANGUAGE_TAG")
         val SHOW_REASONING = booleanPreferencesKey("SHOW_REASONING")
+        val SHOW_USAGE_STATS = booleanPreferencesKey("SHOW_USAGE_STATS")
         val ON_DEVICE_VOICE_ENGINE = stringPreferencesKey("ON_DEVICE_VOICE_ENGINE")
         val LOCAL_LLM_MODEL = stringPreferencesKey("LOCAL_LLM_MODEL")
         val VOICE_AUDIO_DEVICE_TYPE = intPreferencesKey("VOICE_AUDIO_DEVICE_TYPE")
@@ -198,6 +200,7 @@ class SettingsRepository(
                     voiceMode = decodeVoiceMode(prefs[Keys.VOICE_MODE]),
                     voiceLanguageTag = prefs[Keys.VOICE_LANGUAGE_TAG] ?: DEFAULT_VOICE_LANGUAGE_TAG,
                     showReasoning = prefs[Keys.SHOW_REASONING] ?: false,
+                    showUsageStats = prefs[Keys.SHOW_USAGE_STATS] ?: false,
                     onDeviceEngine = decodeOnDeviceEngine(prefs[Keys.ON_DEVICE_VOICE_ENGINE]),
                     localLlmModel =
                         when (val saved = prefs[Keys.LOCAL_LLM_MODEL]) {
@@ -306,6 +309,10 @@ class SettingsRepository(
 
     suspend fun updateShowReasoning(enabled: Boolean) {
         dataStore.edit { it[Keys.SHOW_REASONING] = enabled }
+    }
+
+    suspend fun updateShowUsageStats(enabled: Boolean) {
+        dataStore.edit { it[Keys.SHOW_USAGE_STATS] = enabled }
     }
 
     suspend fun updateOnDeviceEngine(engine: OnDeviceEngine) {

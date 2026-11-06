@@ -262,6 +262,23 @@ internal fun SettingsScreen(
                         )
                     },
                 )
+                ListItem(
+                    modifier =
+                        Modifier.testTag("gomode-show-usage-stats").toggleable(
+                            value = settings.showUsageStats,
+                            enabled = settings.loadState == SettingsLoadState.Ready,
+                            role = Role.Switch,
+                            onValueChange = { value -> scope.launch { edits.setShowUsageStats(value) } },
+                        ),
+                    headlineContent = { Text("Show usage stats") },
+                    trailingContent = {
+                        Switch(
+                            checked = settings.showUsageStats,
+                            onCheckedChange = null,
+                            enabled = settings.loadState == SettingsLoadState.Ready,
+                        )
+                    },
+                )
                 VoiceErrorDiagnosticsSetting()
             }
             HorizontalDivider()

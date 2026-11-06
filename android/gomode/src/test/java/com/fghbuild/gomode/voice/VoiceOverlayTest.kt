@@ -10,6 +10,24 @@ import org.junit.Test
 
 class VoiceOverlayTest {
     @Test
+    fun toolHistoryKeepsRepeatedInvocationsAndBoundsNames() {
+        var state = VoiceState().withToolCall("same_tool").withToolCall("same_tool")
+        assertEquals(listOf("same_tool", "same_tool"), state.toolHistory.map { it.name })
+        assertEquals(
+            2,
+            state.toolHistory
+                .map { it.sequence }
+                .toSet()
+                .size,
+        )
+        for (index in 1..32) state = state.withToolCall("tool_$index")
+        assertEquals(32, state.toolHistory.size)
+        assertEquals("tool_1", state.toolHistory.first().name)
+        assertEquals("tool_32", state.toolHistory.last().name)
+        assertEquals(state.toolHistory, state.copy(activeTool = null).toolHistory)
+    }
+
+    @Test
     fun audioDeviceIconsUsePlatformTypesAndHandleUnknownRoutes() {
         assertEquals("Filled.Bluetooth", audioDeviceIcon(AudioDeviceInfo.TYPE_BLUETOOTH_SCO).name)
         assertEquals("Filled.Bluetooth", audioDeviceIcon(AudioDeviceInfo.TYPE_BLE_HEADSET).name)

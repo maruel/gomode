@@ -112,6 +112,7 @@ func (b *realtimeBridgeBackend) connect(ctx context.Context, sessionID string, s
 // realtimeBridgeSession defers connection until session.setup supplies policy.
 // The session context owns setup and receive I/O; each caller owns its Send.
 type realtimeBridgeSession struct {
+	usage       usageTracker
 	id          string
 	backend     *realtimeBridgeBackend
 	provider    genai.Provider
@@ -350,6 +351,10 @@ func (s *realtimeBridgeSession) rxLoop(rt genai.RealtimeSession) {
 func (s *realtimeBridgeSession) handleEvent(event *genai.RealtimeEvent) error {
 	var out [][]byte
 	switch event.Kind {
+	case genai.RealtimeEventUsage:
+		// Providers such as Gemini without response identities retain session
+		// totals, but cannot safely attribute late usage to a transcript entry.
+		return s.usage.report(s.ctx, s.sink, s.id, s.provider.Name(), s.provider.ModelID(), gatewayResponseID(s.id, event.ResponseID), event.Usage)
 	case genai.RealtimeEventContentAudio:
 		s.sink.addAssistantPCM(event.Content.Audio)
 		if !s.assistantSpeaking {
@@ -358,20 +363,22 @@ func (s *realtimeBridgeSession) handleEvent(event *genai.RealtimeEvent) error {
 		}
 	case genai.RealtimeEventContentReasoning:
 		if event.Content.Reasoning != "" {
-			out = append(out, mustGatewayServerMessage(&voicev2.ReasoningDelta{Kind: voicev2.MessageKindReasoningDelta, Text: event.Content.Reasoning}))
+			out = append(out, mustGatewayServerMessage(&voicev2.ReasoningDelta{Kind: voicev2.MessageKindReasoningDelta, Text: event.Content.Reasoning, ResponseID: gatewayResponseID(s.id, event.ResponseID)}))
 		}
 	case genai.RealtimeEventTranscriptInput, genai.RealtimeEventTranscriptOutput:
 		speaker := voicev2.SpeakerUser
+		responseID := ""
 		transcript := &s.inputTranscript
 		if event.Kind == genai.RealtimeEventTranscriptOutput {
 			speaker = voicev2.SpeakerAssistant
+			responseID = gatewayResponseID(s.id, event.ResponseID)
 			transcript = &s.outputTranscript
 		}
 		text := transcript.consume(event)
 		if text != "" {
-			out = append(out, mustGatewayServerMessage(&voicev2.TranscriptDelta{Kind: voicev2.MessageKindTranscriptDelta, Speaker: speaker, Text: text}))
+			out = append(out, mustGatewayServerMessage(&voicev2.TranscriptDelta{Kind: voicev2.MessageKindTranscriptDelta, Speaker: speaker, Text: text, ResponseID: responseID}))
 			if speaker == voicev2.SpeakerAssistant {
-				out = append(out, mustGatewayServerMessage(&voicev2.AssistantTextDelta{Kind: voicev2.MessageKindAssistantTextDelta, Text: text}))
+				out = append(out, mustGatewayServerMessage(&voicev2.AssistantTextDelta{Kind: voicev2.MessageKindAssistantTextDelta, Text: text, ResponseID: gatewayResponseID(s.id, event.ResponseID)}))
 			}
 		}
 	case genai.RealtimeEventInterrupted:
@@ -407,7 +414,7 @@ func (s *realtimeBridgeSession) handleEvent(event *genai.RealtimeEvent) error {
 			s.sink.sendTurnError(s.ctx, s.backend.errorScope()+": "+detail)
 		}
 	default:
-		// Usage, generation completion and resumption observations have no gateway
+		// Generation completion and resumption observations have no gateway
 		// DTO. In particular generation completion does not end playback.
 	}
 	for _, msg := range out {

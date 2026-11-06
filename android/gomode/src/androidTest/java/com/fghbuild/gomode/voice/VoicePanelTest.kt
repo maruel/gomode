@@ -9,8 +9,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -35,10 +37,14 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
 import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -73,6 +79,184 @@ import kotlin.math.abs
 class VoicePanelTest {
     @get:Rule
     val composeRule = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    @OptIn(ExperimentalTestApi::class)
+    fun usageRemainsReviewableAfterDisconnectAndAtLargeText() {
+        lateinit var inputModes: InputModeManager
+        val showStats = mutableStateOf(false)
+        val large = mutableStateOf(false)
+        val narrow = mutableStateOf(false)
+        val error = mutableStateOf<String?>(null)
+        val counts =
+            com.caic.voicegateway.sdk.v2
+                .TokenUsage(inputTokens = 1234, outputTokens = 64, cachedTokens = 128, reasoningTokens = 8)
+        val report =
+            com.caic.voicegateway.sdk.v2.SessionUsage(
+                com.caic.voicegateway.sdk.v2.MessageKind.SessionUsage,
+                "fixture",
+                "llamacpp",
+                "LFM3-audio",
+                counts,
+                lastResponse =
+                    counts.copy(
+                        inputTokens = 234,
+                        outputTokens = 0,
+                        cachedTokens = 0,
+                        reasoningTokens = null,
+                    ),
+            )
+        composeRule.setContent {
+            inputModes = LocalInputModeManager.current
+            val density = LocalDensity.current.density
+            CompositionLocalProvider(LocalDensity provides Density(density, if (large.value) 2f else 1f)) {
+                GoModeTheme {
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .windowInsetsPadding(
+                                WindowInsets.statusBars,
+                            ).testTag("voice-panel-viewport"),
+                    ) {
+                        Spacer(Modifier.weight(1f))
+                        Box(if (narrow.value) Modifier.width(320.dp) else Modifier.fillMaxWidth()) {
+                            VoicePanel(
+                                VoiceState(
+                                    usage = VoiceUsage(counts, report),
+                                    error = error.value,
+                                    transcript =
+                                        listOf(
+                                            TranscriptEntry(
+                                                TranscriptSpeaker.USER,
+                                                "What should I work on next?",
+                                                true,
+                                            ),
+                                            TranscriptEntry(
+                                                TranscriptSpeaker.ASSISTANT,
+                                                "Review the launch brief first.",
+                                                true,
+                                                responseID = "first",
+                                                responseUsage =
+                                                    counts.copy(
+                                                        inputTokens = 1000,
+                                                        outputTokens = 52,
+                                                        reasoningTokens = 8,
+                                                    ),
+                                            ),
+                                            TranscriptEntry(
+                                                TranscriptSpeaker.ASSISTANT,
+                                                "Compare deadlines.",
+                                                true,
+                                                TranscriptKind.REASONING,
+                                                responseID = "second",
+                                            ),
+                                            TranscriptEntry(
+                                                TranscriptSpeaker.ASSISTANT,
+                                                "The prototype feedback is due today too.",
+                                                true,
+                                                responseID = "second",
+                                                responseUsage =
+                                                    counts.copy(
+                                                        inputTokens = 234,
+                                                        outputTokens = 0,
+                                                        cachedTokens = 0,
+                                                        reasoningTokens = null,
+                                                    ),
+                                            ),
+                                            TranscriptEntry(
+                                                TranscriptSpeaker.ASSISTANT,
+                                                "The design review is tomorrow.",
+                                                true,
+                                                responseID = "third",
+                                                responseUsage =
+                                                    com.caic.voicegateway.sdk.v2
+                                                        .TokenUsage(outputTokens = 12),
+                                            ),
+                                        ),
+                                ),
+                                true,
+                                {},
+                                {},
+                                {},
+                                {},
+                                {},
+                                serviceReconnect = null,
+                                onCycleApp = {},
+                                canCycleApps = false,
+                                showUsageStats = showStats.value,
+                                onHideUsageStats = { showStats.value = false },
+                                modifier = Modifier.testTag("voice-panel"),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        fun assertFullWidth() {
+            val viewport = composeRule.onNodeWithTag("voice-panel-viewport").fetchSemanticsNode().boundsInRoot
+            val panel = composeRule.onNodeWithTag("voice-panel").fetchSemanticsNode().boundsInRoot
+            assertEquals(viewport.left, panel.left, 1f)
+            assertEquals(viewport.right, panel.right, 1f)
+            val transcript = composeRule.onNodeWithTag("gomode-voice-transcript").fetchSemanticsNode().boundsInRoot
+            val inset = with(composeRule.density) { 8.dp.toPx() }
+            assertEquals(viewport.left + inset, transcript.left, 1f)
+            assertEquals(viewport.right - inset, transcript.right, 1f)
+        }
+        assertFullWidth()
+        capture("usage-collapsed")
+        composeRule.runOnIdle { showStats.value = true }
+        assertFullWidth()
+        composeRule.onNodeWithContentDescription("Input tokens: 1,234").assertIsDisplayed()
+        composeRule
+            .onNodeWithTag(
+                "gomode-voice-transcript",
+            ).performScrollToNode(hasContentDescription("Input tokens: 234"))
+        composeRule.onNodeWithContentDescription("Input tokens: 234").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Connect voice assistant").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Input tokens: 1,234").performScrollTo()
+        capture("usage")
+        composeRule.runOnIdle { large.value = true }
+        composeRule.onNodeWithContentDescription("Input tokens: 1,234").assertIsDisplayed()
+        assertFullWidth()
+        capture("usage-large-text")
+        composeRule.runOnIdle { narrow.value = true }
+        composeRule.onNodeWithContentDescription("Input tokens: 1,234").assertIsDisplayed()
+        capture("usage-narrow-large-text")
+        composeRule
+            .onNodeWithTag(
+                "gomode-voice-transcript",
+            ).performScrollToNode(hasContentDescription("Input tokens: 234"))
+        composeRule.onNodeWithContentDescription("Input tokens: 234").assertIsDisplayed()
+        composeRule.runOnIdle { error.value = "Gateway offline" }
+        composeRule.onNodeWithText("Gateway offline").assertIsDisplayed()
+        composeRule
+            .onNodeWithTag(
+                "gomode-voice-transcript",
+            ).performScrollToNode(hasContentDescription("Input tokens: 234"))
+        composeRule.onNodeWithContentDescription("Input tokens: 234").assertIsDisplayed()
+        composeRule.runOnIdle { inputModes.requestInputMode(InputMode.Keyboard) }
+        composeRule
+            .onNodeWithContentDescription("Close usage")
+            .performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+            .performKeyInput { pressKey(Key.Enter) }
+        composeRule.onNodeWithTag("gomode-voice-usage").assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("Input tokens: 234").assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("Settings").assertIsFocused()
+        composeRule.runOnIdle { showStats.value = true }
+        composeRule.onNodeWithTag("gomode-voice-usage").assertIsDisplayed()
+        composeRule.runOnIdle {
+            large.value = false
+            narrow.value = false
+            error.value = null
+        }
+        composeRule
+            .onNodeWithTag("gomode-voice-transcript")
+            .performScrollToNode(hasContentDescription("Input tokens: 234"))
+        composeRule.onNodeWithContentDescription("Input tokens: 234").performTouchInput { longClick() }
+        composeRule.onNodeWithText("Input tokens: 234").assertIsDisplayed()
+        capture("usage-tooltip")
+    }
 
     @Test
     fun transcriptLabelsReasoningSeparatelyFromSpokenText() {
@@ -400,7 +584,19 @@ class VoicePanelTest {
     @Test
     fun longToolActivityUsesItsOwnRowBelowEveryPrimaryControl() {
         val tool = "workspace_search_project_documents_by_author_and_revision_with_extended_filters_and_full_metadata"
-        val state = mutableStateOf(VoiceState(connected = true, activeTool = tool))
+        val state =
+            mutableStateOf(
+                VoiceState(
+                    connected = true,
+                    activeTool = tool,
+                    toolHistory =
+                        listOf(
+                            ToolInvocation(1, "task_list"),
+                            ToolInvocation(2, "project_read"),
+                            ToolInvocation(3, tool),
+                        ),
+                ),
+            )
         var disconnects = 0
         var settings = 0
         var switches = 0
@@ -427,7 +623,7 @@ class VoicePanelTest {
                 }
             }
         }
-        val status = composeRule.onNodeWithText("Calling tool: $tool…").assertIsDisplayed()
+        val status = composeRule.onNodeWithContentDescription("Calling tool: $tool…").assertIsDisplayed()
         capture("long-activity")
         val textBounds = status.fetchSemanticsNode().boundsInRoot
         val controls =
@@ -453,11 +649,32 @@ class VoicePanelTest {
                 .boundsInRoot
         assertEquals(settingsBounds.left, activity.left, 1f)
         assertEquals(actions.right, activity.right, 1f)
-        val layouts = mutableListOf<TextLayoutResult>()
-        status.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
-        val layout = layouts.single()
-        assertTrue(layout.lineCount >= 3)
-        assertFalse(layout.hasVisualOverflow)
+        val history = composeRule.onNodeWithTag("gomode-voice-tool-history").assertIsDisplayed()
+        val historyBounds = history.fetchSemanticsNode().boundsInRoot
+        assertTrue("History remains one line", historyBounds.height <= textBounds.height + 1f)
+        composeRule.onNodeWithText(tool).assertIsDisplayed()
+        composeRule.onNodeWithText("task_list").assertIsNotDisplayed()
+        composeRule.onNodeWithText("task_list").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText(tool).assertIsNotDisplayed()
+        composeRule.runOnIdle { state.value = state.value.withToolCall("next_tool") }
+        composeRule.onNodeWithText("task_list").assertIsDisplayed()
+        capture("tool-history-older")
+        composeRule.onNodeWithText("next_tool").performScrollTo().assertIsDisplayed()
+        capture("tool-history-newest")
+        val full =
+            (3..32).fold(VoiceState().withToolCall("duplicate").withToolCall("duplicate")) { historyState, index ->
+                historyState.withToolCall("tool_$index")
+            }
+        composeRule.runOnIdle {
+            state.value =
+                state.value.copy(toolHistory = full.toolHistory, activeTool = full.activeTool)
+        }
+        composeRule.onNodeWithText("tool_10").performScrollTo().assertIsDisplayed()
+        composeRule.runOnIdle { state.value = state.value.withToolCall("tool_33") }
+        composeRule.onNodeWithText("tool_10").assertIsDisplayed()
+        composeRule.runOnIdle { state.value = state.value.withToolCall("tool_34").withToolCall("tool_35") }
+        composeRule.onNodeWithText("tool_10").assertIsDisplayed()
+        capture("tool-history-retention")
         controls.forEach { it.performClick() }
         composeRule.runOnIdle {
             assertEquals(MicrophoneMode.MUTE_ONCE, state.value.microphoneMode)
@@ -532,7 +749,16 @@ class VoicePanelTest {
                         voiceEnabled = true,
                         onConnect = {
                             state.value =
-                                state.value.copy(connected = true, activeTool = scene.getString("tool"))
+                                state.value.copy(
+                                    connected = true,
+                                    activeTool = scene.getString("tool"),
+                                    toolHistory =
+                                        listOf(
+                                            ToolInvocation(1, "task_list"),
+                                            ToolInvocation(2, "project_read"),
+                                            ToolInvocation(3, scene.getString("tool")),
+                                        ),
+                                )
                         },
                         onDisconnect = { state.value = state.value.copy(connected = false, activeTool = null) },
                         onSelectMicrophoneMode = { state.value = state.value.copy(microphoneMode = it) },
@@ -549,7 +775,7 @@ class VoicePanelTest {
         composeRule.onNodeWithContentDescription("Connect voice assistant").assertIsDisplayed()
         capture("documentation-idle")
         composeRule.onNodeWithContentDescription("Connect voice assistant").performClick()
-        composeRule.onNodeWithText("Calling tool: ${scene.getString("tool")}…").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Calling tool: ${scene.getString("tool")}…").assertIsDisplayed()
         val log =
             composeRule
                 .onNodeWithTag(
@@ -581,7 +807,7 @@ class VoicePanelTest {
         assertEquals(hangup.center.y, level.center.y, 1f)
         val activity =
             composeRule
-                .onNodeWithText(
+                .onNodeWithContentDescription(
                     "Calling tool: ${scene.getString("tool")}…",
                 ).fetchSemanticsNode()
                 .boundsInRoot
@@ -786,15 +1012,15 @@ class VoicePanelTest {
         }
         composeRule.onNodeWithText("Thinking…").assertIsDisplayed()
         composeRule.runOnIdle {
-            state.value = state.value.copy(activeTool = "example_tool")
+            state.value = state.value.withToolCall("example_tool")
         }
-        composeRule.onNodeWithText("Calling tool: example_tool…").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Calling tool: example_tool…").assertIsDisplayed()
         composeRule.onNodeWithText("Thinking…").assertDoesNotExist()
         composeRule.runOnIdle {
             state.value = state.value.copy(activeTool = null)
         }
         composeRule.onNodeWithText("Thinking…").assertIsDisplayed()
-        composeRule.onNodeWithText("Calling tool: example_tool…").assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("Calling tool: example_tool…").assertDoesNotExist()
     }
 
     @Test
@@ -923,6 +1149,14 @@ class VoicePanelTest {
                             transcript =
                                 listOf(
                                     TranscriptEntry(TranscriptSpeaker.ASSISTANT, "Four tasks are running."),
+                                    TranscriptEntry(
+                                        TranscriptSpeaker.USER,
+                                        "Show the launch brief and the prototype feedback before the design review.",
+                                    ),
+                                    TranscriptEntry(
+                                        TranscriptSpeaker.ASSISTANT,
+                                        "Review the launch brief and prototype feedback, then prepare the notes for tomorrow's design review.",
+                                    ),
                                 ),
                         ),
                     voiceEnabled = true,
@@ -947,7 +1181,28 @@ class VoicePanelTest {
         assertEquals(content.top, close.top, 1f)
         assertEquals(content.right, close.right, 1f)
         val transcript = composeRule.onNodeWithTag("gomode-voice-transcript").assertIsDisplayed()
-        assertTrue(transcript.fetchSemanticsNode().boundsInRoot.right <= close.left)
+        assertEquals(content.right, transcript.fetchSemanticsNode().boundsInRoot.right, 1f)
+        val message =
+            composeRule
+                .onNode(
+                    hasTestTag("gomode-voice-text-part") and hasText("Assistant: Four tasks are running."),
+                    useUnmergedTree = true,
+                ).fetchSemanticsNode()
+                .boundsInRoot
+        assertTrue(message.right <= close.left)
+        val lowerMessage =
+            composeRule
+                .onNodeWithText(
+                    "Assistant: Review the launch brief and prototype feedback, then prepare the notes for tomorrow's design review.",
+                ).fetchSemanticsNode()
+                .boundsInRoot
+        assertTrue(lowerMessage.top >= close.bottom)
+        assertTrue(lowerMessage.right > close.left)
+        val touch = toggle.fetchSemanticsNode().touchBoundsInRoot
+        with(composeRule.density) {
+            assertEquals(32.dp.toPx(), touch.width, 1f)
+            assertEquals(32.dp.toPx(), touch.height, 1f)
+        }
         toggle.performKeyInput { pressKey(Key.Enter) }
         composeRule.onNodeWithTag("gomode-voice-transcript").assertDoesNotExist()
         composeRule.onNodeWithContentDescription("Show transcript").assertIsDisplayed()
@@ -961,7 +1216,8 @@ class VoicePanelTest {
         )
         toggle.assertIsFocused().performKeyInput { pressKey(Key.Enter) }
         composeRule.onNodeWithText("Assistant: Four tasks are running.").assertIsDisplayed()
-        toggle.assertIsFocused()
+        transcript.assertIsFocused()
+        capture("transcript-focus")
     }
 
     @Test
@@ -1061,6 +1317,153 @@ class VoicePanelTest {
         transcript.performScrollToNode(hasTestTag("gomode-voice-transcript-end"))
         appendResponse()
         composeRule.onNodeWithTag("gomode-voice-transcript-end").assertIsDisplayed()
+    }
+
+    @Test
+    fun wrappedTranscriptRowsKeepFollowingAfterCloseReservationChanges() {
+        val entries =
+            mutableStateOf(
+                (1..30).map {
+                    TranscriptEntry(
+                        TranscriptSpeaker.ASSISTANT,
+                        "Response $it: " + "Review carefully. ".repeat(it % 5 + 1),
+                    )
+                },
+            )
+        composeRule.setContent {
+            MaterialTheme {
+                Box(Modifier.width(320.dp)) {
+                    VoicePanel(
+                        VoiceState(connected = true, speaking = true, transcript = entries.value),
+                        true,
+                        {},
+                        {},
+                        {},
+                        {},
+                        {},
+                        serviceReconnect = null,
+                        onCycleApp = {},
+                        canCycleApps = false,
+                    )
+                }
+            }
+        }
+        val end = composeRule.onNodeWithTag("gomode-voice-transcript-end")
+        end.assertIsDisplayed()
+        repeat(10) { index ->
+            composeRule.runOnIdle {
+                entries.value +=
+                    TranscriptEntry(TranscriptSpeaker.ASSISTANT, "Response ${31 + index} should be reviewed soon.")
+            }
+            end.assertIsDisplayed()
+        }
+    }
+
+    @Test
+    fun floatingTextKeepsInlineMetricsOnTheTextBaseline() {
+        val value = mutableStateOf("Assistant: Done.")
+        composeRule.setContent {
+            MaterialTheme {
+                VoiceTextFlow(
+                    androidx.compose.ui.text
+                        .AnnotatedString(value.value),
+                    MaterialTheme.typography.bodySmall,
+                    MaterialTheme.colorScheme.onSurface,
+                    with(LocalDensity.current) { TextExclusion(48.dp.roundToPx(), 52.dp.roundToPx()) },
+                    Modifier.width(320.dp).testTag("floating-text"),
+                    metrics = {
+                        androidx.compose.material3.Text(
+                            "↑ 12",
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.testTag("inline-count"),
+                        )
+                    },
+                )
+            }
+        }
+
+        fun layouts(tag: String): List<TextLayoutResult> {
+            val result = mutableListOf<TextLayoutResult>()
+            if (tag == "floating-text") {
+                val nodes = composeRule.onAllNodesWithTag("gomode-voice-text-part", useUnmergedTree = true)
+                repeat(nodes.fetchSemanticsNodes().size) { index ->
+                    nodes[index].performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(result) }
+                }
+            } else {
+                composeRule
+                    .onNodeWithTag(
+                        tag,
+                    ).performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(result) }
+            }
+            return result
+        }
+
+        fun checkBaseline() {
+            val parts = layouts("floating-text")
+            val last = parts.last()
+            val textBox =
+                composeRule
+                    .onAllNodesWithTag("gomode-voice-text-part", useUnmergedTree = true)[parts.lastIndex]
+                    .fetchSemanticsNode()
+                    .boundsInRoot
+            val countBox = composeRule.onNodeWithTag("inline-count").fetchSemanticsNode().boundsInRoot
+            val expected = textBox.top + last.getLineBaseline(last.lineCount - 1)
+            val actual = countBox.top + layouts("inline-count").single().firstBaseline
+            assertEquals(expected, actual, 1f)
+        }
+        checkBaseline()
+        composeRule.runOnIdle {
+            value.value = "Assistant: " + "Compare the launch brief and the prototype feedback carefully. ".repeat(8)
+        }
+        composeRule.onNodeWithText(value.value).assert(
+            SemanticsMatcher.keyNotDefined(SemanticsActions.GetTextLayoutResult),
+        )
+        val parts = layouts("floating-text")
+        assertTrue(
+            parts
+                .first()
+                .layoutInput.constraints.maxWidth <
+                parts
+                    .last()
+                    .layoutInput.constraints.maxWidth,
+        )
+        checkBaseline()
+        composeRule.runOnIdle { value.value = "Assistant: " + "مرحبا بالعالم ".repeat(24) }
+        val arabic = layouts("floating-text")
+        assertEquals(arabic.first().getParagraphDirection(0), arabic.last().getParagraphDirection(0))
+    }
+
+    @Test
+    fun unknownUsageTotalsKeepTheModelAndReportingStatusVisible() {
+        val counts =
+            com.caic.voicegateway.sdk.v2
+                .TokenUsage()
+        val report =
+            com.caic.voicegateway.sdk.v2.SessionUsage(
+                com.caic.voicegateway.sdk.v2.MessageKind.SessionUsage,
+                "fixture",
+                "llamacpp",
+                "LFM3-audio",
+                counts,
+            )
+        composeRule.setContent {
+            GoModeTheme {
+                VoicePanel(
+                    VoiceState(usage = VoiceUsage(counts, report)),
+                    true,
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    serviceReconnect = null,
+                    onCycleApp = {},
+                    canCycleApps = false,
+                    showUsageStats = true,
+                )
+            }
+        }
+        composeRule.onNodeWithText("llamacpp · LFM3-audio · Not reported").assertIsDisplayed()
     }
 
     @Test

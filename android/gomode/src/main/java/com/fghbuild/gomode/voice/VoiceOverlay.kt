@@ -1,6 +1,7 @@
 // Full-width bottom shell panel composable: settings, voice controls, status, and transcript display.
 package com.fghbuild.gomode.voice
 
+import android.content.res.Configuration
 import android.media.AudioDeviceInfo
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -10,6 +11,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,6 +28,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -33,15 +36,23 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Cached
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DataUsage
 import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.PhoneInTalk
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speaker
@@ -64,8 +75,10 @@ import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -76,20 +89,28 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.SubcomposeLayout
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.platform.ViewConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -98,7 +119,10 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import com.caic.voicegateway.sdk.v2.TokenUsage
 import com.caic.voicegateway.sdk.v2.TurnState
 import kotlinx.coroutines.launch
 
@@ -106,6 +130,7 @@ private const val PULSE_MIN_ALPHA = 0.5f
 private const val PULSE_MAX_ALPHA = 1.0f
 private const val PULSE_DURATION_MS = 1000
 private const val SERVICE_RECONNECT_REASON_LIMIT = 200
+private val CloseTargetSize = 32.dp
 private val WHITESPACE = Regex("\\s+")
 private const val BAR_COUNT = 3
 private const val BAR_MIN_HEIGHT = 4f
@@ -142,12 +167,16 @@ fun VoicePanel(
     modifier: Modifier = Modifier,
     microphoneRecovery: MicrophonePermissionRecovery? = null,
     speechRecovery: (@Composable () -> Unit)? = null,
+    showUsageStats: Boolean = false,
+    onHideUsageStats: () -> Unit = {},
 ) {
+    val settingsFocus = remember { FocusRequester() }
+    val showUsage = voiceState.connected || voiceState.usage != null || voiceState.transcript.isNotEmpty()
     val appControls: @Composable () -> Unit = {
-        AppControls(onOpenSettings, onCycleApp, canCycleApps)
+        AppControls(onOpenSettings, onCycleApp, canCycleApps, settingsFocus)
     }
     Surface(
-        modifier = modifier,
+        modifier = modifier.fillMaxWidth(),
         tonalElevation = 4.dp,
     ) {
         Column(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
@@ -206,14 +235,89 @@ fun VoicePanel(
                 voiceState.connectStatus != null -> {
                     ConnectingStatus(voiceState.connectStatus)
                 }
-
-                voiceState.connected -> {
-                    ActivePanel(voiceState)
+            }
+            if (voiceState.connected || voiceState.transcript.isNotEmpty() || voiceState.toolHistory.isNotEmpty()) {
+                ConversationPanel(voiceState, showUsageStats)
+            }
+            if (showUsage && showUsageStats) {
+                UsagePanel(voiceState.usage) {
+                    onHideUsageStats()
+                    settingsFocus.requestFocus()
                 }
             }
         }
     }
 }
+
+@Composable
+private fun UsagePanel(
+    usage: VoiceUsage?,
+    onClose: () -> Unit,
+) {
+    val density = LocalDensity.current
+    val style = MaterialTheme.typography.labelSmall
+    val model =
+        listOfNotNull(usage?.latest?.provider, usage?.latest?.model)
+            .filter(String::isNotBlank)
+            .joinToString(" · ")
+    val totals = usage?.totals
+    val reported =
+        totals != null &&
+            listOfNotNull(
+                totals.inputTokens,
+                totals.outputTokens,
+                totals.cachedTokens,
+                totals.reasoningTokens,
+            ).isNotEmpty()
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .padding(horizontal = 12.dp, vertical = 2.dp)
+            .testTag("gomode-voice-usage")
+            .heightIn(min = CloseTargetSize, max = 180.dp)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        VoiceTextFlow(
+            text =
+                androidx.compose.ui.text
+                    .AnnotatedString(
+                        if (reported) {
+                            model
+                        } else {
+                            listOf(
+                                model,
+                                "Not reported",
+                            ).filter(String::isNotEmpty).joinToString(" · ")
+                        },
+                    ),
+            style = style,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            exclusion =
+                with(
+                    density,
+                ) { TextExclusion(CloseTargetSize.roundToPx(), (CloseTargetSize + 4.dp).roundToPx()) },
+            modifier = Modifier.fillMaxWidth(),
+            metrics = {
+                if (reported && totals != null) TokenMetrics(totals)
+                if (usage?.latest?.contextTokens != null || usage?.latest?.contextWindow != null) {
+                    val context = "${formatUsageCount(
+                        usage?.latest?.contextTokens,
+                    )} / ${formatUsageCount(usage?.latest?.contextWindow)}"
+                    UsageMetric("Context tokens: $context", context, Icons.Default.DataUsage)
+                }
+            },
+        )
+        VoiceCloseButton(onClose, "Close usage", Modifier.align(Alignment.TopEnd))
+    }
+}
+
+private fun formatUsageCount(value: Long?): String =
+    value?.let {
+        java.text.NumberFormat
+            .getIntegerInstance()
+            .format(it)
+    } ?: "Not reported"
 
 // Service updates resume on their own. The spinner reports the retry, and a tap reveals which
 // service feed restarted and the reason it ended without asking for an action.
@@ -275,9 +379,10 @@ private fun AppControls(
     onOpenSettings: () -> Unit,
     onCycleApp: () -> Unit,
     canCycleApps: Boolean,
+    settingsFocus: FocusRequester,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        SettingsButton(onOpenSettings)
+        SettingsButton(onOpenSettings, Modifier.focusRequester(settingsFocus))
         if (canCycleApps) {
             IconButton(
                 onClick = onCycleApp,
@@ -290,10 +395,13 @@ private fun AppControls(
 }
 
 @Composable
-private fun SettingsButton(onOpenSettings: () -> Unit) {
+private fun SettingsButton(
+    onOpenSettings: () -> Unit,
+    modifier: Modifier,
+) {
     IconButton(
         onClick = onOpenSettings,
-        modifier = Modifier.testTag("gomode-web-open-settings"),
+        modifier = modifier.testTag("gomode-web-open-settings"),
     ) {
         Icon(
             Icons.Default.Settings,
@@ -464,41 +572,74 @@ private fun MicrophoneModeButton(
 }
 
 @Composable
-private fun TranscriptToggle(
-    expanded: Boolean,
-    focusRequester: FocusRequester,
-    onToggle: () -> Unit,
+private fun VoiceCloseButton(
+    onClick: () -> Unit,
+    contentDescription: String,
+    modifier: Modifier = Modifier,
 ) {
+    val viewConfiguration = LocalViewConfiguration.current
+    val compactConfiguration =
+        remember(viewConfiguration) {
+            // Keep implicit touch expansion within the compact close target.
+            object : ViewConfiguration by viewConfiguration {
+                override val minimumTouchTargetSize = DpSize(CloseTargetSize, CloseTargetSize)
+            }
+        }
     val closeIconSize =
         with(LocalDensity.current) {
             MaterialTheme.typography.labelSmall.fontSize
                 .toDp() * 1.25f
         }
-    IconButton(
-        onClick = onToggle,
-        modifier = Modifier.size(48.dp).focusRequester(focusRequester).testTag("gomode-voice-transcript-toggle"),
-    ) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = if (expanded) Alignment.TopCenter else Alignment.Center,
+    CompositionLocalProvider(LocalViewConfiguration provides compactConfiguration) {
+        IconButton(
+            onClick = onClick,
+            modifier = modifier.size(CloseTargetSize),
         ) {
-            Icon(
-                imageVector = if (expanded) Icons.Default.Close else Icons.Default.Subtitles,
-                contentDescription = if (expanded) "Hide transcript" else "Show transcript",
-                modifier =
-                    Modifier
-                        .padding(
-                            top = if (expanded) 2.dp else 0.dp,
-                        ).size(if (expanded) closeIconSize else 24.dp),
-            )
+            Box(Modifier.fillMaxSize().padding(top = 2.dp), contentAlignment = Alignment.TopCenter) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = contentDescription,
+                    modifier = Modifier.size(closeIconSize),
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun ActivePanel(voiceState: VoiceState) {
+private fun TranscriptToggle(
+    expanded: Boolean,
+    focusRequester: FocusRequester,
+    onToggle: () -> Unit,
+) {
+    val modifier = Modifier.focusRequester(focusRequester).testTag("gomode-voice-transcript-toggle")
+    if (expanded) {
+        VoiceCloseButton(onToggle, "Hide transcript", modifier)
+    } else {
+        IconButton(onClick = onToggle, modifier = modifier.size(48.dp)) {
+            Icon(Icons.Default.Subtitles, contentDescription = "Show transcript", modifier = Modifier.size(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun ConversationPanel(
+    voiceState: VoiceState,
+    showUsageStats: Boolean,
+) {
+    val transcriptMargin =
+        if (LocalConfiguration.current.orientation ==
+            Configuration.ORIENTATION_PORTRAIT
+        ) {
+            0.dp
+        } else {
+            16.dp
+        }
     var transcriptExpanded by rememberSaveable { mutableStateOf(true) }
     val transcriptFocus = remember { FocusRequester() }
+    val logFocus = remember { FocusRequester() }
+    var logFocused by remember { mutableStateOf(false) }
+    val focusColor = MaterialTheme.colorScheme.primary
     var focusAfterToggle by remember { mutableStateOf(false) }
     val transcriptToggle: @Composable () -> Unit = {
         TranscriptToggle(transcriptExpanded, transcriptFocus) {
@@ -508,45 +649,90 @@ private fun ActivePanel(voiceState: VoiceState) {
     }
     LaunchedEffect(transcriptExpanded) {
         if (focusAfterToggle) {
-            if (voiceState.transcript.isNotEmpty()) transcriptFocus.requestFocus()
+            if (voiceState.transcript.isNotEmpty()) {
+                if (transcriptExpanded) logFocus.requestFocus() else transcriptFocus.requestFocus()
+            }
             focusAfterToggle = false
         }
     }
 
     Column(
-        modifier = Modifier.padding(start = 16.dp, top = 0.dp, end = 16.dp, bottom = 12.dp),
+        modifier = Modifier.padding(bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().testTag("gomode-voice-activity"),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("gomode-voice-activity"),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(
-                text = voiceStatusText(voiceState),
-                style = MaterialTheme.typography.bodyMedium,
-                color =
-                    if (voiceState.activeTool != null) {
-                        MaterialTheme.colorScheme.tertiary
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    },
-                modifier = Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Polite },
-            )
-            if (voiceState.transcript.isNotEmpty() && !transcriptExpanded) transcriptToggle()
+            if (voiceState.connected && voiceState.error == null && voiceState.connectStatus == null &&
+                voiceState.activeTool == null
+            ) {
+                Text(
+                    text = voiceStatusText(voiceState),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color =
+                        if (voiceState.activeTool != null) {
+                            MaterialTheme.colorScheme.tertiary
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                    modifier =
+                        Modifier
+                            .then(
+                                if (voiceState.toolHistory.isEmpty()) Modifier.weight(1f) else Modifier,
+                            ).semantics {
+                                liveRegion =
+                                    LiveRegionMode.Polite
+                            },
+                )
+            }
+            if (voiceState.toolHistory.isNotEmpty()) {
+                ToolHistory(voiceState.toolHistory, voiceState.activeTool, Modifier.weight(1f))
+            }
+            if (voiceState.transcript.isNotEmpty() &&
+                !transcriptExpanded
+            ) {
+                transcriptToggle()
+            }
         }
 
-        if (transcriptExpanded) {
-            Row(
-                modifier = Modifier.fillMaxWidth().testTag("gomode-voice-transcript-content"),
-                verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+        if (transcriptExpanded && voiceState.transcript.isNotEmpty()) {
+            Box(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = transcriptMargin)
+                        .background(
+                            MaterialTheme.colorScheme.surfaceContainerLowest,
+                            RoundedCornerShape(8.dp),
+                        ).padding(8.dp)
+                        .testTag("gomode-voice-transcript-content"),
             ) {
                 TranscriptLog(
                     entries = voiceState.transcript,
-                    modifier = Modifier.weight(1f).testTag("gomode-voice-transcript"),
+                    showUsageStats = showUsageStats,
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .drawBehind {
+                                if (logFocused) {
+                                    val stroke = 2.dp.toPx()
+                                    drawRoundRect(
+                                        color = focusColor,
+                                        topLeft = Offset(-stroke, -stroke),
+                                        size = Size(size.width + stroke * 2, size.height + stroke * 2),
+                                        cornerRadius = CornerRadius(8.dp.toPx()),
+                                        style = Stroke(stroke),
+                                    )
+                                }
+                            }.onFocusChanged { logFocused = it.isFocused }
+                            .semantics { contentDescription = "Transcript" }
+                            .focusRequester(logFocus)
+                            .focusable()
+                            .testTag("gomode-voice-transcript"),
+                    close = transcriptToggle,
                 )
-                if (voiceState.transcript.isNotEmpty()) transcriptToggle()
             }
         }
     }
@@ -647,8 +833,12 @@ internal fun transcriptLabel(entry: TranscriptEntry): String =
 internal fun TranscriptLog(
     entries: List<TranscriptEntry>,
     modifier: Modifier = Modifier,
+    showUsageStats: Boolean = false,
+    close: (@Composable () -> Unit)? = null,
 ) {
     val listState = rememberLazyListState()
+    val leading = if (close != null) minOf(4, entries.size) else 0
+    val endIndex = entries.size - leading + if (leading > 0) 1 else 0
     var followingTail by remember { mutableStateOf(true) }
     val manualScroll =
         remember(listState) {
@@ -667,14 +857,17 @@ internal fun TranscriptLog(
             if (!scrolling && !forward) followingTail = true
         }
     }
-    val lastEntryText = entries.lastOrNull()?.text
-    LaunchedEffect(entries.size, lastEntryText, followingTail) {
-        if (entries.isEmpty()) {
-            followingTail = true
-        } else if (followingTail) {
-            // A bottom sentinel reaches the end even when the last message is taller than the viewport.
-            listState.scrollToItem(entries.size)
+    LaunchedEffect(listState, endIndex, followingTail, entries.isEmpty()) {
+        if (followingTail && entries.isNotEmpty()) {
+            snapshotFlow {
+                listState.layoutInfo.visibleItemsInfo
+                    .lastOrNull()
+                    ?.let { Triple(it.index, it.offset, it.size) }
+            }.collect { listState.scrollToItem(endIndex) }
         }
+    }
+    LaunchedEffect(entries.isEmpty()) {
+        if (entries.isEmpty()) followingTail = true
     }
     if (entries.isNotEmpty()) {
         LazyColumn(
@@ -682,35 +875,235 @@ internal fun TranscriptLog(
             modifier = modifier.heightIn(max = TranscriptHeight).nestedScroll(manualScroll),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            itemsIndexed(entries) { _, entry ->
-                val reasoning = entry.kind == TranscriptKind.REASONING
-                val labelColor =
-                    when {
-                        reasoning -> MaterialTheme.colorScheme.onSurfaceVariant
-                        entry.speaker == TranscriptSpeaker.USER -> MaterialTheme.colorScheme.primary
-                        else -> MaterialTheme.colorScheme.secondary
+            if (leading > 0 && close != null) {
+                item { FloatingTranscriptStart(entries.take(leading), showUsageStats, close) }
+            }
+            itemsIndexed(entries.drop(leading)) { _, entry -> TranscriptRow(entry, showUsageStats, null) }
+            item { Spacer(Modifier.fillMaxWidth().height(1.dp).testTag("gomode-voice-transcript-end")) }
+        }
+    }
+}
+
+// The initial entries share the float; the rest of the conversation remains lazy.
+@Composable
+private fun FloatingTranscriptStart(
+    entries: List<TranscriptEntry>,
+    showUsageStats: Boolean,
+    close: @Composable () -> Unit,
+) {
+    SubcomposeLayout { constraints ->
+        val button = subcompose("close", close).single().measure(constraints.copy(minWidth = 0, minHeight = 0))
+        val gap = 4.dp.roundToPx()
+        var top = 0
+        val positions = mutableListOf<Int>()
+        val rows =
+            entries.mapIndexed { index, entry ->
+                val exclusion =
+                    if (top <
+                        button.height
+                    ) {
+                        TextExclusion(button.height - top, button.width + gap)
+                    } else {
+                        null
                     }
-                Text(
-                    text =
-                        buildAnnotatedString {
-                            withStyle(SpanStyle(color = labelColor, fontWeight = FontWeight.SemiBold)) {
-                                append("${transcriptLabel(entry)}: ")
-                            }
-                            append(entry.text)
-                        },
-                    style = MaterialTheme.typography.bodySmall,
-                    color =
-                        if (reasoning) {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                val row =
+                    subcompose(index) { TranscriptRow(entry, showUsageStats, exclusion) }
+                        .single()
+                        .measure(Constraints.fixedWidth(constraints.maxWidth))
+                positions.add(top)
+                top += row.height + gap
+                row
             }
-            item {
-                Spacer(Modifier.fillMaxWidth().height(1.dp).testTag("gomode-voice-transcript-end"))
+        layout(constraints.maxWidth, maxOf(button.height, top - gap)) {
+            rows.forEachIndexed { index, row -> row.placeRelative(0, positions[index]) }
+            button.placeRelative(constraints.maxWidth - button.width, 0)
+        }
+    }
+}
+
+// The viewport is one text line high; standard scroll semantics expose both axes.
+@Composable
+private fun ToolHistory(
+    entries: List<ToolInvocation>,
+    activeTool: String?,
+    modifier: Modifier = Modifier,
+) {
+    val vertical = rememberScrollState()
+    val horizontal = rememberScrollState()
+    var followingTail by remember { mutableStateOf(true) }
+    var firstSequence by remember { mutableStateOf(entries.first().sequence) }
+    val style = MaterialTheme.typography.bodySmall
+    val rowHeight = with(LocalDensity.current) { style.lineHeight.toDp() }
+    val rowPixels = with(LocalDensity.current) { rowHeight.roundToPx() }
+    LaunchedEffect(vertical, rowPixels) {
+        var previous = vertical.value
+        snapshotFlow { vertical.value to vertical.isScrollInProgress }.collect { (value, scrolling) ->
+            if (value != previous) {
+                followingTail = value >= vertical.maxValue - 1
+                previous = value
             }
+            if (!scrolling && !followingTail) {
+                val snapped = ((value + rowPixels / 2) / rowPixels) * rowPixels
+                if (snapped != value) vertical.scrollTo(snapped)
+                followingTail = vertical.value >= vertical.maxValue - 1
+            }
+        }
+    }
+    LaunchedEffect(entries, vertical.maxValue) {
+        if (followingTail && vertical.maxValue != Int.MAX_VALUE) vertical.scrollTo(vertical.maxValue)
+    }
+    LaunchedEffect(entries) {
+        val evicted = (entries.first().sequence - firstSequence).coerceAtLeast(0)
+        firstSequence = entries.first().sequence
+        if (followingTail) {
+            horizontal.scrollTo(0)
+        } else if (evicted > 0) {
+            vertical.scrollTo((vertical.value - evicted * rowPixels).coerceAtLeast(0).toInt())
+        }
+    }
+    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Icon(
+            if (activeTool != null) Icons.Default.Build else Icons.Default.History,
+            contentDescription = activeTool?.let { "Calling tool: $it…" },
+            modifier = Modifier.size(rowHeight).semantics { liveRegion = LiveRegionMode.Polite },
+            tint =
+                if (activeTool !=
+                    null
+                ) {
+                    MaterialTheme.colorScheme.tertiary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+        )
+        Column(
+            Modifier
+                .weight(1f)
+                .height(rowHeight)
+                .clipToBounds()
+                .verticalScroll(vertical)
+                .horizontalScroll(horizontal)
+                .semantics { contentDescription = "Recent tool calls" }
+                .testTag("gomode-voice-tool-history"),
+        ) {
+            entries.forEachIndexed { index, entry ->
+                key(entry.sequence) {
+                    Text(
+                        entry.name,
+                        style = style,
+                        softWrap = false,
+                        modifier = Modifier.height(rowHeight),
+                        color =
+                            if (index == entries.lastIndex &&
+                                entry.name == activeTool
+                            ) {
+                                MaterialTheme.colorScheme.tertiary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TranscriptRow(
+    entry: TranscriptEntry,
+    showUsageStats: Boolean,
+    exclusion: TextExclusion?,
+) {
+    val reasoning = entry.kind == TranscriptKind.REASONING
+    val labelColor =
+        when {
+            reasoning -> MaterialTheme.colorScheme.onSurfaceVariant
+            entry.speaker == TranscriptSpeaker.USER -> MaterialTheme.colorScheme.primary
+            else -> MaterialTheme.colorScheme.secondary
+        }
+    val text =
+        buildAnnotatedString {
+            withStyle(SpanStyle(color = labelColor, fontWeight = FontWeight.SemiBold)) {
+                append("${transcriptLabel(entry)}: ")
+            }
+            append(entry.text)
+        }
+    val counts =
+        entry.responseUsage.takeIf {
+            showUsageStats && !reasoning && entry.speaker == TranscriptSpeaker.ASSISTANT
+        }
+    val assistant = !reasoning && entry.speaker == TranscriptSpeaker.ASSISTANT
+    val inset = with(LocalDensity.current) { if (assistant) 1.dp.roundToPx() else 0 }
+    val space = exclusion?.copy(height = exclusion.height - inset)
+    val rowModifier =
+        if (assistant) {
+            Modifier
+                .background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(3.dp))
+                .padding(horizontal = 3.dp, vertical = 1.dp)
+        } else {
+            Modifier
+        }
+    VoiceTextFlow(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = if (reasoning) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+        exclusion = space,
+        modifier = rowModifier.fillMaxWidth(),
+        metrics =
+            if (counts != null) {
+                { TokenMetrics(counts) }
+            } else {
+                null
+            },
+    )
+}
+
+@Composable
+private fun TokenMetrics(counts: TokenUsage) {
+    ResponseMetric("Input", counts.inputTokens, Icons.Default.ArrowUpward)
+    ResponseMetric("Output", counts.outputTokens, Icons.Default.ArrowDownward)
+    counts.cachedTokens?.let { ResponseMetric("Cached input", it, Icons.Default.Cached) }
+    counts.reasoningTokens?.let { ResponseMetric("Reasoning", it, Icons.Default.Psychology) }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ResponseMetric(
+    label: String,
+    value: Long?,
+    icon: ImageVector,
+) {
+    UsageMetric("$label tokens: ${formatUsageCount(value)}", value?.let { formatUsageCount(it) } ?: "—", icon)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun UsageMetric(
+    description: String,
+    value: String,
+    icon: ImageVector,
+) {
+    val style = MaterialTheme.typography.labelSmall
+    val iconSize = with(LocalDensity.current) { style.fontSize.toDp() * 1.25f }
+    TooltipBox(
+        positionProvider = TooltipDefaults.rememberTooltipPositionProvider(),
+        tooltip = { RichTooltip { Text(description) } },
+        state = rememberTooltipState(),
+    ) {
+        Row(
+            modifier = Modifier.clearAndSetSemantics { contentDescription = description },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                modifier = Modifier.size(iconSize),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                value,
+                style = style.copy(fontFeatureSettings = "tnum"),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

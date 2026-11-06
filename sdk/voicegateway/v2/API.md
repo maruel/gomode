@@ -70,6 +70,7 @@ MessageKind identifies a voice gateway WebRTC data-channel message.
 | `session.close` | MessageKindSessionClose asks the gateway to close the session. |
 | `session.ready` | MessageKindSessionReady reports that the gateway session is ready. |
 | `session.status` | MessageKindSessionStatus reports startup progress before session.ready. |
+| `session.usage` | MessageKindSessionUsage reports cumulative provider usage for this connection. |
 | `transcript.delta` | MessageKindTranscriptDelta streams transcript text. |
 | `assistant.text.delta` | MessageKindAssistantTextDelta streams assistant text. |
 | `reasoning.delta` | MessageKindReasoningDelta streams provider reasoning text. |
@@ -485,6 +486,42 @@ setup timeout on receipt; only session.ready enables microphone input.
 | `kind` | `MessageKind` | Kind is "session.status". | yes |
 | `message` | `string` | Message is a short user-visible description of startup work. | yes |
 
+### TokenUsage
+
+TokenUsage contains provider-reported counts. Nil means unavailable. Cached
+and reasoning counts are breakdowns, never additional tokens to sum with input
+and output; providers differ in how they account for reasoning output.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `inputTokens` | `int64` | InputTokens includes the input processed again on each model request. |  |
+| `outputTokens` | `int64` | OutputTokens counts generated output as reported by the provider. |  |
+| `cachedTokens` | `int64` | CachedTokens is the reported cached-input breakdown. |  |
+| `reasoningTokens` | `int64` | ReasoningTokens is the reported reasoning breakdown. |  |
+
+### SessionUsage
+
+SessionUsage is an idempotent snapshot for one gateway connection. Clients
+replace snapshots with the same SessionID and carry totals across automatic
+reconnects in one conversation. Missing reports are excluded from totals;
+this is observed model usage, not a billing statement or ASR/TTS accounting.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `kind` | `MessageKind` | Kind is "session.usage". | yes |
+| `sessionID` | `string` | SessionID identifies the gateway connection that owns these totals. | yes |
+| `provider` | `string` | Provider identifies the generation provider. | yes |
+| `model` | `string` | Model identifies the generation model. | yes |
+| `totals` | `TokenUsage` | Totals sums all reported responses, including tool continuations. | yes |
+| `lastResponse` | `TokenUsage` | LastResponse contains the latest reported response counts, when available. |  |
+| `responseID` | `string` | ResponseID identifies the response observed by this report. It is opaque
+and unique across gateway connections. Empty means the provider did not
+supply a reliable response association. |  |
+| `responseUsage` | `TokenUsage` | ResponseUsage contains counts for ResponseID in this report only. Unlike
+LastResponse, it is never carried forward into context-only reports. |  |
+| `contextTokens` | `int64` | ContextTokens is the latest reported context size, never summed. |  |
+| `contextWindow` | `int64` | ContextWindow is the latest reported context capacity. |  |
+
 ### TranscriptDelta
 
 TranscriptDelta is a gateway message that streams transcript text.
@@ -495,6 +532,9 @@ Each fragment appends to previously emitted text; it never replaces it.
 | `kind` | `MessageKind` | Kind is "transcript.delta". | yes |
 | `speaker` | `Speaker` | Speaker identifies who produced this transcript text. | yes |
 | `text` | `string` | Text is an incremental transcript fragment. | yes |
+| `responseID` | `string` | ResponseID is the opaque gateway-scoped response identity. Assistant
+text and its usage share this value; user text and uncorrelated providers
+omit it. Separate response IDs must not be merged into one transcript entry. |  |
 
 ### AssistantTextDelta
 
@@ -505,6 +545,9 @@ Each fragment appends to previously emitted text; it never replaces it.
 |-------|------|-------------|----------|
 | `kind` | `MessageKind` | Kind is "assistant.text.delta". | yes |
 | `text` | `string` | Text is an incremental assistant text fragment. | yes |
+| `responseID` | `string` | ResponseID is the opaque gateway-scoped response identity. Assistant
+text and its usage share this value; user text and uncorrelated providers
+omit it. Separate response IDs must not be merged into one transcript entry. |  |
 
 ### ReasoningDelta
 
@@ -518,6 +561,9 @@ The gateway includes it in the session activity log.
 |-------|------|-------------|----------|
 | `kind` | `MessageKind` | Kind is "reasoning.delta". | yes |
 | `text` | `string` | Text is an incremental reasoning fragment. | yes |
+| `responseID` | `string` | ResponseID is the opaque gateway-scoped response identity. Assistant
+text and its usage share this value; user text and uncorrelated providers
+omit it. Separate response IDs must not be merged into one transcript entry. |  |
 
 ### SpeechStarted
 

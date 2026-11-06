@@ -136,6 +136,12 @@ internal class SettingsEdits(
             true
         }
 
+    suspend fun setShowUsageStats(enabled: Boolean): Boolean =
+        persist {
+            repository.updateShowUsageStats(enabled)
+            true
+        }
+
     suspend fun setShowServiceOnLockScreen(enabled: Boolean): Boolean =
         persist {
             repository.updateShowServiceOnLockScreen(enabled)

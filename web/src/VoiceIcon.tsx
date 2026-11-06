@@ -3,6 +3,13 @@
 import styles from "./VoiceControls.module.css";
 
 type VoiceIconName =
+  | "arrowUpward"
+  | "arrowDownward"
+  | "dataUsage"
+  | "history"
+  | "build"
+  | "cached"
+  | "psychology"
   | "bluetooth"
   | "callEnd"
   | "close"

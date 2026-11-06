@@ -29,6 +29,7 @@ beforeEach(() => {
   voiceSession.setState((s) => ({
     ...s,
     connected: false,
+    showUsageStats: false,
     connectStatus: null,
     connectPhase: null,
     error: null,
@@ -41,8 +42,10 @@ beforeEach(() => {
     speaking: false,
     microphoneMode: "listening",
     activeTool: null,
+    toolHistory: [],
     turnState: TurnStateIdle,
     transcript: [],
+    usage: null,
     languageTag: "en-US",
     mode: "cloud",
     choices: [],
@@ -210,7 +213,7 @@ describe("VoiceOverlay status", () => {
     await user.click(show);
     expect(screen.getByText("Review the launch brief.")).toBeInTheDocument();
     expect(screen.getByText("Find the latest revision")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Hide transcript" })).toHaveFocus();
+    expect(screen.getByRole("region", { name: "Transcript" })).toHaveFocus();
   });
 
   it("labels reasoning separately from assistant statements", () => {
@@ -225,8 +228,8 @@ describe("VoiceOverlay status", () => {
     render(() => <VoiceOverlay />);
     const reasoning = screen.getByText("Weigh both dates.");
     const statement = screen.getByText("The first date is earlier.");
-    expect(reasoning.textContent).toBe("Reasoning:Weigh both dates.");
-    expect(statement.textContent).toBe("Assistant:The first date is earlier.");
+    expect(reasoning.textContent).toBe("Reasoning: Weigh both dates.");
+    expect(statement.textContent).toBe("Assistant: The first date is earlier.");
   });
 
   it("restores the transcript from the activity row when no audio picker is available", async () => {
@@ -245,7 +248,7 @@ describe("VoiceOverlay status", () => {
     expect(show).toHaveFocus();
     await user.click(show);
     expect(screen.getByText("Ready to help.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Hide transcript" })).toHaveFocus();
+    expect(screen.getByRole("region", { name: "Transcript" })).toHaveFocus();
   });
 
   it("exposes host-owned server switching without resetting the voice conversation", async () => {
@@ -533,7 +536,16 @@ describe("VoiceOverlay status", () => {
 
   it("keeps controls separate from the complete tool activity and subsequent status", () => {
     const tool = "workspace_search_project_documents_by_author_and_revision_with_extended_filters_and_full_metadata";
-    voiceSession.setState((s) => ({ ...s, connected: true, speaking: true, activeTool: tool }));
+    voiceSession.setState((s) => ({
+      ...s,
+      connected: true,
+      speaking: true,
+      activeTool: tool,
+      toolHistory: [
+        { sequence: 1, name: "task_list" },
+        { sequence: 2, name: tool },
+      ],
+    }));
     render(() => <VoiceOverlay />);
     const controls = screen.getByRole("group", { name: "Voice controls" });
     const activity = screen.getByRole("status", { name: "Voice activity" });
@@ -542,9 +554,19 @@ describe("VoiceOverlay status", () => {
     expect(within(controls).getByRole("button", { name: "End voice session" })).toBeInTheDocument();
     expect(controls.contains(activity)).toBe(false);
     expect(controls.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-    expect(activity).toHaveTextContent(`Calling tool: ${tool}…`);
+    expect(activity).toHaveTextContent("Calling tool:");
+    const history = screen.getByRole("region", { name: "Recent tool calls" });
+    expect(
+      within(history)
+        .getAllByRole("listitem")
+        .map((row) => row.textContent),
+    ).toEqual(["task_list", tool]);
+    expect(history).toHaveAttribute("tabindex", "0");
     voiceSession.setState((s) => ({ ...s, activeTool: null, speaking: false }));
     expect(activity).toHaveTextContent("Listening…");
+    expect(history).toHaveTextContent(tool);
+    voiceSession.setState((s) => ({ ...s, connected: false }));
+    expect(screen.getByRole("region", { name: "Recent tool calls" })).toBe(history);
   });
 
   it("shows gateway work behind speech and ahead of muting", () => {
@@ -631,6 +653,10 @@ describe("VoiceOverlay settings", () => {
   });
 
   it("keeps invalid language errors visible after close and prevents using the old language", async () => {
+    voiceSession.setState((state) => ({
+      ...state,
+      transcript: [{ kind: "transcript", speaker: "assistant", text: "Ready", final: true }],
+    }));
     const user = userEvent.setup();
     render(() => <VoiceOverlay />);
     await user.click(screen.getByRole("button", { name: "Voice settings" }));
@@ -908,4 +934,188 @@ describe("VoiceOverlay notifications", () => {
     view.unmount();
     await waitFor(() => expect(setVoiceActiveMock).toHaveBeenLastCalledWith(false));
   });
+});
+
+it("discloses reported usage after disconnect with zero distinct from unavailable", async () => {
+  voiceSession.setState((state) => ({
+    ...state,
+    error: "Gateway offline",
+    transcript: [
+      { kind: "transcript", speaker: "user", text: "Hello", final: true },
+      { kind: "reasoning", speaker: "assistant", text: "Consider the request", final: true, responseID: "a" },
+      {
+        kind: "transcript",
+        speaker: "assistant",
+        text: "Ready",
+        final: true,
+        responseID: "a",
+        responseUsage: { inputTokens: 234, outputTokens: 0, cachedTokens: 0 },
+      },
+      {
+        kind: "transcript",
+        speaker: "assistant",
+        text: "Unknown input",
+        final: true,
+        responseID: "b",
+        responseUsage: { outputTokens: 12 },
+      },
+    ],
+    usage: {
+      totals: { inputTokens: 1234, outputTokens: 0, cachedTokens: 128 },
+      latest: {
+        kind: "session.usage",
+        sessionID: "one",
+        provider: "test",
+        model: "model",
+        contextTokens: 2048,
+        contextWindow: 8192,
+        totals: { inputTokens: 1234, outputTokens: 0, cachedTokens: 128 },
+        lastResponse: { inputTokens: 234, outputTokens: 0, cachedTokens: 0 },
+      },
+    },
+  }));
+  render(() => <VoiceOverlay />);
+  const user = userEvent.setup();
+  const settings = screen.getByRole("button", { name: "Voice settings" });
+  await user.click(settings);
+  const toggle = screen.getByRole("checkbox", { name: "Show usage stats" });
+  expect(toggle).not.toBeChecked();
+  await user.click(toggle);
+  expect(localStorage.getItem("gomode.voiceUsageStats")).toBe("on");
+  await user.click(screen.getByRole("button", { name: "Close voice settings" }));
+  const table = screen.getByRole("region", { name: "Usage" });
+  expect(within(table).getByText("1,234")).toBeVisible();
+  expect(within(table).getByText("0")).toBeVisible();
+  expect(within(table).getByText("128")).toBeVisible();
+  expect(
+    within(table).getByRole("img", { name: "Input tokens: 1,234" }).querySelector('[data-icon="arrowUpward"]'),
+  ).not.toBeNull();
+  expect(
+    within(table).getByRole("img", { name: "Cached input tokens: 128" }).querySelector('[data-icon="cached"]'),
+  ).not.toBeNull();
+  expect(
+    within(table).getByRole("img", { name: "Context tokens: 2,048 / 8,192" }).querySelector('[data-icon="dataUsage"]'),
+  ).not.toBeNull();
+  const inputMetric = screen.getByRole("img", { name: "Input tokens: 234" });
+  expect(inputMetric).toBeVisible();
+  expect(
+    within(screen.getByRole("region", { name: "Transcript" })).getByRole("img", { name: "Output tokens: 0" }),
+  ).toBeVisible();
+  expect(screen.getByRole("img", { name: "Cached input tokens: 0" })).toBeVisible();
+  expect(screen.getByRole("img", { name: "Input tokens: Not reported" })).toHaveTextContent("—");
+  expect(inputMetric.parentElement?.parentElement).toHaveTextContent("Assistant: Ready");
+  inputMetric.focus();
+  voiceSession.setState((state) => ({
+    ...state,
+    transcript: state.transcript.map((entry) =>
+      entry.responseID === "a" && entry.kind === "transcript"
+        ? { ...entry, text: "Ready now", responseUsage: { inputTokens: 235, outputTokens: 0, cachedTokens: 0 } }
+        : entry,
+    ),
+  }));
+  expect(screen.getByRole("img", { name: "Input tokens: 235" })).toBe(inputMetric);
+  expect(inputMetric).toHaveFocus();
+  expect(screen.getByText("Input tokens: 235")).toBeVisible();
+  expect(screen.getByRole("region", { name: "Transcript" })).not.toContainElement(
+    screen.getByText("Input tokens: 235"),
+  );
+  await user.keyboard("{Escape}");
+  expect(screen.queryByText("Input tokens: 235")).toBeNull();
+  expect(screen.getByText("test · model")).toBeVisible();
+  const save = vi.spyOn(window.Storage.prototype, "setItem").mockImplementation(() => {
+    throw new Error("Storage unavailable");
+  });
+  try {
+    await user.click(screen.getByRole("button", { name: "Close usage" }));
+    expect(screen.getByRole("region", { name: "Usage" })).toBeVisible();
+    expect(screen.getByText("Could not save the usage preference: Storage unavailable")).toHaveAttribute(
+      "role",
+      "alert",
+    );
+  } finally {
+    save.mockRestore();
+  }
+  await user.click(screen.getByRole("button", { name: "Close usage" }));
+  expect(settings).toHaveFocus();
+  expect(screen.queryByRole("region", { name: "Usage" })).toBeNull();
+  expect(screen.queryByRole("img", { name: "Input tokens: 235" })).toBeNull();
+  expect(voiceSession.state.usage?.totals.inputTokens).toBe(1234);
+  await user.click(settings);
+  expect(toggle).not.toBeChecked();
+  await user.click(toggle);
+  await user.keyboard("{Escape}");
+  expect(within(screen.getByRole("region", { name: "Usage" })).getByText("1,234")).toBeVisible();
+  voiceSession.setState((state) => ({ ...state, error: null, usage: null, connected: true }));
+  expect(within(screen.getByRole("region", { name: "Usage" })).getByText("Not reported")).toBeVisible();
+});
+
+it("observes transcript reflow when the first response arrives after connecting", async () => {
+  const observe = vi.spyOn(ResizeObserver.prototype, "observe");
+  try {
+    voiceSession.setState((state) => ({ ...state, connected: true }));
+    render(() => <VoiceOverlay />);
+    expect(screen.queryByRole("region", { name: "Transcript" })).toBeNull();
+    voiceSession.setState((state) => ({
+      ...state,
+      transcript: [{ kind: "transcript", speaker: "assistant", text: "Ready", final: true }],
+    }));
+    const transcript = await screen.findByRole("region", { name: "Transcript" });
+    expect(observe).toHaveBeenCalledWith(transcript);
+    expect(transcript).toBeVisible();
+  } finally {
+    observe.mockRestore();
+  }
+});
+
+it("follows old-row usage layout updates while preserving manual transcript scroll", async () => {
+  voiceSession.setState((state) => ({
+    ...state,
+    connected: true,
+    showUsageStats: true,
+    transcript: [
+      { kind: "transcript", speaker: "assistant", text: "Earlier", final: true, responseID: "a" },
+      { kind: "transcript", speaker: "user", text: "Later", final: true },
+    ],
+  }));
+  render(() => <VoiceOverlay />);
+  const transcript = screen.getByRole("region", { name: "Transcript" });
+  Object.defineProperties(transcript, {
+    scrollHeight: { configurable: true, value: 1000 },
+    clientHeight: { configurable: true, value: 100 },
+  });
+  const correctUsage = (inputTokens: number) =>
+    voiceSession.setState((state) => ({
+      ...state,
+      transcript: state.transcript.map((entry) =>
+        entry.responseID === "a" ? { ...entry, responseUsage: { inputTokens, outputTokens: 0 } } : entry,
+      ),
+    }));
+  correctUsage(10);
+  await waitFor(() => expect(transcript.scrollTop).toBe(1000));
+  transcript.scrollTop = 400;
+  fireEvent.scroll(transcript);
+  correctUsage(11);
+  await Promise.resolve();
+  expect(transcript.scrollTop).toBe(400);
+  transcript.scrollTop = 900;
+  fireEvent.scroll(transcript);
+  correctUsage(12);
+  await waitFor(() => expect(transcript.scrollTop).toBe(1000));
+});
+
+it("keeps the floating close control when interim rows are recreated", async () => {
+  const entry = { kind: "transcript" as const, speaker: "user" as const, text: "Interim", final: false };
+  voiceSession.setState((state) => ({ ...state, connected: true, transcript: [entry, entry] }));
+  render(() => <VoiceOverlay />);
+  const log = screen.getByRole("region", { name: "Transcript" });
+  const close = within(log).getByRole("button", { name: "Hide transcript" });
+  close.focus();
+  const old = log.querySelectorAll("[class*='transcriptEntry']")[1];
+  voiceSession.setState((state) => ({ ...state, transcript: [entry] }));
+  voiceSession.setState((state) => ({ ...state, transcript: [entry, entry] }));
+  expect(log.querySelectorAll("[class*='transcriptEntry']")[1]).not.toBe(old);
+  expect(close).toHaveFocus();
+  await userEvent.click(close);
+  expect(log).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Show transcript" })).toHaveFocus();
 });

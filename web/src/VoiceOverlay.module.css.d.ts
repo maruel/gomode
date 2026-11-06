@@ -2,6 +2,7 @@
 declare const classes: {
   readonly "accessAction": string;
   readonly "accessNotice": string;
+  readonly "activityAnnouncement": string;
   readonly "activityText": string;
   readonly "audioError": string;
   readonly "callActions": string;
@@ -16,6 +17,7 @@ declare const classes: {
   readonly "errorHistory": string;
   readonly "errorList": string;
   readonly "errorPanel": string;
+  readonly "metricTooltip": string;
   readonly "micBar": string;
   readonly "micBars": string;
   readonly "microphoneClock": string;
@@ -24,6 +26,8 @@ declare const classes: {
   readonly "panel": string;
   readonly "panelInner": string;
   readonly "pulse": string;
+  readonly "responseMetric": string;
+  readonly "responseUsage": string;
   readonly "row": string;
   readonly "settingsHeader": string;
   readonly "settingsSection": string;
@@ -33,16 +37,27 @@ declare const classes: {
   readonly "statusError": string;
   readonly "statusText": string;
   readonly "statusTool": string;
+  readonly "tokenCounts": string;
+  readonly "toolHistory": string;
+  readonly "toolHistoryActive": string;
+  readonly "toolHistoryItems": string;
+  readonly "toolHistoryViewport": string;
   readonly "toolbarActions": string;
-  readonly "transcriptBody": string;
-  readonly "transcriptContent": string;
+  readonly "transcriptEntries": string;
   readonly "transcriptEntry": string;
+  readonly "transcriptEntryAssistant": string;
   readonly "transcriptEntryReasoning": string;
   readonly "transcriptLabelAssistant": string;
   readonly "transcriptLabelReasoning": string;
   readonly "transcriptLabelUser": string;
   readonly "transcriptList": string;
   readonly "transcriptPlaceholder": string;
+  readonly "transcriptText": string;
   readonly "transcriptToggle": string;
+  readonly "usage": string;
+  readonly "usageBody": string;
+  readonly "usageClose": string;
+  readonly "usageEmpty": string;
+  readonly "usageModel": string;
 };
 export default classes;

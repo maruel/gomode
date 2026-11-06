@@ -77,6 +77,112 @@ import java.util.concurrent.TimeUnit
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 class DeviceVoiceSessionTest {
+    @Test
+    fun gatewayResponseCountsMatchIdentityAcrossStreamingAndFinalization() {
+        val socket = FakeWebSocket()
+        var listener: WebSocketListener? = null
+        val session =
+            createSession(FakeSpeech()) { _, captured ->
+                listener = captured
+                socket
+            }
+        try {
+            session.connect()
+            val backend = requireNotNull(listener)
+            backend.onOpen(socket, upgradeResponse())
+            backend.onMessage(socket, """{"kind":"session.ready"}""")
+
+            fun report(
+                id: String,
+                tokens: Int,
+            ) {
+                backend.onMessage(
+                    socket,
+                    """{"kind":"session.usage","sessionID":"one","provider":"test","model":"model",
+                        "totals":{"inputTokens":100},"responseID":"$id",
+                        "responseUsage":{"inputTokens":$tokens,"outputTokens":0}}""",
+                )
+            }
+            report("a", 10)
+            backend.onMessage(socket, """{"kind":"assistant.text.delta","text":"First.","responseID":"a"}""")
+            backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+            backend.onMessage(socket, """{"kind":"assistant.text.delta","text":"Second.","responseID":"b"}""")
+            report("b", 20)
+            report("a", 11)
+            backend.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
+            assertEquals(2, session.state.value.transcript.size)
+            assertEquals(
+                listOf(11L, 20L),
+                session.state.value.transcript
+                    .map { it.responseUsage?.inputTokens },
+            )
+            assertTrue(
+                session.state.value.transcript
+                    .all { it.final },
+            )
+            session.disconnect()
+            assertEquals(
+                11L,
+                session.state.value.transcript
+                    .first()
+                    .responseUsage
+                    ?.inputTokens,
+            )
+        } finally {
+            session.close()
+        }
+    }
+
+    @Test
+    fun usageSurvivesFailureAndDisconnectButResetsForANewConversation() {
+        val socket = FakeWebSocket()
+        var listener: WebSocketListener? = null
+        val session =
+            createSession(FakeSpeech()) { _, captured ->
+                listener = captured
+                socket
+            }
+        try {
+            session.connect()
+            val backend = requireNotNull(listener)
+            backend.onOpen(socket, upgradeResponse())
+            backend.onMessage(
+                socket,
+                """{"kind":"session.usage","sessionID":"one","provider":"test","model":"model",
+                    "totals":{"inputTokens":123,"outputTokens":0}}""",
+            )
+            backend.onMessage(
+                socket,
+                """{"kind":"session.usage","sessionID":"one","provider":"test","model":"model",
+                    "totals":{"inputTokens":123,"outputTokens":0}}""",
+            )
+            assertEquals(
+                123L,
+                session.state.value.usage
+                    ?.totals
+                    ?.inputTokens,
+            )
+            session.setError("Failed")
+            assertEquals(
+                123L,
+                session.state.value.usage
+                    ?.totals
+                    ?.inputTokens,
+            )
+            session.disconnect()
+            assertEquals(
+                123L,
+                session.state.value.usage
+                    ?.totals
+                    ?.inputTokens,
+            )
+            session.connect()
+            assertNull(session.state.value.usage)
+        } finally {
+            session.close()
+        }
+    }
+
     @Before
     fun setUp() {
         Dispatchers.setMain(Dispatchers.Unconfined)

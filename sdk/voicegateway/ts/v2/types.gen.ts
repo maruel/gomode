@@ -38,6 +38,7 @@ export type MessageKind =
   | "session.close"
   | "session.ready"
   | "session.status"
+  | "session.usage"
   | "transcript.delta"
   | "assistant.text.delta"
   | "reasoning.delta"
@@ -58,6 +59,7 @@ export const MessageKindTurnCancel = "turn.cancel";
 export const MessageKindSessionClose = "session.close";
 export const MessageKindSessionReady = "session.ready";
 export const MessageKindSessionStatus = "session.status";
+export const MessageKindSessionUsage = "session.usage";
 export const MessageKindTranscriptDelta = "transcript.delta";
 export const MessageKindAssistantTextDelta = "assistant.text.delta";
 export const MessageKindReasoningDelta = "reasoning.delta";
@@ -504,6 +506,58 @@ export interface SessionStatus {
 }
 
 /**
+ * TokenUsage contains provider-reported counts. Nil means unavailable. Cached
+ * and reasoning counts are breakdowns, never additional tokens to sum with input
+ * and output; providers differ in how they account for reasoning output.
+ */
+export interface TokenUsage {
+  /** InputTokens includes the input processed again on each model request. */
+  inputTokens?: number /* int64 */;
+  /** OutputTokens counts generated output as reported by the provider. */
+  outputTokens?: number /* int64 */;
+  /** CachedTokens is the reported cached-input breakdown. */
+  cachedTokens?: number /* int64 */;
+  /** ReasoningTokens is the reported reasoning breakdown. */
+  reasoningTokens?: number /* int64 */;
+}
+
+/**
+ * SessionUsage is an idempotent snapshot for one gateway connection. Clients
+ * replace snapshots with the same SessionID and carry totals across automatic
+ * reconnects in one conversation. Missing reports are excluded from totals;
+ * this is observed model usage, not a billing statement or ASR/TTS accounting.
+ */
+export interface SessionUsage {
+  /** Kind is "session.usage". */
+  kind: MessageKind;
+  /** SessionID identifies the gateway connection that owns these totals. */
+  sessionID: string;
+  /** Provider identifies the generation provider. */
+  provider: string;
+  /** Model identifies the generation model. */
+  model: string;
+  /** Totals sums all reported responses, including tool continuations. */
+  totals: TokenUsage;
+  /** LastResponse contains the latest reported response counts, when available. */
+  lastResponse?: TokenUsage;
+  /**
+   * ResponseID identifies the response observed by this report. It is opaque
+   * and unique across gateway connections. Empty means the provider did not
+   * supply a reliable response association.
+   */
+  responseID?: string;
+  /**
+   * ResponseUsage contains counts for ResponseID in this report only. Unlike
+   * LastResponse, it is never carried forward into context-only reports.
+   */
+  responseUsage?: TokenUsage;
+  /** ContextTokens is the latest reported context size, never summed. */
+  contextTokens?: number /* int64 */;
+  /** ContextWindow is the latest reported context capacity. */
+  contextWindow?: number /* int64 */;
+}
+
+/**
  * TranscriptDelta is a gateway message that streams transcript text.
  * Each fragment appends to previously emitted text; it never replaces it.
  */
@@ -514,6 +568,12 @@ export interface TranscriptDelta {
   speaker: Speaker;
   /** Text is an incremental transcript fragment. */
   text: string;
+  /**
+   * ResponseID is the opaque gateway-scoped response identity. Assistant
+   * text and its usage share this value; user text and uncorrelated providers
+   * omit it. Separate response IDs must not be merged into one transcript entry.
+   */
+  responseID?: string;
 }
 
 /**
@@ -525,6 +585,12 @@ export interface AssistantTextDelta {
   kind: MessageKind;
   /** Text is an incremental assistant text fragment. */
   text: string;
+  /**
+   * ResponseID is the opaque gateway-scoped response identity. Assistant
+   * text and its usage share this value; user text and uncorrelated providers
+   * omit it. Separate response IDs must not be merged into one transcript entry.
+   */
+  responseID?: string;
 }
 
 /**
@@ -539,6 +605,12 @@ export interface ReasoningDelta {
   kind: MessageKind;
   /** Text is an incremental reasoning fragment. */
   text: string;
+  /**
+   * ResponseID is the opaque gateway-scoped response identity. Assistant
+   * text and its usage share this value; user text and uncorrelated providers
+   * omit it. Separate response IDs must not be merged into one transcript entry.
+   */
+  responseID?: string;
 }
 
 /** SpeechStarted is a gateway message that reports speech output started. */

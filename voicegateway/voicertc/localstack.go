@@ -65,6 +65,7 @@ type llmReply struct {
 // llmFragment is one streamed LLM output fragment. Reasoning and text arrive in
 // generated order; a fragment sets at most one of them.
 type llmFragment struct {
+	usage     *usageObservation
 	text      string
 	reasoning string
 }
@@ -184,6 +185,7 @@ type sessionToolCall struct {
 // localStackSession owns one half-duplex voice session: queues, cancellation,
 // and tool-call correlation are all local to the backend.
 type localStackSession struct {
+	usage   usageTracker
 	id      string
 	sink    backendSink
 	baseCtx context.Context //nolint:containedctx // session lifetime context for turn goroutines
@@ -436,14 +438,15 @@ func (s *localStackSession) startAdmittedStep(ctx context.Context, conv llmConve
 	s.speaking = false
 	s.turnGeneration++
 	generation := s.turnGeneration
+	responseID := gatewayResponseID(s.id, fmt.Sprintf("local-%d", generation))
 	ready := make(chan struct{})
 	s.turns.Go(func() error {
 		defer s.finishTurn(generation)
 		<-ready
 		if s.clientSpeech {
-			s.handleTextStep(ctx, conv, step)
+			s.handleTextStep(ctx, conv, step, responseID)
 		} else {
-			s.handleLLMStep(ctx, conv, step)
+			s.handleLLMStep(ctx, conv, step, responseID)
 		}
 		return nil
 	})
@@ -457,18 +460,21 @@ func (s *localStackSession) startAdmittedStep(ctx context.Context, conv llmConve
 // handleTextStep streams one LLM step as assistant text for a client-speech
 // session. It performs the same tool round trip as handleLLMStep without local
 // synthesis.
-func (s *localStackSession) handleTextStep(ctx context.Context, conv llmConversation, step llmStep) {
+func (s *localStackSession) handleTextStep(ctx context.Context, conv llmConversation, step llmStep, responseID string) {
 	streamed := false
 	for fragment := range step.stream {
+		if fragment.usage != nil {
+			s.reportUsage(fragment.usage, responseID)
+		}
 		if ctx.Err() != nil {
 			continue
 		}
 		if fragment.reasoning != "" {
-			s.emit(&voicev2.ReasoningDelta{Kind: voicev2.MessageKindReasoningDelta, Text: fragment.reasoning})
+			s.emit(&voicev2.ReasoningDelta{Kind: voicev2.MessageKindReasoningDelta, Text: fragment.reasoning, ResponseID: responseID})
 		}
 		if fragment.text != "" {
 			streamed = true
-			s.emit(&voicev2.AssistantTextDelta{Kind: voicev2.MessageKindAssistantTextDelta, Text: fragment.text})
+			s.emit(&voicev2.AssistantTextDelta{Kind: voicev2.MessageKindAssistantTextDelta, Text: fragment.text, ResponseID: responseID})
 		}
 	}
 	reply, err := s.finishStep(ctx, conv, step)
@@ -477,17 +483,20 @@ func (s *localStackSession) handleTextStep(ctx context.Context, conv llmConversa
 		return
 	}
 	if ctx.Err() == nil && !streamed && reply.text != "" {
-		s.emit(&voicev2.AssistantTextDelta{Kind: voicev2.MessageKindAssistantTextDelta, Text: reply.text})
+		s.emit(&voicev2.AssistantTextDelta{Kind: voicev2.MessageKindAssistantTextDelta, Text: reply.text, ResponseID: responseID})
 	}
 }
 
-func (s *localStackSession) handleLLMStep(ctx context.Context, conv llmConversation, step llmStep) {
+func (s *localStackSession) handleLLMStep(ctx context.Context, conv llmConversation, step llmStep, responseID string) {
 	if s.directAudio {
 		// The same model slot serves chat and TTS. Drain and release generation
 		// before synthesis, and speak only a final answer without tool calls.
 		for output := range step.stream {
+			if output.usage != nil {
+				s.reportUsage(output.usage, responseID)
+			}
 			if ctx.Err() == nil && output.reasoning != "" {
-				s.emit(&voicev2.ReasoningDelta{Kind: voicev2.MessageKindReasoningDelta, Text: output.reasoning})
+				s.emit(&voicev2.ReasoningDelta{Kind: voicev2.MessageKindReasoningDelta, Text: output.reasoning, ResponseID: responseID})
 			}
 		}
 		reply, err := s.finishStep(ctx, conv, step)
@@ -496,13 +505,13 @@ func (s *localStackSession) handleLLMStep(ctx context.Context, conv llmConversat
 			return
 		}
 		if len(reply.toolCalls) == 0 && ctx.Err() == nil {
-			s.speak(ctx, reply.text)
+			s.speak(ctx, reply.text, responseID)
 		}
 		return
 	}
-	speech := s.startSpeechQueue(ctx)
+	speech := s.startSpeechQueue(ctx, responseID)
 	defer speech.close()
-	if _, err := s.forwardLLMText(ctx, conv, speech, step); err != nil {
+	if _, err := s.forwardLLMText(ctx, conv, speech, step, responseID); err != nil {
 		s.warnTurn(ctx, "llm", err)
 	}
 }
@@ -528,7 +537,7 @@ func (s *localStackSession) finishStep(ctx context.Context, conv llmConversation
 	return reply, nil
 }
 
-func (s *localStackSession) forwardLLMText(ctx context.Context, conv llmConversation, speech *assistantSpeechQueue, step llmStep) (llmReply, error) {
+func (s *localStackSession) forwardLLMText(ctx context.Context, conv llmConversation, speech *assistantSpeechQueue, step llmStep, responseID string) (llmReply, error) {
 	fragmenter := newSentenceFragmenter(defaultSentenceFragmentMaxRunes)
 	sending := true
 	streamed := false
@@ -543,8 +552,11 @@ func (s *localStackSession) forwardLLMText(ctx context.Context, conv llmConversa
 		streamed = true
 	}
 	for output := range step.stream {
+		if output.usage != nil {
+			s.reportUsage(output.usage, responseID)
+		}
 		if output.reasoning != "" && ctx.Err() == nil {
-			s.emit(&voicev2.ReasoningDelta{Kind: voicev2.MessageKindReasoningDelta, Text: output.reasoning})
+			s.emit(&voicev2.ReasoningDelta{Kind: voicev2.MessageKindReasoningDelta, Text: output.reasoning, ResponseID: responseID})
 		}
 		for _, fragment := range fragmenter.push(output.text) {
 			sendFragment(fragment)
@@ -569,16 +581,16 @@ func (s *localStackSession) forwardLLMText(ctx context.Context, conv llmConversa
 	return reply, nil
 }
 
-func (s *localStackSession) speak(ctx context.Context, text string) {
+func (s *localStackSession) speak(ctx context.Context, text, responseID string) {
 	if text == "" {
 		return
 	}
 	fragmenter := newSentenceFragmenter(defaultSentenceFragmentMaxRunes)
 	fragments := append(fragmenter.push(text), fragmenter.flush()...)
-	s.speakFragments(ctx, ctx, slices.Values(fragments))
+	s.speakFragments(ctx, ctx, slices.Values(fragments), responseID)
 }
 
-func (s *localStackSession) startSpeechQueue(ctx context.Context) *assistantSpeechQueue {
+func (s *localStackSession) startSpeechQueue(ctx context.Context, responseID string) *assistantSpeechQueue {
 	workers, workerCtx := errgroup.WithContext(ctx)
 	q := &assistantSpeechQueue{
 		items:   make(chan assistantSpeechQueueItem, 4),
@@ -586,14 +598,14 @@ func (s *localStackSession) startSpeechQueue(ctx context.Context) *assistantSpee
 		workers: workers,
 	}
 	q.workers.Go(func() error {
-		s.speakFragments(workerCtx, ctx, queuedTextFragments(q.items))
+		s.speakFragments(workerCtx, ctx, queuedTextFragments(q.items), responseID)
 		close(q.done)
 		return nil
 	})
 	return q
 }
 
-func (s *localStackSession) speakFragments(ctx, turnCtx context.Context, fragments iter.Seq[string]) {
+func (s *localStackSession) speakFragments(ctx, turnCtx context.Context, fragments iter.Seq[string], responseID string) {
 	var started bool
 	var audioStartedAt time.Time
 	var audioBytes int
@@ -635,8 +647,8 @@ func (s *localStackSession) speakFragments(ctx, turnCtx context.Context, fragmen
 					s.setSpeaking(turnCtx, true)
 					s.emit(&voicev2.SpeechStarted{Kind: voicev2.MessageKindSpeechStarted, Speaker: voicev2.SpeakerAssistant})
 				}
-				s.emit(&voicev2.TranscriptDelta{Kind: voicev2.MessageKindTranscriptDelta, Speaker: voicev2.SpeakerAssistant, Text: text})
-				s.emit(&voicev2.AssistantTextDelta{Kind: voicev2.MessageKindAssistantTextDelta, Text: text})
+				s.emit(&voicev2.TranscriptDelta{Kind: voicev2.MessageKindTranscriptDelta, Speaker: voicev2.SpeakerAssistant, Text: text, ResponseID: responseID})
+				s.emit(&voicev2.AssistantTextDelta{Kind: voicev2.MessageKindAssistantTextDelta, Text: text, ResponseID: responseID})
 				textEmitted = true
 			}
 			for off := 0; off < len(pcm); off += ttsChunkBytes {
@@ -722,6 +734,12 @@ func (s *localStackSession) deliverToolResult(ctx context.Context, r toolResultM
 
 func (s *localStackSession) emit(msg any) {
 	if err := s.sink.sendGatewayMessage(s.baseCtx, mustGatewayServerMessage(msg)); err != nil {
+		s.sink.cancelSession()
+	}
+}
+
+func (s *localStackSession) reportUsage(u *usageObservation, responseID string) {
+	if err := s.usage.report(s.baseCtx, s.sink, s.id, u.provider, u.model, responseID, &u.counts); err != nil {
 		s.sink.cancelSession()
 	}
 }

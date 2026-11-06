@@ -37,6 +37,7 @@ export interface VoiceSettingsMessages {
   stopMusicLabel: string;
   musicPlaybackError: string;
   showReasoning: string;
+  showUsageStats: string;
   voiceLanguage: string;
   voiceMode: string;
 }
@@ -71,6 +72,7 @@ export const defaultVoiceSettingsMessages: VoiceSettingsMessages = {
   stopMusicLabel: "Stop thinking music",
   musicPlaybackError: "Could not play thinking music.",
   showReasoning: "Show assistant reasoning",
+  showUsageStats: "Show usage stats",
   voiceLanguage: "Voice language (e.g. en-US)",
   voiceMode: "Voice mode",
 };
@@ -104,6 +106,7 @@ export default function VoiceSettings(props: {
   const [voiceSaveError, setVoiceSaveError] = createSignal<string | null>(null);
   const [speedSaveError, setSpeedSaveError] = createSignal<string | null>(null);
   const [reasoningError, setReasoningError] = createSignal<string | null>(null);
+  const [usageError, setUsageError] = createSignal<string | null>(null);
   createEffect(
     on(
       () => [
@@ -120,6 +123,7 @@ export default function VoiceSettings(props: {
   const error = () =>
     languageError() ??
     modeError() ??
+    usageError() ??
     reasoningError() ??
     choiceError() ??
     voiceSaveError() ??
@@ -410,6 +414,23 @@ export default function VoiceSettings(props: {
           }}
         />
         {messages().showReasoning}
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={voiceSession.state.showUsageStats}
+          onChange={(event) => {
+            const next = event.currentTarget.checked;
+            try {
+              voiceSession.setShowUsageStats(next);
+              setUsageError(null);
+            } catch (err) {
+              event.currentTarget.checked = !next;
+              setUsageError(`Could not save the usage preference: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }}
+        />
+        {messages().showUsageStats}
       </label>
       <p id={errorId} role="alert" class={styles.error}>
         {error()}

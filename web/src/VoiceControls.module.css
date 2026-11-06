@@ -144,3 +144,31 @@
 .swapHoriz {
   mask-image: url("@material-symbols/svg-400/outlined/swap_horiz.svg");
 }
+
+.arrowUpward {
+  mask-image: url("@material-symbols/svg-400/outlined/arrow_upward.svg");
+}
+
+.arrowDownward {
+  mask-image: url("@material-symbols/svg-400/outlined/arrow_downward.svg");
+}
+
+.cached {
+  mask-image: url("@material-symbols/svg-400/outlined/cached.svg");
+}
+
+.psychology {
+  mask-image: url("@material-symbols/svg-400/outlined/psychology.svg");
+}
+
+.dataUsage {
+  mask-image: url("@material-symbols/svg-400/outlined/data_usage.svg");
+}
+
+.history {
+  mask-image: url("@material-symbols/svg-400/outlined/history.svg");
+}
+
+.build {
+  mask-image: url("@material-symbols/svg-400/outlined/build.svg");
+}

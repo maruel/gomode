@@ -138,6 +138,7 @@ type realtimeMicrophoneTurn struct {
 // the lock during socket reads. Cancellation precedes Close's state lock, so it
 // wakes a blocked send before shutdown waits for the reader.
 type llamaRealtimeSession struct {
+	usage    usageTracker
 	backend  *llamaRealtimeBackend
 	id       string
 	sink     backendSink
@@ -573,6 +574,8 @@ func (s *llamaRealtimeSession) receive() {
 
 func (s *llamaRealtimeSession) eventLocked(event *genai.RealtimeEvent) error {
 	switch event.Kind {
+	case genai.RealtimeEventUsage:
+		return s.usage.report(s.ctx, s.sink, s.id, s.backend.provider.Name(), s.backend.provider.ModelID(), gatewayResponseID(s.id, event.ResponseID), event.Usage)
 	case genai.RealtimeEventContentAudio:
 		if s.cancelling {
 			return nil
@@ -586,10 +589,10 @@ func (s *llamaRealtimeSession) eventLocked(event *genai.RealtimeEvent) error {
 		if text == "" {
 			return nil
 		}
-		if err := s.sendLocked(&voicev2.TranscriptDelta{Kind: voicev2.MessageKindTranscriptDelta, Speaker: voicev2.SpeakerAssistant, Text: text}); err != nil {
+		if err := s.sendLocked(&voicev2.TranscriptDelta{Kind: voicev2.MessageKindTranscriptDelta, Speaker: voicev2.SpeakerAssistant, Text: text, ResponseID: gatewayResponseID(s.id, event.ResponseID)}); err != nil {
 			return err
 		}
-		return s.sendLocked(&voicev2.AssistantTextDelta{Kind: voicev2.MessageKindAssistantTextDelta, Text: text})
+		return s.sendLocked(&voicev2.AssistantTextDelta{Kind: voicev2.MessageKindAssistantTextDelta, Text: text, ResponseID: gatewayResponseID(s.id, event.ResponseID)})
 	case genai.RealtimeEventInterrupted:
 		if !s.cancelling {
 			s.sink.clearAssistantAudio()

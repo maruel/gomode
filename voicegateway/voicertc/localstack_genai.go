@@ -474,6 +474,7 @@ func (c *genaiConversation) startGenerationLocked(ctx context.Context) llmStep {
 	var err error
 	return llmStep{
 		stream: func(yield func(llmFragment) bool) {
+			accepting := true
 			replies, done := c.provider.GenStream(ctx, snapshot, opts...)
 			for reply := range replies {
 				reasoning := reply.Reasoning
@@ -481,14 +482,22 @@ func (c *genaiConversation) startGenerationLocked(ctx context.Context) llmStep {
 					reasoning = ""
 				}
 				if (reply.Text != "" || reasoning != "") && !yield(llmFragment{text: reply.Text, reasoning: reasoning}) {
+					accepting = false
 					break
 				}
 			}
 			res, err = done()
+			// Usage belongs to the completed request, including tool rounds and
+			// cancelled turns whose result cannot be committed to history.
+			u := &res.Usage
+			if accepting && (err == nil || u.InputTokens > 0 || u.OutputTokens > 0 || u.TotalTokens > 0 ||
+				u.InputCachedTokens > 0 || u.ReasoningTokens > 0 || u.ContextTokens > 0 || u.ContextWindow > 0) {
+				accepting = yield(llmFragment{usage: &usageObservation{provider: c.provider.Name(), model: c.provider.ModelID(), counts: res.Usage}})
+			}
 			if err == nil && c.audioInput {
 				var reasoning string
 				reasoning, err = separateStagedReasoning(&res.Message, c.effort != genai.EffortOff)
-				if err == nil && reasoning != "" && c.includeReasoning && ctx.Err() == nil {
+				if accepting && err == nil && reasoning != "" && c.includeReasoning && ctx.Err() == nil {
 					yield(llmFragment{reasoning: reasoning})
 				}
 			}

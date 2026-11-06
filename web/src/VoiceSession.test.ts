@@ -1566,6 +1566,29 @@ describe("VoiceSession", () => {
     expect(previousErrors(empty.state)).toEqual([]);
   });
 
+  it("retains the latest tool names after completion and disconnect, then resets for a new conversation", async () => {
+    mcpMocks.mcpCallTool.mockResolvedValue({ structuredContent: {} });
+    const session = new VoiceSession();
+    await session.connect();
+    const channel = FakePeerConnection.dataChannels.at(-1);
+    dispatchToolCall(channel, "first", "same_tool");
+    dispatchToolCall(channel, "second", "same_tool");
+    expect(session.state.toolHistory.map((entry) => entry.name)).toEqual(["same_tool", "same_tool"]);
+    expect(new Set(session.state.toolHistory.map((entry) => entry.sequence)).size).toBe(2);
+    for (let i = 1; i <= 32; i++) dispatchToolCall(channel, `call-${i}`, `tool_${i}`);
+    expect(session.state.toolHistory).toHaveLength(32);
+    expect(session.state.toolHistory[0]?.name).toBe("tool_1");
+    expect(session.state.toolHistory.at(-1)?.name).toBe("tool_32");
+    await Promise.resolve();
+    expect(session.state.activeTool).toBeNull();
+    session.disconnect();
+    expect(session.state.toolHistory.at(-1)?.name).toBe("tool_32");
+    await session.connect();
+    dispatchToolCall(channel, "late", "old_connection");
+    expect(session.state.toolHistory).toEqual([]);
+    session.disconnect();
+  });
+
   it("preserves outstanding tools and transport after a recoverable gateway error", async () => {
     const tool = deferred<Awaited<ReturnType<typeof mcpClient.callTool>>>();
     mcpMocks.mcpCallTool.mockReturnValue(tool.promise);
@@ -2302,6 +2325,110 @@ function triggerIceState(state: RTCIceConnectionState): void {
 }
 
 describe("voice network recovery", () => {
+  it("associates response reports independently of text order, fragments and reasoning", async () => {
+    const session = new VoiceSession();
+    const send = (message: object) =>
+      FakePeerConnection.dataChannels[0]?.onmessage?.(new MessageEvent("message", { data: JSON.stringify(message) }));
+    const report = (responseID: string | undefined, inputTokens: number) =>
+      send({
+        kind: "session.usage",
+        sessionID: "one",
+        provider: "test",
+        model: "model",
+        totals: { inputTokens: 100 },
+        responseID,
+        responseUsage: { inputTokens, outputTokens: 0 },
+        lastResponse: { inputTokens: 999 },
+      });
+    const text = (responseID: string | undefined, text: string) =>
+      send({
+        kind: "transcript.delta",
+        speaker: "assistant",
+        text,
+        responseID,
+      });
+    try {
+      await session.connect();
+      session.setState((s) => ({ ...s, showReasoning: true }));
+      report("a", 10);
+      text("a", "First");
+      send({ kind: "reasoning.delta", text: "Reason", responseID: "a" });
+      send({ kind: "speech.ended" });
+      text("b", "Second");
+      text("a", " continued");
+      report("b", 20);
+      report("a", 11);
+      report("a", 11);
+      text(undefined, "Uncorrelated");
+      report(undefined, 99);
+      const rows = session.state.transcript;
+      expect(rows).toHaveLength(4);
+      expect(rows[0]).toMatchObject({
+        text: "First continued",
+        final: true,
+        responseID: "a",
+        responseUsage: { inputTokens: 11, outputTokens: 0 },
+      });
+      expect(rows[1]?.responseUsage).toBeUndefined();
+      expect(rows[2]).toMatchObject({ text: "Second", responseID: "b", responseUsage: { inputTokens: 20 } });
+      expect(rows[3]?.responseUsage).toBeUndefined();
+      expect(session.state.usage?.totals.inputTokens).toBe(100);
+      for (let i = 0; i < 257; i++) report(`pending-${i}`, i);
+      text("a", " again");
+      expect(session.state.transcript[0]?.responseUsage?.inputTokens).toBe(11);
+      expect(session.state.usage?.responses?.size).toBe(256);
+      session.disconnect();
+      expect(session.state.transcript[0]?.responseUsage?.inputTokens).toBe(11);
+    } finally {
+      session.disconnect();
+    }
+  });
+  it("retains usage across recovery and disconnect, then resets for a new conversation", async () => {
+    vi.useFakeTimers();
+    const session = new VoiceSession();
+    const report = (channel: FakeDataChannel, sessionID: string, inputTokens: number) =>
+      channel.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            kind: "session.usage",
+            sessionID,
+            provider: "test",
+            model: "model",
+            totals: { inputTokens, outputTokens: 0 },
+            responseID: `${sessionID}/response`,
+            responseUsage: { inputTokens },
+          }),
+        }),
+      );
+    try {
+      await session.connect();
+      const first = FakePeerConnection.dataChannels[0]!;
+      report(first, "one", 100);
+      report(first, "one", 100);
+      expect(session.state.usage?.totals.inputTokens).toBe(100);
+      triggerIceState("failed");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(() => expect(FakePeerConnection.dataChannels).toHaveLength(2));
+      report(FakePeerConnection.dataChannels[1]!, "two", 30);
+      report(first, "one", 999);
+      const recovered = FakePeerConnection.dataChannels[1]!;
+      for (const responseID of ["one/response", "two/response"])
+        recovered.onmessage?.(
+          new MessageEvent("message", {
+            data: JSON.stringify({ kind: "transcript.delta", speaker: "assistant", text: responseID, responseID }),
+          }),
+        );
+      expect(session.state.transcript.map((entry) => entry.responseUsage?.inputTokens)).toEqual([100, 30]);
+      expect(session.state.usage?.totals.inputTokens).toBe(130);
+      session.disconnect();
+      expect(session.state.usage?.totals.inputTokens).toBe(130);
+      await session.connect();
+      expect(session.state.usage).toBeNull();
+    } finally {
+      session.disconnect();
+      vi.useRealTimers();
+    }
+  });
   it("retains a fatal delivery error when ICE recovery was pending", async () => {
     vi.useFakeTimers();
     const session = new VoiceSession();
@@ -2420,6 +2547,19 @@ describe("reasoning display preference", () => {
     session.setShowReasoning(false);
     expect(localStorage.getItem("gomode.voiceReasoning")).toBe("off");
     expect(new VoiceSession().state.showReasoning).toBe(false);
+  });
+});
+
+describe("usage display preference", () => {
+  it("defaults to hidden and persists the choice for later sessions", () => {
+    const session = new VoiceSession();
+    expect(session.state.showUsageStats).toBe(false);
+    session.setShowUsageStats(true);
+    expect(localStorage.getItem("gomode.voiceUsageStats")).toBe("on");
+    expect(new VoiceSession().state.showUsageStats).toBe(true);
+    session.setShowUsageStats(false);
+    expect(localStorage.getItem("gomode.voiceUsageStats")).toBe("off");
+    expect(new VoiceSession().state.showUsageStats).toBe(false);
   });
 });
 

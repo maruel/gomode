@@ -705,6 +705,12 @@ internal fun GoModeApp(
                         } else {
                             null
                         },
+                    showUsageStats = settings.showUsageStats,
+                    onHideUsageStats = {
+                        scope.launch {
+                            if (!settingsEdits.setShowUsageStats(false)) activeNativeScreen = NativeScreen.Settings
+                        }
+                    },
                     voiceState = voiceState,
                     voiceEnabled = voiceAvailable,
                     onConnect = {
@@ -777,7 +783,6 @@ internal fun GoModeApp(
                                 reason = it,
                             )
                         },
-                    modifier = Modifier.fillMaxWidth(),
                 )
             }
         }

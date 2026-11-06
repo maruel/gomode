@@ -298,6 +298,54 @@ class VoiceSettingsTest {
     }
 
     @Test
+    fun usageTogglePersistsAndStaysAvailableDuringCalls() {
+        val active = mutableStateOf(false)
+        val store = MemoryPreferences()
+        val repository = SettingsRepository(store)
+        composeRule.runOnUiThread { composeRule.activity.enableEdgeToEdge() }
+        composeRule.setContent {
+            val settings by repository.settings.collectAsState()
+            GoModeTheme {
+                SettingsScreen(
+                    settings = settings,
+                    settingsRepository = repository,
+                    edits = rememberSettingsEdits(repository, settings),
+                    voiceSessionActive = active.value,
+                    onDone = {},
+                    onOpenHalo = {},
+                )
+            }
+        }
+        val toggle = composeRule.onNodeWithTag("gomode-show-usage-stats")
+        toggle.performScrollTo().assertIsOff()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val device = UiDevice.getInstance(instrumentation)
+
+        fun capture(name: String) {
+            val path = "/data/local/tmp/gomode-usage-setting-$name.png"
+            device.executeShellCommand("screencap -p $path")
+            assertTrue(device.executeShellCommand("stat -c %s $path").trim().toLong() > 0)
+        }
+        composeRule.waitForIdle()
+        device.waitForIdle()
+        capture("off")
+        toggle.performClick()
+        composeRule.waitUntil { repository.settings.value.showUsageStats }
+        toggle.performScrollTo().assertIsOn()
+        composeRule.waitForIdle()
+        device.waitForIdle()
+        capture("on")
+        val reopened = SettingsRepository(store)
+        composeRule.waitUntil { reopened.settings.value.showUsageStats }
+        composeRule.runOnIdle { active.value = true }
+        // Display-only: it stays available while a call runs.
+        toggle.performScrollTo().assertIsEnabled()
+        composeRule.waitForIdle()
+        device.waitForIdle()
+        capture("active-call")
+    }
+
+    @Test
     fun voiceModeChipsSaveSelectionAndDisableDuringAnActiveSession() {
         val active = mutableStateOf(false)
         val store = MemoryPreferences()

@@ -22,7 +22,9 @@ import com.caic.voicegateway.sdk.v2.MessageKind
 import com.caic.voicegateway.sdk.v2.ReasoningDelta
 import com.caic.voicegateway.sdk.v2.SessionSetup
 import com.caic.voicegateway.sdk.v2.SessionStatus
+import com.caic.voicegateway.sdk.v2.SessionUsage
 import com.caic.voicegateway.sdk.v2.Speaker
+import com.caic.voicegateway.sdk.v2.TokenUsage
 import com.caic.voicegateway.sdk.v2.ToolCall
 import com.caic.voicegateway.sdk.v2.ToolDeclaration
 import com.caic.voicegateway.sdk.v2.ToolResult
@@ -349,6 +351,7 @@ internal class VoiceSession(
             recoveryPolicy.reset()
             recoveryContext = ""
             clearTranscript()
+            _state.update { it.copy(usage = null, toolHistory = emptyList()) }
         }
         try {
             voiceConversation.begin(preserveTranscript)
@@ -1008,8 +1011,14 @@ internal class VoiceSession(
         sessionTools = emptyList()
         // Preserve transcript so the user can review it after disconnecting.
         _state.value =
-            VoiceState(transcript = _state.value.transcript.map { it.copy(final = true) })
-                .withCallAudio(callController.audioState.value)
+            VoiceState(
+                transcript =
+                    _state.value.transcript.map {
+                        it.copy(final = true)
+                    },
+                usage = _state.value.usage,
+                toolHistory = _state.value.toolHistory,
+            ).withCallAudio(callController.audioState.value)
     }
 
     private fun finishDisconnectAudio(attempt: Long) {
@@ -1175,6 +1184,11 @@ internal class VoiceSession(
                     sendUserMessage("Say exactly one word: Ready")
                 }
 
+                MessageKind.SessionUsage -> {
+                    val report = json.decodeFromString(SessionUsage.serializer(), text)
+                    _state.update { it.withUsageReport(report) }
+                }
+
                 MessageKind.TranscriptDelta -> {
                     handleTranscriptDelta(json.decodeFromString(TranscriptDelta.serializer(), text))
                 }
@@ -1255,9 +1269,7 @@ internal class VoiceSession(
         if (!settingsRepository.settings.value.showReasoning) return
         val chunk = msg.text ?: return
         _state.update {
-            it.copy(
-                transcript = it.transcript.appendChunk(TranscriptSpeaker.ASSISTANT, chunk, TranscriptKind.REASONING),
-            )
+            it.withTranscriptChunk(TranscriptSpeaker.ASSISTANT, chunk, TranscriptKind.REASONING, msg.responseID)
         }
     }
 
@@ -1269,7 +1281,7 @@ internal class VoiceSession(
                 else -> return
             }
         val chunk = msg.text ?: return
-        _state.update { it.copy(transcript = it.transcript.appendChunk(speaker, chunk)) }
+        _state.update { it.withTranscriptChunk(speaker, chunk, responseID = msg.responseID) }
     }
 
     private suspend fun handleToolCall(
@@ -1319,7 +1331,7 @@ internal class VoiceSession(
         val name = msg.name
         val sessionID = conversationID
         try {
-            _state.update { it.copy(activeTool = name) }
+            _state.update { it.withToolCall(name) }
             val serverResult =
                 executeNativeVoiceTool(
                     name,
@@ -1576,6 +1588,8 @@ data class TranscriptEntry(
     val text: String,
     val final: Boolean = false,
     val kind: TranscriptKind = TranscriptKind.TRANSCRIPT,
+    val responseID: String? = null,
+    val responseUsage: TokenUsage? = null,
 )
 
 /** Appends a gateway-reported turn failure without ending the call. */
@@ -1599,7 +1613,14 @@ enum class MicrophoneMode {
     fun afterReply(): MicrophoneMode = if (this == MUTE_ONCE) LISTENING else this
 }
 
+/** An admitted invocation; sequence distinguishes repeated names within one conversation. */
+data class ToolInvocation(
+    val sequence: Long,
+    val name: String,
+)
+
 data class VoiceState(
+    val usage: VoiceUsage? = null,
     val connectStatus: String? = null,
     /** Latest gateway startup heartbeat, on the elapsed-realtime clock. */
     val startupProgressAtMillis: Long? = null,
@@ -1608,6 +1629,8 @@ data class VoiceState(
     val speaking: Boolean = false,
     val microphoneMode: MicrophoneMode = MicrophoneMode.LISTENING,
     val activeTool: String? = null,
+    /** Latest 32 admitted tool names, in invocation order across reconnects. */
+    val toolHistory: List<ToolInvocation> = emptyList(),
     /** Gateway work before assistant output; idle when the gateway does not report any. */
     val turnState: TurnState = TurnState.Idle,
     val error: String? = null,
@@ -1733,12 +1756,37 @@ internal fun List<TranscriptEntry>.appendChunk(
     speaker: TranscriptSpeaker,
     text: String,
     kind: TranscriptKind = TranscriptKind.TRANSCRIPT,
-): List<TranscriptEntry> =
-    if (isNotEmpty() && last().speaker == speaker && last().kind == kind && !last().final) {
-        dropLast(1) + TranscriptEntry(speaker, last().text + text, kind = kind)
+    responseID: String? = null,
+    responseUsage: TokenUsage? = null,
+): List<TranscriptEntry> {
+    val id = responseID.takeIf { speaker == TranscriptSpeaker.ASSISTANT }
+    val index =
+        if (id != null) {
+            indexOfFirst {
+                it.speaker == speaker && it.kind == kind && it.responseID == id
+            }
+        } else {
+            lastIndex
+        }
+    val previous = getOrNull(index)
+    val counts = responseUsage.takeIf { kind == TranscriptKind.TRANSCRIPT && id != null }
+    return if (previous != null && previous.speaker == speaker && previous.kind == kind &&
+        previous.responseID == id && (id != null || !previous.final)
+    ) {
+        mapIndexed { i, entry ->
+            if (i == index) {
+                entry.copy(
+                    text = entry.text + text,
+                    responseUsage = counts ?: entry.responseUsage,
+                )
+            } else {
+                entry
+            }
+        }
     } else {
-        this + TranscriptEntry(speaker, text, kind = kind)
+        this + TranscriptEntry(speaker, text, kind = kind, responseID = id, responseUsage = counts)
     }
+}
 
 internal class VoiceMcpAuthChangedException : IllegalStateException("Hosted service authentication changed")
 
@@ -1819,3 +1867,14 @@ private fun audioDeviceTypeName(type: Int): String =
         AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "Wired Headphones"
         else -> "Device $type"
     }
+
+/** Record an admitted tool invocation without retaining its arguments or result. */
+internal fun VoiceState.withToolCall(name: String): VoiceState =
+    copy(
+        activeTool = name,
+        toolHistory =
+            (
+                toolHistory +
+                    ToolInvocation((toolHistory.lastOrNull()?.sequence ?: 0) + 1, name)
+            ).takeLast(32),
+    )

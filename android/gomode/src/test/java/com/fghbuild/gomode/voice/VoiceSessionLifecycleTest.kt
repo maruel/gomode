@@ -110,6 +110,11 @@ class VoiceSessionLifecycleTest {
                     "exception" -> channel.sendFailure = IllegalStateException("private result")
                 }
                 try {
+                    invokeHandleServerMessage(
+                        session,
+                        """{"kind":"session.usage","sessionID":"one","provider":"test","model":"model","totals":{"inputTokens":123}}""",
+                        channel,
+                    )
                     invokeHandleServerMessage(session, """{"kind":"turn.status","state":"thinking"}""", channel)
                     val outcome =
                         runCatching {
@@ -123,6 +128,12 @@ class VoiceSessionLifecycleTest {
                     assertEquals(first, settings.settings.first { it.activeServiceId == first }.activeServiceId)
                     assertEquals(VOICE_TOOL_RESULT_DELIVERY_ERROR, session.state.value.error)
                     assertFalse(session.state.value.connected)
+                    assertEquals(
+                        123L,
+                        session.state.value.usage
+                            ?.totals
+                            ?.inputTokens,
+                    )
                     assertNull(session.state.value.activeTool)
                     assertEquals(com.caic.voicegateway.sdk.v2.TurnState.Idle, session.state.value.turnState)
                     assertEquals(if (failure == "closed") 0 else 1, channel.sendAttempts)

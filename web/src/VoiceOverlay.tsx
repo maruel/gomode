@@ -1,13 +1,29 @@
 // Voice overlay component: persistent bottom panel with microphone and voice controls.
 
-import { createEffect, createSignal, createUniqueId, For, Show, on, onCleanup, onMount, type Accessor } from "solid-js";
+import {
+  createEffect,
+  createSignal,
+  createUniqueId,
+  For,
+  Index,
+  Show,
+  on,
+  onCleanup,
+  onMount,
+  type Accessor,
+  type JSX,
+} from "solid-js";
+
+import { Portal } from "solid-js/web";
 
 import { TurnStateThinking, TurnStateTranscribing } from "../../sdk/voicegateway/ts/v2/types.gen";
 import { bluetoothAudioDeviceLabel, microphoneMuted, previousErrors, voiceSession } from "./VoiceSession";
-import type { MicrophoneMode, VoiceState, TranscriptEntry } from "./VoiceSession";
+import type { MicrophoneMode, VoiceState, TranscriptEntry, ToolInvocation } from "./VoiceSession";
 import { notifications } from "./notifications";
 import VoiceSettings, { defaultVoiceSettingsMessages, type VoiceSettingsMessages } from "./VoiceSettings";
 import VoiceIcon from "./VoiceIcon";
+import type { VoiceUsage } from "./VoiceUsage";
+import type { TokenUsage } from "../../sdk/voicegateway/ts/v2/types.gen";
 import controls from "./VoiceControls.module.css";
 import styles from "./VoiceOverlay.module.css";
 
@@ -30,6 +46,16 @@ const BAR_MAX_H = 20;
 
 /** Host-provided text for the browser voice controls. */
 export interface VoiceOverlayMessages extends Partial<VoiceSettingsMessages> {
+  usage?: string;
+  closeUsage?: string;
+  usageConversation?: string;
+  usageInput?: string;
+  usageOutput?: string;
+  usageCached?: string;
+  usageReasoning?: string;
+  usageContext?: string;
+  toolHistory?: string;
+  usageNotReported?: string;
   voiceSettings?: string;
   closeVoiceSettings?: string;
   settingUpBrowserSpeech?: string;
@@ -194,6 +220,24 @@ export default function VoiceOverlay(props: {
   let connectButtonRef: HTMLButtonElement | undefined;
   let settingsTrigger: HTMLButtonElement | null = null;
   const [settingsOpen, setSettingsOpen] = createSignal(false);
+  const [usageSaveError, setUsageSaveError] = createSignal<string | null>(null);
+  createEffect(
+    on(
+      () => session.state.showUsageStats,
+      () => setUsageSaveError(null),
+      { defer: true },
+    ),
+  );
+  const closeUsage = () => {
+    try {
+      session.setShowUsageStats(false);
+      setUsageSaveError(null);
+      settingsTrigger?.focus();
+    } catch (err) {
+      setUsageSaveError(`Could not save the usage preference: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  const hasUsage = () => session.state.connected || session.state.usage !== null || session.state.transcript.length > 0;
   const [settingsError, setSettingsError] = createSignal<string | null>(null);
   const [languageError, setLanguageError] = createSignal<string | null>(null);
   const settingsId = createUniqueId();
@@ -218,6 +262,9 @@ export default function VoiceOverlay(props: {
     <button
       type="button"
       class={controls.control}
+      ref={(element) => {
+        settingsTrigger = element;
+      }}
       aria-label={messages().voiceSettings ?? "Voice settings"}
       aria-expanded={settingsOpen()}
       aria-controls={settingsId}
@@ -498,12 +545,14 @@ export default function VoiceOverlay(props: {
           </Show>
           <Show
             when={
-              session.state.error === null &&
-              session.state.connectStatus === null &&
-              (session.state.connected || session.state.listening || session.state.speaking)
+              session.state.connected ||
+              session.state.listening ||
+              session.state.speaking ||
+              session.state.transcript.length > 0 ||
+              session.state.toolHistory.length > 0
             }
           >
-            <ActivePanel state={session.state} messages={messages} />
+            <ConversationPanel state={session.state} messages={messages} />
           </Show>
           <Show when={session.state.mode === "cloud"}>
             <AudioErrors state={session.state} />
@@ -529,6 +578,18 @@ export default function VoiceOverlay(props: {
                 {error()}
               </p>
             )}
+          </Show>
+          <Show when={usageSaveError()}>
+            {(error) => (
+              <p role="alert" class={styles.statusError}>
+                {error()}
+              </p>
+            )}
+          </Show>
+          <Show when={hasUsage() && session.state.showUsageStats && !settingsOpen()}>
+            <section class={styles.usage} aria-label={messages().usage ?? "Usage"}>
+              <UsagePanel usage={session.state.usage} messages={messages} onClose={closeUsage} />
+            </section>
           </Show>
           {/* Keep drafts and pending language saves alive when settings close. */}
           <section
@@ -562,6 +623,54 @@ export default function VoiceOverlay(props: {
 }
 
 // Sub-panels
+
+function UsagePanel(props: {
+  usage: VoiceUsage | null;
+  messages: Accessor<VoiceOverlayMessages>;
+  onClose: () => void;
+}) {
+  const absent = () => props.messages().usageNotReported ?? "Not reported";
+  const model = () =>
+    [props.usage?.latest.provider, props.usage?.latest.model]
+      .filter((value) => value !== undefined && value !== "")
+      .join(" · ");
+  const count = (value: number | undefined) => value?.toLocaleString() ?? absent();
+  const reportedTotals = () => {
+    const totals = props.usage?.totals;
+    return totals !== undefined && Object.values(totals).some((value) => value !== undefined) ? totals : null;
+  };
+  return (
+    <>
+      <div
+        class={styles.usageBody}
+        role="group"
+        aria-label={props.messages().usageConversation ?? "Conversation tokens"}
+      >
+        <button
+          type="button"
+          class={`${controls.control} ${styles.usageClose}`}
+          aria-label={props.messages().closeUsage ?? "Close usage"}
+          onClick={() => props.onClose()}
+        >
+          <VoiceIcon name="close" />
+        </button>
+        <Show when={model()}>
+          <p class={styles.usageModel}>{model()}</p>
+        </Show>
+        <Show when={reportedTotals()} fallback={<p class={styles.usageEmpty}>{absent()}</p>}>
+          {(counts) => <TokenCounts counts={counts()} messages={props.messages} />}
+        </Show>
+        <Show when={props.usage?.latest.contextTokens !== undefined || props.usage?.latest.contextWindow !== undefined}>
+          <ResponseMetric
+            icon="dataUsage"
+            value={`${count(props.usage?.latest.contextTokens)} / ${count(props.usage?.latest.contextWindow)}`}
+            description={`${props.messages().usageContext ?? "Context tokens"}: ${count(props.usage?.latest.contextTokens)} / ${count(props.usage?.latest.contextWindow)}`}
+          />
+        </Show>
+      </div>
+    </>
+  );
+}
 
 function ConnectingPanel(props: {
   status: string;
@@ -636,7 +745,7 @@ function MicrophoneControls(props: {
   );
 }
 
-function ActivePanel(props: { state: VoiceState; messages: Accessor<VoiceOverlayMessages> }) {
+function ConversationPanel(props: { state: VoiceState; messages: Accessor<VoiceOverlayMessages> }) {
   const [transcriptExpanded, setTranscriptExpanded] = createSignal(true);
   const transcriptId = createUniqueId();
   let transcriptToggleRef: HTMLButtonElement | undefined;
@@ -652,7 +761,16 @@ function ActivePanel(props: { state: VoiceState; messages: Accessor<VoiceOverlay
         class={`${controls.control} ${styles.transcriptToggle}`}
         onClick={() => {
           setTranscriptExpanded(!transcriptExpanded());
-          queueMicrotask(() => transcriptToggleRef?.focus());
+          queueMicrotask(() => {
+            if (transcriptExpanded()) {
+              document
+                .getElementById(transcriptId)
+                ?.querySelector<HTMLElement>('[role="region"]')
+                ?.focus({ preventScroll: true });
+            } else {
+              transcriptToggleRef?.focus();
+            }
+          });
         }}
         title={label()}
         aria-label={label()}
@@ -693,25 +811,93 @@ function ActivePanel(props: { state: VoiceState; messages: Accessor<VoiceOverlay
         role="status"
         aria-label={props.messages().voiceActivity ?? defaultVoiceOverlayMessages.voiceActivity}
       >
-        <span class={statusClass()}>{statusText()}</span>
+        <Show
+          when={
+            props.state.error === null &&
+            props.state.connectStatus === null &&
+            (props.state.connected || props.state.listening || props.state.speaking)
+          }
+        >
+          <span class={`${statusClass()} ${props.state.activeTool !== null ? styles.activityAnnouncement : ""}`}>
+            {statusText()}
+          </span>
+        </Show>
+        <Show when={props.state.toolHistory.length > 0}>
+          <ToolHistory
+            entries={props.state.toolHistory}
+            active={props.state.activeTool !== null}
+            label={props.messages().toolHistory ?? "Recent tool calls"}
+          />
+        </Show>
         <Show when={props.state.transcript.length > 0 && !transcriptExpanded()}>
           <TranscriptToggle />
         </Show>
       </div>
-      <div class={styles.transcriptContent}>
-        <div class={styles.transcriptBody}>
-          <TranscriptLog
-            id={transcriptId}
-            expanded={transcriptExpanded()}
-            transcript={props.state.transcript}
-            messages={props.messages}
-          />
-        </div>
-        <Show when={props.state.transcript.length > 0 && transcriptExpanded()}>
-          <TranscriptToggle />
-        </Show>
-      </div>
+      <TranscriptLog
+        id={transcriptId}
+        expanded={transcriptExpanded()}
+        transcript={props.state.transcript}
+        showUsageStats={props.state.showUsageStats}
+        messages={props.messages}
+        closeControl={TranscriptToggle}
+      />
     </>
+  );
+}
+
+// One visible invocation; both axes remain scrollable without a painted scrollbar.
+function ToolHistory(props: { entries: ToolInvocation[]; label: string; active: boolean }) {
+  let viewport!: HTMLDivElement;
+  let list!: HTMLOListElement;
+  let followingTail = true;
+  // CSS scroll snapping keeps the retained invocation anchored during eviction.
+  // Following the newest item is the only imperative scroll owner.
+  createEffect(() => {
+    void props.entries;
+    queueMicrotask(() => {
+      if (followingTail) {
+        viewport.scrollTop = viewport.scrollHeight;
+        viewport.scrollLeft = 0;
+      }
+    });
+  });
+  onMount(() => {
+    const observer = new ResizeObserver(() => {
+      if (followingTail) viewport.scrollTop = viewport.scrollHeight;
+    });
+    observer.observe(viewport);
+    observer.observe(list);
+    onCleanup(() => observer.disconnect());
+  });
+  return (
+    <div class={`${styles.toolHistory} ${props.active ? styles.toolHistoryActive : ""}`}>
+      <VoiceIcon name={props.active ? "build" : "history"} />
+      <div
+        ref={viewport}
+        class={styles.toolHistoryViewport}
+        role="region"
+        aria-live="off"
+        aria-label={props.label}
+        tabIndex={0}
+        onScroll={() => {
+          followingTail = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 2;
+        }}
+        onKeyDown={(event) => {
+          const step = viewport.clientHeight;
+          if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+            event.preventDefault();
+            viewport.scrollTop += event.key === "ArrowUp" ? -step : step;
+          } else if (event.key === "Home" || event.key === "End") {
+            event.preventDefault();
+            viewport.scrollTop = event.key === "Home" ? 0 : viewport.scrollHeight;
+          }
+        }}
+      >
+        <ol ref={list} class={styles.toolHistoryItems}>
+          <For each={props.entries}>{(entry) => <li>{entry.name}</li>}</For>
+        </ol>
+      </div>
+    </div>
   );
 }
 
@@ -892,50 +1078,207 @@ function transcriptLabelClass(entry: TranscriptEntry): string {
   return entry.speaker === "user" ? styles.transcriptLabelUser : styles.transcriptLabelAssistant;
 }
 
-function TranscriptLog(props: {
-  id: string;
-  expanded: boolean;
+interface TranscriptContentProps {
   transcript: TranscriptEntry[];
+  showUsageStats: boolean;
   messages: Accessor<VoiceOverlayMessages>;
-}) {
-  let listRef: HTMLDivElement | undefined;
+  closeControl: () => JSX.Element;
+}
 
-  // Auto-scroll to bottom when transcript changes.
-  createEffect(() => {
-    const len = props.transcript.length;
-    const last = props.transcript[len - 1]?.text;
-    void len;
-    void last;
-    if (props.expanded && listRef) {
-      listRef.scrollTop = listRef.scrollHeight;
-    }
-  });
-
+function TranscriptLog(props: TranscriptContentProps & { id: string; expanded: boolean }) {
   return (
     <div id={props.id} hidden={!props.expanded}>
       <Show when={props.expanded}>
-        <Show when={props.transcript.length > 0}>
-          <div class={styles.transcriptList} ref={listRef}>
-            <For each={props.transcript}>
-              {(entry) => (
-                <div
-                  class={
-                    entry.kind === "reasoning"
-                      ? `${styles.transcriptEntry} ${styles.transcriptEntryReasoning}`
-                      : styles.transcriptEntry
-                  }
-                >
-                  <span class={transcriptLabelClass(entry)}>{transcriptLabel(entry, props.messages())}</span>
-                  {entry.text}
-                </div>
-              )}
-            </For>
-          </div>
-        </Show>
-        <Show when={props.transcript.length === 0}>
-          <p class={styles.transcriptPlaceholder}>{props.messages().transcriptPlaceholder}</p>
+        <Show
+          when={props.transcript.length > 0}
+          fallback={<p class={styles.transcriptPlaceholder}>{props.messages().transcriptPlaceholder}</p>}
+        >
+          <TranscriptContent
+            transcript={props.transcript}
+            showUsageStats={props.showUsageStats}
+            messages={props.messages}
+            closeControl={props.closeControl}
+          />
         </Show>
       </Show>
     </div>
+  );
+}
+
+function TranscriptContent(props: TranscriptContentProps) {
+  let listRef!: HTMLDivElement;
+  let contentRef!: HTMLDivElement;
+  let followingTail = true;
+  // Mount with the scrollable content, including when a conversation starts empty.
+  onMount(() => {
+    const observer = new ResizeObserver(() => {
+      if (followingTail) listRef.scrollTop = listRef.scrollHeight;
+    });
+    observer.observe(listRef);
+    observer.observe(contentRef);
+    onCleanup(() => observer.disconnect());
+  });
+  createEffect(() => {
+    void props.transcript;
+    void props.showUsageStats;
+    // Wait for text and usage layout to settle.
+    queueMicrotask(() => {
+      if (followingTail && listRef.isConnected) listRef.scrollTop = listRef.scrollHeight;
+    });
+  });
+  return (
+    <div
+      class={styles.transcriptList}
+      ref={listRef}
+      role="region"
+      onScroll={() => {
+        followingTail = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight < 2;
+      }}
+      aria-label={props.messages().transcript}
+      tabIndex={0}
+    >
+      <div class={styles.transcriptEntries} ref={contentRef}>
+        {props.closeControl()}
+        <Index each={props.transcript}>
+          {(entry) => (
+            <div
+              class={`${styles.transcriptEntry} ${
+                entry().kind === "reasoning"
+                  ? styles.transcriptEntryReasoning
+                  : entry().speaker === "assistant"
+                    ? styles.transcriptEntryAssistant
+                    : ""
+              }`}
+            >
+              <span class={styles.transcriptText}>
+                <span class={transcriptLabelClass(entry())}>{transcriptLabel(entry(), props.messages())}</span>{" "}
+                {entry().text}
+              </span>{" "}
+              <Show
+                when={
+                  props.showUsageStats &&
+                  entry().speaker === "assistant" &&
+                  entry().kind === "transcript" &&
+                  entry().responseUsage
+                }
+              >
+                {(counts) => <TokenCounts counts={counts()} messages={props.messages} class={styles.responseUsage} />}
+              </Show>
+            </div>
+          )}
+        </Index>
+      </div>
+    </div>
+  );
+}
+
+function TokenCounts(props: { counts: TokenUsage; messages: Accessor<VoiceOverlayMessages>; class?: string }) {
+  const metrics = [
+    { key: "inputTokens", icon: "arrowUpward", label: () => props.messages().usageInput ?? "Input" },
+    { key: "outputTokens", icon: "arrowDownward", label: () => props.messages().usageOutput ?? "Output" },
+    { key: "cachedTokens", icon: "cached", label: () => props.messages().usageCached ?? "Cached input" },
+    { key: "reasoningTokens", icon: "psychology", label: () => props.messages().usageReasoning ?? "Reasoning" },
+  ] as const;
+  return (
+    <span class={props.class ?? styles.tokenCounts}>
+      <For each={metrics}>
+        {(metric) => {
+          const value = () => props.counts[metric.key];
+          const description = () =>
+            `${metric.label()} tokens: ${value()?.toLocaleString() ?? props.messages().usageNotReported ?? "Not reported"}`;
+          return (
+            <Show when={metric.key === "inputTokens" || metric.key === "outputTokens" || value() !== undefined}>
+              <ResponseMetric
+                metric={metric.key}
+                icon={metric.icon}
+                value={value()?.toLocaleString() ?? "—"}
+                description={description()}
+              />
+            </Show>
+          );
+        }}
+      </For>
+    </span>
+  );
+}
+
+function ResponseMetric(props: {
+  icon: "arrowUpward" | "arrowDownward" | "cached" | "psychology" | "dataUsage";
+  metric?: keyof TokenUsage;
+  value: string;
+  description: string;
+}) {
+  let target!: HTMLSpanElement;
+  let tooltip: HTMLSpanElement | null = null;
+  const [hovered, setHovered] = createSignal(false);
+  const [focused, setFocused] = createSignal(false);
+  const [position, setPosition] = createSignal({ x: 0, y: 0 });
+  const visible = () => hovered() || focused();
+  const place = () => {
+    const rect = target.getBoundingClientRect();
+    const size = tooltip?.getBoundingClientRect();
+    const width = size?.width ?? 0;
+    const height = size?.height ?? 0;
+    setPosition({
+      x: Math.max(8, Math.min(window.innerWidth - width - 8, rect.right - width)),
+      y:
+        rect.top - height - 4 >= 8
+          ? rect.top - height - 4
+          : Math.max(8, Math.min(window.innerHeight - height - 8, rect.bottom + 4)),
+    });
+  };
+  createEffect(() => {
+    if (!visible()) return;
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    onCleanup(() => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    });
+  });
+  return (
+    <>
+      <span
+        ref={target}
+        class={styles.responseMetric}
+        data-metric={props.metric}
+        tabIndex={0}
+        role="img"
+        aria-label={props.description}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            setFocused(false);
+            setHovered(false);
+          }
+        }}
+      >
+        <VoiceIcon name={props.icon} />
+        <span>{props.value}</span>
+      </span>
+      <Show when={visible()}>
+        <Portal>
+          <span
+            ref={(node) => {
+              tooltip = node;
+              const observer = new ResizeObserver(place);
+              observer.observe(node);
+              onCleanup(() => observer.disconnect());
+              queueMicrotask(place);
+            }}
+            class={styles.metricTooltip}
+            role="tooltip"
+            aria-hidden="true"
+            style={{ "--metric-x": `${position().x}px`, "--metric-y": `${position().y}px` }}
+          >
+            {props.description}
+          </span>
+        </Portal>
+      </Show>
+    </>
   );
 }

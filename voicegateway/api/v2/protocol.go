@@ -24,6 +24,8 @@ const (
 	MessageKindSessionReady MessageKind = "session.ready"
 	// MessageKindSessionStatus reports startup progress before session.ready.
 	MessageKindSessionStatus MessageKind = "session.status"
+	// MessageKindSessionUsage reports cumulative provider usage for this connection.
+	MessageKindSessionUsage MessageKind = "session.usage"
 	// MessageKindTranscriptDelta streams transcript text.
 	MessageKindTranscriptDelta MessageKind = "transcript.delta"
 	// MessageKindAssistantTextDelta streams assistant text.
@@ -133,6 +135,50 @@ type SessionStatus struct {
 	Message string `json:"message"`
 }
 
+// TokenUsage contains provider-reported counts. Nil means unavailable. Cached
+// and reasoning counts are breakdowns, never additional tokens to sum with input
+// and output; providers differ in how they account for reasoning output.
+type TokenUsage struct {
+	// InputTokens includes the input processed again on each model request.
+	InputTokens *int64 `json:"inputTokens,omitempty"`
+	// OutputTokens counts generated output as reported by the provider.
+	OutputTokens *int64 `json:"outputTokens,omitempty"`
+	// CachedTokens is the reported cached-input breakdown.
+	CachedTokens *int64 `json:"cachedTokens,omitempty"`
+	// ReasoningTokens is the reported reasoning breakdown.
+	ReasoningTokens *int64 `json:"reasoningTokens,omitempty"`
+}
+
+// SessionUsage is an idempotent snapshot for one gateway connection. Clients
+// replace snapshots with the same SessionID and carry totals across automatic
+// reconnects in one conversation. Missing reports are excluded from totals;
+// this is observed model usage, not a billing statement or ASR/TTS accounting.
+type SessionUsage struct {
+	// Kind is "session.usage".
+	Kind MessageKind `json:"kind"`
+	// SessionID identifies the gateway connection that owns these totals.
+	SessionID string `json:"sessionID"`
+	// Provider identifies the generation provider.
+	Provider string `json:"provider"`
+	// Model identifies the generation model.
+	Model string `json:"model"`
+	// Totals sums all reported responses, including tool continuations.
+	Totals TokenUsage `json:"totals"`
+	// LastResponse contains the latest reported response counts, when available.
+	LastResponse *TokenUsage `json:"lastResponse,omitempty"`
+	// ResponseID identifies the response observed by this report. It is opaque
+	// and unique across gateway connections. Empty means the provider did not
+	// supply a reliable response association.
+	ResponseID string `json:"responseID,omitempty"`
+	// ResponseUsage contains counts for ResponseID in this report only. Unlike
+	// LastResponse, it is never carried forward into context-only reports.
+	ResponseUsage *TokenUsage `json:"responseUsage,omitempty"`
+	// ContextTokens is the latest reported context size, never summed.
+	ContextTokens *int64 `json:"contextTokens,omitempty"`
+	// ContextWindow is the latest reported context capacity.
+	ContextWindow *int64 `json:"contextWindow,omitempty"`
+}
+
 // Context carries provider-neutral text or instruction context.
 type Context struct {
 	// SystemInstruction is provider-neutral instruction text for the assistant.
@@ -210,6 +256,10 @@ type TranscriptDelta struct {
 	Speaker Speaker `json:"speaker"`
 	// Text is an incremental transcript fragment.
 	Text string `json:"text"`
+	// ResponseID is the opaque gateway-scoped response identity. Assistant
+	// text and its usage share this value; user text and uncorrelated providers
+	// omit it. Separate response IDs must not be merged into one transcript entry.
+	ResponseID string `json:"responseID,omitempty"`
 }
 
 // AssistantTextDelta is a gateway message that streams assistant text.
@@ -219,6 +269,10 @@ type AssistantTextDelta struct {
 	Kind MessageKind `json:"kind"`
 	// Text is an incremental assistant text fragment.
 	Text string `json:"text"`
+	// ResponseID is the opaque gateway-scoped response identity. Assistant
+	// text and its usage share this value; user text and uncorrelated providers
+	// omit it. Separate response IDs must not be merged into one transcript entry.
+	ResponseID string `json:"responseID,omitempty"`
 }
 
 // ReasoningDelta is a gateway message that streams provider reasoning text.
@@ -231,6 +285,10 @@ type ReasoningDelta struct {
 	Kind MessageKind `json:"kind"`
 	// Text is an incremental reasoning fragment.
 	Text string `json:"text"`
+	// ResponseID is the opaque gateway-scoped response identity. Assistant
+	// text and its usage share this value; user text and uncorrelated providers
+	// omit it. Separate response IDs must not be merged into one transcript entry.
+	ResponseID string `json:"responseID,omitempty"`
 }
 
 // SpeechStarted is a gateway message that reports speech output started.

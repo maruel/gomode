@@ -94,6 +94,7 @@ public struct MessageKind: Codable, Equatable, Hashable {
     public static let SessionClose = MessageKind("session.close")
     public static let SessionReady = MessageKind("session.ready")
     public static let SessionStatus = MessageKind("session.status")
+    public static let SessionUsage = MessageKind("session.usage")
     public static let TranscriptDelta = MessageKind("transcript.delta")
     public static let AssistantTextDelta = MessageKind("assistant.text.delta")
     public static let ReasoningDelta = MessageKind("reasoning.delta")
@@ -626,6 +627,50 @@ public struct SessionStatus: Codable {
     public let message: String
 }
 
+/// TokenUsage contains provider-reported counts. Nil means unavailable. Cached
+/// and reasoning counts are breakdowns, never additional tokens to sum with input
+/// and output; providers differ in how they account for reasoning output.
+public struct TokenUsage: Codable {
+    /// InputTokens includes the input processed again on each model request.
+    public let inputTokens: Int?
+    /// OutputTokens counts generated output as reported by the provider.
+    public let outputTokens: Int?
+    /// CachedTokens is the reported cached-input breakdown.
+    public let cachedTokens: Int?
+    /// ReasoningTokens is the reported reasoning breakdown.
+    public let reasoningTokens: Int?
+}
+
+/// SessionUsage is an idempotent snapshot for one gateway connection. Clients
+/// replace snapshots with the same SessionID and carry totals across automatic
+/// reconnects in one conversation. Missing reports are excluded from totals;
+/// this is observed model usage, not a billing statement or ASR/TTS accounting.
+public struct SessionUsage: Codable {
+    /// Kind is "session.usage".
+    public let kind: MessageKind
+    /// SessionID identifies the gateway connection that owns these totals.
+    public let sessionID: String
+    /// Provider identifies the generation provider.
+    public let provider: String
+    /// Model identifies the generation model.
+    public let model: String
+    /// Totals sums all reported responses, including tool continuations.
+    public let totals: TokenUsage
+    /// LastResponse contains the latest reported response counts, when available.
+    public let lastResponse: TokenUsage?
+    /// ResponseID identifies the response observed by this report. It is opaque
+    /// and unique across gateway connections. Empty means the provider did not
+    /// supply a reliable response association.
+    public let responseID: String?
+    /// ResponseUsage contains counts for ResponseID in this report only. Unlike
+    /// LastResponse, it is never carried forward into context-only reports.
+    public let responseUsage: TokenUsage?
+    /// ContextTokens is the latest reported context size, never summed.
+    public let contextTokens: Int?
+    /// ContextWindow is the latest reported context capacity.
+    public let contextWindow: Int?
+}
+
 /// TranscriptDelta is a gateway message that streams transcript text.
 /// Each fragment appends to previously emitted text; it never replaces it.
 public struct TranscriptDelta: Codable {
@@ -635,6 +680,10 @@ public struct TranscriptDelta: Codable {
     public let speaker: Speaker
     /// Text is an incremental transcript fragment.
     public let text: String
+    /// ResponseID is the opaque gateway-scoped response identity. Assistant
+    /// text and its usage share this value; user text and uncorrelated providers
+    /// omit it. Separate response IDs must not be merged into one transcript entry.
+    public let responseID: String?
 }
 
 /// AssistantTextDelta is a gateway message that streams assistant text.
@@ -644,6 +693,10 @@ public struct AssistantTextDelta: Codable {
     public let kind: MessageKind
     /// Text is an incremental assistant text fragment.
     public let text: String
+    /// ResponseID is the opaque gateway-scoped response identity. Assistant
+    /// text and its usage share this value; user text and uncorrelated providers
+    /// omit it. Separate response IDs must not be merged into one transcript entry.
+    public let responseID: String?
 }
 
 /// ReasoningDelta is a gateway message that streams provider reasoning text.
@@ -656,6 +709,10 @@ public struct ReasoningDelta: Codable {
     public let kind: MessageKind
     /// Text is an incremental reasoning fragment.
     public let text: String
+    /// ResponseID is the opaque gateway-scoped response identity. Assistant
+    /// text and its usage share this value; user text and uncorrelated providers
+    /// omit it. Separate response IDs must not be merged into one transcript entry.
+    public let responseID: String?
 }
 
 /// SpeechStarted is a gateway message that reports speech output started.

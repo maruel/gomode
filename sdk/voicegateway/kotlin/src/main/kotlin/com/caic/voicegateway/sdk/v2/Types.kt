@@ -123,6 +123,10 @@ sealed interface MessageKind {
         override val value = "session.status"
     }
     @Serializable
+    data object SessionUsage : MessageKind {
+        override val value = "session.usage"
+    }
+    @Serializable
     data object TranscriptDelta : MessageKind {
         override val value = "transcript.delta"
     }
@@ -176,6 +180,7 @@ object MessageKindSerializer : KSerializer<MessageKind> {
             "session.close" -> MessageKind.SessionClose
             "session.ready" -> MessageKind.SessionReady
             "session.status" -> MessageKind.SessionStatus
+            "session.usage" -> MessageKind.SessionUsage
             "transcript.delta" -> MessageKind.TranscriptDelta
             "assistant.text.delta" -> MessageKind.AssistantTextDelta
             "reasoning.delta" -> MessageKind.ReasoningDelta
@@ -920,6 +925,60 @@ data class SessionStatus(
 )
 
 /**
+ * TokenUsage contains provider-reported counts. Nil means unavailable. Cached
+ * and reasoning counts are breakdowns, never additional tokens to sum with input
+ * and output; providers differ in how they account for reasoning output.
+ */
+@Serializable
+data class TokenUsage(
+    /** InputTokens includes the input processed again on each model request. */
+    val inputTokens: Long? = null,
+    /** OutputTokens counts generated output as reported by the provider. */
+    val outputTokens: Long? = null,
+    /** CachedTokens is the reported cached-input breakdown. */
+    val cachedTokens: Long? = null,
+    /** ReasoningTokens is the reported reasoning breakdown. */
+    val reasoningTokens: Long? = null,
+)
+
+/**
+ * SessionUsage is an idempotent snapshot for one gateway connection. Clients
+ * replace snapshots with the same SessionID and carry totals across automatic
+ * reconnects in one conversation. Missing reports are excluded from totals;
+ * this is observed model usage, not a billing statement or ASR/TTS accounting.
+ */
+@Serializable
+data class SessionUsage(
+    /** Kind is "session.usage". */
+    val kind: MessageKind,
+    /** SessionID identifies the gateway connection that owns these totals. */
+    @SerialName("sessionID") val sessionID: String,
+    /** Provider identifies the generation provider. */
+    val provider: String,
+    /** Model identifies the generation model. */
+    val model: String,
+    /** Totals sums all reported responses, including tool continuations. */
+    val totals: TokenUsage,
+    /** LastResponse contains the latest reported response counts, when available. */
+    val lastResponse: TokenUsage? = null,
+    /**
+     * ResponseID identifies the response observed by this report. It is opaque
+     * and unique across gateway connections. Empty means the provider did not
+     * supply a reliable response association.
+     */
+    @SerialName("responseID") val responseID: String? = null,
+    /**
+     * ResponseUsage contains counts for ResponseID in this report only. Unlike
+     * LastResponse, it is never carried forward into context-only reports.
+     */
+    val responseUsage: TokenUsage? = null,
+    /** ContextTokens is the latest reported context size, never summed. */
+    val contextTokens: Long? = null,
+    /** ContextWindow is the latest reported context capacity. */
+    val contextWindow: Long? = null,
+)
+
+/**
  * TranscriptDelta is a gateway message that streams transcript text.
  * Each fragment appends to previously emitted text; it never replaces it.
  */
@@ -931,6 +990,12 @@ data class TranscriptDelta(
     val speaker: Speaker,
     /** Text is an incremental transcript fragment. */
     val text: String,
+    /**
+     * ResponseID is the opaque gateway-scoped response identity. Assistant
+     * text and its usage share this value; user text and uncorrelated providers
+     * omit it. Separate response IDs must not be merged into one transcript entry.
+     */
+    @SerialName("responseID") val responseID: String? = null,
 )
 
 /**
@@ -943,6 +1008,12 @@ data class AssistantTextDelta(
     val kind: MessageKind,
     /** Text is an incremental assistant text fragment. */
     val text: String,
+    /**
+     * ResponseID is the opaque gateway-scoped response identity. Assistant
+     * text and its usage share this value; user text and uncorrelated providers
+     * omit it. Separate response IDs must not be merged into one transcript entry.
+     */
+    @SerialName("responseID") val responseID: String? = null,
 )
 
 /**
@@ -958,6 +1029,12 @@ data class ReasoningDelta(
     val kind: MessageKind,
     /** Text is an incremental reasoning fragment. */
     val text: String,
+    /**
+     * ResponseID is the opaque gateway-scoped response identity. Assistant
+     * text and its usage share this value; user text and uncorrelated providers
+     * omit it. Separate response IDs must not be merged into one transcript entry.
+     */
+    @SerialName("responseID") val responseID: String? = null,
 )
 
 /** SpeechStarted is a gateway message that reports speech output started. */

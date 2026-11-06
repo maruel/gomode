@@ -11,6 +11,7 @@ import com.caic.voicegateway.sdk.v2.MessageEnvelope
 import com.caic.voicegateway.sdk.v2.MessageKind
 import com.caic.voicegateway.sdk.v2.SessionSetup
 import com.caic.voicegateway.sdk.v2.SessionStatus
+import com.caic.voicegateway.sdk.v2.SessionUsage
 import com.caic.voicegateway.sdk.v2.ToolCall
 import com.caic.voicegateway.sdk.v2.ToolResult
 import com.caic.voicegateway.sdk.v2.TurnCancel
@@ -267,6 +268,7 @@ internal class DeviceVoiceSession(
         if (!preserveTranscript) {
             this.conversationID = conversationID ?: UUID.randomUUID().toString()
             clearTranscript()
+            _state.update { it.copy(usage = null, toolHistory = emptyList()) }
         }
         if (!frontendTools.isReady) {
             setError(FRONTEND_NOT_READY)
@@ -537,9 +539,14 @@ internal class DeviceVoiceSession(
                     maybeStartListening()
                 }
 
+                MessageKind.SessionUsage -> {
+                    val report = json.decodeFromString(SessionUsage.serializer(), text)
+                    _state.update { it.withUsageReport(report) }
+                }
+
                 MessageKind.AssistantTextDelta -> {
                     val msg = json.decodeFromString(AssistantTextDelta.serializer(), text)
-                    handleAssistantText(msg.text)
+                    handleAssistantText(msg.text, msg.responseID)
                 }
 
                 MessageKind.TurnStatus -> {
@@ -628,11 +635,14 @@ internal class DeviceVoiceSession(
         }
     }
 
-    private fun handleAssistantText(delta: String) {
+    private fun handleAssistantText(
+        delta: String,
+        responseID: String? = null,
+    ) {
         if (delta.isEmpty() || suppressReply) return
         turnIdle = false
         _state.update {
-            it.copy(transcript = it.transcript.appendChunk(TranscriptSpeaker.ASSISTANT, delta))
+            it.withTranscriptChunk(TranscriptSpeaker.ASSISTANT, delta, responseID = responseID)
         }
         segmenter.push(speechTextFilter.push(delta)).forEach(::speak)
     }
@@ -924,7 +934,7 @@ internal class DeviceVoiceSession(
         // Pin this call to its conversation before native/frontend dispatch can suspend.
         val sessionID = conversationID
         try {
-            _state.update { it.copy(activeTool = name) }
+            _state.update { it.withToolCall(name) }
             val serverResult =
                 executeNativeVoiceTool(
                     name,
@@ -1035,7 +1045,7 @@ internal class DeviceVoiceSession(
         // Pin this call to its conversation before native/frontend dispatch can suspend.
         val sessionID = conversationID
         try {
-            _state.update { it.copy(activeTool = name) }
+            _state.update { it.withToolCall(name) }
             val serverResult =
                 executeNativeVoiceTool(
                     name,
@@ -1141,6 +1151,8 @@ internal class DeviceVoiceSession(
         // Preserve transcript so the user can review it after disconnecting.
         _state.value =
             VoiceState(
+                usage = _state.value.usage,
+                toolHistory = _state.value.toolHistory,
                 transcript =
                     _state.value.transcript
                         .withoutUserDraft()

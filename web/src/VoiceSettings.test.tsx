@@ -30,6 +30,7 @@ beforeEach(() => {
     mode: "cloud",
     languageTag: "en-US",
     connected: false,
+    showUsageStats: false,
     connectStatus: null,
   }));
 });
@@ -240,6 +241,21 @@ describe("VoiceSettings", () => {
     expect(voiceSession.state.showReasoning).toBe(false);
   });
 
+  it("saves usage visibility and keeps it editable during a call", async () => {
+    const user = userEvent.setup();
+    render(() => <VoiceSettings />);
+    const toggle = screen.getByRole("checkbox", { name: "Show usage stats" });
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    expect(toggle).toBeChecked();
+    expect(voiceSession.state.showUsageStats).toBe(true);
+    expect(localStorage.getItem("gomode.voiceUsageStats")).toBe("on");
+    voiceSession.setState((s) => ({ ...s, connected: true, connectStatus: null }));
+    expect(toggle).toBeEnabled();
+    await user.click(toggle);
+    expect(voiceSession.state.showUsageStats).toBe(false);
+  });
+
   it("follows another settings view's saved language without overwriting a draft", async () => {
     const user = userEvent.setup();
     render(() => (
@@ -355,6 +371,23 @@ describe("VoiceSettings", () => {
         "Could not save the reasoning preference: Storage unavailable",
       );
       expect(voiceSession.state.showReasoning).toBe(false);
+    } finally {
+      save.mockRestore();
+    }
+  });
+
+  it("restores the usage checkbox when saving the preference fails", async () => {
+    const save = vi.spyOn(window.Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    try {
+      const user = userEvent.setup();
+      render(() => <VoiceSettings />);
+      const toggle = screen.getByRole("checkbox", { name: "Show usage stats" });
+      await user.click(toggle);
+      expect(toggle).not.toBeChecked();
+      expect(screen.getByRole("alert")).toHaveTextContent("Could not save the usage preference: Storage unavailable");
+      expect(voiceSession.state.showUsageStats).toBe(false);
     } finally {
       save.mockRestore();
     }

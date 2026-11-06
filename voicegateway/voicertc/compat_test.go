@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/maruel/genai"
 	"github.com/maruel/gomode/voicegateway"
 	voiceapi "github.com/maruel/gomode/voicegateway/api"
 	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
@@ -58,6 +59,18 @@ func TestClientProtocolMessage(t *testing.T) {
 func TestServerProtocolMessage(t *testing.T) {
 	t.Parallel()
 	p := voiceapi.SessionProtocol{Version: voiceapi.ProtocolV1}
+	for _, data := range []string{
+		`{"kind":"transcript.delta","speaker":"assistant","text":"Hello","responseID":"private-v2"}`,
+		`{"kind":"assistant.text.delta","text":"Hello","responseID":"private-v2"}`,
+	} {
+		projected, err := serverProtocolMessage(p, []byte(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(projected), "responseID") {
+			t.Fatalf("v1 exposed response correlation: %s", projected)
+		}
+	}
 	for _, kind := range []string{"session.status", "session.usage", "reasoning.delta", "future.event"} {
 		out, err := serverProtocolMessage(p, []byte(`{"kind":"`+kind+`"}`))
 		if err != nil || out != nil {
@@ -98,6 +111,7 @@ type protocolConversation struct{ reasoningConversation }
 func (protocolConversation) user(context.Context, string) (llmStep, error) {
 	return llmStep{stream: slices.Values([]llmFragment{
 		{reasoning: "Thinking"}, {text: "Ready"},
+		{usage: &usageObservation{provider: "fixture", model: "synthetic", counts: genai.Usage{InputTokens: 5, OutputTokens: 2}}},
 	}), finish: func() (llmReply, error) { return llmReply{text: "Ready"}, nil }}, nil
 }
 
@@ -181,7 +195,7 @@ func TestPublishedTextSessions(t *testing.T) {
 				if !slices.Contains(kinds, voicev2.MessageKindAssistantTextDelta) {
 					t.Fatalf("no answer in %v", kinds)
 				}
-				for _, kind := range []voicev2.MessageKind{voicev2.MessageKindReasoningDelta} {
+				for _, kind := range []voicev2.MessageKind{voicev2.MessageKindReasoningDelta, voicev2.MessageKindSessionUsage} {
 					if slices.Contains(kinds, kind) != (version == voiceapi.ProtocolV2) {
 						t.Fatalf("version %v event %s in %v", version, kind, kinds)
 					}

@@ -26,6 +26,35 @@ sessions require the matching `gomode.text.v1` or `gomode.text.v2` subprotocol.
 Tickets must come from the same route version as their redemption endpoint.
 See the [v1 reference](../sdk/voicegateway/v1/API.md) for its frozen contract.
 
+### Response usage
+
+V2 assistant `transcript.delta`, `assistant.text.delta`, and `reasoning.delta`
+events optionally carry an opaque `responseID`. The same response has the same
+identity across these event kinds; identities are scoped to a gateway connection
+and differ after reconnecting. Clients must keep distinct responses separate and
+avoid displaying the two assistant text transports as duplicate transcript rows.
+
+`session.usage.totals` remains a replaceable connection snapshot.
+`responseID` and `responseUsage`, when present together, identify the counts for
+that specific response. Counts may arrive before text, after another response,
+or for a tool-only response without transcript text. Clients should retain
+bounded pending response reports and attach them only to matching assistant
+entries. A context-only report omits these fields; `lastResponse` is retained
+for existing clients and must not be used to associate counts with an entry.
+Unknown counts remain absent rather than becoming zero.
+
+The local stack assigns an identity to each generation, including tool
+continuations, and retains it through delayed synthesis. Realtime providers use
+their authoritative response identity when available. Gemini currently supplies
+no such identity through genai, so its usage contributes to connection totals
+without being attributed to transcript entries. The gateway never infers an
+association from event arrival order.
+
+For the most recent 256 reported response identities, repeated reports replace
+their earlier contribution to totals and retain previously known breakdowns.
+Eviction preserves totals and streaming; beyond this window accounting relies
+on genai delivering each response's usage once. V1 events remain unchanged.
+
 ## Responsibilities
 
 The gateway owns provider connections, media conversion, turn state,

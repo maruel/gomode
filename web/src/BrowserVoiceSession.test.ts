@@ -136,6 +136,37 @@ async function readySocket(): Promise<FakeWebSocket> {
   return socket;
 }
 
+it("attaches text-gateway counts by identity before and after output without merging adjacent responses", async () => {
+  const socket = await readySocket();
+  const report = (id: string, tokens: number) =>
+    socket.message({
+      kind: "session.usage",
+      sessionID: "one",
+      provider: "test",
+      model: "model",
+      totals: { inputTokens: 100 },
+      responseID: id,
+      responseUsage: { inputTokens: tokens, outputTokens: 0 },
+    });
+  report("a", 10);
+  socket.message({ kind: "assistant.text.delta", responseID: "a", text: "First." });
+  socket.message({ kind: "turn.status", state: "idle" });
+  socket.message({ kind: "assistant.text.delta", responseID: "b", text: "Second." });
+  report("b", 20);
+  report("a", 11);
+  expect(session.state.transcript).toHaveLength(2);
+  expect(session.state.transcript[0]).toMatchObject({
+    responseID: "a",
+    responseUsage: { inputTokens: 11 },
+    text: "First.",
+  });
+  expect(session.state.transcript[1]).toMatchObject({
+    responseID: "b",
+    responseUsage: { inputTokens: 20 },
+    text: "Second.",
+  });
+});
+
 it("ends text voice visibly when a tool result cannot be sent", async () => {
   const socket = await readySocket();
   callTool.mockResolvedValue({ structuredContent: { value: "private result" } });

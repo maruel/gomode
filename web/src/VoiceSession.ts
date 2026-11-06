@@ -4,6 +4,7 @@ import { SpeechTextFilter } from "./SpeechTextFilter";
 import { SentenceSegmenter } from "./SentenceSegmenter";
 import { MicrophoneLevel } from "./MicrophoneLevel";
 import { MicrophoneInput } from "./MicrophoneInput";
+import { mergeVoiceUsage, type VoiceUsage } from "./VoiceUsage";
 import { createSignal, untrack } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 
@@ -24,6 +25,8 @@ import {
   type TurnState,
   type TurnStatus,
   type SessionStatus,
+  type SessionUsage,
+  type TokenUsage,
   type VoiceRTCClientDiagnostics,
   type VoiceRTCDiagnosticsResp,
   MessageKindContextUpdate,
@@ -34,6 +37,7 @@ import {
   MessageKindInterrupted,
   MessageKindSessionReady,
   MessageKindSessionStatus,
+  MessageKindSessionUsage,
   MessageKindSessionSetup,
   MessageKindSpeechEnded,
   MessageKindSpeechStarted,
@@ -339,6 +343,8 @@ export interface TranscriptEntry {
   speaker: TranscriptSpeaker;
   text: string;
   final: boolean;
+  responseID?: string;
+  responseUsage?: TokenUsage;
 }
 
 /** Describes a single audio input/output device. Mirrors Android's AudioDevice. */
@@ -380,7 +386,14 @@ export function microphoneMuted(state: Pick<VoiceState, "microphoneMode" | "spea
   return state.microphoneMode === "muted" || (state.microphoneMode === "muteOnce" && state.speaking);
 }
 
+/** One admitted tool invocation; sequence distinguishes repeated names in a conversation. */
+export interface ToolInvocation {
+  sequence: number;
+  name: string;
+}
+
 export interface VoiceState {
+  usage: VoiceUsage | null;
   mode: VoiceMode;
   choices: VoiceChoice[];
   /** Effective gateway choice per family, null when the gateway offers none. */
@@ -397,11 +410,15 @@ export interface VoiceState {
   speaking: boolean;
   microphoneMode: MicrophoneMode;
   activeTool: string | null;
+  /** Latest 32 admitted tool names, in invocation order across reconnects. */
+  toolHistory: ToolInvocation[];
   /** Gateway work before assistant output; idle when the gateway does not report any. */
   turnState: TurnState;
   transcript: TranscriptEntry[];
   /** Shows provider reasoning in the transcript. Off by default. */
   showReasoning: boolean;
+  /** Shows reported token counts in the voice overlay. Off by default. */
+  showUsageStats: boolean;
   micLevel: number;
   micLevelError: string | null;
   error: string | null;
@@ -493,6 +510,15 @@ function savedReasoning(): boolean {
     return localStorage.getItem("gomode.voiceReasoning") === "on";
   } catch (error) {
     console.warn("Could not load the reasoning display preference; hiding reasoning", error);
+    return false;
+  }
+}
+
+function savedUsageStats(): boolean {
+  try {
+    return localStorage.getItem("gomode.voiceUsageStats") === "on";
+  } catch (error) {
+    console.warn("Could not load the usage display preference; hiding usage stats", error);
     return false;
   }
 }
@@ -714,9 +740,12 @@ export class VoiceSession {
       speaking: false,
       microphoneMode: "listening",
       activeTool: null,
+      toolHistory: [],
       turnState: TurnStateIdle,
       transcript: [],
+      usage: null,
       showReasoning: savedReasoning(),
+      showUsageStats: savedUsageStats(),
       micLevel: 0,
       micLevelError: null,
       error: null,
@@ -991,6 +1020,12 @@ export class VoiceSession {
   setShowReasoning(show: boolean): void {
     localStorage.setItem("gomode.voiceReasoning", show ? "on" : "off");
     this.setState((s) => ({ ...s, showReasoning: show }));
+  }
+
+  /** Save whether the overlay displays reported usage, independently of collection. */
+  setShowUsageStats(show: boolean): void {
+    localStorage.setItem("gomode.voiceUsageStats", show ? "on" : "off");
+    this.setState((s) => ({ ...s, showUsageStats: show }));
   }
 
   /** Enumerate available audio devices and auto-select defaults. Call before connect(). */
@@ -1432,6 +1467,9 @@ export class VoiceSession {
     this._lastOfferSDP = "";
     this._lastAnswerSDP = "";
     if (!preserveTranscript) {
+      this._update((s) => {
+        s.usage = null;
+      });
       this._reconnectAttempts = 0;
       this._recoveryContext = "";
       this._clearTranscript();
@@ -1612,7 +1650,12 @@ export class VoiceSession {
     this._releaseAll(true);
     this._speakerActive = false;
     this._pendingNotifications = [];
-    if (!preserveTranscript) this._clearTranscript();
+    if (!preserveTranscript) {
+      this._clearTranscript();
+      this._update((s) => {
+        s.usage = null;
+      });
+    }
     this._update((s) => {
       s.connected = false;
       s.speaking = false;
@@ -2079,6 +2122,7 @@ export class VoiceSession {
   private _clearTranscript(): void {
     this._update((s) => {
       s.transcript = [];
+      s.toolHistory = [];
     });
   }
 
@@ -2146,6 +2190,20 @@ export class VoiceSession {
     try {
       env = JSON.parse(text) as MessageEnvelope;
     } catch {
+      return;
+    }
+    if (env.kind === MessageKindSessionUsage) {
+      const report = JSON.parse(text) as SessionUsage;
+      this._update((s) => {
+        s.usage = mergeVoiceUsage(s.usage, report);
+        if (report.responseID && report.responseUsage) {
+          s.transcript = s.transcript.map((entry) =>
+            entry.speaker === "assistant" && entry.kind === "transcript" && entry.responseID === report.responseID
+              ? { ...entry, responseUsage: report.responseUsage }
+              : entry,
+          );
+        }
+      });
       return;
     }
 
@@ -2223,7 +2281,7 @@ export class VoiceSession {
       this._browserTurnIdle = false;
       this._speakerActive = true;
       this._update((s) => {
-        s.transcript = appendChunk(s.transcript, "assistant", delta.text, "transcript");
+        s.transcript = appendChunk(s.transcript, "assistant", delta.text, "transcript", delta.responseID, s.usage);
       });
       this._sentenceSegmenter.push(this._speechTextFilter.push(delta.text), this._speakBrowserFragment);
       return;
@@ -2235,7 +2293,7 @@ export class VoiceSession {
       const delta = JSON.parse(text) as ReasoningDelta;
       if (!delta.text) return;
       this._update((s) => {
-        s.transcript = appendChunk(s.transcript, "assistant", delta.text, "reasoning");
+        s.transcript = appendChunk(s.transcript, "assistant", delta.text, "reasoning", delta.responseID, s.usage);
       });
       return;
     }
@@ -2327,13 +2385,17 @@ export class VoiceSession {
     if (msg.speaker !== "user" && msg.speaker !== "assistant") return;
     if (!msg.text) return;
     this._update((s) => {
-      s.transcript = appendChunk(s.transcript, msg.speaker, msg.text ?? "", "transcript");
+      s.transcript = appendChunk(s.transcript, msg.speaker, msg.text ?? "", "transcript", msg.responseID, s.usage);
     });
   }
 
   private async _handleToolCall(msg: ToolCall, attempt: number, channel: VoiceChannel): Promise<void> {
     if (!this._ownsChannel(attempt, channel)) return;
     if (!msg.id || !msg.name) return;
+    this._update((s) => {
+      const sequence = (s.toolHistory.at(-1)?.sequence ?? 0) + 1;
+      s.toolHistory = [...s.toolHistory.slice(-31), { sequence, name: msg.name }];
+    });
     if (msg.name === HANG_UP_TOOL_NAME) {
       this.disconnect();
       return;
@@ -2341,7 +2403,7 @@ export class VoiceSession {
 
     try {
       this._update((s) => {
-        s.activeTool = msg.name ?? null;
+        s.activeTool = msg.name;
       });
       const frontend = this._frontendTools?.declarations.some((tool) => tool.name === msg.name)
         ? this._frontendTools
@@ -2628,12 +2690,27 @@ function appendChunk(
   speaker: TranscriptSpeaker,
   text: string,
   kind: TranscriptKind,
+  responseID: string | undefined,
+  usage: VoiceUsage | null,
 ): TranscriptEntry[] {
-  const last = transcript[transcript.length - 1];
-  if (last && last.speaker === speaker && last.kind === kind && !last.final) {
-    return [...transcript.slice(0, -1), { kind, speaker, text: last.text + text, final: false }];
+  const id = speaker === "assistant" ? responseID : undefined;
+  const index = id
+    ? transcript.findIndex((entry) => entry.speaker === speaker && entry.kind === kind && entry.responseID === id)
+    : transcript.length - 1;
+  const previous = transcript[index];
+  const counts = kind === "transcript" && id ? usage?.responses?.get(id) : undefined;
+  if (
+    previous &&
+    previous.speaker === speaker &&
+    previous.kind === kind &&
+    previous.responseID === id &&
+    (id || !previous.final)
+  ) {
+    return transcript.map((entry, i) =>
+      i === index ? { ...entry, text: entry.text + text, ...(counts ? { responseUsage: counts } : {}) } : entry,
+    );
   }
-  return [...transcript, { kind, speaker, text, final: false }];
+  return [...transcript, { kind, speaker, text, final: false, responseID: id, responseUsage: counts }];
 }
 
 // Singleton — lives at module level so the WebRTC connection survives component remounts.

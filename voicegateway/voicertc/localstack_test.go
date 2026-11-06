@@ -125,7 +125,7 @@ func TestLocalStackSession(t *testing.T) {
 				sink := &captureSink{}
 				s := &localStackSession{id: "llm-error", sink: sink, baseCtx: t.Context()}
 				step := newLLMStep(nil, llmReply{}, errors.New("http 400: upstream refused the request"))
-				s.handleTextStep(ctx, &fakeConversation{}, step)
+				s.handleTextStep(ctx, &fakeConversation{}, step, "")
 				if cancelled {
 					if got := sink.kinds(); len(got) != 0 {
 						t.Fatalf("cancelled turn messages = %v", got)
@@ -491,7 +491,7 @@ func TestLocalStackSession(t *testing.T) {
 			var release sync.Once
 			t.Cleanup(func() { release.Do(func() { close(releaseSecondChunk) }); workers.Wait() })
 			workers.Go(func() {
-				s.speak(t.Context(), "hello")
+				s.speak(t.Context(), "hello", "")
 				close(done)
 			})
 			select {
@@ -523,7 +523,7 @@ func TestLocalStackSession(t *testing.T) {
 				baseCtx: t.Context(),
 				tts:     failingTTS{called: ttsCalled},
 			}
-			s.speak(t.Context(), "hello")
+			s.speak(t.Context(), "hello", "")
 			select {
 			case <-ttsCalled:
 			default:
@@ -627,6 +627,181 @@ func TestLocalStackSession(t *testing.T) {
 		}
 		sess.startUserMessage(t.Context(), "after close")
 	})
+}
+
+func TestLocalStackResponseCorrelation(t *testing.T) {
+	t.Parallel()
+	t.Run("tool continuation", func(t *testing.T) {
+		t.Parallel()
+		p := &fakeGenAIProvider{
+			firstReplies: []genai.Reply{{Text: "Checking."}, {ToolCall: genai.ToolCall{ID: "call-one", Name: "tasks_list", Arguments: `{}`}}},
+			usage:        genai.Usage{InputTokens: 10, OutputTokens: 2},
+		}
+		sink := &correlationSink{events: make(chan struct{}, 1)}
+		runtime := &localStackRuntime{llm: &genaiLLMAdapter{provider: p}}
+		s := runtime.newSession(t.Context(), "continuation", sink, true)
+		t.Cleanup(func() {
+			if err := s.close(); err != nil {
+				t.Error(err)
+			}
+		})
+		for _, message := range []any{
+			voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup, Tools: []voicev2.ToolDeclaration{{Name: "tasks_list", Parameters: json.RawMessage(`{"type":"object"}`)}}},
+			voicev2.UserMessage{Kind: voicev2.MessageKindUserMessage, Text: "List tasks"},
+		} {
+			if err := s.acceptClientMessage(t.Context(), mustJSON(t, message)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		sink.waitKind(t, voicev2.MessageKindToolCall)
+		call := decodeToolCall(t, &sink.captureSink)
+		if err := s.acceptClientMessage(t.Context(), mustJSON(t, voicev2.ToolResult{Kind: voicev2.MessageKindToolResult, ID: call.ID, Name: call.Name, Result: json.RawMessage(`[]`)})); err != nil {
+			t.Fatal(err)
+		}
+		sink.waitKindCount(t, voicev2.MessageKindSessionUsage, 2)
+		sink.mu.Lock()
+		t.Cleanup(sink.mu.Unlock)
+		texts := map[string]string{}
+		var reports []voicev2.SessionUsage
+		for _, data := range sink.msgs {
+			var text voicev2.AssistantTextDelta
+			if err := json.Unmarshal(data, &text); err != nil {
+				t.Fatal(err)
+			}
+			if text.Kind == voicev2.MessageKindAssistantTextDelta {
+				texts[text.ResponseID] += text.Text
+			}
+			var usage voicev2.SessionUsage
+			if err := json.Unmarshal(data, &usage); err != nil {
+				t.Fatal(err)
+			}
+			if usage.Kind == voicev2.MessageKindSessionUsage {
+				reports = append(reports, usage)
+			}
+		}
+		if len(reports) != 2 || reports[0].ResponseID == "" || reports[0].ResponseID == reports[1].ResponseID || texts[reports[0].ResponseID] != "Checking." || texts[reports[1].ResponseID] != "Done." {
+			t.Fatalf("reports=%+v texts=%v", reports, texts)
+		}
+		if reports[1].Totals.InputTokens == nil || *reports[1].Totals.InputTokens != 20 {
+			t.Fatalf("continuation totals=%+v", reports[1])
+		}
+	})
+	for _, directAudio := range []bool{false, true} {
+		t.Run(fmt.Sprintf("directAudio=%t", directAudio), func(t *testing.T) {
+			t.Parallel()
+			sink := &correlationSink{events: make(chan struct{}, 1)}
+			release := make(chan struct{})
+			runtime := &localStackRuntime{newVAD: func() vadSegmenter { return &energyVAD{} }, tts: delayedCorrelationTTS{release: release}, directAudio: directAudio}
+			s := runtime.newSession(t.Context(), "late-speech", sink, false)
+			var once sync.Once
+			t.Cleanup(func() {
+				once.Do(func() { close(release) })
+				if err := s.close(); err != nil {
+					t.Error(err)
+				}
+			})
+			ctx, cancel := context.WithCancel(t.Context())
+			step := llmStep{
+				stream: slices.Values([]llmFragment{
+					{text: "Hello."},
+					{usage: &usageObservation{provider: "test", model: "test", counts: genai.Usage{InputTokens: 12, OutputTokens: 3}}},
+				}),
+				finish: func() (llmReply, error) { return llmReply{text: "Hello."}, nil },
+			}
+			s.startAdmittedStep(ctx, &fakeConversation{}, step, cancel, false)
+			sink.waitKind(t, voicev2.MessageKindSessionUsage)
+			if slices.Contains(sink.kinds(), voicev2.MessageKindAssistantTextDelta) {
+				t.Fatal("assistant text emitted before delayed TTS produced audio")
+			}
+			once.Do(func() { close(release) })
+			sink.waitKind(t, voicev2.MessageKindSpeechEnded)
+			sink.mu.Lock()
+			t.Cleanup(sink.mu.Unlock)
+			var usage voicev2.SessionUsage
+			var text voicev2.AssistantTextDelta
+			var transcript voicev2.TranscriptDelta
+			for _, data := range sink.msgs {
+				var header struct {
+					Kind voicev2.MessageKind `json:"kind"`
+				}
+				if err := json.Unmarshal(data, &header); err != nil {
+					t.Fatal(err)
+				}
+				switch header.Kind {
+				case voicev2.MessageKindSessionUsage:
+					if err := json.Unmarshal(data, &usage); err != nil {
+						t.Fatal(err)
+					}
+				case voicev2.MessageKindAssistantTextDelta:
+					if err := json.Unmarshal(data, &text); err != nil {
+						t.Fatal(err)
+					}
+				case voicev2.MessageKindTranscriptDelta:
+					if err := json.Unmarshal(data, &transcript); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if usage.ResponseID == "" || usage.ResponseID != text.ResponseID || text.ResponseID != transcript.ResponseID || usage.ResponseUsage == nil || *usage.ResponseUsage.InputTokens != 12 {
+				t.Fatalf("usage=%+v text=%+v transcript=%+v", usage, text, transcript)
+			}
+		})
+	}
+}
+
+// correlationSink notifies asynchronous correlation tests after recording events.
+type correlationSink struct {
+	captureSink
+	events chan struct{}
+}
+
+func (s *correlationSink) sendGatewayMessage(ctx context.Context, data []byte) error {
+	if err := s.captureSink.sendGatewayMessage(ctx, data); err != nil {
+		return err
+	}
+	select {
+	case s.events <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (s *correlationSink) waitKind(t *testing.T, kind voicev2.MessageKind) {
+	s.waitKindCount(t, kind, 1)
+}
+
+func (s *correlationSink) waitKindCount(t *testing.T, kind voicev2.MessageKind, count int) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	t.Cleanup(cancel)
+	for {
+		found := 0
+		for _, got := range s.kinds() {
+			if got == kind {
+				found++
+			}
+		}
+		if found >= count {
+			return
+		}
+		select {
+		case <-s.events:
+		case <-ctx.Done():
+			t.Fatalf("waiting for %d %s events: %v", count, kind, ctx.Err())
+		}
+	}
+}
+
+// delayedCorrelationTTS holds the first PCM until usage has reached the client.
+type delayedCorrelationTTS struct{ release <-chan struct{} }
+
+func (d delayedCorrelationTTS) synthesize(ctx context.Context, _ string) iter.Seq2[[]byte, error] {
+	return func(yield func([]byte, error) bool) {
+		select {
+		case <-d.release:
+			yield([]byte{1, 2}, nil)
+		case <-ctx.Done():
+		}
+	}
 }
 
 func TestLocalStackReasoning(t *testing.T) {
@@ -1153,7 +1328,7 @@ func TestLocalStackTextOnly(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		if _, err := io.WriteString(w, `data: {"choices":[{"index":0,"delta":{"content":"Hello."},"finish_reason":null}]}
 
-data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":8,"total_tokens":128}}
 
 data: [DONE]
 
@@ -1204,6 +1379,13 @@ data: [DONE]
 	}
 	if reply.Text != "Hello." {
 		t.Fatalf("reply = %+v", reply)
+	}
+	var usage voicev2.SessionUsage
+	if err := json.Unmarshal(expectKind(t, ctx, conn, voicev2.MessageKindSessionUsage), &usage); err != nil {
+		t.Fatal(err)
+	}
+	if usage.Model != "test-model" || usage.Totals.InputTokens == nil || *usage.Totals.InputTokens != 120 || *usage.LastResponse.OutputTokens != 8 {
+		t.Fatalf("usage = %+v", usage)
 	}
 	expectTurnStatus(t, ctx, conn, voicev2.TurnStateIdle)
 }
@@ -1963,6 +2145,8 @@ type fakeGenAIProvider struct {
 	base.NotImplemented
 
 	firstReplies []genai.Reply
+	usage        genai.Usage
+	resultError  error
 
 	mu    sync.Mutex
 	calls []fakeGenAICall
@@ -2015,7 +2199,7 @@ func (p *fakeGenAIProvider) GenStream(ctx context.Context, msgs genai.Messages, 
 			if err := ctx.Err(); err != nil {
 				return genai.Result{}, err
 			}
-			return genai.Result{Replies: replies}, nil
+			return genai.Result{Replies: replies, Usage: p.usage}, p.resultError
 		}
 }
 

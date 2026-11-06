@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -501,9 +502,55 @@ func TestGenaiConversationReasoning(t *testing.T) {
 		{reasoning: "Weigh both dates. "},
 		{reasoning: "Compare them. "},
 		{text: "The first date is earlier."},
+		{usage: &usageObservation{provider: "fake", model: "fake-model"}},
 	}
-	if !slices.Equal(fragments, want) {
+	if !reflect.DeepEqual(fragments, want) {
 		t.Fatalf("fragments = %v, want %v", fragments, want)
+	}
+}
+
+func TestGenaiConversationStreamStop(t *testing.T) {
+	t.Parallel()
+	p := &fakeGenAIProvider{firstReplies: []genai.Reply{{Text: "First."}, {Text: "Second."}}}
+	conv := (&genaiLLMAdapter{provider: p}).newConversation("Answer briefly.", nil, false)
+	step, err := conv.user(t.Context(), "Hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range step.stream {
+		break
+	}
+	if _, err := step.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGenaiConversationFailedUsage(t *testing.T) {
+	t.Parallel()
+	for _, usage := range []genai.Usage{
+		{InputCachedTokens: 12}, {ReasoningTokens: 7}, {ContextTokens: 55}, {ContextWindow: 1024},
+	} {
+		t.Run(usage.String(), func(t *testing.T) {
+			t.Parallel()
+			p := &fakeGenAIProvider{firstReplies: []genai.Reply{}, usage: usage, resultError: context.Canceled}
+			conv := (&genaiLLMAdapter{provider: p}).newConversation("Answer briefly.", nil, false)
+			step, err := conv.user(t.Context(), "Hello")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var observations []usageObservation
+			for fragment := range step.stream {
+				if fragment.usage != nil {
+					observations = append(observations, *fragment.usage)
+				}
+			}
+			if !reflect.DeepEqual(observations, []usageObservation{{provider: "fake", model: "fake-model", counts: usage}}) {
+				t.Fatalf("usage lost on cancellation: %+v", observations)
+			}
+			if _, err := step.finish(); !errors.Is(err, context.Canceled) {
+				t.Fatalf("error = %v", err)
+			}
+		})
 	}
 }
 

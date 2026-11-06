@@ -171,7 +171,7 @@
 }
 
 .activityText {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
   line-height: 1.5;
   color: var(--color-text-secondary);
@@ -362,18 +362,8 @@
 
 /* ---- Transcript ---- */
 
-.transcriptContent {
-  display: flex;
-  gap: 0.5rem;
-  align-items: flex-start;
-}
-
-.transcriptBody {
-  flex: 1;
-  min-width: 0;
-}
-
 .transcriptToggle[aria-expanded="true"] {
+  float: inline-end;
   align-items: flex-start;
   padding-top: 0.35rem;
   font-size: 0.75rem;
@@ -384,18 +374,39 @@
 }
 
 .transcriptList {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
   max-height: min(14rem, 28dvh);
   margin-top: 0.35rem;
+  padding: 0.4rem;
+  background: var(--color-bg-surface);
+  border-radius: 0.5rem;
   overflow-y: auto;
 }
 
+.transcriptList:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
 .transcriptEntry {
+  display: block;
+  padding: 0.1rem 0.2rem;
+  overflow-wrap: anywhere;
   font-size: 0.8rem;
   line-height: 1.4;
   color: var(--color-text-secondary);
+}
+
+.transcriptEntryAssistant {
+  background: color-mix(in srgb, var(--color-bg-hover) 55%, transparent);
+  border-radius: 0.2rem;
+}
+
+.transcriptEntries {
+  display: flow-root;
+}
+
+.transcriptEntries > :not(:last-child) {
+  margin-block-end: 0.1rem;
 }
 
 .transcriptEntryReasoning {
@@ -424,4 +435,166 @@
   margin-top: 0.35rem;
   font-size: 0.8rem;
   color: var(--color-text-faint);
+}
+
+.usage {
+  padding: 0.15rem 0.5rem;
+  color: var(--color-text);
+  background: var(--color-bg-hover);
+  border-radius: 0.5rem;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.usageBody {
+  display: flow-root;
+  min-width: 0;
+  padding-block: 0.2rem;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.usageClose {
+  float: inline-end;
+  align-items: flex-start;
+  padding-top: 0.35rem;
+  margin-inline-start: 0.5rem;
+}
+
+.usageModel,
+.usageEmpty {
+  display: inline;
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+
+.usageModel {
+  margin-inline-end: 0.75rem;
+  font-size: 0.72rem;
+}
+
+.transcriptText {
+  overflow-wrap: anywhere;
+}
+
+.tokenCounts {
+  display: inline;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+.tokenCounts > .responseMetric {
+  margin-inline-end: 0.65em;
+}
+
+.responseUsage {
+  display: inline;
+  margin-inline-start: 0.5em;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+}
+
+.responseUsage > .responseMetric:not(:last-child) {
+  margin-inline-end: 0.5em;
+}
+
+.toolHistory {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+}
+
+.toolHistoryViewport {
+  flex: 1;
+  min-width: 0;
+  height: 1.5em;
+  line-height: 1.5;
+  overflow: auto;
+  scrollbar-width: none;
+  scroll-snap-type: y mandatory;
+  overflow-anchor: none;
+  overscroll-behavior: contain;
+  border-radius: 0.15em;
+}
+
+.toolHistoryViewport::-webkit-scrollbar {
+  display: none;
+}
+.toolHistoryViewport:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+.toolHistoryItems {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  width: max-content;
+  min-width: 100%;
+}
+.toolHistoryItems > li {
+  height: 1.5em;
+  white-space: nowrap;
+  scroll-snap-align: start;
+}
+
+.responseMetric {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.1em;
+  position: relative;
+  white-space: nowrap;
+  border-radius: 0.15em;
+}
+
+.responseMetric > [data-icon] {
+  align-self: center;
+}
+
+.responseMetric:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.metricTooltip {
+  position: fixed;
+  top: var(--metric-y);
+  left: var(--metric-x);
+  width: max-content;
+  max-width: calc(100vw - 1rem);
+  padding: 0.25em 0.5em;
+  background: var(--color-bg-surface);
+  color: var(--color-text);
+  border: 1px solid currentColor;
+  border-radius: 0.2em;
+  font-size: 0.75rem;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+.activityAnnouncement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.toolHistoryActive {
+  color: var(--color-plan);
+}
+
+.toolHistoryItems > li {
+  color: var(--color-text-secondary);
+}
+.toolHistoryActive .toolHistoryItems > li:last-child {
+  color: var(--color-plan);
 }

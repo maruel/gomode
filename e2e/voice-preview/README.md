@@ -4,10 +4,43 @@ Settings, next server, and audio selectors stay in that order on the left, befor
 and during voice sessions. The start button stays at the right and becomes
 hang-up while connecting or active. During an active session, microphone mute
 stays after the audio selectors and the level meter sits immediately left of
-hang-up. Activity occupies the second row and wraps long tool identifiers without
-truncation. Connection errors keep the same toolbar and normal start action, with no separate retry or dismiss
-buttons. The transcript reopen button stays at the right of the activity row when
+hang-up. Activity occupies the second row. Recent tool calls occupy a one-line
+scrollable history, initially showing the newest invocation. Scroll vertically for earlier
+calls and horizontally for complete long identifiers; scrollbars stay hidden.
+The latest 32 invocation names remain reviewable after disconnect and reset for a
+new conversation. Browsing older calls preserves the current scroll position.
+Connection errors keep the same toolbar and normal start action, with no separate
+retry or dismiss buttons. The transcript reopen button stays at the right of the activity row when
 hidden. The X sits at the top right of the expanded transcript content.
+
+Enable **Show usage stats** in voice settings to show conversation totals and
+counts beside each matching assistant reply. Both displays use the same icons.
+The arrows mean input and output tokens; the cached and reasoning symbols show optional breakdowns. Hover or focus
+a browser count, or long-press an Android count, for its metric name and exact
+value. A dash means the provider did not report that count. The setting stays
+available during calls. Closing the usage panel hides all counts without clearing
+them. Replies without an authoritative response identity contribute only to totals.
+
+Open the browser fixture with `?history=retention` to exercise FIFO eviction.
+It seeds 32 invocations, including repeated names, and exposes fixture controls
+for appending one or two calls. Browse to `tool_10`, append calls, and verify
+that the same retained invocation stays visible. Native coverage is in
+`longToolActivityUsesItsOwnRowBelowEveryPrimaryControl`, including the
+`tool-history-retention` capture.
+
+The browser fixture includes three correlated replies, reasoning, zero output,
+and unknown input. For the equivalent native usage scene, run:
+
+```sh
+cd android
+./gradlew :gomode:connectedDebugAndroidTest \
+  '-Pandroid.testInstrumentationRunnerArguments.class=com.fghbuild.gomode.voice.VoicePanelTest#usageRemainsReviewableAfterDisconnectAndAtLargeText' \
+  '-Pandroid.testInstrumentationRunnerArguments.captureVoicePanel=true'
+```
+
+Pull `/data/local/tmp/gomode-voice-panel-usage.png`,
+`gomode-voice-panel-usage-large-text.png`, and `gomode-voice-panel-usage-tooltip.png`
+from the emulator. They cover normal text, 2× text at 320 dp, and long-press help.
 
 Each client retains the five newest failures. A collapsed list below the error
 panel shows them with their time, so a failure stays readable after the error
