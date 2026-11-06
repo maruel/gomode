@@ -7,10 +7,24 @@ import { BrowserSpeech, browserSpeechAvailable, browserSpeechAvoidsChimes } from
 
 let restore: () => void;
 let speech: BrowserSpeech;
-const callbacks = { listening: vi.fn(), speaking: vi.fn(), interim: vi.fn(), final: vi.fn(), error: vi.fn() };
+const pending: string[] = [];
+const callbacks = {
+  nextSpeech: vi.fn(() => pending.shift() ?? null),
+  listening: vi.fn(),
+  speaking: vi.fn(),
+  interim: vi.fn(),
+  final: vi.fn(),
+  error: vi.fn(),
+};
+
+function speak(text: string): void {
+  pending.push(text);
+  speech.speak();
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
+  pending.length = 0;
   restore = installBrowserSpeech("Chrome desktop");
   speech = new BrowserSpeech("en-US", "", 1, callbacks);
 });
@@ -21,11 +35,25 @@ afterEach(() => {
 });
 
 describe("BrowserSpeech", () => {
+  it("pulls one fragment per completed utterance and ignores pumps during playback", () => {
+    speak("First.");
+    speak("Second.");
+    speak("Third.");
+    expect(callbacks.nextSpeech).toHaveBeenCalledOnce();
+    expect(fakeSynthesis.spoken.map((entry) => entry.text)).toEqual(["First."]);
+    fakeSynthesis.complete();
+    expect(fakeSynthesis.spoken.map((entry) => entry.text)).toEqual(["First.", "Second."]);
+    fakeSynthesis.complete();
+    expect(fakeSynthesis.spoken.map((entry) => entry.text)).toEqual(["First.", "Second.", "Third."]);
+    fakeSynthesis.complete();
+    expect(callbacks.speaking).toHaveBeenLastCalledWith(false);
+  });
+
   it("prefers the browser default in the same language over an arbitrary exact regional voice", () => {
     const novelty = { name: "Odd voice", lang: "en-US", localService: true, default: false } as SpeechSynthesisVoice;
     const preferred = { name: "Preferred", lang: "en-CA", localService: true, default: true } as SpeechSynthesisVoice;
     fakeSynthesis.voices = [novelty, preferred];
-    speech.speak("Hello.");
+    speak("Hello.");
     expect(fakeSynthesis.spoken[0]?.voice).toBe(preferred);
   });
 
@@ -34,13 +62,13 @@ describe("BrowserSpeech", () => {
     fakeSynthesis.voices = [{ voiceURI: "other", lang: "en-US", default: true } as SpeechSynthesisVoice, preferred];
     speech.close();
     speech = new BrowserSpeech("en-US", "selected", 1, callbacks);
-    speech.speak("Hello.");
+    speak("Hello.");
     expect(fakeSynthesis.spoken[0]?.voice).toBe(preferred);
   });
 
   it("leaves selection to the browser when no default matches the language", () => {
     fakeSynthesis.voices = [{ lang: "en-US", localService: true, default: false } as SpeechSynthesisVoice];
-    speech.speak("Hello.");
+    speak("Hello.");
     expect(fakeSynthesis.spoken[0]?.voice).toBeNull();
   });
 
@@ -48,7 +76,7 @@ describe("BrowserSpeech", () => {
     fakeSynthesis.voices = [{ voiceURI: "other" } as SpeechSynthesisVoice];
     speech.close();
     speech = new BrowserSpeech("en-US", "missing", 1, callbacks);
-    speech.speak("Hello.");
+    speak("Hello.");
     expect(fakeSynthesis.spoken).toHaveLength(0);
     expect(callbacks.error).toHaveBeenCalledWith(expect.stringContaining("unavailable"));
   });
@@ -56,8 +84,8 @@ describe("BrowserSpeech", () => {
   it("waits for the saved voice to load on a fresh page and preserves queued fragments", () => {
     speech.close();
     speech = new BrowserSpeech("en-US", "selected", 1, callbacks);
-    speech.speak("First.");
-    speech.speak("Second.");
+    speak("First.");
+    speak("Second.");
     expect(fakeSynthesis.spoken).toHaveLength(0);
     const selected = { voiceURI: "selected" } as SpeechSynthesisVoice;
     fakeSynthesis.voices = [selected];
@@ -71,11 +99,11 @@ describe("BrowserSpeech", () => {
     vi.useFakeTimers();
     speech.close();
     speech = new BrowserSpeech("en-US", "selected", 1, callbacks);
-    speech.speak("First.");
+    speak("First.");
     vi.advanceTimersByTime(5000);
     expect(callbacks.error).toHaveBeenCalledWith(expect.stringContaining("did not load"));
     callbacks.error.mockClear();
-    speech.speak("Cancelled.");
+    speak("Cancelled.");
     speech.stopSpeaking();
     fakeSynthesis.voices = [{ voiceURI: "selected" } as SpeechSynthesisVoice];
     fakeSynthesis.dispatchEvent(new Event("voiceschanged"));
@@ -87,9 +115,9 @@ describe("BrowserSpeech", () => {
   it("keeps discovery in charge when another fragment arrives before voiceschanged", () => {
     speech.close();
     speech = new BrowserSpeech("en-US", "selected", 1, callbacks);
-    speech.speak("First.");
+    speak("First.");
     fakeSynthesis.voices = [{ voiceURI: "selected" } as SpeechSynthesisVoice];
-    speech.speak("Second.");
+    speak("Second.");
     expect(fakeSynthesis.spoken).toHaveLength(0);
     fakeSynthesis.dispatchEvent(new Event("voiceschanged"));
     expect(fakeSynthesis.spoken.map((utterance) => utterance.text)).toEqual(["First."]);
@@ -236,7 +264,7 @@ describe("BrowserSpeech", () => {
   });
 
   it("speaks in the selected language and ignores completion after disposal", () => {
-    speech.speak("Hello.");
+    speak("Hello.");
     expect(fakeSynthesis.spoken[0]?.lang).toBe("en-US");
     speech.close();
     fakeSynthesis.complete();

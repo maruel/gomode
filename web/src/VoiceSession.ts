@@ -1,7 +1,6 @@
 // Browser voice sessions via WebRTC and speech, dispatching MCP and frontend tools.
 
-import { SpeechTextFilter } from "./SpeechTextFilter";
-import { SentenceSegmenter } from "./SentenceSegmenter";
+import { BrowserSpeechBuffer } from "./BrowserSpeechBuffer";
 import { MicrophoneLevel } from "./MicrophoneLevel";
 import { MicrophoneInput } from "./MicrophoneInput";
 import { mergeVoiceUsage, type VoiceUsage } from "./VoiceUsage";
@@ -678,8 +677,7 @@ export class VoiceSession {
   private _dc: RTCDataChannel | null = null;
   private _textSocket: WebSocket | null = null;
   private _browserSpeech: BrowserSpeech | null = null;
-  private readonly _sentenceSegmenter = new SentenceSegmenter();
-  private _speechTextFilter = new SpeechTextFilter();
+  private readonly _browserSpeechBuffer = new BrowserSpeechBuffer();
   private _browserTurnIdle = false;
   // The cancelled generation can still report idle after its interruption.
   // Admit output again only when the next submitted user turn starts thinking.
@@ -1702,6 +1700,7 @@ export class VoiceSession {
         this.state.browserVoiceURI,
         this.state.browserSpeechRate,
         {
+          nextSpeech: () => this._browserSpeechBuffer.next(),
           listening: (value) => {
             if (this._ownsChannel(attempt, socket))
               this._update((s) => {
@@ -1789,8 +1788,7 @@ export class VoiceSession {
     this._browserCancellation = "pending";
     this._browserTurnIdle = true;
     this._speakerActive = false;
-    this._sentenceSegmenter.clear();
-    this._speechTextFilter.clear();
+    this._browserSpeechBuffer.clear();
     this._browserSpeech?.stopSpeaking();
     this._update((s) => {
       s.speaking = false;
@@ -1808,22 +1806,14 @@ export class VoiceSession {
     }
   }
 
-  private readonly _speakBrowserFragment = (text: string): void => {
-    const speech = this._browserSpeech;
-    speech?.speak(text);
-    // Synchronous platform failures tear down the owner via its error callback.
-    // Stop segmentation too; it must not retain a tail after that teardown.
-    if (speech !== this._browserSpeech) throw new Error("Browser speech playback stopped");
-  };
-
   private _finishBrowserTurn(): void {
     // Generation owns transcript boundaries, independently of queued playback.
     this._update((s) => {
       s.transcript = s.transcript.map((entry) => ({ ...entry, final: true }));
     });
-    this._sentenceSegmenter.push(this._speechTextFilter.finish(), this._speakBrowserFragment);
-    this._sentenceSegmenter.finish(this._speakBrowserFragment);
     this._browserTurnIdle = true;
+    this._browserSpeechBuffer.finish();
+    this._browserSpeech?.speak();
     this._drainBrowserTurn();
   }
 
@@ -1942,8 +1932,7 @@ export class VoiceSession {
     const speech = this._browserSpeech;
     this._textSocket = null;
     this._browserSpeech = null;
-    this._sentenceSegmenter.clear();
-    this._speechTextFilter.clear();
+    this._browserSpeechBuffer.clear();
     this._browserTurnIdle = false;
     this._browserCancellation = "none";
     speech?.close();
@@ -2283,7 +2272,8 @@ export class VoiceSession {
       this._update((s) => {
         s.transcript = appendChunk(s.transcript, "assistant", delta.text, "transcript", delta.responseID, s.usage);
       });
-      this._sentenceSegmenter.push(this._speechTextFilter.push(delta.text), this._speakBrowserFragment);
+      this._browserSpeechBuffer.append(delta.text);
+      this._browserSpeech?.speak();
       return;
     }
 
@@ -2320,8 +2310,7 @@ export class VoiceSession {
     if (env.kind === MessageKindInterrupted) {
       if (this.state.mode === "browser") {
         this._browserTurnIdle = true;
-        this._sentenceSegmenter.clear();
-        this._speechTextFilter.clear();
+        this._browserSpeechBuffer.clear();
         this._browserSpeech?.stopSpeaking();
         this._update((s) => {
           s.speaking = false;

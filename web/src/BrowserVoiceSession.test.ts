@@ -513,14 +513,94 @@ describe("browser voice sessions", () => {
     expect(fakeSynthesis.spoken.at(-1)?.text).toBe("Fresh");
   });
 
-  it("fails visibly under queue pressure instead of dropping generated speech", async () => {
+  it("buffers a long reply and reads every sentence in order before reopening mute-once capture", async () => {
+    const socket = await readySocket();
+    socket.message({ kind: "turn.status", state: "thinking" });
+    session.setMicrophoneMode("muteOnce");
+    session.injectText("Notification");
+    const sentences = Array.from({ length: 200 }, (_, index) => `Sentence ${index} ${"word ".repeat(20)}ends.`);
+    const text = sentences.join(" ") + " ";
+    socket.message({ kind: "assistant.text.delta", text });
+    await Promise.resolve();
+    expect(session.state.error).toBeNull();
+    expect(session.state.connected).toBe(true);
+    expect(fakeSynthesis.cancel).not.toHaveBeenCalled();
+    expect(fakeSynthesis.spoken.map((entry) => entry.text)).toEqual([sentences[0]]);
+    socket.message({ kind: "assistant.text.delta", text: "Final tail" });
+    socket.message({ kind: "turn.status", state: "idle" });
+    expect(session.state.transcript).toEqual([
+      { kind: "transcript", speaker: "assistant", text: text + "Final tail", final: true },
+    ]);
+    expect(session.state.microphoneMode).toBe("muteOnce");
+    expect(socket.sent.some((message) => message.includes("Notification"))).toBe(false);
+    for (let index = 0; index < sentences.length; index++) {
+      expect(fakeSynthesis.spoken.at(-1)?.text).toBe(sentences[index]);
+      fakeSynthesis.complete();
+      expect(session.state.microphoneMode).toBe("muteOnce");
+    }
+    expect(fakeSynthesis.spoken.at(-1)?.text).toBe("Final tail");
+    fakeSynthesis.complete();
+    expect(fakeSynthesis.spoken.map((entry) => entry.text)).toEqual([...sentences, "Final tail"]);
+    expect(session.state.errorHistory).toHaveLength(0);
+    expect(session.state.microphoneMode).toBe("listening");
+    expect(session.state.listening).toBe(true);
+    expect(socket.sent.some((message) => message.includes("Notification"))).toBe(true);
+  });
+
+  it("discards a long buffered reply on barge-in and speaks its replacement", async () => {
     const socket = await readySocket();
     socket.message({ kind: "assistant.text.delta", text: "Sentence. ".repeat(2000) });
-    await Promise.resolve();
-    expect(session.state.error).toContain("speech queue");
+    const old = fakeSynthesis.spoken[0];
+    ok(old);
+    const recognition = FakeRecognition.instances.at(-1);
+    ok(recognition);
+    recognition.result([["Stop", false]]);
+    expect(session.state.speaking).toBe(false);
+    expect(socket.sent.at(-1)).toBe(JSON.stringify({ kind: "turn.cancel" }));
+    recognition.result([["Stop", true]]);
+    recognition.end();
+    socket.message({ kind: "interrupted", source: "user" });
+    socket.message({ kind: "turn.status", state: "thinking" });
+    finishTurn(socket, "Fresh reply.");
+    old.onend?.call(old, new Event("end") as SpeechSynthesisEvent);
+    expect(fakeSynthesis.spoken.map((entry) => entry.text)).toEqual(["Sentence.", "Fresh reply."]);
+    expect(session.state.speaking).toBe(true);
+    expect(session.state.error).toBeNull();
+    fakeSynthesis.complete();
+    expect(session.state.listening).toBe(true);
+  });
+
+  it("keeps unread speech when the visible transcript is cleared during generation or playback", async () => {
+    const socket = await readySocket();
+    socket.message({ kind: "assistant.text.delta", text: "First. Second. " });
+    session.clearTranscript();
+    expect(session.state.transcript).toHaveLength(0);
+    socket.message({ kind: "assistant.text.delta", text: "Third. Final tail" });
+    socket.message({ kind: "turn.status", state: "idle" });
+    fakeSynthesis.complete();
+    expect(fakeSynthesis.spoken.at(-1)?.text).toBe("Second.");
+    session.clearTranscript();
+    for (let index = 0; index < 3; index++) fakeSynthesis.complete();
+    expect(fakeSynthesis.spoken.map((entry) => entry.text)).toEqual(["First.", "Second.", "Third.", "Final tail"]);
+    expect(session.state.transcript).toHaveLength(0);
+    expect(session.state.connected).toBe(true);
+    expect(session.state.error).toBeNull();
+    expect(session.state.listening).toBe(true);
+  });
+
+  it("reports a synthesis failure during buffered playback and clears the backlog on reconnect", async () => {
+    const socket = await readySocket();
+    socket.message({ kind: "assistant.text.delta", text: "Sentence. ".repeat(2000) });
+    expect(session.state.connected).toBe(true);
+    fakeSynthesis.speak.mockImplementationOnce(() => {
+      throw new Error("Synthesis unavailable");
+    });
+    fakeSynthesis.complete();
     expect(session.state.connected).toBe(false);
-    expect(fakeSynthesis.spoken).toHaveLength(1);
-    expect(fakeSynthesis.cancel).toHaveBeenCalledOnce();
+    expect(session.state.error).toContain("Synthesis unavailable");
+    finishTurn(await readySocket(), "Fresh reply");
+    expect(fakeSynthesis.spoken.at(-1)?.text).toBe("Fresh reply");
+    expect(session.state.error).toBeNull();
   });
 
   it("cancels queued fragments on disconnect without reviving capture", async () => {

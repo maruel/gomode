@@ -44,15 +44,13 @@ export function browserSpeechAvoidsChimes(): boolean {
 }
 
 interface SpeechCallbacks {
+  nextSpeech(): string | null;
   listening(value: boolean): void;
   speaking(value: boolean): void;
   interim(text: string): void;
   final(text: string): void;
   error(message: string, permissionDenied?: boolean): void;
 }
-
-const MAX_SPEECH_FRAGMENTS = 64;
-const MAX_SPEECH_CHARS = 16384;
 
 export class BrowserSpeech {
   private recognition: BrowserRecognition | null = null;
@@ -63,10 +61,8 @@ export class BrowserSpeech {
   private startupTimer: ReturnType<typeof setTimeout> | null = null;
   private utterance: SpeechSynthesisUtterance | null = null;
   private voicesCleanup: (() => void) | null = null;
-  // Includes active speech, not just pending fragments. Fail visibly rather
-  // than let a fast generation build an unbounded synthesis backlog.
-  private speechQueue: string[] = [];
-  private speechChars = 0;
+  // Retain only the current fragment, including while saved voices load.
+  private pendingSpeech: string | null = null;
   private boundaryTimer: ReturnType<typeof setTimeout> | null = null;
   private activityTimer: ReturnType<typeof setTimeout> | null = null;
   private abortTimer: ReturnType<typeof setTimeout> | null = null;
@@ -102,15 +98,8 @@ export class BrowserSpeech {
     }
   }
 
-  speak(text: string): void {
-    if (this.disposed || text === "") return;
-    if (
-      this.speechQueue.length + (this.utterance === null ? 0 : 1) >= MAX_SPEECH_FRAGMENTS ||
-      this.speechChars + text.length > MAX_SPEECH_CHARS
-    )
-      throw new Error("Browser speech queue is full. Retry with a shorter reply.");
-    this.speechQueue.push(text);
-    this.speechChars += text.length;
+  speak(): void {
+    if (this.disposed) return;
     if (this.utterance === null && this.voicesCleanup === null) this.startSpeaking();
   }
 
@@ -120,18 +109,18 @@ export class BrowserSpeech {
     const active = this.utterance !== null;
     // Revoke playback identity before cancel(), which may dispatch callbacks.
     this.utterance = null;
-    this.speechQueue = [];
-    this.speechChars = 0;
+    this.pendingSpeech = null;
     if (active) window.speechSynthesis.cancel();
   }
 
   private startSpeaking(): void {
-    const text = this.speechQueue[0];
-    if (text === undefined) {
-      this.callbacks.speaking(false);
-      return;
-    }
     try {
+      const text = this.pendingSpeech ?? this.callbacks.nextSpeech();
+      if (text === null) {
+        this.callbacks.speaking(false);
+        return;
+      }
+      this.pendingSpeech = text;
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = this.languageTag;
       utterance.rate = this.rate;
@@ -168,12 +157,11 @@ export class BrowserSpeech {
       if (this.voiceURI !== "" && !voice)
         throw new Error("The saved browser voice is unavailable. Choose another speaking voice in settings.");
       if (voice) utterance.voice = voice;
-      this.speechQueue.shift();
+      this.pendingSpeech = null;
       this.utterance = utterance;
       utterance.onend = () => {
         if (this.utterance !== utterance || this.disposed) return;
         this.utterance = null;
-        this.speechChars -= text.length;
         this.startSpeaking();
       };
       utterance.onerror = (event) => {
