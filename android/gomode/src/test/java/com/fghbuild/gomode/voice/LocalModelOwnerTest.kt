@@ -313,7 +313,7 @@ class LocalModelOwnerTest {
             val first = async { owner.acquire() }
             testScheduler.runCurrent()
             val original = first.await()
-            val turn = launch { original.engine.processTurn(UserTurnInput("hello"), {}, { null }) }
+            val turn = launch { original.engine.processTurn(UserTurnInput("hello"), {}, {}, { null }) }
             testScheduler.runCurrent()
             assertTrue(startedTurn.isCompleted)
             owner.release(original)
@@ -368,7 +368,7 @@ class LocalModelOwnerTest {
             val prepared = async { owner.acquire() }
             testScheduler.runCurrent()
             val engine = prepared.await().engine
-            val turn = launch { engine.processTurn(UserTurnInput("hello"), {}, { null }) }
+            val turn = launch { engine.processTurn(UserTurnInput("hello"), {}, {}, { null }) }
             testScheduler.runCurrent()
             owner.release(prepared.await())
             owner.close()
@@ -527,7 +527,7 @@ class LocalModelOwnerTest {
             val prepared = async { owner.acquire() }
             testScheduler.runCurrent()
             val engine = prepared.await().engine
-            val turn = launch { engine.processTurn(UserTurnInput("hello"), {}, { null }) }
+            val turn = launch { engine.processTurn(UserTurnInput("hello"), {}, {}, { null }) }
             testScheduler.runCurrent()
             val removal = launch { owner.removeModel(LocalLlmModel.GEMMA_4_E2B) { events.add("deleted") } }
             testScheduler.runCurrent()
@@ -572,6 +572,8 @@ class LocalModelOwnerTest {
     private open class Runner : EdgeLlmRunner {
         override val isModelLoaded = true
         override val backendName = "test"
+
+        override fun getUsage(): EngineUsage? = null
 
         override suspend fun generateStream(message: Message): Flow<Message> = flowOf(Message.model("Done"))
 

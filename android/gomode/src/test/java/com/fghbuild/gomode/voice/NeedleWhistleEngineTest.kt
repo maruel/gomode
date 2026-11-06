@@ -65,6 +65,7 @@ class NeedleWhistleEngineTest {
                 engine.processTurn(
                     input = UserTurnInput(text = "Please toggle_mute now"),
                     onDelta = { deltas.add(it) },
+                    onUsage = {},
                     onToolCall = { call ->
                         executedCall = call
                         JsonObject(mapOf("status" to JsonPrimitive("Muted")))
@@ -94,6 +95,7 @@ class NeedleWhistleEngineTest {
                 engine.processTurn(
                     input = UserTurnInput(text = "What is the weather outside today?"),
                     onDelta = { deltas.add(it) },
+                    onUsage = {},
                     onToolCall = {
                         toolDispatched = true
                         null

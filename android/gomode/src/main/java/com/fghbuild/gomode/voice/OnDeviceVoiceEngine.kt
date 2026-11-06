@@ -69,6 +69,14 @@ data class EngineSessionContext(
     val mcpClient: McpClient?,
 )
 
+/** Runtime-measured prefill and decode counts with the latest context occupancy. */
+data class EngineUsage(
+    val inputTokens: Long,
+    val outputTokens: Long,
+    val contextTokens: Long,
+    val contextWindow: Long,
+)
+
 /** EngineTurnResult summarizes the finished turn. */
 data class EngineTurnResult(
     val assistantText: String = "",
@@ -95,11 +103,13 @@ interface OnDeviceVoiceEngine {
 
     /**
      * Processes one user turn, streaming text fragments through [onDelta]
-     * and requesting tool executions through [onToolCall].
+     * and requesting tool executions through [onToolCall]. [onUsage] receives cumulative
+     * counts after each completed model request, including requests preceding a failed turn.
      */
     suspend fun processTurn(
         input: UserTurnInput,
         onDelta: (String) -> Unit,
+        onUsage: suspend (EngineUsage) -> Unit,
         onToolCall: suspend (ToolCall) -> JsonElement?,
     ): EngineTurnResult
 
@@ -131,6 +141,7 @@ internal class RemoteGatewayEngine : OnDeviceVoiceEngine {
     override suspend fun processTurn(
         input: UserTurnInput,
         onDelta: (String) -> Unit,
+        onUsage: suspend (EngineUsage) -> Unit,
         onToolCall: suspend (ToolCall) -> JsonElement?,
     ): EngineTurnResult = EngineTurnResult()
 

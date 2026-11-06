@@ -47,7 +47,6 @@ const BAR_MAX_H = 20;
 /** Host-provided text for the browser voice controls. */
 export interface VoiceOverlayMessages extends Partial<VoiceSettingsMessages> {
   usage?: string;
-  closeUsage?: string;
   usageConversation?: string;
   usageInput?: string;
   usageOutput?: string;
@@ -220,23 +219,6 @@ export default function VoiceOverlay(props: {
   let connectButtonRef: HTMLButtonElement | undefined;
   let settingsTrigger: HTMLButtonElement | null = null;
   const [settingsOpen, setSettingsOpen] = createSignal(false);
-  const [usageSaveError, setUsageSaveError] = createSignal<string | null>(null);
-  createEffect(
-    on(
-      () => session.state.showUsageStats,
-      () => setUsageSaveError(null),
-      { defer: true },
-    ),
-  );
-  const closeUsage = () => {
-    try {
-      session.setShowUsageStats(false);
-      setUsageSaveError(null);
-      settingsTrigger?.focus();
-    } catch (err) {
-      setUsageSaveError(`Could not save the usage preference: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
   const hasUsage = () => session.state.connected || session.state.usage !== null || session.state.transcript.length > 0;
   const [settingsError, setSettingsError] = createSignal<string | null>(null);
   const [languageError, setLanguageError] = createSignal<string | null>(null);
@@ -579,16 +561,9 @@ export default function VoiceOverlay(props: {
               </p>
             )}
           </Show>
-          <Show when={usageSaveError()}>
-            {(error) => (
-              <p role="alert" class={styles.statusError}>
-                {error()}
-              </p>
-            )}
-          </Show>
-          <Show when={hasUsage() && session.state.showUsageStats && !settingsOpen()}>
+          <Show when={hasUsage() && session.state.showUsageStats}>
             <section class={styles.usage} aria-label={messages().usage ?? "Usage"}>
-              <UsagePanel usage={session.state.usage} messages={messages} onClose={closeUsage} />
+              <UsagePanel usage={session.state.usage} messages={messages} />
             </section>
           </Show>
           {/* Keep drafts and pending language saves alive when settings close. */}
@@ -624,11 +599,7 @@ export default function VoiceOverlay(props: {
 
 // Sub-panels
 
-function UsagePanel(props: {
-  usage: VoiceUsage | null;
-  messages: Accessor<VoiceOverlayMessages>;
-  onClose: () => void;
-}) {
+function UsagePanel(props: { usage: VoiceUsage | null; messages: Accessor<VoiceOverlayMessages> }) {
   const absent = () => props.messages().usageNotReported ?? "Not reported";
   const model = () =>
     [props.usage?.latest.provider, props.usage?.latest.model]
@@ -646,14 +617,6 @@ function UsagePanel(props: {
         role="group"
         aria-label={props.messages().usageConversation ?? "Conversation tokens"}
       >
-        <button
-          type="button"
-          class={`${controls.control} ${styles.usageClose}`}
-          aria-label={props.messages().closeUsage ?? "Close usage"}
-          onClick={() => props.onClose()}
-        >
-          <VoiceIcon name="close" />
-        </button>
         <Show when={model()}>
           <p class={styles.usageModel}>{model()}</p>
         </Show>

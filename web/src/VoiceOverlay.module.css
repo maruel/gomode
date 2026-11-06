@@ -447,13 +447,6 @@
   line-height: 1.4;
 }
 
-.usageClose {
-  float: inline-end;
-  align-items: flex-start;
-  padding-top: 0.35rem;
-  margin-inline-start: 0.5rem;
-}
-
 .usageModel,
 .usageEmpty {
   display: inline;
@@ -541,8 +534,7 @@
     padding-inline: 0.1875rem;
   }
 
-  .transcriptToggle[aria-expanded="true"],
-  .usageClose {
+  .transcriptToggle[aria-expanded="true"] {
     width: 2rem;
     height: 2rem;
   }

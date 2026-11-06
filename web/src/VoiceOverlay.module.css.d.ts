@@ -58,7 +58,6 @@ declare const classes: {
   readonly "transcriptToggle": string;
   readonly "usage": string;
   readonly "usageBody": string;
-  readonly "usageClose": string;
   readonly "usageEmpty": string;
   readonly "usageModel": string;
 };

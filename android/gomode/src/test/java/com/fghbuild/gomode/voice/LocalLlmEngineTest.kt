@@ -68,6 +68,7 @@ class LocalLlmEngineTest {
     private fun engine(
         configs: MutableList<ConversationConfig> = mutableListOf(),
         onClose: () -> Unit = {},
+        usage: EngineUsage? = null,
         reply: (Message) -> Flow<Message> = { flowOf(Message.model("Ready.")) },
     ): LocalLlmEngine =
         LocalLlmEngine(
@@ -77,6 +78,8 @@ class LocalLlmEngineTest {
                 object : EdgeLlmRunner {
                     override val isModelLoaded = true
                     override val backendName = "test"
+
+                    override fun getUsage(): EngineUsage? = usage
 
                     override suspend fun generateStream(message: Message): Flow<Message> = reply(message)
 
@@ -88,6 +91,44 @@ class LocalLlmEngineTest {
                 }
             },
         )
+
+    @Test
+    fun localUsageIncludesToolContinuations() =
+        runTest {
+            val requests = mutableListOf<Message>()
+            val reports = mutableListOf<EngineUsage>()
+            val engine =
+                engine(
+                    mutableListOf(),
+                    usage = EngineUsage(12, 3, 48, 8192),
+                ) { request ->
+                    requests.add(request)
+                    flowOf(if (requests.size == 1) callMessage() else Message.model("Done"))
+                }
+            engine.initialize(sessionContext)
+            engine.processTurn(UserTurnInput("Switch"), {}, reports::add) { JsonObject(emptyMap()) }
+            assertEquals(listOf(EngineUsage(12, 3, 48, 8192), EngineUsage(24, 6, 48, 8192)), reports)
+            engine.close()
+        }
+
+    @Test
+    fun completedRequestsRemainReportedWhenMalformedRetryFails() =
+        runTest {
+            val reports = mutableListOf<EngineUsage>()
+            val engine =
+                engine(usage = EngineUsage(12, 3, 48, 8192)) {
+                    flowOf(Message.model("<!tool_call>invalid"))
+                }
+            engine.initialize(sessionContext)
+            val failure =
+                runCatching {
+                    engine.processTurn(UserTurnInput("Run"), {}, reports::add) { error("No dispatch") }
+                }.exceptionOrNull()
+            assertTrue(failure is IllegalStateException)
+            assertEquals("Local model repeated a malformed tool-call prefix", failure?.message)
+            assertEquals(listOf(EngineUsage(12, 3, 48, 8192), EngineUsage(24, 6, 48, 8192)), reports)
+            engine.close()
+        }
 
     private fun assertRecommendedSampler(config: ConversationConfig): SamplerConfig {
         val sampler = checkNotNull(config.samplerConfig)
@@ -174,9 +215,9 @@ class LocalLlmEngineTest {
                     }
                 }
             engine.initialize(sessionContext)
-            engine.processTurn(UserTurnInput("Hi"), {}, { error("No call") })
+            engine.processTurn(UserTurnInput("Hi"), {}, {}, { error("No call") })
             val deltas = mutableListOf<String>()
-            val result = engine.processTurn(UserTurnInput("Run"), deltas::add) { error("No malformed dispatch") }
+            val result = engine.processTurn(UserTurnInput("Run"), deltas::add, {}) { error("No malformed dispatch") }
             assertEquals("Recovered", result.assistantText)
             assertEquals(listOf("Recovered"), deltas)
             assertEquals(requests[1].toString(), requests[2].toString())
@@ -236,7 +277,7 @@ class LocalLlmEngineTest {
                 }
             engine.initialize(sessionContext)
             val result =
-                engine.processTurn(UserTurnInput("Run"), {}) {
+                engine.processTurn(UserTurnInput("Run"), {}, {}) {
                     dispatches++
                     Json.parseToJsonElement("""{"ok":true}""")
                 }
@@ -271,7 +312,7 @@ class LocalLlmEngineTest {
             engine.initialize(sessionContext)
             val failure =
                 runCatching {
-                    engine.processTurn(UserTurnInput("Run"), { error("No speech") }, { error("No dispatch") })
+                    engine.processTurn(UserTurnInput("Run"), { error("No speech") }, {}, { error("No dispatch") })
                 }.exceptionOrNull()
             assertEquals("Local model repeated a malformed tool-call prefix", failure?.message)
             assertEquals(2, attempts)
@@ -297,9 +338,9 @@ class LocalLlmEngineTest {
                     }
                 }
             engine.initialize(sessionContext)
-            engine.processTurn(UserTurnInput("First request"), {}, { error("No tool") })
+            engine.processTurn(UserTurnInput("First request"), {}, {}, { error("No tool") })
             val deltas = mutableListOf<String>()
-            val result = engine.processTurn(UserTurnInput("Second request"), deltas::add) { error("No tool") }
+            val result = engine.processTurn(UserTurnInput("Second request"), deltas::add, {}) { error("No tool") }
             assertEquals("Second answer", result.assistantText)
             assertEquals(listOf("Second answer"), deltas)
             assertEquals(requests[1].toString(), requests[2].toString())
@@ -327,8 +368,8 @@ class LocalLlmEngineTest {
                     if (attempts % 2 == 1) flow { throw nativeParseFailure() } else flowOf(Message.model("Recovered"))
                 }
             engine.initialize(sessionContext)
-            engine.processTurn(UserTurnInput("First request"), {}, { error("No tool") })
-            engine.processTurn(UserTurnInput("Second request"), {}, { error("No tool") })
+            engine.processTurn(UserTurnInput("First request"), {}, {}, { error("No tool") })
+            engine.processTurn(UserTurnInput("Second request"), {}, {}, { error("No tool") })
             assertEquals(3, configs.size)
             val seeds = configs.map { assertRecommendedSampler(it).seed }
             assertEquals(3, seeds.distinct().size)
@@ -350,7 +391,7 @@ class LocalLlmEngineTest {
             engine.initialize(sessionContext)
             val failure =
                 runCatching {
-                    engine.processTurn(UserTurnInput("Request"), { error("No speech") }, { error("No tool") })
+                    engine.processTurn(UserTurnInput("Request"), { error("No speech") }, {}, { error("No tool") })
                 }.exceptionOrNull()
             assertEquals("Local model could not form a valid tool call.", failure?.message)
             assertEquals(2, attempts)
@@ -373,7 +414,7 @@ class LocalLlmEngineTest {
                     }
                 }
             engine.initialize(sessionContext)
-            engine.processTurn(UserTurnInput("Run"), {}) {
+            engine.processTurn(UserTurnInput("Run"), {}, {}) {
                 dispatches++
                 JsonObject(emptyMap())
             }
@@ -407,7 +448,7 @@ class LocalLlmEngineTest {
                 }
             active = engine
             engine.initialize(sessionContext)
-            engine.processTurn(UserTurnInput("Run"), { error("No speech") }, { error("No tool") })
+            engine.processTurn(UserTurnInput("Run"), { error("No speech") }, {}, { error("No tool") })
             assertEquals(1, configs.size)
             engine.closeAndJoin()
         }
@@ -428,7 +469,7 @@ class LocalLlmEngineTest {
             val deltas = mutableListOf<String>()
             val failure =
                 runCatching {
-                    engine.processTurn(UserTurnInput("Request"), deltas::add) { error("No tool") }
+                    engine.processTurn(UserTurnInput("Request"), deltas::add, {}) { error("No tool") }
                 }.exceptionOrNull()
             assertEquals("Local model could not form a valid tool call.", failure?.message)
             assertEquals(1, attempts)
@@ -448,7 +489,7 @@ class LocalLlmEngineTest {
             engine.initialize(sessionContext)
             val failure =
                 runCatching {
-                    engine.processTurn(UserTurnInput("Request"), {}, { error("No tool") })
+                    engine.processTurn(UserTurnInput("Request"), {}, {}, { error("No tool") })
                 }.exceptionOrNull()
             assertTrue(failure is LiteRtLmJniException)
             assertEquals(1, attempts)
@@ -466,13 +507,16 @@ class LocalLlmEngineTest {
         runTest {
             val engine = engine { flowOf(Message.model("<!tool")) }
             engine.initialize(sessionContext)
-            assertEquals("<!tool", engine.processTurn(UserTurnInput("Hi"), {}, { error("No dispatch") }).assistantText)
+            assertEquals(
+                "<!tool",
+                engine.processTurn(UserTurnInput("Hi"), {}, {}, { error("No dispatch") }).assistantText,
+            )
             engine.closeAndJoin()
             val normal = engine { flowOf(Message.model("A marker: <!tool_call>")) }
             normal.initialize(sessionContext)
             assertEquals(
                 "A marker: <!tool_call>",
-                normal.processTurn(UserTurnInput("Hi"), {}, { error("No dispatch") }).assistantText,
+                normal.processTurn(UserTurnInput("Hi"), {}, {}, { error("No dispatch") }).assistantText,
             )
             normal.closeAndJoin()
         }
@@ -490,7 +534,7 @@ class LocalLlmEngineTest {
                     }
                 }
             engine.initialize(sessionContext)
-            engine.processTurn(UserTurnInput("private-user-prompt"), {}) {
+            engine.processTurn(UserTurnInput("private-user-prompt"), {}, {}) {
                 Json.parseToJsonElement("""{"message":"private-tool-result"}""")
             }
             val logs = ShadowLog.getLogsForTag("LocalLlmEngine").map { it.msg }
@@ -576,7 +620,7 @@ class LocalLlmEngineTest {
             val dispatched = mutableListOf<ToolCall>()
             val deltas = mutableListOf<String>()
             val result =
-                engine.processTurn(UserTurnInput("Use music"), deltas::add) { call ->
+                engine.processTurn(UserTurnInput("Use music"), deltas::add, {}) { call ->
                     dispatched.add(call)
                     Json.parseToJsonElement("""{"message":"Switched to media"}""")
                 }
@@ -628,7 +672,7 @@ class LocalLlmEngineTest {
             engine.initialize(sessionContext)
             val calls = mutableListOf<ToolCall>()
             val result =
-                engine.processTurn(UserTurnInput("Switch"), {}) {
+                engine.processTurn(UserTurnInput("Switch"), {}, {}) {
                     calls.add(it)
                     JsonObject(emptyMap())
                 }
@@ -681,7 +725,7 @@ class LocalLlmEngineTest {
                 )
             engine.resetConversation(replacement)
             val calls = mutableListOf<ToolCall>()
-            engine.processTurn(UserTurnInput("Switch"), {}) {
+            engine.processTurn(UserTurnInput("Switch"), {}, {}) {
                 calls.add(it)
                 null
             }
@@ -713,7 +757,7 @@ class LocalLlmEngineTest {
                 }
             engine.initialize(sessionContext)
             val calls = mutableListOf<ToolCall>()
-            engine.processTurn(UserTurnInput("Switch"), {}) {
+            engine.processTurn(UserTurnInput("Switch"), {}, {}) {
                 calls.add(it)
                 null
             }
@@ -750,7 +794,7 @@ class LocalLlmEngineTest {
                 ),
             )
             var dispatched: ToolCall? = null
-            engine.processTurn(UserTurnInput("Configure it"), {}) {
+            engine.processTurn(UserTurnInput("Configure it"), {}, {}) {
                 dispatched = it
                 JsonObject(emptyMap())
             }
@@ -775,7 +819,7 @@ class LocalLlmEngineTest {
             invalid.initialize(sessionContext)
             val failure =
                 runCatching {
-                    invalid.processTurn(UserTurnInput("Run"), {}) {
+                    invalid.processTurn(UserTurnInput("Run"), {}, {}) {
                         dispatches++
                         null
                     }
@@ -788,7 +832,7 @@ class LocalLlmEngineTest {
             looping.initialize(sessionContext)
             val loop =
                 runCatching {
-                    looping.processTurn(UserTurnInput("Run"), {}) {
+                    looping.processTurn(UserTurnInput("Run"), {}, {}) {
                         dispatches++
                         null
                     }
@@ -823,7 +867,7 @@ class LocalLlmEngineTest {
             )
             val calls = mutableListOf<ToolCall>()
             val result =
-                engine.processTurn(UserTurnInput("Run twice"), {}) {
+                engine.processTurn(UserTurnInput("Run twice"), {}, {}) {
                     calls.add(it)
                     Json.parseToJsonElement("""{"error":{"code":42}}""")
                 }
@@ -844,7 +888,7 @@ class LocalLlmEngineTest {
                 }
             engine.initialize(sessionContext)
             val result =
-                engine.processTurn(UserTurnInput("Disconnect"), {}) {
+                engine.processTurn(UserTurnInput("Disconnect"), {}, {}) {
                     engine.close()
                     null
                 }
@@ -859,7 +903,7 @@ class LocalLlmEngineTest {
             val text = "Explain switch_service and `TOOL_CALL:`, without running it."
             val engine = engine { flowOf(Message.model(text)) }
             engine.initialize(sessionContext)
-            val result = engine.processTurn(UserTurnInput("Explain the tool"), {}) { error("No structured call") }
+            val result = engine.processTurn(UserTurnInput("Explain the tool"), {}, {}) { error("No structured call") }
             assertEquals(text, result.assistantText)
             assertTrue(result.toolCalls.isEmpty())
             engine.closeAndJoin()
@@ -884,7 +928,7 @@ class LocalLlmEngineTest {
             engine.initialize(sessionContext)
             val turn =
                 launch {
-                    engine.processTurn(UserTurnInput("Run"), {}) {
+                    engine.processTurn(UserTurnInput("Run"), {}, {}) {
                         dispatches++
                         null
                     }
@@ -914,7 +958,7 @@ class LocalLlmEngineTest {
             engine.initialize(sessionContext)
             val failure =
                 runCatching {
-                    engine.processTurn(UserTurnInput("Run"), {}, { null })
+                    engine.processTurn(UserTurnInput("Run"), {}, {}, { null })
                 }.exceptionOrNull()
             assertEquals("Local model returned an empty response", failure?.message)
             engine.closeAndJoin()
@@ -927,7 +971,7 @@ class LocalLlmEngineTest {
             engine.initialize(sessionContext)
             val failure =
                 runCatching {
-                    engine.processTurn(UserTurnInput("Hello"), {}) { error("No call") }
+                    engine.processTurn(UserTurnInput("Hello"), {}, {}) { error("No call") }
                 }.exceptionOrNull()
             assertTrue(failure is IllegalArgumentException)
             engine.closeAndJoin()
@@ -944,13 +988,13 @@ class LocalLlmEngineTest {
                     flowOf(Message.model("Ready."))
                 }
             engine.initialize(sessionContext.copy(serviceContextText = "Current item: alpha"))
-            engine.processTurn(UserTurnInput("Remember cedar"), {}) { error("No tool") }
+            engine.processTurn(UserTurnInput("Remember cedar"), {}, {}) { error("No tool") }
             engine.injectContext("Current item: beta")
-            engine.processTurn(UserTurnInput("Recall it"), {}) { error("No tool") }
+            engine.processTurn(UserTurnInput("Recall it"), {}, {}) { error("No tool") }
             assertEquals(1, configs.size)
             assertTrue(messages.last().toString().contains("beta"))
             assertTrue(messages.last().toString().contains("Recall it"))
-            engine.processTurn(UserTurnInput("Continue"), {}) { error("No tool") }
+            engine.processTurn(UserTurnInput("Continue"), {}, {}) { error("No tool") }
             assertFalse(messages.last().toString().contains("beta"))
             engine.closeAndJoin()
         }
@@ -976,7 +1020,7 @@ class LocalLlmEngineTest {
             engine.initialize(sessionContext)
             val turn =
                 launch {
-                    engine.processTurn(UserTurnInput("Remember cedar and call A"), {}) {
+                    engine.processTurn(UserTurnInput("Remember cedar and call A"), {}, {}) {
                         toolStarted.complete(Unit)
                         finishTool.await()
                         Json.parseToJsonElement("""{"source":"A","fact":"cedar"}""")
@@ -987,7 +1031,7 @@ class LocalLlmEngineTest {
             finishTool.complete(Unit)
             turn.join()
             update.join()
-            engine.processTurn(UserTurnInput("Recall cedar on B"), {}) { error("No new tool") }
+            engine.processTurn(UserTurnInput("Recall cedar on B"), {}, {}) { error("No new tool") }
             assertEquals(listOf(Role.USER, Role.TOOL, Role.USER), messages.map { it.role })
             assertTrue(messages[1].toString().contains("cedar"))
             assertFalse(messages[1].toString().contains("Selected server B"))
@@ -1016,7 +1060,7 @@ class LocalLlmEngineTest {
             engine.initialize(sessionContext)
             val turn =
                 launch {
-                    engine.processTurn(UserTurnInput("Hold the old turn"), {}) {
+                    engine.processTurn(UserTurnInput("Hold the old turn"), {}, {}) {
                         entered.complete(Unit)
                         release.await()
                         null
@@ -1031,7 +1075,7 @@ class LocalLlmEngineTest {
             release.complete(Unit)
             turn.join()
             update.join()
-            engine.processTurn(UserTurnInput("Fresh user turn"), {}) { error("No fresh tool") }
+            engine.processTurn(UserTurnInput("Fresh user turn"), {}, {}) { error("No fresh tool") }
             assertFalse(messages.last().toString().contains("retired-account-context"))
             engine.closeAndJoin()
         }
@@ -1090,7 +1134,7 @@ class LocalLlmEngineTest {
                     }
                 }
             engine.initialize(sessionContext)
-            val turn = launch { engine.processTurn(UserTurnInput("Hello"), {}, { null }) }
+            val turn = launch { engine.processTurn(UserTurnInput("Hello"), {}, {}, { null }) }
             entered.await()
             val update = launch { engine.injectContext("Late context") }
             val disposal = launch { engine.closeAndJoin() }
@@ -1110,6 +1154,8 @@ class LocalLlmEngineTest {
         object : EdgeLlmRunner {
             override val isModelLoaded = true
             override val backendName = "test"
+
+            override fun getUsage(): EngineUsage? = null
 
             override suspend fun generateStream(message: Message): Flow<Message> = error("No turn")
 
@@ -1170,7 +1216,7 @@ class LocalLlmEngineTest {
             native.initialize(sessionContext)
             assertEquals(
                 "Native inference failed",
-                runCatching { native.processTurn(UserTurnInput("Hi"), {}, { null }) }.exceptionOrNull()?.message,
+                runCatching { native.processTurn(UserTurnInput("Hi"), {}, {}, { null }) }.exceptionOrNull()?.message,
             )
             native.closeAndJoin()
             val dispatch = engine { flowOf(callMessage()) }
@@ -1178,7 +1224,7 @@ class LocalLlmEngineTest {
             assertEquals(
                 "Dispatch failed",
                 runCatching {
-                    dispatch.processTurn(UserTurnInput("Run"), {}, { error("Dispatch failed") })
+                    dispatch.processTurn(UserTurnInput("Run"), {}, {}, { error("Dispatch failed") })
                 }.exceptionOrNull()?.message,
             )
             dispatch.closeAndJoin()
@@ -1197,6 +1243,8 @@ class LocalLlmEngineTest {
                         object : EdgeLlmRunner {
                             override val isModelLoaded = true
                             override val backendName = "test"
+
+                            override fun getUsage(): EngineUsage? = null
 
                             override suspend fun generateStream(message: Message): Flow<Message> = error("No turn")
 
@@ -1238,6 +1286,8 @@ class LocalLlmEngineTest {
                                 override val isModelLoaded = true
                                 override val backendName = "test"
 
+                                override fun getUsage(): EngineUsage? = null
+
                                 override suspend fun generateStream(message: Message): Flow<Message> =
                                     if (message.role == Role.TOOL) {
                                         flowOf(Message.model("Saved."))
@@ -1263,7 +1313,7 @@ class LocalLlmEngineTest {
                     engine.initialize(sessionContext)
                     val result =
                         runCatching {
-                            engine.processTurn(UserTurnInput("Save it"), spoken::append) { call ->
+                            engine.processTurn(UserTurnInput("Save it"), spoken::append, {}) { call ->
                                 dispatched = true
                                 assertEquals(
                                     literal,
@@ -1302,6 +1352,8 @@ class LocalLlmEngineTest {
                             object : EdgeLlmRunner {
                                 override val isModelLoaded = true
                                 override val backendName = "GPU"
+
+                                override fun getUsage(): EngineUsage? = null
 
                                 override suspend fun generateStream(message: Message) = flowOf(Message.model("Ready."))
 

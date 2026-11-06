@@ -12,6 +12,7 @@ import com.caic.voicegateway.sdk.v2.MessageKind
 import com.caic.voicegateway.sdk.v2.SessionSetup
 import com.caic.voicegateway.sdk.v2.SessionStatus
 import com.caic.voicegateway.sdk.v2.SessionUsage
+import com.caic.voicegateway.sdk.v2.TokenUsage
 import com.caic.voicegateway.sdk.v2.ToolCall
 import com.caic.voicegateway.sdk.v2.ToolResult
 import com.caic.voicegateway.sdk.v2.TurnCancel
@@ -30,6 +31,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.coroutineScope
@@ -839,6 +841,7 @@ internal class DeviceVoiceSession(
         activeEngine: OnDeviceVoiceEngine,
     ) {
         val turn = localTurnGeneration.incrementAndGet()
+        val responseID = if (activeEngine.engineType == OnDeviceEngine.LOCAL_LLM) UUID.randomUUID().toString() else null
         suppressReply = false
         scope.launch {
             localTurnLock.withLock {
@@ -859,8 +862,37 @@ internal class DeviceVoiceSession(
                         onDelta = { delta ->
                             lastDelta =
                                 scope.launch {
-                                    if (currentTurn()) handleAssistantText(delta)
+                                    if (currentTurn()) handleAssistantText(delta, responseID)
                                 }
+                        },
+                        onUsage = { usage ->
+                            // Measured work survives a failed or interrupted turn. The attempt
+                            // check still prevents delivery into a replacement conversation.
+                            withContext(NonCancellable + Dispatchers.Main) {
+                                lastDelta?.join()
+                                if (ownsAttempt(attempt)) {
+                                    val counts =
+                                        TokenUsage(
+                                            inputTokens = usage.inputTokens,
+                                            outputTokens = usage.outputTokens,
+                                        )
+                                    _state.update {
+                                        it.withUsageReport(
+                                            SessionUsage(
+                                                MessageKind.SessionUsage,
+                                                sessionID = checkNotNull(responseID),
+                                                provider = "LiteRT-LM",
+                                                model = checkNotNull(activeEngine.modelName),
+                                                totals = counts,
+                                                responseID = responseID,
+                                                responseUsage = counts,
+                                                contextTokens = usage.contextTokens,
+                                                contextWindow = usage.contextWindow,
+                                            ),
+                                        )
+                                    }
+                                }
+                            }
                         },
                         onToolCall = { toolCall ->
                             lastDelta?.join()

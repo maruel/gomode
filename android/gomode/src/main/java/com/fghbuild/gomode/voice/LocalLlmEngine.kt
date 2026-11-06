@@ -16,6 +16,8 @@ import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
+import com.google.ai.edge.litertlm.ExperimentalFlags
 import com.google.ai.edge.litertlm.LiteRtLmJniException
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.OpenApiTool
@@ -142,6 +144,9 @@ internal interface EdgeLlmRunner : AutoCloseable {
 
     suspend fun generateStream(message: Message): Flow<Message>
 
+    // Read the last completed native request before replacing the conversation.
+    fun getUsage(): EngineUsage?
+
     // Reset conversation state; recurrent models also require fresh native engine state.
     fun replaceConversation(config: ConversationConfig)
 }
@@ -171,7 +176,10 @@ internal class LiteRtLmRunner(
         initialize(conversationConfig)
     }
 
+    @OptIn(ExperimentalApi::class)
     private fun initialize(conversationConfig: ConversationConfig) {
+        // LiteRT reads this flag at engine creation; it enables runtime token counters.
+        ExperimentalFlags.enableBenchmark = true
         val diagnostics = (context.applicationContext as GoModeApplication).modelLoadDiagnostics
         val backends = backendsFor(model)
         val failure =
@@ -283,6 +291,18 @@ internal class LiteRtLmRunner(
         } else {
             conv.sendMessageAsync(message)
         }
+    }
+
+    @OptIn(ExperimentalApi::class)
+    override fun getUsage(): EngineUsage {
+        val conv = checkNotNull(conversation) { "Local model session is closed" }
+        val info = conv.getBenchmarkInfo()
+        return EngineUsage(
+            inputTokens = info.lastPrefillTokenCount.toLong(),
+            outputTokens = info.lastDecodeTokenCount.toLong(),
+            contextTokens = conv.getTokenCount().toLong(),
+            contextWindow = model.maxNumTokens.toLong(),
+        )
     }
 
     override fun close() {
@@ -428,6 +448,7 @@ internal class LocalLlmEngine(
     override suspend fun processTurn(
         input: UserTurnInput,
         onDelta: (String) -> Unit,
+        onUsage: suspend (EngineUsage) -> Unit,
         onToolCall: suspend (ToolCall) -> JsonElement?,
     ): EngineTurnResult {
         val generation = turnGeneration.get()
@@ -451,6 +472,17 @@ internal class LocalLlmEngine(
                 try {
                     val text = StringBuilder()
                     val executed = mutableListOf<ToolCall>()
+                    var usage: EngineUsage? = null
+
+                    suspend fun observeUsage(next: EngineUsage) {
+                        val total =
+                            next.copy(
+                                inputTokens = (usage?.inputTokens ?: 0) + next.inputTokens,
+                                outputTokens = (usage?.outputTokens ?: 0) + next.outputTokens,
+                            )
+                        usage = total
+                        onUsage(total)
+                    }
                     val contextUpdate = pendingContext
                     pendingContext = null
                     var message =
@@ -463,11 +495,14 @@ internal class LocalLlmEngine(
                         )
                     while (true) {
                         if (!validateTurn()) {
-                            return@withContext EngineTurnResult(assistantText = text.toString(), toolCalls = executed)
+                            return@withContext EngineTurnResult(
+                                assistantText = text.toString(),
+                                toolCalls = executed,
+                            )
                         }
                         val roundStart = text.length
                         val reply =
-                            generateReply(activeRunner, message, diagnostics, ::validateTurn) { delta ->
+                            generateReply(activeRunner, message, diagnostics, ::validateTurn, ::observeUsage) { delta ->
                                 text.append(delta)
                                 onDelta(delta)
                             }
@@ -479,7 +514,10 @@ internal class LocalLlmEngine(
                         conversationHistory.add(message)
                         conversationHistory.add(reply)
                         if (!validateTurn()) {
-                            return@withContext EngineTurnResult(assistantText = text.toString(), toolCalls = executed)
+                            return@withContext EngineTurnResult(
+                                assistantText = text.toString(),
+                                toolCalls = executed,
+                            )
                         }
                         if (calls.isEmpty()) {
                             require(
@@ -566,6 +604,7 @@ internal class LocalLlmEngine(
         message: Message,
         diagnostics: LocalTurnDiagnostics,
         validateTurn: () -> Boolean,
+        onUsage: suspend (EngineUsage) -> Unit,
         onDelta: (String) -> Unit,
     ): Message? {
         var retried = false
@@ -625,6 +664,8 @@ internal class LocalLlmEngine(
                     if (e.message?.startsWith(NATIVE_TOOL_PARSE_ERROR) != true) throw e
                     nativeParseFailure = true
                 }
+                val measured = activeRunner.getUsage()
+                if (measured != null) onUsage(measured)
                 // Always drain native work before rebuilding or handling invalidation.
                 if (!validateTurn()) {
                     retryOutcome = RetryOutcome.INVALIDATED

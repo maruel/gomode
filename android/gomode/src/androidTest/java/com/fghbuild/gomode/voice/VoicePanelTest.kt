@@ -84,7 +84,6 @@ class VoicePanelTest {
     @Test
     @OptIn(ExperimentalTestApi::class)
     fun usageRemainsReviewableAfterDisconnectAndAtLargeText() {
-        lateinit var inputModes: InputModeManager
         val showStats = mutableStateOf(false)
         val large = mutableStateOf(false)
         val narrow = mutableStateOf(false)
@@ -108,7 +107,6 @@ class VoicePanelTest {
                     ),
             )
         composeRule.setContent {
-            inputModes = LocalInputModeManager.current
             val density = LocalDensity.current.density
             CompositionLocalProvider(LocalDensity provides Density(density, if (large.value) 2f else 1f)) {
                 GoModeTheme {
@@ -185,7 +183,6 @@ class VoicePanelTest {
                                 onCycleApp = {},
                                 canCycleApps = false,
                                 showUsageStats = showStats.value,
-                                onHideUsageStats = { showStats.value = false },
                                 modifier = Modifier.testTag("voice-panel"),
                             )
                         }
@@ -252,16 +249,6 @@ class VoicePanelTest {
                 "gomode-voice-transcript",
             ).performScrollToNode(hasContentDescription("Input tokens: 234"))
         composeRule.onNodeWithContentDescription("Input tokens: 234").assertIsDisplayed()
-        composeRule.runOnIdle { inputModes.requestInputMode(InputMode.Keyboard) }
-        composeRule
-            .onNodeWithContentDescription("Close usage")
-            .performSemanticsAction(SemanticsActions.RequestFocus) { it() }
-            .performKeyInput { pressKey(Key.Enter) }
-        composeRule.onNodeWithTag("gomode-voice-usage").assertDoesNotExist()
-        composeRule.onNodeWithContentDescription("Input tokens: 234").assertDoesNotExist()
-        composeRule.onNodeWithContentDescription("Settings").assertIsFocused()
-        composeRule.runOnIdle { showStats.value = true }
-        composeRule.onNodeWithTag("gomode-voice-usage").assertIsDisplayed()
         composeRule.runOnIdle {
             large.value = false
             narrow.value = false

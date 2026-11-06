@@ -706,11 +706,6 @@ internal fun GoModeApp(
                             null
                         },
                     showUsageStats = settings.showUsageStats,
-                    onHideUsageStats = {
-                        scope.launch {
-                            if (!settingsEdits.setShowUsageStats(false)) activeNativeScreen = NativeScreen.Settings
-                        }
-                    },
                     voiceState = voiceState,
                     voiceEnabled = voiceAvailable,
                     onConnect = {

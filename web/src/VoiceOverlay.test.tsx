@@ -982,6 +982,7 @@ it("discloses reported usage after disconnect with zero distinct from unavailabl
   expect(toggle).not.toBeChecked();
   await user.click(toggle);
   expect(localStorage.getItem("gomode.voiceUsageStats")).toBe("on");
+  expect(within(screen.getByRole("region", { name: "Usage" })).getByText("1,234")).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Close voice settings" }));
   const table = screen.getByRole("region", { name: "Usage" });
   expect(within(table).getByText("1,234")).toBeVisible();
@@ -1022,21 +1023,9 @@ it("discloses reported usage after disconnect with zero distinct from unavailabl
   await user.keyboard("{Escape}");
   expect(screen.queryByText("Input tokens: 235")).toBeNull();
   expect(screen.getByText("test · model")).toBeVisible();
-  const save = vi.spyOn(window.Storage.prototype, "setItem").mockImplementation(() => {
-    throw new Error("Storage unavailable");
-  });
-  try {
-    await user.click(screen.getByRole("button", { name: "Close usage" }));
-    expect(screen.getByRole("region", { name: "Usage" })).toBeVisible();
-    expect(screen.getByText("Could not save the usage preference: Storage unavailable")).toHaveAttribute(
-      "role",
-      "alert",
-    );
-  } finally {
-    save.mockRestore();
-  }
-  await user.click(screen.getByRole("button", { name: "Close usage" }));
-  expect(settings).toHaveFocus();
+  await user.click(settings);
+  await user.click(toggle);
+  await user.keyboard("{Escape}");
   expect(screen.queryByRole("region", { name: "Usage" })).toBeNull();
   expect(screen.queryByRole("img", { name: "Input tokens: 235" })).toBeNull();
   expect(voiceSession.state.usage?.totals.inputTokens).toBe(1234);

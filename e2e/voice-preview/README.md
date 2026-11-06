@@ -24,8 +24,7 @@ counts beside each matching assistant reply. Both displays use the same icons.
 The arrows mean input and output tokens; the cached and reasoning symbols show optional breakdowns. Hover or focus
 a browser count, or long-press an Android count, for its metric name and exact
 value. A dash means the provider did not report that count. The setting stays
-available during calls. Closing the usage panel hides all counts without clearing
-them. Cached and reasoning counters wrap together unless their combined width
+available during calls and controls both displays. Cached and reasoning counters wrap together unless their combined width
 exceeds the available content width. Replies without an authoritative response
 identity contribute only to totals.
 

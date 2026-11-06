@@ -1132,6 +1132,7 @@ class DeviceVoiceSessionTest {
                                 override suspend fun processTurn(
                                     input: UserTurnInput,
                                     onDelta: (String) -> Unit,
+                                    onUsage: suspend (EngineUsage) -> Unit,
                                     onToolCall: suspend (com.caic.voicegateway.sdk.v2.ToolCall) ->
                                     kotlinx.serialization.json.JsonElement?,
                                 ): EngineTurnResult {
@@ -1623,6 +1624,7 @@ class DeviceVoiceSessionTest {
                             override suspend fun processTurn(
                                 input: UserTurnInput,
                                 onDelta: (String) -> Unit,
+                                onUsage: suspend (EngineUsage) -> Unit,
                                 onToolCall: suspend (com.caic.voicegateway.sdk.v2.ToolCall) ->
                                 kotlinx.serialization.json.JsonElement?,
                             ): EngineTurnResult {
@@ -2059,7 +2061,7 @@ class DeviceVoiceSessionTest {
         }
 
     @Test
-    fun `startup preparation starts no audio and first voice call reuses model and discovery`() =
+    fun `prepared local sessions reuse startup and retain usage after failed turns`() =
         runTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             Dispatchers.setMain(dispatcher)
@@ -2068,6 +2070,7 @@ class DeviceVoiceSessionTest {
             repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
             selectEngine(repo, OnDeviceEngine.LOCAL_LLM)
 
+            var failTurn = false
             var allocations = 0
             var discoveries = 0
             val calls = FakeVoiceCallController()
@@ -2084,8 +2087,12 @@ class DeviceVoiceSessionTest {
                             override val isModelLoaded = true
                             override val backendName = "test"
 
+                            override fun getUsage() = EngineUsage(12, 3, 15, 8192)
+
                             override suspend fun generateStream(message: Message) =
-                                kotlinx.coroutines.flow.flowOf(Message.model("Hello"))
+                                kotlinx.coroutines.flow.flowOf(
+                                    Message.model(if (failTurn) "<!tool_call>invalid" else "Hello"),
+                                )
 
                             override fun replaceConversation(config: ConversationConfig) = Unit
 
@@ -2126,7 +2133,38 @@ class DeviceVoiceSessionTest {
             requireNotNull(speech.resultCallback)("Hi")
             testScheduler.runCurrent()
             assertTrue(speech.spoken.contains("Hello"))
+            val usage = requireNotNull(session.state.value.usage)
+            assertEquals(12L, usage.totals.inputTokens)
+            assertEquals(3L, usage.totals.outputTokens)
+            assertEquals(15L, usage.latest.contextTokens)
+            val reply =
+                session.state.value.transcript
+                    .last()
+            assertEquals(usage.totals, reply.responseUsage)
+            assertEquals(usage.latest.responseID, reply.responseID)
+            failTurn = true
+            requireNotNull(speech.resultCallback)("Fail this turn")
+            testScheduler.runCurrent()
+            assertEquals("llm: Local model repeated a malformed tool-call prefix", session.state.value.error)
+            assertEquals(
+                36L,
+                session.state.value.usage
+                    ?.totals
+                    ?.inputTokens,
+            )
+            assertEquals(
+                9L,
+                session.state.value.usage
+                    ?.totals
+                    ?.outputTokens,
+            )
             session.disconnect()
+            assertEquals(
+                36L,
+                session.state.value.usage
+                    ?.totals
+                    ?.inputTokens,
+            )
             session.close()
             owner.close()
             testScheduler.runCurrent()
@@ -2157,6 +2195,8 @@ class DeviceVoiceSessionTest {
                         object : EdgeLlmRunner {
                             override val isModelLoaded = true
                             override val backendName = "test"
+
+                            override fun getUsage(): EngineUsage? = null
 
                             override suspend fun generateStream(message: Message) =
                                 kotlinx.coroutines.flow.flowOf(Message.model("Hello"))
@@ -2236,6 +2276,8 @@ class DeviceVoiceSessionTest {
                             override val isModelLoaded = true
                             override val backendName = "test"
 
+                            override fun getUsage(): EngineUsage? = null
+
                             override suspend fun generateStream(message: Message) =
                                 kotlinx.coroutines.flow.flow {
                                     finishTurn.await()
@@ -2314,6 +2356,8 @@ class DeviceVoiceSessionTest {
                         object : EdgeLlmRunner {
                             override val isModelLoaded = true
                             override val backendName = "test"
+
+                            override fun getUsage(): EngineUsage? = null
 
                             override suspend fun generateStream(message: Message) =
                                 kotlinx.coroutines.flow.flow {
@@ -2403,6 +2447,8 @@ class DeviceVoiceSessionTest {
                             override val isModelLoaded = true
                             override val backendName = "test"
 
+                            override fun getUsage(): EngineUsage? = null
+
                             override suspend fun generateStream(message: Message) =
                                 kotlinx.coroutines.flow.flow {
                                     generations++
@@ -2488,6 +2534,7 @@ class DeviceVoiceSessionTest {
                             override suspend fun processTurn(
                                 input: UserTurnInput,
                                 onDelta: (String) -> Unit,
+                                onUsage: suspend (EngineUsage) -> Unit,
                                 onToolCall: suspend (
                                     com.caic.voicegateway.sdk.v2.ToolCall,
                                 ) -> kotlinx.serialization.json.JsonElement?,
@@ -2565,6 +2612,7 @@ class DeviceVoiceSessionTest {
                                 override suspend fun processTurn(
                                     input: UserTurnInput,
                                     onDelta: (String) -> Unit,
+                                    onUsage: suspend (EngineUsage) -> Unit,
                                     onToolCall: suspend (
                                         com.caic.voicegateway.sdk.v2.ToolCall,
                                     ) -> kotlinx.serialization.json.JsonElement?,
@@ -2729,6 +2777,7 @@ class DeviceVoiceSessionTest {
                             override suspend fun processTurn(
                                 input: UserTurnInput,
                                 onDelta: (String) -> Unit,
+                                onUsage: suspend (EngineUsage) -> Unit,
                                 onToolCall: suspend (com.caic.voicegateway.sdk.v2.ToolCall) ->
                                 kotlinx.serialization.json.JsonElement?,
                             ): EngineTurnResult {

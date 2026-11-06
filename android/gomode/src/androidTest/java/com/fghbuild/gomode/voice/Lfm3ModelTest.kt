@@ -77,6 +77,7 @@ class Lfm3ModelTest {
                     engine.processTurn(
                         UserTurnInput("Save the literal value $literal with id 9007199254740993."),
                         spoken::append,
+                        {},
                     ) { call ->
                         calls++
                         assertEquals("record_value", call.name)
@@ -146,7 +147,7 @@ class Lfm3ModelTest {
                     engine.initialize(setup)
                     val spoken = StringBuilder()
                     val reply =
-                        engine.processTurn(UserTurnInput("What is the weather in Paris?"), spoken::append) { call ->
+                        engine.processTurn(UserTurnInput("What is the weather in Paris?"), spoken::append, {}) { call ->
                             assertEquals("get_weather", call.name)
                             buildJsonObject {
                                 put("weather", "18 Celsius, light rain")
@@ -158,7 +159,7 @@ class Lfm3ModelTest {
                     assertFalse(spoken.contains("<tool_call>"))
                     assertFalse(spoken.contains("<think>"))
                     engine.resetConversation(setup.copy(tools = emptyList(), systemInstruction = "Answer briefly."))
-                    val fresh = engine.processTurn(UserTurnInput("What is the capital of Japan?"), {}) { null }
+                    val fresh = engine.processTurn(UserTurnInput("What is the capital of Japan?"), {}, {}) { null }
                     assertTrue(fresh.assistantText.contains("Tokyo", ignoreCase = true))
                 } finally {
                     engine.closeAndJoin()
@@ -194,7 +195,7 @@ class Lfm3ModelTest {
                     val notes =
                         "The archive access code is ORCHID-6829.\n" +
                             " neutral".repeat(20_000) + "\nWhat is the archive access code?"
-                    val reply = engine.processTurn(UserTurnInput(notes), {}) { error("No tools are advertised") }
+                    val reply = engine.processTurn(UserTurnInput(notes), {}, {}) { error("No tools are advertised") }
                     assertTrue(reply.assistantText.contains("ORCHID-6829"))
                 } finally {
                     engine.closeAndJoin()

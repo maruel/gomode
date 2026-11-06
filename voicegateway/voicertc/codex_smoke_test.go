@@ -1,4 +1,4 @@
-// Real subscription Luna text sessions through configured gateway WebSocket transport.
+// Real chat token usage and subscription tool recall through gateway WebSocket sessions.
 
 //go:build smoke
 
@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +97,7 @@ func TestSmokeCodexSubscriptionTextSession(t *testing.T) {
 	}
 	readAnswer := func() string {
 		var text strings.Builder
+		var usage voicev2.SessionUsage
 		for {
 			kind, data := readMessage(t, ctx, conn)
 			switch kind {
@@ -105,12 +107,19 @@ func TestSmokeCodexSubscriptionTextSession(t *testing.T) {
 					t.Fatal(err)
 				}
 				text.WriteString(delta.Text)
+			case voicev2.MessageKindSessionUsage:
+				if err := json.Unmarshal(data, &usage); err != nil {
+					t.Fatal(err)
+				}
 			case voicev2.MessageKindTurnStatus:
 				var status voicev2.TurnStatus
 				if err := json.Unmarshal(data, &status); err != nil {
 					t.Fatal(err)
 				}
 				if status.State == voicev2.TurnStateIdle {
+					if usage.ResponseUsage == nil || usage.ResponseUsage.InputTokens == nil || *usage.ResponseUsage.InputTokens <= 0 || usage.ResponseUsage.OutputTokens == nil || *usage.ResponseUsage.OutputTokens <= 0 {
+						t.Fatalf("text gateway did not surface response token usage: %+v", usage)
+					}
 					return strings.TrimSpace(text.String())
 				}
 			case voicev2.MessageKindToolCall, voicev2.MessageKindError:
@@ -129,5 +138,67 @@ func TestSmokeCodexSubscriptionTextSession(t *testing.T) {
 	}
 	if err := conn.Close(websocket.StatusNormalClosure, "smoke complete"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestSmokeChatTokenUsage checks real provider counts on the transport shared by
+// browser and Android speech, independently of the provider's text fragments.
+func TestSmokeChatTokenUsage(t *testing.T) {
+	cfg, err := voicegateway.LoadConfig("../../contrib/config.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, choice := range cfg.Chat {
+		key := map[string]string{"openai": "OPENAI_API_KEY", "deepseek": "DEEPSEEK_API_KEY", "xiaomi": "XIAOMI_API_KEY"}[choice.Provider]
+		if choice.Auth != "" || key == "" || os.Getenv(key) == "" {
+			continue
+		}
+		t.Run(choice.Provider, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+			t.Cleanup(cancel)
+			config := voicegateway.DefaultConfig()
+			config.Realtime, config.LocalStack, config.Chat = nil, nil, []voicegateway.ChatConfig{choice}
+			config.Server.WebRTCUDPPort = 0
+			bridge, err := newBridgeWithTimeout(ctx, &config, t.TempDir(), 5*time.Millisecond)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { bridge.CloseAll(t.Context()) })
+			conn := dialTextSession(t, bridge)
+			writeMessage(t, ctx, conn, voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup, Voice: voicev2.VoiceConfig{Language: "en-US"}})
+			expectKind(t, ctx, conn, voicev2.MessageKindSessionReady)
+			writeMessage(t, ctx, conn, voicev2.UserMessage{Kind: voicev2.MessageKindUserMessage, Text: "Reply with OK."})
+			var usage voicev2.SessionUsage
+			var responseID string
+			for {
+				kind, data := readMessage(t, ctx, conn)
+				switch kind {
+				case voicev2.MessageKindAssistantTextDelta:
+					var delta voicev2.AssistantTextDelta
+					if err := json.Unmarshal(data, &delta); err != nil {
+						t.Fatal(err)
+					}
+					responseID = delta.ResponseID
+				case voicev2.MessageKindSessionUsage:
+					if err := json.Unmarshal(data, &usage); err != nil {
+						t.Fatal(err)
+					}
+				case voicev2.MessageKindTurnStatus:
+					var status voicev2.TurnStatus
+					if err := json.Unmarshal(data, &status); err != nil {
+						t.Fatal(err)
+					}
+					if status.State != voicev2.TurnStateIdle {
+						continue
+					}
+					if responseID == "" || usage.ResponseID != responseID || usage.ResponseUsage == nil || usage.ResponseUsage.InputTokens == nil || *usage.ResponseUsage.InputTokens <= 0 || usage.ResponseUsage.OutputTokens == nil || *usage.ResponseUsage.OutputTokens <= 0 {
+						t.Fatalf("missing correlated text gateway token usage: %+v", usage)
+					}
+					return
+				case voicev2.MessageKindError:
+					t.Fatalf("gateway error: %s", data)
+				}
+			}
+		})
 	}
 }

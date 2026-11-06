@@ -49,6 +49,7 @@ internal class NeedleWhistleEngine(
     override suspend fun processTurn(
         input: UserTurnInput,
         onDelta: (String) -> Unit,
+        onUsage: suspend (EngineUsage) -> Unit,
         onToolCall: suspend (ToolCall) -> JsonElement?,
     ): EngineTurnResult {
         val query = input.text.trim()

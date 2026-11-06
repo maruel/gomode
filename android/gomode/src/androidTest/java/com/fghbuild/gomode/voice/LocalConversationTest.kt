@@ -202,6 +202,16 @@ class LocalConversationTest {
                 waitForListening(session, speech)
                 composeRule.runOnIdle { speech.submit("USER_REMEMBER cedar") }
                 waitForListening(session, speech)
+                val usage = requireNotNull(session.state.value.usage)
+                assertEquals(12L, usage.totals.inputTokens)
+                assertEquals(3L, usage.totals.outputTokens)
+                assertEquals(15L, usage.latest.contextTokens)
+                assertEquals(
+                    usage.totals,
+                    session.state.value.transcript
+                        .last()
+                        .responseUsage,
+                )
                 a.holdTools = true
                 composeRule.runOnIdle { speech.submit("USER_HELD") }
                 assertTrue(a.toolStarted.await(30, TimeUnit.SECONDS))
@@ -385,6 +395,9 @@ class LocalConversationTest {
     ) : EdgeLlmRunner {
         override val isModelLoaded = true
         override val backendName = "controlled"
+
+        override fun getUsage() = EngineUsage(12, 3, 15, 8192)
+
         val messages = CopyOnWriteArrayList<Message>()
         val replacements = AtomicInteger()
 

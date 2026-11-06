@@ -169,14 +169,12 @@ fun VoicePanel(
     microphoneRecovery: MicrophonePermissionRecovery? = null,
     speechRecovery: (@Composable () -> Unit)? = null,
     showUsageStats: Boolean = false,
-    onHideUsageStats: () -> Unit = {},
 ) {
     val contentInset =
         if (LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT) 8.dp else 24.dp
-    val settingsFocus = remember { FocusRequester() }
     val showUsage = voiceState.connected || voiceState.usage != null || voiceState.transcript.isNotEmpty()
     val appControls: @Composable () -> Unit = {
-        AppControls(onOpenSettings, onCycleApp, canCycleApps, settingsFocus)
+        AppControls(onOpenSettings, onCycleApp, canCycleApps)
     }
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -246,21 +244,14 @@ fun VoicePanel(
                 ConversationPanel(voiceState, showUsageStats, contentInset)
             }
             if (showUsage && showUsageStats) {
-                UsagePanel(voiceState.usage) {
-                    onHideUsageStats()
-                    settingsFocus.requestFocus()
-                }
+                UsagePanel(voiceState.usage)
             }
         }
     }
 }
 
 @Composable
-private fun UsagePanel(
-    usage: VoiceUsage?,
-    onClose: () -> Unit,
-) {
-    val density = LocalDensity.current
+private fun UsagePanel(usage: VoiceUsage?) {
     val style = MaterialTheme.typography.labelSmall
     val model =
         listOfNotNull(usage?.latest?.provider, usage?.latest?.model)
@@ -281,7 +272,7 @@ private fun UsagePanel(
             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             .padding(horizontal = 12.dp, vertical = 2.dp)
             .testTag("gomode-voice-usage")
-            .heightIn(min = CloseTargetSize, max = 180.dp)
+            .heightIn(max = 180.dp)
             .verticalScroll(rememberScrollState()),
     ) {
         VoiceTextFlow(
@@ -299,10 +290,7 @@ private fun UsagePanel(
                     ),
             style = style,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            exclusion =
-                with(
-                    density,
-                ) { TextExclusion(CloseTargetSize.roundToPx(), (CloseTargetSize + 4.dp).roundToPx()) },
+            exclusion = null,
             modifier = Modifier.fillMaxWidth(),
             metrics = {
                 if (reported && totals != null) TokenMetrics(totals)
@@ -314,7 +302,6 @@ private fun UsagePanel(
                 }
             },
         )
-        VoiceCloseButton(onClose, "Close usage", Modifier.align(Alignment.TopEnd))
     }
 }
 
@@ -385,10 +372,9 @@ private fun AppControls(
     onOpenSettings: () -> Unit,
     onCycleApp: () -> Unit,
     canCycleApps: Boolean,
-    settingsFocus: FocusRequester,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        SettingsButton(onOpenSettings, Modifier.focusRequester(settingsFocus))
+        SettingsButton(onOpenSettings)
         if (canCycleApps) {
             IconButton(
                 onClick = onCycleApp,
@@ -401,13 +387,10 @@ private fun AppControls(
 }
 
 @Composable
-private fun SettingsButton(
-    onOpenSettings: () -> Unit,
-    modifier: Modifier,
-) {
+private fun SettingsButton(onOpenSettings: () -> Unit) {
     IconButton(
         onClick = onOpenSettings,
-        modifier = modifier.size(48.dp).testTag("gomode-web-open-settings"),
+        modifier = Modifier.size(48.dp).testTag("gomode-web-open-settings"),
     ) {
         Box(Modifier.fillMaxSize().padding(start = 8.dp), contentAlignment = Alignment.CenterStart) {
             Icon(
