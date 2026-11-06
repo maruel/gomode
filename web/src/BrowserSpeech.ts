@@ -74,6 +74,7 @@ export class BrowserSpeech {
   constructor(
     private readonly languageTag: string,
     private readonly voiceURI: string,
+    private readonly rate: number,
     private readonly callbacks: SpeechCallbacks,
   ) {}
 
@@ -134,6 +135,7 @@ export class BrowserSpeech {
     try {
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = this.languageTag;
+      utterance.rate = this.rate;
       const voices = window.speechSynthesis.getVoices();
       if (this.voiceURI !== "" && voices.length === 0) {
         // Chrome loads voices asynchronously on a fresh page. Keep the first

@@ -2,7 +2,7 @@
 
 import { createEffect, createSignal, createUniqueId, onCleanup, Show, For, on, type Accessor } from "solid-js";
 import { browserSpeechAvailable } from "./BrowserSpeech";
-import { voiceSession, type VoiceMode } from "./VoiceSession";
+import { BROWSER_SPEECH_RATES, voiceSession, type VoiceMode } from "./VoiceSession";
 import type { VoiceTransport } from "../../sdk/voicegateway/ts/v2/types.gen";
 import { WebAudioThinkingEarcon } from "./ThinkingEarcon";
 import VoiceIcon from "./VoiceIcon";
@@ -19,6 +19,8 @@ export interface VoiceSettingsMessages {
   cloudVoiceModel: string;
   endSessionToChange: string;
   speakingVoice: string;
+  speakingSpeed: string;
+  speakingSpeedNormal: string;
   speakingVoiceDefault: string;
   browserVoiceDefault: string;
   speakingVoiceUnavailable: string;
@@ -48,8 +50,11 @@ export const defaultVoiceSettingsMessages: VoiceSettingsMessages = {
   cloudVoice: "Cloud voice",
   cloudVoiceDescription: "The voice gateway receives your microphone audio and sends back spoken replies.",
   cloudVoiceModel: "Model",
-  endSessionToChange: "End the voice session to change voice mode, speaking voice, gateway model, or language.",
+  endSessionToChange:
+    "End the voice session to change voice mode, speaking voice or speed, gateway model, or language.",
   speakingVoice: "Speaking voice",
+  speakingSpeed: "Speaking speed",
+  speakingSpeedNormal: "1× (Normal)",
   speakingVoiceDefault: "Provider default",
   browserVoiceDefault: "Browser default",
   speakingVoiceUnavailable: "Choose an available speaking voice",
@@ -97,6 +102,7 @@ export default function VoiceSettings(props: {
   const [modeError, setModeError] = createSignal<string | null>(null);
   const [choiceError, setChoiceError] = createSignal<string | null>(null);
   const [voiceSaveError, setVoiceSaveError] = createSignal<string | null>(null);
+  const [speedSaveError, setSpeedSaveError] = createSignal<string | null>(null);
   const [reasoningError, setReasoningError] = createSignal<string | null>(null);
   createEffect(
     on(
@@ -117,6 +123,7 @@ export default function VoiceSettings(props: {
     reasoningError() ??
     choiceError() ??
     voiceSaveError() ??
+    speedSaveError() ??
     voiceSession.state.choicesError ??
     voiceSession.state.voiceError;
   createEffect(() => props.onError?.(error()));
@@ -288,6 +295,29 @@ export default function VoiceSettings(props: {
                   {voice.name} ({voice.lang})
                 </option>
               )}
+            </For>
+          </select>
+        </label>
+      </Show>
+      <Show when={voiceSession.state.mode === "browser" && supported}>
+        <label>
+          {messages().speakingSpeed}
+          <select
+            disabled={active()}
+            value={voiceSession.state.browserSpeechRate}
+            onChange={(event) => {
+              try {
+                voiceSession.selectBrowserSpeechRate(Number(event.currentTarget.value));
+                setSpeedSaveError(null);
+              } catch (err) {
+                event.currentTarget.value = String(voiceSession.state.browserSpeechRate);
+                setSpeedSaveError(err instanceof Error ? err.message : String(err));
+              }
+            }}
+            aria-describedby={error() === null ? undefined : errorId}
+          >
+            <For each={BROWSER_SPEECH_RATES}>
+              {(rate) => <option value={rate}>{rate === 1 ? messages().speakingSpeedNormal : `${rate}×`}</option>}
             </For>
           </select>
         </label>

@@ -24,6 +24,7 @@ beforeEach(() => {
     choicesError: null,
     voiceName: null,
     browserVoiceURI: "",
+    browserSpeechRate: 1,
     voiceError: null,
     voiceStatus: "idle",
     mode: "cloud",
@@ -39,6 +40,52 @@ afterEach(() => {
 });
 
 describe("VoiceSettings", () => {
+  it("saves browser speaking speed, restores it after reload, and locks it during a session", async () => {
+    const user = userEvent.setup();
+    render(() => <VoiceSettings />);
+    expect(screen.queryByRole("combobox", { name: "Speaking speed" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("radio", { name: "Browser speech" }));
+    const speed = screen.getByRole("combobox", { name: "Speaking speed" });
+    expect(speed).toHaveValue("1");
+    await user.selectOptions(speed, "1.5");
+    expect(localStorage.getItem("gomode.browserSpeechRate")).toBe("1.5");
+    expect(new VoiceSession().state.browserSpeechRate).toBe(1.5);
+    voiceSession.setState((s) => ({ ...s, connectStatus: "Connecting…" }));
+    expect(speed).toBeDisabled();
+    expect(() => voiceSession.selectBrowserSpeechRate(2)).toThrow("End the session");
+  });
+
+  it("keeps the saved speaking speed when storage fails", async () => {
+    const user = userEvent.setup();
+    voiceSession.selectMode("browser");
+    render(() => <VoiceSettings />);
+    const save = vi.spyOn(window.Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    try {
+      const speed = screen.getByRole("combobox", { name: "Speaking speed" });
+      await user.selectOptions(speed, "1.5");
+      expect(speed).toHaveValue("1");
+      expect(voiceSession.state.browserSpeechRate).toBe(1);
+      expect(screen.getByRole("alert")).toHaveTextContent("Storage unavailable");
+    } finally {
+      save.mockRestore();
+    }
+  });
+
+  it("rejects invalid speaking speeds and recovers an invalid stored preference", () => {
+    for (const rate of [0, 10, Number.NaN, Infinity])
+      expect(() => voiceSession.selectBrowserSpeechRate(rate)).toThrow("speaking speed");
+    localStorage.setItem("gomode.browserSpeechRate", "NaN");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(new VoiceSession().state.browserSpeechRate).toBe(1);
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("loads browser voices asynchronously, saves a selection, and retains it across settings mounts", async () => {
     const user = userEvent.setup();
     voiceSession.selectMode("browser");

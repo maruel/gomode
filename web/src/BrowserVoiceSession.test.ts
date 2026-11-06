@@ -199,9 +199,14 @@ describe("browser voice sessions", () => {
     const selected = { name: "Selected", lang: "en-US", voiceURI: "selected" } as SpeechSynthesisVoice;
     fakeSynthesis.voices = [selected];
     session.selectBrowserVoice("selected");
+    session.selectBrowserSpeechRate(1.5);
     const socket = await readySocket();
     socket.message({ kind: "assistant.text.delta", text: "Hello. " });
     expect(fakeSynthesis.spoken[0]?.voice).toBe(selected);
+    expect(fakeSynthesis.spoken[0]?.rate).toBe(1.5);
+    socket.message({ kind: "assistant.text.delta", text: "Next. " });
+    fakeSynthesis.complete();
+    expect(fakeSynthesis.spoken[1]?.rate).toBe(1.5);
     expect(() => session.selectBrowserVoice("")).toThrow("End the session");
   });
 

@@ -427,6 +427,15 @@ export interface VoiceState {
   languageTag: string;
   /** Saved browser synthesis voice URI; empty string uses the browser default. */
   browserVoiceURI: string;
+  /** Saved browser speaking speed as a multiple of the voice's normal rate. */
+  browserSpeechRate: number;
+}
+
+export const BROWSER_SPEECH_RATES: readonly number[] = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+
+function validateBrowserSpeechRate(rate: number): number {
+  if (!BROWSER_SPEECH_RATES.includes(rate)) throw new Error("Choose an available speaking speed");
+  return rate;
 }
 
 const DEFAULT_VOICE_LANGUAGE = "en-US";
@@ -465,6 +474,16 @@ function savedBrowserVoiceURI(): string {
   } catch (error) {
     console.warn("Could not load browser speaking voice; using browser default", error);
     return "";
+  }
+}
+
+function savedBrowserSpeechRate(): number {
+  try {
+    const saved = localStorage.getItem("gomode.browserSpeechRate");
+    return saved === null ? 1 : validateBrowserSpeechRate(Number(saved));
+  } catch (error) {
+    console.warn("Could not load browser speaking speed; using normal speed", error);
+    return 1;
   }
 }
 
@@ -711,6 +730,7 @@ export class VoiceSession {
       selectedOutputId: "",
       languageTag: savedVoiceLanguage(),
       browserVoiceURI: savedBrowserVoiceURI(),
+      browserSpeechRate: savedBrowserSpeechRate(),
     });
     this.state = state;
     this.setState = setState as (fn: (s: VoiceState) => VoiceState) => void;
@@ -943,6 +963,15 @@ export class VoiceSession {
       throw new Error("Choose an available speaking voice");
     localStorage.setItem("gomode.browserVoiceURI", uri);
     this.setState((s) => ({ ...s, browserVoiceURI: uri }));
+  }
+
+  /** Save browser synthesis speed for the next session. */
+  selectBrowserSpeechRate(rate: number): void {
+    if (this.state.connected || this.state.connectStatus !== null)
+      throw new Error("End the session before changing speaking speed");
+    validateBrowserSpeechRate(rate);
+    localStorage.setItem("gomode.browserSpeechRate", String(rate));
+    this.setState((s) => ({ ...s, browserSpeechRate: rate }));
   }
 
   /** Save the language for the next session. An active session keeps its language. */
@@ -1621,36 +1650,41 @@ export class VoiceSession {
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       const socket = new WebSocket(url, ["gomode.text.v2", `gomode.ticket.${response.ticket}`]);
       this._textSocket = socket;
-      const speech = new BrowserSpeech(this.state.languageTag, this.state.browserVoiceURI, {
-        listening: (value) => {
-          if (this._ownsChannel(attempt, socket))
+      const speech = new BrowserSpeech(
+        this.state.languageTag,
+        this.state.browserVoiceURI,
+        this.state.browserSpeechRate,
+        {
+          listening: (value) => {
+            if (this._ownsChannel(attempt, socket))
+              this._update((s) => {
+                s.listening = value;
+              });
+          },
+          speaking: (value) => {
+            if (!this._ownsChannel(attempt, socket)) return;
             this._update((s) => {
-              s.listening = value;
+              s.speaking = value;
             });
+            if (!value) this._drainBrowserTurn();
+          },
+          interim: (text) => {
+            if (this._ownsChannel(attempt, socket)) this._browserUserText(text, false);
+          },
+          final: (text) => {
+            if (!this._ownsChannel(attempt, socket)) return;
+            this._browserTurnIdle = false;
+            this._speakerActive = true;
+            this._browserUserText(text, true);
+            this._send(JSON.stringify(gatewayUserMessage(text)));
+          },
+          error: (message, permissionDenied) => {
+            if (!this._ownsChannel(attempt, socket)) return;
+            if (permissionDenied) this._microphoneDenied();
+            else this._setError(message);
+          },
         },
-        speaking: (value) => {
-          if (!this._ownsChannel(attempt, socket)) return;
-          this._update((s) => {
-            s.speaking = value;
-          });
-          if (!value) this._drainBrowserTurn();
-        },
-        interim: (text) => {
-          if (this._ownsChannel(attempt, socket)) this._browserUserText(text, false);
-        },
-        final: (text) => {
-          if (!this._ownsChannel(attempt, socket)) return;
-          this._browserTurnIdle = false;
-          this._speakerActive = true;
-          this._browserUserText(text, true);
-          this._send(JSON.stringify(gatewayUserMessage(text)));
-        },
-        error: (message, permissionDenied) => {
-          if (!this._ownsChannel(attempt, socket)) return;
-          if (permissionDenied) this._microphoneDenied();
-          else this._setError(message);
-        },
-      });
+      );
       this._browserSpeech = speech;
       socket.onopen = () => {
         if (!this._ownsChannel(attempt, socket)) return;
