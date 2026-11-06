@@ -44,11 +44,11 @@ for existing clients and must not be used to associate counts with an entry.
 Unknown counts remain absent rather than becoming zero.
 
 The local stack assigns an identity to each generation, including tool
-continuations, and retains it through delayed synthesis. Realtime providers use
-their authoritative response identity when available. Gemini currently supplies
-no such identity through genai, so its usage contributes to connection totals
-without being attributed to transcript entries. The gateway never infers an
-association from event arrival order.
+continuations, and retains it through delayed synthesis. Realtime adapters may
+supply a provider identity or a session-local identity established from
+documented provider boundaries. Reports without an identity contribute to
+connection totals without being attributed to transcript entries. The gateway
+never infers an association from event arrival order.
 
 For the most recent 256 reported response identities, repeated reports replace
 their earlier contribution to totals and retain previously known breakdowns.

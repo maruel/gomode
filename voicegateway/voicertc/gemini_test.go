@@ -174,6 +174,65 @@ func TestGeminiBridgeBackend(t *testing.T) {
 }
 
 func TestGeminiBridgeSession(t *testing.T) {
+	t.Run("response usage", func(t *testing.T) {
+		s, sink := newGeminiGateway(t, func(ctx context.Context, ws *websocket.Conn) {
+			readGeminiFixture(t, ctx, ws)
+			for _, frame := range []string{
+				`{"setupComplete":{}}`,
+				`{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":"AQACAA=="}}]},"outputTranscription":{"text":"First reply.","finished":true},"generationComplete":true}}`,
+				`{"serverContent":{"turnComplete":true},"usageMetadata":{"promptTokenCount":10,"responseTokenCount":2,"totalTokenCount":12}}`,
+				`{"usageMetadata":{"promptTokenCount":3,"responseTokenCount":1,"totalTokenCount":4}}`,
+				`{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":"AQACAA=="}}]},"outputTranscription":{"text":"Second reply.","finished":true},"generationComplete":true}}`,
+				`{"serverContent":{"turnComplete":true},"usageMetadata":{"promptTokenCount":20,"responseTokenCount":4,"totalTokenCount":24}}`,
+			} {
+				writeGeminiFixture(t, ctx, ws, frame)
+			}
+			_, _, _ = ws.Read(ctx)
+		})
+		if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"session.setup","context":{"systemInstruction":"test"}}`)); err != nil {
+			t.Fatal(err)
+		}
+		sink.waitForKind(t, voicev2.MessageKindSessionUsage, 3)
+		sink.mu.Lock()
+		defer sink.mu.Unlock()
+		var transcripts []voicev2.TranscriptDelta
+		var usages []voicev2.SessionUsage
+		for _, data := range sink.msgs {
+			var envelope voicev2.MessageEnvelope
+			if err := json.Unmarshal(data, &envelope); err != nil {
+				t.Fatal(err)
+			}
+			switch envelope.Kind {
+			case voicev2.MessageKindTranscriptDelta:
+				var transcript voicev2.TranscriptDelta
+				if err := json.Unmarshal(data, &transcript); err != nil {
+					t.Fatal(err)
+				}
+				transcripts = append(transcripts, transcript)
+			case voicev2.MessageKindSessionUsage:
+				var usage voicev2.SessionUsage
+				if err := json.Unmarshal(data, &usage); err != nil {
+					t.Fatal(err)
+				}
+				usages = append(usages, usage)
+			}
+		}
+		if len(transcripts) != 2 || len(usages) != 3 {
+			t.Fatalf("transcripts=%+v usages=%+v", transcripts, usages)
+		}
+		if transcripts[0].ResponseID == "" || transcripts[1].ResponseID == "" || transcripts[0].ResponseID == transcripts[1].ResponseID {
+			t.Fatalf("response identities=%+v", transcripts)
+		}
+		if usages[0].ResponseID != transcripts[0].ResponseID || usages[2].ResponseID != transcripts[1].ResponseID || usages[0].ResponseUsage == nil || usages[2].ResponseUsage == nil {
+			t.Fatalf("usage associations=%+v", usages)
+		}
+		if usages[1].ResponseID != "" || usages[1].ResponseUsage != nil {
+			t.Fatalf("standalone usage acquired an identity: %+v", usages[1])
+		}
+		if usages[2].Totals.InputTokens == nil || *usages[2].Totals.InputTokens != 33 || usages[2].Totals.OutputTokens == nil || *usages[2].Totals.OutputTokens != 7 {
+			t.Fatalf("connection totals=%+v", usages[2].Totals)
+		}
+	})
 	t.Run("cancelled host tools finish without ending voice", func(t *testing.T) {
 		for _, race := range []bool{false, true} {
 			t.Run(map[bool]string{false: "after cancellation", true: "during cancellation delivery"}[race], func(t *testing.T) {

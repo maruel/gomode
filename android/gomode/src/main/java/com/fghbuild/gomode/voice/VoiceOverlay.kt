@@ -120,6 +120,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import com.caic.voicegateway.sdk.v2.TokenUsage
@@ -170,6 +171,8 @@ fun VoicePanel(
     showUsageStats: Boolean = false,
     onHideUsageStats: () -> Unit = {},
 ) {
+    val contentInset =
+        if (LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT) 8.dp else 24.dp
     val settingsFocus = remember { FocusRequester() }
     val showUsage = voiceState.connected || voiceState.usage != null || voiceState.transcript.isNotEmpty()
     val appControls: @Composable () -> Unit = {
@@ -190,9 +193,12 @@ fun VoicePanel(
                 onSelectDevice,
                 appControls,
                 serviceReconnect,
+                contentInset,
             )
             microphoneRecovery?.let { recovery ->
-                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("gomode-microphone-recovery")) {
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = contentInset).testTag("gomode-microphone-recovery"),
+                ) {
                     Text(
                         if (recovery.onRequest == null) {
                             "Microphone access is off. Allow microphone access in app permissions."
@@ -215,7 +221,7 @@ fun VoicePanel(
                 Text(
                     text = message,
                     color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = contentInset, vertical = 8.dp),
                 )
             }
             when {
@@ -227,17 +233,17 @@ fun VoicePanel(
                         modifier =
                             Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                                .padding(horizontal = contentInset, vertical = 8.dp)
                                 .testTag("gomode-voice-error-message"),
                     )
                 }
 
                 voiceState.connectStatus != null -> {
-                    ConnectingStatus(voiceState.connectStatus)
+                    ConnectingStatus(voiceState.connectStatus, contentInset)
                 }
             }
             if (voiceState.connected || voiceState.transcript.isNotEmpty() || voiceState.toolHistory.isNotEmpty()) {
-                ConversationPanel(voiceState, showUsageStats)
+                ConversationPanel(voiceState, showUsageStats, contentInset)
             }
             if (showUsage && showUsageStats) {
                 UsagePanel(voiceState.usage) {
@@ -401,13 +407,15 @@ private fun SettingsButton(
 ) {
     IconButton(
         onClick = onOpenSettings,
-        modifier = modifier.testTag("gomode-web-open-settings"),
+        modifier = modifier.size(48.dp).testTag("gomode-web-open-settings"),
     ) {
-        Icon(
-            Icons.Default.Settings,
-            contentDescription = "Settings",
-            modifier = Modifier.size(24.dp),
-        )
+        Box(Modifier.fillMaxSize().padding(start = 8.dp), contentAlignment = Alignment.CenterStart) {
+            Icon(
+                Icons.Default.Settings,
+                contentDescription = "Settings",
+                modifier = Modifier.size(24.dp),
+            )
+        }
     }
 }
 
@@ -421,14 +429,15 @@ private fun VoiceToolbar(
     onSelectDevice: (Int) -> Unit,
     appControls: @Composable () -> Unit,
     serviceReconnect: ServiceReconnectDetail?,
+    contentInset: Dp,
 ) {
     val active = voiceState.connected || voiceState.connectStatus != null
     Row(
-        // A 24dp icon is centered in its 48dp target: put its visible left edge at 16dp.
+        // The settings glyph starts 8dp inside its bounded 48dp touch target.
         modifier =
             Modifier
                 .fillMaxWidth()
-                .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp)
+                .padding(start = contentInset - 8.dp, end = contentInset, top = 4.dp, bottom = 4.dp)
                 .testTag("gomode-voice-actions"),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(2.dp),
@@ -483,7 +492,10 @@ private fun VoiceToolbar(
 }
 
 @Composable
-private fun ConnectingStatus(status: String) {
+private fun ConnectingStatus(
+    status: String,
+    contentInset: Dp,
+) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val alpha by infiniteTransition.animateFloat(
         initialValue = PULSE_MIN_ALPHA,
@@ -498,7 +510,7 @@ private fun ConnectingStatus(status: String) {
     Text(
         text = status,
         style = MaterialTheme.typography.bodyMedium,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).alpha(alpha),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = contentInset, vertical = 8.dp).alpha(alpha),
     )
 }
 
@@ -626,15 +638,8 @@ private fun TranscriptToggle(
 private fun ConversationPanel(
     voiceState: VoiceState,
     showUsageStats: Boolean,
+    contentInset: Dp,
 ) {
-    val transcriptMargin =
-        if (LocalConfiguration.current.orientation ==
-            Configuration.ORIENTATION_PORTRAIT
-        ) {
-            0.dp
-        } else {
-            16.dp
-        }
     var transcriptExpanded by rememberSaveable { mutableStateOf(true) }
     val transcriptFocus = remember { FocusRequester() }
     val logFocus = remember { FocusRequester() }
@@ -661,7 +666,7 @@ private fun ConversationPanel(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("gomode-voice-activity"),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = contentInset).testTag("gomode-voice-activity"),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -702,11 +707,8 @@ private fun ConversationPanel(
                 modifier =
                     Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = transcriptMargin)
-                        .background(
-                            MaterialTheme.colorScheme.surfaceContainerLowest,
-                            RoundedCornerShape(8.dp),
-                        ).padding(8.dp)
+                        .padding(horizontal = contentInset - 8.dp)
+                        .padding(8.dp)
                         .testTag("gomode-voice-transcript-content"),
             ) {
                 TranscriptLog(
@@ -1061,8 +1063,15 @@ private fun TranscriptRow(
 private fun TokenMetrics(counts: TokenUsage) {
     ResponseMetric("Input", counts.inputTokens, Icons.Default.ArrowUpward)
     ResponseMetric("Output", counts.outputTokens, Icons.Default.ArrowDownward)
-    counts.cachedTokens?.let { ResponseMetric("Cached input", it, Icons.Default.Cached) }
-    counts.reasoningTokens?.let { ResponseMetric("Reasoning", it, Icons.Default.Psychology) }
+    if (counts.cachedTokens != null || counts.reasoningTokens != null) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            counts.cachedTokens?.let { ResponseMetric("Cached input", it, Icons.Default.Cached) }
+            counts.reasoningTokens?.let { ResponseMetric("Reasoning", it, Icons.Default.Psychology) }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

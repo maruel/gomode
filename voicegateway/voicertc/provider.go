@@ -352,8 +352,8 @@ func (s *realtimeBridgeSession) handleEvent(event *genai.RealtimeEvent) error {
 	var out [][]byte
 	switch event.Kind {
 	case genai.RealtimeEventUsage:
-		// Providers such as Gemini without response identities retain session
-		// totals, but cannot safely attribute late usage to a transcript entry.
+		// Unidentified reports retain session totals without guessing which
+		// transcript entry owns them.
 		return s.usage.report(s.ctx, s.sink, s.id, s.provider.Name(), s.provider.ModelID(), gatewayResponseID(s.id, event.ResponseID), event.Usage)
 	case genai.RealtimeEventContentAudio:
 		s.sink.addAssistantPCM(event.Content.Audio)

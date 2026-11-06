@@ -12,6 +12,12 @@ new conversation. Browsing older calls preserves the current scroll position.
 Connection errors keep the same toolbar and normal start action, with no separate
 retry or dismiss buttons. The transcript reopen button stays at the right of the activity row when
 hidden. The X sits at the top right of the expanded transcript content.
+On Android, the settings glyph and text share an 8 dp inset in portrait and
+24 dp in landscape; the settings touch target remains fully inside the panel.
+Mobile web uses a matching 0.5 rem text inset and compact side margins. The
+transcript uses the panel background on both platforms; assistant replies
+retain their subtle shading. Mobile web keeps scrolling available without
+visible scrollbar tracks, matching the native panel.
 
 Enable **Show usage stats** in voice settings to show conversation totals and
 counts beside each matching assistant reply. Both displays use the same icons.
@@ -19,7 +25,9 @@ The arrows mean input and output tokens; the cached and reasoning symbols show o
 a browser count, or long-press an Android count, for its metric name and exact
 value. A dash means the provider did not report that count. The setting stays
 available during calls. Closing the usage panel hides all counts without clearing
-them. Replies without an authoritative response identity contribute only to totals.
+them. Cached and reasoning counters wrap together unless their combined width
+exceeds the available content width. Replies without an authoritative response
+identity contribute only to totals.
 
 Open the browser fixture with `?history=retention` to exercise FIFO eviction.
 It seeds 32 invocations, including repeated names, and exposes fixture controls
@@ -40,7 +48,9 @@ cd android
 
 Pull `/data/local/tmp/gomode-voice-panel-usage.png`,
 `gomode-voice-panel-usage-large-text.png`, and `gomode-voice-panel-usage-tooltip.png`
-from the emulator. They cover normal text, 2× text at 320 dp, and long-press help.
+from the emulator. They cover normal text, 2× text at the full portrait width,
+and long-press help. `gomode-voice-panel-usage-narrow-large-text.png` separately
+covers 2× text at 320 dp.
 
 Each client retains the five newest failures. A collapsed list below the error
 panel shows them with their time, so a failure stays readable after the error
@@ -52,8 +62,8 @@ again. Hidden transcripts keep receiving text but show no drafts. Keyboard focus
 follows the toggle between these locations. Accessible names are “Hide transcript”
 and “Show transcript”.
 There is no separate transcript header or collapse chevron. The X glyph follows
-the platform's small label typography. Its touch target stays 48 dp on Android
-and 44 CSS px on web.
+the platform's small label typography. Its touch target stays 32 dp on Android,
+2 rem on mobile web, and 44 CSS px on desktop web.
 
 When the operator enables Show assistant reasoning, the transcript lists
 provider reasoning as its own muted entry labelled Reasoning, ahead of the
@@ -67,8 +77,9 @@ At extreme zoom, the controls on the left scroll horizontally while start/hang-u
 stays fixed at the right. Keyboard focus scrolls each action into view and leaves
 room for its focus outline.
 The Settings icon box starts at the same inset as activity and transcript text.
-Its centered touch target extends to the left, remaining 48 dp on Android and
-44 CSS px on web. Web reserves enough inset to keep the focus outline on-screen.
+Its touch target remains 48 dp on Android and 44 CSS px on web. Mobile web
+insets the glyph inside its target; desktop web centers it. Both keep the focus
+outline on-screen.
 
 ## Keep these three references coherent
 

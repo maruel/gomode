@@ -261,7 +261,7 @@ export default function VoiceOverlay(props: {
   const SettingsButton = () => (
     <button
       type="button"
-      class={controls.control}
+      class={`${controls.control} ${styles.settingsButton}`}
       ref={(element) => {
         settingsTrigger = element;
       }}
@@ -1179,25 +1179,29 @@ function TokenCounts(props: { counts: TokenUsage; messages: Accessor<VoiceOverla
     { key: "cachedTokens", icon: "cached", label: () => props.messages().usageCached ?? "Cached input" },
     { key: "reasoningTokens", icon: "psychology", label: () => props.messages().usageReasoning ?? "Reasoning" },
   ] as const;
+  const renderMetric = (metric: (typeof metrics)[number]) => {
+    const value = () => props.counts[metric.key];
+    const description = () =>
+      `${metric.label()} tokens: ${value()?.toLocaleString() ?? props.messages().usageNotReported ?? "Not reported"}`;
+    return (
+      <Show when={metric.key === "inputTokens" || metric.key === "outputTokens" || value() !== undefined}>
+        <ResponseMetric
+          metric={metric.key}
+          icon={metric.icon}
+          value={value()?.toLocaleString() ?? "—"}
+          description={description()}
+        />
+      </Show>
+    );
+  };
   return (
     <span class={props.class ?? styles.tokenCounts}>
-      <For each={metrics}>
-        {(metric) => {
-          const value = () => props.counts[metric.key];
-          const description = () =>
-            `${metric.label()} tokens: ${value()?.toLocaleString() ?? props.messages().usageNotReported ?? "Not reported"}`;
-          return (
-            <Show when={metric.key === "inputTokens" || metric.key === "outputTokens" || value() !== undefined}>
-              <ResponseMetric
-                metric={metric.key}
-                icon={metric.icon}
-                value={value()?.toLocaleString() ?? "—"}
-                description={description()}
-              />
-            </Show>
-          );
-        }}
-      </For>
+      <For each={metrics.slice(0, 2)}>{renderMetric}</For>
+      <Show when={props.counts.cachedTokens !== undefined || props.counts.reasoningTokens !== undefined}>
+        <span class={styles.metricTail}>
+          <For each={metrics.slice(2)}>{renderMetric}</For>
+        </span>
+      </Show>
     </span>
   );
 }

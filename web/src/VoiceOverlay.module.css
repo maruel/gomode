@@ -33,12 +33,6 @@
   overflow-y: auto;
 }
 
-@media (width <= 768px) {
-  .panelInner {
-    padding-bottom: calc(0.25rem + env(safe-area-inset-bottom, 0px));
-  }
-}
-
 /* ---- Row layouts ---- */
 
 .row {
@@ -377,7 +371,6 @@
   max-height: min(14rem, 28dvh);
   margin-top: 0.35rem;
   padding: 0.4rem;
-  background: var(--color-bg-surface);
   border-radius: 0.5rem;
   overflow-y: auto;
 }
@@ -484,7 +477,7 @@
   color: var(--color-text-secondary);
 }
 
-.tokenCounts > .responseMetric {
+.tokenCounts .responseMetric:not(:last-child) {
   margin-inline-end: 0.65em;
 }
 
@@ -496,8 +489,68 @@
   color: var(--color-text-secondary);
 }
 
-.responseUsage > .responseMetric:not(:last-child) {
+.responseUsage .responseMetric:not(:last-child) {
   margin-inline-end: 0.5em;
+}
+
+.metricTail {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  max-inline-size: 100%;
+  vertical-align: baseline;
+}
+
+@media (width <= 768px) {
+  .panelInner {
+    /* Reserve the focus outline, then align mobile content at 8px by default. */
+    padding-inline: 0.25rem;
+    padding-bottom: calc(0.25rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .panelInner,
+  .toolbarActions,
+  .settingsSection,
+  .transcriptList {
+    scrollbar-width: none;
+  }
+
+  .callToolbar {
+    padding-inline: 0;
+    margin-inline: 0;
+  }
+
+  .settingsButton {
+    justify-content: flex-start;
+    padding-inline-start: 0.25rem;
+  }
+
+  .callStatus {
+    margin-inline: 0.25rem;
+  }
+
+  .transcriptList {
+    padding-inline: 0.25rem;
+  }
+
+  .transcriptEntry {
+    padding-inline: 0;
+  }
+
+  .transcriptEntryAssistant {
+    padding-inline: 0.1875rem;
+  }
+
+  .transcriptToggle[aria-expanded="true"],
+  .usageClose {
+    width: 2rem;
+    height: 2rem;
+  }
+
+  .usage {
+    margin-inline: -0.25rem;
+    border-radius: 0;
+  }
 }
 
 .toolHistory {

@@ -17,6 +17,7 @@ declare const classes: {
   readonly "errorHistory": string;
   readonly "errorList": string;
   readonly "errorPanel": string;
+  readonly "metricTail": string;
   readonly "metricTooltip": string;
   readonly "micBar": string;
   readonly "micBars": string;
@@ -29,6 +30,7 @@ declare const classes: {
   readonly "responseMetric": string;
   readonly "responseUsage": string;
   readonly "row": string;
+  readonly "settingsButton": string;
   readonly "settingsHeader": string;
   readonly "settingsSection": string;
   readonly "spacer": string;

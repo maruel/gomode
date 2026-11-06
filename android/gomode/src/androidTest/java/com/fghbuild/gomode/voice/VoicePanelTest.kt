@@ -40,6 +40,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
@@ -208,6 +209,22 @@ class VoicePanelTest {
         composeRule.runOnIdle { showStats.value = true }
         assertFullWidth()
         composeRule.onNodeWithContentDescription("Input tokens: 1,234").assertIsDisplayed()
+        val cached =
+            composeRule
+                .onNode(
+                    hasContentDescription(
+                        "Cached input tokens: 128",
+                    ) and hasAnyAncestor(hasTestTag("gomode-voice-transcript")),
+                ).fetchSemanticsNode()
+                .boundsInRoot
+        val reasoning =
+            composeRule
+                .onNode(
+                    hasContentDescription("Reasoning tokens: 8") and
+                        hasAnyAncestor(hasTestTag("gomode-voice-transcript")),
+                ).fetchSemanticsNode()
+                .boundsInRoot
+        assertEquals(cached.top, reasoning.top, 1f)
         composeRule
             .onNodeWithTag(
                 "gomode-voice-transcript",
