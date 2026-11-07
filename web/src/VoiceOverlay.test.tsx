@@ -24,6 +24,10 @@ vi.spyOn(voiceSession, "loadVoiceChoices").mockResolvedValue();
 let restoreBrowserSpeech: () => void;
 beforeEach(() => {
   restoreBrowserSpeech = installBrowserSpeech("Chrome desktop");
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: { getUserMedia: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn() },
+  });
   vi.clearAllMocks();
   localStorage.removeItem("gomode.voiceLanguage");
   voiceSession.setState((s) => ({
@@ -155,7 +159,7 @@ describe("VoiceOverlay status", () => {
       expect(enable).toHaveAttribute("aria-disabled", "true");
       await user.keyboard("{Enter}");
       expect(request).toHaveBeenCalledOnce();
-      expect(screen.getByRole("button", { name: "Connect voice assistant" })).toBeDisabled();
+      expect(screen.queryByRole("button", { name: "Connect voice assistant" })).toBeNull();
       finish();
       await waitFor(() => expect(enable).toHaveAttribute("aria-disabled", "false"));
       expect(enable).toHaveFocus();
@@ -171,7 +175,11 @@ describe("VoiceOverlay status", () => {
     });
     voiceSession.setState((state) => ({ ...state, microphoneAccess: "denied" }));
     render(() => <VoiceOverlay />);
-    expect(screen.getByText(/browser’s site permissions/)).toBeInTheDocument();
+    const microphone = screen.getByRole("button", { name: "Enable microphone" });
+    expect(microphone.querySelector('[data-icon="micAlert"]')).not.toBeNull();
+    expect(microphone).toHaveAccessibleDescription("Allow microphone access in your browser’s site permissions.");
+    expect(microphone).toHaveAccessibleName("Enable microphone");
+    expect(microphone).toHaveTextContent("");
     expect(screen.getByRole("button", { name: "Voice settings" })).toBeEnabled();
     expect(screen.getByRole("combobox", { name: "Microphone" })).toBeEnabled();
     await userEvent.setup().click(screen.getByRole("button", { name: "Enable microphone" }));
@@ -180,6 +188,24 @@ describe("VoiceOverlay status", () => {
     expect(screen.queryByRole("button", { name: "Enable microphone" })).toBeNull();
     expect(screen.getByRole("button", { name: "Connect voice assistant" })).toHaveFocus();
     request.mockRestore();
+  });
+
+  it("uses the microphone warning for missing browser APIs and reveals guidance on click", async () => {
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: undefined });
+    const request = vi.spyOn(voiceSession, "requestMicrophoneAccess").mockResolvedValue();
+    try {
+      render(() => <VoiceOverlay />);
+      const microphone = screen.getByRole("button", { name: "Enable microphone" });
+      expect(microphone.querySelector('[data-icon="micAlert"]')).not.toBeNull();
+      expect(microphone).toHaveAccessibleDescription("Microphone requires HTTPS or a supported browser.");
+      await userEvent.setup().click(microphone);
+      expect(screen.getByRole("status")).toHaveTextContent("Microphone requires HTTPS or a supported browser.");
+      expect(request).not.toHaveBeenCalled();
+      expect(connectMock).not.toHaveBeenCalled();
+      expect(microphone).toHaveFocus();
+    } finally {
+      request.mockRestore();
+    }
   });
 
   it("hides the transcript without clearing it and restores new text from an icon", async () => {

@@ -485,6 +485,15 @@ describe("VoiceSession", () => {
       }
     });
   }
+  it("does not report a device-list failure when the browser has no media APIs", async () => {
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: undefined });
+    const session = new VoiceSession();
+    await session.enumerateDevices();
+    expect(session.state.audioDevicesError).toBeNull();
+    expect(session.state.audioInputs).toEqual([]);
+    expect(session.state.audioOutputs).toEqual([]);
+  });
+
   it("prefers newly connected Bluetooth and remembers its routes across sessions", async () => {
     const sink = vi.fn(async (_id: string) => {});
     Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true, value: sink });

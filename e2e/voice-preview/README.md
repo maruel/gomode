@@ -28,6 +28,11 @@ available during calls and controls both displays. Cached and reasoning counters
 exceeds the available content width. Replies without an authoritative response
 identity contribute only to totals.
 
+Open `?state=idle` with `microphone-denied.js` as the browser init script to inspect
+microphone permission recovery. The start control uses the Material `mic_alert`
+symbol; clicking it retries permission and reveals a short hint if access stays
+blocked. Missing browser microphone APIs use the same control with HTTPS guidance.
+
 Open the browser fixture with `?history=retention` to exercise FIFO eviction.
 It seeds 32 invocations, including repeated names, and exposes fixture controls
 for appending one or two calls. Browse to `tool_10`, append calls, and verify

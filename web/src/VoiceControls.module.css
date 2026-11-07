@@ -113,6 +113,10 @@
   mask-image: url("@material-symbols/svg-400/outlined/mic.svg");
 }
 
+.micAlert {
+  mask-image: url("@material-symbols/svg-400/outlined/mic_alert.svg");
+}
+
 .micOff {
   mask-image: url("@material-symbols/svg-400/outlined/mic_off.svg");
 }

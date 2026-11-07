@@ -52,6 +52,10 @@ function mount(
   ));
 }
 beforeEach(() => {
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: { getUserMedia: vi.fn(), enumerateDevices: vi.fn(async () => []) },
+  });
   errors.mockClear();
   window.history.replaceState({}, "", "/");
   owner = createFrontendPreparationClient().publishAuth({ authChanged: true, nativeAccess: true });

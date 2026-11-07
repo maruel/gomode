@@ -1031,6 +1031,9 @@ export class VoiceSession {
   /** Enumerate available audio devices and auto-select defaults. Call before connect(). */
   async enumerateDevices(): Promise<void> {
     const attempt = ++this._deviceEnumerationAttempt;
+    // In insecure contexts and unsupported browsers there is no device API.
+    // The microphone control owns the capability warning and recovery guidance.
+    if (!navigator.mediaDevices?.enumerateDevices) return;
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       if (attempt !== this._deviceEnumerationAttempt) return;

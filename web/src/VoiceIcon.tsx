@@ -15,6 +15,7 @@ type VoiceIconName =
   | "close"
   | "headphones"
   | "mic"
+  | "micAlert"
   | "micOff"
   | "phoneInTalk"
   | "playArrow"

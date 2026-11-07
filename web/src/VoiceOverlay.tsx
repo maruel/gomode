@@ -72,6 +72,7 @@ export interface VoiceOverlayMessages extends Partial<VoiceSettingsMessages> {
   microphone: string;
   audioDevices?: string;
   microphoneAccessOff?: string;
+  microphoneUnavailable?: string;
   enableMicrophone?: string;
   requestingMicrophone?: string;
   enableSound?: string;
@@ -126,8 +127,8 @@ export const defaultVoiceOverlayMessages: VoiceOverlayMessages = {
   listening: "Listening…",
   microphone: "Microphone",
   audioDevices: "Audio devices",
-  microphoneAccessOff:
-    "Microphone access is off. Allow access in your browser’s site permissions or device privacy settings.",
+  microphoneAccessOff: "Allow microphone access in your browser’s site permissions.",
+  microphoneUnavailable: "Microphone requires HTTPS or a supported browser.",
   enableMicrophone: "Enable microphone",
   requestingMicrophone: "Requesting access…",
   enableSound: "Enable sound",
@@ -307,6 +308,25 @@ export default function VoiceOverlay(props: {
   const isConnected = () => session.state.connected || session.state.listening || session.state.speaking;
   const isActive = () => isConnected() || session.state.connectStatus !== null;
 
+  const microphoneUnavailable = !navigator.mediaDevices?.getUserMedia;
+  const microphoneWarning = () => !isActive() && (microphoneUnavailable || session.state.microphoneAccess === "denied");
+  const [microphoneHelpOpen, setMicrophoneHelpOpen] = createSignal(false);
+  const microphoneAccessHelpId = createUniqueId();
+  const microphoneAccessHelp = () =>
+    microphoneUnavailable
+      ? (messages().microphoneUnavailable ?? defaultVoiceOverlayMessages.microphoneUnavailable)
+      : (messages().microphoneAccessOff ?? defaultVoiceOverlayMessages.microphoneAccessOff);
+  const connectLabel = () =>
+    session.state.connectStatus !== null
+      ? messages().cancelConnection
+      : isConnected()
+        ? messages().endSession
+        : microphoneWarning()
+          ? session.state.microphoneAccessPending
+            ? (messages().requestingMicrophone ?? defaultVoiceOverlayMessages.requestingMicrophone)
+            : (messages().enableMicrophone ?? defaultVoiceOverlayMessages.enableMicrophone)
+          : messages().connect;
+
   // -----------------------------------------------------------------------
   // Event handlers
   // -----------------------------------------------------------------------
@@ -319,6 +339,11 @@ export default function VoiceOverlay(props: {
       session.disconnect();
     } else {
       if (!canStart()) return;
+      if (microphoneWarning()) {
+        setMicrophoneHelpOpen(true);
+        if (!microphoneUnavailable) await session.requestMicrophoneAccess();
+        return;
+      }
       if (languageError() !== null) {
         setSettingsOpen(true);
         panelRef?.querySelector<HTMLInputElement>('input[type="text"]')?.focus();
@@ -431,19 +456,14 @@ export default function VoiceOverlay(props: {
               <button
                 ref={connectButtonRef}
                 type="button"
-                class={`${controls.control} ${isActive() ? controls.danger : controls.outlined}`}
+                class={`${controls.control} ${isActive() || microphoneWarning() ? controls.danger : controls.outlined}`}
                 onClick={() => handleMicClick()}
-                disabled={!isActive() && session.state.microphoneAccessPending}
-                title={isActive() ? messages().endSession : messages().connect}
-                aria-label={
-                  session.state.connectStatus !== null
-                    ? messages().cancelConnection
-                    : isConnected()
-                      ? messages().endSession
-                      : messages().connect
-                }
+                aria-disabled={!isActive() && session.state.microphoneAccessPending}
+                title={microphoneWarning() ? microphoneAccessHelp() : connectLabel()}
+                aria-label={connectLabel()}
+                aria-describedby={microphoneWarning() ? microphoneAccessHelpId : undefined}
               >
-                <VoiceIcon name={isActive() ? "callEnd" : "mic"} />
+                <VoiceIcon name={isActive() ? "callEnd" : microphoneWarning() ? "micAlert" : "mic"} />
               </button>
             </div>
           </div>
@@ -452,24 +472,14 @@ export default function VoiceOverlay(props: {
               {audioHelpMessage()}
             </p>
           </Show>
-          <Show when={session.state.microphoneAccess === "denied"}>
-            <div role="status" class={styles.accessNotice}>
-              <span>{messages().microphoneAccessOff ?? defaultVoiceOverlayMessages.microphoneAccessOff}</span>
-              <button
-                type="button"
-                class={styles.accessAction}
-                aria-disabled={session.state.microphoneAccessPending}
-                onClick={async () => {
-                  if (session.state.microphoneAccessPending) return;
-                  await session.requestMicrophoneAccess();
-                  if (session.state.microphoneAccess === "granted") connectButtonRef?.focus();
-                }}
-              >
-                {session.state.microphoneAccessPending
-                  ? (messages().requestingMicrophone ?? defaultVoiceOverlayMessages.requestingMicrophone)
-                  : (messages().enableMicrophone ?? defaultVoiceOverlayMessages.enableMicrophone)}
-              </button>
-            </div>
+          <Show when={microphoneWarning()}>
+            <p
+              id={microphoneAccessHelpId}
+              role="status"
+              class={microphoneHelpOpen() ? styles.deviceHint : styles.microphoneHelp}
+            >
+              {microphoneAccessHelp()}
+            </p>
           </Show>
           <Show when={session.state.micLevelError}>
             {(error) => (

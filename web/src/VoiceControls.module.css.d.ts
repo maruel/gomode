@@ -14,6 +14,7 @@ declare const classes: {
   readonly "history": string;
   readonly "icon": string;
   readonly "mic": string;
+  readonly "micAlert": string;
   readonly "micOff": string;
   readonly "outlined": string;
   readonly "phoneInTalk": string;

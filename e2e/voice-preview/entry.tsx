@@ -19,7 +19,8 @@ window.fetch = (input, init) =>
       )
     : originalFetch(input, init);
 
-voiceSession.setState((state) => ({ ...state, connected: true }));
+const idle = new URLSearchParams(location.search).get("state") === "idle";
+voiceSession.setState((state) => ({ ...state, connected: !idle }));
 const root = document.getElementById("voice-root");
 if (!root) throw new Error("Missing voice fixture root");
 const [first, second] = scene.servers;
@@ -88,6 +89,7 @@ if (wrapping) {
 
 // Populate after mount to exercise the empty-to-populated transcript lifecycle.
 queueMicrotask(() => {
+  if (idle) return;
   voiceSession.setState((state) => ({
     ...state,
     connected: true,
