@@ -4,6 +4,10 @@ package com.fghbuild.gomode
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.By
+import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.Until
 import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellSession
 import com.fghbuild.gomode.ui.web.WebShellScreen
@@ -26,6 +30,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -184,6 +189,93 @@ class FrontendToolInvocationBridgeTest {
             assertEquals("2", evaluate(view, "calls.length"))
         }
 
+    @Test
+    @StandaloneHostedFixture
+    fun sameDocumentRouteAndDelayedPreparedAckPreserveThePendingNativeInvocation() =
+        fixture { entry, view, scope ->
+            evaluate(view, "enableVoiceLifetime()")
+            compose.runOnIdle { entry.frontendPreparation.setVoiceSession("conversation") { true } }
+            compose.waitUntil { evaluate(view, "nativeID") == "\"conversation\"" }
+            val pending = invoke(entry, scope, """{"defer":true}""")
+            compose.waitUntil { evaluate(view, "calls.length") == "1" }
+            val generation = entry.frontendTools.revision
+            // Hold the native initial-publication gate again while a delayed
+            // same-scope prepared ACK remains queued in the hosted document.
+            compose.runOnIdle { entry.frontendPreparation.setVoiceSession("conversation") { true } }
+            val prepared = scope.async { entry.frontendPreparation.awaitVoiceSessionPrepared("conversation") }
+            compose.waitForIdle()
+            assertFalse(prepared.isCompleted)
+            evaluate(
+                view,
+                "history.pushState({},'', '/selected-node?view=outline#section'); nativePrepared='conversation'; publish()",
+            )
+            compose.waitUntil { prepared.isCompleted }
+            assertEquals(generation, entry.frontendTools.revision)
+            assertFalse(pending.isCompleted)
+            evaluate(view, "resolveCall(0,{selected:true})")
+            await(pending)
+            assertEquals("{\"selected\":true}", runBlocking { pending.await() }.toString())
+            val following = invoke(entry, scope, "{}")
+            await(following)
+            assertEquals("{\"sync\":true}", runBlocking { following.await() }.toString())
+        }
+
+    @Test
+    @StandaloneHostedFixture
+    fun manualSelectionUsesAuthenticatedLifetimeAndRetirementClearsItWithoutToolCalls() =
+        fixture { entry, view, scope ->
+            evaluate(view, "enableVoiceLifetime()")
+            compose.runOnIdle { entry.frontendPreparation.setVoiceSession("manual-first") { true } }
+            compose.waitUntil { evaluate(view, "nativeID") == "\"manual-first\"" }
+            val prepared = scope.async { entry.frontendPreparation.awaitVoiceSessionPrepared("manual-first") }
+            compose.waitUntil { prepared.isCompleted }
+            val instrumentation = InstrumentationRegistry.getInstrumentation()
+            val device = UiDevice.getInstance(instrumentation)
+            checkNotNull(device.wait(Until.findObject(By.text("Select second")), GOMODE_DEFAULT_TIMEOUT_MS)).click()
+            compose.waitUntil { evaluate(view, "selected") == "\"second\"" }
+            awaitVisibleFrame(view)
+            device.waitForIdle()
+            assertTrue(
+                device.takeScreenshot(
+                    File(instrumentation.targetContext.getExternalFilesDir(null), "native-manual-focus.png"),
+                ),
+            )
+            assertEquals("\"second\"", evaluate(view, "focusHistory.at(-1).node"))
+            assertEquals("\"manual-first\"", evaluate(view, "focusHistory.at(-1).sessionID"))
+            assertEquals("0", evaluate(view, "calls.length"))
+            compose.runOnIdle { entry.frontendPreparation.clearVoiceSession("manual-first") }
+            compose.waitUntil { evaluate(view, "nativeID") == "null" }
+            assertEquals("null", evaluate(view, "focusHistory.at(-1).node"))
+            assertEquals("\"second:disconnected\"", evaluate(view, "document.getElementById('selection').textContent"))
+            awaitVisibleFrame(view)
+            device.waitForIdle()
+            assertTrue(
+                device.takeScreenshot(
+                    File(instrumentation.targetContext.getExternalFilesDir(null), "native-retired-focus.png"),
+                ),
+            )
+            val count = evaluate(view, "focusHistory.length")
+            evaluate(view, "document.getElementById('select-second').click()")
+            assertEquals(count, evaluate(view, "focusHistory.length"))
+            compose.runOnIdle { entry.frontendPreparation.setVoiceSession("manual-second") { true } }
+            compose.waitUntil { evaluate(view, "nativeID") == "\"manual-second\"" }
+            evaluate(view, "replaceScope()")
+            compose.waitUntil { evaluate(view, "nativePrepared") == "\"manual-second\"" }
+            assertEquals("\"manual-second\"", evaluate(view, "focusHistory.at(-1).sessionID"))
+            // A new document recovers only through a newly authenticated, opted-in scope.
+            evaluate(view, "location.reload()")
+            compose.waitUntil { entry.isFrontendReady && evaluate(view, "frameReady") == "true" }
+            assertEquals("null", evaluate(view, "nativeID"))
+            evaluate(view, "enableVoiceLifetime()")
+            compose.waitUntil { evaluate(view, "nativeID") == "\"manual-second\"" }
+            compose.runOnIdle { entry.frontendPreparation.clearVoiceSession("manual-second") }
+            compose.waitUntil { evaluate(view, "nativeID") == "null" }
+            evaluate(view, "authenticate()")
+            compose.waitUntil { entry.isFrontendReady }
+            assertEquals("null", evaluate(view, "nativeID"))
+            assertEquals("0", evaluate(view, "calls.length"))
+        }
+
     private fun invoke(
         entry: ServiceShellSession,
         scope: CoroutineScope,
@@ -233,6 +325,23 @@ class FrontendToolInvocationBridgeTest {
         }
     }
 
+    // JavaScript completion precedes WebView compositor presentation. Capture only
+    // after its visual state has reached a subsequent drawing frame.
+    private fun awaitVisibleFrame(view: WebView) {
+        val drawn = CountDownLatch(1)
+        compose.runOnUiThread {
+            view.postVisualStateCallback(
+                0,
+                object : WebView.VisualStateCallback() {
+                    override fun onComplete(requestId: Long) {
+                        view.postOnAnimation { view.postOnAnimation { drawn.countDown() } }
+                    }
+                },
+            )
+        }
+        assertTrue(drawn.await(5, TimeUnit.SECONDS))
+    }
+
     private fun evaluate(
         view: WebView,
         script: String,
@@ -251,13 +360,26 @@ class FrontendToolInvocationBridgeTest {
 
     private companion object {
         const val PAGE = """
-        <!doctype html><html><body><iframe src='/frame' onload='frameReady=true'></iframe><script>
+        <!doctype html><html><body><output id='selection'>first:disconnected</output><button id='select-second' onclick="selectNode('second')">Select second</button><iframe src='/frame' onload='frameReady=true'></iframe><script>
         let frameReady=false, documentID=null, token=null, scopeID=0, request=0;
         let calls=[], resolvers=[], cancellations=0, lastCall=null;
+        let nativeEnabled=false, nativeID=null, nativePrepared=null, selected='first', focusHistory=[];
+        function selectNode(node) { selected=node; document.getElementById('selection').textContent=node+':'+(nativeID||'disconnected');
+          if(nativeID)focusHistory.push({sessionID:nativeID,node}); }
+        function enableVoiceLifetime() { nativeEnabled=true; publish(); }
+        gomodeFrontendReadiness.onmessage=e=>{
+          const update=JSON.parse(e.data);
+          if(!nativeEnabled||update.document!==documentID||update.token!==token||update.scope!==String(scopeID)||
+             update.voiceSessionVersion!==1||update.sessionID===nativeID)return;
+          const previous=nativeID; nativeID=update.sessionID; nativePrepared=null;
+          if(previous)focusHistory.push({sessionID:previous,node:null});
+          selectNode(selected); if(nativeID){nativePrepared=nativeID;publish();}
+        };
         const binding=window.goModeFrontendDocument;
         function publish() {
           gomodeFrontendReadiness.postMessage(JSON.stringify({document:documentID,token,scope:String(scopeID),ready:true,
-            tools:[{name:'fixture',description:'Fixture',parameters:{type:'object'}}]}));
+            tools:[{name:'fixture',description:'Fixture',parameters:{type:'object'}}],
+            ...(nativeEnabled?{voiceSessionVersion:1,voiceSessionPrepared:nativePrepared}:{})}));
         }
         function authenticate() {
           binding.then(document => {
@@ -267,7 +389,7 @@ class FrontendToolInvocationBridgeTest {
             gomodeAuth.postMessage(JSON.stringify({frontendDocument:document,frontendRequest:id,authChanged:true,nativeAccess:true}));
           });
         }
-        function replaceScope() { scopeID++; publish(); }
+        function replaceScope() { scopeID++; nativeID=null; nativePrepared=null; publish(); }
         const owns=call=>call.document===documentID&&call.token===token&&call.scope===String(scopeID);
         window.dispatchGoModeVoiceTool=call=>{
           if(!owns(call))return;

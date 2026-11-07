@@ -3,7 +3,8 @@
 import { createEffect, createSignal, onCleanup, Show, untrack } from "solid-js";
 import { configureMcpClient, mcpClient } from "./McpClient";
 import { configureVoiceGateway, voiceSession } from "./VoiceSession";
-import VoiceOverlay, { defaultVoiceOverlayMessages } from "./VoiceOverlay";
+import VoiceOverlay from "./VoiceOverlay";
+import { defaultVoiceMessages } from "./VoiceMessages";
 import { notifications } from "./notifications";
 import { monitorServiceNotifications } from "./ServiceNotifications";
 import type { BrowserVoiceRuntimeProps } from "./BrowserVoiceShell";
@@ -86,7 +87,7 @@ export default function BrowserVoiceRuntime(props: BrowserVoiceRuntimeProps) {
       {props.children?.({ session: voiceSession, mcp: conversationMcp })}
       <VoiceOverlay
         canStart={() => active() && props.canStart()}
-        messages={() => props.messages?.(defaultVoiceOverlayMessages) ?? defaultVoiceOverlayMessages}
+        messages={() => props.messages?.() ?? defaultVoiceMessages}
       />
     </Show>
   );

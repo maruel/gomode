@@ -258,7 +258,7 @@ internal class ServiceWebPage(
                     this,
                     "gomodeFrontendReadiness",
                     setOf(serviceOrigin(initialURL)),
-                ) { view, message, sourceOrigin, isMainFrame, _ ->
+                ) { view, message, sourceOrigin, isMainFrame, reply ->
                     if (serviceSession.isCurrentPage(pageGeneration) &&
                         acceptsFrontendVoiceTools(sourceOrigin, isMainFrame, view.url, initialURL) &&
                         bearerStore.authReady.value
@@ -279,7 +279,7 @@ internal class ServiceWebPage(
                             } else {
                                 frontendTools.clear(view)
                             }
-                            serviceSession.frontendPreparation.update(payload)
+                            serviceSession.frontendPreparation.update(payload, reply::postMessage)
                         }.onFailure {
                             serviceSession.frontendPreparation.invalidateIdentity()
                             frontendTools.clear(view)

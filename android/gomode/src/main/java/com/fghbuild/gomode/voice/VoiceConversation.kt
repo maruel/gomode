@@ -1,6 +1,7 @@
 // Owns voice conversation identities, scoped context streams, and gateway authorization.
 package com.fghbuild.gomode.voice
 
+import android.util.Log
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.service.ServiceCatalog
@@ -12,9 +13,11 @@ import com.fghbuild.gomode.service.serviceOrigin
 import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellSession
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -193,6 +196,7 @@ internal class VoiceConversation(
         val cached = current.setup
         val setup =
             if (cached == null) {
+                awaitFrontendContext(current)
                 prepareVoiceSetup(
                     settingsRepository,
                     settingsClient,
@@ -232,6 +236,7 @@ internal class VoiceConversation(
         val settings = current.settings
         var prepared = false
         try {
+            awaitFrontendContext(current)
             val setup =
                 standaloneVoiceSetup().copy(
                     serverName =
@@ -304,11 +309,35 @@ internal class VoiceConversation(
             if (entry.bearerStore.authReady.value) {
                 val identity =
                     current.admitted.getOrPut(key) {
+                        current.lifetime.scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                            entry.frontendPreparation.setVoiceSession(current.lifetime.sessionID) {
+                                conversation === current && isCurrent()
+                            }
+                            try {
+                                awaitCancellation()
+                            } finally {
+                                entry.frontendPreparation.clearVoiceSession(current.lifetime.sessionID)
+                            }
+                        }
                         AdmittedIdentity(entry, entry.bearerStore.identityEpoch.value, cookieFor(key.url))
                     }
                 if (identity.authorization == null) identity.authorization = catalog.authorization(key)
             }
         }
+    }
+
+    private suspend fun awaitFrontendContext(current: Conversation) {
+        // Host context is advisory. Bound a stalled publisher without blocking
+        // independent voice transport indefinitely; lifetime cancellation still wins.
+        val prepared =
+            withTimeoutOrNull(5_000) {
+                for (identity in current.admitted.values.toList()) {
+                    identity.entry.frontendPreparation.awaitVoiceSessionPrepared(current.lifetime.sessionID)
+                }
+                true
+            }
+        if (prepared == null) Log.w("GoModeVoice", "Hosted voice context publication timed out")
+        requireCurrent()
     }
 }
 

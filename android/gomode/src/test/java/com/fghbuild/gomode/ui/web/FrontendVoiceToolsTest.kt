@@ -144,6 +144,111 @@ class FrontendVoiceToolsTest {
         }
 
     @Test
+    fun negotiatedLifetimeRequiresConversationEchoAndRepeatedReadinessKeepsPendingCalls() =
+        runTest {
+            val registration =
+                org.json.JSONObject(
+                    """{"document":"document","token":"identity","scope":"scope","voiceSessionVersion":1}""",
+                )
+            val declarations = """[{"name":"select_item","description":"Select item","parameters":{}}]"""
+            tools.register(view, declarations, registration)
+            view.deferResult = true
+            val pending = async { tools.execute("select_item", JsonObject(emptyMap()), "conversation") { true } }
+            runCurrent()
+            val reply = org.json.JSONObject(view.script.substringAfter("?.(").dropLast(1))
+            val generation = tools.revision
+            tools.register(view, declarations, registration.put("voiceSessionPrepared", "conversation"))
+            assertEquals(generation, tools.revision)
+            assertFalse(pending.isCompleted)
+            reply.remove("sessionID")
+            reply.put("result", org.json.JSONObject().put("legacy", true))
+            tools.complete(view, reply.toString())
+            assertFalse(pending.isCompleted)
+            reply.put("sessionID", "conversation")
+            tools.complete(view, reply.toString())
+            assertEquals("{\"legacy\":true}", pending.await().toString())
+        }
+
+    @Test
+    fun sameDocumentRoutesAndDelayedReadinessPreservePendingAndFollowingInvocations() =
+        runTest {
+            val registration =
+                org.json.JSONObject(
+                    """{"document":"document","token":"identity","scope":"scope","voiceSessionVersion":1}""",
+                )
+            val declarations = """[{"name":"select_item","description":"Select item","parameters":{}}]"""
+            tools.register(view, declarations, registration)
+            for (route in listOf("https://service.test/w/node?view=outline#section", "https://service.test/settings")) {
+                view.deferResult = true
+                val pending = async { tools.execute("select_item", JsonObject(emptyMap()), "conversation") { true } }
+                runCurrent()
+                val reply = checkNotNull(view.callback)
+                val generation = tools.revision
+                view.pageURL = route
+                tools.register(view, declarations, registration.put("voiceSessionPrepared", "conversation"))
+                assertEquals(generation, tools.revision)
+                assertFalse(pending.isCompleted)
+                reply.onReceiveValue("""{"selected":true}""")
+                assertEquals("{\"selected\":true}", pending.await().toString())
+                view.deferResult = false
+                assertEquals(
+                    "{\"selected\":true}",
+                    tools.execute("select_item", JsonObject(emptyMap()), "conversation") { true }.toString(),
+                )
+            }
+        }
+
+    @Test
+    fun changedDocumentAccountScopeAndCapabilityStillInvalidatePendingCallsAfterRouteChanges() =
+        runTest {
+            for (field in listOf("document", "token", "scope", "voiceSessionVersion")) {
+                view.pageURL = "https://service.test"
+                val registration =
+                    org.json.JSONObject(
+                        """{"document":"document","token":"identity","scope":"scope","voiceSessionVersion":1}""",
+                    )
+                val declarations = """[{"name":"select_item","description":"Select item","parameters":{}}]"""
+                tools.register(view, declarations, registration)
+                view.deferResult = true
+                val pending = async { tools.execute("select_item", JsonObject(emptyMap()), "conversation") { true } }
+                runCurrent()
+                val reply = checkNotNull(view.callback)
+                view.pageURL = "https://service.test/w/replacement"
+                registration.put(field, if (field == "voiceSessionVersion") 2 else "replacement")
+                tools.register(view, declarations, registration)
+                assertTrue(checkNotNull(pending.await()).containsKey("error"))
+                reply.onReceiveValue("""{"late":true}""")
+                assertTrue(checkNotNull(pending.await()).containsKey("error"))
+            }
+        }
+
+    @Test
+    fun anotherOriginCannotReuseARegistrationWithAnIdenticalPreparationBinding() =
+        runTest {
+            val registration =
+                org.json.JSONObject(
+                    """{"document":"document","token":"identity","scope":"scope","voiceSessionVersion":1}""",
+                )
+            val declarations = """[{"name":"select_item","description":"Select item","parameters":{}}]"""
+            for (url in listOf(
+                "https://foreign.test/node",
+                "http://service.test/node",
+                "https://service.test:444/node",
+            )) {
+                view.pageURL = "https://service.test"
+                tools.register(view, declarations, registration)
+                view.deferResult = true
+                val pending = async { tools.execute("select_item", JsonObject(emptyMap()), "conversation") { true } }
+                runCurrent()
+                val generation = tools.revision
+                view.pageURL = url
+                tools.register(view, declarations, registration)
+                assertTrue(tools.revision > generation)
+                assertTrue(checkNotNull(pending.await()).containsKey("error"))
+            }
+        }
+
+    @Test
     fun cancelledAttemptCannotExecuteFrontendCode() =
         runTest {
             val result = tools.execute("select_item", JsonObject(emptyMap()), "conversation") { false }

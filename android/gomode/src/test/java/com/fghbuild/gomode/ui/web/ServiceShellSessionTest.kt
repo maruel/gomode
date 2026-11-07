@@ -45,7 +45,7 @@ class ServiceShellSessionTest {
                     .put("document", session.frontendPreparation.document)
                     .put("token", ack.getString("frontendToken"))
                     .put("ready", true)
-            session.frontendPreparation.update(ready)
+            session.frontendPreparation.update(ready) {}
             action(session)
             assertTrue(session.frontendTools.declarations.isEmpty())
             assertFalse(session.frontendPreparation.ready.value)

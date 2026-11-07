@@ -168,9 +168,12 @@ notification suppression, and a pending Connect action keeps its originating
 runtime and user intent. The render-prop child receives `{session, mcp}` for
 host-owned context and document subscriptions; clean those up with the child.
 Supply localized `setupFailed` text and an `onError` callback. The optional
-`messages(defaults)` factory receives the default dictionary inside the lazy
-runtime and returns translations without mutating it. Host containers own theme
-mappings and layout.
+`messages` accessor returns the host’s current localized `VoiceMessages` catalog.
+Import `defaultVoiceMessages` and its derived type from
+`@maruel/gomode/web/VoiceMessages`; translated catalogs are available from
+`@maruel/gomode/web/VoiceMessages/de`, `/es`, and `/fr`. These modules contain only
+labels, so hosts can load them with their language dictionaries independently of
+the lazy voice runtime. Host containers own theme mappings and layout.
 
 ## Hosted Authentication
 

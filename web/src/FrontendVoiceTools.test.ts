@@ -91,6 +91,166 @@ it("makes browser readiness local while native publication waits for matching au
   expect(browser.ready()).toBe(true);
 });
 
+function nativeSession(sessionID: string | null, overrides?: Record<string, unknown>) {
+  const bound = readiness.at(-1)!;
+  window.gomodeFrontendReadiness?.onmessage?.({
+    data: JSON.stringify({
+      document: bound.document,
+      token: bound.token,
+      scope: bound.scope,
+      voiceSessionVersion: 1,
+      sessionID,
+      ...overrides,
+    }),
+  });
+}
+
+it("binds native lifetime and awaited initial publication to authenticated document and product scope", async () => {
+  const initial = deferred<void>();
+  const prepare = vi.fn((_sessionID: string, _signal: AbortSignal) => initial.promise);
+  const scope = authenticate().createScope(prepare);
+  scope.setTools([]);
+  scope.setDataReady(true);
+  await Promise.resolve();
+  acknowledge({ ...requests[0], voiceSessionVersion: 1 }, "identity");
+  expect(scope.nativeVoiceSessionID()).toBeNull();
+  for (const mismatch of [
+    { document: "foreign" },
+    { token: "retired" },
+    { scope: "old" },
+    { voiceSessionVersion: 2 },
+  ]) {
+    nativeSession("first", mismatch);
+    expect(scope.nativeVoiceSessionID()).toBeNull();
+  }
+  nativeSession("first");
+  expect(scope.nativeVoiceSessionID()).toBe("first");
+  expect(prepare).toHaveBeenCalledOnce();
+  expect(prepare.mock.calls[0]?.[0]).toBe("first");
+  expect(readiness.at(-1)?.voiceSessionPrepared).toBeNull();
+  nativeSession("first");
+  expect(prepare).toHaveBeenCalledOnce();
+  initial.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(readiness.at(-1)?.voiceSessionPrepared).toBe("first");
+  const signal = prepare.mock.calls[0]![1];
+  scope.setDataReady(false);
+  expect(signal.aborted).toBe(true);
+  expect(scope.nativeVoiceSessionID()).toBeNull();
+  expect(readiness.at(-1)?.voiceSessionPrepared).toBeNull();
+  scope.setDataReady(true);
+  nativeSession("second");
+  expect(scope.nativeVoiceSessionID()).toBe("second");
+  expect(prepare).toHaveBeenCalledTimes(2);
+  owner?.dispose();
+  expect(scope.nativeVoiceSessionID()).toBeNull();
+  expect(prepare.mock.calls[1]![1].aborted).toBe(true);
+});
+
+it("admits negotiated native wire dispatch only for the live conversation ID", async () => {
+  const responses: Record<string, unknown>[] = [];
+  window.gomodeFrontendToolResult = { postMessage: (value) => responses.push(JSON.parse(value)) };
+  const execute = vi.fn((_args: Record<string, unknown>, _context: FrontendVoiceToolContext) => ({ selected: true }));
+  const scope = authenticate().createScope();
+  scope.setTools([{ ...tool, execute }]);
+  scope.setDataReady(true);
+  await Promise.resolve();
+  acknowledge({ ...requests.at(-1)!, voiceSessionVersion: 1 }, "identity");
+  nativeSession("retired-conversation");
+  nativeSession("live-conversation");
+  const binding = readiness.at(-1)!;
+  const dispatch = (invocation: string, sessionID?: string) =>
+    window.dispatchGoModeVoiceTool!({
+      document: "document",
+      token: "identity",
+      scope: String(binding.scope),
+      invocation,
+      ...(sessionID === undefined ? {} : { sessionID }),
+      name: "select_item",
+      args: {},
+    });
+  dispatch("missing");
+  dispatch("stale", "retired-conversation");
+  dispatch("foreign", "another-conversation");
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(execute).not.toHaveBeenCalled();
+  expect(responses).toEqual([]);
+  dispatch("current", "live-conversation");
+  await vi.waitFor(() => expect(responses).toHaveLength(1));
+  expect(execute).toHaveBeenCalledOnce();
+  expect(execute.mock.calls[0]![1].sessionID).toBe("live-conversation");
+  expect(responses[0]).toMatchObject({
+    invocation: "current",
+    sessionID: "live-conversation",
+    result: { selected: true },
+  });
+  nativeSession(null);
+  dispatch("after-retirement", "live-conversation");
+  await Promise.resolve();
+  expect(execute).toHaveBeenCalledOnce();
+  expect(responses).toHaveLength(1);
+  delete window.gomodeFrontendToolResult;
+});
+
+it("retires native pending actions when the conversation ends while keeping scope tools prepared", async () => {
+  const contexts: FrontendVoiceToolContext[] = [];
+  const waiting = deferred<Record<string, unknown>>();
+  const scope = authenticate().createScope();
+  scope.setTools([
+    {
+      ...tool,
+      execute: (_args, current) => {
+        contexts.push(current);
+        return waiting.promise;
+      },
+    },
+  ]);
+  scope.setDataReady(true);
+  await Promise.resolve();
+  acknowledge({ ...requests[0], voiceSessionVersion: 1 }, "identity");
+  nativeSession("first");
+  const result = captureFrontendVoiceTools().execute("select_item", {}, "first");
+  const context = contexts[0]!;
+  expect(context.isCurrent()).toBe(true);
+  nativeSession(null);
+  expect(scope.ready()).toBe(true);
+  expect(context.isCurrent()).toBe(false);
+  expect(context.signal.aborted).toBe(true);
+  waiting.resolve({ late: true });
+  expect(await result).toHaveProperty("error");
+  expect(await captureFrontendVoiceTools().execute("select_item", {}, "first")).toHaveProperty("error");
+});
+
+it("acknowledges advisory publication failure but never a cancelled or retired publisher", async () => {
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const blocked = deferred<void>();
+  const prepare = vi
+    .fn<(sessionID: string, signal: AbortSignal) => Promise<void>>()
+    .mockRejectedValueOnce(new Error("Publication unavailable"))
+    .mockImplementationOnce(() => blocked.promise);
+  const scope = authenticate().createScope(prepare);
+  scope.setTools([]);
+  scope.setDataReady(true);
+  await Promise.resolve();
+  acknowledge({ ...requests[0], voiceSessionVersion: 1 }, "identity");
+  nativeSession("first");
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(readiness.at(-1)?.voiceSessionPrepared).toBe("first");
+  expect(warning).toHaveBeenCalledOnce();
+  nativeSession("second");
+  nativeSession(null);
+  const count = readiness.length;
+  blocked.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(readiness).toHaveLength(count);
+  expect(prepare.mock.calls[1]![1].aborted).toBe(true);
+  warning.mockRestore();
+});
+
 it("replaces workspace scopes without reauthenticating and cannot dispatch a replacement from an old conversation", async () => {
   const identity = authenticate();
   const first = identity.createScope();

@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.serialization.json.Json
@@ -34,6 +35,7 @@ import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -87,6 +89,146 @@ class VoiceConversationTest {
                 owner.finish()
                 catalog.close()
                 entry.close()
+            }
+        }
+
+    @Test
+    fun authenticatedNativeLifetimeSurvivesRecoveryAndRetiresOnIdentityReplacement() =
+        runTest {
+            val repository = SettingsRepository(MemoryPreferences())
+            val id = repository.addService("Server", "https://example.test")
+            repository.settings.first { it.activeServiceId == id }
+            val entry = ServiceShellSession(ServiceShellKey(id, "https://example.test")) {}
+            authenticate(entry, "initial")
+            val catalog = ServiceCatalog(backgroundScope)
+            val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { mapOf(entry.key to entry) }
+            val messages = mutableListOf<JSONObject>()
+
+            fun subscribe() {
+                val preparation = entry.frontendPreparation
+                val ack =
+                    JSONObject(
+                        checkNotNull(
+                            preparation.acknowledge(
+                                JSONObject()
+                                    .put(
+                                        "frontendDocument",
+                                        preparation.document,
+                                    ).put("frontendRequest", "native"),
+                            ),
+                        ),
+                    )
+                preparation.update(
+                    JSONObject()
+                        .put("document", preparation.document)
+                        .put("token", ack.getString("frontendToken"))
+                        .put("scope", "workspace")
+                        .put("ready", true)
+                        .put("voiceSessionVersion", 1),
+                ) { messages.add(JSONObject(it)) }
+            }
+            try {
+                subscribe()
+                owner.begin(false, "native-first")
+                assertEquals("native-first", messages.last().getString("sessionID"))
+                owner.begin(true)
+                assertEquals("native-first", owner.sessionID)
+                subscribe()
+                assertEquals("native-first", messages.last().getString("sessionID"))
+                owner.finish()
+                assertTrue(messages.last().isNull("sessionID"))
+                owner.begin(false, "native-second")
+                assertEquals("native-second", messages.last().getString("sessionID"))
+                authenticate(entry, "replacement")
+                assertFalse(owner.isCurrent())
+                subscribe()
+                assertTrue(messages.last().isNull("sessionID"))
+            } finally {
+                owner.finish()
+                catalog.close()
+                entry.close()
+            }
+        }
+
+    @Test
+    fun retirementReleasesAnInitialNativePublicationGateBeforeLocalSetup() =
+        runTest {
+            val repository = SettingsRepository(MemoryPreferences())
+            val id = repository.addService("Server", "https://example.test")
+            repository.updateVoiceMode(VoiceMode.DEVICE)
+            repository.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+            repository.settings.first { it.activeServiceId == id && it.onDeviceEngine == OnDeviceEngine.LOCAL_LLM }
+            val entry = ServiceShellSession(ServiceShellKey(id, "https://example.test")) {}
+            authenticate(entry, "identity")
+            val preparation = entry.frontendPreparation
+            val request = JSONObject().put("frontendDocument", preparation.document).put("frontendRequest", "gate")
+            val ack = JSONObject(checkNotNull(preparation.acknowledge(request)))
+            preparation.update(
+                JSONObject()
+                    .put("document", preparation.document)
+                    .put("token", ack.getString("frontendToken"))
+                    .put("scope", "workspace")
+                    .put("ready", true)
+                    .put("voiceSessionVersion", 1),
+            ) {}
+            val catalog = ServiceCatalog(backgroundScope)
+            val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { mapOf(entry.key to entry) }
+            try {
+                val pending = async { runCatching { owner.prepareLocal() } }
+                runCurrent()
+                assertFalse(pending.isCompleted)
+                owner.finish()
+                assertTrue(pending.await().exceptionOrNull() is VoiceSetupException)
+            } finally {
+                owner.finish()
+                catalog.close()
+                entry.close()
+            }
+        }
+
+    @Test
+    fun newlyAdmittedServiceCannotInvalidateTheInitialPublicationGateIterator() =
+        runTest {
+            val repository = SettingsRepository(MemoryPreferences())
+            val id = repository.addService("Server", "https://example.test")
+            repository.updateVoiceMode(VoiceMode.DEVICE)
+            repository.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+            repository.settings.first { it.activeServiceId == id && it.onDeviceEngine == OnDeviceEngine.LOCAL_LLM }
+            val first = ServiceShellSession(ServiceShellKey(id, "https://example.test")) {}
+            val second = ServiceShellSession(ServiceShellKey("second", "https://second.example.test")) {}
+            val third = ServiceShellSession(ServiceShellKey("third", "https://third.example.test")) {}
+            authenticate(first, "first-identity")
+            authenticate(second, "second-identity")
+            val preparation = first.frontendPreparation
+            val request = JSONObject().put("frontendDocument", preparation.document).put("frontendRequest", "gate")
+            val ack = JSONObject(checkNotNull(preparation.acknowledge(request)))
+            preparation.update(
+                JSONObject()
+                    .put("document", preparation.document)
+                    .put("token", ack.getString("frontendToken"))
+                    .put("scope", "workspace")
+                    .put("ready", true)
+                    .put("voiceSessionVersion", 1),
+            ) {}
+            val entries = mutableMapOf(first.key to first, second.key to second)
+            var authorized = true
+            val catalog = ServiceCatalog(backgroundScope)
+            val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog, { authorized }) { entries }
+            try {
+                val pending = async { runCatching { owner.prepareLocal() } }
+                runCurrent()
+                assertFalse(pending.isCompleted)
+                authenticate(third, "third-identity")
+                entries[third.key] = third
+                owner.contextText()
+                authorized = false
+                preparation.clearVoiceSession(owner.sessionID)
+                val failure = pending.await().exceptionOrNull()
+                assertTrue("Expected retired setup, received $failure", failure is VoiceSetupException)
+            } finally {
+                owner.finish()
+                catalog.close()
+                listOf(first, second, third).forEach { it.close() }
             }
         }
 

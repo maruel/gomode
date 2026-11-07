@@ -14,7 +14,7 @@ internal fun completeFixtureFrontend(entry: ServiceShellSession) {
     val ack = JSONObject(checkNotNull(state.acknowledge(request)))
     state.update(
         JSONObject().put("document", state.document).put("token", ack.getString("frontendToken")).put("ready", true),
-    )
+    ) {}
 }
 
 internal val frontendPreparationFixtureScript =

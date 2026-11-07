@@ -6,6 +6,7 @@ import { A, Router } from "@solidjs/router";
 import { createEffect, createSignal, onCleanup } from "solid-js";
 import { expect, vi } from "../tests/expect";
 import { deferred } from "../tests/deferred";
+import { defaultVoiceMessages } from "./VoiceMessages";
 import BrowserVoiceShell, { type BrowserVoiceShellProps } from "./BrowserVoiceShell";
 import { HostModeProvider } from "./HostMode";
 import {
@@ -278,13 +279,16 @@ it("configures scoped embedded MCP and gateway headers while translating the laz
   });
   scope.setTools([]);
   scope.setDataReady(true);
+  const [messages, setMessages] = createSignal({ ...defaultVoiceMessages, connect: "Speak now" });
   mount(() => scope, {
     mcpEndpoint: (endpoint) => `${endpoint}?session=original`,
     gatewayHeaders: { "X-Example-Session": "original" },
-    messages: (defaults) => ({ ...defaults, connect: "Speak now" }),
+    messages,
   });
   await screen.findByTestId("voice-runtime");
   expect(screen.getByRole("button", { name: "Speak now" })).toBeInTheDocument();
+  setMessages({ ...defaultVoiceMessages, connect: "Parler" });
+  expect(screen.getByRole("button", { name: "Parler" })).toBeInTheDocument();
   await mcpClient.listTools();
   expect(requests.some((request) => request.url === "/mcp?session=original")).toBe(true);
   await waitFor(() =>

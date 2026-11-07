@@ -10,5 +10,5 @@ internal fun completeFrontendPreparation(entry: ServiceShellSession) {
     val ack = JSONObject(checkNotNull(state.acknowledge(request)))
     state.update(
         JSONObject().put("document", state.document).put("token", ack.getString("frontendToken")).put("ready", true),
-    )
+    ) {}
 }

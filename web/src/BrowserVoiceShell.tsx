@@ -1,10 +1,10 @@
 // Lazily mounts browser voice and binds host context preparation to the current frontend owner.
 
-import { createEffect, createSignal, onCleanup, Show, type Component, type JSX } from "solid-js";
+import { createEffect, createSignal, onCleanup, Show, type Accessor, type Component, type JSX } from "solid-js";
 import { useHostMode } from "./HostMode";
 import { discoverBrowserVoice, sameOriginVoiceEndpoint, type BrowserVoiceEndpoints } from "./BrowserVoiceManifest";
 import type { FrontendPreparationScope } from "./FrontendVoiceTools";
-import type { VoiceOverlayMessages } from "./VoiceOverlay";
+import type { VoiceMessages } from "./VoiceMessages";
 import type { ServiceAuthorization } from "../../sdk/voicegateway/ts/v2/types.gen";
 import type { PrepareVoiceSession } from "./VoiceSession";
 import type { BrowserVoiceRuntime } from "./BrowserVoiceRuntime";
@@ -21,8 +21,8 @@ export interface BrowserVoiceShellProps {
   gatewayHeaders?: HeadersInit;
   /** Publish selected host context before conversation setup reads; ordinary failures are advisory. */
   prepareSession?: PrepareVoiceSession;
-  /** Defaults are supplied lazily so localization does not eagerly import the overlay. */
-  messages?: (defaults: Readonly<VoiceOverlayMessages>) => VoiceOverlayMessages;
+  /** Read the host’s current localized voice catalog. */
+  messages?: Accessor<VoiceMessages>;
   setupFailed: string;
   errorClass?: string;
   onError: (error: unknown) => void;

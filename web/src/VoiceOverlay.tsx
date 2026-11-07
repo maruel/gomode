@@ -20,7 +20,8 @@ import { TurnStateThinking, TurnStateTranscribing } from "../../sdk/voicegateway
 import { bluetoothAudioDeviceLabel, microphoneMuted, previousErrors, voiceSession } from "./VoiceSession";
 import type { MicrophoneMode, VoiceState, TranscriptEntry, ToolInvocation } from "./VoiceSession";
 import { notifications } from "./notifications";
-import VoiceSettings, { defaultVoiceSettingsMessages, type VoiceSettingsMessages } from "./VoiceSettings";
+import VoiceSettings from "./VoiceSettings";
+import { defaultVoiceMessages, type VoiceMessages } from "./VoiceMessages";
 import VoiceIcon from "./VoiceIcon";
 import type { VoiceUsage } from "./VoiceUsage";
 import type { TokenUsage } from "../../sdk/voicegateway/ts/v2/types.gen";
@@ -44,131 +45,10 @@ const BAR_DURATIONS = [80, 40, 120];
 const BAR_MIN_H = 3;
 const BAR_MAX_H = 20;
 
-/** Host-provided text for the browser voice controls. */
-export interface VoiceOverlayMessages extends Partial<VoiceSettingsMessages> {
-  usage?: string;
-  usageConversation?: string;
-  usageInput?: string;
-  usageOutput?: string;
-  usageCached?: string;
-  usageReasoning?: string;
-  usageContext?: string;
-  toolHistory?: string;
-  usageNotReported?: string;
-  voiceSettings?: string;
-  closeVoiceSettings?: string;
-  settingUpBrowserSpeech?: string;
-  nextServer?: string;
-  assistant: string;
-  callingTool?: string;
-  cancel: string;
-  cancelConnection: string;
-  hideTranscript?: string;
-  showTranscript?: string;
-  connect: string;
-  connectionFailed: string;
-  endSession: string;
-  listening: string;
-  microphone: string;
-  audioDevices?: string;
-  microphoneAccessOff?: string;
-  microphoneUnavailable?: string;
-  enableMicrophone?: string;
-  requestingMicrophone?: string;
-  enableSound?: string;
-  enableMicrophoneMeter?: string;
-  microphoneMode?: string;
-  microphoneNextState?: string;
-  microphoneListening?: string;
-  microphoneMuteOnce?: string;
-  microphoneFullyMuted?: string;
-  microphoneMuteOnceHelp?: string;
-  microphoneMuteNextReplyHelp?: string;
-  microphoneMutedHelp?: string;
-  muted: string;
-  previousErrors?: string;
-  reasoning: string;
-  reconnecting: string;
-  signaling: string;
-  speaker: string;
-  systemDefault?: string;
-  systemAudioSettings?: string;
-  systemMicrophoneSettings?: string;
-  unavailableDevice?: string;
-  speaking: string;
-  thinking: string;
-  transcribing: string;
-  transcript: string;
-  transcriptPlaceholder: string;
-  voiceActivity?: string;
-  voiceAssistant: string;
-  voiceControls?: string;
-  voiceLanguage?: string;
-  waitingForServer: string;
-  settingUpWebRTC: string;
-  you: string;
-}
-
-export const defaultVoiceOverlayMessages: VoiceOverlayMessages = {
-  ...defaultVoiceSettingsMessages,
-  voiceSettings: "Voice settings",
-  closeVoiceSettings: "Close voice settings",
-  settingUpBrowserSpeech: "Setting up browser speech…",
-  nextServer: "Next server",
-  assistant: "Assistant:",
-  callingTool: "Calling tool:",
-  cancel: "Cancel",
-  cancelConnection: "Cancel connection",
-  hideTranscript: "Hide transcript",
-  showTranscript: "Show transcript",
-  connect: "Connect voice assistant",
-  connectionFailed: "Voice connection failed",
-  endSession: "End voice session",
-  listening: "Listening…",
-  microphone: "Microphone",
-  audioDevices: "Audio devices",
-  microphoneAccessOff: "Allow microphone access in your browser’s site permissions.",
-  microphoneUnavailable: "Microphone requires HTTPS or a supported browser.",
-  enableMicrophone: "Enable microphone",
-  requestingMicrophone: "Requesting access…",
-  enableSound: "Enable sound",
-  enableMicrophoneMeter: "Enable level meter",
-  microphoneMode: "Microphone mode",
-  microphoneNextState: "Next",
-  microphoneListening: "Listening",
-  microphoneMuteOnce: "Mute once",
-  microphoneFullyMuted: "Muted",
-  microphoneMuteOnceHelp: "Muted until this reply ends.",
-  microphoneMuteNextReplyHelp: "Mutes during the next reply, then returns to Listening.",
-  microphoneMutedHelp: "Stays muted until you unmute.",
-  muted: "Muted",
-  previousErrors: "Previous errors",
-  reasoning: "Reasoning:",
-  reconnecting: "Reconnecting…",
-  signaling: "Signaling…",
-  speaker: "Speaker",
-  systemDefault: "System default",
-  systemAudioSettings: "Use your device’s sound settings to change the speaker.",
-  systemMicrophoneSettings: "Use your device’s sound settings to change the microphone.",
-  unavailableDevice: "Device unavailable",
-  speaking: "Speaking…",
-  thinking: "Thinking…",
-  transcribing: "Transcribing…",
-  transcript: "Transcript",
-  transcriptPlaceholder: "Transcript will appear here…",
-  voiceActivity: "Voice activity",
-  voiceAssistant: "Voice assistant",
-  voiceControls: "Voice controls",
-  voiceLanguage: "Voice language (e.g. en-US)",
-  waitingForServer: "Waiting for server…",
-  settingUpWebRTC: "Setting up WebRTC…",
-  you: "You:",
-};
-
 function localizedStatus(
   status: string,
   phase: VoiceState["connectPhase"],
-  messages: VoiceOverlayMessages,
+  messages: VoiceMessages,
   hasCustomMessages: boolean,
 ): string {
   if (!hasCustomMessages) return status;
@@ -191,7 +71,7 @@ function formatErrorTime(at: number): string {
 }
 
 export default function VoiceOverlay(props: {
-  messages?: VoiceOverlayMessages | Accessor<VoiceOverlayMessages>;
+  messages?: VoiceMessages | Accessor<VoiceMessages>;
   /** The owning runtime may revoke a pending start before its controls finish unmounting. */
   canStart?: Accessor<boolean>;
   // The host owns its server catalog, navigation, and voice-context handoff.
@@ -213,7 +93,7 @@ export default function VoiceOverlay(props: {
   );
   const messages = () => {
     const value = props.messages;
-    return (typeof value === "function" ? value() : value) ?? defaultVoiceOverlayMessages;
+    return (typeof value === "function" ? value() : value) ?? defaultVoiceMessages;
   };
 
   let panelRef: HTMLDivElement | undefined;
@@ -233,9 +113,7 @@ export default function VoiceOverlay(props: {
     ),
   );
   const audioHelpMessage = () =>
-    audioHelp() === "input"
-      ? (messages().systemMicrophoneSettings ?? defaultVoiceOverlayMessages.systemMicrophoneSettings)
-      : (messages().systemAudioSettings ?? defaultVoiceOverlayMessages.systemAudioSettings);
+    audioHelp() === "input" ? messages().systemMicrophoneSettings : messages().systemAudioSettings;
   const closeSettings = () => {
     setSettingsOpen(false);
     if (settingsTrigger?.isConnected) settingsTrigger.focus();
@@ -248,7 +126,7 @@ export default function VoiceOverlay(props: {
       ref={(element) => {
         settingsTrigger = element;
       }}
-      aria-label={messages().voiceSettings ?? "Voice settings"}
+      aria-label={messages().voiceSettings}
       aria-expanded={settingsOpen()}
       aria-controls={settingsId}
       onClick={(event) => {
@@ -267,8 +145,8 @@ export default function VoiceOverlay(props: {
           <button
             type="button"
             class={controls.control}
-            title={`${messages().nextServer ?? defaultVoiceOverlayMessages.nextServer}: ${server().name}`}
-            aria-label={`${messages().nextServer ?? defaultVoiceOverlayMessages.nextServer}: ${server().name}`}
+            title={`${messages().nextServer}: ${server().name}`}
+            aria-label={`${messages().nextServer}: ${server().name}`}
             onClick={() => server().onSelect()}
           >
             <VoiceIcon name="swapHoriz" />
@@ -313,9 +191,7 @@ export default function VoiceOverlay(props: {
   const [microphoneHelpOpen, setMicrophoneHelpOpen] = createSignal(false);
   const microphoneAccessHelpId = createUniqueId();
   const microphoneAccessHelp = () =>
-    microphoneUnavailable
-      ? (messages().microphoneUnavailable ?? defaultVoiceOverlayMessages.microphoneUnavailable)
-      : (messages().microphoneAccessOff ?? defaultVoiceOverlayMessages.microphoneAccessOff);
+    microphoneUnavailable ? messages().microphoneUnavailable : messages().microphoneAccessOff;
   const connectLabel = () =>
     session.state.connectStatus !== null
       ? messages().cancelConnection
@@ -323,8 +199,8 @@ export default function VoiceOverlay(props: {
         ? messages().endSession
         : microphoneWarning()
           ? session.state.microphoneAccessPending
-            ? (messages().requestingMicrophone ?? defaultVoiceOverlayMessages.requestingMicrophone)
-            : (messages().enableMicrophone ?? defaultVoiceOverlayMessages.enableMicrophone)
+            ? messages().requestingMicrophone
+            : messages().enableMicrophone
           : messages().connect;
 
   // -----------------------------------------------------------------------
@@ -425,7 +301,7 @@ export default function VoiceOverlay(props: {
           <div
             class={styles.callToolbar}
             role="group"
-            aria-label={messages().voiceControls ?? defaultVoiceOverlayMessages.voiceControls}
+            aria-label={messages().voiceControls}
             onFocusIn={(event) => {
               event.target.closest("button, select")?.scrollIntoView({ block: "nearest", inline: "nearest" });
             }}
@@ -500,7 +376,7 @@ export default function VoiceOverlay(props: {
                     if (session.state.micLevelError === null) connectButtonRef?.focus();
                   }}
                 >
-                  {messages().enableMicrophoneMeter ?? defaultVoiceOverlayMessages.enableMicrophoneMeter}
+                  {messages().enableMicrophoneMeter}
                 </button>
               </div>
             )}
@@ -510,7 +386,7 @@ export default function VoiceOverlay(props: {
               <div role="status" class={styles.accessNotice}>
                 <span>{error()}</span>
                 <button type="button" class={styles.accessAction} onClick={() => session.resumeAudio()}>
-                  {messages().enableSound ?? defaultVoiceOverlayMessages.enableSound}
+                  {messages().enableSound}
                 </button>
               </div>
             )}
@@ -558,7 +434,7 @@ export default function VoiceOverlay(props: {
           </Show>
           <Show when={!settingsOpen() && priorErrors().length > 0}>
             <details class={styles.errorHistory}>
-              <summary>{`${messages().previousErrors ?? defaultVoiceOverlayMessages.previousErrors} (${priorErrors().length})`}</summary>
+              <summary>{`${messages().previousErrors} (${priorErrors().length})`}</summary>
               <ul class={styles.errorList}>
                 <For each={priorErrors()}>
                   {(entry) => (
@@ -579,7 +455,7 @@ export default function VoiceOverlay(props: {
             )}
           </Show>
           <Show when={hasUsage() && session.state.showUsageStats}>
-            <section class={styles.usage} aria-label={messages().usage ?? "Usage"}>
+            <section class={styles.usage} aria-label={messages().usage}>
               <UsagePanel usage={session.state.usage} messages={messages} />
             </section>
           </Show>
@@ -588,14 +464,14 @@ export default function VoiceOverlay(props: {
             id={settingsId}
             hidden={!settingsOpen()}
             class={styles.settingsSection}
-            aria-label={messages().voiceSettings ?? "Voice settings"}
+            aria-label={messages().voiceSettings}
           >
             <div class={styles.settingsHeader}>
-              <h2>{messages().voiceSettings ?? "Voice settings"}</h2>
+              <h2>{messages().voiceSettings}</h2>
               <button
                 type="button"
                 class={controls.control}
-                aria-label={messages().closeVoiceSettings ?? "Close voice settings"}
+                aria-label={messages().closeVoiceSettings}
                 onClick={closeSettings}
               >
                 <VoiceIcon name="close" />
@@ -616,8 +492,8 @@ export default function VoiceOverlay(props: {
 
 // Sub-panels
 
-function UsagePanel(props: { usage: VoiceUsage | null; messages: Accessor<VoiceOverlayMessages> }) {
-  const absent = () => props.messages().usageNotReported ?? "Not reported";
+function UsagePanel(props: { usage: VoiceUsage | null; messages: Accessor<VoiceMessages> }) {
+  const absent = () => props.messages().usageNotReported;
   const model = () =>
     [props.usage?.latest.provider, props.usage?.latest.model]
       .filter((value) => value !== undefined && value !== "")
@@ -629,11 +505,7 @@ function UsagePanel(props: { usage: VoiceUsage | null; messages: Accessor<VoiceO
   };
   return (
     <>
-      <div
-        class={styles.usageBody}
-        role="group"
-        aria-label={props.messages().usageConversation ?? "Conversation tokens"}
-      >
+      <div class={styles.usageBody} role="group" aria-label={props.messages().usageConversation}>
         <Show when={model()}>
           <p class={styles.usageModel}>{model()}</p>
         </Show>
@@ -644,7 +516,7 @@ function UsagePanel(props: { usage: VoiceUsage | null; messages: Accessor<VoiceO
           <ResponseMetric
             icon="dataUsage"
             value={`${count(props.usage?.latest.contextTokens)} / ${count(props.usage?.latest.contextWindow)}`}
-            description={`${props.messages().usageContext ?? "Context tokens"}: ${count(props.usage?.latest.contextTokens)} / ${count(props.usage?.latest.contextWindow)}`}
+            description={`${props.messages().usageContext}: ${count(props.usage?.latest.contextTokens)} / ${count(props.usage?.latest.contextWindow)}`}
           />
         </Show>
       </div>
@@ -655,7 +527,7 @@ function UsagePanel(props: { usage: VoiceUsage | null; messages: Accessor<VoiceO
 function ConnectingPanel(props: {
   status: string;
   phase: VoiceState["connectPhase"];
-  messages: Accessor<VoiceOverlayMessages>;
+  messages: Accessor<VoiceMessages>;
   hasCustomMessages: boolean;
 }) {
   return (
@@ -663,7 +535,7 @@ function ConnectingPanel(props: {
       <VoiceIcon name="mic" />
       <span class={styles.statusText}>
         {props.phase === "setup" && voiceSession.transport === "text"
-          ? (props.messages().settingUpBrowserSpeech ?? props.status)
+          ? props.messages().settingUpBrowserSpeech
           : localizedStatus(props.status, props.phase, props.messages(), props.hasCustomMessages)}
       </span>
     </div>
@@ -672,7 +544,7 @@ function ConnectingPanel(props: {
 
 function MicrophoneControls(props: {
   state: VoiceState;
-  messages: Accessor<VoiceOverlayMessages>;
+  messages: Accessor<VoiceMessages>;
   onSelect: (mode: MicrophoneMode) => void;
 }) {
   const microphoneHelpId = createUniqueId();
@@ -685,14 +557,14 @@ function MicrophoneControls(props: {
   const microphoneStateLabel = (mode: MicrophoneMode) => {
     const messages = props.messages();
     return mode === "listening"
-      ? (messages.microphoneListening ?? defaultVoiceOverlayMessages.microphoneListening)
+      ? messages.microphoneListening
       : mode === "muteOnce"
-        ? (messages.microphoneMuteOnce ?? defaultVoiceOverlayMessages.microphoneMuteOnce)
-        : (messages.microphoneFullyMuted ?? defaultVoiceOverlayMessages.microphoneFullyMuted);
+        ? messages.microphoneMuteOnce
+        : messages.microphoneFullyMuted;
   };
   const microphoneLabel = () => {
     const messages = props.messages();
-    return `${messages.microphoneMode ?? defaultVoiceOverlayMessages.microphoneMode}: ${microphoneStateLabel(props.state.microphoneMode)}. ${messages.microphoneNextState ?? defaultVoiceOverlayMessages.microphoneNextState}: ${microphoneStateLabel(nextMicrophoneMode())}`;
+    return `${messages.microphoneMode}: ${microphoneStateLabel(props.state.microphoneMode)}. ${messages.microphoneNextState}: ${microphoneStateLabel(nextMicrophoneMode())}`;
   };
   return (
     <>
@@ -714,26 +586,22 @@ function MicrophoneControls(props: {
       <Show when={props.state.microphoneMode !== "listening"}>
         <span id={microphoneHelpId} class={styles.microphoneHelp}>
           {props.state.microphoneMode === "muted"
-            ? (props.messages().microphoneMutedHelp ?? defaultVoiceOverlayMessages.microphoneMutedHelp)
+            ? props.messages().microphoneMutedHelp
             : props.state.speaking
-              ? (props.messages().microphoneMuteOnceHelp ?? defaultVoiceOverlayMessages.microphoneMuteOnceHelp)
-              : (props.messages().microphoneMuteNextReplyHelp ??
-                defaultVoiceOverlayMessages.microphoneMuteNextReplyHelp)}
+              ? props.messages().microphoneMuteOnceHelp
+              : props.messages().microphoneMuteNextReplyHelp}
         </span>
       </Show>
     </>
   );
 }
 
-function ConversationPanel(props: { state: VoiceState; messages: Accessor<VoiceOverlayMessages> }) {
+function ConversationPanel(props: { state: VoiceState; messages: Accessor<VoiceMessages> }) {
   const [transcriptExpanded, setTranscriptExpanded] = createSignal(true);
   const transcriptId = createUniqueId();
   let transcriptToggleRef: HTMLButtonElement | undefined;
   const TranscriptToggle = () => {
-    const label = () =>
-      transcriptExpanded()
-        ? (props.messages().hideTranscript ?? defaultVoiceOverlayMessages.hideTranscript)
-        : (props.messages().showTranscript ?? defaultVoiceOverlayMessages.showTranscript);
+    const label = () => (transcriptExpanded() ? props.messages().hideTranscript : props.messages().showTranscript);
     return (
       <button
         ref={transcriptToggleRef}
@@ -769,8 +637,7 @@ function ConversationPanel(props: { state: VoiceState; messages: Accessor<VoiceO
   };
 
   const statusText = () => {
-    if (props.state.activeTool !== null)
-      return `${props.messages().callingTool ?? defaultVoiceOverlayMessages.callingTool} ${props.state.activeTool}…`;
+    if (props.state.activeTool !== null) return `${props.messages().callingTool} ${props.state.activeTool}…`;
     if (props.state.speaking) return props.messages().speaking;
     const busy = busyText();
     if (busy !== null) return busy;
@@ -786,11 +653,7 @@ function ConversationPanel(props: { state: VoiceState; messages: Accessor<VoiceO
 
   return (
     <>
-      <div
-        class={styles.callStatus}
-        role="status"
-        aria-label={props.messages().voiceActivity ?? defaultVoiceOverlayMessages.voiceActivity}
-      >
+      <div class={styles.callStatus} role="status" aria-label={props.messages().voiceActivity}>
         <Show
           when={
             props.state.error === null &&
@@ -806,7 +669,7 @@ function ConversationPanel(props: { state: VoiceState; messages: Accessor<VoiceO
           <ToolHistory
             entries={props.state.toolHistory}
             active={props.state.activeTool !== null}
-            label={props.messages().toolHistory ?? "Recent tool calls"}
+            label={props.messages().toolHistory}
           />
         </Show>
         <Show
@@ -913,7 +776,7 @@ function AudioDevicePicker(props: {
   outputs: Array<{ deviceId: string; label: string }>;
   selectedInputId: string;
   selectedOutputId: string;
-  messages: Accessor<VoiceOverlayMessages>;
+  messages: Accessor<VoiceMessages>;
   onSelectInput: (id: string) => Promise<void>;
   onSelectOutput: (id: string) => Promise<void>;
   switching: boolean;
@@ -939,11 +802,7 @@ function AudioDevicePicker(props: {
     </button>
   );
   return (
-    <div
-      class={styles.deviceGroup}
-      role="group"
-      aria-label={props.messages().audioDevices ?? defaultVoiceOverlayMessages.audioDevices}
-    >
+    <div class={styles.deviceGroup} role="group" aria-label={props.messages().audioDevices}>
       <div class={styles.deviceRow}>
         <div class={styles.deviceField}>
           <Show when={props.gatewayInput} fallback={<SystemDevice direction="input" />}>
@@ -964,18 +823,14 @@ function AudioDevicePicker(props: {
                 }}
                 title={`${props.messages().microphone}: ${
                   props.inputs.find((d) => d.deviceId === (props.selectedInputId || "default"))?.label ??
-                  (props.selectedInputId
-                    ? (props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice)
-                    : (props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault))
+                  (props.selectedInputId ? props.messages().unavailableDevice : props.messages().systemDefault)
                 }`}
                 aria-label={props.messages().microphone}
                 disabled={props.switching}
               >
-                <option value="">{props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault}</option>
+                <option value="">{props.messages().systemDefault}</option>
                 <Show when={props.selectedInputId && !props.inputs.some((d) => d.deviceId === props.selectedInputId)}>
-                  <option value={props.selectedInputId}>
-                    {props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice}
-                  </option>
+                  <option value={props.selectedInputId}>{props.messages().unavailableDevice}</option>
                 </Show>
                 <For each={props.inputs.filter((d) => d.deviceId !== "" && d.deviceId !== "default")}>
                   {(d) => <option value={d.deviceId}>{d.label}</option>}
@@ -1003,20 +858,16 @@ function AudioDevicePicker(props: {
                 }}
                 title={`${props.messages().speaker}: ${
                   props.outputs.find((d) => d.deviceId === (props.selectedOutputId || "default"))?.label ??
-                  (props.selectedOutputId
-                    ? (props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice)
-                    : (props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault))
+                  (props.selectedOutputId ? props.messages().unavailableDevice : props.messages().systemDefault)
                 }`}
                 aria-label={props.messages().speaker}
                 disabled={props.switching}
               >
-                <option value="">{props.messages().systemDefault ?? defaultVoiceOverlayMessages.systemDefault}</option>
+                <option value="">{props.messages().systemDefault}</option>
                 <Show
                   when={props.selectedOutputId && !props.outputs.some((d) => d.deviceId === props.selectedOutputId)}
                 >
-                  <option value={props.selectedOutputId}>
-                    {props.messages().unavailableDevice ?? defaultVoiceOverlayMessages.unavailableDevice}
-                  </option>
+                  <option value={props.selectedOutputId}>{props.messages().unavailableDevice}</option>
                 </Show>
                 <For each={props.outputs.filter((d) => d.deviceId !== "" && d.deviceId !== "default")}>
                   {(d) => <option value={d.deviceId}>{d.label}</option>}
@@ -1052,7 +903,7 @@ function MicLevelBars(barProps: { micLevel: number }) {
 
 // Transcript log
 
-function transcriptLabel(entry: TranscriptEntry, messages: VoiceOverlayMessages): string {
+function transcriptLabel(entry: TranscriptEntry, messages: VoiceMessages): string {
   if (entry.kind === "reasoning") return messages.reasoning;
   return entry.speaker === "user" ? messages.you : messages.assistant;
 }
@@ -1065,7 +916,7 @@ function transcriptLabelClass(entry: TranscriptEntry): string {
 interface TranscriptContentProps {
   transcript: TranscriptEntry[];
   showUsageStats: boolean;
-  messages: Accessor<VoiceOverlayMessages>;
+  messages: Accessor<VoiceMessages>;
   closeControl: () => JSX.Element;
   draft: VoiceState["transcriptDraft"];
 }
@@ -1166,17 +1017,17 @@ function TranscriptContent(props: TranscriptContentProps) {
   );
 }
 
-function TokenCounts(props: { counts: TokenUsage; messages: Accessor<VoiceOverlayMessages>; class?: string }) {
+function TokenCounts(props: { counts: TokenUsage; messages: Accessor<VoiceMessages>; class?: string }) {
   const metrics = [
-    { key: "inputTokens", icon: "arrowUpward", label: () => props.messages().usageInput ?? "Input" },
-    { key: "outputTokens", icon: "arrowDownward", label: () => props.messages().usageOutput ?? "Output" },
-    { key: "cachedTokens", icon: "cached", label: () => props.messages().usageCached ?? "Cached input" },
-    { key: "reasoningTokens", icon: "psychology", label: () => props.messages().usageReasoning ?? "Reasoning" },
+    { key: "inputTokens", icon: "arrowUpward", label: () => props.messages().usageInput },
+    { key: "outputTokens", icon: "arrowDownward", label: () => props.messages().usageOutput },
+    { key: "cachedTokens", icon: "cached", label: () => props.messages().usageCached },
+    { key: "reasoningTokens", icon: "psychology", label: () => props.messages().usageReasoning },
   ] as const;
   const renderMetric = (metric: (typeof metrics)[number]) => {
     const value = () => props.counts[metric.key];
     const description = () =>
-      `${metric.label()} tokens: ${value()?.toLocaleString() ?? props.messages().usageNotReported ?? "Not reported"}`;
+      `${metric.label()} tokens: ${value()?.toLocaleString() ?? props.messages().usageNotReported}`;
     return (
       <Show when={metric.key === "inputTokens" || metric.key === "outputTokens" || value() !== undefined}>
         <ResponseMetric

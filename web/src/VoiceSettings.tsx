@@ -14,81 +14,10 @@ import {
 import { browserRecognitionAvailable, browserSynthesisAvailable, browserVoiceMatchesLanguage } from "./BrowserSpeech";
 import { BROWSER_SPEECH_RATES, voiceSession, type VoiceSetupMode } from "./VoiceSession";
 import { WebAudioThinkingEarcon } from "./ThinkingEarcon";
+import { defaultVoiceSettingsMessages, type VoiceSettingsMessages } from "./VoiceMessages";
 import VoiceIcon from "./VoiceIcon";
 import controls from "./VoiceControls.module.css";
 import styles from "./VoiceSettings.module.css";
-
-export interface VoiceSettingsMessages {
-  voiceSetup: string;
-  allInOne: string;
-  selectParts: string;
-  languageModel: string;
-  browserSpeech: string;
-  recognition: string;
-  gatewayModel: string;
-  synthesisModel: string;
-  browserSpeechPrivacy: string;
-  browserRecognitionUnavailable: string;
-  browserSynthesisUnavailable: string;
-  endSessionToChange: string;
-  speakingVoice: string;
-  speakingSpeed: string;
-  speakingSpeedNormal: string;
-  speakingVoiceDefault: string;
-  browserVoiceDefault: string;
-  speakingVoiceUnavailable: string;
-  choicesLoading: string;
-  choicesRetry: string;
-  choiceUnavailable: string;
-  credits: string;
-  musicComposer: string;
-  musicArranger: string;
-  thinkingMusic: string;
-  playMusic: string;
-  stopMusic: string;
-  playMusicLabel: string;
-  stopMusicLabel: string;
-  musicPlaybackError: string;
-  showReasoning: string;
-  showUsageStats: string;
-  voiceLanguage: string;
-}
-
-export const defaultVoiceSettingsMessages: VoiceSettingsMessages = {
-  voiceSetup: "Voice setup",
-  allInOne: "All-in-one model",
-  selectParts: "Select parts",
-  languageModel: "Language model",
-  browserSpeech: "Browser",
-  recognition: "Recognition",
-  gatewayModel: "Model",
-  synthesisModel: "Speech",
-  browserSpeechPrivacy: "Browser recognition may use your browser vendor's cloud service.",
-  browserRecognitionUnavailable: "Browser recognition is unavailable. Choose a model.",
-  browserSynthesisUnavailable: "Browser speech is unavailable. Choose a model.",
-  endSessionToChange: "End the voice session to change its setup.",
-  speakingVoice: "Speaking voice",
-  speakingSpeed: "Speaking speed",
-  speakingSpeedNormal: "1× (Normal)",
-  speakingVoiceDefault: "Provider default",
-  browserVoiceDefault: "Browser default",
-  speakingVoiceUnavailable: "Choose an available speaking voice",
-  choicesLoading: "Loading voice choices…",
-  choicesRetry: "Retry loading voice choices",
-  choiceUnavailable: "Choose an available model",
-  credits: "Credits",
-  musicComposer: "Composed by Hans Zimmer.",
-  musicArranger: "Arranged for Solo-Piano by Philipp A. G. Grzywaczyk.",
-  thinkingMusic: "Thinking music",
-  playMusic: "Play",
-  stopMusic: "Stop",
-  playMusicLabel: "Play thinking music",
-  stopMusicLabel: "Stop thinking music",
-  musicPlaybackError: "Could not play thinking music.",
-  showReasoning: "Show assistant reasoning",
-  showUsageStats: "Show usage stats",
-  voiceLanguage: "Voice language (e.g. en-US)",
-};
 
 export default function VoiceSettings(props: {
   messages?: Partial<VoiceSettingsMessages> | Accessor<Partial<VoiceSettingsMessages>>;

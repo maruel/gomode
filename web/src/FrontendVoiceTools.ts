@@ -1,4 +1,4 @@
-// Owns authenticated frontend preparation, product scopes, and conversation-bound voice-tool dispatch.
+// Owns authenticated frontend preparation, native conversation lifetimes, and scoped voice-tool dispatch.
 //
 // Bridge-3 wire contract, as enforced here:
 // 1. Capture window.goModeFrontendDocument, gomodeAuth, and
@@ -10,6 +10,11 @@
 //    queued in order, so a disposed owner cannot post a late login.
 // 4. gomodeFrontendReadiness receives {document, token, scope, ready, tools};
 //    tools is the complete declaration array, including [].
+// 5. Auth capability voiceSessionVersion:1 enables authenticated readiness replies
+//    {document,token,scope,voiceSessionVersion:1,sessionID:string|null}. A scope
+//    publishes voiceSessionPrepared only after its initial host callback settles;
+//    ordinary failures warn, while retirement aborts work and suppresses late ACKs.
+//    Both ends retain nonblocking behavior for older clients without this capability.
 // Native dispatch calls window.dispatchGoModeVoiceTool({document, token, scope,
 // invocation, sessionID, name, args}) and cancelGoModeVoiceTool with the same fields;
 // completion posts {document, token, scope, invocation, result} to
@@ -49,6 +54,8 @@ export interface FrontendVoiceToolsSnapshot {
 export interface FrontendPreparationScope {
   /** Local readiness works in browsers without waiting for a native acknowledgement. */
   ready: Accessor<boolean>;
+  /** Authenticated native conversation lifetime; absent on older shells and after retirement. */
+  nativeVoiceSessionID: Accessor<string | null>;
   /** Atomically register every intended tool; [] explicitly completes zero-tool registration. */
   setTools(tools: readonly FrontendVoiceTool[]): void;
   /** Report authoritative initial-data completion, including a successful empty result. */
@@ -57,8 +64,8 @@ export interface FrontendPreparationScope {
 }
 
 export interface FrontendPreparation {
-  /** Replace product/workspace preparation without replacing authenticated identity. */
-  createScope(): FrontendPreparationScope;
+  /** Replace preparation; optionally await initial native focus publication before voice setup. */
+  createScope(prepareSession?: (sessionID: string, signal: AbortSignal) => Promise<void>): FrontendPreparationScope;
   dispose(): void;
 }
 
@@ -68,7 +75,7 @@ declare global {
     cancelGoModeVoiceTool?: (request: NativeInvocation) => void;
     gomodeFrontendToolResult?: { postMessage(message: string): void };
     goModeFrontendDocument?: Promise<string>;
-    gomodeFrontendReadiness?: { postMessage: (message: string) => void };
+    gomodeFrontendReadiness?: AuthBridge;
   }
 }
 
@@ -90,7 +97,11 @@ interface NativeToolInvocation extends NativeInvocation {
   args: Record<string, unknown>;
 }
 
-type ActiveScope = FrontendPreparationScope & { snapshot(): FrontendVoiceToolsSnapshot; binding(): string };
+type ActiveScope = FrontendPreparationScope & {
+  snapshot(): FrontendVoiceToolsSnapshot;
+  binding(): string;
+  receiveVoiceSession(sessionID: string | null): void;
+};
 let preparation: FrontendPreparation | null = null;
 let activeScope: ActiveScope | null = null;
 let nextPreparationRequest = 0;
@@ -114,6 +125,8 @@ export function createFrontendPreparationClient(): {
         (authMessage.authChanged === true && authMessage.nativeAccess === true);
       let document: string | null = null;
       let token: string | null = null;
+      let voiceSessionCapable = false;
+      let preparedSessionID: string | null = null;
       let disposed = false;
       let scope: ActiveScope | null = null;
       const publish = () =>
@@ -127,6 +140,7 @@ export function createFrontendPreparationClient(): {
               scope: scope?.binding() ?? "",
               ready,
               tools: ready ? scope?.snapshot().declarations : [],
+              ...(voiceSessionCapable ? { voiceSessionVersion: 1, voiceSessionPrepared: preparedSessionID } : {}),
             }),
           );
         });
@@ -147,12 +161,36 @@ export function createFrontendPreparationClient(): {
         )
           return;
         token = reply.frontendToken;
+        voiceSessionCapable = reply.voiceSessionVersion === 1;
         publish();
       };
+      const receiveVoiceSession = (event: { data: string }) => {
+        let value: unknown;
+        try {
+          value = JSON.parse(event.data);
+        } catch (error) {
+          console.error("Invalid Go Mode voice lifetime", error);
+          return;
+        }
+        if (disposed || !voiceSessionCapable || typeof value !== "object" || value === null || !scope) return;
+        const reply = value as Record<string, unknown>;
+        if (
+          reply.voiceSessionVersion !== 1 ||
+          reply.document !== document ||
+          reply.token !== token ||
+          reply.scope !== scope.binding() ||
+          !scope.ready()
+        )
+          return;
+        scope.receiveVoiceSession(validSessionID(reply.sessionID) ? reply.sessionID : null);
+      };
       const owner: FrontendPreparation = {
-        createScope() {
+        createScope(prepareSession) {
           scope?.dispose();
           const [ready, setReady] = createSignal(false);
+          const [nativeVoiceSessionID, setNativeVoiceSessionID] = createSignal<string | null>(null);
+          const prepareVoiceSession = prepareSession ?? null;
+          let nativeLifetime = new AbortController();
           let tools: Map<string, FrontendVoiceTool> | null = null;
           let dataReady = false;
           let released = disposed;
@@ -163,6 +201,7 @@ export function createFrontendPreparationClient(): {
             lifetime.abort();
             lifetime = new AbortController();
             registration = String(++nextRegistration);
+            current.receiveVoiceSession(null);
           };
           const owns = (request: NativeInvocation) =>
             untrack(
@@ -170,6 +209,7 @@ export function createFrontendPreparationClient(): {
                 activeScope === current &&
                 (request.sessionID === undefined || validSessionID(request.sessionID)) &&
                 ready() &&
+                (!voiceSessionCapable || request.sessionID === nativeVoiceSessionID()) &&
                 request.document === document &&
                 request.token === token &&
                 request.scope === registration,
@@ -179,11 +219,16 @@ export function createFrontendPreparationClient(): {
             const captured = tools;
             const capturedRegistration = registration;
             const capturedLifetime = lifetime.signal;
+            const capturedNativeLifetime = nativeLifetime.signal;
             return (name: string, args: Record<string, unknown>, sessionID: string | null, signal?: AbortSignal) => {
-              const isCurrent = () => activeScope === current && ready() && capturedRegistration === registration;
+              const isCurrent = () =>
+                activeScope === current &&
+                ready() &&
+                capturedRegistration === registration &&
+                (!voiceSessionCapable || sessionID === nativeVoiceSessionID());
               const tool = isCurrent() ? captured?.get(name) : null;
               return tool
-                ? runTool(tool, args, sessionID, [capturedLifetime, signal], isCurrent)
+                ? runTool(tool, args, sessionID, [capturedLifetime, capturedNativeLifetime, signal], isCurrent)
                 : Promise.resolve(unavailableTool(name));
             };
           };
@@ -215,6 +260,33 @@ export function createFrontendPreparationClient(): {
           };
           const current: ActiveScope = {
             ready,
+            nativeVoiceSessionID,
+            receiveVoiceSession(sessionID) {
+              if (untrack(nativeVoiceSessionID) === sessionID) return;
+              nativeLifetime.abort();
+              nativeLifetime = new AbortController();
+              const signal = nativeLifetime.signal;
+              preparedSessionID = null;
+              setNativeVoiceSessionID(sessionID);
+              for (const [id, invocation] of pending) {
+                if (invocation.sessionID !== sessionID) {
+                  invocation.controller.abort();
+                  pending.delete(id);
+                }
+              }
+              if (sessionID === null) return;
+              const prepare = prepareVoiceSession;
+              void (async () => {
+                try {
+                  await prepare?.(sessionID, signal);
+                } catch (error) {
+                  if (!signal.aborted) console.warn("Could not prepare native voice context", error);
+                }
+                if (signal.aborted || released || !untrack(ready)) return;
+                preparedSessionID = sessionID;
+                publish();
+              })();
+            },
             binding: () => registration,
             setTools(values) {
               if (released) return;
@@ -278,12 +350,16 @@ export function createFrontendPreparationClient(): {
           disposed = true;
           token = null;
           if (bridge?.onmessage === receive) bridge.onmessage = null;
+          if (readinessBridge?.onmessage === receiveVoiceSession) readinessBridge.onmessage = null;
           if (preparation === owner) preparation = null;
         },
       };
       preparation = owner;
       if (bridge && documentBinding !== undefined) {
-        if (grantsAccess) bridge.onmessage = receive;
+        if (grantsAccess) {
+          bridge.onmessage = receive;
+          if (readinessBridge) readinessBridge.onmessage = receiveVoiceSession;
+        }
         void documentBinding.then((boundDocument) => {
           // Revocations remain ordered; retired grants can never post late authentication.
           if (disposed && grantsAccess) return;

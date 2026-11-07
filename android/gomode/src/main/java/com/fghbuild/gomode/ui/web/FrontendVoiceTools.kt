@@ -32,11 +32,13 @@ internal class FrontendVoiceTools(
         val generation: Long,
         val binding: JsonObject,
         val sessionID: String,
+        val requiresSessionEcho: Boolean,
         val isCurrent: () -> Boolean,
     )
 
     private val pending = mutableMapOf<String, Invocation>()
     private var generation = 0L
+    private var requiresSessionEcho = false
     private var owner = WeakReference<WebView>(null)
     private var registeredURL: String? = null
     private var binding = JsonObject(emptyMap())
@@ -64,7 +66,16 @@ internal class FrontendVoiceTools(
                 }
             }
         val url = requireNotNull(view.url) { "Frontend document URL is unavailable" }
+        val nextRequiresSessionEcho = preparation.opt("voiceSessionVersion") == 1
+        // Document identity owns this registration; a same-origin SPA route may
+        // change while its initial-context acknowledgement is still pending.
+        if (owner.get() === view && ownsOrigin(view) && binding == next && declarations == tools &&
+            requiresSessionEcho == nextRequiresSessionEcho
+        ) {
+            return
+        }
         invalidate()
+        requiresSessionEcho = nextRequiresSessionEcho
         owner = WeakReference(view)
         registeredURL = url
         binding = next
@@ -81,6 +92,7 @@ internal class FrontendVoiceTools(
         registeredURL = null
         binding = JsonObject(emptyMap())
         declarations = emptyList()
+        requiresSessionEcho = false
     }
 
     // Main-thread ownership ensures cancellation and result delivery settle each invocation once.
@@ -104,6 +116,7 @@ internal class FrontendVoiceTools(
         val call = pending[id] ?: return
         if (call.view !== view || call.binding.any { (key, value) -> message[key] != value }) return
         val sessionID = message["sessionID"]
+        if (sessionID == null && call.requiresSessionEcho) return
         if (sessionID != null &&
             (sessionID !is JsonPrimitive || !sessionID.isString || sessionID.content != call.sessionID)
         ) {
@@ -140,7 +153,8 @@ internal class FrontendVoiceTools(
             val id = UUID.randomUUID().toString()
             withTimeoutOrNull(5_000) {
                 suspendCancellableCoroutine { continuation ->
-                    val call = Invocation(continuation, view, generation, binding, sessionID, isCurrent)
+                    val call =
+                        Invocation(continuation, view, generation, binding, sessionID, requiresSessionEcho, isCurrent)
                     pending[id] = call
                     continuation.invokeOnCancellation {
                         // Cancellation may originate off Main; WebView access always returns to its thread.

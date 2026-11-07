@@ -9,7 +9,8 @@ import { deferred } from "../tests/deferred";
 import { installBrowserSpeech } from "../tests/browser-speech";
 
 import { TurnStateIdle, TurnStateThinking, TurnStateTranscribing } from "../../sdk/voicegateway/ts/v2/types.gen";
-import VoiceOverlay, { defaultVoiceOverlayMessages, type VoiceOverlayMessages } from "./VoiceOverlay";
+import VoiceOverlay from "./VoiceOverlay";
+import { defaultVoiceMessages, type VoiceMessages } from "./VoiceMessages";
 import { notifications } from "./notifications";
 import { voiceSession } from "./VoiceSession";
 
@@ -947,8 +948,8 @@ describe("VoiceOverlay connection", () => {
   });
 
   it("renders host-provided controls and connection status", () => {
-    const messages: VoiceOverlayMessages = {
-      ...defaultVoiceOverlayMessages,
+    const messages: VoiceMessages = {
+      ...defaultVoiceMessages,
       connect: "Connecter la voix",
       settingUpWebRTC: "Configuration WebRTC…",
       cancelConnection: "Annuler la connexion",
@@ -963,8 +964,8 @@ describe("VoiceOverlay connection", () => {
   });
 
   it("localizes reconnect status while keeping the server error verbatim", () => {
-    const messages: VoiceOverlayMessages = {
-      ...defaultVoiceOverlayMessages,
+    const messages: VoiceMessages = {
+      ...defaultVoiceMessages,
       connectionFailed: "Connexion vocale échouée",
       reconnecting: "Reconnexion…",
     };
@@ -999,11 +1000,11 @@ describe("VoiceOverlay connection", () => {
   });
 
   it("updates a plain reactive messages prop when the host language changes", () => {
-    const [messages, setMessages] = createSignal<VoiceOverlayMessages>(defaultVoiceOverlayMessages);
+    const [messages, setMessages] = createSignal<VoiceMessages>(defaultVoiceMessages);
     render(() => <VoiceOverlay messages={messages()} />);
     expect(screen.getByRole("button", { name: "Connect voice assistant" })).toBeInTheDocument();
 
-    setMessages({ ...defaultVoiceOverlayMessages, connect: "Connecter la voix", voiceAssistant: "Assistant vocal" });
+    setMessages({ ...defaultVoiceMessages, connect: "Connecter la voix", voiceAssistant: "Assistant vocal" });
     expect(screen.getByRole("button", { name: "Connecter la voix" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Assistant vocal" })).toBeInTheDocument();
   });

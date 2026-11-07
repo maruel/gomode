@@ -90,3 +90,26 @@ test("SDK exports require an explicit protocol version", () => {
     });
   }
 });
+
+test("shared voice catalogs have no runtime or UI dependency", async () => {
+  const result = await build({
+    absWorkingDir: root,
+    entryPoints: [
+      "web/src/VoiceMessages.ts",
+      "web/src/voiceMessages/de.ts",
+      "web/src/voiceMessages/es.ts",
+      "web/src/voiceMessages/fr.ts",
+    ],
+    outdir: "e2e/browser-integration/catalogs",
+    bundle: true,
+    format: "esm",
+    write: false,
+    metafile: true,
+  });
+  assert.deepEqual(Object.keys(result.metafile.inputs).sort(), [
+    "web/src/VoiceMessages.ts",
+    "web/src/voiceMessages/de.ts",
+    "web/src/voiceMessages/es.ts",
+    "web/src/voiceMessages/fr.ts",
+  ]);
+});
