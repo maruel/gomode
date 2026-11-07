@@ -177,6 +177,18 @@ public struct Role: Codable, Equatable, Hashable {
 public enum ErrorCodes {
 }
 
+/// Extensions stores namespaced MCP extension payloads.
+///
+/// The draft schema constrains values to JSON objects. RawMessage keeps the DTO
+/// forward-compatible; validate extension values before depending on object shape.
+public typealias Extensions = [String: JSONValue]
+
+/// MetaObject is metadata attached to MCP interactions.
+///
+/// MCP reserves protocol-level key names. Implementations should use prefixed
+/// reverse-DNS keys for their own metadata.
+public typealias MetaObject = [String: JSONValue]
+
 /// JSONRPCRequest is a JSON-RPC request that expects a response.
 public struct JSONRPCRequest: Codable {
     public let jsonrpc: String
@@ -226,15 +238,15 @@ public struct ToolsCapability: Codable {
 /// Capabilities describes server-supported MCP features.
 public struct Capabilities: Codable {
     /// Experimental contains non-standard capabilities supported by the server.
-    public let experimental: [String: JSONValue]?
+    public let experimental: Extensions?
     /// DeprecatedLogging is present if the server supports sending log messages to the client.
     ///
     /// Deprecated as of protocol version 2026-07-28, but still present in that
     /// schema. This is native 2026-07-28 compatibility, not released-version
     /// compat.go support; remove it only after the upstream 2026+ schema drops it.
-    public let logging: [String: JSONValue]?
+    public let logging: MetaObject?
     /// Completions is present if the server supports argument completion suggestions.
-    public let completions: [String: JSONValue]?
+    public let completions: MetaObject?
     /// Prompts is present if the server offers prompt templates.
     public let prompts: PromptsCapability?
     /// Resources is present if the server offers resources to read.
@@ -242,7 +254,7 @@ public struct Capabilities: Codable {
     /// Tools is present if the server offers tools to call.
     public let tools: ToolsCapability
     /// Extensions contains optional MCP extensions supported by the server.
-    public let extensions: [String: JSONValue]?
+    public let extensions: Extensions?
 }
 
 /// Icon describes an optionally-sized icon for UI display.
@@ -296,29 +308,29 @@ public struct ServerDiscoverResult: Codable {
 /// SamplingCapability describes deprecated client sampling support.
 public struct SamplingCapability: Codable {
     /// Context declares context inclusion support.
-    public let context: [String: JSONValue]?
+    public let context: MetaObject?
     /// Tools declares tool-use support.
-    public let tools: [String: JSONValue]?
+    public let tools: MetaObject?
 }
 
 /// ElicitationCapability describes client elicitation support.
 public struct ElicitationCapability: Codable {
     /// Form declares support for form-mode elicitation.
-    public let form: [String: JSONValue]?
+    public let form: MetaObject?
     /// URL declares support for URL-mode elicitation.
-    public let url: [String: JSONValue]?
+    public let url: MetaObject?
 }
 
 /// ClientCapabilities describes capabilities the client supports for a request.
 public struct ClientCapabilities: Codable {
     /// Experimental contains non-standard capabilities supported by the client.
-    public let experimental: [String: JSONValue]?
+    public let experimental: Extensions?
     /// DeprecatedRoots is present if the client supports listing roots.
     ///
     /// Deprecated as of protocol version 2026-07-28, but still present in that
     /// schema. This is native 2026-07-28 compatibility, not released-version
     /// compat.go support; remove it only after the upstream 2026+ schema drops it.
-    public let roots: [String: JSONValue]?
+    public let roots: MetaObject?
     /// DeprecatedSampling is present if the client supports server-initiated LLM sampling.
     ///
     /// Deprecated as of protocol version 2026-07-28, but still present in that
@@ -328,7 +340,7 @@ public struct ClientCapabilities: Codable {
     /// Elicitation is present if the client supports server-initiated user elicitation.
     public let elicitation: ElicitationCapability?
     /// Extensions contains optional MCP extensions supported by the client.
-    public let extensions: [String: JSONValue]?
+    public let extensions: Extensions?
 }
 
 /// OpenAIUserLocation contains optional client location hints. Only the device's
@@ -336,40 +348,6 @@ public struct ClientCapabilities: Codable {
 public struct OpenAIUserLocation: Codable {
     /// Timezone is the caller device's IANA timezone, such as America/Toronto.
     public let timezone: String?
-}
-
-/// OpenAIRequestMeta contains OpenAI-specific client metadata extensions.
-/// Embedding it in RequestMeta keeps its namespaced fields flat on the wire.
-/// These optional, self-reported values do not establish authenticated identity.
-///
-/// Reference: https://developers.openai.com/plugins/reference#_meta-fields-the-client-provides
-public struct OpenAIRequestMeta: Codable {
-    /// Locale requests a language and regional convention using a BCP 47 tag,
-    /// such as en-CA or fr-CA.
-    public let locale: String?
-    /// Organization carries an anonymized identifier for the caller's ChatGPT
-    /// organization, when the client provides one.
-    public let organization: String?
-    /// Session groups tool calls from the same ChatGPT conversation using an
-    /// anonymized conversation identifier.
-    public let session: String?
-    /// Subject carries an anonymized user identifier for call correlation or
-    /// rate-limit accounting; it is not an authentication credential.
-    public let subject: String?
-    /// UserAgent is a best-effort client hint for analytics or presentation;
-    /// it is not a reliable indication of client capabilities.
-    public let userAgent: String?
-    /// UserLocation is an optional formatting hint supplied by the client.
-    public let userLocation: OpenAIUserLocation?
-
-    private enum CodingKeys: String, CodingKey {
-        case locale = "openai/locale"
-        case organization = "openai/organization"
-        case session = "openai/session"
-        case subject = "openai/subject"
-        case userAgent = "openai/userAgent"
-        case userLocation = "openai/userLocation"
-    }
 }
 
 /// RequestMeta is the metadata object required in MCP request params.
@@ -446,7 +424,7 @@ public struct ToolAnnotations: Codable {
 
 /// ToolDescriptor describes a tool the client can call.
 public struct ToolDescriptor: Codable {
-    public let _meta: [String: JSONValue]?
+    public let _meta: MetaObject?
     public let icons: [Icon]?
     /// Name is the programmatic tool identifier.
     public let name: String
@@ -464,7 +442,7 @@ public struct ToolDescriptor: Codable {
 
 /// ToolsListResult is the response payload for tools/list.
 public struct ToolsListResult: Codable {
-    public let _meta: [String: JSONValue]?
+    public let _meta: MetaObject?
     public let resultType: ResultType
     public let nextCursor: String?
     public let tools: [ToolDescriptor]
@@ -487,7 +465,7 @@ public struct ToolsCallParams: Codable {
 
 /// ResourceContent contains resource data returned by resources/read.
 public struct ResourceContent: Codable {
-    public let _meta: [String: JSONValue]?
+    public let _meta: MetaObject?
     /// URI identifies this resource.
     public let uri: String
     /// MimeType is the resource MIME type, if known.
@@ -513,7 +491,7 @@ public struct Annotations: Codable {
 /// The draft schema models this as a union. Validate checks that only fields for
 /// the selected content type are present.
 public struct ContentBlock: Codable {
-    public let _meta: [String: JSONValue]?
+    public let _meta: MetaObject?
     public let icons: [Icon]?
     /// Type identifies the content variant.
     public let `type`: ContentType
@@ -541,7 +519,7 @@ public struct ContentBlock: Codable {
 
 /// ToolCallResult is the response payload for a tool call.
 public struct ToolCallResult: Codable {
-    public let _meta: [String: JSONValue]?
+    public let _meta: MetaObject?
     public let resultType: ResultType
     /// Content is the unstructured result of the tool call.
     public let content: [ContentBlock]
@@ -553,7 +531,7 @@ public struct ToolCallResult: Codable {
 
 /// ResourceDescriptor describes a resource the server can read.
 public struct ResourceDescriptor: Codable {
-    public let _meta: [String: JSONValue]?
+    public let _meta: MetaObject?
     public let icons: [Icon]?
     /// URI identifies this resource.
     public let uri: String
@@ -573,7 +551,7 @@ public struct ResourceDescriptor: Codable {
 
 /// ResourcesListResult is the response payload for resources/list.
 public struct ResourcesListResult: Codable {
-    public let _meta: [String: JSONValue]?
+    public let _meta: MetaObject?
     public let resultType: ResultType
     public let nextCursor: String?
     public let resources: [ResourceDescriptor]
@@ -583,7 +561,7 @@ public struct ResourcesListResult: Codable {
 
 /// ResourceTemplateDescriptor describes a parameterized MCP resource.
 public struct ResourceTemplateDescriptor: Codable {
-    public let _meta: [String: JSONValue]?
+    public let _meta: MetaObject?
     public let icons: [Icon]?
     /// Name is the programmatic template identifier.
     public let name: String
@@ -601,7 +579,7 @@ public struct ResourceTemplateDescriptor: Codable {
 
 /// ResourceTemplatesListResult is the response payload for resources/templates/list.
 public struct ResourceTemplatesListResult: Codable {
-    public let _meta: [String: JSONValue]?
+    public let _meta: MetaObject?
     public let resultType: ResultType
     public let nextCursor: String?
     public let resourceTemplates: [ResourceTemplateDescriptor]
@@ -622,7 +600,7 @@ public struct ResourcesReadParams: Codable {
 
 /// ResourcesReadResult is the response payload for resources/read.
 public struct ResourcesReadResult: Codable {
-    public let _meta: [String: JSONValue]?
+    public let _meta: MetaObject?
     public let resultType: ResultType
     /// Contents contains text or blob resource contents.
     public let contents: [ResourceContent]
@@ -656,7 +634,7 @@ public struct JSONRPCNotification: Codable {
 
 /// SubscriptionNotificationParams is the payload for subscription notifications.
 public struct SubscriptionNotificationParams: Codable {
-    public let _meta: [String: JSONValue]?
+    public let _meta: MetaObject?
     /// Notifications is the subset of requested notification types the server accepted.
     public let notifications: SubscriptionFilter?
     /// URI identifies an updated resource.
@@ -666,7 +644,7 @@ public struct SubscriptionNotificationParams: Codable {
 /// SubscriptionsInitialStateParams is the payload for the
 /// notifications/subscriptions/initial_state notification.
 public struct SubscriptionsInitialStateParams: Codable {
-    public let _meta: [String: JSONValue]?
+    public let _meta: MetaObject?
     /// URI is the subscribed target whose initial state was delivered.
     public let uri: String
     /// Contents is the resources/read result for the same target, so a client

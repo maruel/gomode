@@ -5,39 +5,120 @@ private struct SSETransportFailure: Error { let underlying: Error }
 
 // Cancellation can race with URLSession returning its data task.
 private final class SSETaskOwner {
+    private enum State {
+        case waiting
+        case installed(URLSessionDataTask)
+        case cancelled
+    }
     private let lock = NSLock()
-    private var task: URLSessionDataTask?
-    private var cancelled = false
+    private var state = State.waiting
     func install(_ task: URLSessionDataTask) {
         lock.lock()
-        defer { lock.unlock() }
-        if cancelled { task.cancel() } else { self.task = task }
+        switch state {
+        case .waiting:
+            state = .installed(task)
+            lock.unlock()
+        case .cancelled:
+            lock.unlock()
+            task.cancel()
+        case .installed:
+            lock.unlock()
+            preconditionFailure("SSE response task already installed")
+        }
     }
     func cancel() {
         lock.lock()
-        defer { lock.unlock() }
-        cancelled = true
+        let task: URLSessionDataTask?
+        if case .installed(let installed) = state { task = installed } else { task = nil }
+        state = .cancelled
+        lock.unlock()
+        // Cancellation may invoke callbacks; never perform it while holding the lock.
         task?.cancel()
-        task = nil
     }
     deinit { cancel() }
+}
+
+private struct SSEFrame {
+    let type: String
+    let id: String?
+    let data: Data?
+}
+
+// Owns delimiters across pulls and frame accumulation; EOF discards unfinished frames.
+private struct SSEFrameParser {
+    let maxBytes: Int?
+    private var eventType = "message"
+    private var eventID: String?
+    private var dataLines: [String] = []
+    private var dataSize = 0
+    private var lineBytes: [UInt8] = []
+    private var previousCR = false
+    private var firstLine = true
+
+    init(maxBytes: Int?) { self.maxBytes = maxBytes }
+
+    mutating func accept(_ byte: UInt8) throws -> SSEFrame? {
+        if byte == 10 && previousCR { previousCR = false; return nil }
+        previousCR = byte == 13
+        if byte != 10 && byte != 13 {
+            if let limit = maxBytes, lineBytes.count >= limit { throw URLError(.dataLengthExceedsMaximum) }
+            lineBytes.append(byte)
+            return nil
+        }
+        var line = String(decoding: lineBytes, as: UTF8.self)
+        lineBytes.removeAll(keepingCapacity: true)
+        if firstLine {
+            if line.hasPrefix("\u{FEFF}") { line.removeFirst() }
+            firstLine = false
+        }
+        if line.isEmpty {
+            let frame = SSEFrame(type: eventType, id: eventID,
+                data: dataLines.isEmpty ? nil : Data(dataLines.joined(separator: "\n").utf8))
+            eventType = "message"
+            eventID = nil
+            dataLines.removeAll(keepingCapacity: true)
+            dataSize = 0
+            return frame
+        }
+        if line.hasPrefix(":") { return nil }
+        let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        let field = parts[0]
+        var value = parts.count > 1 ? String(parts[1]) : ""
+        if value.hasPrefix(" ") { value.removeFirst() }
+        switch field {
+        case "event": eventType = value.isEmpty ? "message" : value
+        case "id": if !value.contains("\0") { eventID = value }
+        case "data":
+            if let limit = maxBytes {
+                dataSize += value.utf8.count + (dataLines.isEmpty ? 0 : 1)
+                if dataSize > limit { throw URLError(.dataLengthExceedsMaximum) }
+            }
+            dataLines.append(value)
+        default: break
+        }
+        return nil
+    }
 }
 
 // Pull one message at a time: no producer task or decoded-event queue.
 // Memory is proportional to one materialized event; only an explicit size limit rejects large events.
 private final class SSEFrameReader<T> {
+    private enum State {
+        case unopened
+        case reading(URLSession.AsyncBytes.Iterator)
+        case finished
+    }
     private let open: () async throws -> URLSession.AsyncBytes
     private let decode: (String, Data) throws -> T?
     private let onEventID: ((String) -> Void)?
-    private let maxSSEEventBytes: Int?
+    private var parser: SSEFrameParser
     private let owner = SSETaskOwner()
-    private var iterator: URLSession.AsyncBytes.Iterator?
-    private var finished = false
+    private var state = State.unopened
     init(open: @escaping () async throws -> URLSession.AsyncBytes,
          onEventID: ((String) -> Void)?, maxSSEEventBytes: Int?, decode: @escaping (String, Data) throws -> T?) {
         self.open = open
         self.onEventID = onEventID
-        self.maxSSEEventBytes = maxSSEEventBytes
+        self.parser = SSEFrameParser(maxBytes: maxSSEEventBytes)
         self.decode = decode
     }
     deinit { owner.cancel() }
@@ -45,103 +126,105 @@ private final class SSEFrameReader<T> {
         let owner = self.owner
         return try await withTaskCancellationHandler {
             do { return try await self.readNext() }
-            catch { owner.cancel(); self.iterator = nil; self.finished = true; throw error }
+            catch { self.state = .finished; owner.cancel(); throw error }
         } onCancel: { owner.cancel() }
     }
     private func readNext() async throws -> T? {
         try _Concurrency.Task.checkCancellation()
-        if finished { return nil }
-        if iterator == nil {
+        var iterator: URLSession.AsyncBytes.Iterator
+        switch state {
+        case .unopened:
             let bytes = try await open()
             owner.install(bytes.task)
             iterator = bytes.makeAsyncIterator()
+            state = .reading(iterator)
+        case .reading(let current):
+            iterator = current
+        case .finished:
+            return nil
         }
-        var eventType = "message"
-        var eventID: String?
-        var dataLines: [String] = []
-        var dataSize = 0
-        var lineBytes: [UInt8] = []
-        var previousCR = false
         while true {
             try _Concurrency.Task.checkCancellation()
             let nextByte: UInt8?
-            do { nextByte = try await iterator?.next() }
+            do { nextByte = try await iterator.next() }
             catch {
                 try _Concurrency.Task.checkCancellation()
                 throw SSETransportFailure(underlying: error)
             }
             guard let byte = nextByte else {
-                finished = true
-                iterator = nil
+                state = .finished
                 owner.cancel()
                 return nil
             }
-            if byte == 10 && previousCR { previousCR = false; continue }
-            previousCR = byte == 13
-            if byte != 10 && byte != 13 {
-                if let limit = maxSSEEventBytes, lineBytes.count >= limit { throw URLError(.dataLengthExceedsMaximum) }
-                lineBytes.append(byte)
-                continue
-            }
-            let line = String(decoding: lineBytes, as: UTF8.self)
-            lineBytes.removeAll(keepingCapacity: true)
-            if line.isEmpty {
-                if let eventID { onEventID?(eventID) }
-                let type = eventType
-                let data = dataLines.isEmpty ? nil : Data(dataLines.joined(separator: "\n").utf8)
-                eventType = "message"
-                eventID = nil
-                dataLines.removeAll(keepingCapacity: true)
-                dataSize = 0
-                if let data, let event = try decode(type, data) { return event }
-                continue
-            }
-            if line.hasPrefix(":") { continue }
-            let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-            let field = parts[0]
-            var value = parts.count > 1 ? String(parts[1]) : ""
-            if value.hasPrefix(" ") { value.removeFirst() }
-            switch field {
-            case "event": eventType = value.isEmpty ? "message" : value
-            case "id": if !value.contains("\0") { eventID = value }
-            case "data":
-                if let limit = maxSSEEventBytes {
-                    dataSize += value.utf8.count + (dataLines.isEmpty ? 0 : 1)
-                    if dataSize > limit { throw URLError(.dataLengthExceedsMaximum) }
-                }
-                dataLines.append(value)
-            default: break
+            guard let frame = try parser.accept(byte) else { continue }
+            // A completed-frame ID is transport position, saved before callbacks/decode/delivery; it is not an acknowledgement.
+            if let id = frame.id { onEventID?(id) }
+            if let data = frame.data, let event = try decode(frame.type, data) {
+                state = .reading(iterator)
+                return event
             }
         }
     }
 }
 
-private final class SSEReconnectReader<T> {
-    private let connect: () -> AsyncThrowingStream<T, Error>
-    private var iterator: AsyncThrowingStream<T, Error>.Iterator?
+// Receiving primary values resets the platform's fixed-delay backoff.
+private struct SSEBackoff {
     private var delayNs: UInt64 = 500_000_000
+    mutating func reset() { delayNs = 500_000_000 }
+    mutating func nextDelay() -> UInt64 {
+        let current = delayNs
+        delayNs = min(delayNs * 3 / 2, 4_000_000_000)
+        return current
+    }
+}
+
+private final class SSEReconnectReader<T> {
+    private enum State {
+        case connecting
+        case reading(AsyncThrowingStream<T, Error>.Iterator)
+        case finished
+    }
+    private let connect: () -> AsyncThrowingStream<T, Error>
+    private var state = State.connecting
+    private var backoff = SSEBackoff()
     init(_ connect: @escaping () -> AsyncThrowingStream<T, Error>) { self.connect = connect }
     func next() async throws -> T? {
-        while !_Concurrency.Task.isCancelled {
-            do {
-                if iterator == nil { iterator = connect().makeAsyncIterator() }
-                if let value = try await iterator?.next() {
-                    delayNs = 500_000_000
-                    return value
+        do {
+            while true {
+                try _Concurrency.Task.checkCancellation()
+                var iterator: AsyncThrowingStream<T, Error>.Iterator
+                switch state {
+                case .connecting:
+                    iterator = connect().makeAsyncIterator()
+                    state = .reading(iterator)
+                case .reading(let current):
+                    iterator = current
+                case .finished:
+                    return nil
                 }
-                iterator = nil // Clean EOF reconnects with the latest cursor.
-            } catch is SSETransportFailure {
-                iterator = nil
-            } catch {
-                iterator = nil
-                throw error
+                do {
+                    if let value = try await iterator.next() {
+                        state = .reading(iterator)
+                        backoff.reset()
+                        return value
+                    }
+                } catch is SSETransportFailure {
+                    // Only failures marked at network boundaries are retryable.
+                }
+                // Clean EOF also retries, after waiting; cursor storage belongs to the returned stream.
+                state = .connecting
+                try await _Concurrency.Task.sleep(nanoseconds: backoff.nextDelay())
             }
-            try await _Concurrency.Task.sleep(nanoseconds: delayNs)
-            delayNs = min(delayNs * 3 / 2, 4_000_000_000)
+        } catch {
+            state = .finished
+            throw error
         }
-        iterator = nil
-        return nil
     }
+}
+
+private enum SSEDecodeFailure {
+    case discard
+    case terminate
 }
 
 private final class SSECursor {
@@ -217,6 +300,7 @@ public final class ApiClient {
         path: String, lastEventID: String?, onEventID: ((String) -> Void)?,
         decode: @escaping (String, Data) throws -> T?
     ) -> AsyncThrowingStream<T, Error> {
+        // Decode and callback failures terminate iteration; unknown event types are ignored.
         let reader = SSEFrameReader(open: {
             var req = URLRequest(url: URL(string: self.baseURL + path)!)
             req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
@@ -238,68 +322,42 @@ public final class ApiClient {
         return AsyncThrowingStream(unfolding: { try await reader.next() })
     }
 
-    private func namedReconnectingStream<T>(_ connect: @escaping () -> AsyncThrowingStream<T, Error>) -> AsyncThrowingStream<T, Error> {
-        let reader = SSEReconnectReader(connect)
+    // One-shot plain streams discard decode failures; reconnecting streams terminate on them.
+    // Framing and pull-based delivery are shared with named streams.
+    private func sseStream<T: Decodable>(path: String, decodeFailure: SSEDecodeFailure) -> AsyncThrowingStream<T, Error> {
+        let reader = SSEFrameReader<T>(open: {
+            var req = URLRequest(url: URL(string: self.baseURL + path)!)
+            req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+            if let token = self.tokenProvider?() {
+                req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+            let bytes: URLSession.AsyncBytes
+            let response: URLResponse
+            do { (bytes, response) = try await self.urlSession.bytes(for: req) }
+            catch {
+                try _Concurrency.Task.checkCancellation()
+                throw SSETransportFailure(underlying: error)
+            }
+            if let httpResponse = response as? HTTPURLResponse,
+               !(200..<300).contains(httpResponse.statusCode) {
+                bytes.task.cancel()
+                throw ApiError(
+                    statusCode: httpResponse.statusCode, code: "HTTP_ERROR",
+                    message: "SSE connection failed with status \(httpResponse.statusCode)", details: nil)
+            }
+            return bytes
+        }, onEventID: nil, maxSSEEventBytes: nil, decode: { _, data in
+            switch decodeFailure {
+            case .discard: return try? self.decoder.decode(T.self, from: data)
+            case .terminate: return try self.decoder.decode(T.self, from: data)
+            }
+        })
         return AsyncThrowingStream(unfolding: { try await reader.next() })
     }
 
-    private func sseStream<T: Decodable>(path: String) -> AsyncThrowingStream<T, Error> {
-        AsyncThrowingStream { continuation in
-            let task = _Concurrency.Task {
-                do {
-                    var req = URLRequest(url: URL(string: self.baseURL + path)!)
-                    req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-                    if let token = self.tokenProvider?() {
-                        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                    }
-                    let (bytes, response) = try await self.urlSession.bytes(for: req)
-                    if let httpResponse = response as? HTTPURLResponse,
-                       !(200..<300).contains(httpResponse.statusCode) {
-                        continuation.finish(throwing: ApiError(
-                            statusCode: httpResponse.statusCode, code: "HTTP_ERROR",
-                            message: "SSE connection failed with status \(httpResponse.statusCode)",
-                            details: nil))
-                        return
-                    }
-                    for try await line in bytes.lines {
-                        if _Concurrency.Task.isCancelled { break }
-                        guard line.hasPrefix("data: ") else { continue }
-                        let data = Data(line.dropFirst(6).utf8)
-                        if let event = try? self.decoder.decode(T.self, from: data) {
-                            continuation.yield(event)
-                        }
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in task.cancel() }
-        }
-    }
-
     private func reconnectingStream<T>(_ connect: @escaping () -> AsyncThrowingStream<T, Error>) -> AsyncThrowingStream<T, Error> {
-        AsyncThrowingStream { continuation in
-            let task = _Concurrency.Task {
-                var delayNs: UInt64 = 500_000_000
-                while !_Concurrency.Task.isCancelled {
-                    do {
-                        for try await value in connect() {
-                            delayNs = 500_000_000
-                            continuation.yield(value)
-                        }
-                        continuation.finish()
-                        return
-                    } catch {
-                        if _Concurrency.Task.isCancelled { break }
-                        try? await _Concurrency.Task.sleep(nanoseconds: delayNs)
-                        delayNs = min(delayNs * 3 / 2, 4_000_000_000)
-                    }
-                }
-                continuation.finish()
-            }
-            continuation.onTermination = { _ in task.cancel() }
-        }
+        let reader = SSEReconnectReader(connect)
+        return AsyncThrowingStream(unfolding: { try await reader.next() })
     }
 
     // JSON endpoints

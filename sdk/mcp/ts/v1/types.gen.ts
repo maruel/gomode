@@ -82,6 +82,22 @@ export type Role =
 export const RoleUser = "user";
 export const RoleAssistant = "assistant";
 
+/**
+ * Extensions stores namespaced MCP extension payloads.
+ *
+ * The draft schema constrains values to JSON objects. RawMessage keeps the DTO
+ * forward-compatible; validate extension values before depending on object shape.
+ */
+export type Extensions = { [key: string]: unknown /* json.RawMessage */ };
+
+/**
+ * MetaObject is metadata attached to MCP interactions.
+ *
+ * MCP reserves protocol-level key names. Implementations should use prefixed
+ * reverse-DNS keys for their own metadata.
+ */
+export type MetaObject = { [key: string]: unknown };
+
 /** JSONRPCRequest is a JSON-RPC request that expects a response. */
 export interface JSONRPCRequest {
   jsonrpc: string;
@@ -131,7 +147,7 @@ export interface ToolsCapability {
 /** Capabilities describes server-supported MCP features. */
 export interface Capabilities {
   /** Experimental contains non-standard capabilities supported by the server. */
-  experimental?: { [key: string]: unknown /* json.RawMessage */};
+  experimental?: Extensions;
   /**
    * DeprecatedLogging is present if the server supports sending log messages to the client.
    *
@@ -139,9 +155,9 @@ export interface Capabilities {
    * schema. This is native 2026-07-28 compatibility, not released-version
    * compat.go support; remove it only after the upstream 2026+ schema drops it.
    */
-  logging?: { [key: string]: unknown};
+  logging?: MetaObject;
   /** Completions is present if the server supports argument completion suggestions. */
-  completions?: { [key: string]: unknown};
+  completions?: MetaObject;
   /** Prompts is present if the server offers prompt templates. */
   prompts?: PromptsCapability;
   /** Resources is present if the server offers resources to read. */
@@ -149,7 +165,7 @@ export interface Capabilities {
   /** Tools is present if the server offers tools to call. */
   tools: ToolsCapability;
   /** Extensions contains optional MCP extensions supported by the server. */
-  extensions?: { [key: string]: unknown /* json.RawMessage */};
+  extensions?: Extensions;
 }
 
 /** Icon describes an optionally-sized icon for UI display. */
@@ -205,23 +221,23 @@ export interface ServerDiscoverResult {
 /** SamplingCapability describes deprecated client sampling support. */
 export interface SamplingCapability {
   /** Context declares context inclusion support. */
-  context?: { [key: string]: unknown};
+  context?: MetaObject;
   /** Tools declares tool-use support. */
-  tools?: { [key: string]: unknown};
+  tools?: MetaObject;
 }
 
 /** ElicitationCapability describes client elicitation support. */
 export interface ElicitationCapability {
   /** Form declares support for form-mode elicitation. */
-  form?: { [key: string]: unknown};
+  form?: MetaObject;
   /** URL declares support for URL-mode elicitation. */
-  url?: { [key: string]: unknown};
+  url?: MetaObject;
 }
 
 /** ClientCapabilities describes capabilities the client supports for a request. */
 export interface ClientCapabilities {
   /** Experimental contains non-standard capabilities supported by the client. */
-  experimental?: { [key: string]: unknown /* json.RawMessage */};
+  experimental?: Extensions;
   /**
    * DeprecatedRoots is present if the client supports listing roots.
    *
@@ -229,7 +245,7 @@ export interface ClientCapabilities {
    * schema. This is native 2026-07-28 compatibility, not released-version
    * compat.go support; remove it only after the upstream 2026+ schema drops it.
    */
-  roots?: { [key: string]: unknown};
+  roots?: MetaObject;
   /**
    * DeprecatedSampling is present if the client supports server-initiated LLM sampling.
    *
@@ -241,7 +257,7 @@ export interface ClientCapabilities {
   /** Elicitation is present if the client supports server-initiated user elicitation. */
   elicitation?: ElicitationCapability;
   /** Extensions contains optional MCP extensions supported by the client. */
-  extensions?: { [key: string]: unknown /* json.RawMessage */};
+  extensions?: Extensions;
 }
 
 /**
@@ -251,43 +267,6 @@ export interface ClientCapabilities {
 export interface OpenAIUserLocation {
   /** Timezone is the caller device's IANA timezone, such as America/Toronto. */
   timezone?: string;
-}
-
-/**
- * OpenAIRequestMeta contains OpenAI-specific client metadata extensions.
- * Embedding it in RequestMeta keeps its namespaced fields flat on the wire.
- * These optional, self-reported values do not establish authenticated identity.
- *
- * Reference: https://developers.openai.com/plugins/reference#_meta-fields-the-client-provides
- */
-export interface OpenAIRequestMeta {
-  /**
-   * Locale requests a language and regional convention using a BCP 47 tag,
-   * such as en-CA or fr-CA.
-   */
-  "openai/locale"?: string;
-  /**
-   * Organization carries an anonymized identifier for the caller's ChatGPT
-   * organization, when the client provides one.
-   */
-  "openai/organization"?: string;
-  /**
-   * Session groups tool calls from the same ChatGPT conversation using an
-   * anonymized conversation identifier.
-   */
-  "openai/session"?: string;
-  /**
-   * Subject carries an anonymized user identifier for call correlation or
-   * rate-limit accounting; it is not an authentication credential.
-   */
-  "openai/subject"?: string;
-  /**
-   * UserAgent is a best-effort client hint for analytics or presentation;
-   * it is not a reliable indication of client capabilities.
-   */
-  "openai/userAgent"?: string;
-  /** UserLocation is an optional formatting hint supplied by the client. */
-  "openai/userLocation"?: OpenAIUserLocation;
 }
 
 /** RequestMeta is the metadata object required in MCP request params. */
@@ -364,7 +343,7 @@ export interface ToolAnnotations {
 
 /** ToolDescriptor describes a tool the client can call. */
 export interface ToolDescriptor {
-  _meta?: { [key: string]: unknown};
+  _meta?: MetaObject;
   icons?: Icon[];
   /** Name is the programmatic tool identifier. */
   name: string;
@@ -382,7 +361,7 @@ export interface ToolDescriptor {
 
 /** ToolsListResult is the response payload for tools/list. */
 export interface ToolsListResult {
-  _meta?: { [key: string]: unknown};
+  _meta?: MetaObject;
   resultType: ResultType;
   nextCursor?: string;
   tools: ToolDescriptor[];
@@ -405,7 +384,7 @@ export interface ToolsCallParams {
 
 /** ResourceContent contains resource data returned by resources/read. */
 export interface ResourceContent {
-  _meta?: { [key: string]: unknown};
+  _meta?: MetaObject;
   /** URI identifies this resource. */
   uri: string;
   /** MimeType is the resource MIME type, if known. */
@@ -433,7 +412,7 @@ export interface Annotations {
  * the selected content type are present.
  */
 export interface ContentBlock {
-  _meta?: { [key: string]: unknown};
+  _meta?: MetaObject;
   icons?: Icon[];
   /** Type identifies the content variant. */
   type: ContentType;
@@ -461,7 +440,7 @@ export interface ContentBlock {
 
 /** ToolCallResult is the response payload for a tool call. */
 export interface ToolCallResult {
-  _meta?: { [key: string]: unknown};
+  _meta?: MetaObject;
   resultType: ResultType;
   /** Content is the unstructured result of the tool call. */
   content: ContentBlock[];
@@ -473,7 +452,7 @@ export interface ToolCallResult {
 
 /** ResourceDescriptor describes a resource the server can read. */
 export interface ResourceDescriptor {
-  _meta?: { [key: string]: unknown};
+  _meta?: MetaObject;
   icons?: Icon[];
   /** URI identifies this resource. */
   uri: string;
@@ -493,7 +472,7 @@ export interface ResourceDescriptor {
 
 /** ResourcesListResult is the response payload for resources/list. */
 export interface ResourcesListResult {
-  _meta?: { [key: string]: unknown};
+  _meta?: MetaObject;
   resultType: ResultType;
   nextCursor?: string;
   resources: ResourceDescriptor[];
@@ -503,7 +482,7 @@ export interface ResourcesListResult {
 
 /** ResourceTemplateDescriptor describes a parameterized MCP resource. */
 export interface ResourceTemplateDescriptor {
-  _meta?: { [key: string]: unknown};
+  _meta?: MetaObject;
   icons?: Icon[];
   /** Name is the programmatic template identifier. */
   name: string;
@@ -521,7 +500,7 @@ export interface ResourceTemplateDescriptor {
 
 /** ResourceTemplatesListResult is the response payload for resources/templates/list. */
 export interface ResourceTemplatesListResult {
-  _meta?: { [key: string]: unknown};
+  _meta?: MetaObject;
   resultType: ResultType;
   nextCursor?: string;
   resourceTemplates: ResourceTemplateDescriptor[];
@@ -542,7 +521,7 @@ export interface ResourcesReadParams {
 
 /** ResourcesReadResult is the response payload for resources/read. */
 export interface ResourcesReadResult {
-  _meta?: { [key: string]: unknown};
+  _meta?: MetaObject;
   resultType: ResultType;
   /** Contents contains text or blob resource contents. */
   contents: ResourceContent[];
@@ -576,7 +555,7 @@ export interface JSONRPCNotification {
 
 /** SubscriptionNotificationParams is the payload for subscription notifications. */
 export interface SubscriptionNotificationParams {
-  _meta?: { [key: string]: unknown};
+  _meta?: MetaObject;
   /** Notifications is the subset of requested notification types the server accepted. */
   notifications?: SubscriptionFilter;
   /** URI identifies an updated resource. */
@@ -588,7 +567,7 @@ export interface SubscriptionNotificationParams {
  * notifications/subscriptions/initial_state notification.
  */
 export interface SubscriptionsInitialStateParams {
-  _meta?: { [key: string]: unknown};
+  _meta?: MetaObject;
   /** URI is the subscribed target whose initial state was delivered. */
   uri: string;
   /**

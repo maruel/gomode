@@ -84,14 +84,14 @@ Use text sessions when the client handles speech recognition and synthesis.
 Browser integrations use a ticket handshake; route ticket issuance and redemption
 to the same gateway instance. Keep tickets out of URLs, storage, and logs.
 
-Use the generated [API reference](../sdk/voicegateway/v2/API.md) for the handshake
+Use the generated [API reference](../sdk/voicegateway/API.v2.md) for the handshake
 routes and request types, and [http.go](../voicegateway/http.go) for native,
 browser, and embedded authentication requirements.
 
 ## API and implementation references
 
-The generated [v2 API reference](../sdk/voicegateway/v2/API.md) owns routes and
-wire types. The published [v1 API reference](../sdk/voicegateway/v1/API.md)
+The generated [v2 API reference](../sdk/voicegateway/API.v2.md) owns routes and
+wire types. The published [v1 API reference](../sdk/voicegateway/API.v1.md)
 covers v1 clients. Use the matching API version throughout a session.
 
 Runtime behavior is documented beside its owners:

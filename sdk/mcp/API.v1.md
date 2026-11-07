@@ -118,6 +118,14 @@ JSONRPCResponse is a JSON-RPC response containing either a result or an error.
 | `result` | `JSONValue` |  |  |
 | `error` | `JSONRPCError` |  |  |
 
+### Extensions
+
+`type Extensions = Record<string, JSONValue>`
+
+### MetaObject
+
+`type MetaObject = Record<string, JSONValue>`
+
 ### PromptsCapability
 
 PromptsCapability describes prompt support advertised by the server.
@@ -149,17 +157,17 @@ Capabilities describes server-supported MCP features.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `experimental` | `Record<string, JSONValue>` | Experimental contains non-standard capabilities supported by the server. |  |
-| `logging` | `Record<string, JSONValue>` | DeprecatedLogging is present if the server supports sending log messages to the client.
+| `experimental` | `Extensions` | Experimental contains non-standard capabilities supported by the server. |  |
+| `logging` | `MetaObject` | DeprecatedLogging is present if the server supports sending log messages to the client.
 
 Deprecated as of protocol version 2026-07-28, but still present in that
 schema. This is native 2026-07-28 compatibility, not released-version
 compat.go support; remove it only after the upstream 2026+ schema drops it. |  |
-| `completions` | `Record<string, JSONValue>` | Completions is present if the server supports argument completion suggestions. |  |
+| `completions` | `MetaObject` | Completions is present if the server supports argument completion suggestions. |  |
 | `prompts` | `PromptsCapability` | Prompts is present if the server offers prompt templates. |  |
 | `resources` | `ResourcesCapability` | Resources is present if the server offers resources to read. |  |
 | `tools` | `ToolsCapability` | Tools is present if the server offers tools to call. | yes |
-| `extensions` | `Record<string, JSONValue>` | Extensions contains optional MCP extensions supported by the server. |  |
+| `extensions` | `Extensions` | Extensions contains optional MCP extensions supported by the server. |  |
 
 ### Icon
 
@@ -208,8 +216,8 @@ SamplingCapability describes deprecated client sampling support.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `context` | `Record<string, JSONValue>` | Context declares context inclusion support. |  |
-| `tools` | `Record<string, JSONValue>` | Tools declares tool-use support. |  |
+| `context` | `MetaObject` | Context declares context inclusion support. |  |
+| `tools` | `MetaObject` | Tools declares tool-use support. |  |
 
 ### ElicitationCapability
 
@@ -217,8 +225,8 @@ ElicitationCapability describes client elicitation support.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `form` | `Record<string, JSONValue>` | Form declares support for form-mode elicitation. |  |
-| `url` | `Record<string, JSONValue>` | URL declares support for URL-mode elicitation. |  |
+| `form` | `MetaObject` | Form declares support for form-mode elicitation. |  |
+| `url` | `MetaObject` | URL declares support for URL-mode elicitation. |  |
 
 ### ClientCapabilities
 
@@ -226,8 +234,8 @@ ClientCapabilities describes capabilities the client supports for a request.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `experimental` | `Record<string, JSONValue>` | Experimental contains non-standard capabilities supported by the client. |  |
-| `roots` | `Record<string, JSONValue>` | DeprecatedRoots is present if the client supports listing roots.
+| `experimental` | `Extensions` | Experimental contains non-standard capabilities supported by the client. |  |
+| `roots` | `MetaObject` | DeprecatedRoots is present if the client supports listing roots.
 
 Deprecated as of protocol version 2026-07-28, but still present in that
 schema. This is native 2026-07-28 compatibility, not released-version
@@ -238,7 +246,7 @@ Deprecated as of protocol version 2026-07-28, but still present in that
 schema. This is native 2026-07-28 compatibility, not released-version
 compat.go support; remove it only after the upstream 2026+ schema drops it. |  |
 | `elicitation` | `ElicitationCapability` | Elicitation is present if the client supports server-initiated user elicitation. |  |
-| `extensions` | `Record<string, JSONValue>` | Extensions contains optional MCP extensions supported by the client. |  |
+| `extensions` | `Extensions` | Extensions contains optional MCP extensions supported by the client. |  |
 
 ### OpenAIUserLocation
 
@@ -248,28 +256,6 @@ IANA timezone is used; these untrusted hints must not influence authorization.
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
 | `timezone` | `string` | Timezone is the caller device's IANA timezone, such as America/Toronto. |  |
-
-### OpenAIRequestMeta
-
-OpenAIRequestMeta contains OpenAI-specific client metadata extensions.
-Embedding it in RequestMeta keeps its namespaced fields flat on the wire.
-These optional, self-reported values do not establish authenticated identity.
-
-Reference: https://developers.openai.com/plugins/reference#_meta-fields-the-client-provides
-
-| Field | Type | Description | Required |
-|-------|------|-------------|----------|
-| `openai/locale` | `string` | Locale requests a language and regional convention using a BCP 47 tag,
-such as en-CA or fr-CA. |  |
-| `openai/organization` | `string` | Organization carries an anonymized identifier for the caller's ChatGPT
-organization, when the client provides one. |  |
-| `openai/session` | `string` | Session groups tool calls from the same ChatGPT conversation using an
-anonymized conversation identifier. |  |
-| `openai/subject` | `string` | Subject carries an anonymized user identifier for call correlation or
-rate-limit accounting; it is not an authentication credential. |  |
-| `openai/userAgent` | `string` | UserAgent is a best-effort client hint for analytics or presentation;
-it is not a reliable indication of client capabilities. |  |
-| `openai/userLocation` | `OpenAIUserLocation` | UserLocation is an optional formatting hint supplied by the client. |  |
 
 ### RequestMeta
 
@@ -327,7 +313,7 @@ ToolDescriptor describes a tool the client can call.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `_meta` | `Record<string, JSONValue>` |  |  |
+| `_meta` | `MetaObject` |  |  |
 | `icons` | `Icon[]` |  |  |
 | `name` | `string` | Name is the programmatic tool identifier. | yes |
 | `title` | `string` | Title is a human-readable display name. |  |
@@ -342,7 +328,7 @@ ToolsListResult is the response payload for tools/list.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `_meta` | `Record<string, JSONValue>` |  |  |
+| `_meta` | `MetaObject` |  |  |
 | `resultType` | `ResultType` |  | yes |
 | `nextCursor` | `string` |  |  |
 | `tools` | `ToolDescriptor[]` |  | yes |
@@ -367,7 +353,7 @@ ResourceContent contains resource data returned by resources/read.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `_meta` | `Record<string, JSONValue>` |  |  |
+| `_meta` | `MetaObject` |  |  |
 | `uri` | `string` | URI identifies this resource. | yes |
 | `mimeType` | `string` | MimeType is the resource MIME type, if known. |  |
 | `text` | `string` | Text contains textual resource contents. |  |
@@ -392,7 +378,7 @@ the selected content type are present.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `_meta` | `Record<string, JSONValue>` |  |  |
+| `_meta` | `MetaObject` |  |  |
 | `icons` | `Icon[]` |  |  |
 | `type` | `ContentType` | Type identifies the content variant. | yes |
 | `name` | `string` | Name is used by resource_link content. |  |
@@ -412,7 +398,7 @@ ToolCallResult is the response payload for a tool call.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `_meta` | `Record<string, JSONValue>` |  |  |
+| `_meta` | `MetaObject` |  |  |
 | `resultType` | `ResultType` |  | yes |
 | `content` | `ContentBlock[]` | Content is the unstructured result of the tool call. | yes |
 | `structuredContent` | `JSONValue` | StructuredContent is optional JSON matching the tool output schema on success. |  |
@@ -424,7 +410,7 @@ ResourceDescriptor describes a resource the server can read.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `_meta` | `Record<string, JSONValue>` |  |  |
+| `_meta` | `MetaObject` |  |  |
 | `icons` | `Icon[]` |  |  |
 | `uri` | `string` | URI identifies this resource. | yes |
 | `name` | `string` | Name is the programmatic resource identifier. | yes |
@@ -440,7 +426,7 @@ ResourcesListResult is the response payload for resources/list.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `_meta` | `Record<string, JSONValue>` |  |  |
+| `_meta` | `MetaObject` |  |  |
 | `resultType` | `ResultType` |  | yes |
 | `nextCursor` | `string` |  |  |
 | `resources` | `ResourceDescriptor[]` |  | yes |
@@ -453,7 +439,7 @@ ResourceTemplateDescriptor describes a parameterized MCP resource.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `_meta` | `Record<string, JSONValue>` |  |  |
+| `_meta` | `MetaObject` |  |  |
 | `icons` | `Icon[]` |  |  |
 | `name` | `string` | Name is the programmatic template identifier. | yes |
 | `title` | `string` | Title is a human-readable display name. |  |
@@ -468,7 +454,7 @@ ResourceTemplatesListResult is the response payload for resources/templates/list
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `_meta` | `Record<string, JSONValue>` |  |  |
+| `_meta` | `MetaObject` |  |  |
 | `resultType` | `ResultType` |  | yes |
 | `nextCursor` | `string` |  |  |
 | `resourceTemplates` | `ResourceTemplateDescriptor[]` |  | yes |
@@ -492,7 +478,7 @@ ResourcesReadResult is the response payload for resources/read.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `_meta` | `Record<string, JSONValue>` |  |  |
+| `_meta` | `MetaObject` |  |  |
 | `resultType` | `ResultType` |  | yes |
 | `contents` | `ResourceContent[]` | Contents contains text or blob resource contents. | yes |
 | `ttlMs` | `int` | TTLMS hints how long clients may cache this response in milliseconds. | yes |
@@ -532,7 +518,7 @@ SubscriptionNotificationParams is the payload for subscription notifications.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `_meta` | `Record<string, JSONValue>` |  |  |
+| `_meta` | `MetaObject` |  |  |
 | `notifications` | `SubscriptionFilter` | Notifications is the subset of requested notification types the server accepted. |  |
 | `uri` | `string` | URI identifies an updated resource. |  |
 
@@ -543,7 +529,7 @@ notifications/subscriptions/initial_state notification.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `_meta` | `Record<string, JSONValue>` |  |  |
+| `_meta` | `MetaObject` |  |  |
 | `uri` | `string` | URI is the subscribed target whose initial state was delivered. | yes |
 | `contents` | `ResourceContent[]` | Contents is the resources/read result for the same target, so a client
 that applies the payload holds the post-subscription state without a

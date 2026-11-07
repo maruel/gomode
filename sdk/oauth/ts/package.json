@@ -1,0 +1,8 @@
+{
+  "name": "oauthsdk",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./v1/*": "./v1/*.ts"
+  }
+}

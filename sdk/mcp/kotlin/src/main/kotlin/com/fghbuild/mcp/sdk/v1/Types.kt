@@ -247,6 +247,10 @@ object RoleSerializer : KSerializer<Role> {
 object ErrorCodes {
 }
 
+typealias Extensions = Map<String, JsonElement>
+
+typealias MetaObject = Map<String, JsonElement>
+
 /** JSONRPCRequest is a JSON-RPC request that expects a response. */
 @Serializable
 data class JSONRPCRequest(
@@ -303,7 +307,7 @@ data class ToolsCapability(
 @Serializable
 data class Capabilities(
     /** Experimental contains non-standard capabilities supported by the server. */
-    val experimental: Map<String, JsonElement>? = null,
+    val experimental: Extensions? = null,
     /**
      * DeprecatedLogging is present if the server supports sending log messages to the client.
      *
@@ -311,9 +315,9 @@ data class Capabilities(
      * schema. This is native 2026-07-28 compatibility, not released-version
      * compat.go support; remove it only after the upstream 2026+ schema drops it.
      */
-    val logging: Map<String, JsonElement>? = null,
+    val logging: MetaObject? = null,
     /** Completions is present if the server supports argument completion suggestions. */
-    val completions: Map<String, JsonElement>? = null,
+    val completions: MetaObject? = null,
     /** Prompts is present if the server offers prompt templates. */
     val prompts: PromptsCapability? = null,
     /** Resources is present if the server offers resources to read. */
@@ -321,7 +325,7 @@ data class Capabilities(
     /** Tools is present if the server offers tools to call. */
     val tools: ToolsCapability,
     /** Extensions contains optional MCP extensions supported by the server. */
-    val extensions: Map<String, JsonElement>? = null,
+    val extensions: Extensions? = null,
 )
 
 /** Icon describes an optionally-sized icon for UI display. */
@@ -381,25 +385,25 @@ data class ServerDiscoverResult(
 @Serializable
 data class SamplingCapability(
     /** Context declares context inclusion support. */
-    val context: Map<String, JsonElement>? = null,
+    val context: MetaObject? = null,
     /** Tools declares tool-use support. */
-    val tools: Map<String, JsonElement>? = null,
+    val tools: MetaObject? = null,
 )
 
 /** ElicitationCapability describes client elicitation support. */
 @Serializable
 data class ElicitationCapability(
     /** Form declares support for form-mode elicitation. */
-    val form: Map<String, JsonElement>? = null,
+    val form: MetaObject? = null,
     /** URL declares support for URL-mode elicitation. */
-    val url: Map<String, JsonElement>? = null,
+    val url: MetaObject? = null,
 )
 
 /** ClientCapabilities describes capabilities the client supports for a request. */
 @Serializable
 data class ClientCapabilities(
     /** Experimental contains non-standard capabilities supported by the client. */
-    val experimental: Map<String, JsonElement>? = null,
+    val experimental: Extensions? = null,
     /**
      * DeprecatedRoots is present if the client supports listing roots.
      *
@@ -407,7 +411,7 @@ data class ClientCapabilities(
      * schema. This is native 2026-07-28 compatibility, not released-version
      * compat.go support; remove it only after the upstream 2026+ schema drops it.
      */
-    val roots: Map<String, JsonElement>? = null,
+    val roots: MetaObject? = null,
     /**
      * DeprecatedSampling is present if the client supports server-initiated LLM sampling.
      *
@@ -419,7 +423,7 @@ data class ClientCapabilities(
     /** Elicitation is present if the client supports server-initiated user elicitation. */
     val elicitation: ElicitationCapability? = null,
     /** Extensions contains optional MCP extensions supported by the client. */
-    val extensions: Map<String, JsonElement>? = null,
+    val extensions: Extensions? = null,
 )
 
 /**
@@ -430,44 +434,6 @@ data class ClientCapabilities(
 data class OpenAIUserLocation(
     /** Timezone is the caller device's IANA timezone, such as America/Toronto. */
     val timezone: String? = null,
-)
-
-/**
- * OpenAIRequestMeta contains OpenAI-specific client metadata extensions.
- * Embedding it in RequestMeta keeps its namespaced fields flat on the wire.
- * These optional, self-reported values do not establish authenticated identity.
- *
- * Reference: https://developers.openai.com/plugins/reference#_meta-fields-the-client-provides
- */
-@Serializable
-data class OpenAIRequestMeta(
-    /**
-     * Locale requests a language and regional convention using a BCP 47 tag,
-     * such as en-CA or fr-CA.
-     */
-    @SerialName("openai/locale") val locale: String? = null,
-    /**
-     * Organization carries an anonymized identifier for the caller's ChatGPT
-     * organization, when the client provides one.
-     */
-    @SerialName("openai/organization") val organization: String? = null,
-    /**
-     * Session groups tool calls from the same ChatGPT conversation using an
-     * anonymized conversation identifier.
-     */
-    @SerialName("openai/session") val session: String? = null,
-    /**
-     * Subject carries an anonymized user identifier for call correlation or
-     * rate-limit accounting; it is not an authentication credential.
-     */
-    @SerialName("openai/subject") val subject: String? = null,
-    /**
-     * UserAgent is a best-effort client hint for analytics or presentation;
-     * it is not a reliable indication of client capabilities.
-     */
-    @SerialName("openai/userAgent") val userAgent: String? = null,
-    /** UserLocation is an optional formatting hint supplied by the client. */
-    @SerialName("openai/userLocation") val userLocation: OpenAIUserLocation? = null,
 )
 
 /** RequestMeta is the metadata object required in MCP request params. */
@@ -548,7 +514,7 @@ data class ToolAnnotations(
 /** ToolDescriptor describes a tool the client can call. */
 @Serializable
 data class ToolDescriptor(
-    val _meta: Map<String, JsonElement>? = null,
+    val _meta: MetaObject? = null,
     val icons: List<Icon>? = null,
     /** Name is the programmatic tool identifier. */
     val name: String,
@@ -567,7 +533,7 @@ data class ToolDescriptor(
 /** ToolsListResult is the response payload for tools/list. */
 @Serializable
 data class ToolsListResult(
-    val _meta: Map<String, JsonElement>? = null,
+    val _meta: MetaObject? = null,
     val resultType: ResultType,
     val nextCursor: String? = null,
     val tools: List<ToolDescriptor>,
@@ -592,7 +558,7 @@ data class ToolsCallParams(
 /** ResourceContent contains resource data returned by resources/read. */
 @Serializable
 data class ResourceContent(
-    val _meta: Map<String, JsonElement>? = null,
+    val _meta: MetaObject? = null,
     /** URI identifies this resource. */
     val uri: String,
     /** MimeType is the resource MIME type, if known. */
@@ -622,7 +588,7 @@ data class Annotations(
  */
 @Serializable
 data class ContentBlock(
-    val _meta: Map<String, JsonElement>? = null,
+    val _meta: MetaObject? = null,
     val icons: List<Icon>? = null,
     /** Type identifies the content variant. */
     val type: ContentType,
@@ -651,7 +617,7 @@ data class ContentBlock(
 /** ToolCallResult is the response payload for a tool call. */
 @Serializable
 data class ToolCallResult(
-    val _meta: Map<String, JsonElement>? = null,
+    val _meta: MetaObject? = null,
     val resultType: ResultType,
     /** Content is the unstructured result of the tool call. */
     val content: List<ContentBlock>,
@@ -664,7 +630,7 @@ data class ToolCallResult(
 /** ResourceDescriptor describes a resource the server can read. */
 @Serializable
 data class ResourceDescriptor(
-    val _meta: Map<String, JsonElement>? = null,
+    val _meta: MetaObject? = null,
     val icons: List<Icon>? = null,
     /** URI identifies this resource. */
     val uri: String,
@@ -685,7 +651,7 @@ data class ResourceDescriptor(
 /** ResourcesListResult is the response payload for resources/list. */
 @Serializable
 data class ResourcesListResult(
-    val _meta: Map<String, JsonElement>? = null,
+    val _meta: MetaObject? = null,
     val resultType: ResultType,
     val nextCursor: String? = null,
     val resources: List<ResourceDescriptor>,
@@ -696,7 +662,7 @@ data class ResourcesListResult(
 /** ResourceTemplateDescriptor describes a parameterized MCP resource. */
 @Serializable
 data class ResourceTemplateDescriptor(
-    val _meta: Map<String, JsonElement>? = null,
+    val _meta: MetaObject? = null,
     val icons: List<Icon>? = null,
     /** Name is the programmatic template identifier. */
     val name: String,
@@ -715,7 +681,7 @@ data class ResourceTemplateDescriptor(
 /** ResourceTemplatesListResult is the response payload for resources/templates/list. */
 @Serializable
 data class ResourceTemplatesListResult(
-    val _meta: Map<String, JsonElement>? = null,
+    val _meta: MetaObject? = null,
     val resultType: ResultType,
     val nextCursor: String? = null,
     val resourceTemplates: List<ResourceTemplateDescriptor>,
@@ -738,7 +704,7 @@ data class ResourcesReadParams(
 /** ResourcesReadResult is the response payload for resources/read. */
 @Serializable
 data class ResourcesReadResult(
-    val _meta: Map<String, JsonElement>? = null,
+    val _meta: MetaObject? = null,
     val resultType: ResultType,
     /** Contents contains text or blob resource contents. */
     val contents: List<ResourceContent>,
@@ -776,7 +742,7 @@ data class JSONRPCNotification(
 /** SubscriptionNotificationParams is the payload for subscription notifications. */
 @Serializable
 data class SubscriptionNotificationParams(
-    val _meta: Map<String, JsonElement>? = null,
+    val _meta: MetaObject? = null,
     /** Notifications is the subset of requested notification types the server accepted. */
     val notifications: SubscriptionFilter? = null,
     /** URI identifies an updated resource. */
@@ -789,7 +755,7 @@ data class SubscriptionNotificationParams(
  */
 @Serializable
 data class SubscriptionsInitialStateParams(
-    val _meta: Map<String, JsonElement>? = null,
+    val _meta: MetaObject? = null,
     /** URI is the subscribed target whose initial state was delivered. */
     val uri: String,
     /**
