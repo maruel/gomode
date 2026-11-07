@@ -52,14 +52,18 @@ jobs:
         run: make android-sdk
       - name: Check Android
         run: make android-check
-      - name: Upload lint results on failure
+      - name: Upload check results on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: android-lint-results
+          name: android-check-results
           path: |
             android/gomode/build/reports/lint-results-debug.xml
             android/gomode/build/reports/detekt/
+            android/gomode/build/reports/tests/
+            android/gomode/build/test-results/
+            sdk/halo/build/reports/tests/
+            sdk/halo/build/test-results/
           if-no-files-found: ignore
           retention-days: 7
 
