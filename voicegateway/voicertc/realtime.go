@@ -31,7 +31,7 @@ func (b *lazyLlamaRealtimeBackend) Close() error {
 }
 
 func (b *lazyLlamaRealtimeBackend) connect(ctx context.Context, id string, sink backendSink) (backendSession, error) {
-	return b.lazy.connect(ctx, id, sink, false)
+	return newNegotiatedStackSession(ctx, nil, b.lazy, id, sink, false), nil
 }
 
 type llamaRealtimeBackend struct {
@@ -190,6 +190,9 @@ func (s *llamaRealtimeSession) setup(msg *voicev2.SessionSetup) error {
 	}
 	if msg.Voice.Name != "" {
 		return errors.New("llamacpp-realtime does not support voice selection")
+	}
+	if err := validateNativeSpeech(msg); err != nil {
+		return err
 	}
 	if err := applySessionLanguage(msg); err != nil {
 		return err

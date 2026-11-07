@@ -68,7 +68,7 @@ beforeEach(() => {
     if (String(input).endsWith("/voice/choices"))
       return new Response(
         JSON.stringify({
-          choices: [{ id: "remote", label: "Remote LLM", transports: ["text"] }],
+          choices: [{ id: "remote", label: "Remote LLM", composable: true, transports: ["text"] }],
           defaults: [{ transport: "text", id: "remote" }],
         }),
       );
@@ -84,7 +84,8 @@ beforeEach(() => {
   vi.spyOn(mcpClient, "readAdvertisedTextResource").mockResolvedValue(null);
   configureVoiceGateway("https://gateway.example", null);
   session = new VoiceSession(chime, earcon);
-  session.selectMode("browser");
+  session.selectSpeechInput("client");
+  session.selectSpeechOutput("client");
 });
 afterEach(() => {
   session.disconnect();
@@ -925,8 +926,11 @@ describe("browser voice sessions", () => {
     expect(socket.url.toString()).toBe("wss://gateway.example/api/voicegateway/v2/voice/text/browser");
     expect(socket.protocols).toEqual(["gomode.text.v2", "gomode.ticket.one-time-ticket"]);
     expect(JSON.parse(socket.sent[0] ?? "{}").voice.language).toBe("fr-CA");
+    expect(JSON.parse(socket.sent[0] ?? "{}").speech).toEqual({ input: "client", output: "client" });
+    expect(JSON.parse(socket.sent[0] ?? "{}")).not.toHaveProperty("recognitionModelID");
+    expect(JSON.parse(socket.sent[0] ?? "{}")).not.toHaveProperty("synthesisModelID");
     expect(JSON.parse(socket.sent[0] ?? "{}").voice).not.toHaveProperty("name");
-    expect(new VoiceSession(chime).state.mode).toBe("browser");
+    expect(new VoiceSession(chime).state.speechInput).toBe("client");
     expect(localStorage.getItem("gomode.voiceLanguage")).toBe("fr-CA");
   });
 
@@ -945,14 +949,16 @@ describe("browser voice sessions", () => {
           )
         : gatewayFetch(input, init);
     await session.loadVoiceChoices();
-    session.selectChoice("text", "local");
+    session.selectChoice("local");
     await readySocket();
     expect(requests[0]?.body).toEqual({ choiceID: "local" });
-    expect(localStorage.getItem("gomode.voiceChoice.https://gateway.example.text")).toBe("local");
+    expect(JSON.parse(localStorage.getItem("gomode.voiceSetup.https://gateway.example")!).partsChoiceID).toBe("local");
   });
 
   it("authenticates same-origin ticket issuance with the host bearer provider", async () => {
     configureVoiceGateway("/", null, () => "host-bearer");
+    session.selectSpeechInput("client");
+    session.selectSpeechOutput("client");
     await readySocket();
     expect(requests[0]?.authorization).toBe("Bearer host-bearer");
     expect(requests[0]?.body).toEqual({ choiceID: "remote" });

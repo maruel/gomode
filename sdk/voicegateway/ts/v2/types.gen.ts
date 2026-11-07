@@ -40,6 +40,7 @@ export type MessageKind =
   | "session.status"
   | "session.usage"
   | "transcript.delta"
+  | "transcript.draft"
   | "assistant.text.delta"
   | "reasoning.delta"
   | "speech.started"
@@ -61,6 +62,7 @@ export const MessageKindSessionReady = "session.ready";
 export const MessageKindSessionStatus = "session.status";
 export const MessageKindSessionUsage = "session.usage";
 export const MessageKindTranscriptDelta = "transcript.delta";
+export const MessageKindTranscriptDraft = "transcript.draft";
 export const MessageKindAssistantTextDelta = "assistant.text.delta";
 export const MessageKindReasoningDelta = "reasoning.delta";
 export const MessageKindSpeechStarted = "speech.started";
@@ -78,6 +80,15 @@ export type Speaker =
  */
 export const SpeakerUser = "user";
 export const SpeakerAssistant = "assistant";
+
+export type SpeechLocation =
+  | "client"
+  | "gateway";
+/**
+ * Supported values.
+ */
+export const SpeechLocationClient = "client";
+export const SpeechLocationGateway = "gateway";
 
 export type TurnState =
   | "idle"
@@ -216,6 +227,16 @@ export type VoiceTransport =
 export const VoiceTransportText = "text";
 export const VoiceTransportWebRTC = "webrtc";
 
+/**
+ * SpeechConfig selects recognition and synthesis independently. Empty fields use
+ * transport defaults: WebRTC uses each configured gateway stage; text uses client
+ * speech. Explicit unsupported selections fail before model initialization.
+ */
+export interface SpeechConfig {
+  input?: SpeechLocation;
+  output?: SpeechLocation;
+}
+
 /** VoiceChoice describes a selectable backend without exposing its credentials. */
 export interface VoiceChoice {
   id: string;
@@ -223,6 +244,13 @@ export interface VoiceChoice {
   transports: VoiceTransport[];
   /** Voices lists supported audio voice names. Omitted when the choice does not offer voice selection. */
   voices?: string[];
+  /**
+   * SpeechModes lists supported input/output ownership combinations.
+   * Missing metadata from older gateways means transport defaults only.
+   */
+  speechModes?: SpeechConfig[];
+  /** Composable allows independent recognition and synthesis model selections. */
+  composable?: boolean;
 }
 
 /**
@@ -237,6 +265,12 @@ export interface VoiceChoiceDefault {
   id: string;
 }
 
+/** SpeechModel identifies one configured speech stage without exposing endpoints or credentials. */
+export interface SpeechModel {
+  id: string;
+  label: string;
+}
+
 /**
  * VoiceChoicesResp advertises the available voice choices and one default per
  * offered family.
@@ -245,6 +279,10 @@ export interface VoiceChoicesResp {
   choices: VoiceChoice[];
   /** Defaults holds one entry per offered transport, ordered by transport name. */
   defaults: VoiceChoiceDefault[];
+  /** RecognitionModels lists gateway recognition stages in preference order. */
+  recognitionModels?: SpeechModel[];
+  /** SynthesisModels lists gateway synthesis stages in preference order. */
+  synthesisModels?: SpeechModel[];
 }
 
 /** ServiceAuthorization identifies the host and carries its scoped gateway token. */
@@ -438,6 +476,20 @@ export interface SessionSetup {
    * It does not enable thinking or change reasoning effort.
    */
   includeReasoning?: boolean;
+  /** Speech selects the owner of recognition and synthesis for this session. */
+  speech?: SpeechConfig;
+  /**
+   * RecognitionModelID selects a recognitionModels entry for a composable LLM.
+   * Omitted uses the first available entry when input is gateway-owned.
+   * It must be omitted for client-owned recognition and indivisible choices.
+   */
+  recognitionModelID?: string;
+  /**
+   * SynthesisModelID selects a synthesisModels entry for a composable LLM.
+   * Omitted uses the first available entry when output is gateway-owned.
+   * It must be omitted for client-owned synthesis and indivisible choices.
+   */
+  synthesisModelID?: string;
 }
 
 /**
@@ -576,6 +628,19 @@ export interface TranscriptDelta {
    * omit it. Separate response IDs must not be merged into one transcript entry.
    */
   responseID?: string;
+  /** DraftID atomically replaces the matching user draft when this text commits. */
+  draft_id?: string;
+}
+
+/**
+ * TranscriptDraft is an ephemeral full-text user hypothesis for one microphone
+ * utterance. Revisions replace text for ID. Empty Text clears only that ID.
+ * Drafts never enter conversation history, activity logs, or recovery context.
+ */
+export interface TranscriptDraft {
+  kind: MessageKind;
+  id: string;
+  text: string;
 }
 
 /**

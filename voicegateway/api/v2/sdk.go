@@ -32,6 +32,7 @@ func SDKAPI() apispec.Config[voiceapi.ErrorCode] {
 			reflect.TypeFor[SessionStatus](),
 			reflect.TypeFor[SessionUsage](),
 			reflect.TypeFor[TranscriptDelta](),
+			reflect.TypeFor[TranscriptDraft](),
 			reflect.TypeFor[AssistantTextDelta](),
 			reflect.TypeFor[ReasoningDelta](),
 			reflect.TypeFor[SpeechStarted](),

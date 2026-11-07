@@ -29,6 +29,7 @@ import com.caic.voicegateway.sdk.v2.ToolCall
 import com.caic.voicegateway.sdk.v2.ToolDeclaration
 import com.caic.voicegateway.sdk.v2.ToolResult
 import com.caic.voicegateway.sdk.v2.TranscriptDelta
+import com.caic.voicegateway.sdk.v2.TranscriptDraft
 import com.caic.voicegateway.sdk.v2.TurnState
 import com.caic.voicegateway.sdk.v2.TurnStatus
 import com.caic.voicegateway.sdk.v2.UserMessage
@@ -757,7 +758,7 @@ internal class VoiceSession(
                 reconnectJob = null
                 if (peerConnection === pc && recoveryPolicy.beginScheduledRecovery()) {
                     speakerActive = false
-                    _state.update { it.copy(speaking = false, turnState = TurnState.Idle) }
+                    _state.update { it.copy(speaking = false, turnState = TurnState.Idle, transcriptDraft = null) }
                     recoveryContext = buildNetworkRecoveryContext(_state.value.transcript)
                     connect(preserveTranscript = true)
                 }
@@ -1041,7 +1042,7 @@ internal class VoiceSession(
     }
 
     override fun clearTranscript() {
-        _state.update { it.copy(transcript = emptyList()) }
+        _state.update { it.copy(transcript = emptyList(), transcriptDraft = null) }
     }
 
     override fun injectText(
@@ -1203,6 +1204,11 @@ internal class VoiceSession(
                     handleTranscriptDelta(json.decodeFromString(TranscriptDelta.serializer(), text))
                 }
 
+                MessageKind.TranscriptDraft -> {
+                    val draft = json.decodeFromString(TranscriptDraft.serializer(), text)
+                    _state.update { it.withTranscriptDraft(draft) }
+                }
+
                 MessageKind.ReasoningDelta -> {
                     handleReasoningDelta(json.decodeFromString(ReasoningDelta.serializer(), text))
                 }
@@ -1289,6 +1295,10 @@ internal class VoiceSession(
     }
 
     private fun handleTranscriptDelta(msg: TranscriptDelta) {
+        if (msg.speaker == Speaker.User && !msg.draft_id.isNullOrEmpty()) {
+            _state.update { it.withCommittedTranscript(msg) }
+            return
+        }
         val speaker =
             when (msg.speaker) {
                 Speaker.User -> TranscriptSpeaker.USER
@@ -1652,6 +1662,8 @@ data class VoiceState(
     val errorId: Long = 0,
     /** Conversation transcript log; each entry is one speaker turn. */
     val transcript: List<TranscriptEntry> = emptyList(),
+    /** Ephemeral gateway hypothesis; excluded from transcript history and recovery. */
+    val transcriptDraft: TranscriptDraft? = null,
     /** RMS mic input level, normalized 0..1. */
     val micLevel: Float = 0f,
     /** Available audio input/output devices. */
@@ -1665,6 +1677,29 @@ data class VoiceState(
         get() =
             microphoneMode == MicrophoneMode.MUTED ||
                 (microphoneMode == MicrophoneMode.MUTE_ONCE && speaking)
+}
+
+/** Replace only the current ephemeral hypothesis; stale clears cannot erase newer input. */
+internal fun VoiceState.withTranscriptDraft(draft: TranscriptDraft): VoiceState {
+    if (draft.id.isEmpty() || draft.text.length > 65536) return this
+    if (draft.text.isEmpty()) {
+        return if (transcriptDraft?.id == draft.id) copy(transcriptDraft = null) else this
+    }
+    return copy(transcriptDraft = draft)
+}
+
+/** Commit a complete user turn and remove its matching hypothesis in one state update. */
+internal fun VoiceState.withCommittedTranscript(message: TranscriptDelta): VoiceState {
+    val committed =
+        if (message.text.isEmpty()) {
+            emptyList()
+        } else {
+            listOf(TranscriptEntry(TranscriptSpeaker.USER, message.text, final = true))
+        }
+    return copy(
+        transcriptDraft = if (transcriptDraft?.id == message.draft_id) null else transcriptDraft,
+        transcript = transcript + committed,
+    )
 }
 
 /** Build a bounded recovery-only context without replaying unfinished transcript deltas. */

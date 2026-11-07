@@ -43,7 +43,7 @@ func TestLocalStackModelsForConfigCodex(t *testing.T) {
 	previousTransport := base.DefaultTransport
 	base.DefaultTransport = transport
 	t.Cleanup(func() { base.DefaultTransport = previousTransport })
-	cfg := &voicegateway.LocalStackConfig{TextOnly: true, LLM: voicegateway.ModelConfig{Provider: "openai", Auth: openairesponses.AuthCodex, Model: "gpt-6-luna", Effort: genai.EffortLow}}
+	cfg := &voicegateway.PipelineConfig{TextOnly: true, LLM: voicegateway.ModelConfig{Provider: "openai", Auth: openairesponses.AuthCodex, Model: "gpt-6-luna", Effort: genai.EffortLow}}
 	models, err := localStackModelsForConfigWithStarter(t.Context(), cfg, func(context.Context, string) (managedLlamaServer, error) {
 		t.Fatal("subscription LLM started a managed runtime")
 		return nil, errors.New("unexpected managed runtime")
@@ -268,7 +268,7 @@ func TestLocalStackChronologicalTransport(t *testing.T) {
 			if path == "text" {
 				conn = dialTextSession(t, newTestTextBridge(t, a))
 			} else {
-				sess = backend.lazy.loaded.(*localStackRuntime).newSession(ctx, "chronology", sink, false)
+				sess = stackVariant(t, backend, gatewaySpeechConfig()).loaded.(*localStackRuntime).newSession(ctx, "chronology", sink, false)
 				t.Cleanup(func() {
 					if sess != nil {
 						if err := sess.close(); err != nil {
@@ -612,7 +612,7 @@ func TestLocalStackASRShutdown(t *testing.T) {
 	asr := &barrierASR{started: make(chan struct{}), stopped: make(chan struct{})}
 	backend := newTestLocalStackBackend(t, func() vadSegmenter { return &energyVAD{} }, asr, echoLLM{}, &recordingTTS{})
 	sink := &barrierSink{messages: make(chan []byte, 20)}
-	sess := backend.lazy.loaded.(*localStackRuntime).newSession(ctx, "asr-shutdown", sink, false)
+	sess := stackVariant(t, backend, gatewaySpeechConfig()).loaded.(*localStackRuntime).newSession(ctx, "asr-shutdown", sink, false)
 	if err := sess.acceptClientMessage(ctx, mustJSON(t, voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup})); err != nil {
 		t.Fatal(err)
 	}

@@ -1,24 +1,13 @@
-/* Saved speech controls in the expanded voice settings section. */
+/* Voice setup tabs, ordered stage controls, and saved shared preferences. */
 
-.settings,
-.settings fieldset {
+.settings {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
   min-width: 0;
-}
-
-.settings fieldset {
-  padding: 0;
-  margin: 0;
-  border: 0;
-}
-
-.family {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  min-width: 0;
+  width: 100%;
+  max-width: 40rem;
+  box-sizing: border-box;
 }
 
 .settings label {
@@ -42,17 +31,10 @@
   border-radius: var(--radius-sm);
 }
 
-.settings input[type="radio"],
 .settings input[type="checkbox"] {
   flex-shrink: 0;
   margin: 0;
   accent-color: var(--color-primary);
-}
-
-.settings legend {
-  padding: 0;
-  margin-bottom: 0.75rem;
-  font-size: 0.85rem;
 }
 
 .settings select {
@@ -119,4 +101,59 @@
 .credits .previewError {
   margin-bottom: 0.5rem;
   color: var(--color-danger);
+}
+
+.setupTabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.25rem;
+  padding: 0.25rem;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-medium);
+  border-radius: var(--radius-sm);
+}
+
+.setupTabs button {
+  min-width: 0;
+  min-height: 2.75rem;
+  padding: 0.5rem;
+  font: inherit;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  background: transparent;
+  border: 2px solid transparent;
+  border-radius: var(--radius-sm);
+}
+
+.setupTabs button[aria-selected="true"] {
+  font-weight: 600;
+  color: var(--color-text);
+  background: var(--color-bg-hover);
+  border-color: var(--color-primary);
+}
+
+.setupTabs button:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.setupTabs button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.setupPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.setupPanel label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.35rem;
+}
+
+.setupPanel select {
+  width: 100%;
 }

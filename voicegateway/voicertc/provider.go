@@ -227,6 +227,9 @@ func (s *realtimeBridgeSession) setup(msg *voicev2.SessionSetup) error {
 	if msg.Context.SystemInstruction == "" {
 		return errors.New("session.setup context.systemInstruction is required")
 	}
+	if err := validateNativeSpeech(msg); err != nil {
+		return err
+	}
 	if err := applySessionLanguage(msg); err != nil {
 		return err
 	}

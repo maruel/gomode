@@ -33,6 +33,7 @@ func TestActivityLog(t *testing.T) {
 	}{
 		{activitydata.SourceClient, `{"kind":"session.setup","context":{"systemInstruction":"Initial context","text":"Current task"},"extension":{"future":[true,null,42]}}`},
 		{activitydata.SourceGateway, `{"kind":"transcript.delta","speaker":"user","text":"hello"}`},
+		{activitydata.SourceGateway, `{"kind":"transcript.draft","id":"a","text":"never persist this draft"}`},
 		{activitydata.SourceGateway, `{"kind":"reasoning.delta","text":"weigh both dates"}`},
 		{activitydata.SourceGateway, `{"kind":"tool.call","id":"call-1","name":"tasks_list","args":{}}`},
 		{activitydata.SourceClient, `{"kind":"tool.result","id":"call-1","name":"tasks_list","result":{"tasks":[]}}`},
@@ -58,6 +59,9 @@ func TestActivityLog(t *testing.T) {
 	data, err := os.ReadFile(paths[0])
 	if err != nil {
 		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("never persist this draft")) {
+		t.Fatal("ephemeral draft persisted")
 	}
 	if !bytes.Contains(data, []byte(`"src":"client"`)) || bytes.Contains(data, []byte(`"dir"`)) {
 		t.Fatalf("log fields = %s, want src without dir", data)

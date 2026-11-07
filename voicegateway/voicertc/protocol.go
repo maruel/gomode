@@ -30,6 +30,46 @@ func decodeGatewayMessage(data []byte, want voicev2.MessageKind, msg any) error 
 	return nil
 }
 
+func clientSpeechConfig() voicev2.SpeechConfig {
+	return voicev2.SpeechConfig{Input: voicev2.SpeechLocationClient, Output: voicev2.SpeechLocationClient}
+}
+
+func gatewaySpeechConfig() voicev2.SpeechConfig {
+	return voicev2.SpeechConfig{Input: voicev2.SpeechLocationGateway, Output: voicev2.SpeechLocationGateway}
+}
+
+func resolveSpeech(requested *voicev2.SpeechConfig, defaults voicev2.SpeechConfig) (voicev2.SpeechConfig, error) {
+	out := defaults
+	if requested != nil {
+		if requested.Input != "" {
+			out.Input = requested.Input
+		}
+		if requested.Output != "" {
+			out.Output = requested.Output
+		}
+	}
+	for _, location := range []voicev2.SpeechLocation{out.Input, out.Output} {
+		if location != voicev2.SpeechLocationClient && location != voicev2.SpeechLocationGateway {
+			return voicev2.SpeechConfig{}, fmt.Errorf("unsupported speech location %q", location)
+		}
+	}
+	return out, nil
+}
+
+func validateNativeSpeech(msg *voicev2.SessionSetup) error {
+	if msg.RecognitionModelID != "" || msg.SynthesisModelID != "" {
+		return errors.New("native audio does not support independent speech models")
+	}
+	speech, err := resolveSpeech(msg.Speech, gatewaySpeechConfig())
+	if err != nil {
+		return err
+	}
+	if speech != gatewaySpeechConfig() {
+		return errors.New("native audio requires gateway recognition and synthesis")
+	}
+	return nil
+}
+
 func applySessionLanguage(msg *voicev2.SessionSetup) error {
 	tag := msg.Voice.Language
 	if tag == "" {

@@ -207,7 +207,7 @@ export default function VoiceOverlay(props: {
     startAttempt++;
   });
   createEffect(
-    on([() => session.state.mode, () => props.canStart?.() ?? true], () => {
+    on([() => `${session.state.speechInput}/${session.state.speechOutput}`, () => props.canStart?.() ?? true], () => {
       startAttempt++;
     }),
   );
@@ -228,7 +228,7 @@ export default function VoiceOverlay(props: {
   const [audioHelp, setAudioHelp] = createSignal<"input" | "output" | null>(null);
   createEffect(
     on(
-      () => session.state.mode,
+      () => `${session.state.speechInput}/${session.state.speechOutput}`,
       () => setAudioHelp(null),
     ),
   );
@@ -352,15 +352,21 @@ export default function VoiceOverlay(props: {
       // Browser audio must be unlocked synchronously while the click or key event
       // still carries user activation. Device enumeration yields before connect().
       session.prepareAudio();
-      const mode = session.state.mode;
-      if (mode === "cloud") await session.enumerateDevices();
-      if (!canStart() || attempt !== startAttempt || mode !== session.state.mode || isActive()) return;
+      const speech = `${session.state.speechInput}/${session.state.speechOutput}`;
+      if (session.transport === "webrtc") await session.enumerateDevices();
+      if (
+        !canStart() ||
+        attempt !== startAttempt ||
+        speech !== `${session.state.speechInput}/${session.state.speechOutput}` ||
+        isActive()
+      )
+        return;
       void session.connect();
     }
   };
 
   createEffect(() => {
-    if (session.state.mode === "cloud") void session.enumerateDevices();
+    if (session.transport === "webrtc") void session.enumerateDevices();
   });
 
   onMount(() => {
@@ -395,7 +401,7 @@ export default function VoiceOverlay(props: {
     document.addEventListener("keydown", onKeyDown);
     onCleanup(() => document.removeEventListener("keydown", onKeyDown));
     const refreshDevices = () => {
-      if (session.state.mode === "cloud") void session.enumerateDevices();
+      if (session.transport === "webrtc") void session.enumerateDevices();
     };
     navigator.mediaDevices?.addEventListener?.("devicechange", refreshDevices);
     onCleanup(() => navigator.mediaDevices?.removeEventListener?.("devicechange", refreshDevices));
@@ -427,7 +433,8 @@ export default function VoiceOverlay(props: {
             <div class={styles.toolbarActions}>
               <AppControls />
               <AudioDevicePicker
-                cloud={session.state.mode === "cloud"}
+                gatewayInput={session.state.speechInput === "gateway"}
+                gatewayOutput={session.state.speechOutput === "gateway"}
                 help={audioHelp()}
                 helpId={audioHelpId}
                 onHelp={(direction) => setAudioHelp((current) => (current === direction ? null : direction))}
@@ -546,7 +553,7 @@ export default function VoiceOverlay(props: {
           >
             <ConversationPanel state={session.state} messages={messages} />
           </Show>
-          <Show when={session.state.mode === "cloud"}>
+          <Show when={session.transport === "webrtc"}>
             <AudioErrors state={session.state} />
           </Show>
           <Show when={!settingsOpen() && priorErrors().length > 0}>
@@ -655,7 +662,7 @@ function ConnectingPanel(props: {
     <div class={`${styles.row} ${styles.statusConnecting}`}>
       <VoiceIcon name="mic" />
       <span class={styles.statusText}>
-        {props.phase === "setup" && voiceSession.state.mode === "browser"
+        {props.phase === "setup" && voiceSession.transport === "text"
           ? (props.messages().settingUpBrowserSpeech ?? props.status)
           : localizedStatus(props.status, props.phase, props.messages(), props.hasCustomMessages)}
       </span>
@@ -802,7 +809,9 @@ function ConversationPanel(props: { state: VoiceState; messages: Accessor<VoiceO
             label={props.messages().toolHistory ?? "Recent tool calls"}
           />
         </Show>
-        <Show when={props.state.transcript.length > 0 && !transcriptExpanded()}>
+        <Show
+          when={(props.state.transcript.length > 0 || props.state.transcriptDraft !== null) && !transcriptExpanded()}
+        >
           <TranscriptToggle />
         </Show>
       </div>
@@ -810,6 +819,7 @@ function ConversationPanel(props: { state: VoiceState; messages: Accessor<VoiceO
         id={transcriptId}
         expanded={transcriptExpanded()}
         transcript={props.state.transcript}
+        draft={props.state.transcriptDraft}
         showUsageStats={props.state.showUsageStats}
         messages={props.messages}
         closeControl={TranscriptToggle}
@@ -893,7 +903,8 @@ function AudioErrors(props: { state: VoiceState }) {
 }
 
 function AudioDevicePicker(props: {
-  cloud: boolean;
+  gatewayInput: boolean;
+  gatewayOutput: boolean;
   help: "input" | "output" | null;
   helpId: string;
   onHelp: (direction: "input" | "output") => void;
@@ -907,7 +918,7 @@ function AudioDevicePicker(props: {
   onSelectOutput: (id: string) => Promise<void>;
   switching: boolean;
 }) {
-  const canSelectOutput = () => props.cloud && "setSinkId" in HTMLMediaElement.prototype;
+  const canSelectOutput = () => props.gatewayOutput && "setSinkId" in HTMLMediaElement.prototype;
   const SystemDevice = (device: { direction: "input" | "output" }) => (
     <button
       type="button"
@@ -935,7 +946,7 @@ function AudioDevicePicker(props: {
     >
       <div class={styles.deviceRow}>
         <div class={styles.deviceField}>
-          <Show when={props.cloud} fallback={<SystemDevice direction="input" />}>
+          <Show when={props.gatewayInput} fallback={<SystemDevice direction="input" />}>
             <span class={`${styles.deviceControl} ${controls.control}`}>
               <VoiceIcon
                 name={audioDeviceIcon(
@@ -1056,6 +1067,7 @@ interface TranscriptContentProps {
   showUsageStats: boolean;
   messages: Accessor<VoiceOverlayMessages>;
   closeControl: () => JSX.Element;
+  draft: VoiceState["transcriptDraft"];
 }
 
 function TranscriptLog(props: TranscriptContentProps & { id: string; expanded: boolean }) {
@@ -1063,11 +1075,12 @@ function TranscriptLog(props: TranscriptContentProps & { id: string; expanded: b
     <div id={props.id} hidden={!props.expanded}>
       <Show when={props.expanded}>
         <Show
-          when={props.transcript.length > 0}
+          when={props.transcript.length > 0 || props.draft !== null}
           fallback={<p class={styles.transcriptPlaceholder}>{props.messages().transcriptPlaceholder}</p>}
         >
           <TranscriptContent
             transcript={props.transcript}
+            draft={props.draft}
             showUsageStats={props.showUsageStats}
             messages={props.messages}
             closeControl={props.closeControl}
@@ -1093,6 +1106,7 @@ function TranscriptContent(props: TranscriptContentProps) {
   });
   createEffect(() => {
     void props.transcript;
+    void props.draft;
     void props.showUsageStats;
     // Wait for text and usage layout to settle.
     queueMicrotask(() => {
@@ -1140,6 +1154,13 @@ function TranscriptContent(props: TranscriptContentProps) {
             </div>
           )}
         </Index>
+        <Show when={props.draft}>
+          {(draft) => (
+            <div class={styles.transcriptEntry} data-testid="voice-transcript-draft" aria-live="off">
+              <span class={styles.transcriptLabelUser}>{props.messages().you}</span> {draft().text}
+            </div>
+          )}
+        </Show>
       </div>
     </div>
   );

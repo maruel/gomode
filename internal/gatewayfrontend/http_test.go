@@ -190,8 +190,7 @@ func TestNewHandler(t *testing.T) {
 		}
 	})
 	t.Run("host API remains separate", func(t *testing.T) {
-		cfg := voicegateway.DefaultConfig()
-		api, err := voicegateway.NewHandler(&cfg, nil, nil)
+		api, err := voicegateway.NewHandler(nil, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

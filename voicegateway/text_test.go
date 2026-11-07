@@ -39,7 +39,7 @@ func TestTextSessionTickets(t *testing.T) {
 		}
 		origin := u.Scheme + "://" + u.Host
 		var calls atomic.Int32
-		handler, err := NewHandler(&cfg, nil, textSessionServerFunc(func(_ context.Context, w http.ResponseWriter, r *http.Request) error {
+		handler, err := NewHandler(cfg.TrustedIssuers, nil, textSessionServerFunc(func(_ context.Context, w http.ResponseWriter, r *http.Request) error {
 			calls.Add(1)
 			if r.Header.Get("Origin") != "" || r.Header.Get("Sec-WebSocket-Protocol") != "gomode.text.v2" {
 				t.Error("authorized ticket headers were not normalized for the transport")
@@ -118,7 +118,7 @@ func TestTextSessionTickets(t *testing.T) {
 			t.Fatal(err)
 		}
 		origin := u.Scheme + "://" + u.Host
-		h, err := NewHandler(&cfg, nil, textSessionServerFunc(func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+		h, err := NewHandler(cfg.TrustedIssuers, nil, textSessionServerFunc(func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 			conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{"gomode.text.v2"}})
 			if err != nil {
 				return err
@@ -219,7 +219,7 @@ func TestTextSessionRoute(t *testing.T) {
 
 	t.Run("requires service authorization", func(t *testing.T) {
 		t.Parallel()
-		handler, err := NewHandler(&Config{}, nil, textSessionServerFunc(func(context.Context, http.ResponseWriter, *http.Request) error {
+		handler, err := NewHandler(nil, nil, textSessionServerFunc(func(context.Context, http.ResponseWriter, *http.Request) error {
 			t.Error("text session server was called without authorization")
 			return nil
 		}))
@@ -260,7 +260,7 @@ func TestTextSessionRoute(t *testing.T) {
 			t.Fatal(err)
 		}
 		called := false
-		handler, err := NewHandler(&cfg, nil, textSessionServerFunc(func(_ context.Context, w http.ResponseWriter, _ *http.Request) error {
+		handler, err := NewHandler(cfg.TrustedIssuers, nil, textSessionServerFunc(func(_ context.Context, w http.ResponseWriter, _ *http.Request) error {
 			called = true
 			w.WriteHeader(http.StatusNoContent)
 			return nil
@@ -291,7 +291,7 @@ func TestTextSessionRoute(t *testing.T) {
 			t.Fatal(err)
 		}
 		called := false
-		handler, err := NewHandler(&cfg, nil, textSessionServerFunc(func(context.Context, http.ResponseWriter, *http.Request) error {
+		handler, err := NewHandler(cfg.TrustedIssuers, nil, textSessionServerFunc(func(context.Context, http.ResponseWriter, *http.Request) error {
 			called = true
 			return nil
 		}))

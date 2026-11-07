@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { expect, vi } from "../tests/expect";
 import { FakeRecognition, fakeSynthesis, installBrowserSpeech } from "../tests/browser-speech";
-import { BrowserSpeech, browserSpeechAvailable, browserSpeechAvoidsChimes } from "./BrowserSpeech";
+import { BrowserSpeech, browserRecognitionAvailable, browserSpeechAvoidsChimes } from "./BrowserSpeech";
 
 let restore: () => void;
 let speech: BrowserSpeech;
@@ -58,7 +58,7 @@ describe("BrowserSpeech", () => {
   });
 
   it("uses an explicitly selected voice even when another voice is the default", () => {
-    const preferred = { voiceURI: "selected", name: "Selected", lang: "en-US" } as SpeechSynthesisVoice;
+    const preferred = { voiceURI: "selected", name: "Selected", lang: "en-GB" } as SpeechSynthesisVoice;
     fakeSynthesis.voices = [{ voiceURI: "other", lang: "en-US", default: true } as SpeechSynthesisVoice, preferred];
     speech.close();
     speech = new BrowserSpeech("en-US", "selected", 1, callbacks);
@@ -70,6 +70,15 @@ describe("BrowserSpeech", () => {
     fakeSynthesis.voices = [{ lang: "en-US", localService: true, default: false } as SpeechSynthesisVoice];
     speak("Hello.");
     expect(fakeSynthesis.spoken[0]?.voice).toBeNull();
+  });
+
+  it("rejects a saved voice from a different base language", () => {
+    fakeSynthesis.voices = [{ voiceURI: "french", lang: "fr-FR" } as SpeechSynthesisVoice];
+    speech.close();
+    speech = new BrowserSpeech("en-US", "french", 1, callbacks);
+    speak("Hello.");
+    expect(fakeSynthesis.spoken).toHaveLength(0);
+    expect(callbacks.error).toHaveBeenCalledWith(expect.stringContaining("unavailable"));
   });
 
   it("reports a missing saved voice instead of silently changing it", () => {
@@ -87,7 +96,7 @@ describe("BrowserSpeech", () => {
     speak("First.");
     speak("Second.");
     expect(fakeSynthesis.spoken).toHaveLength(0);
-    const selected = { voiceURI: "selected" } as SpeechSynthesisVoice;
+    const selected = { voiceURI: "selected", lang: "en-US" } as SpeechSynthesisVoice;
     fakeSynthesis.voices = [selected];
     fakeSynthesis.dispatchEvent(new Event("voiceschanged"));
     expect(fakeSynthesis.spoken[0]).toMatchObject({ text: "First.", voice: selected });
@@ -105,7 +114,7 @@ describe("BrowserSpeech", () => {
     callbacks.error.mockClear();
     speak("Cancelled.");
     speech.stopSpeaking();
-    fakeSynthesis.voices = [{ voiceURI: "selected" } as SpeechSynthesisVoice];
+    fakeSynthesis.voices = [{ voiceURI: "selected", lang: "en-US" } as SpeechSynthesisVoice];
     fakeSynthesis.dispatchEvent(new Event("voiceschanged"));
     vi.advanceTimersByTime(5000);
     expect(callbacks.error).not.toHaveBeenCalled();
@@ -116,7 +125,7 @@ describe("BrowserSpeech", () => {
     speech.close();
     speech = new BrowserSpeech("en-US", "selected", 1, callbacks);
     speak("First.");
-    fakeSynthesis.voices = [{ voiceURI: "selected" } as SpeechSynthesisVoice];
+    fakeSynthesis.voices = [{ voiceURI: "selected", lang: "en-US" } as SpeechSynthesisVoice];
     speak("Second.");
     expect(fakeSynthesis.spoken).toHaveLength(0);
     fakeSynthesis.dispatchEvent(new Event("voiceschanged"));
@@ -282,9 +291,9 @@ describe("BrowserSpeech", () => {
 
   it("does not advertise ordinary Firefox and avoids iOS UI sounds", () => {
     Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Firefox/150" });
-    expect(browserSpeechAvailable()).toBe(false);
+    expect(browserRecognitionAvailable()).toBe(false);
     Object.defineProperty(navigator, "userAgent", { configurable: true, value: "iPhone Safari" });
-    expect(browserSpeechAvailable()).toBe(true);
+    expect(browserRecognitionAvailable()).toBe(true);
     expect(browserSpeechAvoidsChimes()).toBe(true);
   });
 });

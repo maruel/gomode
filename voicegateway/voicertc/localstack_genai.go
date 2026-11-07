@@ -25,6 +25,9 @@ import (
 	"github.com/maruel/genaipy/whistle"
 
 	"github.com/maruel/genai"
+	"github.com/maruel/genai/providers/gemini"
+	"github.com/maruel/genai/providers/groq"
+	"github.com/maruel/genai/providers/llamacpp"
 	"github.com/maruel/genai/providers/llamacpp/llamacppsrv"
 	"github.com/maruel/genai/providers/openrouter"
 
@@ -33,51 +36,33 @@ import (
 )
 
 // localStackRuntimeForConfig builds gateway-side ASR, LLM, and TTS adapters.
-// Text-only clients own recognition and synthesis, so their configuration
-// initializes only the LLM and does not provision gateway speech models.
-// External speech servers are not pinged: engines share no health or model
-// readiness endpoint. Operators must warm them before latency-sensitive use;
-// the first request may otherwise load or download a model.
-func localStackRuntimeForConfig(ctx context.Context, cfg *voicegateway.LocalStackConfig) (*localStackRuntime, error) {
+// Only selected gateway stages are present in cfg. Client-owned stages are
+// omitted before acquisition and never provision a speech model.
+// External HTTP speech engines share no health or model readiness endpoint;
+// provider-backed stages use their provider's health check. Operators must warm
+// external speech models before latency-sensitive use, since the first request
+// may otherwise load or download a model.
+func localStackRuntimeForConfig(ctx context.Context, cfg *voicegateway.PipelineConfig) (*localStackRuntime, error) {
 	models, err := localStackModelsForConfigWithStarter(ctx, cfg, startManagedLlamaServer)
 	if err != nil {
 		return nil, err
 	}
-	var tts ttsAdapter
-	var ttsRuntime io.Closer
-	if !cfg.TextOnly {
-		if cfg.TTS.Engine == voicegateway.LocalStackTTSOpenAIAudio {
-			synth, err := speech.NewHTTPSynthesizer(http.DefaultClient, cfg.TTS.Remote, cfg.TTS.Model, cfg.TTS.Voice)
-			if err != nil {
-				return nil, errors.Join(err, models.runtime.Close())
-			}
-			tts = &speechTTSAdapter{synthesizer: synth}
-		} else {
-			// genaipy owns the pinned KittenTTS worker, uv/Python 3.12 setup,
-			// and user caches. Python 3.13 cannot build its transitive dependencies.
-			// Cold setup can pull large ML packages; HF_TOKEN avoids anonymous
-			// Hugging Face download rate limits. Cancellation preserves the worker
-			// for another fragment; runtime eviction closes it through ttsRuntime.
-			kitten, err := kittentts.New(ctx, kittentts.Config{Model: cfg.TTS.Model, Voice: cfg.TTS.Voice})
-			if err != nil {
-				return nil, errors.Join(err, models.runtime.Close())
-			}
-			tts, ttsRuntime = &speechTTSAdapter{synthesizer: kitten}, kitten
-		}
-	}
 	b := &localStackRuntime{
 		newVAD:  func() vadSegmenter { return &energyVAD{} },
 		asr:     models.asr,
+		liveASR: models.liveASR,
 		llm:     models.llm,
-		tts:     tts,
-		runtime: joinClosers(models.runtime, ttsRuntime),
+		tts:     models.tts,
+		runtime: models.runtime,
 	}
 	return b, nil
 }
 
 type localStackModels struct {
 	asr     asrAdapter
+	liveASR liveASRAdapter
 	llm     llmAdapter
+	tts     ttsAdapter
 	runtime io.Closer
 }
 
@@ -90,7 +75,7 @@ type localStackEndpoint struct {
 
 func localStackModelsForConfigWithStarter(
 	ctx context.Context,
-	cfg *voicegateway.LocalStackConfig,
+	cfg *voicegateway.PipelineConfig,
 	start managedLlamaStarter,
 ) (localStackModels, error) {
 	// Resolve credentials before starting speech models. The LLM is owned here
@@ -101,9 +86,10 @@ func localStackModelsForConfigWithStarter(
 	}
 	var asr localStackEndpoint
 	var asrAdapter asrAdapter
-	if !cfg.TextOnly {
+	var liveASR liveASRAdapter
+	if !cfg.TextOnly && cfg.ASR != (voicegateway.ASRConfig{}) {
 		switch cfg.ASR.Engine {
-		case voicegateway.LocalStackASRWhistle:
+		case voicegateway.ASREngineWhistle:
 			// genaipy owns the isolated uv/Python 3.12 Needle worker and disables
 			// telemetry. Needle downloads a prebuilt native engine and weights
 			// into its own cache, rather than building the runtime from source.
@@ -118,9 +104,9 @@ func localStackModelsForConfigWithStarter(
 			}
 			asr.runtime = w
 			asrAdapter = &speechASRAdapter{recognizer: w}
-		case voicegateway.LocalStackASROpenAIAudio, voicegateway.LocalStackASRWhisperCPP:
+		case voicegateway.ASREngineOpenAIAudio, voicegateway.ASREngineWhisperCPP:
 			protocol := speech.OpenAI
-			if cfg.ASR.Engine == voicegateway.LocalStackASRWhisperCPP {
+			if cfg.ASR.Engine == voicegateway.ASREngineWhisperCPP {
 				protocol = speech.WhisperCPP
 			}
 			recognizer, err := speech.NewHTTPRecognizer(http.DefaultClient, cfg.ASR.Remote, cfg.ASR.Model, protocol)
@@ -134,17 +120,75 @@ func localStackModelsForConfigWithStarter(
 			if err != nil {
 				return localStackModels{}, errors.Join(err, llm.runtime.Close())
 			}
-			recognizer, err := speech.NewProviderRecognizer(asr.provider)
-			if err != nil {
-				return localStackModels{}, errors.Join(err, asr.runtime.Close(), llm.runtime.Close())
+			if cfg.ASR.Streaming {
+				switch p := asr.provider.(type) {
+				case *llamacpp.Client:
+					liveASR = &llamaLiveASR{client: p}
+				case *gemini.Client:
+					liveASR = &geminiLiveASR{client: p}
+				default:
+					return localStackModels{}, errors.Join(errors.New("ASR provider does not support live transcription"), asr.runtime.Close(), llm.runtime.Close())
+				}
+			} else {
+				switch p := asr.provider.(type) {
+				case *groq.Client:
+					asrAdapter = &groqASRAdapter{client: p}
+				case *gemini.Client:
+					if strings.Contains(p.ModelID(), "-transcribe") {
+						asrAdapter = &geminiASRAdapter{client: p}
+					}
+				}
+				if asrAdapter == nil {
+					recognizer, err := speech.NewProviderRecognizer(asr.provider)
+					if err != nil {
+						return localStackModels{}, errors.Join(err, asr.runtime.Close(), llm.runtime.Close())
+					}
+					asrAdapter = &speechASRAdapter{recognizer: recognizer}
+				}
 			}
-			asrAdapter = &speechASRAdapter{recognizer: recognizer}
+		}
+	}
+	runtime := joinClosers(asr.runtime, llm.runtime)
+	var tts ttsAdapter
+	var ttsRuntime io.Closer
+	if !cfg.TextOnly && cfg.TTS != (voicegateway.TTSConfig{}) {
+		switch cfg.TTS.Engine {
+		case voicegateway.TTSEngineGenAI:
+			endpoint, err := resolveLocalStackEndpoint(ctx, voicegateway.ModelConfig{Provider: cfg.TTS.Provider, Remote: cfg.TTS.Remote, Model: cfg.TTS.Model}, start)
+			if err != nil {
+				return localStackModels{}, errors.Join(err, runtime.Close())
+			}
+			switch p := endpoint.provider.(type) {
+			case *llamacpp.Client:
+				tts = &llamaTTSAdapter{client: p, voice: cfg.TTS.Voice}
+			case *gemini.Client:
+				tts = &geminiTTSAdapter{client: p, voice: cfg.TTS.Voice}
+			default:
+				return localStackModels{}, errors.Join(errors.New("provider does not support dedicated speech synthesis"), endpoint.runtime.Close(), runtime.Close())
+			}
+			ttsRuntime = endpoint.runtime
+		case voicegateway.TTSEngineOpenAIAudio:
+			synth, err := speech.NewHTTPSynthesizer(http.DefaultClient, cfg.TTS.Remote, cfg.TTS.Model, cfg.TTS.Voice)
+			if err != nil {
+				return localStackModels{}, errors.Join(err, runtime.Close())
+			}
+			tts = &speechTTSAdapter{synthesizer: synth}
+		case voicegateway.TTSEngineKittenTTS:
+			// genaipy owns Python setup and caches. Cancellation preserves its
+			// worker for later fragments; runtime eviction closes the process.
+			kitten, err := kittentts.New(ctx, kittentts.Config{Model: cfg.TTS.Model, Voice: cfg.TTS.Voice})
+			if err != nil {
+				return localStackModels{}, errors.Join(err, runtime.Close())
+			}
+			tts, ttsRuntime = &speechTTSAdapter{synthesizer: kitten}, kitten
 		}
 	}
 	return localStackModels{
 		asr:     asrAdapter,
+		liveASR: liveASR,
 		llm:     &genaiLLMAdapter{provider: llm.provider, effort: cfg.LLM.Effort, openRouterSort: cfg.LLM.OpenRouterSort},
-		runtime: joinClosers(asr.runtime, llm.runtime),
+		tts:     tts,
+		runtime: joinClosers(runtime, ttsRuntime),
 	}, nil
 }
 

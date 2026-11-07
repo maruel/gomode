@@ -63,17 +63,19 @@ type ChoiceTextSessionServer interface {
 	ServeTextChoice(ctx context.Context, w http.ResponseWriter, r *http.Request, choiceID string) error
 }
 
-// NewHandler returns a reusable voice gateway HTTP handler. textSessions may be
-// nil when no backend serves text voice sessions.
+// NewHandler validates standalone issuer policy and returns authenticated voice
+// gateway routes. textSessions may be nil when no backend serves text sessions.
 func NewHandler(
-	cfg *Config,
+	issuers []TrustedIssuerConfig,
 	bridge MediaBridge,
 	textSessions TextSessionServer,
 ) (http.Handler, error) {
-	if cfg == nil {
-		return nil, errors.New("voice gateway config is required")
+	for i := range issuers {
+		if err := validateTrustedIssuer(i, &issuers[i]); err != nil {
+			return nil, err
+		}
 	}
-	return newHandler(cfg, func() MediaBridge { return bridge }, textSessions, true, true, nil), nil
+	return newHandler(issuers, func() MediaBridge { return bridge }, textSessions, true, true, nil), nil
 }
 
 // NewEmbeddedHandler returns voice gateway routes for a caller that already
@@ -88,17 +90,17 @@ func NewEmbeddedHandler(bridge MediaBridgeProvider, textSessions TextSessionServ
 
 // newHandler builds the route table. verifier is nil in production and set by
 // tests that control the OAuth discovery clock and JWKS cache lifetimes.
-func newHandler(cfg *Config, bridge MediaBridgeProvider, textSessions TextSessionServer, requireServiceAuth, includeHealth bool, verifier *oauthverify.Verifier) http.Handler {
+func newHandler(issuers []TrustedIssuerConfig, bridge MediaBridgeProvider, textSessions TextSessionServer, requireServiceAuth, includeHealth bool, verifier *oauthverify.Verifier) http.Handler {
 	h := &handler{
-		cfg:                cfg,
+		issuers:            issuers,
 		bridge:             bridge,
 		textSessions:       textSessions,
 		requireServiceAuth: requireServiceAuth,
 		verifier:           verifier,
 		textTickets:        make(map[string]textTicket),
 	}
-	if h.verifier == nil && cfg != nil {
-		for _, issuer := range cfg.TrustedIssuers {
+	if h.verifier == nil {
+		for _, issuer := range issuers {
 			if issuer.OAuth {
 				h.verifier = oauthverify.New(nil)
 				break
@@ -127,17 +129,17 @@ func newHandler(cfg *Config, bridge MediaBridgeProvider, textSessions TextSessio
 	}
 
 	if requireServiceAuth {
-		return allowTrustedIssuerOrigins(cfg, mux)
+		return allowTrustedIssuerOrigins(issuers, mux)
 	}
 	return mux
 }
 
 // allowTrustedIssuerOrigins permits browser clients hosted by a trusted service
 // to call the standalone gateway with a host-issued token in the offer body.
-func allowTrustedIssuerOrigins(cfg *Config, next http.Handler) http.Handler {
+func allowTrustedIssuerOrigins(issuers []TrustedIssuerConfig, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		for _, issuer := range cfg.TrustedIssuers {
+		for _, issuer := range issuers {
 			if origin != strings.TrimRight(issuer.Issuer, "/") {
 				continue
 			}
@@ -156,7 +158,7 @@ func allowTrustedIssuerOrigins(cfg *Config, next http.Handler) http.Handler {
 }
 
 type handler struct {
-	cfg                *Config
+	issuers            []TrustedIssuerConfig
 	bridge             MediaBridgeProvider
 	textSessions       TextSessionServer
 	requireServiceAuth bool
@@ -193,16 +195,18 @@ func (h *handler) voiceChoices() voicev2.VoiceChoicesResp {
 		text.Choices = []voicev2.VoiceChoice{{ID: id, Label: "Default", Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportText}}}
 		text.Defaults = []voicev2.VoiceChoiceDefault{{Transport: voicev2.VoiceTransportText, ID: id}}
 	}
-	choices := voicev2.VoiceChoicesResp{Choices: []voicev2.VoiceChoice{}}
+	choices := voicev2.VoiceChoicesResp{Choices: []voicev2.VoiceChoice{}, RecognitionModels: slices.Clone(media.RecognitionModels), SynthesisModels: slices.Clone(media.SynthesisModels)}
 	for _, ch := range media.Choices {
 		if slices.Contains(ch.Transports, voicev2.VoiceTransportWebRTC) {
 			ch.Transports = []voicev2.VoiceTransport{voicev2.VoiceTransportWebRTC}
 			ch.Voices = slices.Clone(ch.Voices)
+			ch.SpeechModes = speechModesForTransport(ch.SpeechModes, voicev2.VoiceTransportWebRTC)
 		} else {
 			// Retain the catalog position for text-only choices until the text
 			// server supplies its capabilities below.
 			ch.Transports = nil
 			ch.Voices = nil
+			ch.SpeechModes = nil
 		}
 		choices.Choices = append(choices.Choices, ch)
 	}
@@ -210,16 +214,33 @@ func (h *handler) voiceChoices() voicev2.VoiceChoicesResp {
 		if !slices.Contains(ch.Transports, voicev2.VoiceTransportText) {
 			continue
 		}
+		modes := speechModesForTransport(ch.SpeechModes, voicev2.VoiceTransportText)
 		i := slices.IndexFunc(choices.Choices, func(c voicev2.VoiceChoice) bool { return c.ID == ch.ID })
 		if i < 0 {
-			choices.Choices = append(choices.Choices, voicev2.VoiceChoice{ID: ch.ID, Label: ch.Label, Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportText}})
+			choices.Choices = append(choices.Choices, voicev2.VoiceChoice{ID: ch.ID, Label: ch.Label, Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportText}, SpeechModes: modes, Composable: ch.Composable})
 		} else {
 			choices.Choices[i].Transports = append([]voicev2.VoiceTransport{voicev2.VoiceTransportText}, choices.Choices[i].Transports...)
+			for _, mode := range modes {
+				if !slices.Contains(choices.Choices[i].SpeechModes, mode) {
+					choices.Choices[i].SpeechModes = append(choices.Choices[i].SpeechModes, mode)
+				}
+			}
 		}
 	}
 	choices.Choices = slices.DeleteFunc(choices.Choices, func(ch voicev2.VoiceChoice) bool { return len(ch.Transports) == 0 })
 	choices.Defaults = voicev2.DefaultChoices(choices.Choices, slices.Concat(media.Defaults, text.Defaults))
 	return choices
+}
+
+// speechModesForTransport projects a shared catalog onto one exposed transport.
+// Text sessions require client speech; WebRTC sessions require at least one
+// gateway speech stage. Clone before filtering so discovery never mutates a
+// provider's shared catalog.
+func speechModesForTransport(modes []voicev2.SpeechConfig, transport voicev2.VoiceTransport) []voicev2.SpeechConfig {
+	return slices.DeleteFunc(slices.Clone(modes), func(mode voicev2.SpeechConfig) bool {
+		clientSpeech := mode.Input == voicev2.SpeechLocationClient && mode.Output == voicev2.SpeechLocationClient
+		return (transport == voicev2.VoiceTransportText) != clientSpeech
+	})
 }
 
 func (h *handler) handleChoices(w http.ResponseWriter, r *http.Request) {
@@ -608,7 +629,7 @@ func isNilMediaBridge(bridge MediaBridge) bool {
 // OAuth access token verification through discovery and JWKS, or the
 // transitional scoped Ed25519 token.
 func (h *handler) verifyServiceToken(ctx context.Context, s voicev2.ServiceAuthorization) (serviceSessionIdentity, error) {
-	for _, issuer := range h.cfg.TrustedIssuers {
+	for _, issuer := range h.issuers {
 		if issuer.Service != s.Kind || strings.TrimRight(issuer.Issuer, "/") != strings.TrimRight(s.BaseURL, "/") {
 			continue
 		}

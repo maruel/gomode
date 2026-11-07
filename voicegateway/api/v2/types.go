@@ -245,6 +245,17 @@ type VoiceChoice struct {
 	Transports []VoiceTransport `json:"transports"`
 	// Voices lists supported audio voice names. Omitted when the choice does not offer voice selection.
 	Voices []string `json:"voices,omitempty"`
+	// SpeechModes lists supported input/output ownership combinations.
+	// Missing metadata from older gateways means transport defaults only.
+	SpeechModes []SpeechConfig `json:"speechModes,omitempty"`
+	// Composable allows independent recognition and synthesis model selections.
+	Composable bool `json:"composable,omitempty"`
+}
+
+// SpeechModel identifies one configured speech stage without exposing endpoints or credentials.
+type SpeechModel struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
 }
 
 // VoiceChoiceDefault names the choice a transport family uses when a session
@@ -263,6 +274,10 @@ type VoiceChoicesResp struct {
 	Choices []VoiceChoice `json:"choices"`
 	// Defaults holds one entry per offered transport, ordered by transport name.
 	Defaults []VoiceChoiceDefault `json:"defaults"`
+	// RecognitionModels lists gateway recognition stages in preference order.
+	RecognitionModels []SpeechModel `json:"recognitionModels,omitempty"`
+	// SynthesisModels lists gateway synthesis stages in preference order.
+	SynthesisModels []SpeechModel `json:"synthesisModels,omitempty"`
 }
 
 // DefaultChoiceID returns the default choice for transport, or "" when the

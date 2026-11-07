@@ -72,6 +72,7 @@ MessageKind identifies a voice gateway WebRTC data-channel message.
 | `session.status` | MessageKindSessionStatus reports startup progress before session.ready. |
 | `session.usage` | MessageKindSessionUsage reports cumulative provider usage for this connection. |
 | `transcript.delta` | MessageKindTranscriptDelta streams transcript text. |
+| `transcript.draft` | MessageKindTranscriptDraft replaces provisional user text, without committing it. |
 | `assistant.text.delta` | MessageKindAssistantTextDelta streams assistant text. |
 | `reasoning.delta` | MessageKindReasoningDelta streams provider reasoning text. |
 | `speech.started` | MessageKindSpeechStarted reports that speech output started. |
@@ -89,6 +90,15 @@ Speaker identifies a transcript or speech speaker.
 |-------|-------------|
 | `user` | SpeakerUser is the human speaker. |
 | `assistant` | SpeakerAssistant is the assistant speaker. |
+
+### SpeechLocation
+
+SpeechLocation identifies which side owns a speech stage.
+
+| Value | Description |
+|-------|-------------|
+| `client` | SpeechLocationClient uses the client's speech facilities. |
+| `gateway` | SpeechLocationGateway uses the gateway's configured speech model. |
 
 ### TurnState
 
@@ -199,6 +209,17 @@ VoiceTransport identifies how clients communicate with a voice choice.
 | `text` | VoiceTransportText carries text with client speech recognition and synthesis. |
 | `webrtc` | VoiceTransportWebRTC carries audio through WebRTC. |
 
+### SpeechConfig
+
+SpeechConfig selects recognition and synthesis independently. Empty fields use
+transport defaults: WebRTC uses each configured gateway stage; text uses client
+speech. Explicit unsupported selections fail before model initialization.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `input` | `SpeechLocation` |  |  |
+| `output` | `SpeechLocation` |  |  |
+
 ### VoiceChoice
 
 VoiceChoice describes a selectable backend without exposing its credentials.
@@ -209,6 +230,9 @@ VoiceChoice describes a selectable backend without exposing its credentials.
 | `label` | `string` |  | yes |
 | `transports` | `VoiceTransport[]` |  | yes |
 | `voices` | `string[]` | Voices lists supported audio voice names. Omitted when the choice does not offer voice selection. |  |
+| `speechModes` | `SpeechConfig[]` | SpeechModes lists supported input/output ownership combinations.
+Missing metadata from older gateways means transport defaults only. |  |
+| `composable` | `boolean` | Composable allows independent recognition and synthesis model selections. |  |
 
 ### VoiceChoiceDefault
 
@@ -221,6 +245,15 @@ or text for client speech with a gateway LLM.
 | `transport` | `VoiceTransport` | Transport is the family this default applies to. | yes |
 | `id` | `string` | ID names a choice that offers Transport. | yes |
 
+### SpeechModel
+
+SpeechModel identifies one configured speech stage without exposing endpoints or credentials.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `id` | `string` |  | yes |
+| `label` | `string` |  | yes |
+
 ### VoiceChoicesResp
 
 VoiceChoicesResp advertises the available voice choices and one default per
@@ -230,6 +263,8 @@ offered family.
 |-------|------|-------------|----------|
 | `choices` | `VoiceChoice[]` |  | yes |
 | `defaults` | `VoiceChoiceDefault[]` | Defaults holds one entry per offered transport, ordered by transport name. | yes |
+| `recognitionModels` | `SpeechModel[]` | RecognitionModels lists gateway recognition stages in preference order. |  |
+| `synthesisModels` | `SpeechModel[]` | SynthesisModels lists gateway synthesis stages in preference order. |  |
 
 ### ServiceAuthorization
 
@@ -418,6 +453,13 @@ SessionSetup is the client message that initializes a voice session.
 | `context` | `Context` | Context provides initial instructions or text context for the session. | yes |
 | `includeReasoning` | `boolean` | IncludeReasoning requests optional provider reasoning output for this session.
 It does not enable thinking or change reasoning effort. |  |
+| `speech` | `SpeechConfig` | Speech selects the owner of recognition and synthesis for this session. |  |
+| `recognitionModelID` | `string` | RecognitionModelID selects a recognitionModels entry for a composable LLM.
+Omitted uses the first available entry when input is gateway-owned.
+It must be omitted for client-owned recognition and indivisible choices. |  |
+| `synthesisModelID` | `string` | SynthesisModelID selects a synthesisModels entry for a composable LLM.
+Omitted uses the first available entry when output is gateway-owned.
+It must be omitted for client-owned synthesis and indivisible choices. |  |
 
 ### ContextUpdate
 
@@ -536,6 +578,19 @@ Each fragment appends to previously emitted text; it never replaces it.
 | `responseID` | `string` | ResponseID is the opaque gateway-scoped response identity. Assistant
 text and its usage share this value; user text and uncorrelated providers
 omit it. Separate response IDs must not be merged into one transcript entry. |  |
+| `draft_id` | `string` | DraftID atomically replaces the matching user draft when this text commits. |  |
+
+### TranscriptDraft
+
+TranscriptDraft is an ephemeral full-text user hypothesis for one microphone
+utterance. Revisions replace text for ID. Empty Text clears only that ID.
+Drafts never enter conversation history, activity logs, or recovery context.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `kind` | `MessageKind` |  | yes |
+| `id` | `string` |  | yes |
+| `text` | `string` |  | yes |
 
 ### AssistantTextDelta
 

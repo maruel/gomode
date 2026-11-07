@@ -112,20 +112,68 @@ type ttsAdapter interface {
 
 // localStackBackend acquires a session-pinned lazy runtime for every connection.
 type localStackBackend struct {
-	lazy *lazyLocalStack
+	variants    []speechStackVariant
+	defaults    voicev2.SpeechConfig
+	composition *speechComposition
+	// closed is protected by composition.pool.mu.
+	closed bool
 }
 
 func (b *localStackBackend) Close() error {
-	return b.lazy.close()
+	var dynamic []*lazyLocalStack
+	if b.composition != nil {
+		b.composition.pool.mu.Lock()
+		b.closed = true
+		for _, l := range b.composition.pool.entries {
+			if l.owner == b {
+				dynamic = append(dynamic, l)
+			}
+		}
+		b.composition.pool.mu.Unlock()
+	}
+	var err error
+	for _, l := range dynamic {
+		err = errors.Join(err, l.close())
+	}
+	for _, v := range b.variants {
+		err = errors.Join(err, v.lazy.close())
+	}
+	return err
 }
 
 func (b *localStackBackend) connect(ctx context.Context, sessionID string, sink backendSink) (backendSession, error) {
-	return b.lazy.connect(ctx, sessionID, sink, false)
+	if len(b.speechModes()) == 1 {
+		return nil, errors.New("text-only choice does not support WebRTC audio")
+	}
+	return newNegotiatedStackSession(ctx, b, nil, sessionID, sink, false), nil
+}
+
+func (b *localStackBackend) speechModes() []voicev2.SpeechConfig {
+	if b.composition == nil {
+		out := make([]voicev2.SpeechConfig, 0, len(b.variants))
+		for _, v := range b.variants {
+			out = append(out, v.speech)
+		}
+		return out
+	}
+	var out []voicev2.SpeechConfig
+	for _, input := range []voicev2.SpeechLocation{voicev2.SpeechLocationGateway, voicev2.SpeechLocationClient} {
+		for _, output := range []voicev2.SpeechLocation{voicev2.SpeechLocationGateway, voicev2.SpeechLocationClient} {
+			if input == voicev2.SpeechLocationGateway && len(b.composition.pool.recognition) == 0 {
+				continue
+			}
+			if output == voicev2.SpeechLocationGateway && len(b.composition.pool.synthesis) == 0 {
+				continue
+			}
+			out = append(out, voicev2.SpeechConfig{Input: input, Output: output})
+		}
+	}
+	return out
 }
 
 // newTextSession creates a client-speech session that shares this backend's LLM.
 func (b *localStackBackend) newTextSession(ctx context.Context, sessionID string, sink backendSink) (backendSession, error) {
-	return b.lazy.connect(ctx, sessionID, sink, true)
+	return newNegotiatedStackSession(ctx, b, nil, sessionID, sink, true), nil
 }
 
 // localStackRuntime owns the loaded VAD→ASR→LLM→TTS adapters and their clients.
@@ -133,6 +181,7 @@ type localStackRuntime struct {
 	directAudio bool
 	newVAD      func() vadSegmenter
 	asr         asrAdapter
+	liveASR     liveASRAdapter
 	llm         llmAdapter
 	tts         ttsAdapter
 	runtime     io.Closer
@@ -149,7 +198,7 @@ func (b *localStackRuntime) connect(ctx context.Context, sessionID string, sink 
 	return b.newSession(ctx, sessionID, sink, false), nil
 }
 
-func (b *localStackRuntime) newSession(ctx context.Context, sessionID string, sink backendSink, clientSpeech bool) *localStackSession {
+func (b *localStackRuntime) newSession(ctx context.Context, sessionID string, sink backendSink, clientOutput bool) *localStackSession {
 	sessionCtx, cancel := context.WithCancel(ctx)
 	turns, sessionCtx := errgroup.WithContext(sessionCtx)
 	s := &localStackSession{
@@ -159,13 +208,17 @@ func (b *localStackRuntime) newSession(ctx context.Context, sessionID string, si
 		sessionCancel: cancel,
 		turns:         turns,
 		asr:           b.asr,
+		liveASR:       b.liveASR,
 		llm:           b.llm,
 		tts:           b.tts,
-		clientSpeech:  clientSpeech,
+		clientInput:   b.asr == nil && b.liveASR == nil && !b.directAudio,
+		clientOutput:  clientOutput || b.tts == nil,
 		directAudio:   b.directAudio,
 		outstanding:   make(map[string]sessionToolCall),
+		livePending:   make(map[string]*liveUtterance),
+		liveGate:      newRealtimeAudioGate(micSampleRate, realtimeAudioManual),
 	}
-	if !clientSpeech {
+	if !s.clientInput && b.liveASR == nil {
 		s.vad = b.newVAD()
 	}
 	return s
@@ -193,14 +246,17 @@ type localStackSession struct {
 
 	sessionCancel context.CancelFunc
 
-	vad vadSegmenter
-	asr asrAdapter
-	llm llmAdapter
-	tts ttsAdapter
-	// clientSpeech reports that the client performs speech recognition and
-	// synthesis, so this session only runs the text LLM turn.
-	clientSpeech bool
-	directAudio  bool
+	vad     vadSegmenter
+	asr     asrAdapter
+	liveASR liveASRAdapter
+	llm     llmAdapter
+	tts     ttsAdapter
+	// Client-owned stages have no gateway adapter and never receive media work.
+	clientInput  bool
+	clientOutput bool
+	// micActive detects onset even after generation is idle while client playback continues.
+	micActive   bool
+	directAudio bool
 
 	turns *errgroup.Group
 	// events serializes admission, generation commits and tool dispatch, never streaming.
@@ -214,6 +270,14 @@ type localStackSession struct {
 	speaking          bool
 	outstanding       map[string]sessionToolCall
 	transcriptionTail <-chan struct{}
+	livePending       map[string]*liveUtterance
+	liveDraftID       string
+	liveSequence      uint64
+
+	// Microphone framing and its current capture belong to the RTP owner.
+	micMu       sync.Mutex
+	liveGate    realtimeAudioGate
+	liveCapture *liveUtterance
 }
 
 func (s *localStackSession) acceptClientMessage(ctx context.Context, data []byte) error {
@@ -292,6 +356,7 @@ func (s *localStackSession) acceptClientMessage(ctx context.Context, data []byte
 		s.deliverToolResult(ctx, toolResultMsg{id: msg.ID, name: msg.Name, result: msg.Result})
 		return nil
 	case voicev2.MessageKindTurnCancel:
+		s.cancelLiveTranscriptions()
 		s.bargeIn(voicev2.InterruptSourceUser, "turn cancelled")
 		return nil
 	case voicev2.MessageKindSessionClose:
@@ -306,8 +371,16 @@ func (s *localStackSession) inputSampleRate() int {
 }
 
 func (s *localStackSession) acceptMicPCM(ctx context.Context, pcm []byte) error {
+	if s.clientInput {
+		return errors.New("microphone audio is not accepted with client recognition")
+	}
+	if s.liveASR != nil {
+		return s.acceptLiveMicPCM(pcm)
+	}
 	utterance, speechActive := s.vad.push(pcm)
-	if speechActive && s.isSpeaking() {
+	onset := speechActive && !s.micActive
+	s.micActive = speechActive
+	if (s.clientOutput && onset) || (speechActive && s.isSpeaking()) {
 		// New user speech while the assistant is talking is a barge-in.
 		s.bargeIn(voicev2.InterruptSourceUser, "")
 	}
@@ -454,7 +527,7 @@ func (s *localStackSession) startAdmittedStep(ctx context.Context, conv llmConve
 	s.turns.Go(func() error {
 		defer s.finishTurn(generation)
 		<-ready
-		if s.clientSpeech {
+		if s.clientOutput {
 			s.handleTextStep(ctx, conv, step, responseID)
 		} else {
 			s.handleLLMStep(ctx, conv, step, responseID)
@@ -776,7 +849,7 @@ func (s *localStackSession) isSpeaking() bool {
 func (s *localStackSession) warnTurn(ctx context.Context, stage string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+	if ctx.Err() != nil {
 		return
 	}
 	slog.WarnContext(s.baseCtx, "voicertc: local stack turn failed", "session", s.id, "stage", stage, "err", err) //nolint:contextcheck // turn goroutines run on the session lifetime context

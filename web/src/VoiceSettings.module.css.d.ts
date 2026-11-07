@@ -2,10 +2,11 @@
 declare const classes: {
   readonly "credits": string;
   readonly "error": string;
-  readonly "family": string;
   readonly "preview": string;
   readonly "previewError": string;
   readonly "retry": string;
   readonly "settings": string;
+  readonly "setupPanel": string;
+  readonly "setupTabs": string;
 };
 export default classes;

@@ -111,12 +111,12 @@ func serveTextSession(ctx context.Context, w http.ResponseWriter, r *http.Reques
 		}
 		return err
 	}
-	close(startupDone)
 	defer func() {
 		if err := sess.close(); err != nil {
 			slog.WarnContext(sessionCtx, "voicertc: close text session", "err", err)
 		}
 	}()
+	started := false
 	for {
 		var data []byte
 		select {
@@ -137,9 +137,16 @@ func serveTextSession(ctx context.Context, w http.ResponseWriter, r *http.Reques
 			if errors.Is(err, errSessionClosed) {
 				return nil
 			}
+			if sessionCtx.Err() != nil {
+				return err
+			}
 			slog.WarnContext(sessionCtx, "voicertc: text session message", "err", err)
 			sink.sendGatewayError(sessionCtx, "session: "+err.Error())
 			return nil
+		}
+		if !started {
+			close(startupDone)
+			started = true
 		}
 	}
 }

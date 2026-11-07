@@ -129,9 +129,9 @@ func (ti *oauthTestIssuer) authorization(t *testing.T, key oauthTestKey, scope s
 	return string(body)
 }
 
-func oauthConfig(t *testing.T, issuers ...*oauthTestIssuer) Config {
+func oauthConfig(t *testing.T, issuers ...*oauthTestIssuer) configFile {
 	t.Helper()
-	cfg := DefaultConfig()
+	cfg := configFile{}
 	for _, ti := range issuers {
 		cfg.TrustedIssuers = append(cfg.TrustedIssuers, TrustedIssuerConfig{
 			Service: "caic", Issuer: ti.issuer, OAuth: true,
@@ -179,7 +179,7 @@ func testOAuthOfferValid(t *testing.T) {
 	tiA := newOAuthTestIssuer(t, keyA)
 	tiB := newOAuthTestIssuer(t, keyB)
 	cfg := oauthConfig(t, tiA, tiB)
-	handler, err := NewHandler(&cfg, &fakeMediaBridge{}, nil)
+	handler, err := NewHandler(cfg.TrustedIssuers, &fakeMediaBridge{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func testOAuthOfferRejectsUnknownIssuerBeforeFetch(t *testing.T) {
 	key := newOAuthTestKey(t, "key-a")
 	ti := newOAuthTestIssuer(t, key)
 	cfg := oauthConfig(t, ti)
-	handler, err := NewHandler(&cfg, &fakeMediaBridge{}, nil)
+	handler, err := NewHandler(cfg.TrustedIssuers, &fakeMediaBridge{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func testOAuthOfferJWKSRotation(t *testing.T) {
 		RefreshCooldown: time.Second,
 	})
 	cfg := oauthConfig(t, ti)
-	handler := newHandler(&cfg, func() MediaBridge { return &fakeMediaBridge{} }, nil, true, true, verifier)
+	handler := newHandler(cfg.TrustedIssuers, func() MediaBridge { return &fakeMediaBridge{} }, nil, true, true, verifier)
 
 	old := ti.authorization(t, oldKey, "voice.session", now.Add(time.Minute))
 	if w := offerWithService(t, handler, old); w.Code != http.StatusOK {
@@ -253,7 +253,7 @@ func testOAuthOfferRejections(t *testing.T) {
 	key := newOAuthTestKey(t, "key-a")
 	ti := newOAuthTestIssuer(t, key)
 	cfg := oauthConfig(t, ti)
-	handler, err := NewHandler(&cfg, &fakeMediaBridge{}, nil)
+	handler, err := NewHandler(cfg.TrustedIssuers, &fakeMediaBridge{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func testOAuthOfferMixedWithScopedIssuer(t *testing.T) {
 	ti := newOAuthTestIssuer(t, key)
 	cfg, scoped := testServiceAuth(t)
 	cfg.TrustedIssuers = append(cfg.TrustedIssuers, TrustedIssuerConfig{Service: "caic", Issuer: ti.issuer, OAuth: true})
-	handler, err := NewHandler(&cfg, &fakeMediaBridge{}, nil)
+	handler, err := NewHandler(cfg.TrustedIssuers, &fakeMediaBridge{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

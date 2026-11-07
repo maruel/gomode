@@ -61,6 +61,7 @@ use `subscriptions/listen`. For released Streamable HTTP clients, configure
 key, including task or authorization scope boundaries. Authenticate every
 request before dispatch; the session ID does not grant authorization. A nil
 owner callback leaves released requests stateless.
+Keep the handler alive across requests for the lifetime of its sessions.
 
 Released clients initialize an owner-bound `Mcp-Session-Id`, subscribe with
 `resources/subscribe`, and open a GET with `Accept: text/event-stream`. Resource
@@ -74,6 +75,29 @@ log, so clients must read the resource and compare stable item IDs/references.
 The MCP host decides whether a notification becomes model context or starts a
 model turn. Receiving a resource update does not itself wake an LLM. Voice
 clients explicitly distinguish passive context from alerts requiring a response.
+
+## Embedded voice configuration
+
+Embed `voicegateway.Config` under a host-owned TOML section and decode with
+`DisallowUnknownFields` to catch misspelled settings. The host owns its listener,
+deployment mode, authentication, and session admission policy. Keep the UDP port
+beside those host settings; validate it with `voicegateway.ServerConfig.Validate`
+and reject negative ports when the host requires WebRTC.
+
+Call `Config.Resolve` during host configuration validation and pass its
+`ResolvedConfig` result through startup. Before creating the bridge, call
+`Available(ctx)` on that result, check caller cancellation, and validate the
+filtered result with `Validate`. Provider availability checks may remove choices;
+an empty catalog prevents startup. Pass the resolved configuration and the
+host-owned UDP port to `voicertc.NewBridge`. Keep
+transcript activity logs in a private directory with a host-owned lifetime.
+
+Realtime choices precede LLM choices, followed by voice presets. Recognition,
+language, and synthesis stages use `asr`, `llm`, and `tts` arrays with unique
+`id` fields and retain their declaration order in embedded and standalone
+gateways. Recognition and synthesis can be selected independently for an LLM;
+optional `voice` presets reference the stage IDs. See the
+[complete configuration](../contrib/config.toml) for speech stages and presets.
 
 ## Device sign-in
 

@@ -1,5 +1,10 @@
 // Browser recognition and synthesis with platform-specific utterance and restart handling.
 
+/** Match a browser voice to a language without restricting its region. */
+export function browserVoiceMatchesLanguage(voice: SpeechSynthesisVoice, languageTag: string): boolean {
+  return voice.lang.toLowerCase().split(/[-_]/u)[0] === languageTag.toLowerCase().split(/[-_]/u)[0];
+}
+
 export interface RecognitionResultEvent {
   resultIndex: number;
   results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }>;
@@ -32,8 +37,12 @@ function recognitionConstructor(): RecognitionConstructor | null {
   return host.SpeechRecognition ?? host.webkitSpeechRecognition ?? null;
 }
 
-export function browserSpeechAvailable(): boolean {
-  return recognitionConstructor() !== null && "speechSynthesis" in window;
+export function browserRecognitionAvailable(): boolean {
+  return recognitionConstructor() !== null;
+}
+
+export function browserSynthesisAvailable(): boolean {
+  return "speechSynthesis" in window && typeof SpeechSynthesisUtterance !== "undefined";
 }
 
 /** iOS recognition can stall after UI audio playback; omit voice-mode chimes. */
@@ -91,7 +100,7 @@ export class BrowserSpeech {
         this.abortTimer = null;
         if (!this.disposed && this.recognition === recognition) {
           this.wantsListening = false;
-          this.callbacks.error("Browser speech did not stop. Retry or use Cloud voice.");
+          this.callbacks.error("Browser speech did not stop. Retry or use gateway recognition.");
         }
       }, 5000);
       recognition.abort();
@@ -147,13 +156,15 @@ export class BrowserSpeech {
         this.callbacks.speaking(true);
         return;
       }
-      const language = this.languageTag.toLowerCase().split("-")[0];
       // macOS includes novelty voices. Enumeration order and localService do
       // not indicate quality; honor the user's selection or browser default.
       const voice =
         this.voiceURI === ""
-          ? voices.find((candidate) => candidate.default && candidate.lang.toLowerCase().split("-")[0] === language)
-          : voices.find((candidate) => candidate.voiceURI === this.voiceURI);
+          ? voices.find((candidate) => candidate.default && browserVoiceMatchesLanguage(candidate, this.languageTag))
+          : voices.find(
+              (candidate) =>
+                candidate.voiceURI === this.voiceURI && browserVoiceMatchesLanguage(candidate, this.languageTag),
+            );
       if (this.voiceURI !== "" && !voice)
         throw new Error("The saved browser voice is unavailable. Choose another speaking voice in settings.");
       if (voice) utterance.voice = voice;
@@ -197,7 +208,7 @@ export class BrowserSpeech {
   private startRecognition(): void {
     const Constructor = recognitionConstructor();
     if (Constructor === null) {
-      this.callbacks.error("Browser speech recognition is unavailable. Use Cloud voice.");
+      this.callbacks.error("Browser speech recognition is unavailable. Use gateway recognition.");
       return;
     }
     const recognition = new Constructor();
@@ -295,7 +306,7 @@ export class BrowserSpeech {
     this.startupTimer = setTimeout(() => {
       if (this.recognition !== recognition || !this.wantsListening) return;
       this.stopListening();
-      this.callbacks.error("Browser speech did not start. Retry or use Cloud voice.");
+      this.callbacks.error("Browser speech did not start. Retry or use gateway recognition.");
     }, 5000);
     try {
       recognition.start();

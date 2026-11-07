@@ -263,6 +263,99 @@ class VoicePanelTest {
     }
 
     @Test
+    fun liveDraftRevisesAndCommitsWithoutDuplicatingHistory() {
+        val state =
+            mutableStateOf(
+                VoiceState(
+                    connected = true,
+                    transcriptDraft =
+                        com.caic.voicegateway.sdk.v2.TranscriptDraft(
+                            com.caic.voicegateway.sdk.v2.MessageKind.TranscriptDraft,
+                            "a",
+                            "I love pears",
+                        ),
+                ),
+            )
+        composeRule.setContent {
+            GoModeTheme {
+                Box(
+                    Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars),
+                    contentAlignment = Alignment.BottomCenter,
+                ) {
+                    VoicePanel(
+                        voiceState = state.value,
+                        voiceEnabled = true,
+                        onConnect = {},
+                        onDisconnect = {},
+                        onSelectMicrophoneMode = {},
+                        onSelectDevice = {},
+                        onOpenSettings = {},
+                        serviceReconnect = null,
+                        onCycleApp = {},
+                        canCycleApps = false,
+                    )
+                }
+            }
+        }
+        composeRule.onNodeWithText("You: I love pears").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Hide transcript").performClick()
+        composeRule.onNodeWithTag("gomode-voice-transcript-draft").assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("Show transcript").performClick()
+        composeRule.onNodeWithText("You: I love pears").assertIsDisplayed()
+        capture("transcript-live-draft")
+        composeRule.runOnIdle {
+            state.value =
+                state.value.withTranscriptDraft(
+                    com.caic.voicegateway.sdk.v2.TranscriptDraft(
+                        com.caic.voicegateway.sdk.v2.MessageKind.TranscriptDraft,
+                        "a",
+                        "I love bananas",
+                    ),
+                )
+        }
+        composeRule.onNodeWithText("You: I love bananas").assertIsDisplayed()
+        capture("transcript-live-revision")
+        composeRule.runOnIdle {
+            state.value =
+                state.value.withCommittedTranscript(
+                    com.caic.voicegateway.sdk.v2.TranscriptDelta(
+                        com.caic.voicegateway.sdk.v2.MessageKind.TranscriptDelta,
+                        com.caic.voicegateway.sdk.v2.Speaker.User,
+                        "I love bananas.",
+                        draft_id = "a",
+                    ),
+                )
+        }
+        composeRule.onNodeWithTag("gomode-voice-transcript-draft").assertDoesNotExist()
+        composeRule.onNodeWithText("You: I love bananas.").assertIsDisplayed()
+        capture("transcript-live-final")
+        composeRule.runOnIdle {
+            state.value =
+                state.value.withTranscriptDraft(
+                    com.caic.voicegateway.sdk.v2.TranscriptDraft(
+                        com.caic.voicegateway.sdk.v2.MessageKind.TranscriptDraft,
+                        "b",
+                        "Canceled",
+                    ),
+                )
+        }
+        composeRule.onNodeWithTag("gomode-voice-transcript-draft").assertIsDisplayed()
+        composeRule.runOnIdle {
+            state.value =
+                state.value.withTranscriptDraft(
+                    com.caic.voicegateway.sdk.v2.TranscriptDraft(
+                        com.caic.voicegateway.sdk.v2.MessageKind.TranscriptDraft,
+                        "b",
+                        "",
+                    ),
+                )
+        }
+        composeRule.onNodeWithTag("gomode-voice-transcript-draft").assertDoesNotExist()
+        composeRule.onNodeWithText("You: I love bananas.").assertIsDisplayed()
+        capture("transcript-live-cancel")
+    }
+
+    @Test
     fun transcriptLabelsReasoningSeparatelyFromSpokenText() {
         composeRule.setContent {
             GoModeTheme {
@@ -1259,6 +1352,78 @@ class VoicePanelTest {
         composeRule.onNodeWithText("You: Send the message").assertDoesNotExist()
         composeRule.onNodeWithContentDescription("Show transcript").assertIsDisplayed().performClick()
         composeRule.onNodeWithText("You: Send the message").assertIsDisplayed()
+    }
+
+    @Test
+    fun liveDraftFollowsItsBottomWithoutOverridingManualScroll() {
+        val state =
+            mutableStateOf(
+                VoiceState(
+                    connected = true,
+                    transcript =
+                        (1..20).map {
+                            TranscriptEntry(
+                                TranscriptSpeaker.ASSISTANT,
+                                "Earlier turn $it",
+                                final = true,
+                            )
+                        },
+                    transcriptDraft =
+                        com.caic.voicegateway.sdk.v2.TranscriptDraft(
+                            com.caic.voicegateway.sdk.v2.MessageKind.TranscriptDraft,
+                            "a",
+                            (1..100).joinToString("\n") { "Recognized phrase $it." },
+                        ),
+                ),
+            )
+        composeRule.setContent {
+            GoModeTheme {
+                Box(
+                    Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.statusBars),
+                    contentAlignment = Alignment.BottomCenter,
+                ) {
+                    VoicePanel(
+                        state.value,
+                        true,
+                        {},
+                        {},
+                        {},
+                        {},
+                        {},
+                        serviceReconnect = null,
+                        onCycleApp = {},
+                        canCycleApps = false,
+                    )
+                }
+            }
+        }
+        composeRule.onNodeWithTag("gomode-voice-transcript-end").assertIsDisplayed()
+
+        fun appendDraft() {
+            composeRule.runOnIdle {
+                val draft = requireNotNull(state.value.transcriptDraft)
+                state.value =
+                    state.value.withTranscriptDraft(draft.copy(text = draft.text + "\nNewest recognized words."))
+            }
+        }
+        appendDraft()
+        composeRule.onNodeWithTag("gomode-voice-transcript-end").assertIsDisplayed()
+        capture("transcript-live-overflow-tail")
+        val transcript = composeRule.onNodeWithTag("gomode-voice-transcript")
+        transcript.performTouchInput { swipeDown() }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("gomode-voice-transcript-end").assertIsNotDisplayed()
+        val before = transcript.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+        appendDraft()
+        composeRule.waitForIdle()
+        val after = transcript.fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+        assertEquals(before, after, 0.01f)
+        composeRule.onNodeWithTag("gomode-voice-transcript-end").assertIsNotDisplayed()
+        capture("transcript-live-overflow-manual")
+        transcript.performScrollToNode(hasTestTag("gomode-voice-transcript-end"))
+        appendDraft()
+        composeRule.onNodeWithTag("gomode-voice-transcript-end").assertIsDisplayed()
+        capture("transcript-live-overflow-resumed")
     }
 
     @Test

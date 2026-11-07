@@ -289,10 +289,11 @@ internal fun LockedCarCall(
                                 )
                             }
                             voiceState.audioError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                            if (voiceState.transcript.isNotEmpty()) {
+                            if (voiceState.transcript.isNotEmpty() || voiceState.transcriptDraft != null) {
                                 Text("Transcript", style = MaterialTheme.typography.labelLarge)
                                 TranscriptLog(
                                     entries = voiceState.transcript,
+                                    draft = voiceState.transcriptDraft,
                                     modifier = Modifier.fillMaxWidth().testTag("gomode-voice-transcript"),
                                 )
                             }

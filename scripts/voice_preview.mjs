@@ -58,6 +58,10 @@ const server = createServer((req, res) => {
     res.end(page);
     return;
   }
+  if (pathname === "/favicon.ico") {
+    res.writeHead(204).end();
+    return;
+  }
   const body = assets.get(pathname);
   if (!body) {
     res.writeHead(404).end();

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -51,10 +52,17 @@ func (f *failingMediaBridge) HandleOffer(context.Context, string) (sdpAnswer, se
 
 func TestNewHandler(t *testing.T) {
 	t.Parallel()
+	t.Run("invalid issuer policy", func(t *testing.T) {
+		t.Parallel()
+		_, err := NewHandler([]TrustedIssuerConfig{{Service: "caic", Issuer: "https://caic.example.com", PublicKey: "invalid"}}, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "trusted_issuers[0].public_key") {
+			t.Fatalf("invalid handler issuer = %v", err)
+		}
+	})
 	t.Run("standalone session operations require bound authorization", func(t *testing.T) {
 		t.Parallel()
 		cfg, serviceJSON := testServiceAuth(t)
-		handler, err := NewHandler(&cfg, &fakeMediaBridge{}, nil)
+		handler, err := NewHandler(cfg.TrustedIssuers, &fakeMediaBridge{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -95,9 +103,9 @@ func TestNewHandler(t *testing.T) {
 	})
 	t.Run("browser preflight from trusted issuer", func(t *testing.T) {
 		t.Parallel()
-		cfg := DefaultConfig()
-		cfg.TrustedIssuers = []TrustedIssuerConfig{{Issuer: "https://caic.example.com"}}
-		handler, err := NewHandler(&cfg, nil, nil)
+		cfg := configFile{}
+		cfg.TrustedIssuers = []TrustedIssuerConfig{{Service: "caic", Issuer: "https://caic.example.com", OAuth: true}}
+		handler, err := NewHandler(cfg.TrustedIssuers, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -130,8 +138,8 @@ func TestNewHandler(t *testing.T) {
 		t.Parallel()
 		w := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/voicegateway/v2/voice/health", http.NoBody)
-		cfg := DefaultConfig()
-		handler, err := NewHandler(&cfg, nil, nil)
+		cfg := configFile{}
+		handler, err := NewHandler(cfg.TrustedIssuers, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -152,8 +160,8 @@ func TestNewHandler(t *testing.T) {
 		t.Parallel()
 		w := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(`{}`))
-		cfg := DefaultConfig()
-		handler, err := NewHandler(&cfg, nil, nil)
+		cfg := configFile{}
+		handler, err := NewHandler(cfg.TrustedIssuers, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -165,8 +173,8 @@ func TestNewHandler(t *testing.T) {
 		t.Parallel()
 		w := httptest.NewRecorder()
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(`{"sdp":"offer"}`))
-		cfg := DefaultConfig()
-		handler, err := NewHandler(&cfg, nil, nil)
+		cfg := configFile{}
+		handler, err := NewHandler(cfg.TrustedIssuers, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -199,13 +207,13 @@ func TestNewHandler(t *testing.T) {
 		w := httptest.NewRecorder()
 		body := `{"sdp":"offer","service":{"kind":"caic","instanceID":"home","baseURL":"https://caic.example.com","token":"` + token + `"}}`
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(body))
-		cfg := DefaultConfig()
+		cfg := configFile{}
 		cfg.TrustedIssuers = []TrustedIssuerConfig{{
 			Service:   "caic",
 			Issuer:    "https://caic.example.com",
 			PublicKey: encodedPublicKey,
 		}}
-		handler, err := NewHandler(&cfg, nil, nil)
+		handler, err := NewHandler(cfg.TrustedIssuers, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -217,7 +225,7 @@ func TestNewHandler(t *testing.T) {
 		t.Parallel()
 		cfg, service := testServiceAuth(t)
 		var bridge *fakeMediaBridge
-		handler, err := NewHandler(&cfg, bridge, nil)
+		handler, err := NewHandler(cfg.TrustedIssuers, bridge, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -238,7 +246,7 @@ func TestNewHandler(t *testing.T) {
 	t.Run("offer succeeds with trusted service", func(t *testing.T) {
 		t.Parallel()
 		cfg, service := testServiceAuth(t)
-		handler, err := NewHandler(&cfg, &fakeMediaBridge{}, nil)
+		handler, err := NewHandler(cfg.TrustedIssuers, &fakeMediaBridge{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -268,7 +276,7 @@ func TestNewHandler(t *testing.T) {
 	t.Run("offer reports a semantic backend failure", func(t *testing.T) {
 		t.Parallel()
 		cfg, service := testServiceAuth(t)
-		handler, err := NewHandler(&cfg, &failingMediaBridge{}, nil)
+		handler, err := NewHandler(cfg.TrustedIssuers, &failingMediaBridge{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -280,8 +288,8 @@ func TestNewHandler(t *testing.T) {
 
 	t.Run("offer rejects untrusted service", func(t *testing.T) {
 		t.Parallel()
-		cfg := DefaultConfig()
-		handler, err := NewHandler(&cfg, &fakeMediaBridge{}, nil)
+		cfg := configFile{}
+		handler, err := NewHandler(cfg.TrustedIssuers, &fakeMediaBridge{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -294,7 +302,7 @@ func TestNewHandler(t *testing.T) {
 	t.Run("offer rejects token without voice capability", func(t *testing.T) {
 		t.Parallel()
 		cfg, service := testServiceAuth(t, "other")
-		handler, err := NewHandler(&cfg, &fakeMediaBridge{}, nil)
+		handler, err := NewHandler(cfg.TrustedIssuers, &fakeMediaBridge{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -388,7 +396,7 @@ func TestNewEmbeddedHandler(t *testing.T) {
 
 // testServiceAuth returns a config with a trusted issuer and a matching service
 // authorization JSON fragment for offer requests.
-func testServiceAuth(t *testing.T, capabilities ...string) (cfg Config, service string) {
+func testServiceAuth(t *testing.T, capabilities ...string) (cfg configFile, service string) {
 	if len(capabilities) == 0 {
 		capabilities = []string{"voice.session"}
 	}
@@ -412,7 +420,7 @@ func testServiceAuth(t *testing.T, capabilities ...string) (cfg Config, service 
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg = DefaultConfig()
+	cfg = configFile{}
 	cfg.TrustedIssuers = []TrustedIssuerConfig{{
 		Service:   "caic",
 		Issuer:    "https://caic.example.com",
@@ -485,13 +493,89 @@ func (b *choiceBridge) ServeTextChoice(_ context.Context, w http.ResponseWriter,
 
 func TestVoiceChoices(t *testing.T) {
 	t.Parallel()
+	t.Run("projects speech modes onto exposed transports", func(t *testing.T) {
+		t.Parallel()
+		all := []voicev2.SpeechConfig{
+			{Input: voicev2.SpeechLocationGateway, Output: voicev2.SpeechLocationGateway},
+			{Input: voicev2.SpeechLocationGateway, Output: voicev2.SpeechLocationClient},
+			{Input: voicev2.SpeechLocationClient, Output: voicev2.SpeechLocationGateway},
+			{Input: voicev2.SpeechLocationClient, Output: voicev2.SpeechLocationClient},
+		}
+		for _, tc := range []struct {
+			name        string
+			media, text bool
+			transports  []voicev2.VoiceTransport
+			modes       []voicev2.SpeechConfig
+		}{
+			{name: "RTC only", media: true,
+				transports: []voicev2.VoiceTransport{voicev2.VoiceTransportWebRTC},
+				modes: []voicev2.SpeechConfig{
+					{Input: voicev2.SpeechLocationGateway, Output: voicev2.SpeechLocationGateway},
+					{Input: voicev2.SpeechLocationGateway, Output: voicev2.SpeechLocationClient},
+					{Input: voicev2.SpeechLocationClient, Output: voicev2.SpeechLocationGateway},
+				}},
+			{name: "text only", text: true,
+				transports: []voicev2.VoiceTransport{voicev2.VoiceTransportText},
+				modes:      []voicev2.SpeechConfig{{Input: voicev2.SpeechLocationClient, Output: voicev2.SpeechLocationClient}}},
+			{name: "RTC and text", media: true, text: true,
+				transports: []voicev2.VoiceTransport{voicev2.VoiceTransportText, voicev2.VoiceTransportWebRTC},
+				modes: []voicev2.SpeechConfig{
+					{Input: voicev2.SpeechLocationGateway, Output: voicev2.SpeechLocationGateway},
+					{Input: voicev2.SpeechLocationGateway, Output: voicev2.SpeechLocationClient},
+					{Input: voicev2.SpeechLocationClient, Output: voicev2.SpeechLocationGateway},
+					{Input: voicev2.SpeechLocationClient, Output: voicev2.SpeechLocationClient},
+				}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				catalog := voicev2.VoiceChoicesResp{Choices: []voicev2.VoiceChoice{{ID: "stack", Label: "Stack", Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportText, voicev2.VoiceTransportWebRTC}, SpeechModes: slices.Clone(all), Composable: true}}, RecognitionModels: []voicev2.SpeechModel{{ID: "asr", Label: "Recognition"}}, SynthesisModels: []voicev2.SpeechModel{{ID: "tts", Label: "Speech"}}}
+				b := &choiceBridge{choices: &catalog}
+				var media MediaBridge
+				if tc.media {
+					media = b
+				}
+				var text TextSessionServer
+				if tc.text {
+					text = b
+				}
+				h := NewEmbeddedHandler(func() MediaBridge { return media }, text)
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), "GET", "/api/voicegateway/v2/voice/choices", http.NoBody))
+				var got voicev2.VoiceChoicesResp
+				if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+					t.Fatal(err)
+				}
+				if w.Code != http.StatusOK || len(got.Choices) != 1 || !slices.Equal(got.Choices[0].Transports, tc.transports) || !slices.Equal(got.Choices[0].SpeechModes, tc.modes) {
+					t.Fatalf("projected choices: %d %+v, want transports %v and modes %+v", w.Code, got.Choices, tc.transports, tc.modes)
+				}
+				if !got.Choices[0].Composable {
+					t.Fatal("HTTP projection lost composition support")
+				}
+				if tc.media {
+					if !slices.Equal(got.RecognitionModels, catalog.RecognitionModels) || !slices.Equal(got.SynthesisModels, catalog.SynthesisModels) {
+						t.Fatal("HTTP projection lost speech catalogs")
+					}
+				} else if len(got.RecognitionModels) != 0 || len(got.SynthesisModels) != 0 {
+					t.Fatal("text-only handler advertised gateway speech models")
+				}
+				if !slices.Equal(catalog.Choices[0].SpeechModes, all) {
+					t.Fatal("HTTP projection mutated the shared source catalog")
+				}
+			})
+		}
+	})
 	t.Run("preserves pipeline order", func(t *testing.T) {
 		t.Parallel()
 		catalog := voicev2.VoiceChoicesResp{
 			Choices: []voicev2.VoiceChoice{
-				{ID: "live", Label: "Realtime", Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportWebRTC}, Voices: []string{"Kore"}},
-				{ID: "chat", Label: "Chat", Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportText}},
-				{ID: "stack", Label: "Local stack", Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportText, voicev2.VoiceTransportWebRTC}},
+				{ID: "live", Label: "Realtime", Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportWebRTC}, Voices: []string{"Kore"}, SpeechModes: []voicev2.SpeechConfig{{Input: voicev2.SpeechLocationGateway, Output: voicev2.SpeechLocationGateway}}},
+				{ID: "chat", Label: "Chat", Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportText}, SpeechModes: []voicev2.SpeechConfig{{Input: voicev2.SpeechLocationClient, Output: voicev2.SpeechLocationClient}}},
+				{ID: "stack", Label: "Local stack", Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportText, voicev2.VoiceTransportWebRTC}, SpeechModes: []voicev2.SpeechConfig{
+					{Input: voicev2.SpeechLocationGateway, Output: voicev2.SpeechLocationGateway},
+					{Input: voicev2.SpeechLocationGateway, Output: voicev2.SpeechLocationClient},
+					{Input: voicev2.SpeechLocationClient, Output: voicev2.SpeechLocationGateway},
+					{Input: voicev2.SpeechLocationClient, Output: voicev2.SpeechLocationClient},
+				}},
 			},
 			Defaults: []voicev2.VoiceChoiceDefault{
 				{Transport: voicev2.VoiceTransportText, ID: "chat"},
@@ -512,7 +596,7 @@ func TestVoiceChoices(t *testing.T) {
 	})
 	b := &choiceBridge{}
 	cfg, service := testServiceAuth(t)
-	h, err := NewHandler(&cfg, b, b)
+	h, err := NewHandler(cfg.TrustedIssuers, b, b)
 	if err != nil {
 		t.Fatal(err)
 	}

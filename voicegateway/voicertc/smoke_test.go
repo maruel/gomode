@@ -286,27 +286,27 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := voicegateway.DefaultConfig()
+	cfg := voicegateway.ResolvedConfig{}
 	cfg.Realtime = nil
-	cfg.LocalStack = []voicegateway.LocalStackConfig{{
+	cfg.Pipelines = []voicegateway.PipelineConfig{{
 		Label: "Local",
-		ASR:   voicegateway.LocalStackASRConfig{Engine: voicegateway.LocalStackASRGenAI, Provider: "llamacpp", Model: "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"},
+		ASR:   voicegateway.ASRConfig{Engine: voicegateway.ASREngineGenAI, Provider: "llamacpp", Model: "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"},
 		LLM:   voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"},
-		TTS:   voicegateway.LocalStackTTSConfig{Engine: voicegateway.LocalStackTTSKittenTTS, Voice: "Jasper", Model: "KittenML/kitten-tts-2"},
+		TTS:   voicegateway.TTSConfig{Engine: voicegateway.TTSEngineKittenTTS, Voice: "Jasper", Model: "KittenML/kitten-tts-2"},
 	}}
-	cfg.TrustedIssuers = []voicegateway.TrustedIssuerConfig{{Service: service.Kind, Issuer: service.BaseURL, PublicKey: encodedPublicKey}}
+	issuers := []voicegateway.TrustedIssuerConfig{{Service: service.Kind, Issuer: service.BaseURL, PublicKey: encodedPublicKey}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 
 	startup := time.Now()
-	bridge, err := newBridgeWithTimeout(runtimeCtx, &cfg, t.TempDir(), 5*time.Millisecond)
+	bridge, err := newBridgeWithTimeout(runtimeCtx, &cfg, 0, t.TempDir(), 5*time.Millisecond)
 	t.Logf("local stack startup: %s", smokeElapsed(startup))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { bridge.CloseAll(runtimeCtx) })
-	handler, err := voicegateway.NewHandler(&cfg, bridge, nil)
+	handler, err := voicegateway.NewHandler(issuers, bridge, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

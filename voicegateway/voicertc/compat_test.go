@@ -71,7 +71,7 @@ func TestServerProtocolMessage(t *testing.T) {
 			t.Fatalf("v1 exposed response correlation: %s", projected)
 		}
 	}
-	for _, kind := range []string{"session.status", "session.usage", "reasoning.delta", "future.event"} {
+	for _, kind := range []string{"session.status", "session.usage", "reasoning.delta", "transcript.draft", "future.event"} {
 		out, err := serverProtocolMessage(p, []byte(`{"kind":"`+kind+`"}`))
 		if err != nil || out != nil {
 			t.Fatalf("v1 event %s: %s %v", kind, out, err)
@@ -89,6 +89,30 @@ func TestServerProtocolMessage(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("v1 projection = %#v", got)
 	}
+	t.Run("committed transcription", func(t *testing.T) {
+		t.Parallel()
+		data := mustGatewayServerMessage(&voicev2.TranscriptDelta{Kind: voicev2.MessageKindTranscriptDelta, Speaker: voicev2.SpeakerUser, Text: "Final words.", DraftID: "utterance"})
+		out, err := serverProtocolMessage(p, data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(out, &got); err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]any{"kind": "transcript.delta", "speaker": "user", "text": "Final words."}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("legacy committed turn = %#v", got)
+		}
+		out, err = serverProtocolMessage(voiceapi.SessionProtocol{Version: voiceapi.ProtocolV2}, data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(out) != string(data) {
+			t.Fatalf("current committed turn = %s", out)
+		}
+	})
+
 	sess := &session{protocol: p}
 	if err := sess.deliverGatewayMessage(out); err != nil {
 		t.Fatal(err)

@@ -29,7 +29,7 @@ beforeEach(() => {
     value: { getUserMedia: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn() },
   });
   vi.clearAllMocks();
-  localStorage.removeItem("gomode.voiceLanguage");
+  localStorage.clear();
   voiceSession.setState((s) => ({
     ...s,
     connected: false,
@@ -50,10 +50,31 @@ beforeEach(() => {
     turnState: TurnStateIdle,
     transcript: [],
     usage: null,
+    transcriptDraft: null,
     languageTag: "en-US",
-    mode: "cloud",
-    choices: [],
-    choiceIDs: { text: null, webrtc: null },
+    speechInput: "gateway",
+    speechOutput: "gateway",
+    setupMode: "parts",
+    choices: [
+      {
+        id: "chat",
+        label: "Chat",
+        composable: true,
+        transports: ["text", "webrtc"],
+        speechModes: [
+          { input: "gateway", output: "gateway" },
+          { input: "gateway", output: "client" },
+          { input: "client", output: "gateway" },
+          { input: "client", output: "client" },
+        ],
+      },
+    ],
+    speechModels: {
+      input: [{ id: "whisper", label: "Whisper" }],
+      output: [{ id: "kokoro", label: "Kokoro" }],
+    },
+    speechModelIDs: { input: "whisper", output: "kokoro" },
+    choiceIDs: { text: "chat", webrtc: "chat" },
     choicesStatus: "ready",
     choicesError: null,
     voiceName: null,
@@ -76,6 +97,59 @@ afterEach(() => {
 });
 
 describe("VoiceOverlay status", () => {
+  it("follows growing drafts and resumes only when the reader returns to the tail", async () => {
+    voiceSession.setState((state) => ({
+      ...state,
+      connected: true,
+      transcript: Array.from({ length: 20 }, (_, index) => ({
+        kind: "transcript",
+        speaker: "assistant",
+        text: `Earlier turn ${index}`,
+        final: true,
+      })),
+      transcriptDraft: { id: "a", text: "Opening words" },
+    }));
+    render(() => <VoiceOverlay />);
+    const list = screen.getByRole("region", { name: "Transcript" });
+    let height = 1200;
+    Object.defineProperties(list, { scrollHeight: { get: () => height }, clientHeight: { value: 200 } });
+    voiceSession.setState((state) => ({ ...state, transcriptDraft: { id: "a", text: "A growing hypothesis" } }));
+    await Promise.resolve();
+    expect(list.scrollTop).toBe(1200);
+    list.scrollTop = 30;
+    fireEvent.scroll(list);
+    height = 1600;
+    voiceSession.setState((state) => ({
+      ...state,
+      transcriptDraft: { id: "a", text: "The latest hypothesis revises earlier words" },
+    }));
+    await Promise.resolve();
+    expect(list.scrollTop).toBe(30);
+    list.scrollTop = 1400;
+    fireEvent.scroll(list);
+    height = 1800;
+    voiceSession.setState((state) => ({ ...state, transcriptDraft: { id: "a", text: "Final words at the tail" } }));
+    await Promise.resolve();
+    expect(list.scrollTop).toBe(1800);
+  });
+
+  it("renders a quiet replaceable draft separately from committed history", () => {
+    voiceSession.setState((s) => ({ ...s, connected: true, transcriptDraft: { id: "a", text: "I love pears" } }));
+    render(() => <VoiceOverlay />);
+    const draft = screen.getByTestId("voice-transcript-draft");
+    expect(draft).toHaveTextContent("I love pears");
+    expect(draft).toHaveAttribute("aria-live", "off");
+    voiceSession.setState((s) => ({ ...s, transcriptDraft: { id: "a", text: "I love bananas" } }));
+    expect(draft).toHaveTextContent("I love bananas");
+    voiceSession.setState((s) => ({
+      ...s,
+      transcriptDraft: null,
+      transcript: [{ kind: "transcript", speaker: "user", text: "I love bananas.", final: true }],
+    }));
+    expect(screen.queryByTestId("voice-transcript-draft")).toBeNull();
+    expect(screen.getByText("I love bananas.")).toBeVisible();
+  });
+
   it("shows a delivery failure with the existing reconnect action", async () => {
     const message =
       "Couldn't deliver the action's result. Reconnect voice. The action may have completed; check before repeating it.";
@@ -262,7 +336,8 @@ describe("VoiceOverlay status", () => {
     voiceSession.setState((state) => ({
       ...state,
       connected: true,
-      mode: "browser",
+      speechInput: "client",
+      speechOutput: "client",
       transcript: [{ kind: "transcript", speaker: "assistant", text: "Ready to help.", final: true }],
     }));
     render(() => <VoiceOverlay />);
@@ -423,7 +498,8 @@ describe("VoiceOverlay status", () => {
     voiceSession.setState((s) => ({
       ...s,
       connected: true,
-      mode: "browser",
+      speechInput: "client",
+      speechOutput: "client",
       audioDevicesError: "Could not list audio devices: permission denied",
     }));
     render(() => <VoiceOverlay />);
@@ -463,7 +539,7 @@ describe("VoiceOverlay status", () => {
   it("shows local audio controls with system routing help even when media elements support output selection", async () => {
     Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true, value: vi.fn() });
     try {
-      voiceSession.setState((s) => ({ ...s, mode: "browser" }));
+      voiceSession.setState((s) => ({ ...s, speechInput: "client", speechOutput: "client" }));
       render(() => <VoiceOverlay />);
       const devices = screen.getByRole("group", { name: "Audio devices" });
       const mic = within(devices).getByRole("button", { name: "Microphone" });
@@ -483,7 +559,7 @@ describe("VoiceOverlay status", () => {
       expect(speaker).toHaveAttribute("aria-expanded", "false");
       expect(speaker).toHaveFocus();
       await user.click(mic);
-      voiceSession.setState((s) => ({ ...s, mode: "cloud" }));
+      voiceSession.setState((s) => ({ ...s, speechInput: "gateway", speechOutput: "gateway" }));
       expect(screen.getByRole("combobox", { name: "Microphone" })).toBeInTheDocument();
       expect(screen.getByRole("combobox", { name: "Speaker" })).toBeInTheDocument();
       expect(screen.queryByText("Use your device’s sound settings to change the microphone.")).toBeNull();
@@ -638,13 +714,9 @@ describe("VoiceOverlay settings", () => {
     render(() => <VoiceOverlay />);
     await user.click(screen.getByRole("button", { name: "Voice settings" }));
     voiceSession.setState((s) => ({ ...s, connectStatus: "Connecting…", connectPhase: "setup" }));
-    expect(screen.getByRole("radio", { name: "Cloud voice" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "Speech" })).toBeDisabled();
     expect(screen.getByRole("textbox", { name: "Voice language (e.g. en-US)" })).toBeDisabled();
-    expect(
-      screen.getByText(
-        "End the voice session to change voice mode, speaking voice or speed, gateway model, or language.",
-      ),
-    ).toBeInTheDocument();
+    expect(screen.getByText("End the voice session to change its setup.")).toBeInTheDocument();
   });
 
   it("allows correcting the language after a failed connection", async () => {
@@ -708,8 +780,8 @@ describe("VoiceOverlay settings", () => {
     render(() => <VoiceOverlay />);
     await user.click(screen.getByRole("button", { name: "Voice settings" }));
     await user.type(screen.getByRole("textbox"), "_invalid");
-    await user.click(screen.getByRole("radio", { name: "Browser speech" }));
-    expect(screen.getByRole("radio", { name: "Browser speech" })).toBeChecked();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Speech" }), "browser");
+    expect(screen.getByRole("combobox", { name: "Speech" })).toHaveValue("browser");
     expect(screen.getByRole("textbox")).toHaveAttribute("aria-invalid", "true");
     expect(screen.getByRole("alert")).toHaveTextContent("Invalid language tag");
     await user.click(screen.getByRole("button", { name: "Connect voice assistant" }));
@@ -725,12 +797,12 @@ describe("VoiceOverlay settings", () => {
       throw new Error("Storage unavailable");
     });
     try {
-      await user.click(screen.getByRole("radio", { name: "Browser speech" }));
+      await user.selectOptions(screen.getByRole("combobox", { name: "Speech" }), "browser");
       expect(screen.getByRole("alert")).toHaveTextContent("Storage unavailable");
       expect(screen.getByRole("textbox")).toHaveAttribute("aria-invalid", "false");
       await user.click(screen.getByRole("button", { name: "Connect voice assistant" }));
       expect(connectMock).toHaveBeenCalledOnce();
-      expect(voiceSession.state.mode).toBe("cloud");
+      expect(voiceSession.state.speechInput).toBe("gateway");
     } finally {
       save.mockRestore();
     }
@@ -795,7 +867,7 @@ describe("VoiceOverlay connection", () => {
     const enumeration = deferred<void>();
     enumerateDevicesMock.mockReturnValueOnce(enumeration.promise);
     fireEvent.click(screen.getByRole("button", { name: "Connect voice assistant" }));
-    voiceSession.setState((state) => ({ ...state, mode: "browser" }));
+    voiceSession.setState((state) => ({ ...state, speechInput: "client", speechOutput: "client" }));
     enumeration.resolve();
     await enumeration.promise;
     expect(connectMock).not.toHaveBeenCalled();

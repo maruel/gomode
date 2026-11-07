@@ -131,6 +131,10 @@ sealed interface MessageKind {
         override val value = "transcript.delta"
     }
     @Serializable
+    data object TranscriptDraft : MessageKind {
+        override val value = "transcript.draft"
+    }
+    @Serializable
     data object AssistantTextDelta : MessageKind {
         override val value = "assistant.text.delta"
     }
@@ -182,6 +186,7 @@ object MessageKindSerializer : KSerializer<MessageKind> {
             "session.status" -> MessageKind.SessionStatus
             "session.usage" -> MessageKind.SessionUsage
             "transcript.delta" -> MessageKind.TranscriptDelta
+            "transcript.draft" -> MessageKind.TranscriptDraft
             "assistant.text.delta" -> MessageKind.AssistantTextDelta
             "reasoning.delta" -> MessageKind.ReasoningDelta
             "speech.started" -> MessageKind.SpeechStarted
@@ -219,6 +224,34 @@ object SpeakerSerializer : KSerializer<Speaker> {
             "user" -> Speaker.User
             "assistant" -> Speaker.Assistant
             else -> Speaker.Other(v)
+        }
+    }
+}
+
+@Serializable(with = SpeechLocationSerializer::class)
+sealed interface SpeechLocation {
+    val value: String
+    @Serializable
+    data object Client : SpeechLocation {
+        override val value = "client"
+    }
+    @Serializable
+    data object Gateway : SpeechLocation {
+        override val value = "gateway"
+    }
+    @Serializable
+    data class Other(override val value: String) : SpeechLocation
+}
+
+object SpeechLocationSerializer : KSerializer<SpeechLocation> {
+    override val descriptor = PrimitiveSerialDescriptor("SpeechLocation", PrimitiveKind.STRING)
+    override fun serialize(encoder: Encoder, value: SpeechLocation) = encoder.encodeString(value.value)
+    override fun deserialize(decoder: Decoder): SpeechLocation {
+        val v = decoder.decodeString()
+        return when (v) {
+            "client" -> SpeechLocation.Client
+            "gateway" -> SpeechLocation.Gateway
+            else -> SpeechLocation.Other(v)
         }
     }
 }
@@ -615,6 +648,14 @@ object VoiceTransportSerializer : KSerializer<VoiceTransport> {
     }
 }
 
+/**
+ * SpeechConfig selects recognition and synthesis independently. Empty fields use
+ * transport defaults: WebRTC uses each configured gateway stage; text uses client
+ * speech. Explicit unsupported selections fail before model initialization.
+ */
+@Serializable
+data class SpeechConfig(val input: SpeechLocation? = null, val output: SpeechLocation? = null)
+
 /** VoiceChoice describes a selectable backend without exposing its credentials. */
 @Serializable
 data class VoiceChoice(
@@ -623,6 +664,13 @@ data class VoiceChoice(
     val transports: List<VoiceTransport>,
     /** Voices lists supported audio voice names. Omitted when the choice does not offer voice selection. */
     val voices: List<String>? = null,
+    /**
+     * SpeechModes lists supported input/output ownership combinations.
+     * Missing metadata from older gateways means transport defaults only.
+     */
+    val speechModes: List<SpeechConfig>? = null,
+    /** Composable allows independent recognition and synthesis model selections. */
+    val composable: Boolean? = null,
 )
 
 /**
@@ -638,6 +686,10 @@ data class VoiceChoiceDefault(
     val id: String,
 )
 
+/** SpeechModel identifies one configured speech stage without exposing endpoints or credentials. */
+@Serializable
+data class SpeechModel(val id: String, val label: String)
+
 /**
  * VoiceChoicesResp advertises the available voice choices and one default per
  * offered family.
@@ -647,6 +699,10 @@ data class VoiceChoicesResp(
     val choices: List<VoiceChoice>,
     /** Defaults holds one entry per offered transport, ordered by transport name. */
     val defaults: List<VoiceChoiceDefault>,
+    /** RecognitionModels lists gateway recognition stages in preference order. */
+    val recognitionModels: List<SpeechModel>? = null,
+    /** SynthesisModels lists gateway synthesis stages in preference order. */
+    val synthesisModels: List<SpeechModel>? = null,
 )
 
 /** ServiceAuthorization identifies the host and carries its scoped gateway token. */
@@ -850,6 +906,20 @@ data class SessionSetup(
      * It does not enable thinking or change reasoning effort.
      */
     val includeReasoning: Boolean? = null,
+    /** Speech selects the owner of recognition and synthesis for this session. */
+    val speech: SpeechConfig? = null,
+    /**
+     * RecognitionModelID selects a recognitionModels entry for a composable LLM.
+     * Omitted uses the first available entry when input is gateway-owned.
+     * It must be omitted for client-owned recognition and indivisible choices.
+     */
+    @SerialName("recognitionModelID") val recognitionModelID: String? = null,
+    /**
+     * SynthesisModelID selects a synthesisModels entry for a composable LLM.
+     * Omitted uses the first available entry when output is gateway-owned.
+     * It must be omitted for client-owned synthesis and indivisible choices.
+     */
+    @SerialName("synthesisModelID") val synthesisModelID: String? = null,
 )
 
 /**
@@ -998,6 +1068,20 @@ data class TranscriptDelta(
      * omit it. Separate response IDs must not be merged into one transcript entry.
      */
     @SerialName("responseID") val responseID: String? = null,
+    /** DraftID atomically replaces the matching user draft when this text commits. */
+    val draft_id: String? = null,
+)
+
+/**
+ * TranscriptDraft is an ephemeral full-text user hypothesis for one microphone
+ * utterance. Revisions replace text for ID. Empty Text clears only that ID.
+ * Drafts never enter conversation history, activity logs, or recovery context.
+ */
+@Serializable
+data class TranscriptDraft(
+    val kind: MessageKind,
+    val id: String,
+    val text: String,
 )
 
 /**

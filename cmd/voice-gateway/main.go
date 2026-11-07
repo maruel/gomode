@@ -78,14 +78,18 @@ func mainImpl(args []string) (err error) {
 		}
 		cfg.Server.WebRTCUDPPort = port
 	}
-	if err := validateStandaloneConfig(&cfg); err != nil {
+	if err := validateStandaloneConfig(&cfg.Server); err != nil {
 		return err
 	}
-	cfg = cfg.Available(ctx)
+	resolved, err := cfg.Resolve()
+	if err != nil {
+		return fmt.Errorf("resolve %s: %w", *configPath, err)
+	}
+	resolved = resolved.Available(ctx)
 	if ctx.Err() != nil {
 		return context.Cause(ctx)
 	}
-	if err := cfg.Validate(); err != nil {
+	if err := resolved.Validate(); err != nil {
 		return fmt.Errorf("available voice choices: %w", err)
 	}
 	watcher, err := startRestartWatch(ctx, *configPath, cancel)
@@ -98,7 +102,7 @@ func mainImpl(args []string) (err error) {
 	if err != nil {
 		return fmt.Errorf("get user cache dir: %w", err)
 	}
-	bridge, err := voicertc.NewBridge(ctx, &cfg, filepath.Join(cacheDir, "voice-gateway"))
+	bridge, err := voicertc.NewBridge(ctx, &resolved, cfg.Server.WebRTCUDPPort, filepath.Join(cacheDir, "voice-gateway"))
 	if err != nil {
 		if ctx.Err() != nil {
 			return context.Cause(ctx)
@@ -110,7 +114,7 @@ func mainImpl(args []string) (err error) {
 	// Text sessions are additive: a text client drives the same backend while
 	// WebRTC clients keep their audio session. A bridge whose backend has no
 	// language model answers the route with 503.
-	handler, err := voicegateway.NewHandler(&cfg, bridge, bridge)
+	handler, err := voicegateway.NewHandler(cfg.TrustedIssuers, bridge, bridge)
 	if err != nil {
 		return err
 	}
@@ -181,11 +185,8 @@ func serveHTTP(ctx context.Context, cancel context.CancelCauseFunc, servers []*h
 	return errors.Join(append(errs, context.Cause(ctx))...)
 }
 
-func validateStandaloneConfig(cfg *voicegateway.Config) error {
-	if err := cfg.Validate(); err != nil {
-		return err
-	}
-	if cfg.Server.WebRTCUDPPort < 0 {
+func validateStandaloneConfig(cfg *voicegateway.ServerConfig) error {
+	if cfg.WebRTCUDPPort < 0 {
 		return errors.New("server.webrtc_udp_port cannot be -1 for standalone voice-gateway")
 	}
 	return nil

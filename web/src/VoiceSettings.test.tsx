@@ -18,8 +18,27 @@ beforeEach(() => {
   restore = installBrowserSpeech("Chrome desktop");
   voiceSession.setState((s) => ({
     ...s,
-    choices: [],
-    choiceIDs: { text: null, webrtc: null },
+    setupMode: "parts",
+    choices: [
+      {
+        id: "chat",
+        label: "Chat",
+        composable: true,
+        transports: ["text", "webrtc"],
+        speechModes: [
+          { input: "gateway", output: "gateway" },
+          { input: "gateway", output: "client" },
+          { input: "client", output: "gateway" },
+          { input: "client", output: "client" },
+        ],
+      },
+    ],
+    choiceIDs: { text: "chat", webrtc: "chat" },
+    speechModels: {
+      input: [{ id: "whisper", label: "Whisper" }],
+      output: [{ id: "kokoro", label: "Kokoro" }],
+    },
+    speechModelIDs: { input: "whisper", output: "kokoro" },
     choicesStatus: "ready",
     choicesError: null,
     voiceName: null,
@@ -27,7 +46,8 @@ beforeEach(() => {
     browserSpeechRate: 1,
     voiceError: null,
     voiceStatus: "idle",
-    mode: "cloud",
+    speechInput: "gateway",
+    speechOutput: "gateway",
     languageTag: "en-US",
     connected: false,
     showUsageStats: false,
@@ -45,7 +65,7 @@ describe("VoiceSettings", () => {
     const user = userEvent.setup();
     render(() => <VoiceSettings />);
     expect(screen.queryByRole("combobox", { name: "Speaking speed" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("radio", { name: "Browser speech" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Speech" }), "browser");
     const speed = screen.getByRole("combobox", { name: "Speaking speed" });
     expect(speed).toHaveValue("1");
     await user.selectOptions(speed, "1.5");
@@ -58,7 +78,8 @@ describe("VoiceSettings", () => {
 
   it("keeps the saved speaking speed when storage fails", async () => {
     const user = userEvent.setup();
-    voiceSession.selectMode("browser");
+    voiceSession.selectSpeechInput("client");
+    voiceSession.selectSpeechOutput("client");
     render(() => <VoiceSettings />);
     const save = vi.spyOn(window.Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("Storage unavailable");
@@ -89,7 +110,8 @@ describe("VoiceSettings", () => {
 
   it("loads browser voices asynchronously, saves a selection, and retains it across settings mounts", async () => {
     const user = userEvent.setup();
-    voiceSession.selectMode("browser");
+    voiceSession.selectSpeechInput("client");
+    voiceSession.selectSpeechOutput("client");
     const view = render(() => <VoiceSettings />);
     const select = screen.getByRole("combobox", { name: "Speaking voice" });
     expect(select).toHaveValue("");
@@ -105,16 +127,50 @@ describe("VoiceSettings", () => {
     fakeSynthesis.voices = [...fakeSynthesis.voices];
     fakeSynthesis.dispatchEvent(new Event("voiceschanged"));
     expect(screen.getByRole("combobox", { name: "Speaking voice" })).toHaveValue("samantha");
-    await user.click(screen.getByRole("radio", { name: "Cloud voice" }));
-    await user.click(screen.getByRole("radio", { name: "Browser speech" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Speech" }), "model:kokoro");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Speech" }), "browser");
     expect(screen.getByRole("combobox", { name: "Speaking voice" })).toHaveValue("samantha");
     voiceSession.setState((s) => ({ ...s, connected: true }));
     expect(screen.getByRole("combobox", { name: "Speaking voice" })).toBeDisabled();
   });
 
+  it("filters browser voices by base language across regions and catalog updates", async () => {
+    voiceSession.selectSpeechOutput("client");
+    fakeSynthesis.voices = [
+      { name: "US English", lang: "en-US", voiceURI: "english-us" },
+      { name: "UK English", lang: "en-GB", voiceURI: "english-uk" },
+      { name: "French", lang: "fr-FR", voiceURI: "french" },
+    ] as SpeechSynthesisVoice[];
+    render(() => <VoiceSettings />);
+    const user = userEvent.setup();
+    const voices = () => screen.getByRole("combobox", { name: "Speaking voice" });
+    expect(screen.getByRole("option", { name: "US English (en-US)" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "UK English (en-GB)" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "French (fr-FR)" })).toBeNull();
+    expect(() => voiceSession.selectBrowserVoice("french")).toThrow("available speaking voice");
+    await user.selectOptions(voices(), "english-uk");
+    voiceSession.selectLanguage("en-AU");
+    expect(voices()).toHaveValue("english-uk");
+    fakeSynthesis.voices.push({
+      name: "Canadian English",
+      lang: "EN-CA",
+      voiceURI: "english-ca",
+    } as SpeechSynthesisVoice);
+    fakeSynthesis.dispatchEvent(new Event("voiceschanged"));
+    expect(screen.getByRole("option", { name: "Canadian English (EN-CA)" })).toBeInTheDocument();
+    voiceSession.selectLanguage("fr-CA");
+    expect(screen.queryByRole("option", { name: "US English (en-US)" })).toBeNull();
+    expect(screen.queryByRole("option", { name: "UK English (en-GB)" })).toBeNull();
+    expect(screen.getByRole("option", { name: "French (fr-FR)" })).toBeInTheDocument();
+    await waitFor(() => expect(voices()).toHaveValue("english-uk"));
+    expect(screen.getByRole("option", { name: "Choose an available speaking voice" })).toBeDisabled();
+    await user.selectOptions(voices(), "french");
+    expect(voiceSession.state.browserVoiceURI).toBe("french");
+  });
+
   it("keeps an unavailable saved browser voice visible and allows returning to the default", async () => {
     const user = userEvent.setup();
-    voiceSession.setState((s) => ({ ...s, mode: "browser", browserVoiceURI: "missing" }));
+    voiceSession.setState((s) => ({ ...s, speechInput: "client", speechOutput: "client", browserVoiceURI: "missing" }));
     render(() => <VoiceSettings />);
     const select = screen.getByRole("combobox", { name: "Speaking voice" });
     expect(select).toHaveValue("missing");
@@ -125,7 +181,8 @@ describe("VoiceSettings", () => {
 
   it("shows the missing saved selection when a voice-list refresh removes the active option", async () => {
     const user = userEvent.setup();
-    voiceSession.selectMode("browser");
+    voiceSession.selectSpeechInput("client");
+    voiceSession.selectSpeechOutput("client");
     const first = { name: "First", lang: "en-US", voiceURI: "first" } as SpeechSynthesisVoice;
     fakeSynthesis.voices = [first, { name: "Selected", lang: "en-US", voiceURI: "selected" } as SpeechSynthesisVoice];
     render(() => <VoiceSettings />);
@@ -142,7 +199,8 @@ describe("VoiceSettings", () => {
 
   it("restores the browser voice selection if saving fails", async () => {
     const user = userEvent.setup();
-    voiceSession.selectMode("browser");
+    voiceSession.selectSpeechInput("client");
+    voiceSession.selectSpeechOutput("client");
     fakeSynthesis.voices = [{ name: "Samantha", lang: "en-US", voiceURI: "samantha" } as SpeechSynthesisVoice];
     render(() => <VoiceSettings />);
     const save = vi.spyOn(window.Storage.prototype, "setItem").mockImplementation(() => {
@@ -209,21 +267,38 @@ describe("VoiceSettings", () => {
       warn.mockRestore();
     }
   });
-  it("saves browser speech and explains that it is not necessarily offline", async () => {
+  it("saves recognition and speech output independently and locks both during sessions", async () => {
     const user = userEvent.setup();
     render(() => <VoiceSettings />);
-    const browser = screen.getByRole("radio", { name: "Browser speech" });
-    expect(screen.getByRole("group", { name: "Voice mode" })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "Cloud voice" })).toBeChecked();
-    await user.click(browser);
-    expect(voiceSession.state.mode).toBe("browser");
-    expect(localStorage.getItem("gomode.voiceMode")).toBe("browser");
-    expect(browser).toBeChecked();
-    expect(browser).toHaveAccessibleDescription(/Only text goes to the voice gateway.*cloud service/);
-    expect(screen.getByRole("radio", { name: "Cloud voice" })).toHaveAccessibleDescription(/microphone audio/);
+    const input = screen.getByRole("combobox", { name: "Recognition" });
+    const output = screen.getByRole("combobox", { name: "Speech" });
+    expect(input).not.toHaveAttribute("aria-describedby");
+    expect(screen.queryByText(/vendor's cloud service/)).not.toBeInTheDocument();
+    await user.selectOptions(output, "browser");
+    expect(voiceSession.speech).toEqual({ input: "gateway", output: "client" });
+    expect(JSON.parse(localStorage.getItem(`gomode.voiceSetup.${window.location.origin}`) ?? "null")).toMatchObject({
+      partsInput: "gateway",
+      partsOutput: "client",
+    });
+    await user.selectOptions(input, "browser");
+    expect(voiceSession.speech).toEqual({ input: "client", output: "client" });
+    expect(input).toHaveAccessibleDescription(/cloud service/);
     voiceSession.setState((s) => ({ ...s, connected: true }));
-    expect(browser).toBeDisabled();
-    expect(screen.getByRole("radio", { name: "Cloud voice" })).toBeDisabled();
+    expect(input).toBeDisabled();
+    expect(output).toBeDisabled();
+  });
+
+  it("migrates saved browser and cloud modes while preserving independent overrides", () => {
+    for (const [mode, location] of [
+      ["browser", "client"],
+      ["cloud", "gateway"],
+    ]) {
+      localStorage.setItem("gomode.voiceMode", mode!);
+      expect(new VoiceSession().speech).toEqual({ input: location, output: location });
+    }
+    localStorage.setItem("gomode.voiceMode", "browser");
+    localStorage.setItem("gomode.voiceInput", "gateway");
+    expect(new VoiceSession().speech).toEqual({ input: "gateway", output: "client" });
   });
 
   it("shows assistant reasoning only after the operator enables it", async () => {
@@ -393,27 +468,41 @@ describe("VoiceSettings", () => {
     }
   });
 
-  it("restores the selected radio when saving the voice mode fails", async () => {
+  it("restores the selected output when persistence fails", async () => {
     const user = userEvent.setup();
     render(() => <VoiceSettings />);
     const save = vi.spyOn(window.Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("Storage unavailable");
     });
     try {
-      await user.click(screen.getByRole("radio", { name: "Browser speech" }));
+      await user.selectOptions(screen.getByRole("combobox", { name: "Speech" }), "browser");
       expect(screen.getByRole("alert")).toHaveTextContent("Storage unavailable");
-      expect(screen.getByRole("radio", { name: "Cloud voice" })).toBeChecked();
-      expect(screen.getByRole("radio", { name: "Browser speech" })).not.toBeChecked();
-      expect(voiceSession.state.mode).toBe("cloud");
+      expect(screen.getByRole("combobox", { name: "Speech" })).toHaveValue("model:kokoro");
+      expect(voiceSession.speech).toEqual({ input: "gateway", output: "gateway" });
     } finally {
       save.mockRestore();
     }
   });
 
-  it("disables browser speech on ordinary Firefox", () => {
+  it("allows browser TTS on Firefox without browser recognition", async () => {
     Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Firefox/150" });
+    const user = userEvent.setup();
     render(() => <VoiceSettings />);
-    expect(screen.getByRole("radio", { name: "Browser speech" })).toBeDisabled();
-    expect(screen.getByText("Browser speech is unavailable in this browser. Use Cloud voice.")).toBeInTheDocument();
+    const input = screen.getByRole("combobox", { name: "Recognition" });
+    const output = screen.getByRole("combobox", { name: "Speech" });
+    expect(input.querySelector('option[value="browser"]')).toBeDisabled();
+    expect(output.querySelector('option[value="browser"]')).toBeEnabled();
+    await user.selectOptions(output, "browser");
+    expect(screen.getByRole("combobox", { name: "Speaking speed" })).toBeInTheDocument();
+    expect(voiceSession.speech).toEqual({ input: "gateway", output: "client" });
+  });
+
+  it("allows browser recognition when synthesis is unavailable", async () => {
+    Reflect.deleteProperty(window, "speechSynthesis");
+    const user = userEvent.setup();
+    render(() => <VoiceSettings />);
+    expect(screen.getByRole("combobox", { name: "Speech" }).querySelector('option[value="browser"]')).toBeDisabled();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Recognition" }), "browser");
+    expect(voiceSession.speech).toEqual({ input: "client", output: "gateway" });
   });
 });

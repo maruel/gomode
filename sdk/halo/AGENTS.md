@@ -17,11 +17,8 @@ Host App
 
 ## Module
 
-Gradle module `:halo-sdk` at `sdk/halo/`:
-
-```kotlin
-dependencies { implementation(project(":halo-sdk")) }
-```
+Gradle module `:halo-sdk` at `sdk/halo/`. See the host dependency declaration in
+[the Android app build file](../../android/gomode/build.gradle.kts).
 
 ## Design Decisions
 

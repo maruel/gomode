@@ -17,6 +17,7 @@ import {
 } from "./VoiceSession";
 import { captureFrontendVoiceTools, createFrontendPreparationClient } from "./FrontendVoiceTools";
 import { mcpClient } from "./McpClient";
+import { FakeRecognition, fakeSynthesis, installBrowserSpeech } from "../tests/browser-speech";
 
 // MCP calls are spied on; gateway signaling is exercised through fetch.
 const mcpMocks = {
@@ -63,6 +64,8 @@ class FakePeerConnection extends EventTarget {
     FakePeerConnection.last = this;
     FakePeerConnection.instances.push(this);
   }
+
+  readonly addTransceiver = vi.fn();
 
   addTrack(track: MediaStreamTrack): void {
     this.addedTracks.push(track);
@@ -168,6 +171,8 @@ let diagnosticRequests: Array<{ url: string; authorization: string | null }> = [
 let offerResponse: Promise<Response> | null = null;
 let diagnosticResponse: VoiceRTCDiagnosticsResp | null = null;
 let offeredVoices: string[] | null = null;
+let mixedSpeech = false;
+let independentSpeech = false;
 
 function serviceToken(subject: string, serial: number): string {
   const claims = {
@@ -198,6 +203,8 @@ beforeEach(() => {
   offerResponse = null;
   diagnosticResponse = null;
   offeredVoices = null;
+  mixedSpeech = false;
+  independentSpeech = false;
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     const authorization = new Headers(init?.headers).get("Authorization");
@@ -209,9 +216,32 @@ beforeEach(() => {
               id: "gemini",
               label: "Gemini Live",
               transports: ["webrtc", "text"],
+              ...(independentSpeech ? { composable: true } : {}),
               ...(offeredVoices === null ? {} : { voices: offeredVoices }),
+              ...(mixedSpeech
+                ? {
+                    speechModes: [
+                      { input: "gateway", output: "gateway" },
+                      { input: "gateway", output: "client" },
+                      { input: "client", output: "gateway" },
+                      { input: "client", output: "client" },
+                    ],
+                  }
+                : {}),
             },
           ],
+          ...(independentSpeech
+            ? {
+                recognitionModels: [
+                  { id: "asr-a", label: "ASR A" },
+                  { id: "asr-b", label: "ASR B" },
+                ],
+                synthesisModels: [
+                  { id: "tts-a", label: "TTS A" },
+                  { id: "tts-b", label: "TTS B" },
+                ],
+              }
+            : {}),
           defaults: [
             { transport: "webrtc", id: "gemini" },
             { transport: "text", id: "gemini" },
@@ -261,6 +291,595 @@ beforeEach(() => {
 });
 
 describe("VoiceSession", () => {
+  for (const native of [true, false]) {
+    it(`prepares real audio for the cold restored ${native ? "native" : "browser"} setup`, async () => {
+      const restore = installBrowserSpeech("Chrome desktop");
+      configureVoiceGateway("https://unrelated.example", null);
+      const chime = { prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() };
+      const thinking = { prepare: vi.fn(), setThinking: vi.fn() };
+      const session = new VoiceSession(chime, thinking);
+      session.setState((s) => ({
+        ...s,
+        speechInput: native ? "client" : "gateway",
+        speechOutput: native ? "client" : "gateway",
+      }));
+      configureVoiceGateway("https://cold.example", null);
+      localStorage.setItem(
+        "gomode.voiceSetup.https://cold.example",
+        JSON.stringify({
+          mode: native ? "all-in-one" : "parts",
+          nativeChoiceID: "native",
+          partsChoiceID: "parts",
+          partsInput: "client",
+          partsOutput: "client",
+          recognitionModelID: null,
+          synthesisModelID: null,
+        }),
+      );
+      const meter = vi.spyOn(session, "enableMicrophoneMeter").mockResolvedValue();
+      const catalog = deferred<Response>();
+      let requests = 0;
+      globalThis.fetch = async () => {
+        requests++;
+        return catalog.promise;
+      };
+      try {
+        // This is the overlay's synchronous user-gesture path, before enumeration.
+        session.prepareAudio();
+        expect(session.speech).toEqual({ input: native ? "gateway" : "client", output: native ? "gateway" : "client" });
+        expect(chime.prepare).toHaveBeenCalledOnce();
+        expect(thinking.prepare).toHaveBeenCalledTimes(native ? 0 : 1);
+        session.setState((s) => ({
+          ...s,
+          speechInput: native ? "client" : "gateway",
+          speechOutput: native ? "client" : "gateway",
+        }));
+        const prepareAudio = session.prepareAudio;
+        const prepare = vi.spyOn(session, "prepareAudio").mockImplementation(() => {
+          expect(session.speech).toEqual({
+            input: native ? "gateway" : "client",
+            output: native ? "gateway" : "client",
+          });
+          prepareAudio.call(session);
+        });
+        const connecting = session.connect();
+        expect(prepare).toHaveBeenCalledOnce();
+        expect(thinking.prepare).toHaveBeenCalledTimes(native ? 0 : 2);
+        expect(requests).toBe(1);
+        session.disconnect();
+        catalog.resolve(new Response(JSON.stringify({ choices: [], defaults: [] })));
+        await connecting;
+        prepare.mockRestore();
+      } finally {
+        session.disconnect();
+        meter.mockRestore();
+        restore();
+      }
+    });
+  }
+
+  it("restores saved native and mixed setups on cold connect ahead of delayed settings discovery", async () => {
+    const restore = installBrowserSpeech("Chrome desktop");
+    const catalog = {
+      choices: [
+        { id: "native", label: "Gemini Live", transports: ["webrtc"], voices: ["Kore"] },
+        {
+          id: "parts",
+          label: "Language model",
+          composable: true,
+          transports: ["text", "webrtc"],
+          speechModes: [
+            { input: "gateway", output: "gateway" },
+            { input: "gateway", output: "client" },
+            { input: "client", output: "gateway" },
+            { input: "client", output: "client" },
+          ],
+        },
+      ],
+      recognitionModels: [{ id: "asr", label: "Whisper" }],
+      synthesisModels: [{ id: "tts", label: "Kokoro" }],
+      defaults: [
+        { transport: "webrtc", id: "native" },
+        { transport: "text", id: "parts" },
+      ],
+    };
+    const signaling = globalThis.fetch;
+    try {
+      for (const native of [true, false]) {
+        localStorage.clear();
+        configureVoiceGateway("https://voice.example", null);
+        globalThis.fetch = async (input, init) =>
+          String(input).endsWith("/voice/choices") ? new Response(JSON.stringify(catalog)) : signaling(input, init);
+        const saved = new VoiceSession();
+        await saved.loadVoiceChoices();
+        if (native) {
+          saved.selectSetupMode("all-in-one");
+          saved.selectSpeakingVoice("Kore");
+        } else {
+          saved.selectSetupMode("parts");
+          saved.selectSpeechStage("output", "client", null);
+        }
+        saved.disconnect();
+        // Construction happened before the host configured this gateway.
+        configureVoiceGateway("https://unrelated.example", null);
+        const session = new VoiceSession(
+          { prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() },
+          { prepare: vi.fn(), setThinking: vi.fn() },
+        );
+        configureVoiceGateway("https://voice.example", null);
+        let finishSettings!: (response: Response) => void;
+        let finishConnection!: (response: Response) => void;
+        let requests = 0;
+        globalThis.fetch = async (input, init) => {
+          if (!String(input).endsWith("/voice/choices")) return signaling(input, init);
+          requests++;
+          return new Promise<Response>((resolve) => {
+            if (requests === 1) finishSettings = resolve;
+            else finishConnection = resolve;
+          });
+        };
+        try {
+          const settings = session.loadVoiceChoices();
+          const connection = session.connect();
+          await vi.waitFor(() => expect(requests).toBe(2));
+          expect(session.state.setupMode).toBe(native ? "all-in-one" : "parts");
+          expect(session.speech).toEqual({ input: "gateway", output: native ? "gateway" : "client" });
+          expect(session.transport).toBe("webrtc");
+          // External changes during admission cannot replace the captured setup.
+          const key = "gomode.voiceSetup.https://voice.example";
+          const preference = JSON.parse(localStorage.getItem(key)!);
+          preference.mode = native ? "parts" : "all-in-one";
+          localStorage.setItem(key, JSON.stringify(preference));
+          finishConnection(new Response(JSON.stringify(catalog)));
+          await connection;
+          expect(session.state.error).toBeNull();
+          const channel = FakePeerConnection.dataChannels.at(-1)!;
+          channel.onopen?.();
+          const start = JSON.parse(channel.send.mock.calls[0]![0] as string);
+          expect(start).toMatchObject({
+            speech: { input: "gateway", output: native ? "gateway" : "client" },
+          });
+          expect(offerRequests.at(-1)!.body).toMatchObject({ choiceID: native ? "native" : "parts" });
+          if (native) expect(start.voice).toMatchObject({ name: "Kore" });
+          else {
+            expect(start.recognitionModelID).toBe("asr");
+            expect(start).not.toHaveProperty("synthesisModelID");
+          }
+          finishSettings(new Response(JSON.stringify({ ...catalog, choices: [catalog.choices[0]] })));
+          await settings;
+          expect(session.state.setupMode).toBe(native ? "all-in-one" : "parts");
+          expect(session.state.choiceIDs.webrtc).toBe(native ? "native" : "parts");
+          expect(session.state.choices).toHaveLength(2);
+        } finally {
+          session.disconnect();
+        }
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it("pins independent stages through reconnect and omits client-owned stage IDs", async () => {
+    const restore = installBrowserSpeech("Chrome desktop");
+    configureVoiceGateway("https://voice.example", null);
+    independentSpeech = true;
+    mixedSpeech = true;
+    try {
+      for (const [input, output] of [
+        ["gateway", "gateway"],
+        ["gateway", "client"],
+        ["client", "gateway"],
+      ] as const) {
+        const session = new VoiceSession(
+          { prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() },
+          { prepare: vi.fn(), setThinking: vi.fn() },
+        );
+        try {
+          session.selectSpeechInput(input);
+          session.selectSpeechOutput(output);
+          await session.loadVoiceChoices();
+          if (input === "gateway") session.selectSpeechModel("input", "asr-b");
+          if (output === "gateway") session.selectSpeechModel("output", "tts-b");
+          await session.connect();
+          const channel = FakePeerConnection.dataChannels.at(-1)!;
+          channel.onopen?.();
+          const expected = {
+            ...(input === "gateway" ? { recognitionModelID: "asr-b" } : {}),
+            ...(output === "gateway" ? { synthesisModelID: "tts-b" } : {}),
+          };
+          expect(JSON.parse(channel.send.mock.calls[0]![0] as string)).toMatchObject(expected);
+          if (input === "client")
+            expect(JSON.parse(channel.send.mock.calls[0]![0] as string)).not.toHaveProperty("recognitionModelID");
+          if (output === "client")
+            expect(JSON.parse(channel.send.mock.calls[0]![0] as string)).not.toHaveProperty("synthesisModelID");
+          channel.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: "session.ready" }) }));
+          localStorage.setItem("gomode.voiceSpeechModel.https://voice.example.input", "asr-a");
+          localStorage.setItem("gomode.voiceSpeechModel.https://voice.example.output", "tts-a");
+          const offers = offerRequests.length;
+          vi.useFakeTimers();
+          triggerIceState("failed");
+          await vi.advanceTimersByTimeAsync(0);
+          await vi.waitFor(() => expect(offerRequests.length).toBe(offers + 1));
+          const replacement = FakePeerConnection.dataChannels.at(-1)!;
+          replacement.onopen?.();
+          expect(JSON.parse(replacement.send.mock.calls[0]![0] as string)).toMatchObject(expected);
+        } finally {
+          session.disconnect();
+          vi.useRealTimers();
+        }
+      }
+    } finally {
+      restore();
+    }
+  });
+
+  it("rejects an explicitly saved removed recognition stage before creating RTC", async () => {
+    configureVoiceGateway("https://voice.example", null);
+    independentSpeech = true;
+    mixedSpeech = true;
+    localStorage.setItem("gomode.voiceSpeechModel.https://voice.example.input", "removed");
+    const session = new VoiceSession();
+    try {
+      await session.connect();
+      expect(session.state.error).toContain("selected recognition model is unavailable");
+      expect(offerRequests).toHaveLength(0);
+      expect(localStorage.getItem("gomode.voiceSpeechModel.https://voice.example.input")).toBe("removed");
+    } finally {
+      session.disconnect();
+    }
+  });
+
+  it("uses gateway recognition with browser TTS without requiring browser recognition", async () => {
+    const restore = installBrowserSpeech("Firefox/150");
+    const session = new VoiceSession(
+      { prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() },
+      { prepare: vi.fn(), setThinking: vi.fn() },
+    );
+    mixedSpeech = true;
+    const remoteAudio = vi.fn();
+    vi.stubGlobal("Audio", remoteAudio);
+    try {
+      session.selectSpeechOutput("client");
+      await session.connect();
+      expect(session.state.error).toBeNull();
+      const pc = FakePeerConnection.last!;
+      const channel = FakePeerConnection.dataChannels.at(-1)!;
+      const message = (value: unknown) =>
+        channel.onmessage?.(new MessageEvent("message", { data: JSON.stringify(value) }));
+      channel.onopen?.();
+      expect(JSON.parse(channel.send.mock.calls[0]![0] as string).speech).toEqual({
+        input: "gateway",
+        output: "client",
+      });
+      expect(pc.addedTracks).toHaveLength(1);
+      pc.ontrack?.call(pc as unknown as RTCPeerConnection, { streams: [{}] } as unknown as RTCTrackEvent);
+      expect(remoteAudio).not.toHaveBeenCalled();
+      message({ kind: "session.ready" });
+      message({ kind: "transcript.draft", id: "draft", text: "Question" });
+      expect(session.state.transcriptDraft).toEqual({ id: "draft", text: "Question" });
+      message({ kind: "transcript.delta", speaker: "user", draft_id: "draft", text: "Question?" });
+      expect(session.state.transcript.at(-1)?.text).toBe("Question?");
+      message({ kind: "turn.status", state: "thinking" });
+      message({ kind: "assistant.text.delta", text: "An answer." });
+      message({ kind: "turn.status", state: "idle" });
+      expect(fakeSynthesis.spoken.at(-1)?.text).toBe("An answer.");
+      expect(session.state.speaking).toBe(true);
+      expect(FakeRecognition.instances).toHaveLength(0);
+      const cancel = vi.spyOn(fakeSynthesis, "cancel");
+      // The gateway's new VAD onset must stop playback even after generation is idle.
+      message({ kind: "interrupted", source: "user" });
+      expect(cancel).toHaveBeenCalled();
+      expect(session.state.speaking).toBe(false);
+      message({ kind: "transcript.delta", speaker: "user", text: "Next question" });
+      message({ kind: "turn.status", state: "thinking" });
+      message({ kind: "assistant.text.delta", text: "Next answer." });
+      message({ kind: "turn.status", state: "idle" });
+      expect(fakeSynthesis.spoken.at(-1)?.text).toBe("Next answer.");
+      fakeSynthesis.complete();
+      expect(session.state.speaking).toBe(false);
+    } finally {
+      session.disconnect();
+      restore();
+    }
+  });
+
+  it("reads a complete long browser reply over RTC at playback speed before releasing mute-once", async () => {
+    const restore = installBrowserSpeech("Firefox/150");
+    const session = new VoiceSession(
+      { prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() },
+      { prepare: vi.fn(), setThinking: vi.fn() },
+    );
+    mixedSpeech = true;
+    try {
+      session.selectSpeechOutput("client");
+      await session.connect();
+      const channel = FakePeerConnection.dataChannels.at(-1)!;
+      const message = (value: unknown) =>
+        channel.onmessage?.(new MessageEvent("message", { data: JSON.stringify(value) }));
+      channel.onopen?.();
+      message({ kind: "session.ready" });
+      message({ kind: "turn.status", state: "thinking" });
+      session.setMicrophoneMode("muteOnce");
+      session.injectText("Deferred notice");
+      const sentences = Array.from({ length: 200 }, (_, index) => `Sentence ${index} ${"word ".repeat(20)}ends.`);
+      message({ kind: "assistant.text.delta", text: sentences.join(" ") + " " });
+      message({ kind: "turn.status", state: "idle" });
+      expect(session.state.error).toBeNull();
+      expect(fakeSynthesis.spoken).toHaveLength(1);
+      for (const sentence of sentences) {
+        expect(session.state.microphoneMode).toBe("muteOnce");
+        expect(fakeSynthesis.spoken.at(-1)?.text).toBe(sentence);
+        fakeSynthesis.complete();
+      }
+      expect(fakeSynthesis.spoken.map((entry) => entry.text)).toEqual(sentences);
+      expect(session.state.microphoneMode).toBe("listening");
+      expect(session.state.speaking).toBe(false);
+      expect(channel.send.mock.calls.some(([text]) => (text as string).includes("Deferred notice"))).toBe(true);
+    } finally {
+      session.disconnect();
+      restore();
+    }
+  });
+
+  it("retains delayed browser speech ownership after idle and cancels it on a new microphone onset", async () => {
+    const restore = installBrowserSpeech("Firefox/150");
+    localStorage.setItem("gomode.browserVoiceURI", "chosen");
+    const session = new VoiceSession(
+      { prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() },
+      { prepare: vi.fn(), setThinking: vi.fn() },
+    );
+    mixedSpeech = true;
+    try {
+      session.selectSpeechOutput("client");
+      await session.connect();
+      const channel = FakePeerConnection.dataChannels.at(-1)!;
+      const message = (value: unknown) =>
+        channel.onmessage?.(new MessageEvent("message", { data: JSON.stringify(value) }));
+      channel.onopen?.();
+      message({ kind: "session.ready" });
+      session.setMicrophoneMode("muteOnce");
+      message({ kind: "assistant.text.delta", text: "Waiting for voices." });
+      expect(fakeSynthesis.spoken).toHaveLength(0);
+      session.injectText("Deferred notification");
+      message({ kind: "turn.status", state: "idle" });
+      expect(session.state.microphoneMode).toBe("muteOnce");
+      expect(session.state.speaking).toBe(true);
+      expect(channel.send.mock.calls.some(([text]) => JSON.parse(text as string).kind === "context.update")).toBe(
+        false,
+      );
+      session.setMicrophoneMode("listening");
+      message({ kind: "interrupted", source: "user" });
+      expect(session.state.speaking).toBe(false);
+      fakeSynthesis.voices = [{ voiceURI: "chosen", name: "Chosen", lang: "en-US" } as SpeechSynthesisVoice];
+      fakeSynthesis.dispatchEvent(new Event("voiceschanged"));
+      expect(fakeSynthesis.spoken).toHaveLength(0);
+      expect(session.state.error).toBeNull();
+      message({ kind: "assistant.text.delta", text: "Replacement answer." });
+      message({ kind: "turn.status", state: "idle" });
+      expect(fakeSynthesis.spoken.at(-1)?.text).toBe("Replacement answer.");
+      expect(session.state.speaking).toBe(true);
+      fakeSynthesis.complete();
+      expect(session.state.speaking).toBe(false);
+    } finally {
+      session.disconnect();
+      restore();
+    }
+  });
+
+  it("uses browser recognition with gateway speech and cancels remote playback without losing tools", async () => {
+    const restore = installBrowserSpeech("Chrome desktop");
+    Reflect.deleteProperty(window, "speechSynthesis");
+    const session = new VoiceSession(
+      { prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() },
+      { prepare: vi.fn(), setThinking: vi.fn() },
+    );
+    mixedSpeech = true;
+    vi.stubGlobal("Audio", window.Audio);
+    vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
+    let audio: HTMLAudioElement | null = null;
+    const create = window.Audio;
+    vi.stubGlobal("Audio", function () {
+      audio = new create();
+      return audio;
+    });
+    try {
+      session.selectSpeechInput("client");
+      await session.connect();
+      expect(session.state.error).toBeNull();
+      const pc = FakePeerConnection.last!;
+      const channel = FakePeerConnection.dataChannels.at(-1)!;
+      const message = (value: unknown) =>
+        channel.onmessage?.(new MessageEvent("message", { data: JSON.stringify(value) }));
+      channel.onopen?.();
+      expect(JSON.parse(channel.send.mock.calls[0]![0] as string).speech).toEqual({
+        input: "client",
+        output: "gateway",
+      });
+      expect(pc.addedTracks).toHaveLength(0);
+      expect(pc.addTransceiver).toHaveBeenCalledWith("audio", { direction: "recvonly" });
+      pc.ontrack?.call(pc as unknown as RTCPeerConnection, { streams: [{}] } as unknown as RTCTrackEvent);
+      message({ kind: "session.ready" });
+      message({ kind: "turn.status", state: "idle" });
+      const recognition = FakeRecognition.instances.at(-1)!;
+      expect(recognition).toBeDefined();
+      message({ kind: "speech.started", speaker: "assistant" });
+      recognition.result([["Interrupt", false]]);
+      expect(audio!.muted).toBe(true);
+      expect(channel.send.mock.calls.some(([text]) => JSON.parse(text as string).kind === "turn.cancel")).toBe(true);
+      const beforeAlert = channel.send.mock.calls.length;
+      session.injectText("Deferred until recognition commits", true);
+      expect(channel.send).toHaveBeenCalledTimes(beforeAlert);
+      message({ kind: "speech.started", speaker: "assistant" });
+      expect(session.state.speaking).toBe(false);
+      message({ kind: "session.usage", sessionID: "cancelled-session", totals: { outputTokens: 12 } });
+      expect(session.state.usage?.totals.outputTokens).toBe(12);
+      mcpMocks.mcpCallTool.mockResolvedValue({ structuredContent: {} });
+      message({ kind: "tool.call", id: "late-tool", name: "lookup", args: {} });
+      await vi.waitFor(() =>
+        expect(channel.send.mock.calls.some(([text]) => JSON.parse(text as string).kind === "tool.result")).toBe(true),
+      );
+      message({ kind: "interrupted", source: "user" });
+      recognition.result([["Interrupt", true]]);
+      recognition.end();
+      expect(channel.send.mock.calls.slice(-2).map(([text]) => JSON.parse(text as string))).toEqual([
+        { kind: "context.update", context: { text: "Deferred until recognition commits" } },
+        { kind: "user.message", text: "Interrupt" },
+      ]);
+      message({ kind: "turn.status", state: "idle" });
+      message({ kind: "turn.status", state: "thinking" });
+      expect(audio!.muted).toBe(false);
+      message({ kind: "speech.started", speaker: "assistant" });
+      expect(session.state.speaking).toBe(true);
+      expect(fakeSynthesis.spoken).toHaveLength(0);
+    } finally {
+      session.disconnect();
+      vi.mocked(HTMLMediaElement.prototype.pause).mockClear();
+      restore();
+    }
+  });
+
+  it("mutes active browser recognition for a gateway tool continuation and resumes after that reply", async () => {
+    const restore = installBrowserSpeech("Chrome desktop");
+    const session = new VoiceSession(
+      { prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() },
+      { prepare: vi.fn(), setThinking: vi.fn() },
+    );
+    mixedSpeech = true;
+    const tool = deferred<{ structuredContent: Record<string, never> }>();
+    mcpMocks.mcpCallTool.mockReturnValue(tool.promise);
+    try {
+      session.selectSpeechInput("client");
+      await session.connect();
+      const channel = FakePeerConnection.dataChannels.at(-1)!;
+      const message = (value: unknown) =>
+        channel.onmessage?.(new MessageEvent("message", { data: JSON.stringify(value) }));
+      channel.onopen?.();
+      message({ kind: "session.ready" });
+      message({ kind: "turn.status", state: "idle" });
+      message({ kind: "speech.started", speaker: "assistant" });
+      message({ kind: "speech.ended", speaker: "assistant" });
+      const recognition = FakeRecognition.instances.at(-1)!;
+      expect(session.state.listening).toBe(true);
+      expect(recognition.aborted).toBe(false);
+      message({ kind: "tool.call", id: "continuation", name: "lookup", args: {} });
+      expect(session.state.activeTool).toBe("lookup");
+      session.setMicrophoneMode("muteOnce");
+      expect(recognition.aborted).toBe(false);
+      tool.resolve({ structuredContent: {} });
+      await vi.waitFor(() =>
+        expect(channel.send.mock.calls.some(([text]) => JSON.parse(text as string).kind === "tool.result")).toBe(true),
+      );
+      message({ kind: "speech.started", speaker: "assistant" });
+      expect(session.state.speaking).toBe(true);
+      expect(session.state.listening).toBe(false);
+      expect(recognition.aborted).toBe(true);
+      const sent = channel.send.mock.calls.length;
+      recognition.result([["Do not interrupt", false]]);
+      recognition.result([["Do not submit", true]]);
+      recognition.end();
+      expect(channel.send.mock.calls.length).toBe(sent);
+      expect(session.state.microphoneMode).toBe("muteOnce");
+      message({ kind: "speech.ended", speaker: "assistant" });
+      expect(session.state.microphoneMode).toBe("listening");
+      expect(session.state.listening).toBe(true);
+      const resumed = FakeRecognition.instances.at(-1)!;
+      expect(resumed).not.toBe(recognition);
+      resumed.result([["Next question", true]]);
+      resumed.end();
+      expect(channel.send.mock.calls.slice(sent).map(([text]) => JSON.parse(text as string))).toEqual([
+        { kind: "user.message", text: "Next question" },
+      ]);
+    } finally {
+      tool.resolve({ structuredContent: {} });
+      session.disconnect();
+      restore();
+    }
+  });
+
+  it("reconnects mixed sessions with the same speech selection and retires old playback callbacks", async () => {
+    const restore = installBrowserSpeech("Firefox/150");
+    const session = new VoiceSession(
+      { prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() },
+      { prepare: vi.fn(), setThinking: vi.fn() },
+    );
+    mixedSpeech = true;
+    try {
+      session.selectSpeechOutput("client");
+      await session.connect();
+      const old = FakePeerConnection.dataChannels.at(-1)!;
+      old.onopen?.();
+      old.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: "session.ready" }) }));
+      vi.useFakeTimers();
+      triggerIceState("failed");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(() => expect(offerRequests).toHaveLength(2));
+      const current = FakePeerConnection.dataChannels.at(-1)!;
+      current.onopen?.();
+      expect(JSON.parse(current.send.mock.calls[0]![0] as string).speech).toEqual({
+        input: "gateway",
+        output: "client",
+      });
+      old.onmessage?.(
+        new MessageEvent("message", { data: JSON.stringify({ kind: "assistant.text.delta", text: "Stale answer." }) }),
+      );
+      expect(fakeSynthesis.spoken).toHaveLength(0);
+      expect(session.state.transcript.some((entry) => entry.text.includes("Stale"))).toBe(false);
+    } finally {
+      session.disconnect();
+      vi.useRealTimers();
+      restore();
+    }
+  });
+
+  it("closes a mixed session when browser synthesis cannot use its saved voice", async () => {
+    const restore = installBrowserSpeech("Firefox/150");
+    localStorage.setItem("gomode.browserVoiceURI", "missing");
+    fakeSynthesis.voices = [{ voiceURI: "other", lang: "en-US" } as SpeechSynthesisVoice];
+    const session = new VoiceSession(
+      { prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() },
+      { prepare: vi.fn(), setThinking: vi.fn() },
+    );
+    mixedSpeech = true;
+    try {
+      session.selectSpeechOutput("client");
+      await session.connect();
+      const pc = FakePeerConnection.last!;
+      const close = vi.spyOn(pc, "close");
+      const channel = FakePeerConnection.dataChannels.at(-1)!;
+      channel.onopen?.();
+      const message = (value: unknown) =>
+        channel.onmessage?.(new MessageEvent("message", { data: JSON.stringify(value) }));
+      message({ kind: "session.ready" });
+      message({ kind: "assistant.text.delta", text: "An answer." });
+      message({ kind: "turn.status", state: "idle" });
+      expect(session.state.connected).toBe(false);
+      expect(session.state.error).toContain("saved browser voice is unavailable");
+      expect(close).toHaveBeenCalledOnce();
+      expect(fakeSynthesis.spoken).toHaveLength(0);
+    } finally {
+      session.disconnect();
+      restore();
+    }
+  });
+
+  it("rejects saved browser speech when its platform capability is unavailable before capturing audio", async () => {
+    localStorage.setItem("gomode.voiceInput", "client");
+    localStorage.setItem("gomode.voiceOutput", "gateway");
+    const restore = installBrowserSpeech("Firefox/150");
+    const session = new VoiceSession(
+      { prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() },
+      { prepare: vi.fn(), setThinking: vi.fn() },
+    );
+    try {
+      await session.connect();
+      expect(session.state.error).toContain("unavailable");
+      expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+    } finally {
+      session.disconnect();
+      restore();
+    }
+  });
+
   it("attenuates the transmitted microphone during replies and restores it after interruption and input replacement", async () => {
     FakeMicrophoneContext.instances = [];
     const session = new VoiceSession();
@@ -1659,6 +2278,36 @@ describe("VoiceSession", () => {
     session.disconnect();
   });
 
+  it("replaces live drafts, commits atomically, and isolates replaced connections", async () => {
+    const session = new VoiceSession();
+    await session.connect();
+    const channel = FakePeerConnection.dataChannels[0];
+    const send = (value: object) => channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify(value) }));
+    send({ kind: "transcript.draft", id: "a", text: "I love pears" });
+    send({ kind: "transcript.draft", id: "a", text: "I love bananas" });
+    expect(session.state.transcriptDraft).toEqual({ id: "a", text: "I love bananas" });
+    expect(session.state.transcript).toEqual([]);
+    expect(buildRecoveryContext(session.state.transcript)).not.toContain("bananas");
+    send({ kind: "transcript.draft", id: "b", text: "Next request" });
+    send({ kind: "transcript.delta", speaker: "user", draft_id: "a", text: "I love bananas." });
+    send({ kind: "transcript.draft", id: "a", text: "" });
+    expect(session.state.transcriptDraft?.text).toBe("Next request");
+    expect(session.state.transcript).toEqual([
+      { kind: "transcript", speaker: "user", text: "I love bananas.", final: true },
+    ]);
+    send({ kind: "transcript.delta", speaker: "user", draft_id: "b", text: "Next request." });
+    expect(session.state.transcriptDraft).toBeNull();
+    expect(session.state.transcript).toHaveLength(2);
+    send({ kind: "transcript.draft", id: "c", text: "Canceled" });
+    send({ kind: "transcript.draft", id: "c", text: "" });
+    expect(session.state.transcriptDraft).toBeNull();
+    session.disconnect();
+    await session.connect();
+    send({ kind: "transcript.draft", id: "stale", text: "Retired" });
+    expect(session.state.transcriptDraft).toBeNull();
+    session.disconnect();
+  });
+
   it("discards a late MCP result from a replaced voice connection", async () => {
     const tool = deferred<Awaited<ReturnType<typeof mcpClient.callTool>>>();
     mcpMocks.mcpCallTool.mockReturnValue(tool.promise);
@@ -1700,7 +2349,7 @@ describe("VoiceSession", () => {
   it("revalidates a removed selection before creating an offer", async () => {
     const session = new VoiceSession();
     await session.loadVoiceChoices();
-    session.selectChoice("webrtc", "gemini");
+    session.selectChoice("gemini");
     const gatewayFetch = globalThis.fetch;
     globalThis.fetch = async (input, init) =>
       String(input).endsWith("/voice/choices")
@@ -1723,7 +2372,7 @@ describe("VoiceSession", () => {
     configureVoiceGateway("https://original.example", null);
     const session = new VoiceSession();
     await session.loadVoiceChoices();
-    session.selectChoice("webrtc", "gemini");
+    session.selectChoice("gemini");
     const instructions = deferred<string>();
     mcpMocks.mcpServerInstructions.mockReturnValueOnce(instructions.promise);
     const connecting = session.connect();

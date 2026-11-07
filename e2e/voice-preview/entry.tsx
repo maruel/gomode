@@ -11,8 +11,51 @@ window.fetch = (input, init) =>
     ? Promise.resolve(
         new Response(
           JSON.stringify({
-            choices: [{ id: "preview", label: "Demonstration", transports: ["webrtc"] }],
-            defaults: [{ transport: "webrtc", id: "preview" }],
+            choices: [
+              {
+                id: "preview",
+                label: "GPT-6 Luna",
+                composable: true,
+                transports: ["text", "webrtc"],
+                speechModes: [
+                  { input: "gateway", output: "gateway" },
+                  { input: "gateway", output: "client" },
+                  { input: "client", output: "gateway" },
+                  { input: "client", output: "client" },
+                ],
+              },
+              {
+                id: "preview-alt",
+                label: "Claude Haiku",
+                composable: true,
+                transports: ["text", "webrtc"],
+                speechModes: [
+                  { input: "gateway", output: "gateway" },
+                  { input: "gateway", output: "client" },
+                  { input: "client", output: "gateway" },
+                  { input: "client", output: "client" },
+                ],
+              },
+              {
+                id: "native",
+                label: "Gemini Live",
+                voices: ["Aoede", "Kore", "Orus"],
+                transports: ["webrtc"],
+                speechModes: [{ input: "gateway", output: "gateway" }],
+              },
+            ],
+            recognitionModels: [
+              { id: "whisper", label: "Whisper" },
+              { id: "parakeet", label: "Parakeet" },
+            ],
+            synthesisModels: [
+              { id: "gemini-tts", label: "Gemini speech" },
+              { id: "kokoro", label: "Kokoro" },
+            ],
+            defaults: [
+              { transport: "webrtc", id: "preview" },
+              { transport: "text", id: "preview" },
+            ],
           }),
           { headers: { "Content-Type": "application/json" } },
         ),
@@ -170,4 +213,27 @@ queueMicrotask(() => {
           },
         ],
   }));
+});
+
+// Controlled speech snapshots exercise the production renderer without a remote model.
+window.addEventListener("message", (event: MessageEvent<unknown>) => {
+  if (event.source !== window || event.origin !== window.location.origin) return;
+  const snapshot = event.data as { kind?: string; text?: unknown };
+  if (typeof snapshot.text !== "string") return;
+  const text = snapshot.text;
+  if (snapshot.kind === "preview.transcript.draft") {
+    voiceSession.setState((state) => ({
+      ...state,
+      activeTool: null,
+      transcriptDraft: { id: "preview-live", text },
+    }));
+  } else if (snapshot.kind === "preview.transcript.final") {
+    voiceSession.setState((state) => ({
+      ...state,
+      transcriptDraft: null,
+      transcript: [{ kind: "transcript", speaker: "user", text, final: true }],
+    }));
+  } else if (snapshot.kind === "preview.transcript.cancel") {
+    voiceSession.setState((state) => ({ ...state, transcriptDraft: null }));
+  }
 });

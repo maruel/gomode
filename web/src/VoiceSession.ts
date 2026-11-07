@@ -19,6 +19,7 @@ import {
   type ToolResult,
   type ToolCall,
   type TranscriptDelta,
+  type TranscriptDraft,
   type AssistantTextDelta,
   type ReasoningDelta,
   type TurnState,
@@ -43,6 +44,7 @@ import {
   MessageKindToolCall,
   MessageKindToolResult,
   MessageKindTranscriptDelta,
+  MessageKindTranscriptDraft,
   MessageKindTurnStatus,
   MessageKindTurnCancel,
   TurnStateIdle,
@@ -51,6 +53,9 @@ import {
   type VoiceChoice,
   type VoiceChoicesResp,
   type VoiceTransport,
+  type SpeechConfig,
+  type SpeechLocation,
+  type SpeechModel,
 } from "../../sdk/voicegateway/ts/v2/types.gen";
 
 import { mcpClient, type McpToolDescriptor } from "./McpClient";
@@ -58,7 +63,13 @@ import { captureFrontendVoiceTools, type FrontendVoiceToolsSnapshot } from "./Fr
 import { GO_MODE_ITEMS_RESOURCE_URI, initialServiceContext } from "./ServiceItems";
 import { WebAudioVoiceChime, type VoiceChimePlayer } from "./VoiceChime";
 import { WebAudioThinkingEarcon, type ThinkingEarcon } from "./ThinkingEarcon";
-import { BrowserSpeech, browserSpeechAvailable, browserSpeechAvoidsChimes } from "./BrowserSpeech";
+import {
+  BrowserSpeech,
+  browserRecognitionAvailable,
+  browserSynthesisAvailable,
+  browserVoiceMatchesLanguage,
+  browserSpeechAvoidsChimes,
+} from "./BrowserSpeech";
 
 // Constants
 
@@ -353,7 +364,7 @@ export interface AudioDevice {
   label: string;
 }
 
-export type VoiceMode = "browser" | "cloud";
+export type SpeechSelection = Required<SpeechConfig>;
 type VoiceChannel = RTCDataChannel | WebSocket;
 
 function voiceChannelOpen(channel: VoiceChannel): boolean {
@@ -391,10 +402,16 @@ export interface ToolInvocation {
   name: string;
 }
 
+export type VoiceSetupMode = "all-in-one" | "parts";
+
 export interface VoiceState {
+  setupMode: VoiceSetupMode;
   usage: VoiceUsage | null;
-  mode: VoiceMode;
+  speechInput: SpeechLocation;
+  speechOutput: SpeechLocation;
   choices: VoiceChoice[];
+  speechModels: Record<"input" | "output", SpeechModel[]>;
+  speechModelIDs: Record<"input" | "output", string | null>;
   /** Effective gateway choice per family, null when the gateway offers none. */
   choiceIDs: Record<VoiceTransport, string | null>;
   choicesStatus: "idle" | "loading" | "ready" | "error";
@@ -414,6 +431,8 @@ export interface VoiceState {
   /** Gateway work before assistant output; idle when the gateway does not report any. */
   turnState: TurnState;
   transcript: TranscriptEntry[];
+  /** Provisional server recognition; excluded from history and recovery. */
+  transcriptDraft: { id: string; text: string } | null;
   /** Shows provider reasoning in the transcript. Off by default. */
   showReasoning: boolean;
   /** Shows reported token counts in the voice overlay. Off by default. */
@@ -466,12 +485,14 @@ export function normalizeVoiceLanguage(tag: string): string {
   return normalized;
 }
 
-function savedVoiceMode(): VoiceMode {
+function savedSpeechLocation(stage: "Input" | "Output"): SpeechLocation {
   try {
-    return localStorage.getItem("gomode.voiceMode") === "browser" ? "browser" : "cloud";
+    const saved = localStorage.getItem(`gomode.voice${stage}`);
+    if (saved === "client" || saved === "gateway") return saved;
+    return localStorage.getItem("gomode.voiceMode") === "browser" ? "client" : "gateway";
   } catch (error) {
-    console.warn("Could not load voice mode; using Cloud voice", error);
-    return "cloud";
+    console.warn("Could not load speech preference; using gateway", error);
+    return "gateway";
   }
 }
 
@@ -527,18 +548,131 @@ function choiceStorageKey(origin: string, transport: VoiceTransport): string {
 }
 
 function savedVoiceChoice(origin: string, transport: VoiceTransport): string | null {
-  return localStorage.getItem(choiceStorageKey(origin, transport));
+  const setup = savedSetup(origin);
+  if (setup !== null)
+    return setup.mode === "all-in-one" && transport === "webrtc" ? setup.nativeChoiceID : setup.partsChoiceID;
+  return (
+    localStorage.getItem(`gomode.voiceModel.${origin}`) ?? localStorage.getItem(choiceStorageKey(origin, transport))
+  );
 }
 
-// A family is one transport: WebRTC audio for Cloud voice, text for client speech.
 const VOICE_TRANSPORTS: readonly VoiceTransport[] = ["text", "webrtc"];
 
-function transportFor(mode: VoiceMode): VoiceTransport {
-  return mode === "browser" ? "text" : "webrtc";
+// A single saved selection owns both the active setup and the remembered parts.
+// The active model is derived from mode; it is never persisted a second time.
+interface VoiceSetupPreference {
+  mode: VoiceSetupMode;
+  nativeChoiceID: string | null;
+  partsChoiceID: string | null;
+  partsInput: SpeechLocation;
+  partsOutput: SpeechLocation;
+  recognitionModelID: string | null;
+  synthesisModelID: string | null;
 }
 
-function compatibleChoices(choices: VoiceChoice[], transport: VoiceTransport): VoiceChoice[] {
-  return choices.filter((choice) => choice.transports.includes(transport));
+function setupStorageKey(origin: string): string {
+  return `gomode.voiceSetup.${origin}`;
+}
+
+function savedSetup(origin: string): VoiceSetupPreference | null {
+  const raw = localStorage.getItem(setupStorageKey(origin));
+  if (raw === null) return null;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (value === null || typeof value !== "object") throw new Error("Invalid saved voice setup");
+    const v = value as Record<string, unknown>;
+    if (
+      (v.mode !== "all-in-one" && v.mode !== "parts") ||
+      (v.partsInput !== "gateway" && v.partsInput !== "client") ||
+      (v.partsOutput !== "gateway" && v.partsOutput !== "client") ||
+      [v.nativeChoiceID, v.partsChoiceID, v.recognitionModelID, v.synthesisModelID].some(
+        (id) => id !== null && (typeof id !== "string" || id === ""),
+      )
+    )
+      throw new Error("Invalid saved voice setup");
+    return v as unknown as VoiceSetupPreference;
+  } catch (error) {
+    console.warn("Could not load the voice setup; using available models", error);
+    return null;
+  }
+}
+
+function nativeVoiceChoice(choice: VoiceChoice): boolean {
+  return choice.composable !== true && !choice.transports.includes("text");
+}
+
+function setupChoices(choices: VoiceChoice[], mode: VoiceSetupMode): VoiceChoice[] {
+  const composable = choices.some((choice) => choice.composable === true);
+  return choices.filter((choice) =>
+    mode === "all-in-one"
+      ? nativeVoiceChoice(choice)
+      : choice.composable === true || (!composable && choice.transports.includes("text")),
+  );
+}
+
+function transportFor(speech: SpeechSelection): VoiceTransport {
+  return speech.input === "client" && speech.output === "client" ? "text" : "webrtc";
+}
+
+function choiceSupportsSpeech(choice: VoiceChoice, speech: SpeechSelection): boolean {
+  const modes =
+    choice.speechModes ??
+    choice.transports.map((transport) =>
+      transport === "text" ? { input: "client", output: "client" } : { input: "gateway", output: "gateway" },
+    );
+  return modes.some((mode) => mode.input === speech.input && mode.output === speech.output);
+}
+
+function compatibleChoices(
+  choices: VoiceChoice[],
+  transport: VoiceTransport,
+  speech: SpeechSelection | null,
+): VoiceChoice[] {
+  return choices.filter(
+    (choice) =>
+      (!choices.some((candidate) => candidate.composable === true) ||
+        choice.composable === true ||
+        !choice.transports.includes("text")) &&
+      choice.transports.includes(transport) &&
+      (speech === null || choiceSupportsSpeech(choice, speech)),
+  );
+}
+
+type SpeechStage = "input" | "output";
+
+function speechModelStorageKey(origin: string, stage: SpeechStage): string {
+  return `gomode.voiceSpeechModel.${origin}.${stage}`;
+}
+
+function resolveSpeechModel(models: SpeechModel[], selected: string | null, stage: SpeechStage): string {
+  const label = stage === "input" ? "recognition" : "speech";
+  if (selected !== null) {
+    if (!models.some((model) => model.id === selected))
+      throw new Error(`The selected ${label} model is unavailable. Choose another ${label} model.`);
+    return selected;
+  }
+  if (!models[0])
+    throw new Error(
+      `The gateway has no ${label} models. Choose browser ${stage === "input" ? "recognition" : "speech output"} or a native audio model.`,
+    );
+  return models[0].id;
+}
+
+function validSpeechModels(models: SpeechModel[] | undefined): boolean {
+  return (
+    models === undefined ||
+    (Array.isArray(models) &&
+      models.every(
+        (model) =>
+          model !== null &&
+          typeof model === "object" &&
+          typeof model.id === "string" &&
+          model.id.trim() !== "" &&
+          typeof model.label === "string" &&
+          model.label.trim() !== "",
+      ) &&
+      new Set(models.map((model) => model.id)).size === models.length)
+  );
 }
 
 function validVoiceCatalog(choice: VoiceChoice): boolean {
@@ -554,8 +688,8 @@ function speakingVoiceStorageKey(origin: string, choiceID: string): string {
   return `gomode.speakingVoice.${JSON.stringify([origin, choiceID])}`;
 }
 
-function savedSpeakingVoice(origin: string, choice: VoiceChoice, mode: VoiceMode): string {
-  if (mode !== "cloud" || !choice.voices?.length) return "";
+function savedSpeakingVoice(origin: string, choice: VoiceChoice, output: SpeechLocation): string {
+  if (output !== "gateway" || !choice.voices?.length) return "";
   return localStorage.getItem(speakingVoiceStorageKey(origin, choice.id)) ?? "";
 }
 
@@ -568,8 +702,13 @@ function validateVoiceChoices(value: VoiceChoicesResp): VoiceChoicesResp {
   if (
     !Array.isArray(value.choices) ||
     !Array.isArray(value.defaults) ||
+    !validSpeechModels(value.recognitionModels) ||
+    !validSpeechModels(value.synthesisModels) ||
     value.choices.some(
       (choice) =>
+        choice === null ||
+        typeof choice !== "object" ||
+        (choice.composable !== undefined && typeof choice.composable !== "boolean") ||
         typeof choice.id !== "string" ||
         choice.id === "" ||
         typeof choice.label !== "string" ||
@@ -577,7 +716,17 @@ function validateVoiceChoices(value: VoiceChoicesResp): VoiceChoicesResp {
         !Array.isArray(choice.transports) ||
         choice.transports.length === 0 ||
         choice.transports.some((transport) => !VOICE_TRANSPORTS.includes(transport)) ||
-        !validVoiceCatalog(choice),
+        !validVoiceCatalog(choice) ||
+        (choice.speechModes !== undefined &&
+          (!Array.isArray(choice.speechModes) ||
+            choice.speechModes.length === 0 ||
+            choice.speechModes.some(
+              (mode) =>
+                mode === null ||
+                typeof mode !== "object" ||
+                !["client", "gateway"].includes(mode.input ?? "") ||
+                !["client", "gateway"].includes(mode.output ?? ""),
+            ))),
     ) ||
     value.defaults.some(
       (fallback) =>
@@ -603,8 +752,9 @@ function resolveVoiceChoice(
   metadata: VoiceChoicesResp,
   transport: VoiceTransport,
   selected: string | null,
+  speech: SpeechSelection | null,
 ): string | null {
-  const compatible = compatibleChoices(metadata.choices, transport);
+  const compatible = compatibleChoices(metadata.choices, transport, speech);
   if (selected !== null) {
     if (!metadata.choices.some((choice) => choice.id === selected))
       throw new Error("The selected voice choice is unavailable. Choose another voice choice.");
@@ -669,6 +819,8 @@ export class VoiceSession {
   private _choicesAttempt = 0;
   private _sessionGateway: GatewaySnapshot | null = null;
   private _sessionChoiceID: string | null = null;
+  private _sessionComposable = false;
+  private _sessionSpeechModelIDs: Record<SpeechStage, string | null> = { input: null, output: null };
   private _sessionVoiceName: string | null = null;
   private _conversationID = newConversationID();
   private _frontendInvocationLifetime = new AbortController();
@@ -724,10 +876,23 @@ export class VoiceSession {
   private readonly _thinkingEarcon: ThinkingEarcon;
 
   constructor(chime?: VoiceChimePlayer, thinkingEarcon?: ThinkingEarcon) {
+    let setup: VoiceSetupPreference | null = null;
+    try {
+      setup = savedSetup(gatewaySnapshot().origin);
+    } catch (error) {
+      console.warn("Could not load the voice setup", error);
+    }
     const [state, setState] = createStore<VoiceState>({
-      mode: savedVoiceMode(),
+      setupMode: setup?.mode ?? "parts",
+      speechInput: setup?.mode === "all-in-one" ? "gateway" : (setup?.partsInput ?? savedSpeechLocation("Input")),
+      speechOutput: setup?.mode === "all-in-one" ? "gateway" : (setup?.partsOutput ?? savedSpeechLocation("Output")),
       choices: [],
-      choiceIDs: { text: null, webrtc: null },
+      speechModels: { input: [], output: [] },
+      speechModelIDs: { input: setup?.recognitionModelID ?? null, output: setup?.synthesisModelID ?? null },
+      choiceIDs: {
+        text: setup?.partsChoiceID ?? null,
+        webrtc: setup?.mode === "all-in-one" ? setup.nativeChoiceID : (setup?.partsChoiceID ?? null),
+      },
       choicesStatus: "idle",
       choicesError: null,
       voiceName: null,
@@ -744,6 +909,7 @@ export class VoiceSession {
       turnState: TurnStateIdle,
       transcript: [],
       usage: null,
+      transcriptDraft: null,
       showReasoning: savedReasoning(),
       showUsageStats: savedUsageStats(),
       micLevel: 0,
@@ -778,35 +944,194 @@ export class VoiceSession {
   /** Reactive gateway identity for settings; configuring a host does not start network requests. */
   readonly gatewayIdentity = gatewayVersion;
 
-  get compatibleChoices(): VoiceChoice[] {
-    return compatibleChoices(this.state.choices, transportFor(this.state.mode));
+  get speech(): SpeechSelection {
+    return { input: this.state.speechInput, output: this.state.speechOutput };
   }
 
-  /** Lists the gateway choices offered for one family. */
-  choicesFor(transport: VoiceTransport): VoiceChoice[] {
-    return compatibleChoices(this.state.choices, transport);
+  get transport(): VoiceTransport {
+    return transportFor(this.speech);
+  }
+
+  get compatibleChoices(): VoiceChoice[] {
+    return compatibleChoices(setupChoices(this.state.choices, this.state.setupMode), this.transport, this.speech);
+  }
+
+  get composableChoice(): boolean {
+    return this.state.choices.find((choice) => choice.id === this.state.choiceIDs[this.transport])?.composable === true;
+  }
+
+  /** Available native models or independently selectable language models. */
+  choicesForSetup(mode: VoiceSetupMode): VoiceChoice[] {
+    return setupChoices(this.state.choices, mode);
+  }
+
+  private _setupPreference(): VoiceSetupPreference {
+    const origin = gatewaySnapshot().origin;
+    const saved = savedSetup(origin);
+    if (this._choicesVersion !== untrack(gatewayVersion))
+      return (
+        saved ?? {
+          mode: "parts",
+          nativeChoiceID: null,
+          partsChoiceID:
+            localStorage.getItem(`gomode.voiceModel.${origin}`) ??
+            localStorage.getItem(choiceStorageKey(origin, "text")),
+          partsInput: savedSpeechLocation("Input"),
+          partsOutput: savedSpeechLocation("Output"),
+          recognitionModelID: localStorage.getItem(speechModelStorageKey(origin, "input")),
+          synthesisModelID: localStorage.getItem(speechModelStorageKey(origin, "output")),
+        }
+      );
+    const preference: VoiceSetupPreference = saved ?? {
+      mode: this.state.setupMode,
+      nativeChoiceID:
+        this.state.setupMode === "all-in-one"
+          ? this.state.choiceIDs.webrtc
+          : (this.choicesForSetup("all-in-one")[0]?.id ?? null),
+      partsChoiceID:
+        this.state.setupMode === "all-in-one" ? this.state.choiceIDs.text : this.state.choiceIDs[this.transport],
+      partsInput: savedSpeechLocation("Input"),
+      partsOutput: savedSpeechLocation("Output"),
+      recognitionModelID: this.state.speechModelIDs.input,
+      synthesisModelID: this.state.speechModelIDs.output,
+    };
+    preference.mode = this.state.setupMode;
+    if (preference.mode === "all-in-one") preference.nativeChoiceID = this.state.choiceIDs.webrtc;
+    else {
+      preference.partsChoiceID = this.state.choiceIDs[this.transport];
+      preference.partsInput = this.state.speechInput;
+      preference.partsOutput = this.state.speechOutput;
+      preference.recognitionModelID = this.state.speechModelIDs.input;
+      preference.synthesisModelID = this.state.speechModelIDs.output;
+    }
+    return preference;
+  }
+
+  // Compute every effective field before saving or publishing any of them. One
+  // storage operation keeps mode switches atomic, including a throwing storage API.
+  private _applySetup(preference: VoiceSetupPreference, persist: boolean): void {
+    const speech =
+      preference.mode === "all-in-one"
+        ? { input: "gateway" as const, output: "gateway" as const }
+        : { input: preference.partsInput, output: preference.partsOutput };
+    const transport = transportFor(speech);
+    const idKey = preference.mode === "all-in-one" ? "nativeChoiceID" : "partsChoiceID";
+    const choices = setupChoices(this.state.choices, preference.mode);
+    let id = preference[idKey];
+    let failure: string | null = null;
+    const compatible = compatibleChoices(choices, transport, speech);
+    if (
+      id !== null &&
+      this.state.choices.some((choice) => choice.id === id) &&
+      !choices.some((choice) => choice.id === id)
+    )
+      id = null;
+    if (id === null) id = compatible[0]?.id ?? null;
+    const choice = choices.find((choice) => choice.id === id);
+    if (this.state.choicesStatus === "ready") {
+      if (id !== null && !choice) failure = "The selected voice choice is unavailable. Choose another voice choice.";
+      else if (choice && !compatible.some((candidate) => candidate.id === id))
+        failure = "This model does not support the selected recognition and speech output.";
+      else if (id === null) failure = "The voice gateway has no model for this setup. Choose another setup.";
+    }
+    preference[idKey] = id;
+    const models = { input: preference.recognitionModelID, output: preference.synthesisModelID };
+    if (choice?.composable) {
+      for (const stage of ["input", "output"] as const) {
+        if (speech[stage] !== "gateway") continue;
+        try {
+          models[stage] = resolveSpeechModel(this.state.speechModels[stage], models[stage], stage);
+        } catch (error) {
+          failure ??= error instanceof Error ? error.message : String(error);
+        }
+      }
+      preference.recognitionModelID = models.input;
+      preference.synthesisModelID = models.output;
+    }
+    const origin = gatewaySnapshot().origin;
+    let name: string | null = null;
+    let voiceError: string | null = null;
+    let voiceStatus: VoiceState["voiceStatus"] = "ready";
+    try {
+      name = choice ? savedSpeakingVoice(origin, choice, speech.output) : null;
+      voiceError = choice && name !== null && speech.output === "gateway" ? speakingVoiceError(choice, name) : null;
+    } catch (error) {
+      if (persist) throw error;
+      voiceError = error instanceof Error ? error.message : String(error);
+      voiceStatus = "error";
+    }
+    if (persist) localStorage.setItem(setupStorageKey(origin), JSON.stringify(preference));
+    this.setState((s) => ({
+      ...s,
+      setupMode: preference.mode,
+      speechInput: speech.input,
+      speechOutput: speech.output,
+      choiceIDs: {
+        text: preference.partsChoiceID,
+        webrtc: preference.mode === "all-in-one" ? preference.nativeChoiceID : preference.partsChoiceID,
+      },
+      speechModelIDs: models,
+      choicesError: failure,
+      voiceName: name,
+      voiceError,
+      voiceStatus,
+    }));
+  }
+
+  /** Switch the effective setup while remembering the other setup's selections. */
+  selectSetupMode(mode: VoiceSetupMode): void {
+    if (this.state.connected || this.state.connectStatus !== null)
+      throw new Error("End the session before changing voice setup");
+    if (mode !== "all-in-one" && mode !== "parts") throw new Error("Invalid voice setup");
+    if (this._choicesVersion !== untrack(gatewayVersion) || this.state.choicesStatus !== "ready")
+      throw new Error("Load voice choices before selecting a setup");
+    const choices = setupChoices(this.state.choices, mode);
+    if (choices.length === 0) throw new Error("This voice setup is unavailable. Choose another setup.");
+    const next = this._setupPreference();
+    next.mode = mode;
+    const key = mode === "all-in-one" ? "nativeChoiceID" : "partsChoiceID";
+    if (next[key] === null) next[key] = choices[0]!.id;
+    this._applySetup(next, true);
+  }
+
+  /** Select a browser stage or one configured gateway model as one saved change. */
+  selectSpeechStage(stage: SpeechStage, location: SpeechLocation, modelID: string | null): void {
+    if (this.state.connected || this.state.connectStatus !== null)
+      throw new Error("End the session before changing speech settings");
+    if (location !== "client" && location !== "gateway") throw new Error("Invalid speech location");
+    if (location === "client" && !(stage === "input" ? browserRecognitionAvailable() : browserSynthesisAvailable()))
+      throw new Error(
+        `Browser ${stage === "input" ? "recognition" : "speech output"} is unavailable. Use a configured model.`,
+      );
+    if (modelID !== null && !this.state.speechModels[stage].some((model) => model.id === modelID))
+      throw new Error("Choose an available speech model");
+    const next = this._setupPreference();
+    next.mode = "parts";
+    if (stage === "input") {
+      next.partsInput = location;
+      if (modelID !== null) next.recognitionModelID = modelID;
+    } else {
+      next.partsOutput = location;
+      if (modelID !== null) next.synthesisModelID = modelID;
+    }
+    this._applySetup(next, true);
+  }
+
+  /** Save one gateway speech stage independently of the selected language model. */
+  selectSpeechModel(stage: SpeechStage, id: string): void {
+    if (
+      this._choicesVersion !== untrack(gatewayVersion) ||
+      this.state.choicesStatus !== "ready" ||
+      !this.composableChoice ||
+      this.speech[stage] !== "gateway"
+    )
+      throw new Error("Load an available gateway speech stage before selecting its model");
+    this.selectSpeechStage(stage, "gateway", id);
   }
 
   get speakingVoices(): string[] {
-    if (this.state.mode !== "cloud") return [];
+    if (this.state.speechOutput !== "gateway") return [];
     return this.state.choices.find((choice) => choice.id === this.state.choiceIDs.webrtc)?.voices ?? [];
-  }
-
-  private _restoreSpeakingVoice(origin: string, choice: VoiceChoice): void {
-    try {
-      const name = savedSpeakingVoice(origin, choice, this.state.mode);
-      this._update((s) => {
-        s.voiceName = name;
-        s.voiceError = this.state.mode === "cloud" ? speakingVoiceError(choice, name) : null;
-        s.voiceStatus = "ready";
-      });
-    } catch (error) {
-      this._update((s) => {
-        s.voiceName = null;
-        s.voiceError = error instanceof Error ? error.message : String(error);
-        s.voiceStatus = "error";
-      });
-    }
   }
 
   /** Save a supported speaking voice for this gateway and backend choice. */
@@ -831,7 +1156,13 @@ export class VoiceSession {
   /** Discover settings choices on demand, keeping obsolete responses out of the current gateway. */
   async loadVoiceChoices(): Promise<void> {
     const snapshot = gatewaySnapshot();
-    if (this._choicesRequest?.version === snapshot.version) return this._choicesRequest.promise;
+    if (this.state.connected || this.state.connectStatus !== null) return;
+    if (this._choicesRequest?.version === snapshot.version) {
+      await this._choicesRequest.promise;
+      if (snapshot.version === untrack(gatewayVersion) && this.state.choicesStatus === "idle")
+        return this.loadVoiceChoices();
+      return;
+    }
     const attempt = ++this._choicesAttempt;
     const promise = this._loadVoiceChoices(snapshot, attempt);
     this._choicesRequest = { version: snapshot.version, promise };
@@ -847,75 +1178,118 @@ export class VoiceSession {
         s.voiceStatus = "idle";
         s.voiceError = null;
       });
+      const setup = savedSetup(snapshot.origin);
+      const speechModelIDs = {
+        input: setup?.recognitionModelID ?? localStorage.getItem(speechModelStorageKey(snapshot.origin, "input")),
+        output: setup?.synthesisModelID ?? localStorage.getItem(speechModelStorageKey(snapshot.origin, "output")),
+      };
       if (this._choicesVersion !== snapshot.version) {
         const choiceIDs = {
           text: savedVoiceChoice(snapshot.origin, "text"),
           webrtc: savedVoiceChoice(snapshot.origin, "webrtc"),
         };
+        const setup = savedSetup(snapshot.origin);
         this._choicesVersion = snapshot.version;
         this._update((s) => {
+          s.setupMode = setup?.mode ?? "parts";
+          s.speechInput =
+            setup?.mode === "all-in-one" ? "gateway" : (setup?.partsInput ?? savedSpeechLocation("Input"));
+          s.speechOutput =
+            setup?.mode === "all-in-one" ? "gateway" : (setup?.partsOutput ?? savedSpeechLocation("Output"));
           s.choices = [];
+          s.speechModels = { input: [], output: [] };
+          s.speechModelIDs = speechModelIDs;
           s.choiceIDs = choiceIDs;
         });
       }
       const metadata = validateVoiceChoices(await snapshot.api.voiceChoices());
       if (snapshot.version !== untrack(gatewayVersion) || attempt !== this._choicesAttempt) return;
+      if (this.state.connected || this.state.connectStatus !== null) {
+        // Session admission owns selection until it succeeds or is released.
+        // Idle lets inactive settings retry the discarded request exactly once.
+        this._update((s) => {
+          s.choicesStatus = "idle";
+        });
+        return;
+      }
       this._update((s) => {
         s.choices = metadata.choices;
+        s.speechModels = { input: metadata.recognitionModels ?? [], output: metadata.synthesisModels ?? [] };
+        s.speechModelIDs = speechModelIDs;
         s.choicesStatus = "ready";
       });
       this._resolveFamilies(snapshot.origin, metadata);
     } catch (error) {
       if (snapshot.version !== untrack(gatewayVersion) || attempt !== this._choicesAttempt) return;
       this._update((s) => {
-        if (s.choicesStatus === "loading") s.choicesStatus = "error";
+        s.choicesStatus = "error";
         s.choicesError = error instanceof Error ? error.message : String(error);
       });
     }
   }
 
-  /** Resolve both families, surfacing a failure for the active one and keeping saved values otherwise. */
+  /** Restore the saved setup, retaining unavailable selections for explicit recovery. */
   private _resolveFamilies(origin: string, metadata: VoiceChoicesResp): void {
-    const choiceIDs: Record<VoiceTransport, string | null> = { text: null, webrtc: null };
-    const failures = new Map<VoiceTransport, globalThis.Error>();
-    for (const transport of VOICE_TRANSPORTS) {
-      const saved = savedVoiceChoice(origin, transport);
-      try {
-        choiceIDs[transport] = resolveVoiceChoice(metadata, transport, saved);
-      } catch (err) {
-        choiceIDs[transport] = saved;
-        failures.set(transport, err instanceof Error ? err : new Error(String(err)));
+    let preference = savedSetup(origin);
+    if (preference === null) {
+      const selected = this.state.choiceIDs[this.transport] ?? savedVoiceChoice(origin, this.transport);
+      const initial = metadata.choices.find(
+        (choice) => choice.id === (selected ?? defaultChoiceID(metadata, this.transport)),
+      );
+      const mode: VoiceSetupMode =
+        initial && nativeVoiceChoice(initial)
+          ? "all-in-one"
+          : setupChoices(metadata.choices, "parts").length > 0
+            ? "parts"
+            : "all-in-one";
+      preference = {
+        mode,
+        nativeChoiceID:
+          initial && nativeVoiceChoice(initial)
+            ? initial.id
+            : (setupChoices(metadata.choices, "all-in-one")[0]?.id ?? null),
+        partsChoiceID:
+          initial && !nativeVoiceChoice(initial)
+            ? initial.id
+            : mode === "parts"
+              ? selected
+              : localStorage.getItem(choiceStorageKey(origin, "text")),
+        partsInput: this.state.speechInput,
+        partsOutput: this.state.speechOutput,
+        recognitionModelID: this.state.speechModelIDs.input,
+        synthesisModelID: this.state.speechModelIDs.output,
+      };
+      if (preference.partsChoiceID === null) {
+        const parts = setupChoices(metadata.choices, "parts");
+        preference.partsChoiceID =
+          parts.find((choice) => choice.id === defaultChoiceID(metadata, "text"))?.id ?? parts[0]?.id ?? null;
       }
+      // Fixed presets are omitted when named language models are available.
+      if (
+        preference.partsChoiceID !== null &&
+        metadata.choices.some((choice) => choice.id === preference!.partsChoiceID) &&
+        !setupChoices(metadata.choices, "parts").some((choice) => choice.id === preference!.partsChoiceID)
+      )
+        preference.partsChoiceID = null;
     }
-    this._update((s) => {
-      s.choiceIDs = choiceIDs;
-    });
-    const active = transportFor(this.state.mode);
-    const failure = failures.get(active);
-    if (failure) throw failure;
-    const choiceID = choiceIDs[active];
-    if (choiceID === null) throw new Error("The voice gateway has no choices for this voice mode");
-    this._restoreSpeakingVoice(
-      origin,
-      metadata.choices.find((choice) => choice.id === choiceID)!,
-    );
+    this._applySetup(preference, false);
   }
 
-  /** Persist an explicit choice only after validating it against the current gateway and family. */
-  selectChoice(transport: VoiceTransport, choiceID: string): void {
+  /** Persist a model only after validating it against the current setup. */
+  selectChoice(choiceID: string): void {
     if (this.state.connected || this.state.connectStatus !== null)
       throw new Error("End the session before changing voice choice");
     if (this._choicesVersion !== untrack(gatewayVersion) || this.state.choicesStatus !== "ready")
       throw new Error("Load voice choices before selecting one");
-    const choice = compatibleChoices(this.state.choices, transport).find((candidate) => candidate.id === choiceID);
+    const choice = setupChoices(this.state.choices, this.state.setupMode).find(
+      (candidate) => candidate.id === choiceID,
+    );
     if (!choice) throw new Error("Choose an available voice choice");
-    const origin = gatewaySnapshot().origin;
-    localStorage.setItem(choiceStorageKey(origin, transport), choiceID);
-    this._update((s) => {
-      s.choiceIDs = { ...s.choiceIDs, [transport]: choiceID };
-      s.choicesError = null;
-    });
-    if (transport === transportFor(this.state.mode)) this._restoreSpeakingVoice(origin, choice);
+    const next = this._setupPreference();
+    next.mode = nativeVoiceChoice(choice) ? "all-in-one" : "parts";
+    if (next.mode === "all-in-one") next.nativeChoiceID = choiceID;
+    else next.partsChoiceID = choiceID;
+    this._applySetup(next, true);
   }
 
   private async _resolveSessionChoice(snapshot: GatewaySnapshot, attempt: number): Promise<string | null> {
@@ -925,17 +1299,35 @@ export class VoiceSession {
       // A connect-time refresh owns publication over an older settings request.
       this._choicesAttempt++;
       this._choicesVersion = snapshot.version;
-      const transport = transportFor(this.state.mode);
+      const transport = this.transport;
       this._update((s) => {
         s.choices = metadata.choices;
+        s.speechModels = { input: metadata.recognitionModels ?? [], output: metadata.synthesisModels ?? [] };
         s.choiceIDs = { ...s.choiceIDs, [transport]: this._sessionChoiceID };
+        s.speechModelIDs = { ...this._sessionSpeechModelIDs };
         s.choicesStatus = "ready";
         s.choicesError = null;
       });
     }
     let choiceID: string | null;
     try {
-      choiceID = resolveVoiceChoice(metadata, transportFor(this.state.mode), this._sessionChoiceID);
+      const stored = savedSetup(snapshot.origin);
+      const selected = metadata.choices.find(
+        (choice) => choice.id === (this._sessionChoiceID ?? defaultChoiceID(metadata, this.transport)),
+      );
+      if (stored === null && selected && nativeVoiceChoice(selected) && this.transport === "webrtc")
+        this._update((s) => {
+          s.setupMode = "all-in-one";
+          s.speechInput = "gateway";
+          s.speechOutput = "gateway";
+        });
+      const choices = setupChoices(metadata.choices, this.state.setupMode);
+      const previous =
+        metadata.choices.some((choice) => choice.id === this._sessionChoiceID) &&
+        !choices.some((choice) => choice.id === this._sessionChoiceID)
+          ? null
+          : this._sessionChoiceID;
+      choiceID = resolveVoiceChoice({ ...metadata, choices }, this.transport, previous, this.speech);
     } catch (error) {
       if (snapshot.version === untrack(gatewayVersion))
         this._update((s) => {
@@ -943,20 +1335,36 @@ export class VoiceSession {
         });
       throw error;
     }
-    if (choiceID === null) throw new Error("The voice gateway has no choices for this voice mode");
+    if (choiceID === null)
+      throw new Error("The voice gateway has no model for the selected recognition and speech output");
     this._sessionChoiceID = choiceID;
     const choice = metadata.choices.find((choice) => choice.id === choiceID)!;
+    this._sessionComposable = choice.composable === true;
+    for (const stage of ["input", "output"] as const) {
+      if (this._sessionComposable && this.speech[stage] === "gateway")
+        this._sessionSpeechModelIDs[stage] = resolveSpeechModel(
+          stage === "input" ? (metadata.recognitionModels ?? []) : (metadata.synthesisModels ?? []),
+          this._sessionSpeechModelIDs[stage],
+          stage,
+        );
+    }
+    if (snapshot.version === untrack(gatewayVersion))
+      this._update((s) => {
+        for (const stage of ["input", "output"] as const) {
+          if (this._sessionSpeechModelIDs[stage] !== null) s.speechModelIDs[stage] = this._sessionSpeechModelIDs[stage];
+        }
+      });
     let voiceError: string | null = null;
     try {
       const name =
-        this.state.mode !== "cloud"
+        this.state.speechOutput !== "gateway"
           ? ""
-          : (this._sessionVoiceName ?? savedSpeakingVoice(snapshot.origin, choice, this.state.mode));
+          : (this._sessionVoiceName ?? savedSpeakingVoice(snapshot.origin, choice, this.state.speechOutput));
       this._sessionVoiceName = name;
-      voiceError = this.state.mode === "cloud" ? speakingVoiceError(choice, name) : null;
+      voiceError = this.state.speechOutput === "gateway" ? speakingVoiceError(choice, name) : null;
       if (snapshot.version === untrack(gatewayVersion))
         this._update((s) => {
-          s.choiceIDs = { ...s.choiceIDs, [transportFor(this.state.mode)]: choiceID };
+          s.choiceIDs = { ...s.choiceIDs, [this.transport]: choiceID };
           s.voiceName = name;
           s.voiceError = voiceError;
           s.voiceStatus = "ready";
@@ -974,25 +1382,30 @@ export class VoiceSession {
     return choiceID;
   }
 
-  /** Persist the transport preference without disrupting an active session. */
-  selectMode(mode: VoiceMode): void {
-    if (mode !== "browser" && mode !== "cloud") throw new Error("Invalid voice mode");
-    if (this.state.connected || this.state.connectStatus !== null)
-      throw new Error("End the session before changing voice mode");
-    if (mode === "browser" && !browserSpeechAvailable())
-      throw new Error("Browser speech is unavailable. Use Cloud voice.");
-    localStorage.setItem("gomode.voiceMode", mode);
-    this.setState((s) => ({ ...s, mode }));
-    if (this._choicesVersion === untrack(gatewayVersion) && this.state.choicesStatus === "ready") {
-      void this.loadVoiceChoices();
-    }
+  /** Save recognition ownership for the next session. */
+  selectSpeechInput(location: SpeechLocation): void {
+    this._selectSpeech("Input", location);
+  }
+
+  /** Save synthesis ownership for the next session. */
+  selectSpeechOutput(location: SpeechLocation): void {
+    this._selectSpeech("Output", location);
+  }
+
+  private _selectSpeech(stage: "Input" | "Output", location: SpeechLocation): void {
+    this.selectSpeechStage(stage === "Input" ? "input" : "output", location, null);
   }
 
   /** Save the browser's speaking voice independently of gateway voices. */
   selectBrowserVoice(uri: string): void {
     if (this.state.connected || this.state.connectStatus !== null)
       throw new Error("End the session before changing speaking voice");
-    if (uri !== "" && !window.speechSynthesis.getVoices().some((voice) => voice.voiceURI === uri))
+    if (
+      uri !== "" &&
+      !window.speechSynthesis
+        .getVoices()
+        .some((voice) => voice.voiceURI === uri && browserVoiceMatchesLanguage(voice, this.state.languageTag))
+    )
       throw new Error("Choose an available speaking voice");
     localStorage.setItem("gomode.browserVoiceURI", uri);
     this.setState((s) => ({ ...s, browserVoiceURI: uri }));
@@ -1149,11 +1562,13 @@ export class VoiceSession {
 
   /** Select an audio input device. If connected, replaces the mic track. */
   async selectInputDevice(deviceId: string): Promise<void> {
+    if (this.state.speechInput !== "gateway") return;
     this._pendingAudioInput = null;
     await this._selectInputDevice(deviceId, true);
   }
 
   private async _selectInputDevice(deviceId: string, remember: boolean): Promise<void> {
+    if (this.state.speechInput !== "gateway") return;
     if (this.state.audioSwitching !== null) return;
     const selection = ++this._audioSelectionAttempt;
     const pc = this._pc;
@@ -1244,7 +1659,7 @@ export class VoiceSession {
   }
 
   private _microphoneActive(): boolean {
-    return !microphoneMuted(this.state) && (this.state.mode === "cloud" || this.state.listening);
+    return !microphoneMuted(this.state) && (this.state.speechInput === "gateway" || this.state.listening);
   }
 
   private _monitorMicrophone(stream: MediaStream): void {
@@ -1256,7 +1671,7 @@ export class VoiceSession {
     const attempt = this._connectionAttempt;
     const activation = this._microphoneMeter.prepare();
     const processing =
-      this.state.mode === "cloud"
+      this.state.speechInput === "gateway"
         ? this._microphoneInput.prepare().catch((error: unknown) => {
             if (attempt === this._connectionAttempt)
               this._update((s) => {
@@ -1270,11 +1685,13 @@ export class VoiceSession {
 
   /** Select an audio output device. Applies immediately if connected. */
   async selectOutputDevice(deviceId: string): Promise<void> {
+    if (this.state.speechOutput !== "gateway") return;
     this._pendingAudioOutput = null;
     await this._selectOutputDevice(deviceId, true);
   }
 
   private async _selectOutputDevice(deviceId: string, remember: boolean): Promise<void> {
+    if (this.state.speechOutput !== "gateway") return;
     if (this.state.audioSwitching !== null) return;
     const selection = ++this._audioSelectionAttempt;
     const audio = this._speakerAudio;
@@ -1313,16 +1730,44 @@ export class VoiceSession {
     }
   }
 
+  private _restoreColdSetup(snapshot: GatewaySnapshot): VoiceSetupPreference | null {
+    if (this._choicesVersion === snapshot.version && this.state.choicesStatus === "ready") return null;
+    const setup = savedSetup(snapshot.origin);
+    this.setState((s) => ({
+      ...s,
+      setupMode: setup?.mode ?? "parts",
+      speechInput: setup?.mode === "all-in-one" ? "gateway" : (setup?.partsInput ?? savedSpeechLocation("Input")),
+      speechOutput: setup?.mode === "all-in-one" ? "gateway" : (setup?.partsOutput ?? savedSpeechLocation("Output")),
+      choiceIDs: {
+        text: setup?.partsChoiceID ?? null,
+        webrtc: setup?.mode === "all-in-one" ? setup.nativeChoiceID : (setup?.partsChoiceID ?? null),
+      },
+    }));
+    return setup;
+  }
+
   /** Unlock chime playback while a browser user-activation event is still active. */
   prepareAudio(): void {
-    if (this.state.mode === "browser" && !browserSpeechAvailable()) return;
+    if (!this.state.connected && this.state.connectStatus === null) {
+      try {
+        this._restoreColdSetup(gatewaySnapshot());
+      } catch (error) {
+        this._setError(error instanceof Error ? error.message : String(error));
+        return;
+      }
+    }
+    if (
+      (this.state.speechInput === "client" && !browserRecognitionAvailable()) ||
+      (this.state.speechOutput === "client" && !browserSynthesisAvailable())
+    )
+      return;
     void this.enableMicrophoneMeter();
-    if (this.state.mode === "browser" && browserSpeechAvoidsChimes()) {
+    if (this.state.speechOutput === "client" && browserSpeechAvoidsChimes()) {
       window.speechSynthesis.resume();
       return;
     }
     this._chime.prepare();
-    if (this.state.mode === "browser") this._thinkingEarcon.prepare();
+    if (this.state.speechOutput === "client") this._thinkingEarcon.prepare();
   }
 
   /** Observe permission changes without prompting. The overlay owns this subscription. */
@@ -1427,18 +1872,26 @@ export class VoiceSession {
   async connect(): Promise<void> {
     this._frontendTools = captureFrontendVoiceTools();
     this._conversationID = newConversationID();
-    this.prepareAudio();
     this._sessionGateway = gatewaySnapshot();
     this._sessionVoiceName = null;
     try {
-      this._sessionChoiceID =
-        this._choicesVersion === this._sessionGateway.version
-          ? this.state.choiceIDs[transportFor(this.state.mode)]
-          : savedVoiceChoice(this._sessionGateway.origin, transportFor(this.state.mode));
-      if (this._choicesVersion === this._sessionGateway.version) {
+      const catalogReady =
+        this._choicesVersion === this._sessionGateway.version && this.state.choicesStatus === "ready";
+      const setup = this._restoreColdSetup(this._sessionGateway);
+      this.prepareAudio();
+      for (const stage of ["input", "output"] as const) {
+        this._sessionSpeechModelIDs[stage] = catalogReady
+          ? this.state.speechModelIDs[stage]
+          : ((stage === "input" ? setup?.recognitionModelID : setup?.synthesisModelID) ??
+            localStorage.getItem(speechModelStorageKey(this._sessionGateway.origin, stage)));
+      }
+      this._sessionChoiceID = catalogReady
+        ? this.state.choiceIDs[this.transport]
+        : savedVoiceChoice(this._sessionGateway.origin, this.transport);
+      if (catalogReady) {
         const choice = this.state.choices.find((choice) => choice.id === this._sessionChoiceID);
-        if (choice && (this.state.mode !== "cloud" || choice.voices?.length))
-          this._sessionVoiceName = savedSpeakingVoice(this._sessionGateway.origin, choice, this.state.mode);
+        if (choice && (this.state.speechOutput !== "gateway" || choice.voices?.length))
+          this._sessionVoiceName = savedSpeakingVoice(this._sessionGateway.origin, choice, this.state.speechOutput);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1455,8 +1908,15 @@ export class VoiceSession {
   }
 
   private async _connect(preserveTranscript: boolean): Promise<void> {
-    if (this.state.mode === "browser") {
+    if (this.transport === "text") {
       await this._connectBrowser(preserveTranscript);
+      return;
+    }
+    if (
+      (this.state.speechInput === "client" && !browserRecognitionAvailable()) ||
+      (this.state.speechOutput === "client" && !browserSynthesisAvailable())
+    ) {
+      this._setError("Browser recognition or speech output is unavailable. Use the gateway.");
       return;
     }
     this._frontendInvocationLifetime.abort();
@@ -1501,12 +1961,12 @@ export class VoiceSession {
       });
       this._pc = pc;
 
-      await this._microphoneInput.prepare();
+      if (this.state.speechInput === "gateway") await this._microphoneInput.prepare();
       if (attempt !== this._connectionAttempt) return;
       // Browser AEC precedes outgoing attenuation and Opus encoding.
       const inputId = this.state.selectedInputId;
       const micConstraints: MediaStreamConstraints = {
-        audio: inputId ? { deviceId: { exact: inputId } } : true,
+        audio: this.state.speechInput === "gateway" && inputId ? { deviceId: { exact: inputId } } : true,
         video: false,
       };
       // Initial acquisition owns input routing too: devicechange must queue any
@@ -1529,13 +1989,17 @@ export class VoiceSession {
         rememberAudioDevice("Input", inputId);
         this._inputPreferenceProvisional = false;
       }
-      this._outgoingMicrophone = this._microphoneInput.connect(micStream);
       micStream.getAudioTracks().forEach((track) => {
-        track.enabled = !microphoneMuted(this.state);
+        track.enabled = this._microphoneActive();
       });
-      for (const t of this._outgoingMicrophone.stream.getAudioTracks()) {
-        t.enabled = !microphoneMuted(this.state);
-        pc.addTrack(t, this._outgoingMicrophone.stream);
+      if (this.state.speechInput === "gateway") {
+        this._outgoingMicrophone = this._microphoneInput.connect(micStream);
+        for (const track of this._outgoingMicrophone.stream.getAudioTracks()) {
+          track.enabled = this._microphoneActive();
+          pc.addTrack(track, this._outgoingMicrophone.stream);
+        }
+      } else {
+        pc.addTransceiver("audio", { direction: "recvonly" });
       }
       this._update((s) => {
         s.audioSwitching = null;
@@ -1549,7 +2013,7 @@ export class VoiceSession {
 
       // Speaker audio from remote RTP track.
       pc.ontrack = (evt) => {
-        if (attempt !== this._connectionAttempt || this._pc !== pc) return;
+        if (attempt !== this._connectionAttempt || this._pc !== pc || this.state.speechOutput !== "gateway") return;
         const audio = new Audio();
         this._speakerAudio = audio;
         audio.srcObject = evt.streams[0] ?? new MediaStream([evt.track]);
@@ -1563,6 +2027,7 @@ export class VoiceSession {
       // Create data channel carrying the voice gateway control protocol.
       const dc = pc.createDataChannel("voice-gateway", { ordered: true });
       this._dc = dc;
+      this._createBrowserSpeech(attempt, dc);
 
       dc.onmessage = (evt: MessageEvent<string>) => {
         if (attempt !== this._connectionAttempt || this._dc !== dc) return;
@@ -1667,8 +2132,8 @@ export class VoiceSession {
       s.turnState = TurnStateIdle;
     });
     this._setStatus("setup", "Setting up browser speech…");
-    if (!browserSpeechAvailable()) {
-      this._setError("Browser speech is unavailable. Use Cloud voice.");
+    if (!browserRecognitionAvailable() || !browserSynthesisAvailable()) {
+      this._setError("Browser recognition or speech output is unavailable. Use the gateway.");
       return;
     }
     try {
@@ -1701,56 +2166,7 @@ export class VoiceSession {
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       const socket = new WebSocket(url, ["gomode.text.v2", `gomode.ticket.${response.ticket}`]);
       this._textSocket = socket;
-      const speech = new BrowserSpeech(
-        this.state.languageTag,
-        this.state.browserVoiceURI,
-        this.state.browserSpeechRate,
-        {
-          nextSpeech: () => this._browserSpeechBuffer.next(),
-          listening: (value) => {
-            if (this._ownsChannel(attempt, socket))
-              this._update((s) => {
-                s.listening = value;
-              });
-            if (!value)
-              queueMicrotask(() => {
-                if (!this._ownsChannel(attempt, socket) || this.state.listening) return;
-                this._browserUserSpeechActive = false;
-                this._flushPendingNotifications(true);
-              });
-          },
-          speaking: (value) => {
-            if (!this._ownsChannel(attempt, socket)) return;
-            this._update((s) => {
-              s.speaking = value;
-            });
-            if (microphoneMuted(this.state)) speech.stopListening();
-            else this._startBrowserListening();
-            if (!value) this._drainBrowserTurn();
-          },
-          interim: (text) => {
-            if (!this._ownsChannel(attempt, socket)) return;
-            if (text !== "") this._browserUserSpeechActive = true;
-            if (text !== "" && this._speakerActive) this._interruptBrowserTurn();
-            this._browserUserText(text, false);
-          },
-          final: (text) => {
-            if (!this._ownsChannel(attempt, socket)) return;
-            this._browserUserSpeechActive = false;
-            this._flushPendingNotifications(false);
-            this._browserTurnIdle = false;
-            this._speakerActive = true;
-            this._browserUserText(text, true);
-            this._send(JSON.stringify(gatewayUserMessage(text)));
-          },
-          error: (message, permissionDenied) => {
-            if (!this._ownsChannel(attempt, socket)) return;
-            if (permissionDenied) this._microphoneDenied();
-            else this._setError(message);
-          },
-        },
-      );
-      this._browserSpeech = speech;
+      this._createBrowserSpeech(attempt, socket);
       socket.onopen = () => {
         if (!this._ownsChannel(attempt, socket)) return;
         this._setStatus("waiting", "Waiting for server…");
@@ -1782,6 +2198,55 @@ export class VoiceSession {
     }
   }
 
+  private _createBrowserSpeech(attempt: number, channel: VoiceChannel): void {
+    if (this.state.speechInput !== "client" && this.state.speechOutput !== "client") return;
+    const speech = new BrowserSpeech(this.state.languageTag, this.state.browserVoiceURI, this.state.browserSpeechRate, {
+      nextSpeech: () => this._browserSpeechBuffer.next(),
+      listening: (value) => {
+        if (this._ownsChannel(attempt, channel))
+          this._update((s) => {
+            s.listening = value;
+          });
+        if (!value)
+          queueMicrotask(() => {
+            if (!this._ownsChannel(attempt, channel) || this.state.listening) return;
+            this._browserUserSpeechActive = false;
+            this._flushPendingNotifications(true);
+          });
+      },
+      speaking: (value) => {
+        if (!this._ownsChannel(attempt, channel)) return;
+        this._update((s) => {
+          s.speaking = value;
+        });
+        if (microphoneMuted(this.state)) speech.stopListening();
+        else this._startBrowserListening();
+        if (!value) this._drainBrowserTurn();
+      },
+      interim: (text) => {
+        if (!this._ownsChannel(attempt, channel)) return;
+        if (text !== "") this._browserUserSpeechActive = true;
+        if (text !== "" && this._speakerActive) this._interruptBrowserTurn();
+        this._browserUserText(text, false);
+      },
+      final: (text) => {
+        if (!this._ownsChannel(attempt, channel)) return;
+        this._browserUserSpeechActive = false;
+        this._flushPendingNotifications(false);
+        this._browserTurnIdle = false;
+        this._speakerActive = true;
+        this._browserUserText(text, true);
+        this._send(JSON.stringify(gatewayUserMessage(text)));
+      },
+      error: (message, permissionDenied) => {
+        if (!this._ownsChannel(attempt, channel)) return;
+        if (permissionDenied) this._microphoneDenied();
+        else this._setError(message);
+      },
+    });
+    this._browserSpeech = speech;
+  }
+
   private _browserUserText(text: string, final: boolean): void {
     this._update((s) => {
       // Tool diagnostics can arrive while recognition is still revising a draft.
@@ -1805,6 +2270,7 @@ export class VoiceSession {
     this._speakerActive = false;
     this._browserSpeechBuffer.clear();
     this._browserSpeech?.stopSpeaking();
+    if (this._speakerAudio !== null) this._speakerAudio.muted = true;
     this._update((s) => {
       s.speaking = false;
       s.activeTool = null;
@@ -1815,7 +2281,12 @@ export class VoiceSession {
   }
 
   private _startBrowserListening(): void {
-    if (this.state.connected && !microphoneMuted(this.state) && (this.state.speaking || this._browserTurnIdle)) {
+    if (
+      this.state.speechInput === "client" &&
+      this.state.connected &&
+      !microphoneMuted(this.state) &&
+      (this.state.speaking || this._browserTurnIdle)
+    ) {
       this._thinkingEarcon.setThinking(false);
       this._browserSpeech?.listen();
     }
@@ -1877,6 +2348,7 @@ export class VoiceSession {
       s.audioInputError = null;
       s.audioOutputError = null;
       s.transcript = s.transcript.map((e) => ({ ...e, final: true }));
+      s.transcriptDraft = null;
     });
   }
 
@@ -1923,7 +2395,7 @@ export class VoiceSession {
   private _sendContextUpdate(text: string, generate: boolean): void {
     if (generate) {
       this._speakerActive = true;
-      if (this.state.mode === "browser") this._browserTurnIdle = false;
+      if (this.state.speechInput === "client" || this.state.speechOutput === "client") this._browserTurnIdle = false;
     }
     this._send(JSON.stringify(gatewayContextUpdate(text, generate)));
   }
@@ -2034,6 +2506,7 @@ export class VoiceSession {
         s.speaking = false;
         s.activeTool = null;
         s.turnState = TurnStateIdle;
+        s.transcriptDraft = null;
       });
       this._recoveryContext = buildRecoveryContext(this.state.transcript);
       void this._connect(true);
@@ -2139,7 +2612,7 @@ export class VoiceSession {
     }
     if (!this._voiceModeActive) return;
     this._voiceModeActive = false;
-    if (this.state.mode !== "browser" || !browserSpeechAvoidsChimes()) this._chime.playDisconnected();
+    if (this.state.speechOutput !== "client" || !browserSpeechAvoidsChimes()) this._chime.playDisconnected();
   }
 
   private async _publishCallMetadata(attempt: number): Promise<void> {
@@ -2163,6 +2636,7 @@ export class VoiceSession {
     this._update((s) => {
       s.transcript = [];
       s.toolHistory = [];
+      s.transcriptDraft = null;
     });
   }
 
@@ -2188,7 +2662,7 @@ export class VoiceSession {
         );
       const state = this.state;
       this._thinkingEarcon.setThinking(
-        state.mode === "browser" &&
+        state.speechOutput === "client" &&
           !browserSpeechAvoidsChimes() &&
           this._browserSpeech !== null &&
           state.connected &&
@@ -2213,6 +2687,11 @@ export class VoiceSession {
       this._sessionVoiceName ?? "",
       this.state.showReasoning,
     );
+    setup.speech = this.speech;
+    if (this._sessionComposable && this.state.speechInput === "gateway" && this._sessionSpeechModelIDs.input !== null)
+      setup.recognitionModelID = this._sessionSpeechModelIDs.input;
+    if (this._sessionComposable && this.state.speechOutput === "gateway" && this._sessionSpeechModelIDs.output !== null)
+      setup.synthesisModelID = this._sessionSpeechModelIDs.output;
     this._send(JSON.stringify(setup));
   }
 
@@ -2247,7 +2726,7 @@ export class VoiceSession {
       return;
     }
 
-    if (this.state.mode === "browser" && this._browserCancellation !== "none") {
+    if (this.state.speechInput === "client" && this._browserCancellation !== "none") {
       if (env.kind === MessageKindInterrupted) {
         this._browserCancellation = "acknowledged";
         this._drainBrowserTurn();
@@ -2264,7 +2743,9 @@ export class VoiceSession {
         env.kind === MessageKindAssistantTextDelta ||
         env.kind === MessageKindReasoningDelta ||
         env.kind === MessageKindTranscriptDelta ||
-        env.kind === MessageKindTurnStatus
+        env.kind === MessageKindTurnStatus ||
+        env.kind === MessageKindSpeechStarted ||
+        env.kind === MessageKindSpeechEnded
       )
         return;
       // Dispatched tool calls belong to the session and still need a result.
@@ -2296,7 +2777,7 @@ export class VoiceSession {
       });
       if (!this._voiceModeActive) {
         this._voiceModeActive = true;
-        if (this.state.mode !== "browser" || !browserSpeechAvoidsChimes()) this._chime.playConnected();
+        if (this.state.speechOutput !== "client" || !browserSpeechAvoidsChimes()) this._chime.playConnected();
       }
       if (this._callMetadata === null) void this._publishCallMetadata(this._connectionAttempt);
       if (this._recoveryContext !== "") {
@@ -2310,14 +2791,31 @@ export class VoiceSession {
       return;
     }
 
-    if (env.kind === MessageKindTranscriptDelta) {
-      const delta = JSON.parse(text) as TranscriptDelta;
-      // Browser recognition already owns the user's interim and final text.
-      if (this.state.mode !== "browser" || delta.speaker !== "user") this._handleTranscriptDelta(delta);
+    if (env.kind === MessageKindTranscriptDraft) {
+      const draft = JSON.parse(text) as TranscriptDraft;
+      if (
+        this.state.speechInput !== "gateway" ||
+        typeof draft.id !== "string" ||
+        !draft.id ||
+        typeof draft.text !== "string" ||
+        draft.text.length > 65536
+      )
+        return;
+      this._update((s) => {
+        if (draft.text) s.transcriptDraft = { id: draft.id, text: draft.text };
+        else if (s.transcriptDraft?.id === draft.id) s.transcriptDraft = null;
+      });
       return;
     }
 
-    if (env.kind === MessageKindAssistantTextDelta && this.state.mode === "browser") {
+    if (env.kind === MessageKindTranscriptDelta) {
+      const delta = JSON.parse(text) as TranscriptDelta;
+      // Browser recognition already owns the user's interim and final text.
+      if (this.state.speechInput !== "client" || delta.speaker !== "user") this._handleTranscriptDelta(delta);
+      return;
+    }
+
+    if (env.kind === MessageKindAssistantTextDelta && this.state.speechOutput === "client") {
       const delta = JSON.parse(text) as AssistantTextDelta;
       this._browserTurnIdle = false;
       this._speakerActive = true;
@@ -2345,6 +2843,8 @@ export class VoiceSession {
       this._update((s) => {
         s.speaking = true;
       });
+      if (microphoneMuted(this.state)) this._browserSpeech?.stopListening();
+      else this._startBrowserListening();
       return;
     }
 
@@ -2356,11 +2856,12 @@ export class VoiceSession {
         if (s.microphoneMode === "muteOnce") s.microphoneMode = "listening";
         s.transcript = s.transcript.map((e) => ({ ...e, final: true }));
       });
+      this._startBrowserListening();
       return;
     }
 
     if (env.kind === MessageKindInterrupted) {
-      if (this.state.mode === "browser") {
+      if (this.state.speechOutput === "client") {
         this._browserTurnIdle = true;
         this._browserSpeechBuffer.clear();
         this._browserSpeech?.stopSpeaking();
@@ -2388,11 +2889,17 @@ export class VoiceSession {
       this._update((s) => {
         s.turnState = msg.state;
       });
-      if (this.state.mode === "browser") {
-        if (msg.state === TurnStateIdle) this._finishBrowserTurn();
-        else {
+      if (this.state.speechInput === "client" || this.state.speechOutput === "client") {
+        if (msg.state === TurnStateIdle) {
+          if (this.state.speechOutput === "client") this._finishBrowserTurn();
+          else {
+            this._browserTurnIdle = true;
+            this._drainBrowserTurn();
+          }
+        } else {
           this._browserTurnIdle = false;
           this._speakerActive = true;
+          if (this._speakerAudio !== null) this._speakerAudio.muted = false;
           if (!this.state.speaking) this._browserSpeech?.stopListening();
         }
       } else if (msg.state === TurnStateIdle) {
@@ -2427,8 +2934,14 @@ export class VoiceSession {
 
   private _handleTranscriptDelta(msg: TranscriptDelta): void {
     if (msg.speaker !== "user" && msg.speaker !== "assistant") return;
-    if (!msg.text) return;
     this._update((s) => {
+      if (msg.speaker === "user" && msg.draft_id) {
+        if (s.transcriptDraft?.id === msg.draft_id) s.transcriptDraft = null;
+        if (msg.text)
+          s.transcript = [...s.transcript, { kind: "transcript", speaker: "user", text: msg.text, final: true }];
+        return;
+      }
+      if (!msg.text) return;
       s.transcript = appendChunk(s.transcript, msg.speaker, msg.text ?? "", "transcript", msg.responseID, s.usage);
     });
   }

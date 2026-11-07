@@ -61,8 +61,8 @@ func TestRealtimeConfig(t *testing.T) {
 			if first != second {
 				t.Fatalf("same runtime cache changed ID: %s vs %s", first, second)
 			}
-			cfg := Config{Realtime: []RealtimeConfig{implicit, explicit}}
-			if err := cfg.ValidateEmbedded(); err == nil {
+			cfg := ResolvedConfig{Realtime: []RealtimeConfig{implicit, explicit}}
+			if err := cfg.Validate(); err == nil {
 				t.Fatal("duplicate effective cache configuration accepted")
 			}
 		})

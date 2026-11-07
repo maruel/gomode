@@ -5,7 +5,9 @@ package voicertc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -14,7 +16,9 @@ import (
 )
 
 type localStackPool struct {
-	limits voicegateway.LocalStackRuntimeConfig
+	limits      voicegateway.RuntimeConfig
+	recognition []voicegateway.ASRConfig
+	synthesis   []voicegateway.TTSConfig
 
 	mu      sync.Mutex
 	entries []*lazyLocalStack
@@ -28,24 +32,282 @@ type lazyLocalStack struct {
 
 	// All mutable state belongs to pool.mu. Loading reserves capacity before
 	// releasing the lock so concurrent cold choices cannot exceed the limit.
-	loaded    backendConnector
-	loading   chan struct{}
-	unloading chan struct{}
-	cancel    context.CancelFunc
-	users     int
-	idleSince time.Time
-	timer     *time.Timer
-	closed    bool
+	loaded     backendConnector
+	loading    chan struct{}
+	unloading  chan struct{}
+	cancel     context.CancelFunc
+	users      int
+	idleSince  time.Time
+	timer      *time.Timer
+	closed     bool
+	owner      *localStackBackend
+	references int
 }
 
-func newLocalStackPool(limits voicegateway.LocalStackRuntimeConfig) *localStackPool {
+func newLocalStackPool(limits voicegateway.RuntimeConfig) *localStackPool {
 	return &localStackPool{limits: limits.WithDefaults(), changed: make(chan struct{})}
 }
 
-func (p *localStackPool) backend(cfg voicegateway.LocalStackConfig) *localStackBackend {
-	l := &lazyLocalStack{pool: p, cfg: &cfg, log: slog.With("provider", cfg.LLM.Provider, "model", cfg.LLM.Model)}
+func (p *localStackPool) backend(cfg voicegateway.PipelineConfig) *localStackBackend {
+	b := &localStackBackend{defaults: clientSpeechConfig()}
+	if !cfg.TextOnly && cfg.ASR != (voicegateway.ASRConfig{}) {
+		b.defaults.Input = voicev2.SpeechLocationGateway
+	}
+	if !cfg.TextOnly && cfg.TTS != (voicegateway.TTSConfig{}) {
+		b.defaults.Output = voicev2.SpeechLocationGateway
+	}
+	for _, input := range []voicev2.SpeechLocation{voicev2.SpeechLocationGateway, voicev2.SpeechLocationClient} {
+		for _, output := range []voicev2.SpeechLocation{voicev2.SpeechLocationGateway, voicev2.SpeechLocationClient} {
+			if input == voicev2.SpeechLocationGateway && (cfg.TextOnly || cfg.UnavailableASR || cfg.ASR == (voicegateway.ASRConfig{})) {
+				continue
+			}
+			if output == voicev2.SpeechLocationGateway && (cfg.TextOnly || cfg.UnavailableTTS || cfg.TTS == (voicegateway.TTSConfig{})) {
+				continue
+			}
+			variant := cfg
+			if input == voicev2.SpeechLocationClient {
+				variant.ASR = voicegateway.ASRConfig{}
+			}
+			if output == voicev2.SpeechLocationClient {
+				variant.TTS = voicegateway.TTSConfig{}
+			}
+			variant.TextOnly = input == voicev2.SpeechLocationClient && output == voicev2.SpeechLocationClient
+			l := &lazyLocalStack{pool: p, cfg: &variant, log: slog.With("provider", cfg.LLM.Provider, "model", cfg.LLM.Model)}
+			p.entries = append(p.entries, l)
+			b.variants = append(b.variants, speechStackVariant{speech: voicev2.SpeechConfig{Input: input, Output: output}, lazy: l})
+		}
+	}
+	return b
+}
+
+// llmBackend keeps one LLM selectable independently of configured speech stages.
+func (p *localStackPool) llmBackend(cfg voicegateway.ModelConfig) *localStackBackend {
+	b := p.backend(voicegateway.PipelineConfig{TextOnly: true, LLM: cfg})
+	b.composition = &speechComposition{pool: p, llm: cfg}
+	if len(p.recognition) > 0 {
+		b.defaults.Input = voicev2.SpeechLocationGateway
+	}
+	if len(p.synthesis) > 0 {
+		b.defaults.Output = voicev2.SpeechLocationGateway
+	}
+	return b
+}
+
+type speechComposition struct {
+	pool *localStackPool
+	llm  voicegateway.ModelConfig
+}
+
+func (b *localStackBackend) selectStages(speech voicev2.SpeechConfig, setup *voicev2.SessionSetup) (*lazyLocalStack, error) {
+	c := b.composition
+	cfg := voicegateway.PipelineConfig{LLM: c.llm, TextOnly: speech == clientSpeechConfig()}
+	if setup.RecognitionModelID != "" && speech.Input != voicev2.SpeechLocationGateway {
+		return nil, errors.New("recognitionModelID requires gateway recognition")
+	}
+	if setup.SynthesisModelID != "" && speech.Output != voicev2.SpeechLocationGateway {
+		return nil, errors.New("synthesisModelID requires gateway synthesis")
+	}
+	if speech.Input == voicev2.SpeechLocationGateway {
+		found := false
+		for _, a := range c.pool.recognition {
+			id, err := a.ID()
+			if err != nil {
+				return nil, err
+			}
+			if setup.RecognitionModelID == "" || setup.RecognitionModelID == id {
+				cfg.ASR = a
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("recognition model %q is unavailable", setup.RecognitionModelID)
+		}
+	}
+	if speech.Output == voicev2.SpeechLocationGateway {
+		found := false
+		for _, a := range c.pool.synthesis {
+			id, err := a.ID()
+			if err != nil {
+				return nil, err
+			}
+			if setup.SynthesisModelID == "" || setup.SynthesisModelID == id {
+				cfg.TTS = a
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("synthesis model %q is unavailable", setup.SynthesisModelID)
+		}
+	}
+	if cfg.TextOnly {
+		return b.variants[0].lazy, nil
+	}
+	p := c.pool
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if b.closed {
+		return nil, errors.New("local stack is closed")
+	}
+	for _, l := range p.entries {
+		if l.owner == b && *l.cfg.(*voicegateway.PipelineConfig) == cfg {
+			l.references++
+			return l, nil
+		}
+	}
+	l := &lazyLocalStack{pool: p, cfg: &cfg, log: slog.With("provider", cfg.LLM.Provider, "model", cfg.LLM.Model), owner: b, references: 1}
 	p.entries = append(p.entries, l)
-	return &localStackBackend{lazy: l}
+	return l, nil
+}
+
+// Dynamic combinations survive only while referenced or resident. Loaded idle
+// combinations are bounded by MaxInstances; failed and evicted entries do not
+// accumulate a cache proportional to the Cartesian product of stage catalogs.
+func (l *lazyLocalStack) pruneLocked() {
+	if l.owner != nil && l.references == 0 && l.loaded == nil && l.loading == nil && l.unloading == nil {
+		l.pool.entries = slices.DeleteFunc(l.pool.entries, func(e *lazyLocalStack) bool { return e == l })
+	}
+}
+
+func (l *lazyLocalStack) releaseReference() {
+	if l.owner == nil {
+		return
+	}
+	l.pool.mu.Lock()
+	defer l.pool.mu.Unlock()
+	l.references--
+	l.pruneLocked()
+}
+
+type speechStackVariant struct {
+	speech voicev2.SpeechConfig
+	lazy   *lazyLocalStack
+}
+
+// negotiatedStackSession admits setup before acquiring any runtime. Each mode
+// has its own pool entry so a client-owned stage cannot pin or initialize an
+// unused worker, even when another session selected gateway speech.
+type negotiatedStackSession struct {
+	backend *localStackBackend
+	native  *lazyLocalStack
+	ctx     context.Context //nolint:containedctx // Negotiation and the loaded lease share this cancellable session lifetime.
+	cancel  context.CancelFunc
+	id      string
+	sink    backendSink
+	text    bool
+
+	op      sync.Mutex
+	session backendSession
+	dynamic *lazyLocalStack
+	closed  bool
+}
+
+func newNegotiatedStackSession(ctx context.Context, backend *localStackBackend, native *lazyLocalStack, id string, sink backendSink, text bool) *negotiatedStackSession {
+	ctx, cancel := context.WithCancel(ctx)
+	return &negotiatedStackSession{backend: backend, native: native, ctx: ctx, cancel: cancel, id: id, sink: sink, text: text}
+}
+
+func (s *negotiatedStackSession) acceptClientMessage(_ context.Context, data []byte) error {
+	s.op.Lock()
+	defer s.op.Unlock()
+	if s.closed {
+		return errSessionClosed
+	}
+	if s.session != nil {
+		return s.session.acceptClientMessage(s.ctx, data)
+	}
+	var setup voicev2.SessionSetup
+	if err := decodeGatewayMessage(data, voicev2.MessageKindSessionSetup, &setup); err != nil {
+		return err
+	}
+	defaults := gatewaySpeechConfig()
+	if s.backend != nil {
+		defaults = s.backend.defaults
+	}
+	if s.text {
+		defaults = clientSpeechConfig()
+	}
+	speech, err := resolveSpeech(setup.Speech, defaults)
+	if err != nil {
+		return err
+	}
+	if s.text && speech != clientSpeechConfig() {
+		return errors.New("text transport requires client recognition and synthesis")
+	}
+	selected := s.native
+	if s.backend == nil || s.backend.composition == nil {
+		if setup.RecognitionModelID != "" || setup.SynthesisModelID != "" {
+			return errors.New("independent speech models require a composable LLM choice")
+		}
+	}
+	switch {
+	case s.backend != nil && s.backend.composition != nil:
+		selected, err = s.backend.selectStages(speech, &setup)
+		if err != nil {
+			return err
+		}
+	case s.backend != nil:
+		for _, v := range s.backend.variants {
+			if v.speech == speech {
+				selected = v.lazy
+				break
+			}
+		}
+	case speech != gatewaySpeechConfig():
+		return errors.New("native audio requires gateway recognition and synthesis")
+	}
+	if selected == nil {
+		return errors.New("selected speech combination is unavailable for this choice")
+	}
+	if err := applySessionLanguage(&setup); err != nil {
+		selected.releaseReference()
+		return err
+	}
+	// The backend applies language once when it accepts the original setup.
+	active, err := selected.connect(s.ctx, s.id, s.sink, s.text)
+	if err != nil {
+		selected.releaseReference()
+		return err
+	}
+	if selected.owner != nil {
+		s.dynamic = selected
+	}
+	s.session = active
+	return active.acceptClientMessage(s.ctx, data)
+}
+
+func (s *negotiatedStackSession) inputSampleRate() int {
+	s.op.Lock()
+	defer s.op.Unlock()
+	if s.session == nil {
+		return micSampleRate
+	}
+	return s.session.inputSampleRate()
+}
+
+func (s *negotiatedStackSession) acceptMicPCM(_ context.Context, pcm []byte) error {
+	s.op.Lock()
+	defer s.op.Unlock()
+	if s.session == nil || s.closed {
+		return errors.New("session.setup is required before microphone audio")
+	}
+	return s.session.acceptMicPCM(s.ctx, pcm)
+}
+
+func (s *negotiatedStackSession) close() error {
+	s.cancel()
+	s.op.Lock()
+	defer s.op.Unlock()
+	s.closed = true
+	if s.session != nil {
+		err := s.session.close()
+		if s.dynamic != nil {
+			s.dynamic.releaseReference()
+		}
+		return err
+	}
+	return nil
 }
 
 func (p *localStackPool) realtimeBackend(cfg voicegateway.RealtimeConfig) *lazyLlamaRealtimeBackend {
@@ -84,6 +346,7 @@ func (l *lazyLocalStack) unloadLocked() error {
 	close(l.unloading)
 	l.unloading = nil
 	l.pool.notifyLocked()
+	l.pruneLocked()
 	return err
 }
 
@@ -140,7 +403,7 @@ func (l *lazyLocalStack) acquire(ctx context.Context) (backendConnector, error) 
 			var b backendConnector
 			var err error
 			switch cfg := l.cfg.(type) {
-			case *voicegateway.LocalStackConfig:
+			case *voicegateway.PipelineConfig:
 				var runtime *localStackRuntime
 				runtime, err = localStackRuntimeForConfig(runCtx, cfg)
 				if runtime != nil {
@@ -240,7 +503,7 @@ func (l *lazyLocalStack) close() error {
 }
 
 func (l *lazyLocalStack) connect(ctx context.Context, id string, sink backendSink, text bool) (backendSession, error) {
-	if cfg, ok := l.cfg.(*voicegateway.LocalStackConfig); !text && ok && cfg.TextOnly {
+	if cfg, ok := l.cfg.(*voicegateway.PipelineConfig); !text && ok && cfg.TextOnly {
 		return nil, errors.New("text-only choice does not support WebRTC audio")
 	}
 	// Heartbeats keep cold downloads and capacity waits visible, without

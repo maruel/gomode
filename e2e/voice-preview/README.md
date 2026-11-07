@@ -110,6 +110,17 @@ activity, transcript scrolling, 320 px width, 200% browser zoom, and Android
 large text. Keep platform-specific controls native. Do not copy host task styles
 into `web/src`.
 
+## Voice setup settings
+
+Open the preview with `?state=idle`, then open **Voice settings**. Capture both
+**All-in-one model** and **Select parts** at the same viewport. The parts tab
+orders recognition, language model, and speech; each speech selector includes
+Browser alongside the configured models. Switching tabs retains each setup.
+
+Check the tabs with arrow keys, then close settings and verify focus returns to
+its trigger. At narrow widths, native browser zoom, and larger default text,
+scroll inside settings to inspect the language and display preferences too.
+
 ## Hosts own browser server switching
 
 Pass the next server and its selection action to the browser overlay:

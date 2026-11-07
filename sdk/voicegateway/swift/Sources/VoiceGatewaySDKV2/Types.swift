@@ -96,6 +96,7 @@ public struct MessageKind: Codable, Equatable, Hashable {
     public static let SessionStatus = MessageKind("session.status")
     public static let SessionUsage = MessageKind("session.usage")
     public static let TranscriptDelta = MessageKind("transcript.delta")
+    public static let TranscriptDraft = MessageKind("transcript.draft")
     public static let AssistantTextDelta = MessageKind("assistant.text.delta")
     public static let ReasoningDelta = MessageKind("reasoning.delta")
     public static let SpeechStarted = MessageKind("speech.started")
@@ -127,6 +128,27 @@ public struct Speaker: Codable, Equatable, Hashable {
     public static let Assistant = Speaker("assistant")
 
     public static func other(_ value: String) -> Speaker { Speaker(value) }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        value = try c.decode(String.self)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(value)
+    }
+}
+
+public struct SpeechLocation: Codable, Equatable, Hashable {
+    public let value: String
+
+    public init(_ value: String) { self.value = value }
+
+    public static let Client = SpeechLocation("client")
+    public static let Gateway = SpeechLocation("gateway")
+
+    public static func other(_ value: String) -> SpeechLocation { SpeechLocation(value) }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
@@ -356,6 +378,14 @@ public struct VoiceTransport: Codable, Equatable, Hashable {
     }
 }
 
+/// SpeechConfig selects recognition and synthesis independently. Empty fields use
+/// transport defaults: WebRTC uses each configured gateway stage; text uses client
+/// speech. Explicit unsupported selections fail before model initialization.
+public struct SpeechConfig: Codable {
+    public let input: SpeechLocation?
+    public let output: SpeechLocation?
+}
+
 /// VoiceChoice describes a selectable backend without exposing its credentials.
 public struct VoiceChoice: Codable {
     public let id: String
@@ -363,6 +393,11 @@ public struct VoiceChoice: Codable {
     public let transports: [VoiceTransport]
     /// Voices lists supported audio voice names. Omitted when the choice does not offer voice selection.
     public let voices: [String]?
+    /// SpeechModes lists supported input/output ownership combinations.
+    /// Missing metadata from older gateways means transport defaults only.
+    public let speechModes: [SpeechConfig]?
+    /// Composable allows independent recognition and synthesis model selections.
+    public let composable: Bool?
 }
 
 /// VoiceChoiceDefault names the choice a transport family uses when a session
@@ -375,12 +410,22 @@ public struct VoiceChoiceDefault: Codable {
     public let id: String
 }
 
+/// SpeechModel identifies one configured speech stage without exposing endpoints or credentials.
+public struct SpeechModel: Codable {
+    public let id: String
+    public let label: String
+}
+
 /// VoiceChoicesResp advertises the available voice choices and one default per
 /// offered family.
 public struct VoiceChoicesResp: Codable {
     public let choices: [VoiceChoice]
     /// Defaults holds one entry per offered transport, ordered by transport name.
     public let defaults: [VoiceChoiceDefault]
+    /// RecognitionModels lists gateway recognition stages in preference order.
+    public let recognitionModels: [SpeechModel]?
+    /// SynthesisModels lists gateway synthesis stages in preference order.
+    public let synthesisModels: [SpeechModel]?
 }
 
 /// ServiceAuthorization identifies the host and carries its scoped gateway token.
@@ -564,6 +609,16 @@ public struct SessionSetup: Codable {
     /// IncludeReasoning requests optional provider reasoning output for this session.
     /// It does not enable thinking or change reasoning effort.
     public let includeReasoning: Bool?
+    /// Speech selects the owner of recognition and synthesis for this session.
+    public let speech: SpeechConfig?
+    /// RecognitionModelID selects a recognitionModels entry for a composable LLM.
+    /// Omitted uses the first available entry when input is gateway-owned.
+    /// It must be omitted for client-owned recognition and indivisible choices.
+    public let recognitionModelID: String?
+    /// SynthesisModelID selects a synthesisModels entry for a composable LLM.
+    /// Omitted uses the first available entry when output is gateway-owned.
+    /// It must be omitted for client-owned synthesis and indivisible choices.
+    public let synthesisModelID: String?
 }
 
 /// ContextUpdate is a client message that appends session context.
@@ -686,6 +741,17 @@ public struct TranscriptDelta: Codable {
     /// text and its usage share this value; user text and uncorrelated providers
     /// omit it. Separate response IDs must not be merged into one transcript entry.
     public let responseID: String?
+    /// DraftID atomically replaces the matching user draft when this text commits.
+    public let draft_id: String?
+}
+
+/// TranscriptDraft is an ephemeral full-text user hypothesis for one microphone
+/// utterance. Revisions replace text for ID. Empty Text clears only that ID.
+/// Drafts never enter conversation history, activity logs, or recovery context.
+public struct TranscriptDraft: Codable {
+    public let kind: MessageKind
+    public let id: String
+    public let text: String
 }
 
 /// AssistantTextDelta is a gateway message that streams assistant text.

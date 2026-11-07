@@ -656,6 +656,59 @@ class VoiceSessionLifecycleTest {
         }
 
     @Test
+    fun liveDraftsReplaceAndOlderFinalsCannotEraseNewerInput() =
+        runTest {
+            val settings = SettingsRepository(InMemoryPreferencesDataStore())
+            val id = settings.addService("Home", "https://home.example")
+            settings.settings.first { it.activeServiceId == id }
+            val session = createCloudSession(settings)
+            val channel = RecordingDataChannel()
+            attachAuthorizedChannel(session, channel)
+            try {
+                invokeHandleServerMessage(session, """{"kind":"transcript.draft","id":"a","text":"Pear"}""", channel)
+                invokeHandleServerMessage(session, """{"kind":"transcript.draft","id":"a","text":"Banana"}""", channel)
+                assertEquals(
+                    "Banana",
+                    session.state.value.transcriptDraft
+                        ?.text,
+                )
+                assertTrue(
+                    session.state.value.transcript
+                        .isEmpty(),
+                )
+                assertFalse(buildNetworkRecoveryContext(session.state.value.transcript).contains("Banana"))
+                invokeHandleServerMessage(session, """{"kind":"transcript.draft","id":"b","text":"Next"}""", channel)
+                invokeHandleServerMessage(
+                    session,
+                    """{"kind":"transcript.delta","speaker":"user","draft_id":"a","text":"Banana."}""",
+                    channel,
+                )
+                invokeHandleServerMessage(session, """{"kind":"transcript.draft","id":"a","text":""}""", channel)
+                assertEquals(
+                    "Next",
+                    session.state.value.transcriptDraft
+                        ?.text,
+                )
+                assertEquals(
+                    listOf(TranscriptEntry(TranscriptSpeaker.USER, "Banana.", final = true)),
+                    session.state.value.transcript,
+                )
+                invokeHandleServerMessage(
+                    session,
+                    """{"kind":"transcript.delta","speaker":"user","draft_id":"b","text":"Next."}""",
+                    channel,
+                )
+                assertEquals(null, session.state.value.transcriptDraft)
+                invokeHandleServerMessage(session, """{"kind":"transcript.draft","id":"c","text":"Cancel"}""", channel)
+                invokeHandleServerMessage(session, """{"kind":"transcript.draft","id":"c","text":""}""", channel)
+                assertEquals(null, session.state.value.transcriptDraft)
+                assertEquals(2, session.state.value.transcript.size)
+            } finally {
+                session.close()
+            }
+        }
+
+    @Test
     fun reasoningReachesTheTranscriptOnlyWhenEnabled() =
         runBlocking {
             val settings = SettingsRepository(InMemoryPreferencesDataStore())

@@ -1225,6 +1225,148 @@ func TestLlamaRealtimeSession(t *testing.T) {
 }
 
 func TestLlamaRealtimeBackend(t *testing.T) {
+	t.Run("staged audio thinking and tools", func(t *testing.T) {
+		requests := make(chan llamacpp.ChatRequest, 2)
+		speech := make(chan llamacpp.SpeechRequest, 1)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/chat/completions":
+				var req llamacpp.ChatRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+					return
+				}
+				requests <- req
+				result := false
+				for _, msg := range req.Messages {
+					if msg.Role == "tool" && msg.ToolCallID == "lookup-1" {
+						result = true
+					}
+				}
+				delta := `{"tool_calls":[{"index":0,"id":"lookup-1","type":"function","function":{"name":"lookup","arguments":"{}"}}]}`
+				if result {
+					delta = `{"content":"The answer is ready."}`
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				if result {
+					if _, err := io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Private reasoning\"},\"finish_reason\":null}]}\n\n"); err != nil {
+						t.Error(err)
+					}
+				}
+				if _, err := fmt.Fprintf(w, "data: {\"choices\":[{\"index\":0,\"delta\":%s,\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n", delta); err != nil {
+					t.Error(err)
+				}
+			case "/tts":
+				var req llamacpp.SpeechRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+					return
+				}
+				speech <- req
+				w.Header().Set("Content-Type", "audio/pcm;rate=24000;encoding=float;bits=32")
+				if _, err := w.Write([]byte{0, 0, 0, 63}); err != nil {
+					t.Error(err)
+				}
+			default:
+				t.Errorf("unexpected staged endpoint %s", r.URL.Path)
+				http.NotFound(w, r)
+			}
+		}))
+		t.Cleanup(srv.Close)
+		b, err := newLlamaRealtimeBackend(t.Context(), voicegateway.RealtimeConfig{
+			ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", Remote: srv.URL}, Staged: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := b.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		sink := &realtimeEventSink{events: make(chan struct{}, 1)}
+		session, err := b.connect(t.Context(), "staged", sink)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Close the session after its workers finish, then prove its reservation
+		// can be reused. Cleanup owns that one close even on a failed assertion.
+		t.Cleanup(func() {
+			if session != nil {
+				if err := session.close(); err != nil {
+					t.Error(err)
+				}
+			}
+		})
+		if err := session.acceptClientMessage(t.Context(), []byte(`{"kind":"session.setup","voice":{"language":"en"},"tools":[{"name":"lookup","description":"Look up the answer","parameters":{"type":"object","properties":{}}}]}`)); err != nil {
+			t.Fatal(err)
+		}
+		if err := session.acceptMicPCM(t.Context(), loudPCM(200)); err != nil {
+			t.Fatal(err)
+		}
+		if err := session.acceptMicPCM(t.Context(), silencePCM(vadSilenceHangoverMS+vadFrameMS)); err != nil {
+			t.Fatal(err)
+		}
+		sink.waitForKind(t, voicev2.MessageKindToolCall, 1)
+		if sink.pcmLen() != 0 {
+			t.Fatal("synthesized before host tool completion")
+		}
+		if err := session.acceptClientMessage(t.Context(), []byte(`{"kind":"tool.result","id":"lookup-1","name":"lookup","result":{"answer":42}}`)); err != nil {
+			t.Fatal(err)
+		}
+		sink.waitForKind(t, voicev2.MessageKindSpeechEnded, 1)
+		for range 2 {
+			req := <-requests
+			if len(req.Tools) != 1 || req.Tools[0].Function.Name != "lookup" || len(req.Messages) < 3 {
+				t.Fatalf("staged tool/history contract: %+v", req)
+			}
+			last := req.Messages[len(req.Messages)-1]
+			if last.Role != "assistant" || len(last.Content) != 1 || last.Content[0].Text != "<think>" {
+				t.Fatalf("missing staged thinking prefill: %+v", last)
+			}
+			found := false
+			for _, msg := range req.Messages {
+				for _, content := range msg.Content {
+					if content.Type == "input_audio" && content.InputAudio.Format == "wav" && bytes.HasPrefix(content.InputAudio.Data, []byte("RIFF")) {
+						found = true
+					}
+				}
+			}
+			if !found {
+				t.Fatal("staged model lost microphone audio history")
+			}
+		}
+		tts := <-speech
+		if tts.Input != "The answer is ready." || !tts.Stream || sink.pcmLen() != 2 || sink.reasoningText() != "" {
+			t.Fatalf("staged synthesis leaked reasoning or lost audio: %+v", tts)
+		}
+		sink.mu.Lock()
+		messages := append([][]byte(nil), sink.msgs...)
+		sink.mu.Unlock()
+		for _, data := range messages {
+			var msg voicev2.TranscriptDelta
+			if err := json.Unmarshal(data, &msg); err != nil {
+				t.Fatal(err)
+			}
+			if msg.Kind == voicev2.MessageKindTranscriptDraft || (msg.Kind == voicev2.MessageKindTranscriptDelta && msg.Speaker == voicev2.SpeakerUser) {
+				t.Fatal("staged audio was routed through independent recognition")
+			}
+		}
+		previous := session
+		session = nil
+		if err := previous.close(); err != nil {
+			t.Fatal(err)
+		}
+		next, err := b.connect(t.Context(), "next", &realtimeEventSink{events: make(chan struct{}, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := next.close(); err != nil {
+				t.Error(err)
+			}
+		})
+	})
 	t.Run("connect", func(t *testing.T) {
 		b := &llamaRealtimeBackend{slots: make(chan struct{}, 1)}
 		s, err := b.connect(t.Context(), "one", &realtimeEventSink{events: make(chan struct{}, 1)})

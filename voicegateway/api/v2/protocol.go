@@ -28,6 +28,8 @@ const (
 	MessageKindSessionUsage MessageKind = "session.usage"
 	// MessageKindTranscriptDelta streams transcript text.
 	MessageKindTranscriptDelta MessageKind = "transcript.delta"
+	// MessageKindTranscriptDraft replaces provisional user text, without committing it.
+	MessageKindTranscriptDraft MessageKind = "transcript.draft"
 	// MessageKindAssistantTextDelta streams assistant text.
 	MessageKindAssistantTextDelta MessageKind = "assistant.text.delta"
 	// MessageKindReasoningDelta streams provider reasoning text.
@@ -96,6 +98,24 @@ type VoiceConfig struct {
 	Language string `json:"language"`
 }
 
+// SpeechLocation identifies which side owns a speech stage.
+type SpeechLocation string
+
+const (
+	// SpeechLocationClient uses the client's speech facilities.
+	SpeechLocationClient SpeechLocation = "client"
+	// SpeechLocationGateway uses the gateway's configured speech model.
+	SpeechLocationGateway SpeechLocation = "gateway"
+)
+
+// SpeechConfig selects recognition and synthesis independently. Empty fields use
+// transport defaults: WebRTC uses each configured gateway stage; text uses client
+// speech. Explicit unsupported selections fail before model initialization.
+type SpeechConfig struct {
+	Input  SpeechLocation `json:"input,omitempty"`
+	Output SpeechLocation `json:"output,omitempty"`
+}
+
 // SessionSetup is the client message that initializes a voice session.
 type SessionSetup struct {
 	// Kind must be "session.setup".
@@ -109,6 +129,16 @@ type SessionSetup struct {
 	// IncludeReasoning requests optional provider reasoning output for this session.
 	// It does not enable thinking or change reasoning effort.
 	IncludeReasoning bool `json:"includeReasoning,omitempty"`
+	// Speech selects the owner of recognition and synthesis for this session.
+	Speech *SpeechConfig `json:"speech,omitempty"`
+	// RecognitionModelID selects a recognitionModels entry for a composable LLM.
+	// Omitted uses the first available entry when input is gateway-owned.
+	// It must be omitted for client-owned recognition and indivisible choices.
+	RecognitionModelID string `json:"recognitionModelID,omitempty"`
+	// SynthesisModelID selects a synthesisModels entry for a composable LLM.
+	// Omitted uses the first available entry when output is gateway-owned.
+	// It must be omitted for client-owned synthesis and indivisible choices.
+	SynthesisModelID string `json:"synthesisModelID,omitempty"`
 }
 
 // SessionClose is a client message that closes the voice session.
@@ -262,6 +292,17 @@ type TranscriptDelta struct {
 	// text and its usage share this value; user text and uncorrelated providers
 	// omit it. Separate response IDs must not be merged into one transcript entry.
 	ResponseID string `json:"responseID,omitempty"`
+	// DraftID atomically replaces the matching user draft when this text commits.
+	DraftID string `json:"draft_id,omitempty"`
+}
+
+// TranscriptDraft is an ephemeral full-text user hypothesis for one microphone
+// utterance. Revisions replace text for ID. Empty Text clears only that ID.
+// Drafts never enter conversation history, activity logs, or recovery context.
+type TranscriptDraft struct {
+	Kind MessageKind `json:"kind"`
+	ID   string      `json:"id"`
+	Text string      `json:"text"`
 }
 
 // AssistantTextDelta is a gateway message that streams assistant text.

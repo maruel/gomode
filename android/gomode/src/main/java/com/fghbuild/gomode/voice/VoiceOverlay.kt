@@ -172,7 +172,9 @@ fun VoicePanel(
 ) {
     val contentInset =
         if (LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT) 8.dp else 24.dp
-    val showUsage = voiceState.connected || voiceState.usage != null || voiceState.transcript.isNotEmpty()
+    val showUsage =
+        voiceState.connected || voiceState.usage != null ||
+            (voiceState.transcript.isNotEmpty() || voiceState.transcriptDraft != null)
     val appControls: @Composable () -> Unit = {
         AppControls(onOpenSettings, onCycleApp, canCycleApps)
     }
@@ -240,7 +242,9 @@ fun VoicePanel(
                     ConnectingStatus(voiceState.connectStatus, contentInset)
                 }
             }
-            if (voiceState.connected || voiceState.transcript.isNotEmpty() || voiceState.toolHistory.isNotEmpty()) {
+            if (voiceState.connected || (voiceState.transcript.isNotEmpty() || voiceState.transcriptDraft != null) ||
+                voiceState.toolHistory.isNotEmpty()
+            ) {
                 ConversationPanel(voiceState, showUsageStats, contentInset)
             }
             if (showUsage && showUsageStats) {
@@ -637,7 +641,7 @@ private fun ConversationPanel(
     }
     LaunchedEffect(transcriptExpanded) {
         if (focusAfterToggle) {
-            if (voiceState.transcript.isNotEmpty()) {
+            if ((voiceState.transcript.isNotEmpty() || voiceState.transcriptDraft != null)) {
                 if (transcriptExpanded) logFocus.requestFocus() else transcriptFocus.requestFocus()
             }
             focusAfterToggle = false
@@ -678,14 +682,14 @@ private fun ConversationPanel(
             if (voiceState.toolHistory.isNotEmpty()) {
                 ToolHistory(voiceState.toolHistory, voiceState.activeTool, Modifier.weight(1f))
             }
-            if (voiceState.transcript.isNotEmpty() &&
+            if ((voiceState.transcript.isNotEmpty() || voiceState.transcriptDraft != null) &&
                 !transcriptExpanded
             ) {
                 transcriptToggle()
             }
         }
 
-        if (transcriptExpanded && voiceState.transcript.isNotEmpty()) {
+        if (transcriptExpanded && (voiceState.transcript.isNotEmpty() || voiceState.transcriptDraft != null)) {
             Box(
                 modifier =
                     Modifier
@@ -717,6 +721,7 @@ private fun ConversationPanel(
                             .focusable()
                             .testTag("gomode-voice-transcript"),
                     close = transcriptToggle,
+                    draft = voiceState.transcriptDraft,
                 )
             }
         }
@@ -820,10 +825,11 @@ internal fun TranscriptLog(
     modifier: Modifier = Modifier,
     showUsageStats: Boolean = false,
     close: (@Composable () -> Unit)? = null,
+    draft: com.caic.voicegateway.sdk.v2.TranscriptDraft? = null,
 ) {
     val listState = rememberLazyListState()
     val leading = if (close != null) minOf(4, entries.size) else 0
-    val endIndex = entries.size - leading + if (leading > 0) 1 else 0
+    val endIndex = entries.size - leading + (if (leading > 0) 1 else 0) + (if (draft != null) 1 else 0)
     var followingTail by remember { mutableStateOf(true) }
     val manualScroll =
         remember(listState) {
@@ -842,8 +848,8 @@ internal fun TranscriptLog(
             if (!scrolling && !forward) followingTail = true
         }
     }
-    LaunchedEffect(listState, endIndex, followingTail, entries.isEmpty()) {
-        if (followingTail && entries.isNotEmpty()) {
+    LaunchedEffect(listState, endIndex, followingTail, entries.isEmpty(), draft?.text) {
+        if (followingTail && (entries.isNotEmpty() || draft != null)) {
             snapshotFlow {
                 listState.layoutInfo.visibleItemsInfo
                     .lastOrNull()
@@ -854,7 +860,7 @@ internal fun TranscriptLog(
     LaunchedEffect(entries.isEmpty()) {
         if (entries.isEmpty()) followingTail = true
     }
-    if (entries.isNotEmpty()) {
+    if (entries.isNotEmpty() || draft != null) {
         LazyColumn(
             state = listState,
             modifier = modifier.heightIn(max = TranscriptHeight).nestedScroll(manualScroll),
@@ -864,6 +870,19 @@ internal fun TranscriptLog(
                 item { FloatingTranscriptStart(entries.take(leading), showUsageStats, close) }
             }
             itemsIndexed(entries.drop(leading)) { _, entry -> TranscriptRow(entry, showUsageStats, null) }
+            if (draft != null) {
+                item {
+                    Row(verticalAlignment = Alignment.Top) {
+                        Text(
+                            text = "You: ${draft.text}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f).testTag("gomode-voice-transcript-draft"),
+                        )
+                        if (entries.isEmpty() && close != null) close()
+                    }
+                }
+            }
             item { Spacer(Modifier.fillMaxWidth().height(1.dp).testTag("gomode-voice-transcript-end")) }
         }
     }

@@ -23,12 +23,12 @@ import (
 func TestSmokeCodexSubscriptionTextSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	t.Cleanup(cancel)
-	cfg, err := voicegateway.LoadConfig("../../contrib/config.toml")
+	cfg, err := loadSmokeConfig("../../contrib/config.toml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var selected []voicegateway.ChatConfig
-	for _, choice := range cfg.Chat {
+	var selected []voicegateway.LLMConfig
+	for _, choice := range cfg.LLM {
 		if choice.Provider == "openai" && choice.Auth == openairesponses.AuthCodex && choice.Model == "gpt-6-luna" {
 			selected = append(selected, choice)
 		}
@@ -36,16 +36,15 @@ func TestSmokeCodexSubscriptionTextSession(t *testing.T) {
 	if len(selected) != 1 {
 		t.Fatalf("contributed subscription Luna choices = %d, want 1", len(selected))
 	}
-	cfg.Realtime, cfg.LocalStack, cfg.Chat = nil, nil, selected
-	cfg.Server.WebRTCUDPPort = 0
-	if err := cfg.ValidateEmbedded(); err != nil {
+	cfg.Realtime, cfg.Pipelines, cfg.LLM = nil, nil, selected
+	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	cfg = cfg.Available(ctx)
-	if len(cfg.Chat) != 1 {
+	if len(cfg.LLM) != 1 {
 		t.Fatal("configured Codex subscription unavailable; a file-backed Codex login is required")
 	}
-	bridge, err := newBridgeWithTimeout(ctx, &cfg, t.TempDir(), 5*time.Millisecond)
+	bridge, err := newBridgeWithTimeout(ctx, &cfg, 0, t.TempDir(), 5*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,11 +143,11 @@ func TestSmokeCodexSubscriptionTextSession(t *testing.T) {
 // TestSmokeChatTokenUsage checks real provider counts on the transport shared by
 // browser and Android speech, independently of the provider's text fragments.
 func TestSmokeChatTokenUsage(t *testing.T) {
-	cfg, err := voicegateway.LoadConfig("../../contrib/config.toml")
+	cfg, err := loadSmokeConfig("../../contrib/config.toml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, choice := range cfg.Chat {
+	for _, choice := range cfg.LLM {
 		key := map[string]string{"openai": "OPENAI_API_KEY", "deepseek": "DEEPSEEK_API_KEY", "xiaomi": "XIAOMI_API_KEY"}[choice.Provider]
 		if choice.Auth != "" || key == "" || os.Getenv(key) == "" {
 			continue
@@ -156,10 +155,9 @@ func TestSmokeChatTokenUsage(t *testing.T) {
 		t.Run(choice.Provider, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 			t.Cleanup(cancel)
-			config := voicegateway.DefaultConfig()
-			config.Realtime, config.LocalStack, config.Chat = nil, nil, []voicegateway.ChatConfig{choice}
-			config.Server.WebRTCUDPPort = 0
-			bridge, err := newBridgeWithTimeout(ctx, &config, t.TempDir(), 5*time.Millisecond)
+			config := voicegateway.ResolvedConfig{}
+			config.Realtime, config.Pipelines, config.LLM = nil, nil, []voicegateway.LLMConfig{choice}
+			bridge, err := newBridgeWithTimeout(ctx, &config, 0, t.TempDir(), 5*time.Millisecond)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -201,4 +199,12 @@ func TestSmokeChatTokenUsage(t *testing.T) {
 			}
 		})
 	}
+}
+
+func loadSmokeConfig(path string) (voicegateway.ResolvedConfig, error) {
+	cfg, err := voicegateway.LoadConfig(path)
+	if err != nil {
+		return voicegateway.ResolvedConfig{}, err
+	}
+	return cfg.Resolve()
 }

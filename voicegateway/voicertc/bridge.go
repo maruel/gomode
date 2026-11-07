@@ -4,6 +4,7 @@
 package voicertc
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -106,26 +107,49 @@ type Bridge struct {
 //
 // Credentials use each provider's native environment variables or, for OpenAI
 // Codex authentication, the file-backed Codex login. Configured choices share
-// the UDP listener selected by cfg.Server.WebRTCUDPPort.
+// the UDP listener selected by udpPort (-1 disables WebRTC).
 //
 // Choice discovery and transport setup happen during construction. Managed local
 // model runtimes load on first use through the shared capacity and idle-eviction
 // pool. A construction failure closes all backends already initialized.
-func NewBridge(ctx context.Context, cfg *voicegateway.Config, activityLogDir string) (*Bridge, error) {
-	return newBridgeWithTimeout(ctx, cfg, activityLogDir, defaultUPnPSSDPTimeout)
+func NewBridge(ctx context.Context, cfg *voicegateway.ResolvedConfig, udpPort int, activityLogDir string) (*Bridge, error) {
+	return newBridgeWithTimeout(ctx, cfg, udpPort, activityLogDir, defaultUPnPSSDPTimeout)
 }
 
-func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, activityLogDir string, upnpSSDPTimeout time.Duration) (*Bridge, error) {
+func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.ResolvedConfig, udpPort int, activityLogDir string, upnpSSDPTimeout time.Duration) (*Bridge, error) {
+	listener := voicegateway.ServerConfig{WebRTCUDPPort: udpPort}
+	if err := listener.Validate(); err != nil {
+		return nil, err
+	}
 	if activityLogDir == "" {
 		return nil, errors.New("voice activity log directory is required")
 	}
-	if err := cfg.ValidateEmbedded(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	count := len(cfg.Realtime) + len(cfg.Chat) + len(cfg.LocalStack)
-	pool := newLocalStackPool(cfg.LocalStackRuntime)
+	count := len(cfg.Realtime) + len(cfg.LLM) + len(cfg.Pipelines)
+	pool := newLocalStackPool(cfg.Runtime)
+	pool.recognition, pool.synthesis = slices.Clone(cfg.Recognition), slices.Clone(cfg.Synthesis)
 	backends := make(map[string]backendConnector, count)
 	advertised := voicev2.VoiceChoicesResp{Choices: make([]voicev2.VoiceChoice, 0, count)}
+	for _, a := range cfg.Recognition {
+		id, err := a.ID()
+		if err != nil {
+			return nil, err
+		}
+		if !slices.ContainsFunc(advertised.RecognitionModels, func(m voicev2.SpeechModel) bool { return m.ID == id }) {
+			advertised.RecognitionModels = append(advertised.RecognitionModels, voicev2.SpeechModel{ID: id, Label: cmp.Or(a.Label, a.Model, string(a.Engine))})
+		}
+	}
+	for _, a := range cfg.Synthesis {
+		id, err := a.ID()
+		if err != nil {
+			return nil, err
+		}
+		if !slices.ContainsFunc(advertised.SynthesisModels, func(m voicev2.SpeechModel) bool { return m.ID == id }) {
+			advertised.SynthesisModels = append(advertised.SynthesisModels, voicev2.SpeechModel{ID: id, Label: cmp.Or(a.Label, a.Model, string(a.Engine))})
+		}
+	}
 	var defaultID string
 	cleanup := func() error {
 		errs := make([]error, 0, len(backends))
@@ -153,8 +177,18 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.Config, activit
 			defaultID = id
 		}
 	}
-	advertised.Defaults = voicev2.DefaultChoices(advertised.Choices, nil)
-	b, err := newBridgeWithBackendAndTimeout(ctx, backends[defaultID], cfg.Server.WebRTCUDPPort, activityLogDir, upnpSSDPTimeout)
+	// Existing audio choices keep their transport default when independently
+	// composable LLMs add WebRTC support. A composed LLM is the fallback when
+	// there is no eligible native model or fixed preset.
+	var preferred []voicev2.VoiceChoiceDefault
+	for _, ch := range advertised.Choices {
+		if !ch.Composable && slices.Contains(ch.Transports, voicev2.VoiceTransportWebRTC) {
+			preferred = []voicev2.VoiceChoiceDefault{{Transport: voicev2.VoiceTransportWebRTC, ID: ch.ID}}
+			break
+		}
+	}
+	advertised.Defaults = voicev2.DefaultChoices(advertised.Choices, preferred)
+	b, err := newBridgeWithBackendAndTimeout(ctx, backends[defaultID], udpPort, activityLogDir, upnpSSDPTimeout)
 	if err != nil {
 		return nil, errors.Join(err, cleanup())
 	}
@@ -229,7 +263,11 @@ func defaultBackendChoices(ctx context.Context, backend backendConnector) (voice
 }
 
 func backendChoice(ctx context.Context, backend backendConnector, id, label string) (voicev2.VoiceChoice, error) {
-	ch := voicev2.VoiceChoice{ID: id, Label: label, Transports: backendTransports(backend)}
+	ch := voicev2.VoiceChoice{ID: id, Label: label, Transports: backendTransports(backend), SpeechModes: []voicev2.SpeechConfig{gatewaySpeechConfig()}}
+	if local, ok := backend.(*localStackBackend); ok {
+		ch.SpeechModes = local.speechModes()
+		ch.Composable = local.composition != nil
+	}
 	if provider, ok := backend.(*realtimeBridgeBackend); ok {
 		voices, err := provider.voices(ctx)
 		if err != nil {
@@ -242,7 +280,7 @@ func backendChoice(ctx context.Context, backend backendConnector, id, label stri
 
 func backendTransports(backend backendConnector) []voicev2.VoiceTransport {
 	if local, ok := backend.(*localStackBackend); ok {
-		if local.lazy.cfg.(*voicegateway.LocalStackConfig).TextOnly {
+		if len(local.speechModes()) == 1 {
 			return []voicev2.VoiceTransport{voicev2.VoiceTransportText}
 		}
 		return []voicev2.VoiceTransport{voicev2.VoiceTransportText, voicev2.VoiceTransportWebRTC}
@@ -262,8 +300,11 @@ func (b *Bridge) VoiceChoices() voicev2.VoiceChoicesResp {
 	for i, ch := range b.choices.Choices {
 		ch.Transports = append([]voicev2.VoiceTransport(nil), ch.Transports...)
 		ch.Voices = append([]string(nil), ch.Voices...)
+		ch.SpeechModes = slices.Clone(ch.SpeechModes)
 		out.Choices[i] = ch
 	}
+	out.RecognitionModels = slices.Clone(b.choices.RecognitionModels)
+	out.SynthesisModels = slices.Clone(b.choices.SynthesisModels)
 	out.Defaults = slices.Clone(b.choices.Defaults)
 	return out
 }
@@ -813,13 +854,10 @@ type udpCandidate struct {
 // backendForConfig constructs one typed pipeline backend.
 func backendForConfig(cfg voicegateway.Choice, pool *localStackPool) (backendConnector, error) {
 	switch c := cfg.(type) {
-	case *voicegateway.LocalStackConfig:
+	case *voicegateway.PipelineConfig:
 		return pool.backend(*c), nil
-	case *voicegateway.ChatConfig:
-		return pool.backend(voicegateway.LocalStackConfig{
-			TextOnly: true,
-			LLM:      c.ModelConfig,
-		}), nil
+	case *voicegateway.LLMConfig:
+		return pool.llmBackend(c.ModelConfig), nil
 	case *voicegateway.RealtimeConfig:
 		resolved := c.WithDefaults()
 		if resolved.Provider == "llamacpp" {
