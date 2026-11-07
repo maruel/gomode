@@ -248,13 +248,13 @@ func TestMainImpl(t *testing.T) {
 	})
 	t.Run("frontend flags", func(t *testing.T) {
 		t.Parallel()
-		// Invalid frontend settings are dormant until the feature is enabled.
+		// The frontend flags do not interfere with config loading.
 		missing := filepath.Join(t.TempDir(), "missing.toml")
 		if err := mainImpl([]string{"-config", missing, "-frontend-http", "0.0.0.0:0"}); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("disabled frontend affected startup: %v", err)
 		}
-		if err := mainImpl([]string{"-config", missing, "-frontend", "-frontend-http", "0.0.0.0:0"}); err == nil || errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("public frontend bind was not rejected: %v", err)
+		if err := mainImpl([]string{"-config", missing, "-frontend", "-frontend-http", "0.0.0.0:0"}); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("remote frontend did not reach config loading: %v", err)
 		}
 	})
 }

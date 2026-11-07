@@ -1,11 +1,12 @@
-// Package gatewayfrontend serves the standalone, loopback-only voice test host.
+// Standalone voice test frontend with configurable remote access and same-origin checks.
+
+// Package gatewayfrontend serves the standalone voice test host.
 package gatewayfrontend
 
 import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -29,32 +30,19 @@ import (
 	"github.com/maruel/gomode/voicegateway"
 )
 
-// Listen opens a loopback listener. Remote access uses an SSH tunnel, never an
-// unauthenticated public bind. Resolve localhost to an explicit address so DNS
-// cannot change the listener's security boundary.
-func Listen(ctx context.Context, addr string) (net.Listener, error) {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, fmt.Errorf("frontend address: %w", err)
-	}
-	if host == "localhost" {
-		host = "127.0.0.1"
-	}
-	ip, err := netip.ParseAddr(host)
-	if err != nil || !ip.IsLoopback() {
-		return nil, errors.New("frontend must bind a loopback IP or localhost; use an SSH tunnel for remote access")
-	}
-	var lc net.ListenConfig
-	return lc.Listen(ctx, "tcp", net.JoinHostPort(host, port))
-}
-
-// NewHandler returns the local host's discovery, MCP, voice and asset routes.
-// The listener address is captured after binding, including an assigned port.
+// NewHandler returns the frontend's discovery, MCP, voice and asset routes.
+// Loopback listeners require local peers and authorities; other listeners allow
+// remote access. The address includes the actual port assigned by the listener.
 func NewHandler(addr net.Addr, bridge voicegateway.MediaBridge, text voicegateway.TextSessionServer) (http.Handler, error) {
-	_, port, err := net.SplitHostPort(addr.String())
+	host, port, err := net.SplitHostPort(addr.String())
 	if err != nil {
 		return nil, err
 	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return nil, fmt.Errorf("frontend listener IP: %w", err)
+	}
+	localOnly := ip.IsLoopback()
 	dist, err := fs.Sub(frontend.Files, "dist")
 	if err != nil {
 		return nil, err
@@ -81,23 +69,23 @@ func NewHandler(addr net.Addr, bridge voicegateway.MediaBridge, text voicegatewa
 	mux.Handle("GET /{$}", assets)
 	mux.Handle("GET /assets/", assets)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check both the network peer and authority. A loopback bind alone does
-		// not prevent DNS rebinding or cross-origin requests from a web page.
-		peer, _, err := net.SplitHostPort(r.RemoteAddr)
-		ip, parseErr := netip.ParseAddr(peer)
-		host, requestedPort, hostErr := net.SplitHostPort(r.Host)
-		hostIP, _ := netip.ParseAddr(host)
-		if err != nil || parseErr != nil || !ip.IsLoopback() || hostErr != nil || requestedPort != port || (host != "localhost" && !hostIP.IsLoopback()) {
-			http.Error(w, "local frontend access required", http.StatusForbidden)
-			return
+		if localOnly {
+			// Check peer and authority to prevent DNS rebinding on local listeners.
+			peer, _, err := net.SplitHostPort(r.RemoteAddr)
+			ip, parseErr := netip.ParseAddr(peer)
+			host, requestedPort, hostErr := net.SplitHostPort(r.Host)
+			hostIP, _ := netip.ParseAddr(host)
+			if err != nil || parseErr != nil || !ip.IsLoopback() || hostErr != nil || requestedPort != port || (host != "localhost" && !hostIP.IsLoopback()) {
+				http.Error(w, "local frontend access required", http.StatusForbidden)
+				return
+			}
 		}
-		origin := r.Header.Get("Origin")
-		if (origin != "" && origin != "http://"+r.Host) || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		// TLS may terminate at a reverse proxy. Require the same authority for
+		// either HTTP scheme without trusting forwarded headers.
+		if origin := r.Header.Get("Origin"); (origin != "" && origin != "http://"+r.Host && origin != "https://"+r.Host) || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 			http.Error(w, "same-origin frontend access required", http.StatusForbidden)
 			return
 		}
-		// The browser sends Origin for mutating requests and WebSocket upgrades.
-		// Non-browser local clients may omit it; they are already trusted peers.
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")

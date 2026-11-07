@@ -61,6 +61,21 @@ it("resolves embedded and externally authorized gateways from the selected tool 
   expect(resolveBrowserVoiceEndpoints(manifest(undefined), expected, origin)).toBeNull();
 });
 
+it("allows same-origin HTTP gateways on remote hosts while rejecting other HTTP authorities", () => {
+  for (const origin of ["http://192.0.2.1:3480", "http://voice.example:3480", "http://[2001:db8::1]:3480"]) {
+    for (const gateway of ["/", origin, `${origin}/`]) {
+      expect(resolveBrowserVoiceEndpoints(manifest(gateway), expected, origin)).toEqual({
+        gatewayURL: `${origin}/`,
+        mcpEndpoint: `${origin}/mcp`,
+        tokenEndpoint: null,
+      });
+    }
+    for (const gateway of ["http://other.example:3480", "http://192.0.2.1:3481"]) {
+      expect(() => resolveBrowserVoiceEndpoints(manifest(gateway, "/token"), expected, origin)).toThrow();
+    }
+  }
+});
+
 it("rejects malformed manifests, ambiguous groups, credential-bearing URLs and remote credential endpoints", () => {
   for (const value of [
     null,

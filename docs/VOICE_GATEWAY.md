@@ -94,16 +94,26 @@ Signaling should sit behind an HTTPS reverse proxy. WebRTC needs a reachable
 ICE/UDP path; the gateway attempts UPnP mapping, which does not replace TURN for
 UDP-blocking networks or double NAT.
 
-### Local test frontend
+### Test frontend
 
 Enable the standalone test page with `voice-gateway -frontend` and open
-<http://127.0.0.1:3480/>. It is disabled by default and restricted to loopback;
-`-frontend-http` selects another local address. For remote testing, forward that
-listener over SSH. The tunnel carries HTTP and browser-speech WebSocket traffic;
-WebRTC still needs its own reachable ICE/UDP path.
+<http://127.0.0.1:3480/>. It is disabled by default. To allow remote access, set the listen
+address:
+
+```sh
+voice-gateway -frontend -frontend-http 0.0.0.0:3480
+```
+
+Open `http://<server-address>:3480/` from another device. Browser microphone
+access requires a secure context, so use an HTTPS reverse proxy for remote voice,
+preserving `Host` and forwarding WebSocket upgrades. Loopback listen addresses
+remain restricted to local peers and hosts. SSH forwarding also works with the
+default configuration. WebRTC still needs its own reachable ICE/UDP path.
 
 The page exposes the production voice controls, transcript, errors, and test
-tools. Its listener provides local access without host tokens; the separate
+tools. Its listener provides access without host tokens, including when remote
+access is enabled: anyone able to reach it can use the voice backends. Restrict
+access through your network or an authenticating reverse proxy. The separate
 signaling listener retains host authorization. `make frontend-build` refreshes
 embedded assets after frontend changes; the binary needs no Node process.
 

@@ -41,7 +41,7 @@ func mainImpl(args []string) (err error) {
 	addr := flags.String("http", envDefault("VOICE_GATEWAY_HTTP", ""), "HTTP listen address for signaling")
 	udpPort := flags.String("udp-port", envDefault("VOICE_GATEWAY_WEBRTC_UDP_PORT", ""), "UDP port for WebRTC ICE")
 	frontend := flags.Bool("frontend", false, "serve the standalone live-test frontend")
-	frontendAddr := flags.String("frontend-http", "127.0.0.1:3480", "loopback HTTP address for the frontend (requires -frontend)")
+	frontendAddr := flags.String("frontend-http", "127.0.0.1:3480", "HTTP listen address for the frontend (requires -frontend)")
 	logLevel := flags.String("log-level", envDefault("VOICE_GATEWAY_LOG_LEVEL", "info"), "log level (debug, info, warn, error)")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -49,9 +49,10 @@ func mainImpl(args []string) (err error) {
 
 	log := initLogging(*logLevel)
 
+	var lc net.ListenConfig
 	var frontendListener net.Listener
 	if *frontend {
-		frontendListener, err = gatewayfrontend.Listen(ctx, *frontendAddr)
+		frontendListener, err = lc.Listen(ctx, "tcp", *frontendAddr)
 		if err != nil {
 			return err
 		}
@@ -119,7 +120,6 @@ func mainImpl(args []string) (err error) {
 		ReadHeaderTimeout: 10 * time.Second,
 	}}
 	listeners := []net.Listener{}
-	var lc net.ListenConfig
 	apiListener, err := lc.Listen(ctx, "tcp", cfg.Server.HTTP)
 	if err != nil {
 		return err
@@ -131,13 +131,13 @@ func mainImpl(args []string) (err error) {
 	}()
 	listeners = append(listeners, apiListener)
 	if frontendListener != nil {
-		local, err := gatewayfrontend.NewHandler(frontendListener.Addr(), bridge, bridge)
+		frontendHandler, err := gatewayfrontend.NewHandler(frontendListener.Addr(), bridge, bridge)
 		if err != nil {
 			return err
 		}
 		servers = append(servers, &http.Server{
 			Addr:              frontendListener.Addr().String(),
-			Handler:           httplog.Handler{Handler: local, Logger: log},
+			Handler:           httplog.Handler{Handler: frontendHandler, Logger: log},
 			ReadHeaderTimeout: 10 * time.Second,
 		})
 		listeners = append(listeners, frontendListener)

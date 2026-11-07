@@ -17,7 +17,7 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-/** A gateway is a secure origin; HTTP loopback is allowed for local development. */
+/** Gateways use HTTPS, same-origin HTTP, or HTTP loopback for local development. */
 export function voiceGatewayOrigin(value: string, origin: string): string {
   if (value !== "/" && !/^https?:\/\/[^/?#@\\]+\/?$/.test(value)) {
     throw new Error("Voice gateway must be a secure origin");
@@ -27,7 +27,7 @@ export function voiceGatewayOrigin(value: string, origin: string): string {
   const loopback =
     url.hostname === "localhost" || url.hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(url.hostname);
   if (
-    (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) ||
+    (url.protocol !== "https:" && !(url.protocol === "http:" && (loopback || url.origin === origin))) ||
     url.username ||
     url.password ||
     url.pathname !== "/" ||

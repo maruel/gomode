@@ -1,4 +1,5 @@
-// Tests local access, real MCP tool dispatch, embedded assets, and isolated voice authorization.
+// Tests local and remote access, real MCP tool dispatch, embedded assets, and isolated voice authorization.
+
 package gatewayfrontend
 
 import (
@@ -16,38 +17,6 @@ import (
 	"github.com/maruel/gomode/mcp"
 	"github.com/maruel/gomode/voicegateway"
 )
-
-func TestListen(t *testing.T) {
-	t.Parallel()
-	t.Run("valid", func(t *testing.T) {
-		for _, addr := range []string{"127.0.0.1:0", "localhost:0", "[::1]:0"} {
-			ln, err := Listen(t.Context(), addr)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := ln.Close(); err != nil {
-				t.Fatal(err)
-			}
-		}
-	})
-	t.Run("error", func(t *testing.T) {
-		for _, addr := range []string{":3480", "0.0.0.0:3480", "[::]:3480", "192.168.1.1:3480", "example.com:3480", "127.0.0.1:invalid", "bad"} {
-			if ln, err := Listen(t.Context(), addr); err == nil {
-				_ = ln.Close()
-				t.Fatalf("accepted %q", addr)
-			}
-		}
-		ln, err := Listen(t.Context(), "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = ln.Close() })
-		if other, err := Listen(t.Context(), ln.Addr().String()); err == nil {
-			_ = other.Close()
-			t.Fatal("accepted occupied port")
-		}
-	})
-}
 
 func TestNewHandler(t *testing.T) {
 	t.Parallel()
@@ -239,6 +208,65 @@ func TestNewHandler(t *testing.T) {
 			t.Fatalf("unauthenticated API status=%d", w.Code)
 		}
 	})
+}
+
+func TestRemoteFrontend(t *testing.T) {
+	t.Parallel()
+	for _, origin := range []string{"http://192.0.2.1:3480", "https://voice.example.com", "https://[2001:db8::1]:8443"} {
+		t.Run(origin, func(t *testing.T) {
+			var lc net.ListenConfig
+			ln, err := lc.Listen(t.Context(), "tcp", "0.0.0.0:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = ln.Close() })
+			h, err := NewHandler(ln.Addr(), nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, target := range []string{"/", "/.well-known/gomode.json", "/api/voicegateway/v2/voice/choices"} {
+				r := httptest.NewRequest("GET", origin+target, nil)
+				r.RemoteAddr = "192.0.2.2:12345"
+				r.Header.Set("Origin", origin)
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, r)
+				if w.Code != http.StatusOK {
+					t.Fatalf("%s status=%d body=%s", target, w.Code, w.Body)
+				}
+			}
+			for _, tc := range []struct{ name, host, requestOrigin, site string }{
+				{name: "host differs from origin", host: "attacker.example", requestOrigin: origin},
+				{name: "wrong origin", requestOrigin: "https://attacker.example"},
+				{name: "null origin", requestOrigin: "null"},
+				{name: "wrong scheme", requestOrigin: "ftp://" + strings.SplitN(origin, "://", 2)[1]},
+				{name: "cross site", site: "cross-site"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					r := httptest.NewRequest("GET", origin+"/", nil)
+					r.RemoteAddr = "192.0.2.2:12345"
+					if tc.host != "" {
+						r.Host = tc.host
+					}
+					r.Header.Set("Origin", tc.requestOrigin)
+					r.Header.Set("Sec-Fetch-Site", tc.site)
+					r.Header.Set("X-Forwarded-Host", r.Host)
+					w := httptest.NewRecorder()
+					h.ServeHTTP(w, r)
+					if w.Code != http.StatusForbidden {
+						t.Fatalf("status=%d", w.Code)
+					}
+				})
+			}
+			// Navigation and non-browser clients may omit Origin.
+			r := httptest.NewRequest("GET", origin+"/", nil)
+			r.RemoteAddr = "192.0.2.2:12345"
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != http.StatusOK {
+				t.Fatalf("navigation status=%d", w.Code)
+			}
+		})
+	}
 }
 
 func TestRegistry(t *testing.T) {
