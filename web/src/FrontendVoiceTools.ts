@@ -1,4 +1,4 @@
-// Owns authenticated frontend preparation, replaceable product scopes, and scoped voice-tool dispatch.
+// Owns authenticated frontend preparation, product scopes, and conversation-bound voice-tool dispatch.
 //
 // Bridge-3 wire contract, as enforced here:
 // 1. Capture window.goModeFrontendDocument, gomodeAuth, and
@@ -11,15 +11,18 @@
 // 4. gomodeFrontendReadiness receives {document, token, scope, ready, tools};
 //    tools is the complete declaration array, including [].
 // Native dispatch calls window.dispatchGoModeVoiceTool({document, token, scope,
-// invocation, name, args}) and cancelGoModeVoiceTool with the same fields;
+// invocation, sessionID, name, args}) and cancelGoModeVoiceTool with the same fields;
 // completion posts {document, token, scope, invocation, result} to
 // gomodeFrontendToolResult. This module ignores another document, identity,
-// registration, or a duplicate invocation.
+// registration, or a duplicate invocation. Legacy bridge-3 invocations may omit
+// sessionID; their host context receives null and must not publish conversation focus.
 
 import { createSignal, untrack, type Accessor } from "solid-js";
 import type { ToolDeclaration } from "../../sdk/voicegateway/ts/v2/types.gen";
 
 export interface FrontendVoiceToolContext {
+  /** MCP openai/session identity; null for legacy native invocations that omit it. */
+  readonly sessionID: string | null;
   signal: AbortSignal;
   /** Check after awaited work, immediately before committing a host action. */
   isCurrent(): boolean;
@@ -35,7 +38,12 @@ export interface FrontendVoiceTool {
 
 export interface FrontendVoiceToolsSnapshot {
   declarations: ToolDeclaration[];
-  execute(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>>;
+  execute(
+    name: string,
+    args: Record<string, unknown>,
+    sessionID: string,
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>>;
 }
 
 export interface FrontendPreparationScope {
@@ -74,6 +82,7 @@ interface NativeInvocation {
   token: string;
   scope: string;
   invocation: string;
+  sessionID?: string;
 }
 
 interface NativeToolInvocation extends NativeInvocation {
@@ -149,7 +158,7 @@ export function createFrontendPreparationClient(): {
           let released = disposed;
           let registration = String(++nextRegistration);
           let lifetime = new AbortController();
-          const pending = new Map<string, AbortController>();
+          const pending = new Map<string, { controller: AbortController; sessionID: string | null }>();
           const invalidate = () => {
             lifetime.abort();
             lifetime = new AbortController();
@@ -159,29 +168,45 @@ export function createFrontendPreparationClient(): {
             untrack(
               () =>
                 activeScope === current &&
+                (request.sessionID === undefined || validSessionID(request.sessionID)) &&
                 ready() &&
                 request.document === document &&
                 request.token === token &&
                 request.scope === registration,
             );
 
+          const captureExecution = () => {
+            const captured = tools;
+            const capturedRegistration = registration;
+            const capturedLifetime = lifetime.signal;
+            return (name: string, args: Record<string, unknown>, sessionID: string | null, signal?: AbortSignal) => {
+              const isCurrent = () => activeScope === current && ready() && capturedRegistration === registration;
+              const tool = isCurrent() ? captured?.get(name) : null;
+              return tool
+                ? runTool(tool, args, sessionID, [capturedLifetime, signal], isCurrent)
+                : Promise.resolve(unavailableTool(name));
+            };
+          };
           const dispatch = (request: NativeToolInvocation) => {
             if (!owns(request) || pending.has(request.invocation)) return;
             const controller = new AbortController();
-            pending.set(request.invocation, controller);
-            void current
-              .snapshot()
-              .execute(request.name, request.args, controller.signal)
-              .then((result) => {
-                if (pending.get(request.invocation) !== controller) return;
+            const invocation = { controller, sessionID: request.sessionID ?? null };
+            pending.set(request.invocation, invocation);
+            // Only omitted legacy native wire IDs may reach the nullable internal runner.
+            void captureExecution()(request.name, request.args, request.sessionID ?? null, controller.signal).then(
+              (result) => {
+                if (pending.get(request.invocation) !== invocation) return;
                 pending.delete(request.invocation);
                 if (owns(request))
                   resultBridge?.postMessage(JSON.stringify({ ...request, name: undefined, args: undefined, result }));
-              });
+              },
+            );
           };
           const cancel = (request: NativeInvocation) => {
             if (!owns(request)) return;
-            pending.get(request.invocation)?.abort();
+            const invocation = pending.get(request.invocation);
+            if (!invocation || (request.sessionID !== undefined && invocation.sessionID !== request.sessionID)) return;
+            invocation.controller.abort();
             pending.delete(request.invocation);
           };
           const update = () => {
@@ -211,17 +236,14 @@ export function createFrontendPreparationClient(): {
             },
             snapshot() {
               const captured = tools;
-              const capturedRegistration = registration;
-              const capturedLifetime = lifetime.signal;
+              const execute = captureExecution();
               return {
                 declarations:
                   ready() && captured !== null ? Array.from(captured.values(), (tool) => tool.declaration) : [],
-                execute(name, args, signal) {
-                  const isCurrent = () => activeScope === current && ready() && capturedRegistration === registration;
-                  const tool = isCurrent() ? captured?.get(name) : null;
-                  return tool
-                    ? runTool(tool, args, [capturedLifetime, signal], isCurrent)
-                    : Promise.resolve(unavailableTool(name));
+                execute(name, args, sessionID, signal) {
+                  if (!validSessionID(sessionID))
+                    return Promise.resolve({ error: "Voice conversation is unavailable." });
+                  return execute(name, args, sessionID, signal);
                 },
               };
             },
@@ -229,7 +251,7 @@ export function createFrontendPreparationClient(): {
               if (released) return;
               released = true;
               invalidate();
-              pending.forEach((controller) => controller.abort());
+              pending.forEach(({ controller }) => controller.abort());
               pending.clear();
               setReady(false);
               if (scope === current) scope = null;
@@ -286,14 +308,16 @@ export function captureFrontendVoiceTools(): FrontendVoiceToolsSnapshot {
 export function executeFrontendVoiceTool(
   name: string,
   args: Record<string, unknown>,
+  sessionID: string,
 ): Promise<Record<string, unknown>> {
-  return captureFrontendVoiceTools().execute(name, args);
+  return captureFrontendVoiceTools().execute(name, args, sessionID);
 }
 
 // The runner owns bounded completion; host actions cooperate by checking context after awaits.
 function runTool(
   tool: FrontendVoiceTool,
   args: Record<string, unknown>,
+  sessionID: string | null,
   signals: (AbortSignal | undefined)[],
   owns: () => boolean,
 ): Promise<Record<string, unknown>> {
@@ -322,7 +346,7 @@ function runTool(
       return;
     }
     try {
-      void Promise.resolve(tool.execute(args, { signal: controller.signal, isCurrent }))
+      void Promise.resolve(tool.execute(args, { sessionID, signal: controller.signal, isCurrent }))
         .then((value) => {
           if (!isCurrent()) {
             cancel();
@@ -342,4 +366,8 @@ function runTool(
       finish({ error: error instanceof Error ? error.message : "Frontend voice tool failed." });
     }
   });
+}
+
+function validSessionID(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "" && value.length <= 256;
 }

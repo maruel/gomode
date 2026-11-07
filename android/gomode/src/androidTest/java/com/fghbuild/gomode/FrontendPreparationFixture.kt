@@ -24,7 +24,7 @@ internal val frontendPreparationFixtureScript =
       let document = null, token = null, request = 0, scopeID = 0, ready = true, tools = [];
       window.dispatchGoModeVoiceTool = call => {
         if (call.document !== document || call.token !== token || call.scope !== String(scopeID)) return;
-        Promise.resolve().then(() => window.executeGoModeVoiceTool(call.name,call.args)).then(result =>
+        Promise.resolve().then(() => window.executeGoModeVoiceTool(call.name,call.args,{sessionID:call.sessionID})).then(result =>
           gomodeFrontendToolResult.postMessage(JSON.stringify({...call,result})));
       };
       window.cancelGoModeVoiceTool = () => {};

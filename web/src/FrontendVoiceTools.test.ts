@@ -1,4 +1,4 @@
-// Tests explicit tool/data preparation, authenticated ownership, and dispatch isolation across scope replacement.
+// Tests frontend preparation, authenticated scopes, per-invocation sessions, and dispatch retirement.
 
 import { afterEach, beforeEach, it } from "node:test";
 import { expect, vi } from "../tests/expect";
@@ -8,6 +8,7 @@ import {
   createFrontendPreparationClient,
   executeFrontendVoiceTool,
   type FrontendPreparation,
+  type FrontendVoiceToolContext,
 } from "./FrontendVoiceTools";
 
 let owner: FrontendPreparation | null = null;
@@ -99,7 +100,7 @@ it("replaces workspace scopes without reauthenticating and cannot dispatch a rep
   await Promise.resolve();
   acknowledge(requests[0]!, "identity");
   const conversation = captureFrontendVoiceTools();
-  expect(await conversation.execute("select_item", {})).toEqual({ selected: true });
+  expect(await conversation.execute("select_item", {}, "conversation")).toEqual({ selected: true });
   const replacement = identity.createScope();
   expect(requests).toHaveLength(1);
   expect(readiness.at(-1)).toMatchObject({ token: "identity", ready: false, tools: [] });
@@ -109,12 +110,12 @@ it("replaces workspace scopes without reauthenticating and cannot dispatch a rep
   first.setTools([tool]);
   first.dispose();
   expect(replacement.ready()).toBe(true);
-  expect(await conversation.execute("select_item", {})).toHaveProperty("error");
+  expect(await conversation.execute("select_item", {}, "conversation")).toHaveProperty("error");
   expect(execute).toHaveBeenCalledOnce();
-  expect(await executeFrontendVoiceTool("select_item", {})).toEqual({ selected: true });
+  expect(await executeFrontendVoiceTool("select_item", {}, "conversation")).toEqual({ selected: true });
   replacement.setDataReady(false);
   expect(captureFrontendVoiceTools().declarations).toEqual([]);
-  expect(await executeFrontendVoiceTool("select_item", {})).toHaveProperty("error");
+  expect(await executeFrontendVoiceTool("select_item", {}, "conversation")).toHaveProperty("error");
 });
 
 it("keeps all dispatch blocked while incomplete, handles tool errors, and rejects reserved/duplicate registrations", async () => {
@@ -123,10 +124,10 @@ it("keeps all dispatch blocked while incomplete, handles tool errors, and reject
     throw new Error("Missing item");
   });
   scope.setTools([{ ...tool, execute }]);
-  expect(await executeFrontendVoiceTool("select_item", {})).toHaveProperty("error");
+  expect(await executeFrontendVoiceTool("select_item", {}, "conversation")).toHaveProperty("error");
   expect(execute).not.toHaveBeenCalled();
   scope.setDataReady(true);
-  expect(await executeFrontendVoiceTool("select_item", {})).toEqual({ error: "Missing item" });
+  expect(await executeFrontendVoiceTool("select_item", {}, "conversation")).toEqual({ error: "Missing item" });
   expect(() => scope.setTools([tool, tool])).toThrow(/reserved/);
   expect(() => scope.setTools([{ ...tool, declaration: { ...tool.declaration, name: "hang_up" } }])).toThrow(
     /reserved/,
@@ -206,7 +207,7 @@ it("never grants local readiness for a signed-out identity", async () => {
   scope.setTools([tool]);
   scope.setDataReady(true);
   expect(scope.ready()).toBe(false);
-  expect(await executeFrontendVoiceTool("select_item", {})).toHaveProperty("error");
+  expect(await executeFrontendVoiceTool("select_item", {}, "conversation")).toHaveProperty("error");
 });
 
 it("awaits a Promise and cancels its captured registration before post-await effects", async () => {
@@ -228,7 +229,7 @@ it("awaits a Promise and cancels its captured registration before post-await eff
     },
   ]);
   scope.setDataReady(true);
-  const pending = captureFrontendVoiceTools().execute("select_item", {});
+  const pending = captureFrontendVoiceTools().execute("select_item", {}, "conversation");
   scope.setTools([tool]);
   gate.resolve();
   expect(await pending).toHaveProperty("error");
@@ -243,7 +244,7 @@ it("correlates concurrent native Promises and rejects queued registrations befor
   const identity = authenticate();
   const scope = identity.createScope();
   const gates = [deferred<void>(), deferred<void>()];
-  const execute = vi.fn(async (args: Record<string, unknown>) => {
+  const execute = vi.fn(async (args: Record<string, unknown>, _context: FrontendVoiceToolContext) => {
     await gates[Number(args.index)]!.promise;
     return { index: args.index };
   });
@@ -257,14 +258,19 @@ it("correlates concurrent native Promises and rejects queued registrations befor
     token: "identity",
     scope: String(binding.scope),
     invocation,
+    sessionID: `conversation-${index}`,
     name: "select_item",
     args: { index },
   });
   window.dispatchGoModeVoiceTool!(call("first", 0));
   window.dispatchGoModeVoiceTool!(call("second", 1));
+  window.cancelGoModeVoiceTool!({ ...call("first", 0), sessionID: "conversation-1" });
+  expect(execute.mock.calls[0]?.[1].signal.aborted).toBe(false);
   gates[1]!.resolve();
   await vi.waitFor(() => expect(responses).toHaveLength(1));
-  expect(responses[0]).toMatchObject({ invocation: "second", result: { index: 1 } });
+  expect(responses[0]).toMatchObject({ invocation: "second", sessionID: "conversation-1", result: { index: 1 } });
+  expect(execute.mock.calls[0]?.[1]).toMatchObject({ sessionID: "conversation-0" });
+  expect(execute.mock.calls[1]?.[1]).toMatchObject({ sessionID: "conversation-1" });
   window.cancelGoModeVoiceTool!(call("first", 0));
   gates[0]!.resolve();
   await Promise.resolve();
@@ -300,7 +306,7 @@ it("times out cooperative async work and rejects non-object results and rejected
       },
     ]);
     scope.setDataReady(true);
-    const pending = captureFrontendVoiceTools().execute("select_item", {});
+    const pending = captureFrontendVoiceTools().execute("select_item", {}, "conversation");
     await vi.advanceTimersByTimeAsync(5_000);
     expect(await pending).toEqual({ error: "Frontend voice tool timed out." });
     expect(aborted).toBe(true);
@@ -313,9 +319,9 @@ it("times out cooperative async work and rejects non-object results and rejected
         },
       },
     ]);
-    expect(await captureFrontendVoiceTools().execute("select_item", {})).toEqual({ error: "Rejected" });
+    expect(await captureFrontendVoiceTools().execute("select_item", {}, "conversation")).toEqual({ error: "Rejected" });
     scope.setTools([{ ...tool, execute: () => [] as unknown as Record<string, unknown> }]);
-    expect(await captureFrontendVoiceTools().execute("select_item", {})).toEqual({
+    expect(await captureFrontendVoiceTools().execute("select_item", {}, "conversation")).toEqual({
       error: "Frontend voice tool returned an invalid result.",
     });
   } finally {
@@ -341,7 +347,7 @@ it("caller cancellation and data revocation retire work without reauthorizing ol
     scope.setDataReady(true);
     const snapshot = captureFrontendVoiceTools();
     const caller = new AbortController();
-    const pending = snapshot.execute("select_item", {}, caller.signal);
+    const pending = snapshot.execute("select_item", {}, "conversation", caller.signal);
     if (revoke === "caller") caller.abort();
     if (revoke === "data") {
       scope.setDataReady(false);
@@ -353,7 +359,7 @@ it("caller cancellation and data revocation retire work without reauthorizing ol
     gate.resolve();
     await Promise.resolve();
     expect(current).toBe(false);
-    if (revoke !== "caller") expect(await snapshot.execute("select_item", {})).toHaveProperty("error");
+    if (revoke !== "caller") expect(await snapshot.execute("select_item", {}, "conversation")).toHaveProperty("error");
   }
 });
 
@@ -371,7 +377,68 @@ it("closes invocation liveness after successful completion without aborting unre
     },
   ]);
   scope.setDataReady(true);
-  expect(await captureFrontendVoiceTools().execute("select_item", {})).toEqual({ done: true });
+  expect(await captureFrontendVoiceTools().execute("select_item", {}, "conversation")).toEqual({ done: true });
   expect(isCurrent()).toBe(false);
   expect(scope.ready()).toBe(true);
+});
+
+it("keeps conversation identity per invocation and rejects missing IDs before host actions", async () => {
+  const scope = authenticate().createScope();
+  const execute = vi.fn((_args: Record<string, unknown>, context: FrontendVoiceToolContext) => ({
+    sessionID: context.sessionID,
+  }));
+  scope.setTools([{ ...tool, execute }]);
+  scope.setDataReady(true);
+  const snapshot = captureFrontendVoiceTools();
+  expect(await snapshot.execute("select_item", {}, "first-conversation")).toEqual({ sessionID: "first-conversation" });
+  expect(await snapshot.execute("select_item", {}, "second-conversation")).toEqual({
+    sessionID: "second-conversation",
+  });
+  for (const sessionID of [undefined, null, "", " ", "x".repeat(257)]) {
+    expect(await Reflect.apply(snapshot.execute, snapshot, ["select_item", {}, sessionID])).toHaveProperty("error");
+  }
+  expect(execute).toHaveBeenCalledTimes(2);
+  await Promise.resolve();
+  acknowledge(requests.at(-1)!, "identity");
+  const binding = readiness.at(-1)!;
+  for (const sessionID of [null, "", " ", "x".repeat(257)]) {
+    Reflect.apply(window.dispatchGoModeVoiceTool!, window, [
+      {
+        document: "document",
+        token: "identity",
+        scope: String(binding.scope),
+        invocation: "forged",
+        sessionID,
+        name: "select_item",
+        args: {},
+      },
+    ]);
+  }
+  expect(execute).toHaveBeenCalledTimes(2);
+});
+
+it("allows legacy native navigation without inventing conversation focus", async () => {
+  const identity = authenticate();
+  const scope = identity.createScope();
+  const publishFocus = vi.fn();
+  const navigate = vi.fn((_args: Record<string, unknown>, context: FrontendVoiceToolContext) => {
+    if (context.sessionID !== null && context.isCurrent()) publishFocus(context.sessionID);
+    return { navigated: true };
+  });
+  scope.setTools([{ ...tool, execute: navigate }]);
+  scope.setDataReady(true);
+  await Promise.resolve();
+  acknowledge(requests.at(-1)!, "identity");
+  const binding = readiness.at(-1)!;
+  window.dispatchGoModeVoiceTool!({
+    document: "document",
+    token: "identity",
+    scope: String(binding.scope),
+    invocation: "legacy",
+    name: "select_item",
+    args: {},
+  });
+  await vi.waitFor(() => expect(navigate).toHaveBeenCalledOnce());
+  expect(navigate.mock.calls[0]?.[1].sessionID).toBeNull();
+  expect(publishFocus).not.toHaveBeenCalled();
 });

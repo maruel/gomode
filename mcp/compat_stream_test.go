@@ -30,10 +30,11 @@ type compatPostResponse struct {
 
 type compatStreamRegistry struct {
 	mcptest.FakeRegistry
-	mu      sync.Mutex
-	changed chan struct{}
-	stopped chan struct{}
-	version int
+	mu                  sync.Mutex
+	changed             chan struct{}
+	stopped             chan struct{}
+	version             int
+	subscriptionSession string
 }
 
 func (r *compatStreamRegistry) ListResources(context.Context, string) (mcp.ResourcesListResult, error) {
@@ -74,7 +75,8 @@ func (r *compatStreamRegistry) ReadResource(ctx context.Context, p *mcp.Resource
 	return mcp.ResourceJSON(p.URI, map[string]int{"version": r.version})
 }
 
-func (r *compatStreamRegistry) SubscribeResourceUpdates(ctx context.Context, f mcp.SubscriptionFilter) (iter.Seq2[mcp.ResourceUpdate, error], error) {
+func (r *compatStreamRegistry) SubscribeResourceUpdates(ctx context.Context, p *mcp.SubscriptionsListenParams) (iter.Seq2[mcp.ResourceUpdate, error], error) {
+	f := p.Notifications
 	for _, uri := range f.ResourceSubscriptions {
 		if uri != "gomode://items" {
 			return nil, mcp.ErrInvalidParams("resource not allowed")
@@ -82,6 +84,7 @@ func (r *compatStreamRegistry) SubscribeResourceUpdates(ctx context.Context, f m
 	}
 	r.mu.Lock()
 	changed := r.changed
+	r.subscriptionSession = p.Meta.Session
 	r.mu.Unlock()
 	return func(yield func(mcp.ResourceUpdate, error) bool) {
 		defer func() { r.stopped <- struct{}{} }()
@@ -154,9 +157,18 @@ func TestReleasedResourceNotifications(t *testing.T) {
 			if resources["subscribe"] != true {
 				t.Fatalf("resources capability = %#v", resources)
 			}
-			resp, out = post("alice", session, "resources/subscribe", map[string]string{"uri": "gomode://items"})
+			resp, out = post("alice", session, "resources/subscribe", map[string]any{
+				"uri":   "gomode://items",
+				"_meta": map[string]string{"openai/session": "conversation"},
+			})
 			if resp.status != http.StatusOK || out.Error != nil {
 				t.Fatalf("subscribe status %d: %#v", resp.status, out.Error)
+			}
+			registry.mu.Lock()
+			subscriptionSession := registry.subscriptionSession
+			registry.mu.Unlock()
+			if subscriptionSession != "conversation" {
+				t.Fatalf("subscription conversation = %q", subscriptionSession)
 			}
 			resp, out = post("alice", session, "resources/subscribe", map[string]string{"uri": "private://other"})
 			if out.Error == nil {

@@ -2,6 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { createEffect, createRoot } from "solid-js";
 import { expect, vi } from "../tests/expect";
 import { FakeMicrophoneContext, microphoneFrames } from "../tests/microphone-audio";
 
@@ -15,7 +16,11 @@ import {
   configureVoiceGateway,
   voiceToolDeclarations,
 } from "./VoiceSession";
-import { captureFrontendVoiceTools, createFrontendPreparationClient } from "./FrontendVoiceTools";
+import {
+  captureFrontendVoiceTools,
+  createFrontendPreparationClient,
+  type FrontendVoiceToolContext,
+} from "./FrontendVoiceTools";
 import { mcpClient } from "./McpClient";
 import { FakeRecognition, fakeSynthesis, installBrowserSpeech } from "../tests/browser-speech";
 
@@ -318,9 +323,11 @@ describe("VoiceSession", () => {
       );
       const meter = vi.spyOn(session, "enableMicrophoneMeter").mockResolvedValue();
       const catalog = deferred<Response>();
+      const requested = deferred<void>();
       let requests = 0;
       globalThis.fetch = async () => {
         requests++;
+        requested.resolve();
         return catalog.promise;
       };
       try {
@@ -345,6 +352,7 @@ describe("VoiceSession", () => {
         const connecting = session.connect();
         expect(prepare).toHaveBeenCalledOnce();
         expect(thinking.prepare).toHaveBeenCalledTimes(native ? 0 : 2);
+        await requested.promise;
         expect(requests).toBe(1);
         session.disconnect();
         catalog.resolve(new Response(JSON.stringify({ choices: [], defaults: [] })));
@@ -1985,6 +1993,80 @@ describe("VoiceSession", () => {
     }
   });
 
+  it("cannot dispatch a host action after synchronous voice retirement", async () => {
+    const preparation = createFrontendPreparationClient().publishAuth({ authChanged: true, nativeAccess: true });
+    const scope = preparation.createScope();
+    const execute = vi.fn(() => ({ selected: true }));
+    scope.setTools([{ declaration: { name: "select_item", description: "Select", parameters: {} }, execute }]);
+    scope.setDataReady(true);
+    const session = new VoiceSession();
+    const dispose = createRoot((dispose) => {
+      createEffect(() => {
+        if (session.state.activeTool === "select_item") session.disconnect();
+      });
+      return dispose;
+    });
+    try {
+      await session.connect();
+      dispatchToolCall(FakePeerConnection.dataChannels[0], "retired-before-host", "select_item");
+      await Promise.resolve();
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+      session.disconnect();
+      preparation.dispose();
+    }
+  });
+
+  for (const kind of ["frontend", "mcp"] as const) {
+    it(`cannot publish ${kind} failure after synchronous completion retirement`, async () => {
+      const preparation = createFrontendPreparationClient().publishAuth({ authChanged: true, nativeAccess: true });
+      const scope = preparation.createScope();
+      scope.setTools(
+        kind === "frontend"
+          ? [
+              {
+                declaration: { name: "select_item", description: "Select", parameters: {} },
+                execute: () => ({ error: "old failure" }),
+              },
+            ]
+          : [],
+      );
+      scope.setDataReady(true);
+      if (kind === "mcp") mcpMocks.mcpCallTool.mockRejectedValueOnce(new Error("old failure"));
+      const session = new VoiceSession();
+      let active = false;
+      let replaced = false;
+      let replacement: Promise<void> | undefined;
+      const dispose = createRoot((dispose) => {
+        createEffect(() => {
+          if (session.state.activeTool === "select_item") active = true;
+          else if (active && !replaced) {
+            replaced = true;
+            session.disconnect();
+            replacement = session.connect();
+          }
+        });
+        return dispose;
+      });
+      try {
+        await session.connect();
+        const previous = session.conversationID;
+        const channel = FakePeerConnection.dataChannels[0];
+        dispatchToolCall(channel, "retired-result", "select_item");
+        await vi.waitFor(() => expect(replaced).toBe(true));
+        await replacement;
+        expect(session.conversationID).not.toBe(previous);
+        expect(session.state.transcript.some((entry) => entry.text.includes("old failure"))).toBe(false);
+        expect(channel?.send).not.toHaveBeenCalledWith(expect.stringContaining('"id":"retired-result"'));
+      } finally {
+        dispose();
+        session.disconnect();
+        preparation.dispose();
+      }
+    });
+  }
+
   it("awaits frontend completion and aborts pending host actions when the call ends", async () => {
     const preparation = createFrontendPreparationClient().publishAuth({ authChanged: true, nativeAccess: true });
     const scope = preparation.createScope();
@@ -2085,11 +2167,26 @@ describe("VoiceSession", () => {
       throw new Error("randomUUID is unavailable on HTTP origins");
     });
     mcpMocks.mcpCallTool.mockResolvedValue({ structuredContent: {} });
+    const preparation = createFrontendPreparationClient().publishAuth({ authChanged: true, nativeAccess: true });
+    const scope = preparation.createScope();
+    const frontend = vi.fn((_args: Record<string, unknown>, context: FrontendVoiceToolContext) => ({
+      sessionID: context.sessionID,
+    }));
+    scope.setTools([
+      { declaration: { name: "select_item", description: "Select", parameters: {} }, execute: frontend },
+    ]);
+    scope.setDataReady(true);
+    const prepare = vi.fn(async (_sessionID: string, _signal: AbortSignal) => {});
+    configureVoiceGateway("/", null, undefined, undefined, prepare);
     const session = new VoiceSession();
     session.selectLanguage("fr-CA");
     await session.connect();
     dispatchToolCall(FakePeerConnection.dataChannels[0], "first", "lookup");
     const firstID = mcpMocks.mcpCallTool.mock.calls[0]?.[2]?.sessionID;
+    dispatchToolCall(FakePeerConnection.dataChannels[0], "frontend-first", "select_item");
+    await vi.waitFor(() => expect(frontend).toHaveBeenCalledOnce());
+    expect(frontend.mock.calls[0]?.[1].sessionID).toBe(firstID);
+    expect(mcpMocks.mcpReadAdvertisedTextResource.mock.calls[0]?.[2]?.sessionID).toBe(firstID);
     expect(firstID).toMatch(/^[0-9a-f]{32}$/);
     expect(mcpMocks.mcpCallTool.mock.calls[0]?.[2]?.locale).toBe("fr-CA");
     vi.useFakeTimers();
@@ -2099,6 +2196,10 @@ describe("VoiceSession", () => {
       await vi.waitFor(() => expect(offerRequests).toHaveLength(2));
       dispatchToolCall(FakePeerConnection.dataChannels[1], "reconnected", "lookup");
       expect(mcpMocks.mcpCallTool.mock.calls[1]?.[2]).toEqual({ locale: "fr-CA", sessionID: firstID });
+      dispatchToolCall(FakePeerConnection.dataChannels[1], "frontend-recovered", "select_item");
+      await vi.waitFor(() => expect(frontend).toHaveBeenCalledTimes(2));
+      expect(frontend.mock.calls[1]?.[1].sessionID).toBe(firstID);
+      expect(mcpMocks.mcpReadAdvertisedTextResource.mock.calls[1]?.[2]?.sessionID).toBe(firstID);
       session.disconnect();
       session.selectLanguage("de-DE");
       await session.connect();
@@ -2106,8 +2207,18 @@ describe("VoiceSession", () => {
       expect(mcpMocks.mcpCallTool.mock.calls[2]?.[2]?.sessionID).toMatch(/^[0-9a-f]{32}$/);
       expect(mcpMocks.mcpCallTool.mock.calls[2]?.[2]?.sessionID).not.toBe(firstID);
       expect(mcpMocks.mcpCallTool.mock.calls[2]?.[2]?.locale).toBe("de-DE");
+      dispatchToolCall(FakePeerConnection.dataChannels[2], "frontend-new", "select_item");
+      await vi.waitFor(() => expect(frontend).toHaveBeenCalledTimes(3));
+      expect(frontend.mock.calls[2]?.[1].sessionID).toBe(mcpMocks.mcpCallTool.mock.calls[2]?.[2]?.sessionID);
+      expect(frontend.mock.calls[2]?.[1].sessionID).not.toBe(firstID);
+      expect(prepare.mock.calls.map(([sessionID]) => sessionID)).toEqual([
+        firstID,
+        firstID,
+        frontend.mock.calls[2]?.[1].sessionID,
+      ]);
     } finally {
       session.disconnect();
+      preparation.dispose();
       vi.useRealTimers();
     }
   });
@@ -2729,9 +2840,83 @@ describe("VoiceSession", () => {
     }
   });
 
+  it("awaits host session preparation before reading setup MCP context", async () => {
+    const gate = deferred<void>();
+    const prepare = vi.fn(async (_sessionID: string, _signal: AbortSignal) => gate.promise);
+    configureVoiceGateway("/", null, undefined, undefined, prepare);
+    const session = new VoiceSession();
+    try {
+      const connecting = session.connect();
+      await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+      expect(prepare.mock.calls[0]?.[0]).toBe(session.conversationID);
+      expect(mcpMocks.mcpServerInstructions).not.toHaveBeenCalled();
+      expect(mcpMocks.mcpListTools).not.toHaveBeenCalled();
+      expect(mcpMocks.mcpReadAdvertisedTextResource).not.toHaveBeenCalled();
+      gate.resolve();
+      await connecting;
+      expect(mcpMocks.mcpReadAdvertisedTextResource).toHaveBeenCalledWith("gomode://items", undefined, {
+        sessionID: session.conversationID,
+      });
+    } finally {
+      session.disconnect();
+    }
+  });
+
+  it("retires pending host preparation without adopting a replacement callback", async () => {
+    const gate = deferred<void>();
+    const original = vi.fn(async (_sessionID: string, _signal: AbortSignal) => gate.promise);
+    const replacement = vi.fn(async (_sessionID: string, _signal: AbortSignal) => {});
+    configureVoiceGateway("/", null, undefined, undefined, original);
+    const session = new VoiceSession();
+    try {
+      const old = session.connect();
+      await vi.waitFor(() => expect(original).toHaveBeenCalledOnce());
+      const firstID = session.conversationID;
+      configureVoiceGateway("/", null, undefined, undefined, replacement);
+      expect(replacement).not.toHaveBeenCalled();
+      session.disconnect();
+      expect(original.mock.calls[0]?.[1].aborted).toBe(true);
+      await session.connect();
+      expect(replacement).toHaveBeenCalledOnce();
+      expect(session.conversationID).not.toBe(firstID);
+      const reads = mcpMocks.mcpReadAdvertisedTextResource.mock.calls.length;
+      gate.resolve();
+      await old;
+      expect(mcpMocks.mcpReadAdvertisedTextResource).toHaveBeenCalledTimes(reads);
+      expect(replacement).toHaveBeenCalledOnce();
+    } finally {
+      gate.resolve();
+      session.disconnect();
+    }
+  });
+
+  it("treats host focus publication failure as advisory but honors explicit abort", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const session = new VoiceSession();
+    try {
+      configureVoiceGateway("/", null, undefined, undefined, async () => {
+        throw new Error("Focus publication unavailable");
+      });
+      await session.connect();
+      expect(mcpMocks.mcpReadAdvertisedTextResource).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith("Could not prepare voice context", expect.any(Error));
+      session.disconnect();
+      const reads = mcpMocks.mcpReadAdvertisedTextResource.mock.calls.length;
+      configureVoiceGateway("/", null, undefined, undefined, async () => {
+        throw new DOMException("Owner retired", "AbortError");
+      });
+      await session.connect();
+      expect(mcpMocks.mcpReadAdvertisedTextResource).toHaveBeenCalledTimes(reads);
+      expect(session.state.connectStatus).toBeNull();
+    } finally {
+      session.disconnect();
+      warn.mockRestore();
+    }
+  });
+
   it("includes the current bounded service items in session setup", async () => {
     mcpMocks.mcpReadAdvertisedTextResource.mockResolvedValue(
-      '{"items":[{"id":"1","reference":"Item #1","title":"Build feature","state":"running","needsAttention":false}]}',
+      '{"items":[{"id":"1","reference":"Item #1","title":"Build feature","state":"running","needsAttention":false,"active":true}]}',
     );
     const session = new VoiceSession();
     session.setShowReasoning(true);
@@ -2744,7 +2929,9 @@ describe("VoiceSession", () => {
     expect(setup).toMatchObject({
       kind: "session.setup",
       includeReasoning: true,
-      context: { text: "Current service items:\n- Item #1: Build feature (running)" },
+      context: {
+        text: "Active service item: Item #1 (1).\nCurrent service items:\n- Item #1: Build feature (running)",
+      },
     });
     expect(setup.context.systemInstruction).toContain('only "Ready"');
     expect(setup.context.systemInstruction).toContain('"Done"');

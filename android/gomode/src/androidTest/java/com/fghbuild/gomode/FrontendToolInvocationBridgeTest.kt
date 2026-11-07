@@ -1,4 +1,4 @@
-// Exercises correlated asynchronous frontend completion and cancellation through real WebView messages.
+// Exercises conversation-bound frontend completion and cancellation through real WebView messages.
 package com.fghbuild.gomode
 
 import android.webkit.WebView
@@ -145,12 +145,52 @@ class FrontendToolInvocationBridgeTest {
             assertTrue(checkNotNull(runBlocking { pending.await() }).containsKey("error"))
         }
 
+    @Test
+    @StandaloneHostedFixture
+    fun invocationSessionsStaySeparateOnOneAuthenticatedFrontend() =
+        fixture { entry, view, scope ->
+            val first = invoke(entry, scope, """{"defer":true}""", "first-conversation")
+            compose.waitUntil { evaluate(view, "calls.length") == "1" }
+            val second = invoke(entry, scope, """{"defer":true}""", "second-conversation")
+            compose.waitUntil { evaluate(view, "calls.length") == "2" }
+            assertEquals("\"first-conversation\"", evaluate(view, "calls[0].sessionID"))
+            assertEquals("\"second-conversation\"", evaluate(view, "calls[1].sessionID"))
+            assertEquals("true", evaluate(view, "calls[0].token===calls[1].token"))
+            evaluate(
+                view,
+                """
+                gomodeFrontendToolResult.postMessage(JSON.stringify({
+                ...calls[0],sessionID:'second-conversation',result:{forged:true}}))
+                """.trimIndent(),
+            )
+            compose.waitForIdle()
+            assertFalse(first.isCompleted)
+            evaluate(view, "resolveCall(1,{sessionID:calls[1].sessionID})")
+            await(second)
+            assertEquals("{\"sessionID\":\"second-conversation\"}", runBlocking { second.await() }.toString())
+            // Deployed bridge-3 hosts may drop newly added fields from their reply.
+            evaluate(
+                view,
+                """
+                gomodeFrontendToolResult.postMessage(JSON.stringify({
+                ...calls[0],sessionID:undefined,result:{legacy:true}}))
+                """.trimIndent(),
+            )
+            await(first)
+            assertEquals("{\"legacy\":true}", runBlocking { first.await() }.toString())
+            val missing = invoke(entry, scope, "{}", "")
+            await(missing)
+            assertTrue(checkNotNull(runBlocking { missing.await() }).containsKey("error"))
+            assertEquals("2", evaluate(view, "calls.length"))
+        }
+
     private fun invoke(
         entry: ServiceShellSession,
         scope: CoroutineScope,
         args: String,
+        sessionID: String = "conversation",
     ) = scope.async {
-        entry.frontendTools.execute("fixture", Json.parseToJsonElement(args).jsonObject) { true }
+        entry.frontendTools.execute("fixture", Json.parseToJsonElement(args).jsonObject, sessionID) { true }
     }
 
     private fun await(call: Deferred<JsonObject?>) {

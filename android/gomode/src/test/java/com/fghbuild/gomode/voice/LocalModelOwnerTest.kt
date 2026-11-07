@@ -8,6 +8,7 @@ import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Message
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -32,6 +33,29 @@ import org.robolectric.Shadows.shadowOf
 @RunWith(RobolectricTestRunner::class)
 class LocalModelOwnerTest {
     private val app: Application get() = RuntimeEnvironment.getApplication()
+
+    @Test
+    fun `clearing idle selection revokes prepared streams before any acquisition`() =
+        runTest {
+            val dispatcher = StandardTestDispatcher(testScheduler)
+            val prepared = setup()
+            val owner =
+                LocalModelOwner(app, localModelInstallation(ModelDownloadState.Ready(1, true)), dispatcher) {
+                    LocalLlmEngine(app, { _, _ -> Runner() }, dispatcher)
+                }
+            val selected = LocalModelSelection("en-US", { prepared }, { true })
+            owner.select(selected)
+            testScheduler.runCurrent()
+            assertEquals(LocalModelState.Ready, owner.state.value)
+            val stream = prepared.lifetime.scope.launch(dispatcher) { awaitCancellation() }
+            testScheduler.runCurrent()
+            owner.clearSelection(selected)
+            assertFalse(prepared.lifetime.isCurrent)
+            assertTrue(stream.isCancelled)
+            testScheduler.runCurrent()
+            owner.close()
+            testScheduler.runCurrent()
+        }
 
     @Test
     fun `startup prefills real instructions schemas and context once without starting audio`() =
@@ -68,6 +92,7 @@ class LocalModelOwnerTest {
             assertNull(shadowOf(app).nextStartedService)
             assertNull(shadowOf(app).nextStartedActivity)
             owner.close()
+            assertFalse(first.await().lifetime.isCurrent)
             testScheduler.runCurrent()
             assertFalse(first.await().engine.isModelLoaded)
         }
@@ -255,6 +280,7 @@ class LocalModelOwnerTest {
         runTest {
             val dispatcher = StandardTestDispatcher(testScheduler)
             val finishDiscovery = CompletableDeferred<Unit>()
+            val preparation = setup()
             var allocations = 0
             var credentialsReady = true
             val owner =
@@ -265,7 +291,7 @@ class LocalModelOwnerTest {
             owner.select(
                 LocalModelSelection("en-US", {
                     finishDiscovery.await()
-                    setup()
+                    preparation
                 }, { credentialsReady }),
             )
             val waiting = async { runCatching { owner.acquire() } }
@@ -277,6 +303,7 @@ class LocalModelOwnerTest {
             assertTrue(waiting.await().isFailure)
             assertEquals(0, allocations)
             assertEquals(LocalModelState.Idle, owner.state.value)
+            assertFalse(preparation.lifetime.isCurrent)
             owner.close()
             testScheduler.runCurrent()
         }

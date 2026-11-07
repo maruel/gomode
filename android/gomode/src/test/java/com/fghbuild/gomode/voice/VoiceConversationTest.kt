@@ -420,7 +420,11 @@ class VoiceConversationTest {
             val catalog = ServiceCatalog(backgroundScope)
             val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { entries }
             try {
-                val setup = owner.prepareLocal().setup
+                val preparation = owner.prepareLocal()
+                val setup = preparation.setup
+                assertEquals(preparation.lifetime.sessionID, owner.sessionID)
+                owner.begin(true)
+                assertEquals(preparation.lifetime.sessionID, owner.sessionID)
                 assertEquals(b, setup.serverID)
                 assertEquals("B", setup.serverName)
                 assertEquals(null, setup.mcpClient)

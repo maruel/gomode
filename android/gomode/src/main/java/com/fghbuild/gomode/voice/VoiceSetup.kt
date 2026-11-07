@@ -68,6 +68,7 @@ internal suspend fun prepareVoiceSetup(
     pinnedVoice: GatewayVoiceSelection? = null,
     capturedSettings: SettingsState? = null,
     sharedCatalog: ServiceCatalog? = null,
+    sessionID: String? = null,
     ensureCurrent: () -> Unit = {},
 ): VoiceSetup {
     val settings = capturedSettings ?: settingsRepository.settings.value
@@ -138,7 +139,7 @@ internal suspend fun prepareVoiceSetup(
         if (sharedCatalog ==
             null
         ) {
-            prepareServiceMcp(settings.activeServiceURL, serviceSettings, bearerTokenFor)
+            prepareServiceMcp(settings.activeServiceURL, serviceSettings, bearerTokenFor, sessionID)
         } else {
             null
         }
@@ -149,9 +150,9 @@ internal suspend fun prepareVoiceSetup(
     val tools = (participant?.tools ?: serviceCatalogTools) + nativeVoiceTools(settings)
     val serviceContextText =
         if (sharedCatalog != null) {
-            sharedCatalog.contextText()
+            sharedCatalog.voiceContextText(sessionID)
         } else {
-            readInitialServiceContext(requireNotNull(client))
+            readInitialServiceContext(requireNotNull(client), sessionID)
         }
     val service = tokenEndpointURL?.let { voiceTokenClient.fetch(it, cookieFor(it), bearerTokenFor(it)) }
     requireCurrent()

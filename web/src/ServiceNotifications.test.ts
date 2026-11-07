@@ -146,11 +146,12 @@ it("coalesces concurrent invalidations and discards pending reads after close", 
   expect(close).toHaveBeenCalledOnce();
 });
 
-it("does not subscribe to an unadvertised resource and bounds large alert context", async () => {
+it("watches catalog changes without unadvertised resource subscriptions and bounds large alert context", async () => {
   snapshot = null;
   monitor = monitorServiceNotifications(inject, error);
   await settle();
-  expect(mcpClient.subscribeResources).not.toHaveBeenCalled();
+  expect(options.resourceSubscriptions).toBeUndefined();
+  expect(options.resourcesListChanged).toBe(true);
   monitor.close();
   inject.mockClear();
   snapshot = JSON.stringify(Array.from({ length: 100 }, (_, i) => alert(String(i), { body: "x".repeat(10000) })));
@@ -166,7 +167,9 @@ it("skips unsupported resources and reads static resources without subscribing",
   await settle();
   expect(read).not.toHaveBeenCalled();
   expect(mcpClient.subscribeResources).not.toHaveBeenCalled();
+  expect(inject.mock.calls).toEqual([["No active service item.", false]]);
   monitor.close();
+  inject.mockClear();
   vi.mocked(mcpClient.resourceCapabilities).mockResolvedValueOnce({});
   monitor = monitorServiceNotifications(inject, error);
   await settle();

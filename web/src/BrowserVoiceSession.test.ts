@@ -6,6 +6,7 @@ import { expect, vi } from "../tests/expect";
 import { FakeMicrophoneContext, microphoneFrames } from "../tests/microphone-audio";
 import { FakeRecognition, fakeSynthesis, installBrowserSpeech } from "../tests/browser-speech";
 import { configureVoiceGateway, VoiceSession } from "./VoiceSession";
+import { deferred } from "../tests/deferred";
 import { mcpClient } from "./McpClient";
 
 class FakeWebSocket {
@@ -92,6 +93,22 @@ afterEach(() => {
   restore();
   globalThis.fetch = originalFetch;
   vi.useRealTimers();
+});
+
+it("awaits host focus publication before browser-speech setup reads", async () => {
+  const gate = deferred<void>();
+  const prepare = vi.fn(async (_sessionID: string, _signal: AbortSignal) => gate.promise);
+  configureVoiceGateway("https://gateway.example", null, undefined, undefined, prepare);
+  const pending = session.connect();
+  await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+  expect(mcpClient.serverInstructions).not.toHaveBeenCalled();
+  expect(mcpClient.listTools).not.toHaveBeenCalled();
+  expect(mcpClient.readAdvertisedTextResource).not.toHaveBeenCalled();
+  gate.resolve();
+  await pending;
+  expect(mcpClient.readAdvertisedTextResource).toHaveBeenCalledWith("gomode://items", undefined, {
+    sessionID: session.conversationID,
+  });
 });
 
 it("explains a text gateway connection failure and releases the session", async () => {
@@ -1069,6 +1086,9 @@ describe("browser voice sessions", () => {
     const socket = await readySocket();
     socket.message({ kind: "tool.call", id: "pending", name: "items_list", args: {} });
     expect(callTool.mock.calls[0]?.[2]?.sessionID).toMatch(/^[0-9a-f]{32}$/);
+    const options = { sessionID: callTool.mock.calls[0]?.[2]?.sessionID };
+    expect(mcpClient.serverInstructions).toHaveBeenCalledWith(options);
+    expect(mcpClient.readAdvertisedTextResource).toHaveBeenCalledWith("gomode://items", undefined, options);
     expect(callTool.mock.calls[0]?.[2]?.locale).toBe("fr-CA");
     socket.message({ kind: "error", message: "OutOfOrder support is unavailable", recoverable: true });
     expect(session.state.connected).toBe(true);

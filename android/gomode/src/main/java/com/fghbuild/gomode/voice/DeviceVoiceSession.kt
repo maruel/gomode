@@ -120,8 +120,8 @@ internal class DeviceVoiceSession(
     private val callController: VoiceCallController = NoopVoiceCallController(),
     private val switchServer: suspend (String) -> Unit = { id -> settingsRepository.switchService(id) },
     private val startupTiming: () -> VoiceStartupTiming? = { null },
-    private val setupProvider: suspend () -> VoiceSetup = {
-        prepareVoiceSetup(settingsRepository, settingsClient, bearerTokenFor)
+    private val setupProvider: suspend (String) -> VoiceSetup = { sessionID ->
+        prepareVoiceSetup(settingsRepository, settingsClient, bearerTokenFor, sessionID = sessionID)
     },
     private val webSocketFactory: (Request, WebSocketListener) -> WebSocket = { request, listener ->
         deviceWebSocketClient.newWebSocket(request, listener)
@@ -292,7 +292,10 @@ internal class DeviceVoiceSession(
                 engineType == OnDeviceEngine.REMOTE_GATEWAY || engineType == OnDeviceEngine.LOCAL_LLM
             }
         try {
-            if (engineType == OnDeviceEngine.REMOTE_GATEWAY) voiceConversation?.begin(preserveTranscript)
+            if (engineType == OnDeviceEngine.REMOTE_GATEWAY) {
+                voiceConversation?.begin(preserveTranscript, this.conversationID)
+                voiceConversation?.let { this.conversationID = it.sessionID }
+            }
         } catch (e: VoiceSetupException) {
             setError(e.message ?: "Gateway conversation is unavailable")
             return
@@ -318,11 +321,12 @@ internal class DeviceVoiceSession(
                         setStatus("Preparing local model…")
                         timing?.enter(VoiceStartupStage.MODEL)
                         preparedLocalModel = localModelOwner.acquire()
+                        this@DeviceVoiceSession.conversationID = checkNotNull(preparedLocalModel).lifetime.sessionID
                     }
                     timing?.enter(VoiceStartupStage.TOOLS)
                     val setup =
                         preparedLocalModel?.setup ?: try {
-                            voiceConversation?.prepare() ?: setupProvider()
+                            voiceConversation?.prepare() ?: setupProvider(this@DeviceVoiceSession.conversationID)
                         } catch (e: VoiceSetupException) {
                             if (engineType == OnDeviceEngine.REMOTE_GATEWAY || engineType == OnDeviceEngine.LOCAL_LLM) {
                                 if (ownsAttempt(attempt)) setError(e.message ?: "Voice setup failed")
@@ -1020,7 +1024,7 @@ internal class DeviceVoiceSession(
                 return result?.structuredContent ?: errorJson("Unknown catalog tool")
             }
             val frontendResult =
-                frontendTools.execute(name, args) {
+                frontendTools.execute(name, args, sessionID) {
                     currentTurn()
                 }
             if (frontendResult != null) {
@@ -1140,7 +1144,7 @@ internal class DeviceVoiceSession(
                 return
             }
             val frontendResult =
-                frontendTools.execute(name, msg.args as? JsonObject ?: JsonObject(emptyMap())) {
+                frontendTools.execute(name, msg.args as? JsonObject ?: JsonObject(emptyMap()), sessionID) {
                     ownsAttempt(attempt) && webSocket === origin
                 }
             if (frontendResult != null) {

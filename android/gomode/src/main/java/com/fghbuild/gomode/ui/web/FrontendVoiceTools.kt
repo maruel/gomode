@@ -1,4 +1,4 @@
-// Origin-scoped frontend declarations and bounded, correlated asynchronous WebView tool dispatch.
+// Origin-scoped frontend declarations and conversation-bound asynchronous WebView tool dispatch.
 package com.fghbuild.gomode.ui.web
 
 import android.os.Handler
@@ -31,6 +31,7 @@ internal class FrontendVoiceTools(
         val view: WebView,
         val generation: Long,
         val binding: JsonObject,
+        val sessionID: String,
         val isCurrent: () -> Boolean,
     )
 
@@ -102,6 +103,12 @@ internal class FrontendVoiceTools(
         val id = (message["invocation"] as? JsonPrimitive)?.content ?: return
         val call = pending[id] ?: return
         if (call.view !== view || call.binding.any { (key, value) -> message[key] != value }) return
+        val sessionID = message["sessionID"]
+        if (sessionID != null &&
+            (sessionID !is JsonPrimitive || !sessionID.isString || sessionID.content != call.sessionID)
+        ) {
+            return
+        }
         if (!call.continuation.isActive) return
         pending.remove(id)
         val result =
@@ -116,9 +123,15 @@ internal class FrontendVoiceTools(
     suspend fun execute(
         name: String,
         args: JsonObject,
+        sessionID: String,
         isCurrent: () -> Boolean,
     ): JsonObject? =
         withContext(Dispatchers.Main) {
+            if (sessionID.isBlank() ||
+                sessionID.length > 256
+            ) {
+                return@withContext error("Voice conversation is unavailable.")
+            }
             if (!isCurrent()) return@withContext error("Voice session ended.")
             if (!canDispatch()) return@withContext error("Hosted frontend is not ready.")
             if (declarations.none { it.name == name }) return@withContext null
@@ -127,7 +140,7 @@ internal class FrontendVoiceTools(
             val id = UUID.randomUUID().toString()
             withTimeoutOrNull(5_000) {
                 suspendCancellableCoroutine { continuation ->
-                    val call = Invocation(continuation, view, generation, binding, isCurrent)
+                    val call = Invocation(continuation, view, generation, binding, sessionID, isCurrent)
                     pending[id] = call
                     continuation.invokeOnCancellation {
                         // Cancellation may originate off Main; WebView access always returns to its thread.
@@ -142,8 +155,9 @@ internal class FrontendVoiceTools(
                     }
                     val request =
                         buildJsonObject {
-                            binding.forEach { (key, value) -> put(key, value) }
+                            call.binding.forEach { (key, value) -> put(key, value) }
                             put("invocation", id)
+                            put("sessionID", sessionID)
                             put("name", name)
                             put("args", args)
                         }
@@ -171,6 +185,7 @@ internal class FrontendVoiceTools(
             buildJsonObject {
                 call.binding.forEach { (key, value) -> put(key, value) }
                 put("invocation", id)
+                put("sessionID", call.sessionID)
             }
         call.view.evaluateJavascript("window.cancelGoModeVoiceTool?.($request)", null)
     }

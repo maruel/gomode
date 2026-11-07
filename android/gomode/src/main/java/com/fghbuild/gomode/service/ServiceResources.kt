@@ -1,4 +1,4 @@
-// Service resource parsing turns generic Go Mode MCP resources into native monitoring state.
+// Service resources provide bounded native item context and advisory conversation focus.
 package com.fghbuild.gomode.service
 
 import com.fghbuild.mcp.sdk.v1.ResourceDescriptor
@@ -7,8 +7,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -26,12 +28,13 @@ data class ServiceMonitoringSnapshot(
     val items: List<ServiceItemSummary>,
     val moreItemsHint: String? = null,
     val omittedItemCount: Int = 0,
+    val activeItem: ActiveServiceItem? = null,
 ) {
     val voiceContext: String
         get() {
             // Android owns this bounded session baseline; see the canonical contract in
             // gomode/docs/ANDROID_SHELL.md#service-item-voice-context-ownership.
-            if (items.isEmpty() && omittedItemCount == 0) return "No visible service items."
+            if (items.isEmpty() && omittedItemCount == 0) return formatVoiceContext(0)
             // Keep these setup-context limits and formatting aligned with the browser's ServiceItems.ts.
             val limit = minOf(items.size, MAX_INITIAL_SERVICE_ITEMS)
             var included = 0
@@ -43,6 +46,8 @@ data class ServiceMonitoringSnapshot(
         }
 
     private fun formatVoiceContext(count: Int): String {
+        val focus = activeItem?.let { "${it.voiceContext}\n" }.orEmpty()
+        if (items.isEmpty() && omittedItemCount == 0) return "${focus}No visible service items."
         val lines =
             items
                 .take(count)
@@ -65,8 +70,19 @@ data class ServiceMonitoringSnapshot(
             val hint = moreItemsHint?.takeIf { it.isNotEmpty() }?.let { " $it" }.orEmpty()
             lines += "- … $omitted more items omitted.$hint"
         }
-        return "Current service items:\n${lines.joinToString("\n")}"
+        return "${focus}Current service items:\n${lines.joinToString("\n")}"
     }
+}
+
+data class ActiveServiceItem(
+    val id: String,
+    val reference: String?,
+) {
+    val voiceContext: String
+        get() {
+            val label = reference?.takeIf { it.isNotEmpty() }?.let { "${it.take(512)} ($id)" } ?: id
+            return "Active service item: $label."
+        }
 }
 
 data class ServiceItemSummary(
@@ -103,34 +119,72 @@ fun serviceMonitoringSnapshot(
                 ?: throw IllegalArgumentException("resource ${plan.itemsResourceURI} has a non-integer omittedCount")
         } ?: 0
     require(omittedItemCount >= 0) { "resource ${plan.itemsResourceURI} has a negative omittedCount" }
+    val summaries =
+        items.mapIndexed { index, element ->
+            val item =
+                element as? JsonObject
+                    ?: throw IllegalArgumentException(
+                        "resource ${plan.itemsResourceURI} item $index must be an object",
+                    )
+            ServiceItemSummary(
+                id = item.requiredString("id", plan.itemsResourceURI, index),
+                reference = item.optionalString("reference"),
+                title = item.requiredString("title", plan.itemsResourceURI, index),
+                state = item.optionalString("state").orEmpty(),
+                needsAttention = item["needsAttention"]?.jsonPrimitive?.booleanOrNull ?: false,
+            )
+        }
     return ServiceMonitoringSnapshot(
-        items =
-            items.mapIndexed { index, element ->
-                val item =
-                    element as? JsonObject
-                        ?: throw IllegalArgumentException(
-                            "resource ${plan.itemsResourceURI} item $index must be an object",
-                        )
-                ServiceItemSummary(
-                    id = item.requiredString("id", plan.itemsResourceURI, index),
-                    reference = item.optionalString("reference"),
-                    title = item.requiredString("title", plan.itemsResourceURI, index),
-                    state = item.optionalString("state").orEmpty(),
-                    needsAttention = item["needsAttention"]?.jsonPrimitive?.booleanOrNull ?: false,
-                )
-            },
+        items = summaries,
+        activeItem = activeServiceItem(root, items, summaries),
         moreItemsHint = root["moreItemsHint"]?.jsonPrimitive?.contentOrNull?.take(MAX_MORE_ITEMS_HINT_CHARS),
         omittedItemCount = omittedItemCount,
     )
 }
 
-suspend fun readInitialServiceContext(client: ServiceResourceClient): String =
+private fun activeServiceItem(
+    root: JsonObject,
+    source: JsonArray,
+    items: List<ServiceItemSummary>,
+): ActiveServiceItem? {
+    val flags = source.map { (it as JsonObject)["active"] }
+    if (flags.any { it != null && (it !is JsonPrimitive || it.isString || it.booleanOrNull == null) }) return null
+    val identities =
+        source.map {
+            ((it as JsonObject)["id"] as? JsonPrimitive)?.takeIf { value -> value.isString }?.contentOrNull
+        }
+    val marked = identities.filterIndexed { index, _ -> (flags[index] as? JsonPrimitive)?.booleanOrNull == true }
+    if (marked.size > 1) return null
+    val rawNumber = root["activeTaskNumber"]
+    val number = (rawNumber as? JsonPrimitive)?.takeIf { !it.isString }?.doubleOrNull
+    if (rawNumber != null && (number == null || number <= 0 || number > 9007199254740991 || number % 1 != 0.0)) {
+        return null
+    }
+    val rawID = root["activeTaskId"]
+    if (rawID == null && rawNumber != null) return null
+    val id =
+        if (rawID == null) {
+            marked.firstOrNull()
+        } else {
+            (rawID as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+        } ?: return null
+    if (id.isBlank() || id.length > 512 || marked.any { it != id }) return null
+    val matches = items.filterIndexed { index, _ -> identities[index] == id }
+    if (matches.size > 1) return null
+    val reference = matches.firstOrNull()?.reference?.takeIf { it.isNotEmpty() } ?: number?.let { "#${it.toLong()}" }
+    return ActiveServiceItem(id, reference)
+}
+
+suspend fun readInitialServiceContext(
+    client: ServiceResourceClient,
+    sessionID: String? = null,
+): String =
     try {
-        val plan = serviceMonitoringPlan(client.listResources())
+        val plan = serviceMonitoringPlan(client.listResources(sessionID))
         if (plan == null) {
             "No visible service items."
         } else {
-            val items = client.readResource(plan.itemsResourceURI)
+            val items = client.readResource(plan.itemsResourceURI, sessionID)
             serviceMonitoringSnapshot(mapOf(plan.itemsResourceURI to items), plan).voiceContext
         }
     } catch (e: CancellationException) {

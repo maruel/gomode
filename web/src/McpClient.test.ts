@@ -63,11 +63,32 @@ describe("configureMcpClient", () => {
           : { contents: [{ uri: "host://usage", text: "usage" }] };
       return new Response(JSON.stringify({ result }));
     };
-    expect(await mcpClient.readAdvertisedTextResource("host://usage")).toBe("usage");
+    expect(
+      await mcpClient.readAdvertisedTextResource("host://usage", undefined, { sessionID: "conversation-one" }),
+    ).toBe("usage");
     expect(params?._meta["openai/userLocation"]).toEqual({
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     });
     expect(params?._meta).not.toHaveProperty("openai/locale");
+    expect(params?._meta["openai/session"]).toBe("conversation-one");
+  });
+
+  it("keeps instructions and resources scoped to each caller without retaining a session", async () => {
+    configureMcpClient("/mcp", "host");
+    const requests: Array<{ method: string; params: { _meta: { "openai/session"?: string } } }> = [];
+    globalThis.fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as (typeof requests)[number];
+      requests.push(body);
+      return Response.json({ result: { instructions: body.params._meta["openai/session"] ?? "sessionless" } });
+    };
+    expect(await mcpClient.serverInstructions({ sessionID: "conversation-one" })).toBe("conversation-one");
+    expect(await mcpClient.serverInstructions({ sessionID: "conversation-two" })).toBe("conversation-two");
+    expect(await mcpClient.serverInstructions()).toBe("sessionless");
+    expect(requests.map((request) => request.method)).toEqual([
+      "server/discover",
+      "server/discover",
+      "server/discover",
+    ]);
   });
 
   it("routes tool requests to the selected same-origin host endpoint", async () => {
@@ -168,6 +189,53 @@ describe("configureMcpClient", () => {
 });
 
 describe("subscribeResources", () => {
+  it("retains its conversation when a subscription reconnects", async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    configureMcpClient("/mcp", "host");
+    const sessions: Array<string | undefined> = [];
+    let ended: () => void = () => {};
+    const disconnected = new Promise<void>((resolve) => {
+      ended = resolve;
+    });
+    let ready: () => void = () => {};
+    const reconnected = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    globalThis.fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { params: SubscriptionsListenParams };
+      sessions.push(body.params._meta["openai/session"]);
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                'data: {"jsonrpc":"2.0","method":"notifications/subscriptions/acknowledged"}\n\n',
+              ),
+            );
+            controller.close();
+          },
+        }),
+      );
+    };
+    const subscription = mcpClient.subscribeResources(
+      {
+        sessionID: "conversation-one",
+        resourceSubscriptions: ["gomode://items"],
+        onError: ended,
+        onReady: () => {
+          if (sessions.length === 2) ready();
+        },
+      },
+      () => {},
+    );
+    t.after(() => subscription.close());
+    await disconnected;
+    t.mock.timers.tick(2000);
+    await reconnected;
+    subscription.close();
+    expect(sessions).toEqual(["conversation-one", "conversation-one"]);
+  });
+
   it("streams resource notifications to the host", async () => {
     configureMcpClient("/api/v1/gomode/mcp", "mddb-frontend");
     let init: RequestInit | undefined;
@@ -200,6 +268,7 @@ describe("subscribeResources", () => {
     });
     const subscription = mcpClient.subscribeResources(
       {
+        sessionID: "conversation-one",
         resourceSubscriptions: ["mddb://node/1"],
         resourcesListChanged: true,
         onReady: () => {
@@ -216,6 +285,7 @@ describe("subscribeResources", () => {
     expect(headers.get("Mcp-Method")).toBe("subscriptions/listen");
     expect(headers.get("Accept")).toBe("text/event-stream");
     const body = JSON.parse(String(init?.body)) as { params: SubscriptionsListenParams };
+    expect(body.params._meta["openai/session"]).toBe("conversation-one");
     expect(body.params._meta["openai/userLocation"]).toEqual({
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     });

@@ -255,7 +255,11 @@ func (h *Handler) handleNative(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) dispatch(ctx context.Context, method Method, params json.RawMessage, header http.Header) (result any, rpcErr *JSONRPCError) {
 	switch method {
 	case MethodServerDiscover:
-		instructions, err := h.Registry.Instructions(ctx)
+		var p RequestParams
+		if err := decodeParams(params, &p); err != nil {
+			return nil, rpcError(InvalidParamsCode, "Invalid params")
+		}
+		instructions, err := h.Registry.Instructions(ctx, &p.Meta)
 		if err != nil {
 			return nil, rpcError(InternalErrorCode, err.Error())
 		}
@@ -449,7 +453,7 @@ func (h *Handler) handleSubscription(ctx context.Context, w http.ResponseWriter,
 		return rpcError(InternalErrorCode, "streaming unavailable")
 	}
 	subID := mcpSubscriptionID(id)
-	changes, err := registry.SubscribeResourceUpdates(ctx, p.Notifications)
+	changes, err := registry.SubscribeResourceUpdates(ctx, &p)
 	if err != nil {
 		return registryError(err)
 	}
@@ -785,8 +789,10 @@ func (h *Handler) dispatchCompat(ctx context.Context, method Method, params json
 	switch method {
 	case "initialize":
 		var p compatInitializeParams
-		_ = decodeCompatParams(params, &p)
-		instructions, err := h.Registry.Instructions(ctx)
+		if err := decodeCompatParams(params, &p); err != nil {
+			return nil, rpcError(InvalidParamsCode, "Invalid params")
+		}
+		instructions, err := h.Registry.Instructions(ctx, &p.Meta)
 		if err != nil {
 			return nil, rpcError(InternalErrorCode, err.Error())
 		}
@@ -881,7 +887,9 @@ func (h *Handler) dispatchCompat(ctx context.Context, method Method, params json
 
 // Registry supplies MCP tools, resources, instructions, and subscription invalidations to Handler.
 type Registry interface {
-	Instructions(ctx context.Context) (string, error)
+	// Instructions returns caller guidance, including conversation-specific
+	// context from metadata. Meta must be non-nil and must not be modified.
+	Instructions(ctx context.Context, meta *RequestMeta) (string, error)
 	Tools(ctx context.Context) ([]ToolDescriptor, error)
 	// CallTool executes the decoded request. Params must be non-nil and must
 	// not be modified during the call.
@@ -895,7 +903,9 @@ type Registry interface {
 
 // SubscriptionRegistry supplies optional resource change streams.
 type SubscriptionRegistry interface {
-	SubscribeResourceUpdates(ctx context.Context, filter SubscriptionFilter) (iter.Seq2[ResourceUpdate, error], error)
+	// SubscribeResourceUpdates observes the requested filters and caller metadata.
+	// Params must be non-nil and must not be modified during the subscription.
+	SubscribeResourceUpdates(ctx context.Context, params *SubscriptionsListenParams) (iter.Seq2[ResourceUpdate, error], error)
 }
 
 // ResourceTemplatesRegistry supplies optional host-owned parameterized resources.

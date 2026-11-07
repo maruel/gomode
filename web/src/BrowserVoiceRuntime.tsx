@@ -1,4 +1,4 @@
-// Configures and owns the lazily loaded browser voice runtime and localized overlay.
+// Owns lazy browser voice setup preparation, scoped context watchers, and the localized overlay.
 
 import { createEffect, createSignal, onCleanup, Show, untrack } from "solid-js";
 import { configureMcpClient, mcpClient } from "./McpClient";
@@ -17,10 +17,27 @@ let releaseRuntime: (() => void) | null = null;
 
 export default function BrowserVoiceRuntime(props: BrowserVoiceRuntimeProps) {
   const [active, setActive] = createSignal(false);
+  // Hosts subscribe through the runtime so their resource streams use the same
+  // conversation as voice setup and tools. Reconnect retains that identity.
+  const conversationMcp: typeof mcpClient = {
+    serverInstructions: (options) =>
+      mcpClient.serverInstructions({ ...options, sessionID: voiceSession.conversationID }),
+    resourceCapabilities: (signal, options) =>
+      mcpClient.resourceCapabilities(signal, { ...options, sessionID: voiceSession.conversationID }),
+    listTools: (options) => mcpClient.listTools({ ...options, sessionID: voiceSession.conversationID }),
+    readAdvertisedTextResource: (uri, signal, options) =>
+      mcpClient.readAdvertisedTextResource(uri, signal, { ...options, sessionID: voiceSession.conversationID }),
+    callTool: (name, args, options) =>
+      mcpClient.callTool(name, args, { ...options, sessionID: voiceSession.conversationID }),
+    subscribeResources: (options, callback) =>
+      mcpClient.subscribeResources({ ...options, sessionID: voiceSession.conversationID }, callback),
+  };
   createEffect(() => {
     const endpoints = props.endpoints;
     const clientName = props.clientName;
     const authorize = props.authorize;
+    const prepareSession = props.prepareSession;
+    const canStart = props.canStart;
     const headers = new Headers(props.gatewayHeaders);
     untrack(() => {
       // Route transitions may construct a replacement before disposing its predecessor.
@@ -43,6 +60,14 @@ export default function BrowserVoiceRuntime(props: BrowserVoiceRuntimeProps) {
         endpoint !== null && authorize !== undefined ? () => authorize(endpoint) : null,
         undefined,
         () => headers,
+        prepareSession === undefined
+          ? undefined
+          : async (sessionID, signal) => {
+              const current = () => !released && canStart() && !signal.aborted;
+              if (!current()) throw new DOMException("Frontend preparation retired.", "AbortError");
+              await prepareSession(sessionID, signal);
+              if (!current()) throw new DOMException("Frontend preparation retired.", "AbortError");
+            },
       );
       setActive(true);
     });
@@ -52,12 +77,13 @@ export default function BrowserVoiceRuntime(props: BrowserVoiceRuntimeProps) {
     const monitor = monitorServiceNotifications(
       (text, generate) => (generate ? voiceSession.injectText(text, true) : voiceSession.setServiceContext(text)),
       props.onError,
+      { sessionID: voiceSession.conversationID },
     );
     onCleanup(() => monitor.close());
   });
   return (
     <Show when={active()}>
-      {props.children?.({ session: voiceSession, mcp: mcpClient })}
+      {props.children?.({ session: voiceSession, mcp: conversationMcp })}
       <VoiceOverlay
         canStart={() => active() && props.canStart()}
         messages={() => props.messages?.(defaultVoiceOverlayMessages) ?? defaultVoiceOverlayMessages}

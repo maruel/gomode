@@ -66,6 +66,13 @@ disposed scopes publish `[]`. Browser conversations capture the scope at
 connection start with `captureFrontendVoiceTools()`, so they cannot dispatch
 same-named tools of a replacement scope.
 
+Browser hosts may provide `prepareSession(sessionID, signal)` on
+`BrowserVoiceShell` to publish their selected workspace/item before setup reads
+instructions, tools, or items. Each conversation captures its host callback;
+recovery reuses it with the same session ID. Ordinary publication failures are
+advisory. Abort or retirement cancels setup, and hosts must honor the signal
+and their captured identity before publication.
+
 The bridge-3 messages, their fields, and their order are defined beside the
 browser implementation in
 [`FrontendVoiceTools.ts`](../web/src/FrontendVoiceTools.ts); hosts that use the
@@ -82,7 +89,16 @@ registration. Declarations alone never authorize startup.
 ### Frontend tool invocation
 
 Tools return a JSON object synchronously or through a Promise and receive
-`{signal, isCurrent}`. Pass the signal to cancellable requests and check
+`{sessionID, signal, isCurrent}`. The read-only `sessionID` is the invoking
+voice conversation's existing `openai/session` identity, shared with MCP reads,
+subscriptions, and tool calls, including recovery. It belongs to each invocation;
+shared frontend scope and authentication tokens never supply it. Browser
+snapshot execution requires that ID explicitly. New native invocations and
+cancellations carry it; completion echoes may omit it for deployed bridge-3
+frontends. Legacy native invocations without it receive `sessionID: null`:
+navigation still works, but hosts must skip conversation focus publication.
+Never synthesize a session from authentication or scope tokens. Explicitly
+invalid IDs cannot execute host actions. Pass the signal to cancellable requests and check
 `isCurrent()` after awaited work, immediately before committing navigation or
 other host actions; cancellation cannot undo a committed action. The shared
 runner bounds invocation to five seconds, aborts retired work, and rejects
@@ -293,6 +309,10 @@ The shell reads the generic `gomode://items` resource:
 - `title`: user-visible label
 - `state`: optional user-visible status
 - `needsAttention`: whether the item needs the user
+- `active`: optional per-item marker for the conversation's focused item
+- `activeTaskId` and `activeTaskNumber`: optional snapshot-level focused item
+  identity and positive numeric reference; these field names also apply when
+  the focused item is absent from the bounded `items` array
 - `omittedCount`: authoritative items excluded from the bounded resource
 - `moreItemsHint`: host guidance to retrieve omitted or newer items
 
@@ -304,7 +324,23 @@ untrusted.
 - The service backend owns the `gomode://items` facts, ordering, attention
   priority, references, omission metadata, and continuation guidance. It
   enforces authorization before projection.
-- Each client owns the bounded baseline in its `session.setup`.
+- Each client owns the bounded baseline in its `session.setup`. A single valid
+  focus appears before the item list, within the same 4,000-character budget.
+  Item order, the 20-item limit, and omission accounting stay authoritative.
+  Conflicting markers, duplicate focused identities, or malformed optional
+  focus fields omit focus while preserving valid items. Identity strings are
+  limited to 512 characters; numeric references must be positive safe integers.
+  Missing or withdrawn focus never reuses an older focused item.
+- Connected browser conversations share one subscription for `gomode://items`
+  and `gomode://notifications`, using their conversation session. Independent
+  reads publish quiet replacing item/reference snapshots and advisory focus
+  changes or clears; only new actionable alerts request a spoken response.
+  Pending or failed initial reads preserve the corresponding setup context.
+  Resource withdrawal releases that resource subscription; a list-change
+  watcher can discover its return.
+  Android scoped item snapshots update the corresponding conversation context,
+  including car-owned conversations. Live catalog projections explicitly clear
+  unreported or withdrawn item focus within the existing per-service budget.
 - The gateway only transports that opaque context to the backend. It neither
   interprets items nor keeps service state.
 
@@ -316,9 +352,13 @@ globally bounded, sourced catalog overview and selected-server focus in
 the model's tool-response turn. Local engines diff generic items and reset their
 baseline when session or service identity changes.
 
-Browser voice subscribes to item changes too. Reference-only changes update
-context even when an item's state is unchanged. These updates stay passive;
-they do not request a model response or a spoken acknowledgment.
+Browser and native voice requests use one client-owned `openai/session` value
+for instructions, resource reads, tools, and subscriptions, retaining it across
+transport recovery. The native conversation lifetime owns this value, including
+local-model preparation before connection. Its service-context streams stop
+with the conversation or participant; independent background monitoring stays
+sessionless and remains the sole owner of user-visible alerts. Browser hosts
+use the render-prop runtime's `mcp` client for conversation-scoped resources.
 
 ## Service Notifications
 

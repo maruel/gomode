@@ -6,6 +6,11 @@ import com.fghbuild.mcp.sdk.v1.ResourceContent
 import com.fghbuild.mcp.sdk.v1.ResourceDescriptor
 import com.fghbuild.mcp.sdk.v1.ResourcesReadResult
 import com.fghbuild.mcp.sdk.v1.ResultType
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -54,6 +59,59 @@ class ServiceResourcesTest {
         assertTrue(snapshot.voiceContext.contains("Task #1: Build feature (active)"))
         assertTrue(snapshot.voiceContext.contains("4 more items omitted. Call tasks_list and follow nextCursor."))
     }
+
+    @Test
+    fun `shared focus vectors preserve advisory context`() {
+        val vectors =
+            checkNotNull(javaClass.getResourceAsStream("/active-context.json")).bufferedReader().use {
+                Json.parseToJsonElement(it.readText()).jsonArray
+            }
+        for (vector in vectors) {
+            val fields = vector.jsonObject
+            val name = fields.getValue("name").jsonPrimitive.content
+            val snapshot = snapshot(fields.getValue("resource").toString())
+            val focus = fields.getValue("focus").jsonPrimitive.contentOrNull
+            assertEquals(name, focus, snapshot.activeItem?.voiceContext)
+            assertEquals(name, focus != null, snapshot.voiceContext.startsWith("Active service item:"))
+            assertTrue(name, snapshot.voiceContext.length <= 4000)
+            assertTrue(
+                name,
+                snapshot.voiceContext.contains("Build") || snapshot.voiceContext.contains("No visible service items"),
+            )
+        }
+    }
+
+    @Test
+    fun `focus survives local omission and shares the context budget`() {
+        val items =
+            (0..24).joinToString(",") { index ->
+                """{"id":"$index","title":"Build $index","active":${index == 24}}"""
+            }
+        val context = snapshot("""{"items":[$items]}""").voiceContext
+        assertTrue(context.startsWith("Active service item: 24."))
+        assertTrue(context.contains("Build 19"))
+        assertTrue(!context.contains("Build 20"))
+        assertTrue(context.contains("5 more items omitted."))
+        val largeItems =
+            (0..24).joinToString(",") { index ->
+                """{"id":"$index","title":"${"x".repeat(900)}"}"""
+            }
+        val largeContext =
+            snapshot(
+                """{"items":[$largeItems],"activeTaskId":"active","activeTaskNumber":99,"omittedCount":5,"moreItemsHint":"${"h".repeat(
+                    512,
+                )}"}""",
+            ).voiceContext
+        assertTrue(largeContext.startsWith("Active service item: #99 (active)."))
+        assertTrue(largeContext.contains("27 more items omitted."))
+        assertTrue(largeContext.length <= 4000)
+    }
+
+    private fun snapshot(text: String) =
+        serviceMonitoringSnapshot(
+            mapOf(GOMODE_ITEMS_RESOURCE_URI to itemsReadResult(text)),
+            ServiceMonitoringPlan(GOMODE_ITEMS_RESOURCE_URI),
+        )
 
     private fun itemsReadResult(text: String) =
         ResourcesReadResult(

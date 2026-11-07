@@ -21,7 +21,9 @@ type FakeRegistry struct {
 }
 
 // Instructions implements mcp.Registry.
-func (FakeRegistry) Instructions(context.Context) (string, error) { return "be helpful", nil }
+func (FakeRegistry) Instructions(context.Context, *mcp.RequestMeta) (string, error) {
+	return "be helpful", nil
+}
 
 // Tools implements mcp.Registry.
 func (FakeRegistry) Tools(context.Context) ([]mcp.ToolDescriptor, error) {
@@ -73,7 +75,7 @@ func (f FakeRegistry) ReadResource(_ context.Context, params *mcp.ResourcesReadP
 }
 
 // SubscribeResourceUpdates implements mcp.SubscriptionRegistry.
-func (FakeRegistry) SubscribeResourceUpdates(context.Context, mcp.SubscriptionFilter) (iter.Seq2[mcp.ResourceUpdate, error], error) {
+func (FakeRegistry) SubscribeResourceUpdates(context.Context, *mcp.SubscriptionsListenParams) (iter.Seq2[mcp.ResourceUpdate, error], error) {
 	return func(func(mcp.ResourceUpdate, error) bool) {}, nil
 }
 

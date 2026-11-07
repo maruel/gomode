@@ -58,6 +58,40 @@ import java.io.IOException
 @OptIn(ExperimentalCoroutinesApi::class)
 class ServiceMonitorTest {
     @Test
+    fun `conversation monitoring retains its session through reconnect`() =
+        runTest {
+            val client =
+                FakeServiceResourceClient().apply {
+                    closeSubscriptionsImmediately = true
+                    enqueueReadResult("""{"items":[]}""")
+                    enqueueReadResult("""{"items":[]}""")
+                }
+            val monitor = ServiceMonitor(this, "conversation-one") { _, _ -> client }
+            monitor.start("https://service.test", serviceSettings())
+            runCurrent()
+            advanceTimeBy(1000)
+            runCurrent()
+            assertEquals(2, client.subscriptionFilters.size)
+            assertEquals(
+                listOf(
+                    "list",
+                    "read",
+                    "discover",
+                    "subscribe",
+                    "list",
+                    "read",
+                    "discover",
+                    "subscribe",
+                ),
+                client.requestSessions.map {
+                    it.first
+                },
+            )
+            assertTrue(client.requestSessions.all { it.second == "conversation-one" })
+            monitor.stop()
+        }
+
+    @Test
     fun `resources-only service retains its initial items without a subscription retry loop`() =
         runTest {
             val client =
@@ -695,6 +729,7 @@ class ServiceMonitorTest {
         }
 
     private class FakeServiceResourceClient : ServiceResourceClient {
+        val requestSessions = mutableListOf<Pair<String, String?>>()
         var supportsSubscriptions = true
         var resources =
             listOf(ResourceDescriptor(uri = "gomode://items", name = "service", mimeType = "application/json"))
@@ -711,7 +746,7 @@ class ServiceMonitorTest {
         private val readResults = ArrayDeque<ResourcesReadResult>()
         private val subscriptionEvents = MutableSharedFlow<JSONRPCNotification>(extraBufferCapacity = 8)
 
-        override suspend fun serverDiscover(): ServerDiscoverResult =
+        override suspend fun serverDiscover(sessionID: String?): ServerDiscoverResult =
             ServerDiscoverResult(
                 resultType = ResultType.Complete,
                 supportedVersions = listOf("2026-07-28"),
@@ -727,7 +762,7 @@ class ServiceMonitorTest {
                 serverInfo = Implementation(name = "test", version = "1"),
                 ttlMs = 1000,
                 cacheScope = CacheScope.Private,
-            )
+            ).also { requestSessions += "discover" to sessionID }
 
         fun enqueueReadResult(text: String) {
             readResults.addLast(itemsReadResult(text))
@@ -741,7 +776,8 @@ class ServiceMonitorTest {
             check(subscriptionEvents.tryEmit(notification))
         }
 
-        override suspend fun listResources(): List<ResourceDescriptor> {
+        override suspend fun listResources(sessionID: String?): List<ResourceDescriptor> {
+            requestSessions += "list" to sessionID
             listCalls++
             if (listFailuresRemaining > 0) {
                 listFailuresRemaining--
@@ -750,12 +786,20 @@ class ServiceMonitorTest {
             return resources
         }
 
-        override suspend fun readResource(uri: String): ResourcesReadResult {
+        override suspend fun readResource(
+            uri: String,
+            sessionID: String?,
+        ): ResourcesReadResult {
+            requestSessions += "read" to sessionID
             readURIs += uri
             return readResults.removeFirst()
         }
 
-        override fun listenSubscriptions(notifications: SubscriptionFilter): Flow<JSONRPCNotification> {
+        override fun listenSubscriptions(
+            notifications: SubscriptionFilter,
+            sessionID: String?,
+        ): Flow<JSONRPCNotification> {
+            requestSessions += "subscribe" to sessionID
             subscriptionFilters += notifications
             if (deliverThenClose.isNotEmpty()) {
                 val delivered = deliverThenClose

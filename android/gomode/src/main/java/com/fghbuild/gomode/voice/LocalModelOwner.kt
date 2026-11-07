@@ -64,6 +64,7 @@ internal class LocalModelOwner(
     private var generation = 0L
     private var closed = false
     private var preparation: Deferred<PreparedLocalModel?>? = null
+    private var preparationLifetime: VoiceConversationLifetime? = null
 
     // Workers mutate the handle under operations. Selection changes read it only to invalidate turns.
     // Disposal failure retains the handle and prevents replacement.
@@ -107,6 +108,8 @@ internal class LocalModelOwner(
                 if (allocated?.model == model) {
                     synchronized(this) {
                         if (selection?.model == model) {
+                            preparationLifetime?.finish()
+                            preparationLifetime = null
                             generation++
                             mutableState.value = LocalModelState.AwaitingDownload
                         }
@@ -178,6 +181,8 @@ internal class LocalModelOwner(
 
     private fun schedule(reuseAllocated: Boolean = false) {
         // Invalidate before the disposal worker can run, including selection-before-disconnect.
+        preparationLifetime?.finish()
+        preparationLifetime = null
         allocated?.invalidateTurns()
         val request = ++generation
         val selected = selection
@@ -186,6 +191,8 @@ internal class LocalModelOwner(
             scope.async {
                 operations.withLock {
                     if (!owns(request)) return@withLock null
+                    var authorizedLifetime: VoiceConversationLifetime? = null
+                    var retained = false
                     try {
                         val reusable = allocated?.takeIf { reuseAllocated && it.isModelLoaded }
                         if (reusable == null) {
@@ -198,8 +205,12 @@ internal class LocalModelOwner(
                             return@withLock null
                         }
                         val authorized = selected.prepareSetup()
+                        authorizedLifetime = authorized.lifetime
                         val setup = authorized.setup
-                        if (!selected.isCurrent() || !owns(request)) return@withLock null
+                        synchronized(this@LocalModelOwner) {
+                            if (!selected.isCurrent() || !owns(request)) return@withLock null
+                            preparationLifetime = authorized.lifetime
+                        }
                         val engine =
                             try {
                                 val context =
@@ -232,7 +243,7 @@ internal class LocalModelOwner(
                             return@withLock null
                         }
                         publish(request, LocalModelState.Ready)
-                        PreparedLocalModel(request, engine, setup, authorized.lifetime)
+                        PreparedLocalModel(request, engine, setup, authorized.lifetime).also { retained = true }
                     } catch (_: LocalModelUnavailableException) {
                         allocated?.closeAndJoin()
                         allocated = null
@@ -258,6 +269,13 @@ internal class LocalModelOwner(
                             LocalModelState.Failed(e.message ?: "Unable to prepare the local model."),
                         )
                         throw e
+                    } finally {
+                        if (!retained) {
+                            authorizedLifetime?.finish()
+                            synchronized(this@LocalModelOwner) {
+                                if (preparationLifetime === authorizedLifetime) preparationLifetime = null
+                            }
+                        }
                     }
                 }
             }

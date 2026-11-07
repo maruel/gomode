@@ -28,17 +28,21 @@ test("test note follows frontend calls, clear, reload ownership, and invalid inp
   ));
   const snapshot = captureFrontendVoiceTools();
   expect(snapshot.declarations.map((tool) => tool.name)).toEqual(["set_test_note"]);
-  expect(await executeFrontendVoiceTool("set_test_note", { text: "Hello world" })).toEqual({ text: "Hello world" });
+  expect(await executeFrontendVoiceTool("set_test_note", { text: "Hello world" }, "conversation")).toEqual({
+    text: "Hello world",
+  });
   expect(screen.getByRole("status", { name: "Test note" })).toHaveTextContent("Hello world");
-  expect(await executeFrontendVoiceTool("set_test_note", { text: 5 })).toHaveProperty("error");
+  expect(await executeFrontendVoiceTool("set_test_note", { text: 5 }, "conversation")).toHaveProperty("error");
   expect(screen.getByRole("status", { name: "Test note" })).toHaveTextContent("Hello world");
   const unicode = "😀".repeat(2000);
-  expect(await executeFrontendVoiceTool("set_test_note", { text: unicode })).toEqual({ text: unicode });
+  expect(await executeFrontendVoiceTool("set_test_note", { text: unicode }, "conversation")).toEqual({ text: unicode });
   expect(screen.getByRole("status", { name: "Test note" })).toHaveTextContent(unicode);
-  expect(await executeFrontendVoiceTool("set_test_note", { text: unicode + "x" })).toHaveProperty("error");
+  expect(await executeFrontendVoiceTool("set_test_note", { text: unicode + "x" }, "conversation")).toHaveProperty(
+    "error",
+  );
   expect(screen.getByRole("status", { name: "Test note" })).toHaveTextContent(unicode);
   fireEvent.click(screen.getByRole("button", { name: "Clear note" }));
   expect(screen.getByRole("button", { name: "Clear note" })).toBeDisabled();
   view.unmount();
-  expect(await snapshot.execute("set_test_note", { text: "Late note" })).toHaveProperty("error");
+  expect(await snapshot.execute("set_test_note", { text: "Late note" }, "conversation")).toHaveProperty("error");
 });

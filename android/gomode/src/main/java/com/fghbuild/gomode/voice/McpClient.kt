@@ -106,15 +106,15 @@ class McpClient(
         return json.decodeFromJsonElement(result)
     }
 
-    override suspend fun serverDiscover(): ServerDiscoverResult =
+    override suspend fun serverDiscover(sessionID: String?): ServerDiscoverResult =
         request(
             method = Method.ServerDiscover,
-            params = buildJsonObject { put("_meta", json.encodeToJsonElement(requestMeta())) },
+            params = buildJsonObject { put("_meta", json.encodeToJsonElement(requestMeta(sessionID))) },
         )
 
-    suspend fun serverInstructions(): String = serverDiscover().instructions.orEmpty()
+    suspend fun serverInstructions(sessionID: String? = null): String = serverDiscover(sessionID).instructions.orEmpty()
 
-    suspend fun listTools(): List<ToolDescriptor> {
+    suspend fun listTools(sessionID: String? = null): List<ToolDescriptor> {
         val tools = mutableListOf<ToolDescriptor>()
         var cursor: String? = null
         do {
@@ -124,7 +124,7 @@ class McpClient(
                     params =
                         json.encodeToJsonElement(
                             PaginatedRequestParams(
-                                _meta = requestMeta(),
+                                _meta = requestMeta(sessionID),
                                 cursor = cursor,
                             ),
                         ),
@@ -167,7 +167,7 @@ class McpClient(
         )
     }
 
-    override suspend fun listResources(): List<ResourceDescriptor> {
+    override suspend fun listResources(sessionID: String?): List<ResourceDescriptor> {
         val resources = mutableListOf<ResourceDescriptor>()
         var cursor: String? = null
         do {
@@ -177,7 +177,7 @@ class McpClient(
                     params =
                         json.encodeToJsonElement(
                             PaginatedRequestParams(
-                                _meta = requestMeta(),
+                                _meta = requestMeta(sessionID),
                                 cursor = cursor,
                             ),
                         ),
@@ -188,7 +188,7 @@ class McpClient(
         return resources
     }
 
-    suspend fun listResourceTemplates(): List<ResourceTemplateDescriptor> {
+    suspend fun listResourceTemplates(sessionID: String? = null): List<ResourceTemplateDescriptor> {
         val templates = mutableListOf<ResourceTemplateDescriptor>()
         var cursor: String? = null
         do {
@@ -198,7 +198,7 @@ class McpClient(
                     params =
                         json.encodeToJsonElement(
                             PaginatedRequestParams(
-                                _meta = requestMeta(),
+                                _meta = requestMeta(sessionID),
                                 cursor = cursor,
                             ),
                         ),
@@ -209,20 +209,26 @@ class McpClient(
         return templates
     }
 
-    override suspend fun readResource(uri: String): ResourcesReadResult =
+    override suspend fun readResource(
+        uri: String,
+        sessionID: String?,
+    ): ResourcesReadResult =
         request(
             method = Method.ResourcesRead,
             params =
                 json.encodeToJsonElement(
                     ResourcesReadParams(
-                        _meta = requestMeta(),
+                        _meta = requestMeta(sessionID),
                         uri = uri,
                     ),
                 ),
             name = uri,
         )
 
-    override fun listenSubscriptions(notifications: SubscriptionFilter): Flow<JSONRPCNotification> =
+    override fun listenSubscriptions(
+        notifications: SubscriptionFilter,
+        sessionID: String?,
+    ): Flow<JSONRPCNotification> =
         subscriptionAPI.subscriptionsListen(
             JSONRPCRequest(
                 jsonrpc = "2.0",
@@ -231,7 +237,7 @@ class McpClient(
                 params =
                     json.encodeToJsonElement(
                         SubscriptionsListenParams(
-                            _meta = requestMeta(),
+                            _meta = requestMeta(sessionID),
                             notifications = notifications,
                         ),
                     ),

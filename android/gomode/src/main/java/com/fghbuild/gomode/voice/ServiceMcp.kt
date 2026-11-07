@@ -26,6 +26,7 @@ internal suspend fun prepareServiceMcp(
     serviceURL: String,
     settings: Settings,
     bearerTokenFor: (String) -> String?,
+    sessionID: String? = null,
 ): ServiceMcp {
     // First-group activation is shared with voice setup; progressive skill activation is separate work.
     val group =
@@ -44,8 +45,8 @@ internal suspend fun prepareServiceMcp(
         )
     val client =
         McpClient(endpoint, group.protocolVersion, credentials::cookieForRequest, credentials::bearerForRequest)
-    val discovery = client.serverDiscover()
-    val tools = client.listTools()
+    val discovery = client.serverDiscover(sessionID)
+    val tools = client.listTools(sessionID)
     require(tools.none { it.name in nativeVoiceToolNames }) {
         "MCP tool conflicts with a reserved native voice tool."
     }

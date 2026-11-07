@@ -1,0 +1,273 @@
+[
+  {
+    "name": "absent",
+    "resource": {
+      "items": [
+        {
+          "id": "one",
+          "reference": "Item #1",
+          "title": "Build",
+          "state": "running"
+        }
+      ]
+    },
+    "focus": null
+  },
+  {
+    "name": "marked",
+    "resource": {
+      "items": [
+        {
+          "id": "one",
+          "reference": "Item #1",
+          "title": "Build",
+          "state": "running",
+          "active": true
+        }
+      ]
+    },
+    "focus": "Active service item: Item #1 (one)."
+  },
+  {
+    "name": "matching top identity",
+    "resource": {
+      "items": [
+        {
+          "id": "one",
+          "reference": "Item #1",
+          "title": "Build",
+          "state": "running",
+          "active": true
+        }
+      ],
+      "activeTaskId": "one",
+      "activeTaskNumber": 1
+    },
+    "focus": "Active service item: Item #1 (one)."
+  },
+  {
+    "name": "top identity outside resource",
+    "resource": {
+      "items": [
+        {
+          "id": "one",
+          "reference": "Item #1",
+          "title": "Build",
+          "state": "running"
+        }
+      ],
+      "activeTaskId": "other",
+      "activeTaskNumber": 9,
+      "omittedCount": 3
+    },
+    "focus": "Active service item: #9 (other)."
+  },
+  {
+    "name": "top identity with empty resource",
+    "resource": {
+      "items": [],
+      "activeTaskId": "other",
+      "activeTaskNumber": 9
+    },
+    "focus": "Active service item: #9 (other)."
+  },
+  {
+    "name": "top identity without number",
+    "resource": {
+      "items": [
+        {
+          "id": "one",
+          "reference": "Item #1",
+          "title": "Build",
+          "state": "running"
+        }
+      ],
+      "activeTaskId": "other"
+    },
+    "focus": "Active service item: other."
+  },
+  {
+    "name": "multiple markers",
+    "resource": {
+      "items": [
+        {
+          "id": "one",
+          "reference": "Item #1",
+          "title": "Build",
+          "state": "running",
+          "active": true
+        },
+        {
+          "id": "two",
+          "title": "Review",
+          "active": true
+        }
+      ]
+    },
+    "focus": null
+  },
+  {
+    "name": "conflicting marker",
+    "resource": {
+      "items": [
+        {
+          "id": "one",
+          "reference": "Item #1",
+          "title": "Build",
+          "state": "running",
+          "active": true
+        }
+      ],
+      "activeTaskId": "other",
+      "activeTaskNumber": 2
+    },
+    "focus": null
+  },
+  {
+    "name": "malformed marker",
+    "resource": {
+      "items": [
+        {
+          "id": "one",
+          "reference": "Item #1",
+          "title": "Build",
+          "state": "running",
+          "active": "true"
+        }
+      ],
+      "activeTaskId": "one"
+    },
+    "focus": null
+  },
+  {
+    "name": "malformed top identity",
+    "resource": {
+      "items": [
+        {
+          "id": "one",
+          "reference": "Item #1",
+          "title": "Build",
+          "state": "running"
+        }
+      ],
+      "activeTaskId": []
+    },
+    "focus": null
+  },
+  {
+    "name": "malformed top number",
+    "resource": {
+      "items": [
+        {
+          "id": "one",
+          "reference": "Item #1",
+          "title": "Build",
+          "state": "running"
+        }
+      ],
+      "activeTaskId": "one",
+      "activeTaskNumber": "1"
+    },
+    "focus": null
+  },
+  {
+    "name": "number without identity",
+    "resource": {
+      "items": [
+        {
+          "id": "one",
+          "reference": "Item #1",
+          "title": "Build",
+          "state": "running",
+          "active": true
+        }
+      ],
+      "activeTaskNumber": 1
+    },
+    "focus": null
+  },
+  {
+    "name": "nonpositive number",
+    "resource": {
+      "items": [
+        {
+          "id": "one",
+          "reference": "Item #1",
+          "title": "Build",
+          "state": "running"
+        }
+      ],
+      "activeTaskId": "one",
+      "activeTaskNumber": 0
+    },
+    "focus": null
+  },
+  {
+    "name": "fractional number",
+    "resource": {
+      "items": [
+        {
+          "id": "one",
+          "reference": "Item #1",
+          "title": "Build",
+          "state": "running"
+        }
+      ],
+      "activeTaskId": "one",
+      "activeTaskNumber": 1.5
+    },
+    "focus": null
+  },
+  {
+    "name": "unsafe number",
+    "resource": {
+      "items": [
+        {
+          "id": "one",
+          "reference": "Item #1",
+          "title": "Build",
+          "state": "running"
+        }
+      ],
+      "activeTaskId": "one",
+      "activeTaskNumber": 9007199254740992
+    },
+    "focus": null
+  },
+  {
+    "name": "oversized identity",
+    "resource": {
+      "items": [
+        {
+          "id": "one",
+          "reference": "Item #1",
+          "title": "Build",
+          "state": "running"
+        }
+      ],
+      "activeTaskId": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    "focus": null
+  },
+  {
+    "name": "duplicate active identity",
+    "resource": {
+      "items": [
+        {
+          "id": "one",
+          "reference": "Item #1",
+          "title": "Build",
+          "state": "running"
+        },
+        {
+          "id": "one",
+          "reference": "Item #1",
+          "title": "Duplicate",
+          "state": "running"
+        }
+      ],
+      "activeTaskId": "one"
+    },
+    "focus": null
+  }
+]

@@ -210,7 +210,7 @@ func newRegistry() *registry {
 	})}
 }
 
-func (*registry) Instructions(context.Context) (string, error) {
+func (*registry) Instructions(context.Context, *mcp.RequestMeta) (string, error) {
 	return "You are a voice assistant in the Voice Gateway live test page. Have a natural conversation. When asked, use echo to test the server MCP roundtrip, or set_test_note to change the visible browser note. No product data is connected.", nil
 }
 func (r *registry) Tools(context.Context) ([]mcp.ToolDescriptor, error) {

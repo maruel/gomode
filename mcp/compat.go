@@ -72,6 +72,7 @@ type compatResourcesCapability struct {
 // nested under _meta as in native 2026-07-28 requests. Unknown fields are
 // ignored for forward compatibility.
 type compatInitializeParams struct {
+	Meta            RequestMeta    `json:"_meta,omitempty"`
 	ProtocolVersion string         `json:"protocolVersion"`
 	ClientInfo      Implementation `json:"clientInfo"`
 }

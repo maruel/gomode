@@ -66,7 +66,7 @@ class FrontendVoiceToolsTest {
             view.deferResult = true
             val request =
                 async(Dispatchers.Unconfined) {
-                    entry.frontendTools.execute("select_item", JsonObject(emptyMap())) { true }
+                    entry.frontendTools.execute("select_item", JsonObject(emptyMap()), "conversation") { true }
                 }
             assertFalse(request.isCompleted)
             var reloads = 0
@@ -88,16 +88,65 @@ class FrontendVoiceToolsTest {
     @Test
     fun dispatchesToOwningPageAndReturnsItsResult() =
         runTest {
-            val result = tools.execute("select_item", JsonObject(emptyMap())) { true }
+            val result = tools.execute("select_item", JsonObject(emptyMap()), "conversation") { true }
             assertEquals("{\"selected\":true}", result.toString())
             assertEquals(true, view.script.contains("select_item"))
-            assertNull(tools.execute("unknown", JsonObject(emptyMap())) { true })
+            assertNull(tools.execute("unknown", JsonObject(emptyMap()), "conversation") { true })
+        }
+
+    @Test
+    fun blankConversationCannotExecuteFrontendCode() =
+        runTest {
+            for (sessionID in listOf("", " ", "x".repeat(257))) {
+                val result = tools.execute("select_item", JsonObject(emptyMap()), sessionID) { true }
+                assertTrue(checkNotNull(result).containsKey("error"))
+                assertEquals("", view.script)
+            }
+        }
+
+    @Test
+    fun invocationConversationIsNotTheSharedPageOrAuthenticationBinding() =
+        runTest {
+            view.deferResult = true
+            val first = async { tools.execute("select_item", JsonObject(emptyMap()), "first-conversation") { true } }
+            runCurrent()
+            val call = org.json.JSONObject(view.script.substringAfter("?.(").dropLast(1))
+            assertEquals("first-conversation", call.getString("sessionID"))
+            val wrong =
+                org.json
+                    .JSONObject(call.toString())
+                    .put("sessionID", "second-conversation")
+                    .put("result", org.json.JSONObject().put("forged", true))
+            tools.complete(view, wrong.toString())
+            assertFalse(first.isCompleted)
+            checkNotNull(view.callback).onReceiveValue("{}")
+            assertEquals("{}", first.await().toString())
+            val second = async { tools.execute("select_item", JsonObject(emptyMap()), "second-conversation") { true } }
+            runCurrent()
+            val next = org.json.JSONObject(view.script.substringAfter("?.(").dropLast(1))
+            assertEquals("second-conversation", next.getString("sessionID"))
+            assertEquals(call.getString("token"), next.getString("token"))
+            checkNotNull(view.callback).onReceiveValue("{}")
+            assertEquals("{}", second.await().toString())
+        }
+
+    @Test
+    fun deployedFrontendMayOmitConversationEchoWhileExistingBindingStillAuthorizesCompletion() =
+        runTest {
+            view.deferResult = true
+            val pending = async { tools.execute("select_item", JsonObject(emptyMap()), "conversation") { true } }
+            runCurrent()
+            val reply = org.json.JSONObject(view.script.substringAfter("?.(").dropLast(1))
+            reply.remove("sessionID")
+            reply.put("result", org.json.JSONObject().put("legacy", true))
+            tools.complete(view, reply.toString())
+            assertEquals("{\"legacy\":true}", pending.await().toString())
         }
 
     @Test
     fun cancelledAttemptCannotExecuteFrontendCode() =
         runTest {
-            val result = tools.execute("select_item", JsonObject(emptyMap())) { false }
+            val result = tools.execute("select_item", JsonObject(emptyMap()), "conversation") { false }
             assertEquals(true, result?.containsKey("error"))
             assertEquals("", view.script)
         }
@@ -106,7 +155,7 @@ class FrontendVoiceToolsTest {
     fun resultFromPreviousPageCannotSucceedAfterRegistrationChanges() =
         runTest {
             view.deferResult = true
-            val request = async { tools.execute("select_item", JsonObject(emptyMap())) { true } }
+            val request = async { tools.execute("select_item", JsonObject(emptyMap()), "conversation") { true } }
             runCurrent()
             tools.clear(view)
             tools.register(
@@ -130,7 +179,7 @@ class FrontendVoiceToolsTest {
                 )
                 tools.clear(view)
                 assertEquals(listOf("new_item"), tools.declarations.map { it.name })
-                assertNull(tools.execute("select_item", JsonObject(emptyMap())) { true })
+                assertNull(tools.execute("select_item", JsonObject(emptyMap()), "conversation") { true })
                 tools.clear(newer)
             } finally {
                 newer.destroy()
@@ -148,10 +197,10 @@ class FrontendVoiceToolsTest {
                     """[{"name":"select_item","description":"Other","parameters":{}}]""",
                     org.json.JSONObject("""{"document":"document","token":"identity","scope":"scope"}"""),
                 )
-                tools.execute("select_item", JsonObject(emptyMap())) { true }
+                tools.execute("select_item", JsonObject(emptyMap()), "conversation") { true }
                 otherView.receive = { otherTools.complete(otherView, it) }
                 assertEquals("", otherView.script)
-                otherTools.execute("select_item", JsonObject(emptyMap())) { true }
+                otherTools.execute("select_item", JsonObject(emptyMap()), "conversation") { true }
                 assertEquals(true, otherView.script.contains("select_item"))
                 tools.clear(view)
                 assertEquals(listOf("select_item"), otherTools.declarations.map { it.name })
@@ -165,7 +214,7 @@ class FrontendVoiceToolsTest {
     fun identityChangeCompletesPendingCallBeforeOldPageReturns() =
         runTest {
             view.deferResult = true
-            val request = async { tools.execute("select_item", JsonObject(emptyMap())) { true } }
+            val request = async { tools.execute("select_item", JsonObject(emptyMap()), "conversation") { true } }
             runCurrent()
             tools.invalidate()
             runCurrent()
@@ -188,7 +237,13 @@ class FrontendVoiceToolsTest {
             )
             authorized = false
             guarded.invalidate()
-            assertEquals(true, guarded.execute("select_item", JsonObject(emptyMap())) { true }?.containsKey("error"))
+            assertEquals(
+                true,
+                guarded
+                    .execute("select_item", JsonObject(emptyMap()), "conversation") {
+                        true
+                    }?.containsKey("error"),
+            )
             assertEquals("", view.script)
             guarded.clear()
         }
@@ -197,11 +252,17 @@ class FrontendVoiceToolsTest {
     fun navigationCannotDeliverArgumentsOrResultsAcrossTheRegisteredOrigin() =
         runTest {
             view.pageURL = "https://foreign.test"
-            assertTrue(checkNotNull(tools.execute("select_item", JsonObject(emptyMap())) { true }).containsKey("error"))
+            assertTrue(
+                checkNotNull(
+                    tools.execute("select_item", JsonObject(emptyMap()), "conversation") {
+                        true
+                    },
+                ).containsKey("error"),
+            )
             assertEquals("", view.script)
             view.pageURL = "https://service.test"
             view.deferResult = true
-            val pending = async { tools.execute("select_item", JsonObject(emptyMap())) { true } }
+            val pending = async { tools.execute("select_item", JsonObject(emptyMap()), "conversation") { true } }
             runCurrent()
             view.pageURL = "https://foreign.test"
             view.callback?.onReceiveValue("{\"selected\":true}")
@@ -228,10 +289,10 @@ class FrontendVoiceToolsTest {
     fun asynchronousCompletionsAreCorrelatedAndDuplicatesCannotSettleAnotherCall() =
         runTest {
             view.deferResult = true
-            val first = async { tools.execute("select_item", JsonObject(emptyMap())) { true } }
+            val first = async { tools.execute("select_item", JsonObject(emptyMap()), "conversation") { true } }
             runCurrent()
             val firstReply = checkNotNull(view.callback)
-            val second = async { tools.execute("select_item", JsonObject(emptyMap())) { true } }
+            val second = async { tools.execute("select_item", JsonObject(emptyMap()), "conversation") { true } }
             runCurrent()
             val secondReply = checkNotNull(view.callback)
             secondReply.onReceiveValue("""{"selected":"second"}""")
@@ -249,7 +310,7 @@ class FrontendVoiceToolsTest {
         runTest {
             Dispatchers.setMain(kotlinx.coroutines.test.StandardTestDispatcher(testScheduler))
             view.deferResult = true
-            val timed = async { tools.execute("select_item", JsonObject(emptyMap())) { true } }
+            val timed = async { tools.execute("select_item", JsonObject(emptyMap()), "conversation") { true } }
             runCurrent()
             val late = checkNotNull(view.callback)
             advanceTimeBy(5_000)
@@ -260,7 +321,7 @@ class FrontendVoiceToolsTest {
                 .idle()
             assertTrue(view.script.contains("cancelGoModeVoiceTool"))
             late.onReceiveValue("""{"selected":true}""")
-            val canceled = async { tools.execute("select_item", JsonObject(emptyMap())) { true } }
+            val canceled = async { tools.execute("select_item", JsonObject(emptyMap()), "conversation") { true } }
             runCurrent()
             canceled.cancel()
             runCurrent()
@@ -284,7 +345,7 @@ class FrontendVoiceToolsTest {
     fun lostCallerAuthorityBeforeDispatchCannotExecuteFrontendCode() =
         runTest {
             var checks = 0
-            val result = tools.execute("select_item", JsonObject(emptyMap())) { ++checks == 1 }
+            val result = tools.execute("select_item", JsonObject(emptyMap()), "conversation") { ++checks == 1 }
             assertTrue(checkNotNull(result).containsKey("error"))
             assertEquals("", view.script)
         }

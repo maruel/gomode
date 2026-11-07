@@ -49,7 +49,9 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import okhttp3.mockwebserver.SocketPolicy
+import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
@@ -389,7 +391,7 @@ class ServerVoiceSwitchTest {
                                 if (id == bearerID && recovery == 0) {
                                     composeRule.waitUntil(30_000) {
                                         composeRule
-                                            .onAllNodesWithText(
+                                            .onAllNodesWithContentDescription(
                                                 "Retry connection",
                                             ).fetchSemanticsNodes()
                                             .isNotEmpty()
@@ -427,6 +429,14 @@ class ServerVoiceSwitchTest {
                                     .getJSONObject("result")
                                     .getJSONObject("result")
                                     .getString("source") == "bearer",
+                            )
+                            assertEquals(
+                                conversationID,
+                                cookie.toolResults
+                                    .single { it.optString("id") == "restored-$recovery" }
+                                    .getJSONObject("result")
+                                    .getJSONObject("result")
+                                    .getString("sessionID"),
                             )
                             assertTrue(cookie.sessions.size == 1)
                             assertTrue(cookie.setupMessages.size == 1)
@@ -791,10 +801,20 @@ class ServerVoiceSwitchTest {
         val sessions = CopyOnWriteArrayList<ControlledTransport>()
         val connections = CopyOnWriteArrayList<WebSocket>()
         val messages = CopyOnWriteArrayList<JSONObject>()
+
+        @Volatile var serviceItems: String? = null
+        private val withdrawItems = CountDownLatch(1)
+
+        fun withdrawServiceItems() {
+            serviceItems = null
+            withdrawItems.countDown()
+        }
+
         private var rtcGateway: ControlledRtcGateway? = null
         val setupMessages = CopyOnWriteArrayList<JSONObject>()
         val toolResults = CopyOnWriteArrayList<JSONObject>()
         val callMetadata = CopyOnWriteArrayList<JSONObject>()
+        val resourceMetadata = CopyOnWriteArrayList<JSONObject>()
         val secondPageRequested = CountDownLatch(1)
 
         @Volatile
@@ -827,13 +847,65 @@ class ServerVoiceSwitchTest {
 
                 mcpPath -> {
                     val rpc = JSONObject(request.body.readUtf8())
+                    if (rpc.getString("method") in listOf("resources/list", "resources/read")) {
+                        resourceMetadata += rpc.optJSONObject("params")?.optJSONObject("_meta") ?: JSONObject()
+                    }
                     if (failDiscovery && rpc.getString("method") == "server/discover") {
                         return MockResponse().setResponseCode(503)
+                    }
+                    if (rpc.getString("method") == "subscriptions/listen") {
+                        val session = rpc.optJSONObject("params")?.optJSONObject("_meta")?.optString("openai/session")
+                        // Voice setup observes the focus before the test permits its withdrawal.
+                        if (!session.isNullOrEmpty()) check(withdrawItems.await(30, TimeUnit.SECONDS))
+                        val changed =
+                            if (!session.isNullOrEmpty()) {
+                                "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/list_changed\",\"params\":{}}\n\n"
+                            } else {
+                                ""
+                            }
+                        return MockResponse().setHeader("Content-Type", "text/event-stream").setBody(
+                            "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\"," +
+                                "\"params\":{}}\n\n" +
+                                changed,
+                        )
                     }
                     val result =
                         when (rpc.getString("method")) {
                             "server/discover" -> {
-                                """{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"},"instructions":"Be brief.","ttlMs":60000,"cacheScope":"private"}"""
+                                """{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}${if (serviceItems != null) ",\"resources\":{\"subscribe\":true,\"listChanged\":true}" else ""}},"serverInfo":{"name":"fixture","version":"1"},"instructions":"Be brief.","ttlMs":60000,"cacheScope":"private"}"""
+                            }
+
+                            "resources/list" -> {
+                                val resources = JSONArray()
+                                if (serviceItems !=
+                                    null
+                                ) {
+                                    resources.put(JSONObject().put("uri", "gomode://items").put("name", "items"))
+                                }
+                                JSONObject()
+                                    .put("resultType", "complete")
+                                    .put("resources", resources)
+                                    .put("ttlMs", 0)
+                                    .put("cacheScope", "private")
+                                    .toString()
+                            }
+
+                            "resources/read" -> {
+                                val text = serviceItems ?: return MockResponse().setResponseCode(404)
+                                val contents =
+                                    JSONArray().put(
+                                        JSONObject()
+                                            .put(
+                                                "uri",
+                                                "gomode://items",
+                                            ).put("text", text),
+                                    )
+                                JSONObject()
+                                    .put("resultType", "complete")
+                                    .put("contents", contents)
+                                    .put("ttlMs", 0)
+                                    .put("cacheScope", "private")
+                                    .toString()
                             }
 
                             "tools/list" -> {
@@ -986,10 +1058,10 @@ class ServerVoiceSwitchTest {
                     val revocation = if (bearer) "{bearerToken:null}" else "{authChanging:true}"
                     val tools =
                         """
-                        window.executeGoModeVoiceTool = (name,args) => {
+                        window.executeGoModeVoiceTool = (name,args,context) => {
                           if (window.holdTool) { fetch('/pending-tool'); while (true) {} }
                           if (name === 'revoke') { fixtureAuth(JSON.stringify($revocation)); return {}; }
-                          return {source:'${if (bearer) "bearer" else "cookie"}',value:args.value};
+                          return {source:'${if (bearer) "bearer" else "cookie"}',value:args.value,sessionID:context.sessionID};
                         };
                         fixtureTools(JSON.stringify([
                           {name:'echo',description:'Echo from this page',parameters:{type:'object',properties:{value:{type:'string'}}}},
@@ -1023,6 +1095,12 @@ class ServerVoiceSwitchTest {
                     send("""{"kind":"session.ready"}""")
                 }
 
+                "user.message" -> {
+                    // This controlled fixture produces no greeting audio, but
+                    // still completes the gateway turn before passive updates.
+                    send("""{"kind":"turn.status","state":"idle"}""")
+                }
+
                 "tool.result" -> {
                     toolResults += message
                     // Local-stack turns can finish without producing speech fragments.
@@ -1032,6 +1110,7 @@ class ServerVoiceSwitchTest {
         }
 
         override fun close() {
+            withdrawItems.countDown()
             rtcGateway?.close()
         }
 

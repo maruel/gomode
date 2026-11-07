@@ -2758,7 +2758,7 @@ class DeviceVoiceSessionTest {
         repository.settings.first { it.onDeviceEngine == engine }
     }
 
-    private fun localSetup(
+    private suspend fun localSetup(
         conversation: VoiceConversation,
         setup: VoiceSetup = testSetup(),
     ) = conversation.prepareLocal().copy(setup = setup)
@@ -2820,7 +2820,7 @@ class DeviceVoiceSessionTest {
             thinkingEarcon = thinkingEarcon,
             startupTiming = startupTiming,
             callController = calls,
-            setupProvider = setupProvider,
+            setupProvider = { setupProvider() },
             webSocketFactory = factory,
             ioDispatcher = ioDispatcher,
             engineFactory = engineFactory,

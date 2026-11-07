@@ -138,6 +138,14 @@ with ETag revalidation.
 
 MCP has no separate manifest field. Skills advertise it.
 
+`openai/session` in request `_meta` is the client's optional conversation
+identity, independent of the host login session. `mcp.Registry.Instructions`
+receives request metadata, and `mcp.SubscriptionRegistry.SubscribeResourceUpdates`
+receives the complete subscription params. Resource reads, including initial
+subscription snapshots and deduplication reads, receive that same metadata.
+The MCP handler stays stateless and does not issue session IDs. Hosts own
+session validation, bounded retention, authorization, and sessionless fallback.
+
 ## Skills
 
 A skill is a `SKILL.md` file. Its Markdown body instructs the model. Its YAML

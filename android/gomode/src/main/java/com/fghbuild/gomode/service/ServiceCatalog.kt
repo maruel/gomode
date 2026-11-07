@@ -1,4 +1,4 @@
-// Owns concurrent retained-service discovery, monitoring, readiness, and identity-pinned tool routing.
+// Owns retained-service discovery, background alerts, conversation-scoped context streams, and tool routing.
 package com.fghbuild.gomode.service
 
 import com.fghbuild.gomode.ui.ServiceBootstrapState
@@ -22,12 +22,14 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -38,6 +40,8 @@ import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+
+private const val NO_ACTIVE_SERVICE_ITEM_CONTEXT = "No active service item is reported."
 
 internal enum class ServiceReadiness(
     val text: String,
@@ -146,7 +150,89 @@ internal class ServiceCatalog(
     }
 
     // Globally bounded, explicitly sourced overview. Tool schemas/instructions/details are discovered on demand.
-    fun contextText(): String =
+    fun contextText(snapshots: Map<ServiceShellKey, ServiceMonitoringSnapshot>): String =
+        formatContextText(
+            snapshots.mapValues { (_, snapshot) ->
+                if (snapshot.activeItem == null) {
+                    "$NO_ACTIVE_SERVICE_ITEM_CONTEXT\n${snapshot.voiceContext}"
+                } else {
+                    snapshot.voiceContext
+                }
+            },
+        )
+
+    // The caller's scope owns these streams. They produce voice context only;
+    // the background catalog remains the sole owner of user-visible alerts.
+    fun monitorVoiceContext(
+        scope: CoroutineScope,
+        sessionID: String,
+    ): StateFlow<Map<ServiceShellKey, ServiceMonitoringSnapshot>> {
+        val snapshots = MutableStateFlow<Map<ServiceShellKey, ServiceMonitoringSnapshot>>(emptyMap())
+        scope.launch {
+            state
+                .map {
+                    members
+                        .mapNotNull { (key, participant) ->
+                            val prepared = participant.prepared
+                            prepared
+                                ?.mcp
+                                ?.takeIf {
+                                    participant.current(prepared) && it.capabilities.resources != null
+                                }?.let { key to it }
+                        }.toMap()
+                }.distinctUntilChanged()
+                .collectLatest { participants ->
+                    snapshots.value = emptyMap()
+                    coroutineScope {
+                        for ((key, mcp) in participants) {
+                            val participant = members[key] ?: continue
+                            val ready =
+                                participant.entry.state.value.bootstrap as? ServiceBootstrapState.Ready ?: continue
+                            launch {
+                                val monitor = ServiceMonitor(this, sessionID) { _, _ -> mcp.client }
+                                try {
+                                    monitor.start(key.url, ready.settings)
+                                    monitor.state.collect { value ->
+                                        if (members[key] !== participant ||
+                                            !mcp.authorization.isCurrent()
+                                        ) {
+                                            return@collect
+                                        }
+                                        val snapshot = value.snapshot
+                                        if (snapshot != null) {
+                                            snapshots.update { it + (key to snapshot) }
+                                        } else if (value.activeNotifications != null) {
+                                            snapshots.update { it - key }
+                                        }
+                                    }
+                                } finally {
+                                    monitor.stop()
+                                }
+                            }
+                        }
+                        awaitCancellation()
+                    }
+                }
+        }
+        return snapshots.asStateFlow()
+    }
+
+    // A voice baseline must be read with its conversation; background monitoring
+    // intentionally keeps a sessionless overview for notifications outside voice.
+    suspend fun voiceContextText(sessionID: String?): String {
+        val contexts = mutableMapOf<ServiceShellKey, String>()
+        for ((key, participant) in members.toMap()) {
+            val prepared = participant.prepared ?: continue
+            if (!participant.current(prepared)) continue
+            val mcp = prepared.mcp ?: continue
+            if (mcp.capabilities.resources == null) continue
+            contexts[key] = readInitialServiceContext(mcp.client, sessionID)
+            check(participant.current(prepared)) { "Service authentication changed during voice context discovery." }
+        }
+        return formatContextText(contexts)
+    }
+
+    private fun formatContextText(contexts: Map<ServiceShellKey, String>): String =
         buildString {
             append(
                 "This replaces the previous service overview; absent items are no longer visible.\n" +
@@ -161,14 +247,7 @@ internal class ServiceCatalog(
                     } else {
                         entry.readiness
                     }
-                val context =
-                    if (current) {
-                        entry.monitoring.snapshot
-                            ?.voiceContext
-                            .orEmpty()
-                    } else {
-                        ""
-                    }
+                val context = contexts[entry.key]?.takeIf { current } ?: NO_ACTIVE_SERVICE_ITEM_CONTEXT
                 val source = Json.encodeToString(listOf(entry.key.serviceID, entry.label, entry.key.url))
                 val body = "Server $source: ${readiness.text}\n$context\n"
                 if (length + body.take(2_000).length > 11_900) {
@@ -228,7 +307,7 @@ internal class ServiceCatalog(
                 if (!participant.current(prepared) || !isCurrent()) return catalogError("Caller or service changed.")
                 when (name) {
                     "discover_service" -> {
-                        participant.discover(prepared, isCurrent)
+                        participant.discover(prepared, sessionID, isCurrent)
                     }
 
                     "read_service_resource" -> {
@@ -239,7 +318,7 @@ internal class ServiceCatalog(
                                     Json.encodeToJsonElement(
                                         checkNotNull(
                                             prepared.mcp,
-                                        ).client.readResource(args.getValue("uri").jsonPrimitive.content),
+                                        ).client.readResource(args.getValue("uri").jsonPrimitive.content, sessionID),
                                     ),
                                 )
                             },
@@ -464,28 +543,41 @@ internal class ServiceCatalog(
 
         suspend fun discover(
             value: PreparedService,
+            sessionID: String?,
             isCurrent: () -> Boolean,
         ): McpToolResult {
             check(current(value) && isCurrent()) { "Caller or service changed before resource discovery." }
             val resources =
                 if (value.mcp?.capabilities?.resources != null) {
-                    checkNotNull(value.mcp).client.listResources()
+                    checkNotNull(value.mcp).client.listResources(sessionID)
                 } else {
                     emptyList()
                 }
             check(current(value) && isCurrent()) { "Caller or service changed during resource discovery." }
             val templates =
                 if (value.mcp?.capabilities?.resources != null) {
-                    checkNotNull(value.mcp).client.listResourceTemplates()
+                    checkNotNull(value.mcp).client.listResourceTemplates(sessionID)
                 } else {
                     emptyList()
                 }
             check(current(value) && isCurrent()) { "Caller or service changed during resource discovery." }
+            val instructions =
+                value.mcp
+                    ?.client
+                    ?.serverInstructions(sessionID)
+                    .orEmpty()
+            val context =
+                value.mcp
+                    ?.takeIf { it.capabilities.resources != null }
+                    ?.client
+                    ?.let { readInitialServiceContext(it, sessionID) }
+                    .orEmpty()
+            check(current(value) && isCurrent()) { "Caller or service changed during context discovery." }
             return McpToolResult(
                 buildJsonObject {
-                    put("instructions", value.mcp?.instructions.orEmpty())
+                    put("instructions", instructions)
                     put("instruction_scope", "Apply these instructions only when using this server.")
-                    put("context", monitoring.snapshot?.voiceContext.orEmpty())
+                    put("context", context)
                     put("mcp_tools", Json.encodeToJsonElement(value.mcp?.tools.orEmpty()))
                     put(
                         "frontend_tools",
@@ -536,8 +628,9 @@ internal class ServiceCatalog(
                             declarations.map { ToolDescriptor(name = it.name, inputSchema = it.parameters) },
                         )
                     validator.validate(tool, arguments)?.let { return catalogError(it) }
+                    val conversation = sessionID ?: return catalogError("Frontend tools require a voice conversation.")
                     val result =
-                        frontend.owner.execute(tool, arguments) {
+                        frontend.owner.execute(tool, arguments, conversation) {
                             current(value) && isCurrent() && frontend.owner.revision == frontend.revision
                         }
                             ?: return catalogError("Frontend tool is unavailable on its owning page.")

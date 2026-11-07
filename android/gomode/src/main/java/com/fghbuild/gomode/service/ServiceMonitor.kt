@@ -32,13 +32,19 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.time.Instant
 
 interface ServiceResourceClient {
-    suspend fun serverDiscover(): ServerDiscoverResult
+    suspend fun serverDiscover(sessionID: String? = null): ServerDiscoverResult
 
-    suspend fun listResources(): List<ResourceDescriptor>
+    suspend fun listResources(sessionID: String? = null): List<ResourceDescriptor>
 
-    suspend fun readResource(uri: String): ResourcesReadResult
+    suspend fun readResource(
+        uri: String,
+        sessionID: String? = null,
+    ): ResourcesReadResult
 
-    fun listenSubscriptions(notifications: SubscriptionFilter): Flow<JSONRPCNotification>
+    fun listenSubscriptions(
+        notifications: SubscriptionFilter,
+        sessionID: String? = null,
+    ): Flow<JSONRPCNotification>
 }
 
 data class ServiceNotification(
@@ -61,6 +67,7 @@ data class ServiceMonitorState(
 
 class ServiceMonitor(
     private val scope: CoroutineScope,
+    private val sessionID: String? = null,
     private val clientFactory: (endpointURL: String, protocolVersion: String) -> ServiceResourceClient,
 ) {
     private val _state = MutableStateFlow(ServiceMonitorState())
@@ -135,11 +142,11 @@ class ServiceMonitor(
 
     private suspend fun monitorOnce(client: ServiceResourceClient): MonitorRunResult {
         var plan = refreshPlan(client, publishEvents = false) ?: return MonitorRunResult.Disabled
-        val resourcesCapability = client.serverDiscover().capabilities.resources
+        val resourcesCapability = client.serverDiscover(sessionID).capabilities.resources
         val notifications = subscriptionFilter(plan, resourcesCapability) ?: return MonitorRunResult.Static
         val initial = InitialStateWindow()
         var delivered = false
-        client.listenSubscriptions(notifications).collect { notification ->
+        client.listenSubscriptions(notifications, sessionID).collect { notification ->
             delivered = true
             val initialState = notification.initialStatePayload()
             when {
@@ -171,7 +178,7 @@ class ServiceMonitor(
         client: ServiceResourceClient,
         publishEvents: Boolean,
     ): ServiceMonitoringPlan? {
-        val plan = serviceMonitoringPlan(client.listResources())
+        val plan = serviceMonitoringPlan(client.listResources(sessionID))
         if (plan == null) {
             _state.value = ServiceMonitorState(activeNotifications = emptyList())
             return null
@@ -188,7 +195,7 @@ class ServiceMonitor(
         client: ServiceResourceClient,
         plan: ServiceMonitoringPlan,
     ): ServiceMonitoringPlan? {
-        val newPlan = serviceMonitoringPlan(client.listResources())
+        val newPlan = serviceMonitoringPlan(client.listResources(sessionID))
         if (newPlan == null) {
             _state.value = ServiceMonitorState(activeNotifications = emptyList())
             return null
@@ -204,7 +211,7 @@ class ServiceMonitor(
         plan: ServiceMonitoringPlan,
         publishEvents: Boolean = true,
     ) {
-        val readResults = plan.resourceURIs.associateWith { uri -> client.readResource(uri) }
+        val readResults = plan.resourceURIs.associateWith { uri -> client.readResource(uri, sessionID) }
         applySnapshot(readResults, plan, publishEvents)
     }
 

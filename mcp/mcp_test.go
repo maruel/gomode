@@ -1,4 +1,4 @@
-// MCP protocol DTO behavior tests.
+// MCP protocol, caller metadata, and subscription behavior tests.
 
 package mcp
 
@@ -25,8 +25,15 @@ type noSubscriptionRegistry struct{ Registry }
 
 type metadataRegistry struct {
 	Registry
-	params ToolsCallParams
-	reads  []ResourcesReadParams
+	params       ToolsCallParams
+	reads        []ResourcesReadParams
+	instructions RequestMeta
+	subscription SubscriptionsListenParams
+}
+
+func (r *metadataRegistry) Instructions(_ context.Context, meta *RequestMeta) (string, error) {
+	r.instructions = *meta
+	return meta.Session, nil
 }
 
 func (r *metadataRegistry) ReadResource(_ context.Context, params *ResourcesReadParams) (ResourcesReadResult, error) {
@@ -34,7 +41,8 @@ func (r *metadataRegistry) ReadResource(_ context.Context, params *ResourcesRead
 	return ResourceJSON(params.URI, map[string]string{"timezone": params.Meta.UserLocation.Timezone})
 }
 
-func (*metadataRegistry) SubscribeResourceUpdates(context.Context, SubscriptionFilter) (iter.Seq2[ResourceUpdate, error], error) {
+func (r *metadataRegistry) SubscribeResourceUpdates(_ context.Context, params *SubscriptionsListenParams) (iter.Seq2[ResourceUpdate, error], error) {
+	r.subscription = *params
 	return func(yield func(ResourceUpdate, error) bool) {
 		yield(ResourceUpdate{ResourceURIs: []string{"test://resource"}}, nil)
 	}, nil
@@ -243,6 +251,58 @@ func TestHandler(t *testing.T) { //nolint:paralleltest // HandleMCP cases replac
 		})
 		t.Run("resource metadata", func(t *testing.T) {
 			t.Parallel()
+			t.Run("instructions", func(t *testing.T) {
+				t.Parallel()
+				t.Run("invalid released metadata", func(t *testing.T) {
+					t.Parallel()
+					r := &metadataRegistry{Registry: &subscriptionTestRegistry{}}
+					h := &Handler{Registry: r}
+					req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"_meta":{"openai/session":123}}}`))
+					w := httptest.NewRecorder()
+					h.HandleMCP(w, req)
+					var response JSONRPCResponse
+					if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+						t.Fatal(err)
+					}
+					if response.Error == nil || response.Error.Code != InvalidParamsCode {
+						t.Fatalf("response = %s, want invalid params", w.Body)
+					}
+				})
+				for _, method := range []string{"server/discover", "initialize"} {
+					t.Run(method, func(t *testing.T) {
+						t.Parallel()
+						r := &metadataRegistry{Registry: &subscriptionTestRegistry{}}
+						h := &Handler{Registry: r}
+						for _, session := range []string{"conversation-one", "conversation-two", ""} {
+							body := nativeMCPRequestJSON(method, "")
+							var request JSONRPCRequest
+							if err := json.Unmarshal([]byte(body), &request); err != nil {
+								t.Fatal(err)
+							}
+							p := RequestParams{Meta: RequestMeta{ProtocolVersion: ProtocolVersion, ClientInfo: Implementation{Name: "test", Version: "1"}, ClientCapabilities: ClientCapabilities{}, OpenAIRequestMeta: OpenAIRequestMeta{Session: session}}}
+							var err error
+							request.Params, err = json.Marshal(p)
+							if err != nil {
+								t.Fatal(err)
+							}
+							data, err := json.Marshal(request)
+							if err != nil {
+								t.Fatal(err)
+							}
+							req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", bytes.NewReader(data))
+							if method == "server/discover" {
+								req.Header.Set("Mcp-Protocol-Version", ProtocolVersion)
+								req.Header.Set("Mcp-Method", method)
+							}
+							w := httptest.NewRecorder()
+							h.HandleMCP(w, req)
+							if w.Code != http.StatusOK || r.instructions.Session != session {
+								t.Fatalf("instructions session = %q, want %q; response %s", r.instructions.Session, session, w.Body)
+							}
+						}
+					})
+				}
+			})
 			for _, version := range []string{ProtocolVersion, "2025-06-18", "2025-11-25"} {
 				t.Run(version, func(t *testing.T) {
 					t.Parallel()
@@ -269,17 +329,20 @@ func TestHandler(t *testing.T) { //nolint:paralleltest // HandleMCP cases replac
 				t.Parallel()
 				r := &metadataRegistry{Registry: &subscriptionTestRegistry{}}
 				h := &Handler{Registry: r}
-				body := `{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen","params":{"notifications":{"resourceSubscriptions":["test://resource"]},"_meta":{"io.modelcontextprotocol/protocolVersion":"` + ProtocolVersion + `","io.modelcontextprotocol/clientInfo":{"name":"test","version":"1"},"io.modelcontextprotocol/clientCapabilities":{},"openai/userLocation":{"timezone":"Asia/Kolkata"}}}}`
+				body := `{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen","params":{"notifications":{"resourceSubscriptions":["test://resource"]},"_meta":{"io.modelcontextprotocol/protocolVersion":"` + ProtocolVersion + `","io.modelcontextprotocol/clientInfo":{"name":"test","version":"1"},"io.modelcontextprotocol/clientCapabilities":{},"openai/session":"conversation-one","openai/userLocation":{"timezone":"Asia/Kolkata"}}}}`
 				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", strings.NewReader(body))
 				req.Header.Set("Mcp-Protocol-Version", ProtocolVersion)
 				req.Header.Set("Mcp-Method", "subscriptions/listen")
 				w := httptest.NewRecorder()
 				h.HandleMCP(w, req)
+				if r.subscription.Meta.Session != "conversation-one" {
+					t.Fatalf("subscription session = %q", r.subscription.Meta.Session)
+				}
 				if len(r.reads) != 2 || !strings.Contains(w.Body.String(), "Asia/Kolkata") {
 					t.Fatalf("missing subscription reads or initial state: reads=%+v response=%s", r.reads, w.Body)
 				}
 				for _, p := range r.reads {
-					if p.Meta.UserLocation.Timezone != "Asia/Kolkata" {
+					if p.Meta.UserLocation.Timezone != "Asia/Kolkata" || p.Meta.Session != "conversation-one" {
 						t.Fatalf("subscription read lost metadata: %+v", p)
 					}
 				}
@@ -493,7 +556,7 @@ func newSubscriptionTestRegistry() *subscriptionTestRegistry {
 	}
 }
 
-func (r *subscriptionTestRegistry) Instructions(context.Context) (string, error) {
+func (r *subscriptionTestRegistry) Instructions(context.Context, *RequestMeta) (string, error) {
 	return "", nil
 }
 
@@ -530,14 +593,14 @@ func (r *subscriptionTestRegistry) ReadResource(context.Context, *ResourcesReadP
 	return ResourcesReadResult{ResultType: ResultTypeComplete, Contents: []ResourceContent{{URI: "test://resource", MimeType: "application/json", Text: r.resource}}}, nil
 }
 
-func (r *subscriptionTestRegistry) SubscribeResourceUpdates(ctx context.Context, filter SubscriptionFilter) (iter.Seq2[ResourceUpdate, error], error) {
+func (r *subscriptionTestRegistry) SubscribeResourceUpdates(ctx context.Context, params *SubscriptionsListenParams) (iter.Seq2[ResourceUpdate, error], error) {
 	return func(yield func(ResourceUpdate, error) bool) {
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-r.changes:
-				if !yield(ResourceUpdate{ResourceURIs: filter.ResourceSubscriptions}, nil) {
+				if !yield(ResourceUpdate{ResourceURIs: params.Notifications.ResourceSubscriptions}, nil) {
 					return
 				}
 			case <-r.heartbeats:

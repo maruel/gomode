@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, it } from "node:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { A, Router } from "@solidjs/router";
-import { createSignal } from "solid-js";
+import { createEffect, createSignal, onCleanup } from "solid-js";
 import { expect, vi } from "../tests/expect";
 import { deferred } from "../tests/deferred";
 import BrowserVoiceShell, { type BrowserVoiceShellProps } from "./BrowserVoiceShell";
@@ -27,9 +27,12 @@ const manifest = {
 };
 function mount(
   preparation: () => FrontendPreparationScope,
-  options?: Pick<BrowserVoiceShellProps, "authorize" | "mcpEndpoint" | "gatewayHeaders" | "messages">,
+  options?: Pick<
+    BrowserVoiceShellProps,
+    "authorize" | "mcpEndpoint" | "gatewayHeaders" | "prepareSession" | "messages" | "children"
+  >,
 ) {
-  const configuration = options ?? {};
+  const { children, ...configuration } = options ?? {};
   return render(() => (
     <Router
       root={() => (
@@ -44,7 +47,7 @@ function mount(
             onError={errors}
             {...configuration}
           >
-            {() => <div data-testid="voice-runtime">Runtime mounted</div>}
+            {children ?? (() => <div data-testid="voice-runtime">Runtime mounted</div>)}
           </BrowserVoiceShell>
         </HostModeProvider>
       )}
@@ -73,14 +76,71 @@ afterEach(() => {
   voiceSession.disconnect();
 });
 
-it("owns service notification reads with the connected runtime and rejects retired results", async () => {
+it("replaces host resource subscriptions when a new voice conversation starts", async () => {
+  const close = vi.fn();
+  const subscribe = vi.spyOn(mcpClient, "subscribeResources").mockReturnValue({ close });
+  const prepareAudio = vi.spyOn(voiceSession, "prepareAudio").mockImplementation(() => {});
+  try {
+    scope.setTools([]);
+    scope.setDataReady(true);
+    mount(() => scope, {
+      children: (runtime) => {
+        createEffect(() => {
+          const subscription = runtime.mcp.subscribeResources({ resourceSubscriptions: ["gomode://items"] }, () => {});
+          onCleanup(() => subscription.close());
+        });
+        return <div data-testid="voice-runtime">Runtime mounted</div>;
+      },
+    });
+    await screen.findByTestId("voice-runtime");
+    const previous = voiceSession.conversationID;
+    expect(subscribe.mock.calls[0]?.[0]?.sessionID).toBe(previous);
+    await voiceSession.connect();
+    expect(voiceSession.conversationID).not.toBe(previous);
+    await waitFor(() => expect(subscribe).toHaveBeenCalledTimes(2));
+    expect(close).toHaveBeenCalledOnce();
+    expect(subscribe.mock.calls[1]?.[0]?.sessionID).toBe(voiceSession.conversationID);
+  } finally {
+    prepareAudio.mockRestore();
+    subscribe.mockRestore();
+  }
+});
+
+it("captures the host preparation callback and aborts it when its runtime retires", async () => {
+  const gate = deferred<void>();
+  const prepare = vi.fn(async (_sessionID: string, _signal: AbortSignal) => gate.promise);
+  const audio = vi.spyOn(voiceSession, "prepareAudio").mockImplementation(() => {});
+  const reads = vi.spyOn(mcpClient, "readAdvertisedTextResource");
+  try {
+    scope.setTools([]);
+    scope.setDataReady(true);
+    mount(() => scope, { prepareSession: prepare });
+    await screen.findByTestId("voice-runtime");
+    const pending = voiceSession.connect();
+    await waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+    expect(prepare.mock.calls[0]?.[0]).toBe(voiceSession.conversationID);
+    expect(reads).not.toHaveBeenCalled();
+    scope.setDataReady(false);
+    await waitFor(() => expect(screen.queryByTestId("voice-runtime")).toBeNull());
+    expect(prepare.mock.calls[0]?.[1].aborted).toBe(true);
+    gate.resolve();
+    await pending;
+    expect(reads).not.toHaveBeenCalled();
+  } finally {
+    gate.resolve();
+    audio.mockRestore();
+    reads.mockRestore();
+  }
+});
+
+it("owns service context reads with the connected runtime and rejects retired results", async () => {
   const capabilities = vi.spyOn(mcpClient, "resourceCapabilities").mockResolvedValue({ subscribe: true });
   const read = vi.spyOn(mcpClient, "readAdvertisedTextResource");
   const subscribe = vi.spyOn(mcpClient, "subscribeResources");
   const inject = vi.spyOn(voiceSession, "injectText").mockImplementation(() => {});
   const close = vi.fn();
   const pending = deferred<string | null>();
-  read.mockReturnValueOnce(pending.promise);
+  read.mockImplementation(() => pending.promise);
   subscribe.mockReturnValue({ close });
   try {
     scope.setTools([]);
@@ -89,10 +149,19 @@ it("owns service notification reads with the connected runtime and rejects retir
     await screen.findByTestId("voice-runtime");
     expect(read).not.toHaveBeenCalled();
     voiceSession.setState((state) => ({ ...state, connected: true }));
-    await waitFor(() => expect(read).toHaveBeenCalledWith("gomode://notifications", expect.any(AbortSignal)));
+    await waitFor(() =>
+      expect(read).toHaveBeenCalledWith("gomode://notifications", expect.any(AbortSignal), {
+        sessionID: voiceSession.conversationID,
+      }),
+    );
+    await waitFor(() =>
+      expect(read).toHaveBeenCalledWith("gomode://items", expect.any(AbortSignal), {
+        sessionID: voiceSession.conversationID,
+      }),
+    );
     scope.setDataReady(false);
     await waitFor(() => expect(screen.queryByTestId("voice-runtime")).toBeNull());
-    expect(read.mock.calls[0]![1]?.aborted).toBe(true);
+    expect(read.mock.calls.every(([, signal]) => signal?.aborted)).toBe(true);
     pending.resolve(JSON.stringify([{ id: "old", title: "Retired alert", body: "Other account" }]));
     await pending.promise;
     expect(inject).not.toHaveBeenCalled();

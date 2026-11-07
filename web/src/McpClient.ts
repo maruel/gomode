@@ -1,6 +1,5 @@
 // MCP JSON-RPC client for server guidance, tools, and resources used by browser Go Mode.
 
-import { createApiClient as createMcpApiClient } from "../../sdk/mcp/ts/v1/api.gen";
 import type { RequestMeta, ResourcesCapability, ServerDiscoverResult } from "../../sdk/mcp/ts/v1/types.gen";
 import { readMcpNotificationStream } from "./McpEvents";
 
@@ -50,7 +49,7 @@ function configuredEndpoint(): string {
 
 type JsonObject = Record<string, unknown>;
 
-function mcpMeta(locale?: string): RequestMeta {
+function mcpMeta(options?: McpToolCallOptions): RequestMeta {
   return {
     "io.modelcontextprotocol/protocolVersion": MCP_PROTOCOL_VERSION,
     "io.modelcontextprotocol/clientInfo": {
@@ -58,7 +57,8 @@ function mcpMeta(locale?: string): RequestMeta {
       version: CLIENT_VERSION,
     },
     "io.modelcontextprotocol/clientCapabilities": {},
-    "openai/locale": locale,
+    "openai/locale": options?.locale,
+    "openai/session": options?.sessionID,
     "openai/userAgent": `gomode-web/${CLIENT_VERSION}`,
     "openai/userLocation": { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone },
   };
@@ -83,10 +83,7 @@ async function mcpRequest(
   };
   if (opts.name !== undefined) headers["Mcp-Name"] = opts.name;
 
-  const meta = mcpMeta(opts.locale);
-  if (method === "tools/call") {
-    meta["openai/session"] = opts.sessionID;
-  }
+  const meta = mcpMeta(opts);
 
   const resp = await authenticatedFetch(configuredEndpoint(), {
     method: "POST",
@@ -125,21 +122,24 @@ export interface McpToolDescriptor {
   annotations?: McpToolAnnotations;
 }
 
-async function mcpServerInstructions(): Promise<string> {
-  const api = createMcpApiClient((path, init) => authenticatedFetch(`${configuredEndpoint()}${path}`, init));
-  return api.serverInstructions();
+async function mcpServerInstructions(options?: McpToolCallOptions): Promise<string> {
+  const discovery = (await mcpRequest("server/discover", {}, { ...options })) as ServerDiscoverResult;
+  return discovery.instructions ?? "";
 }
 
-async function mcpResourceCapabilities(signal?: AbortSignal): Promise<ResourcesCapability | null> {
-  const discovery = (await mcpRequest("server/discover", {}, { signal })) as ServerDiscoverResult;
+async function mcpResourceCapabilities(
+  signal?: AbortSignal,
+  options?: McpToolCallOptions,
+): Promise<ResourcesCapability | null> {
+  const discovery = (await mcpRequest("server/discover", {}, { ...options, signal })) as ServerDiscoverResult;
   return discovery.capabilities.resources ?? null;
 }
 
-async function mcpListTools(): Promise<McpToolDescriptor[]> {
+async function mcpListTools(options?: McpToolCallOptions): Promise<McpToolDescriptor[]> {
   const tools: McpToolDescriptor[] = [];
   let cursor: string | undefined;
   do {
-    const result = (await mcpRequest("tools/list", cursor === undefined ? {} : { cursor }, {})) as {
+    const result = (await mcpRequest("tools/list", cursor === undefined ? {} : { cursor }, { ...options })) as {
       tools: McpToolDescriptor[];
       nextCursor?: string;
     };
@@ -152,11 +152,18 @@ async function mcpListTools(): Promise<McpToolDescriptor[]> {
 }
 
 /** Read a text resource when its URI is advertised to this scoped client. */
-async function mcpReadAdvertisedTextResource(uri: string, signal?: AbortSignal): Promise<string | null> {
+async function mcpReadAdvertisedTextResource(
+  uri: string,
+  signal?: AbortSignal,
+  options?: McpToolCallOptions,
+): Promise<string | null> {
   let cursor: string | undefined;
   let advertised = false;
   do {
-    const page = (await mcpRequest("resources/list", cursor === undefined ? {} : { cursor }, { signal })) as {
+    const page = (await mcpRequest("resources/list", cursor === undefined ? {} : { cursor }, {
+      ...options,
+      signal,
+    })) as {
       resources: Array<{ uri: string }>;
       nextCursor?: string;
     };
@@ -165,7 +172,7 @@ async function mcpReadAdvertisedTextResource(uri: string, signal?: AbortSignal):
   } while (!advertised && cursor !== undefined && cursor !== "");
   if (!advertised) return null;
 
-  const result = (await mcpRequest("resources/read", { uri }, { name: uri, signal })) as {
+  const result = (await mcpRequest("resources/read", { uri }, { ...options, name: uri, signal })) as {
     contents: Array<{ uri: string; text?: string }>;
   };
   const text = result.contents.find((content) => content.uri === uri)?.text;
@@ -253,7 +260,7 @@ export interface McpResourceNotification {
 }
 
 /** Host options for an MCP resource subscription. */
-export interface McpSubscribeOptions {
+export interface McpSubscribeOptions extends McpToolCallOptions {
   /** Resource URIs to watch for content changes. */
   resourceSubscriptions?: string[];
   /** Also report resource list changes. */
@@ -321,7 +328,7 @@ function subscribeMcpResources(
           jsonrpc: "2.0",
           id: ++_idCounter,
           method: "subscriptions/listen",
-          params: { notifications: filter, _meta: mcpMeta() },
+          params: { notifications: filter, _meta: mcpMeta(options) },
         }),
         signal: controller.signal,
       });

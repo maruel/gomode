@@ -130,7 +130,10 @@ func (h *Handler) handleCompatResourceSubscription(w http.ResponseWriter, r *htt
 		// Authorize subscription under this POST's current principal, not the
 		// initializer's context. Cancellation also releases registry setup work.
 		ctx, cancel := context.WithCancel(r.Context())
-		_, err := h.Registry.(SubscriptionRegistry).SubscribeResourceUpdates(ctx, SubscriptionFilter{ResourceSubscriptions: []string{params.URI}})
+		_, err := h.Registry.(SubscriptionRegistry).SubscribeResourceUpdates(ctx, &SubscriptionsListenParams{
+			Meta:          params.Meta,
+			Notifications: SubscriptionFilter{ResourceSubscriptions: []string{params.URI}},
+		})
 		cancel()
 		if err != nil {
 			h.writeResponse(w, http.StatusOK, JSONRPCResponse{JSONRPC: jsonRPCVersion, ID: req.ID, Error: registryError(err)})
@@ -242,7 +245,9 @@ func (h *Handler) streamCompatResources(ctx context.Context, stream *sse.Stream,
 	var updates <-chan compatResourceUpdate
 	var wg sync.WaitGroup
 	if filter.ResourcesListChanged || len(filter.ResourceSubscriptions) > 0 {
-		changes, err := h.Registry.(SubscriptionRegistry).SubscribeResourceUpdates(ctx, filter)
+		// Released GET streams carry no request metadata. Their invalidations
+		// remain sessionless; metadata-bearing resource POSTs retain their scope.
+		changes, err := h.Registry.(SubscriptionRegistry).SubscribeResourceUpdates(ctx, &SubscriptionsListenParams{Notifications: filter})
 		if err != nil {
 			return false, err
 		}

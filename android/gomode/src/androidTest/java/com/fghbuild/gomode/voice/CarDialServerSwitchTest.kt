@@ -1,4 +1,4 @@
-// Exercises car-owned shared conversations using the retained authenticated service pages and frontend tools.
+// Exercises car-owned conversations across services, live item focus withdrawal, and frontend tools.
 package com.fghbuild.gomode.voice
 
 import android.Manifest
@@ -85,6 +85,7 @@ class CarDialServerSwitchTest {
         MockWebServer().use { cookieServer ->
             MockWebServer().use { bearerServer ->
                 val cookie = ServerVoiceSwitchTest.HostedVoiceFixture(false)
+                cookie.serviceItems = """{"items":[{"id":"focused-item","title":"Focused work","active":true}]}"""
                 // This journey keeps identity stable. The manual handoff fixture separately
                 // exercises page reload/auth clearing; explicit clearing must end a car call.
                 val bearer = ServerVoiceSwitchTest.HostedVoiceFixture(true, reloadBearer = false)
@@ -143,11 +144,39 @@ class CarDialServerSwitchTest {
                         cookie.sessions.size == 1 &&
                             application.carDialVoiceOwner.state.value.status == CarDialStatus.CONNECTED
                     }
+                    assertTrue(
+                        cookie.setupMessages
+                            .single()
+                            .getJSONObject("context")
+                            .getString("text")
+                            .contains("Active service item: focused-item."),
+                    )
+                    val beforeFocusWithdrawal = cookie.messages.size
+                    cookie.withdrawServiceItems()
+                    awaitCondition {
+                        cookie.messages.drop(beforeFocusWithdrawal).any {
+                            it.optString("kind") == "context.update" &&
+                                it.getJSONObject("context").getString("text").let { text ->
+                                    text.contains("No active service item is reported.") &&
+                                        !text.contains("Active service item: focused-item.")
+                                }
+                        }
+                    }
                     assertTrue(device.wait(Until.hasObject(By.desc("End voice")), 15_000))
                     assertTrue(device.wait(Until.hasObject(By.text("Hosted service")), 15_000))
                     probe(cookie, requireNotNull(cookieID), cookie)
                     cookie.sessions.single().send(switchCommand(requireNotNull(bearerID)))
                     awaitCondition { repository.settings.value.activeServiceId == bearerID }
+                    awaitCondition {
+                        cookie.messages.any {
+                            it.optString("kind") == "context.update" &&
+                                it
+                                    .getJSONObject("context")
+                                    .getString("text")
+                                    .substringBefore('\n')
+                                    .contains(bearerID)
+                        }
+                    }
                     assertEquals(1, cookie.sessions.size)
                     assertEquals(0, bearer.sessions.size)
                     probe(cookie, requireNotNull(bearerID), bearer)
@@ -178,9 +207,21 @@ class CarDialServerSwitchTest {
                             .getJSONObject("result")
                             .getString("source") == "bearer",
                     )
+                    assertEquals(
+                        conversation,
+                        cookie.toolResults
+                            .single { it.optString("id") == "frontend" }
+                            .getJSONObject("result")
+                            .getJSONObject("result")
+                            .getString("sessionID"),
+                    )
+                    val scopedResources = cookie.resourceMetadata.filter { it.has("openai/session") }
+                    assertTrue(scopedResources.isNotEmpty())
+                    assertTrue(scopedResources.all { it.getString("openai/session") == conversation })
                     assertEquals(1, cookie.sessions.size)
                     assertEquals(0, bearer.sessions.size)
                 } finally {
+                    cookie.withdrawServiceItems()
                     instrumentation.runOnMainSync { application.carDialVoiceOwner.cancel() }
                     instrumentation.waitForIdleSync()
                     instrumentation.runOnMainSync {

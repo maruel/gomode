@@ -355,7 +355,8 @@ internal class VoiceSession(
             _state.update { it.copy(usage = null, toolHistory = emptyList()) }
         }
         try {
-            voiceConversation.begin(preserveTranscript)
+            voiceConversation.begin(preserveTranscript, this.conversationID)
+            this.conversationID = voiceConversation.sessionID
         } catch (e: VoiceSetupException) {
             setError(e.message ?: "Gateway conversation is unavailable")
             return

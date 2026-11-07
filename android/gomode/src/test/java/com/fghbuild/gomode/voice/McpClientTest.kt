@@ -151,7 +151,7 @@ class McpClientTest {
                         cookieProvider = { null },
                     )
 
-                assertEquals("Use the tools.", client.serverInstructions())
+                assertEquals("Use the tools.", client.serverInstructions("conversation-one"))
 
                 val request = server.takeRequest()
                 val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
@@ -161,6 +161,16 @@ class McpClientTest {
                 assertEquals("2.0", body["jsonrpc"]?.jsonPrimitive?.content)
                 assertNotNull(body["id"])
                 assertEquals("server/discover", body["method"]?.jsonPrimitive?.content)
+                assertEquals(
+                    "conversation-one",
+                    body["params"]
+                        ?.jsonObject
+                        ?.get("_meta")
+                        ?.jsonObject
+                        ?.get("openai/session")
+                        ?.jsonPrimitive
+                        ?.content,
+                )
                 assertEquals(
                     null,
                     body["params"]

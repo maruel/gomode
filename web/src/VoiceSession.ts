@@ -1,4 +1,4 @@
-// Browser voice sessions via WebRTC and speech, dispatching MCP and frontend tools.
+// Browser voice sessions prepare host context before setup and dispatch conversation-bound tools.
 
 import { BrowserSpeechBuffer } from "./BrowserSpeechBuffer";
 import { MicrophoneLevel } from "./MicrophoneLevel";
@@ -108,6 +108,8 @@ type ServiceAuthorizationProvider = () => Promise<ServiceAuthorization>;
 let serviceAuthorizationProvider: ServiceAuthorizationProvider | null = null;
 let gatewayBearerTokenProvider: (() => string | null | Promise<string | null>) | null = null;
 let gatewayHeadersProvider: (() => HeadersInit) | null = null;
+export type PrepareVoiceSession = (sessionID: string, signal: AbortSignal) => Promise<void>;
+let sessionPreparation: PrepareVoiceSession | null = null;
 
 /** Configure gateway authorization; host headers are captured per session and sent only to same-origin endpoints. */
 export function configureVoiceGateway(
@@ -115,6 +117,7 @@ export function configureVoiceGateway(
   provider: ServiceAuthorizationProvider | null,
   tokenProvider?: () => string | null | Promise<string | null>,
   headersProvider?: () => HeadersInit,
+  prepareSession?: PrepareVoiceSession,
 ): void {
   const u = new URL(baseURL, window.location.origin);
   if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("Voice gateway URL must use HTTP or HTTPS");
@@ -122,6 +125,7 @@ export function configureVoiceGateway(
   serviceAuthorizationProvider = provider;
   gatewayBearerTokenProvider = tokenProvider ?? null;
   gatewayHeadersProvider = headersProvider ?? null;
+  sessionPreparation = prepareSession ?? null;
   setGatewayVersion((version) => version + 1);
 }
 
@@ -199,6 +203,7 @@ interface GatewaySnapshot {
   origin: string;
   serviceProvider: ServiceAuthorizationProvider | null;
   bearerProvider: BearerTokenProvider | null;
+  prepareSession: PrepareVoiceSession | null;
   api: ReturnType<typeof voicegatewaySDK.createApiClient>;
 }
 
@@ -213,6 +218,7 @@ function gatewaySnapshot(): GatewaySnapshot {
     origin,
     serviceProvider,
     bearerProvider,
+    prepareSession: sessionPreparation,
     api: voicegatewaySDK.createApiClient((path, init) => gatewayFetch(origin, bearerProvider, headers, path, init)),
   };
 }
@@ -822,7 +828,13 @@ export class VoiceSession {
   private _sessionComposable = false;
   private _sessionSpeechModelIDs: Record<SpeechStage, string | null> = { input: null, output: null };
   private _sessionVoiceName: string | null = null;
-  private _conversationID = newConversationID();
+  private readonly _conversationID: () => string;
+  private readonly _setConversationID: (value: string) => string;
+
+  /** Identity shared by setup, tools, and resource subscriptions in this conversation. */
+  get conversationID(): string {
+    return this._conversationID();
+  }
   private _frontendInvocationLifetime = new AbortController();
   private _frontendTools: FrontendVoiceToolsSnapshot | null = null;
   private _pc: RTCPeerConnection | null = null;
@@ -882,6 +894,9 @@ export class VoiceSession {
     } catch (error) {
       console.warn("Could not load the voice setup", error);
     }
+    const [conversationID, setConversationID] = createSignal(newConversationID());
+    this._conversationID = conversationID;
+    this._setConversationID = setConversationID;
     const [state, setState] = createStore<VoiceState>({
       setupMode: setup?.mode ?? "parts",
       speechInput: setup?.mode === "all-in-one" ? "gateway" : (setup?.partsInput ?? savedSpeechLocation("Input")),
@@ -1871,7 +1886,7 @@ export class VoiceSession {
   /** Start a new voice session via WebRTC data channel through the host backend. */
   async connect(): Promise<void> {
     this._frontendTools = captureFrontendVoiceTools();
-    this._conversationID = newConversationID();
+    this._setConversationID(newConversationID());
     this._sessionGateway = gatewaySnapshot();
     this._sessionVoiceName = null;
     try {
@@ -1905,6 +1920,23 @@ export class VoiceSession {
     }
     this._reconnectEnabled = true;
     await this._connect(false);
+  }
+
+  private async _prepareHostSession(snapshot: GatewaySnapshot, attempt: number, signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted || attempt !== this._connectionAttempt) return false;
+    try {
+      await snapshot.prepareSession?.(this.conversationID, signal);
+    } catch (error) {
+      if (signal.aborted || attempt !== this._connectionAttempt) return false;
+      if (error instanceof DOMException && error.name === "AbortError") {
+        this.disconnect();
+        return false;
+      }
+      // Selected-item context is advisory; an ordinary publication failure must
+      // not prevent the otherwise independent voice transport from starting.
+      console.warn("Could not prepare voice context", error);
+    }
+    return !signal.aborted && attempt === this._connectionAttempt;
   }
 
   private async _connect(preserveTranscript: boolean): Promise<void> {
@@ -1941,14 +1973,17 @@ export class VoiceSession {
 
     try {
       const snapshot = this._sessionGateway!;
+      if (!(await this._prepareHostSession(snapshot, attempt, this._frontendInvocationLifetime.signal))) return;
       const choiceID = await this._resolveSessionChoice(snapshot, attempt);
       if (choiceID === null) return;
       const [systemInstruction, mcpTools, serviceItemsText] = await Promise.all([
-        mcpClient.serverInstructions(),
-        mcpClient.listTools(),
+        mcpClient.serverInstructions({ sessionID: this.conversationID }),
+        mcpClient.listTools({ sessionID: this.conversationID }),
         // Initial service context is advisory. A resource failure must not make
         // the independent voice transport unavailable.
-        mcpClient.readAdvertisedTextResource(GO_MODE_ITEMS_RESOURCE_URI).catch(() => null),
+        mcpClient
+          .readAdvertisedTextResource(GO_MODE_ITEMS_RESOURCE_URI, undefined, { sessionID: this.conversationID })
+          .catch(() => null),
       ]);
       if (attempt !== this._connectionAttempt) return;
       // This client owns the bounded session baseline and refreshes it on every
@@ -2138,12 +2173,15 @@ export class VoiceSession {
     }
     try {
       const snapshot = this._sessionGateway!;
+      if (!(await this._prepareHostSession(snapshot, attempt, this._frontendInvocationLifetime.signal))) return;
       const choiceID = await this._resolveSessionChoice(snapshot, attempt);
       if (choiceID === null) return;
       const [systemInstruction, tools, serviceItems, service] = await Promise.all([
-        mcpClient.serverInstructions(),
-        mcpClient.listTools(),
-        mcpClient.readAdvertisedTextResource(GO_MODE_ITEMS_RESOURCE_URI).catch(() => null),
+        mcpClient.serverInstructions({ sessionID: this.conversationID }),
+        mcpClient.listTools({ sessionID: this.conversationID }),
+        mcpClient
+          .readAdvertisedTextResource(GO_MODE_ITEMS_RESOURCE_URI, undefined, { sessionID: this.conversationID })
+          .catch(() => null),
         snapshot.serviceProvider?.() ?? Promise.resolve(null),
       ]);
       if (attempt !== this._connectionAttempt) return;
@@ -2949,10 +2987,13 @@ export class VoiceSession {
   private async _handleToolCall(msg: ToolCall, attempt: number, channel: VoiceChannel): Promise<void> {
     if (!this._ownsChannel(attempt, channel)) return;
     if (!msg.id || !msg.name) return;
+    const sessionID = this.conversationID;
     this._update((s) => {
       const sequence = (s.toolHistory.at(-1)?.sequence ?? 0) + 1;
       s.toolHistory = [...s.toolHistory.slice(-31), { sequence, name: msg.name }];
     });
+    // Store observers can retire or replace this conversation synchronously.
+    if (!this._ownsChannel(attempt, channel)) return;
     if (msg.name === HANG_UP_TOOL_NAME) {
       this.disconnect();
       return;
@@ -2962,6 +3003,7 @@ export class VoiceSession {
       this._update((s) => {
         s.activeTool = msg.name;
       });
+      if (!this._ownsChannel(attempt, channel)) return;
       const frontend = this._frontendTools?.declarations.some((tool) => tool.name === msg.name)
         ? this._frontendTools
         : null;
@@ -2970,19 +3012,21 @@ export class VoiceSession {
             structuredContent: await frontend.execute(
               msg.name,
               msg.args ?? {},
+              sessionID,
               this._frontendInvocationLifetime.signal,
             ),
             isError: false,
           }
         : await mcpClient.callTool(msg.name, msg.args ?? {}, {
             locale: this.state.languageTag,
-            sessionID: this._conversationID,
+            sessionID,
           });
       if (!this._ownsChannel(attempt, channel)) return;
       if (frontend && result.structuredContent["error"] !== undefined) result.isError = true;
       this._update((s) => {
         s.activeTool = null;
       });
+      if (!this._ownsChannel(attempt, channel)) return;
 
       // Surface tool errors in the transcript.
       if (result.isError) {
@@ -3001,12 +3045,14 @@ export class VoiceSession {
         });
       }
 
+      if (!this._ownsChannel(attempt, channel)) return;
       this._sendToolResult(channel, msg.id, msg.name, result.structuredContent);
     } catch (e: unknown) {
       if (!this._ownsChannel(attempt, channel)) return;
       this._update((s) => {
         s.activeTool = null;
       });
+      if (!this._ownsChannel(attempt, channel)) return;
       const errMsg = e instanceof Error ? e.message : "Unknown error";
       this._update((s) => {
         s.transcript = [
@@ -3019,6 +3065,7 @@ export class VoiceSession {
           },
         ];
       });
+      if (!this._ownsChannel(attempt, channel)) return;
       this._sendToolResult(channel, msg.id, msg.name, { error: errMsg });
     }
   }

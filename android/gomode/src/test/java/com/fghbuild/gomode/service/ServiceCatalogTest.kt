@@ -14,10 +14,15 @@ import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.ui.web.completeFrontendPreparation
 import com.fghbuild.gomode.voice.McpToolResult
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
@@ -59,6 +64,95 @@ class ServiceCatalogTest {
     fun tearDown() {
         Dispatchers.resetMain()
     }
+
+    @Test
+    fun `voice context streams use their conversation and stop when the participant is removed`() =
+        runTest {
+            Fixture("scoped").use { fixture ->
+                fixture.scopedItems = true
+                fixture.supportsSubscriptions = true
+                val entry = fixture.entry("a")
+                val catalog = ServiceCatalog(backgroundScope)
+                val lifetime = SupervisorJob()
+                val voiceScope = CoroutineScope(backgroundScope.coroutineContext + lifetime)
+                try {
+                    catalog.reconcile(mapOf(entry.key to entry), emptyMap())
+                    val background = catalog.state.first { it[entry.key]?.monitoring?.snapshot != null }
+                    val contexts = catalog.monitorVoiceContext(voiceScope, "conversation-one")
+                    val snapshot = contexts.first { it[entry.key]?.items?.singleOrNull()?.title == "conversation-one" }
+                    assertEquals(
+                        "conversation-one",
+                        snapshot
+                            .getValue(entry.key)
+                            .items
+                            .single()
+                            .title,
+                    )
+                    fixture.subscriptionSessions.first { "conversation-one" in it }
+                    assertEquals(
+                        "sessionless",
+                        background[entry.key]
+                            ?.monitoring
+                            ?.snapshot
+                            ?.items
+                            ?.single()
+                            ?.title,
+                    )
+                    assertTrue(fixture.requestSessions.contains("resources/read" to "conversation-one"))
+                    catalog.reconcile(emptyMap(), emptyMap())
+                    contexts.first { it.isEmpty() }
+                    lifetime.cancelAndJoin()
+                    val completed = fixture.requestSessions.count { it.second == "conversation-one" }
+                    advanceTimeBy(5000)
+                    runCurrent()
+                    assertEquals(completed, fixture.requestSessions.count { it.second == "conversation-one" })
+                } finally {
+                    lifetime.cancelAndJoin()
+                    catalog.close()
+                    entry.close()
+                }
+            }
+        }
+
+    @Test
+    fun `voice context clears items withdrawn by a resource list update`() =
+        runTest {
+            Fixture("withdrawn").use { fixture ->
+                fixture.scopedItems = true
+                fixture.supportsSubscriptions = true
+                fixture.withdrawItemsForSession = "conversation-one"
+                val entry = fixture.entry("a")
+                val catalog = ServiceCatalog(backgroundScope)
+                val lifetime = SupervisorJob()
+                try {
+                    catalog.reconcile(mapOf(entry.key to entry), emptyMap())
+                    catalog.state.first { it[entry.key]?.monitoring?.snapshot != null }
+                    val contexts =
+                        catalog.monitorVoiceContext(
+                            CoroutineScope(backgroundScope.coroutineContext + lifetime),
+                            "conversation-one",
+                        )
+                    val initial = contexts.first { it[entry.key]?.items?.singleOrNull()?.title == "conversation-one" }
+                    val focused =
+                        initial.mapValues { (_, snapshot) ->
+                            snapshot.copy(activeItem = ActiveServiceItem("same", "Item #1"))
+                        }
+                    assertTrue(catalog.contextText(focused).contains("Active service item: Item #1 (same)."))
+                    val withdrawn = contexts.first { it.isEmpty() }
+                    val cleared = catalog.contextText(withdrawn)
+                    assertTrue(cleared.contains("No active service item is reported."))
+                    assertFalse(cleared.contains("Active service item:"))
+                    assertTrue(cleared.length <= 12000)
+                    val unreported = catalog.contextText(initial)
+                    assertTrue(unreported.contains("No active service item is reported."))
+                    assertTrue(fixture.requestSessions.count { it == "resources/list" to "conversation-one" } >= 2)
+                } finally {
+                    lifetime.cancelAndJoin()
+                    catalog.close()
+                    entry.close()
+                }
+            }
+        }
 
     @Test
     fun `native ready preparation waits exactly once and cancelled waits ignore late frontend readiness`() =
@@ -145,9 +239,10 @@ class ServiceCatalogTest {
                         val detail = discover.structuredContent.getValue("result").jsonObject
                         assertTrue(detail.getValue("mcp_tools").toString().contains("additionalProperties"))
                         assertEquals("B instructions", detail.getValue("instructions").jsonPrimitive.content)
-                        assertTrue(catalog.contextText().contains("Alpha"))
-                        assertTrue(catalog.contextText().contains("Beta"))
-                        assertTrue(catalog.contextText().contains("Same item"))
+                        val context = catalog.voiceContextText("conversation-one")
+                        assertTrue(context.contains("Alpha"))
+                        assertTrue(context.contains("Beta"))
+                        assertTrue(context.contains("Same item"))
                         first.minimum = 5
                         assertTrue(dispatch(catalog, "a").isError)
                         first.minimum = 1
@@ -270,6 +365,7 @@ class ServiceCatalogTest {
                             catalog.execute(
                                 "dispatch_service_tool",
                                 dispatchArgs("a", "frontend", "{\"n\":2}"),
+                                "conversation",
                             ) { true },
                         )
                     assertTrue(invalid.isError)
@@ -279,6 +375,7 @@ class ServiceCatalogTest {
                             catalog.execute(
                                 "dispatch_service_tool",
                                 dispatchArgs("a", "frontend", "{\"word\":\"hello\"}"),
+                                "conversation",
                             ) { true }
                         }
                     view.invoked.await()
@@ -312,7 +409,11 @@ class ServiceCatalogTest {
                     fixture.blockToolsList = true
                     val pending =
                         async {
-                            catalog.execute("dispatch_service_tool", dispatchArgs("a", "frontend")) { true }
+                            catalog.execute(
+                                "dispatch_service_tool",
+                                dispatchArgs("a", "frontend"),
+                                "conversation",
+                            ) { true }
                         }
                     assertTrue(async(Dispatchers.IO) { fixture.toolsListEntered.await(5, TimeUnit.SECONDS) }.await())
                     entry.openPage()
@@ -453,7 +554,11 @@ class ServiceCatalogTest {
                     catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.READY }
                     val pending =
                         async {
-                            catalog.execute("dispatch_service_tool", dispatchArgs("a", "frontend", "{}")) { true }
+                            catalog.execute(
+                                "dispatch_service_tool",
+                                dispatchArgs("a", "frontend", "{}"),
+                                "conversation",
+                            ) { true }
                         }
                     view.invoked.await()
                     view.complete("""{"source":"browser"}""")
@@ -485,7 +590,7 @@ class ServiceCatalogTest {
                             "label".repeat(1000)
                     },
                 )
-                val context = catalog.contextText()
+                val context = catalog.voiceContextText("conversation-one")
                 assertTrue(context.contains("replaces the previous service overview"))
                 assertTrue(context.length <= 12_000)
                 assertTrue(context.contains("More servers omitted"))
@@ -528,6 +633,12 @@ class ServiceCatalogTest {
         val server = MockWebServer()
         val requests = CopyOnWriteArrayList<RecordedRequest>()
         var supportsResources = true
+        var supportsSubscriptions = false
+        var scopedItems = false
+        var withdrawItemsForSession: String? = null
+        var itemsVisible = true
+        val subscriptionSessions = MutableStateFlow<List<String?>>(emptyList())
+        val requestSessions = CopyOnWriteArrayList<Pair<String, String?>>()
         var minimum = 1
         var failDiscovery = false
         var blockCall = false
@@ -545,6 +656,30 @@ class ServiceCatalogTest {
                         requests += request
                         val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
                         val method = body.getValue("method").jsonPrimitive.content
+                        val session =
+                            body["params"]
+                                ?.jsonObject
+                                ?.get(
+                                    "_meta",
+                                )?.jsonObject
+                                ?.get("openai/session")
+                                ?.jsonPrimitive
+                                ?.content
+                        requestSessions += method to session
+                        if (method == "subscriptions/listen") {
+                            val withdrawal =
+                                if (session != null && session == withdrawItemsForSession) {
+                                    itemsVisible = false
+                                    "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/list_changed\",\"params\":{}}\n\n"
+                                } else {
+                                    ""
+                                }
+                            subscriptionSessions.update { it + session }
+                            return MockResponse().setHeader("Content-Type", "text/event-stream").setBody(
+                                "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\"," +
+                                    "\"params\":{}}\n\n$withdrawal",
+                            )
+                        }
                         if (method == "server/discover" && failDiscovery) return MockResponse().setResponseCode(503)
                         if (!supportsResources && method.startsWith("resources/")) {
                             return MockResponse()
@@ -556,7 +691,7 @@ class ServiceCatalogTest {
                         }
                         val capabilities =
                             if (supportsResources) {
-                                """{"tools":{},"resources":{}}"""
+                                """{"tools":{},"resources":{"subscribe":$supportsSubscriptions}}"""
                             } else {
                                 """{"tools":{}}"""
                             }
@@ -602,9 +737,13 @@ class ServiceCatalogTest {
                                 }
 
                                 "resources/list" -> {
-                                    """
-                                    {"resources":[{"name":"items","uri":"gomode://items","mimeType":"application/json"}]}
-                                    """.trimIndent()
+                                    if (!itemsVisible) {
+                                        """{"resources":[]}"""
+                                    } else {
+                                        """
+                                        {"resources":[{"name":"items","uri":"gomode://items","mimeType":"application/json"}]}
+                                        """.trimIndent()
+                                    }
                                 }
 
                                 "resources/templates/list" -> {
@@ -612,6 +751,7 @@ class ServiceCatalogTest {
                                 }
 
                                 "resources/read" -> {
+                                    val title = if (scopedItems) session ?: "sessionless" else "Same item"
                                     buildJsonObject {
                                         put(
                                             "contents",
@@ -620,7 +760,7 @@ class ServiceCatalogTest {
                                                 [
                                                   {
                                                     "uri": "gomode://items",
-                                                    "text": "{\"items\":[{\"id\":\"same\",\"title\":\"Same item\",\"state\":\"ready\"}]}"
+                                                    "text": "{\"items\":[{\"id\":\"same\",\"title\":\"$title\",\"state\":\"ready\"}]}"
                                                   }
                                                 ]
                                                 """.trimIndent(),

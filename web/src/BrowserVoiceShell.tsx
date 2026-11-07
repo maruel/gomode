@@ -1,4 +1,4 @@
-// Discovers and lazily mounts browser voice only for the current prepared frontend scope.
+// Lazily mounts browser voice and binds host context preparation to the current frontend owner.
 
 import { createEffect, createSignal, onCleanup, Show, type Component, type JSX } from "solid-js";
 import { useHostMode } from "./HostMode";
@@ -6,6 +6,7 @@ import { discoverBrowserVoice, sameOriginVoiceEndpoint, type BrowserVoiceEndpoin
 import type { FrontendPreparationScope } from "./FrontendVoiceTools";
 import type { VoiceOverlayMessages } from "./VoiceOverlay";
 import type { ServiceAuthorization } from "../../sdk/voicegateway/ts/v2/types.gen";
+import type { PrepareVoiceSession } from "./VoiceSession";
 import type { BrowserVoiceRuntime } from "./BrowserVoiceRuntime";
 
 export interface BrowserVoiceShellProps {
@@ -18,6 +19,8 @@ export interface BrowserVoiceShellProps {
   /** Decorate the validated MCP endpoint with captured host session authority if needed. */
   mcpEndpoint?: (endpoint: string) => string;
   gatewayHeaders?: HeadersInit;
+  /** Publish selected host context before conversation setup reads; ordinary failures are advisory. */
+  prepareSession?: PrepareVoiceSession;
   /** Defaults are supplied lazily so localization does not eagerly import the overlay. */
   messages?: (defaults: Readonly<VoiceOverlayMessages>) => VoiceOverlayMessages;
   setupFailed: string;
@@ -32,6 +35,7 @@ export interface BrowserVoiceRuntimeProps {
   clientName: string;
   authorize?: BrowserVoiceShellProps["authorize"];
   gatewayHeaders?: HeadersInit;
+  prepareSession?: PrepareVoiceSession;
   messages?: BrowserVoiceShellProps["messages"];
   onError: BrowserVoiceShellProps["onError"];
   children?: BrowserVoiceShellProps["children"];
@@ -58,6 +62,7 @@ export default function BrowserVoiceShell(props: BrowserVoiceShellProps) {
       authorize: props.authorize,
       mcpEndpoint: props.mcpEndpoint,
       gatewayHeaders: new Headers(props.gatewayHeaders),
+      prepareSession: props.prepareSession,
       onError: props.onError,
     };
     const controller = new AbortController();

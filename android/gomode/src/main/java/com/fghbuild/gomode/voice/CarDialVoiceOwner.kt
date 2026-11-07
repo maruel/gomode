@@ -1,4 +1,4 @@
-// Owns bounded system-dial requests, timed native startup, and call lifetime across Activity replacement.
+// Owns system-dial requests, native startup, live voice context, and call lifetime across Activity replacement.
 package com.fghbuild.gomode.voice
 
 import android.Manifest
@@ -36,6 +36,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -106,6 +107,7 @@ internal class CarDialVoiceOwner(
     private var conversation: VoiceConversation? = null
     private var startup: Job? = null
     private var lifetime: Job? = null
+    private var contextUpdates: Job? = null
     private var callController: TelecomCallController? = null
     private val mutableSession = MutableStateFlow<VoiceSessionController?>(null)
     val session = mutableSession.asStateFlow()
@@ -398,6 +400,29 @@ internal class CarDialVoiceOwner(
                 }
             }
         mutableSession.value = voice
+        if (voiceConversation != null) {
+            contextUpdates =
+                scope.launch {
+                    var previous: String? = null
+                    combine(voice.state, settingsRepository.settings, pages.catalog.state, voiceConversation.state) {
+                        voiceState,
+                        _,
+                        _,
+                        _,
+                        ->
+                        if (voiceState.connected &&
+                            voiceConversation.isCurrent()
+                        ) {
+                            voiceConversation.contextText()
+                        } else {
+                            null
+                        }
+                    }.collect { text ->
+                        if (text != null && text != previous) voice.injectText(text)
+                        previous = text
+                    }
+                }
+        }
         checkCurrent(current, next)
         Log.i("GoModeCarDial", "Starting prepared voice transport")
         next.timing.enter(VoiceStartupStage.TRANSPORT)
@@ -502,6 +527,8 @@ internal class CarDialVoiceOwner(
         attempt?.authority?.set(false)
         request = null
         attempt = null
+        contextUpdates?.cancel()
+        contextUpdates = null
         conversation?.finish()
         conversation = null
         startup?.cancel()
