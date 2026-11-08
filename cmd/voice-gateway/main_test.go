@@ -241,8 +241,8 @@ func TestIsNormalShutdown(t *testing.T) {
 
 func TestMainImpl(t *testing.T) {
 	t.Parallel()
+	// Each invocation owns the process-wide named Windows shutdown event.
 	t.Run("rejects disabled webrtc port", func(t *testing.T) {
-		t.Parallel()
 		path := filepath.Join(t.TempDir(), "config.toml")
 		if err := os.WriteFile(path, []byte("[[realtime]]\nlabel = 'Native'\nprovider = 'gemini'\nmodel = 'gemini-3.8-live'\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -256,7 +256,6 @@ func TestMainImpl(t *testing.T) {
 		}
 	})
 	t.Run("frontend flags", func(t *testing.T) {
-		t.Parallel()
 		// The frontend flags do not interfere with config loading.
 		missing := filepath.Join(t.TempDir(), "missing.toml")
 		if err := mainImpl([]string{"-config", missing, "-frontend-http", "0.0.0.0:0"}); !errors.Is(err, os.ErrNotExist) {

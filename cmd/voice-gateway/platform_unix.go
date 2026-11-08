@@ -1,15 +1,20 @@
 //go:build unix
 
-// Redirects the gateway's process output and runtime crash reports to an append-only log on Unix.
+// Unix process output redirection and signal-based shutdown.
 
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 
 	"golang.org/x/sys/unix"
 )
+
+func startPlatformShutdown(context.CancelCauseFunc) (func() error, error) {
+	return func() error { return nil }, nil
+}
 
 func redirectOutput(path string) (err error) {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600) // #nosec G304 -- The operator selects the CLI log path.

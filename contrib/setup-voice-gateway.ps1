@@ -44,7 +44,23 @@ try {
     if ($null -ne $task) {
         # Prevent the one-minute trigger from starting the gateway during the copy.
         Disable-ScheduledTask -TaskName $TaskName -TaskPath '\' | Out-Null
-        Stop-ScheduledTask -TaskName $TaskName -TaskPath '\'
+        $gateway = Get-Process -Name 'voice-gateway' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | Select-Object -First 1
+        # Retain the process handle so PID reuse cannot change which process we wait on.
+        if ($null -ne $gateway) { $null = $gateway.Handle }
+        if ($null -ne $gateway) {
+            $stop = $null
+            if ([Threading.EventWaitHandle]::TryOpenExisting("Local\GoModeVoiceGateway-$($gateway.Id)", [ref]$stop)) {
+                try { $null = $stop.Set() } finally { $stop.Dispose() }
+            }
+            # Give the shutdown event ten seconds before Scheduler can force termination.
+            if (-not $gateway.WaitForExit(10000)) {
+                Stop-ScheduledTask -TaskName $TaskName -TaskPath '\'
+                if (-not $gateway.HasExited) { Stop-Process -InputObject $gateway -Force }
+            }
+            if (-not $gateway.WaitForExit(30000)) {
+                throw "Timed out stopping '$exe' (PID $($gateway.Id))."
+            }
+        }
     }
     if ($source -ne $exe) { Copy-Item -LiteralPath $source -Destination $exe -Force }
 

@@ -52,6 +52,11 @@ func mainImpl(args []string) (err error) {
 	if err != nil {
 		return err
 	}
+	closeShutdown, err := startPlatformShutdown(cancel)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, closeShutdown()) }()
 
 	var lc net.ListenConfig
 	var frontendListener net.Listener
