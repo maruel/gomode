@@ -37,17 +37,21 @@ func mainImpl(args []string) (err error) {
 	defer cancel(nil)
 
 	flags := flag.NewFlagSet("voice-gateway", flag.ContinueOnError)
-	configPath := flags.String("config", envDefault("VOICE_GATEWAY_CONFIG", voicegateway.DefaultConfigPath()), "voice gateway config.toml path")
+	configPath := flags.String("config", voicegateway.DefaultConfigPath(), "voice gateway config.toml path")
 	addr := flags.String("http", envDefault("VOICE_GATEWAY_HTTP", ""), "HTTP listen address for signaling")
 	udpPort := flags.String("udp-port", envDefault("VOICE_GATEWAY_WEBRTC_UDP_PORT", ""), "UDP port for WebRTC ICE")
 	frontend := flags.Bool("frontend", false, "serve the standalone live-test frontend")
 	frontendAddr := flags.String("frontend-http", "127.0.0.1:3480", "HTTP listen address for the frontend (requires -frontend)")
 	logLevel := flags.String("log-level", envDefault("VOICE_GATEWAY_LOG_LEVEL", "info"), "log level (debug, info, warn, error)")
+	logFile := flags.String("log-file", "", "append stdout and stderr to this file instead of the console")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 
-	log := initLogging(*logLevel)
+	log, err := initLogging(*logLevel, *logFile)
+	if err != nil {
+		return err
+	}
 
 	var lc net.ListenConfig
 	var frontendListener net.Listener
@@ -192,7 +196,12 @@ func validateStandaloneConfig(cfg *voicegateway.ServerConfig) error {
 	return nil
 }
 
-func initLogging(level string) *slog.Logger {
+func initLogging(level, path string) (*slog.Logger, error) {
+	if path != "" {
+		if err := redirectOutput(path); err != nil {
+			return nil, fmt.Errorf("redirect output to %s: %w", path, err)
+		}
+	}
 	ll := &slog.LevelVar{}
 	switch level {
 	case "debug":
@@ -205,15 +214,16 @@ func initLogging(level string) *slog.Logger {
 	l := slog.New(tint.NewTextHandler(colorable.NewColorable(os.Stderr), &tint.Options{
 		Level: ll,
 		ReplaceAttr: func(groups []string, attr slog.Attr) slog.Attr {
-			if len(groups) == 0 && attr.Key == slog.TimeKey {
+			if path == "" && len(groups) == 0 && attr.Key == slog.TimeKey {
 				return slog.Attr{}
 			}
 			return attr
 		},
-		NoColor: !isatty.IsTerminal(os.Stderr.Fd()),
+		NoColor:    !isatty.IsTerminal(os.Stderr.Fd()),
+		TimeFormat: time.RFC3339,
 	}))
 	slog.SetDefault(l)
-	return l
+	return l, nil
 }
 
 func envDefault(name, def string) string {
@@ -340,7 +350,7 @@ func isNormalShutdown(err error) bool {
 
 func main() {
 	if err := mainImpl(os.Args[1:]); err != nil && !isNormalShutdown(err) {
-		fmt.Fprintf(os.Stderr, "voice-gateway: %v\n", err)
+		slog.Error("voice-gateway", "err", err)
 		os.Exit(1)
 	}
 }

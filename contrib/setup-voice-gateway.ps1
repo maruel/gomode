@@ -3,11 +3,6 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'voice-gateway'),
-    [string]$ConfigPath = $(
-        $configHome = $env:XDG_CONFIG_HOME
-        if (-not $configHome) { $configHome = Join-Path $env:USERPROFILE '.config' }
-        Join-Path $configHome 'voice-gateway/config.toml'
-    ),
     [string]$TaskName = 'GoModeVoiceGateway'
 )
 
@@ -15,8 +10,13 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $InstallDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($InstallDir)
-$ConfigPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ConfigPath)
+$configHome = [Environment]::GetEnvironmentVariable('XDG_CONFIG_HOME', 'User')
+if (-not $configHome) { $configHome = [Environment]::GetEnvironmentVariable('XDG_CONFIG_HOME', 'Machine') }
+if (-not $configHome) { $configHome = Join-Path $env:USERPROFILE '.config' }
+$configPath = Join-Path $configHome 'voice-gateway/config.toml'
+if ($configPath -notmatch '^(?:[A-Za-z]:[\\/]|\\\\)') { throw "Configuration path '$configPath' must be absolute." }
 $exe = Join-Path $InstallDir 'voice-gateway.exe'
+$logFile = Join-Path $InstallDir 'voice-gateway.log'
 $task = Get-ScheduledTask | Where-Object { $_.TaskPath -eq '\' -and $_.TaskName -eq $TaskName }
 if ($null -ne $task -and (@($task.Actions).Count -ne 1 -or $task.Actions[0].Execute -ne $exe)) {
     throw "Task '$TaskName' does not run '$exe'. Use the original -InstallDir or a different -TaskName."
@@ -34,9 +34,9 @@ if (-not $goBin) { $goBin = Join-Path ($goEnv.GOPATH -split [IO.Path]::PathSepar
 $source = Join-Path $goBin 'voice-gateway.exe'
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-if (-not (Test-Path -LiteralPath $ConfigPath)) {
-    New-Item -ItemType Directory -Force -Path (Split-Path $ConfigPath -Parent) | Out-Null
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'config.toml') -Destination $ConfigPath
+if (-not (Test-Path -LiteralPath $configPath)) {
+    New-Item -ItemType Directory -Force -Path (Split-Path $configPath -Parent) | Out-Null
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'config.toml') -Destination $configPath
 }
 
 try {
@@ -48,9 +48,9 @@ try {
     if ($source -ne $exe) { Copy-Item -LiteralPath $source -Destination $exe -Force }
 
     $user = [Environment]::UserDomainName + '\' + [Environment]::UserName
-    $action = New-ScheduledTaskAction -Execute $exe -Argument ('-config "' + $ConfigPath + '"') -WorkingDirectory $InstallDir
+    $action = New-ScheduledTaskAction -Execute $exe -Argument ('-log-file "' + $logFile + '"') -WorkingDirectory $InstallDir
     # Interactive tasks run only while signed in and use the persistent user environment,
-    # not shell-only API keys or PATH changes from this setup session.
+    # not shell-only variables from this setup session.
     $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
     # No repetition duration means retry indefinitely after any exit, including config changes.
     $triggers = @(
@@ -68,6 +68,6 @@ try {
 }
 
 Write-Host "Installed: $exe"
-Write-Host "Edit configuration: $ConfigPath"
+Write-Host "Edit configuration: $configPath"
 Write-Host "Requested start of scheduled task: $TaskName"
-Write-Host 'Investigate logs (Task Scheduler): Get-WinEvent -LogName Microsoft-Windows-TaskScheduler/Operational -MaxEvents 50 | Format-List TimeCreated, Message'
+Write-Host "Investigate logs: Get-Content -LiteralPath '$($logFile.Replace("'", "''"))' -Tail 100 -Wait"
