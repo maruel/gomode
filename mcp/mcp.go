@@ -4,7 +4,6 @@ package mcp
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -458,16 +457,10 @@ func (h *Handler) handleSubscription(ctx context.Context, w http.ResponseWriter,
 	if ctx.Err() != nil {
 		return nil
 	}
-	// Read every subscribed target before acknowledging. The delivered initial
-	// state doubles as the dedup baseline for the change loop; taking it first
-	// establishes a happens-before edge so a mutation that lands as soon as the
-	// client sees the ack is still detected as a change instead of being
-	// deduplicated against a post-mutation snapshot.
+	// Registration precedes these authorized reads. Any queued invalidation is
+	// delivered after initial state, including mutations concurrent with the read;
+	// an invalidation watermark cannot establish read-snapshot equality.
 	initialReads := h.readInitialSubscriptionState(ctx, &p)
-	lastResources := ""
-	if p.Notifications.ResourcesListChanged {
-		lastResources = h.subscriptionResourcesHash(ctx)
-	}
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -477,36 +470,33 @@ func (h *Handler) handleSubscription(ctx context.Context, w http.ResponseWriter,
 		slog.WarnContext(ctx, "write mcp subscription acknowledgment", "err", err)
 		return nil
 	}
-	lastResourceContents, ok := h.writeInitialSubscriptionState(ctx, out, subID, p.Notifications, initialReads)
-	if !ok {
+	if !h.writeInitialSubscriptionState(ctx, out, subID, p.Notifications, initialReads) {
 		return nil
 	}
-	h.streamSubscriptionNotifications(ctx, out, subID, &p, changes, lastResources, lastResourceContents)
+	h.streamSubscriptionNotifications(ctx, out, subID, &p, changes)
 	return nil
 }
 
 // subscriptionInitialRead is the pre-ack read of one subscribed target: the
-// contents to deliver, the dedup baseline for the change loop, and a read
-// failure that delivers no initial-state payload for that target.
+// contents to deliver and a read failure that delivers no initial-state payload
+// for that target.
 type subscriptionInitialRead struct {
 	contents []ResourceContent
-	baseline string
 	readErr  error
 }
 
 // readInitialSubscriptionState reads every subscribed target through the
 // registered resources/read path before the acknowledgment is written, so
-// the delivered initial state and the dedup baseline for the change loop come
-// from the same authorized read.
+// the delivered initial state comes from the authorized caller's snapshot.
 func (h *Handler) readInitialSubscriptionState(ctx context.Context, params *SubscriptionsListenParams) map[string]subscriptionInitialRead {
 	reads := make(map[string]subscriptionInitialRead, len(params.Notifications.ResourceSubscriptions))
 	for _, uri := range params.Notifications.ResourceSubscriptions {
 		res, err := h.Registry.ReadResource(ctx, &ResourcesReadParams{Meta: params.Meta, URI: uri})
 		if err != nil {
-			reads[uri] = subscriptionInitialRead{baseline: err.Error(), readErr: err}
+			reads[uri] = subscriptionInitialRead{readErr: err}
 			continue
 		}
-		reads[uri] = subscriptionInitialRead{contents: res.Contents, baseline: stableJSON(res.Contents)}
+		reads[uri] = subscriptionInitialRead{contents: res.Contents}
 	}
 	return reads
 }
@@ -520,33 +510,31 @@ func (h *Handler) readInitialSubscriptionState(ctx context.Context, params *Subs
 // the initial_state (when one was delivered); that re-read burst is
 // intentionally kept so a client that does not consume the native notification
 // keeps today's behavior. Targets whose pre-ack read failed receive only the
-// resources/updated re-read, because they have no contents to deliver. The
-// returned baselines seed the change loop, so a genuine first post-subscribe
-// change still deduplicates correctly and produces exactly one update. Returns
-// false if a write fails so the caller skips the change loop.
-func (h *Handler) writeInitialSubscriptionState(ctx context.Context, stream *sse.Stream, subID string, filter SubscriptionFilter, reads map[string]subscriptionInitialRead) (map[string]string, bool) {
-	baselines := make(map[string]string, len(filter.ResourceSubscriptions))
+// resources/updated re-read, because they have no contents to deliver.
+// Registry invalidations queued during these reads remain deliverable after the
+// initial state; the transport never guesses snapshot equality. Returns false
+// if a write fails so the caller skips the change loop.
+func (h *Handler) writeInitialSubscriptionState(ctx context.Context, stream *sse.Stream, subID string, filter SubscriptionFilter, reads map[string]subscriptionInitialRead) bool {
 	if filter.ResourcesListChanged {
 		if err := writeMCPNotification(stream, JSONRPCNotification{JSONRPC: jsonRPCVersion, Method: NotificationMethodResourcesListChanged, Params: SubscriptionNotificationParams{Meta: mcpSubscriptionMeta(subID)}}); err != nil {
 			slog.WarnContext(ctx, "write mcp initial resources list notification", "err", err)
-			return baselines, false
+			return false
 		}
 	}
 	for _, uri := range filter.ResourceSubscriptions {
 		read := reads[uri]
-		baselines[uri] = read.baseline
 		if read.readErr != nil {
 			slog.WarnContext(ctx, "read mcp subscription initial state", "uri", uri, "err", read.readErr)
 		} else if err := writeMCPNotification(stream, JSONRPCNotification{JSONRPC: jsonRPCVersion, Method: NotificationMethodSubscriptionsInitialState, Params: SubscriptionsInitialStateParams{Meta: mcpSubscriptionMeta(subID), URI: uri, Contents: read.contents}}); err != nil {
 			slog.WarnContext(ctx, "write mcp initial subscription state notification", "err", err)
-			return baselines, false
+			return false
 		}
 		if err := writeMCPNotification(stream, JSONRPCNotification{JSONRPC: jsonRPCVersion, Method: NotificationMethodResourcesUpdated, Params: SubscriptionNotificationParams{Meta: mcpSubscriptionMeta(subID), URI: uri}}); err != nil {
 			slog.WarnContext(ctx, "write mcp initial resource update notification", "err", err)
-			return baselines, false
+			return false
 		}
 	}
-	return baselines, true
+	return true
 }
 
 type subscriptionStreamWriter interface {
@@ -554,7 +542,7 @@ type subscriptionStreamWriter interface {
 	http.Flusher
 }
 
-func (h *Handler) streamSubscriptionNotifications(ctx context.Context, stream *sse.Stream, subID string, params *SubscriptionsListenParams, changes iter.Seq2[ResourceUpdate, error], lastResources string, lastResourceContents map[string]string) {
+func (h *Handler) streamSubscriptionNotifications(ctx context.Context, stream *sse.Stream, subID string, params *SubscriptionsListenParams, changes iter.Seq2[ResourceUpdate, error]) {
 	filter := params.Notifications
 	for update, err := range changes {
 		if err != nil {
@@ -569,60 +557,22 @@ func (h *Handler) streamSubscriptionNotifications(ctx context.Context, stream *s
 			continue
 		}
 		if update.ResourcesListChanged && filter.ResourcesListChanged {
-			resources := h.subscriptionResourcesHash(ctx)
-			if resources != lastResources {
-				if err := writeMCPNotification(stream, JSONRPCNotification{JSONRPC: jsonRPCVersion, Method: NotificationMethodResourcesListChanged, Params: SubscriptionNotificationParams{Meta: mcpSubscriptionMeta(subID)}}); err != nil {
-					slog.WarnContext(ctx, "write mcp resources notification", "err", err)
-					return
-				}
-				lastResources = resources
+			if err := writeMCPNotification(stream, JSONRPCNotification{JSONRPC: jsonRPCVersion, Method: NotificationMethodResourcesListChanged, Params: SubscriptionNotificationParams{Meta: mcpSubscriptionMeta(subID)}}); err != nil {
+				slog.WarnContext(ctx, "write mcp resources notification", "err", err)
+				return
 			}
 		}
 		for _, uri := range update.ResourceURIs {
 			if !slices.Contains(filter.ResourceSubscriptions, uri) {
 				continue
 			}
-			content := h.subscriptionResourceContentHash(ctx, &ResourcesReadParams{Meta: params.Meta, URI: uri})
-			if content == lastResourceContents[uri] {
-				continue
-			}
+
 			if err := writeMCPNotification(stream, JSONRPCNotification{JSONRPC: jsonRPCVersion, Method: NotificationMethodResourcesUpdated, Params: SubscriptionNotificationParams{Meta: mcpSubscriptionMeta(subID), URI: uri}}); err != nil {
 				slog.WarnContext(ctx, "write mcp resource update notification", "err", err)
 				return
 			}
-			lastResourceContents[uri] = content
 		}
 	}
-}
-
-func (h *Handler) subscriptionResourcesHash(ctx context.Context) string {
-	hash := sha256.New()
-	_, _ = io.WriteString(hash, "[")
-	first := true
-	for resource, err := range h.Registry.Resources(ctx) {
-		if err != nil {
-			return "error: " + err.Error()
-		}
-		data, err := json.Marshal(resource)
-		if err != nil {
-			return "error: " + err.Error()
-		}
-		if !first {
-			_, _ = io.WriteString(hash, ",")
-		}
-		_, _ = hash.Write(data)
-		first = false
-	}
-	_, _ = io.WriteString(hash, "]")
-	return base64.RawURLEncoding.EncodeToString(hash.Sum(nil))
-}
-
-func (h *Handler) subscriptionResourceContentHash(ctx context.Context, params *ResourcesReadParams) string {
-	res, err := h.Registry.ReadResource(ctx, params)
-	if err != nil {
-		return err.Error()
-	}
-	return stableJSON(res.Contents)
 }
 
 func mcpSubscriptionID(id json.RawMessage) string {
@@ -669,14 +619,6 @@ func writeMCPNotification(stream *sse.Stream, msg JSONRPCNotification) error {
 		return err
 	}
 	return stream.Data(data)
-}
-
-func stableJSON(v any) string {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return err.Error()
-	}
-	return string(data)
 }
 
 func (h *Handler) validateToolParamHeaders(ctx context.Context, header http.Header, name string, args json.RawMessage) error {
@@ -930,13 +872,17 @@ type RawToolResult struct {
 	IsError    bool
 }
 
-// ResourceUpdate describes a signal-backed resource update candidate.
+// ResourceUpdate describes authoritative state invalidations from the registry.
+// Registries own target selection and semantic change detection. Transports never
+// reread resources or enumerate catalogs to validate an invalidation. A queued
+// update may conservatively repeat initial state; it must never be suppressed by
+// inferring request echoes or comparing only a partial content projection.
 type ResourceUpdate struct {
 	// KeepAlive requests an SSE heartbeat without a resource notification.
 	KeepAlive bool
-	// ResourcesListChanged indicates the resource list may have changed.
+	// ResourcesListChanged reports changed descriptor membership or metadata.
 	ResourcesListChanged bool
-	// ResourceURIs are subscribed resource URIs whose contents may have changed.
+	// ResourceURIs identify resources invalidated by committed state changes.
 	ResourceURIs []string
 }
 

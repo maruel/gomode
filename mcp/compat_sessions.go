@@ -330,9 +330,7 @@ func (h *Handler) streamCompatResources(stream *sse.Stream, subscription compatR
 			return false, err
 		}
 	}
-	lastResources := ""
 	if filter.ResourcesListChanged {
-		lastResources = h.subscriptionResourcesHash(ctx)
 		if err := writeMCPNotification(stream, JSONRPCNotification{JSONRPC: jsonRPCVersion, Method: NotificationMethodResourcesListChanged}); err != nil {
 			return false, err
 		}
@@ -365,12 +363,8 @@ func (h *Handler) streamCompatResources(stream *sse.Stream, subscription compatR
 				}
 			}
 			if event.update.ResourcesListChanged && filter.ResourcesListChanged {
-				resources := h.subscriptionResourcesHash(ctx)
-				if resources != lastResources {
-					if err := writeMCPNotification(stream, JSONRPCNotification{JSONRPC: jsonRPCVersion, Method: NotificationMethodResourcesListChanged}); err != nil {
-						return false, err
-					}
-					lastResources = resources
+				if err := writeMCPNotification(stream, JSONRPCNotification{JSONRPC: jsonRPCVersion, Method: NotificationMethodResourcesListChanged}); err != nil {
+					return false, err
 				}
 			}
 			for _, uri := range event.update.ResourceURIs {

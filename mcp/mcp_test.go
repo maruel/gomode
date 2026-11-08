@@ -219,7 +219,7 @@ func TestHandler(t *testing.T) { //nolint:paralleltest // HandleMCP cases replac
 			}
 		})
 		t.Run("canceled native subscription setup", func(t *testing.T) {
-			for _, stage := range []string{"registration", "resource read", "catalog iteration"} {
+			for _, stage := range []string{"registration", "resource read"} {
 				t.Run(stage, func(t *testing.T) {
 					synctest.Test(t, func(t *testing.T) {
 						ctx, cancel := context.WithCancel(t.Context())
@@ -230,8 +230,6 @@ func TestHandler(t *testing.T) { //nolint:paralleltest // HandleMCP cases replac
 							reg.setup = cancel
 						case "resource read":
 							reg.read = cancel
-						case "catalog iteration":
-							reg.catalog = cancel
 						}
 						h := &Handler{Registry: reg}
 						req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/mcp", strings.NewReader(nativeMCPRequestJSON("subscriptions/listen", `"notifications":{"resourcesListChanged":true,"resourceSubscriptions":["test://resource"]}`)))
@@ -359,15 +357,18 @@ func TestHandler(t *testing.T) { //nolint:paralleltest // HandleMCP cases replac
 			t.Run("subscription initial state and resource update", func(t *testing.T) {
 				registry := newSubscriptionTestRegistry()
 				h := &Handler{Registry: registry, ServerInfo: Implementation{Name: "test", Version: "1.0.0"}}
-				r, cancel := openSubscriptionStream(t, h, "test://resource")
+				r := openSubscriptionStream(t, h, "test://resource", true)
 
 				ack := readSSEMessage(t, r)
 				if ack.Method != NotificationMethodSubscriptionsAcknowledged {
 					t.Fatalf("first notification = %q, want acknowledgment", ack.Method)
 				}
 
+				if msg := readSSEMessage(t, r); msg.Method != NotificationMethodResourcesListChanged {
+					t.Fatalf("initial catalog notification=%q", msg.Method)
+				}
 				// The post-ack notification is the delivered initial state, sourced from
-				// the same pre-ack read that seeds the dedup baseline.
+				// the authorized pre-ack read.
 				initial := readSSEMessage(t, r)
 				if initial.Method != NotificationMethodSubscriptionsInitialState {
 					t.Fatalf("second notification = %q, want initial state", initial.Method)
@@ -418,24 +419,15 @@ func TestHandler(t *testing.T) { //nolint:paralleltest // HandleMCP cases replac
 					t.Fatalf("uri = %q, want test://resource", uri)
 				}
 
-				// Re-signaling the same state is deduplicated against the delivered
-				// contents: no further notification may follow.
-				registry.setResource("changed")
-				duplicate := make(chan JSONRPCNotification, 1)
-				var wg sync.WaitGroup
-				t.Cleanup(func() {
-					cancel()
-					wg.Wait()
-				})
-				wg.Go(func() {
-					if msg, err := readSSEMessageNoFatal(r); err == nil {
-						duplicate <- msg
-					}
-				})
-				select {
-				case msg := <-duplicate:
-					t.Fatalf("notification for unchanged content: method %q", msg.Method)
-				case <-time.After(50 * time.Millisecond):
+				registry.changes <- ResourceUpdate{ResourcesListChanged: true}
+				if msg := readSSEMessage(t, r); msg.Method != NotificationMethodResourcesListChanged {
+					t.Fatalf("catalog update=%q", msg.Method)
+				}
+				registry.mu.Lock()
+				reads, lists, seqs := registry.readCalls, registry.listCalls, registry.seqCalls
+				registry.mu.Unlock()
+				if reads != 1 || lists != 0 || seqs != 0 {
+					t.Fatalf("transport probes: reads=%d lists=%d seqs=%d", reads, lists, seqs)
 				}
 			})
 
@@ -443,7 +435,7 @@ func TestHandler(t *testing.T) { //nolint:paralleltest // HandleMCP cases replac
 				registry := newSubscriptionTestRegistry()
 				registry.readErr = errors.New("resource read unavailable")
 				h := &Handler{Registry: registry, ServerInfo: Implementation{Name: "test", Version: "1.0.0"}}
-				r, _ := openSubscriptionStream(t, h, "test://resource")
+				r := openSubscriptionStream(t, h, "test://resource", false)
 
 				ack := readSSEMessage(t, r)
 				if ack.Method != NotificationMethodSubscriptionsAcknowledged {
@@ -537,7 +529,7 @@ func TestHandler(t *testing.T) { //nolint:paralleltest // HandleMCP cases replac
 					}
 				})
 			}
-			t.Run("subscription snapshots and dedup reads", func(t *testing.T) {
+			t.Run("subscription snapshot metadata and queued invalidation", func(t *testing.T) {
 				t.Parallel()
 				r := &metadataRegistry{Registry: &subscriptionTestRegistry{}}
 				h := &Handler{Registry: r}
@@ -550,7 +542,7 @@ func TestHandler(t *testing.T) { //nolint:paralleltest // HandleMCP cases replac
 				if r.subscription.Meta.Session != "conversation-one" {
 					t.Fatalf("subscription session = %q", r.subscription.Meta.Session)
 				}
-				if len(r.reads) != 2 || !strings.Contains(w.Body.String(), "Asia/Kolkata") {
+				if len(r.reads) != 1 || !strings.Contains(w.Body.String(), "Asia/Kolkata") {
 					t.Fatalf("missing subscription reads or initial state: reads=%+v response=%s", r.reads, w.Body)
 				}
 				for _, p := range r.reads {
@@ -721,21 +713,6 @@ func TestHandler(t *testing.T) { //nolint:paralleltest // HandleMCP cases replac
 			}
 		})
 	})
-	t.Run("subscriptionResourcesHash", func(t *testing.T) {
-		registry := newSubscriptionTestRegistry()
-		h := &Handler{Registry: registry}
-		first := h.subscriptionResourcesHash(t.Context())
-		second := h.subscriptionResourcesHash(t.Context())
-		if first == "" || first != second {
-			t.Fatalf("subscription resource hashes = %q and %q", first, second)
-		}
-		registry.mu.Lock()
-		listCalls, seqCalls := registry.listCalls, registry.seqCalls
-		registry.mu.Unlock()
-		if listCalls != 0 || seqCalls != 2 {
-			t.Fatalf("catalog calls = list %d, sequence %d; want list 0, sequence 2", listCalls, seqCalls)
-		}
-	})
 }
 
 func (r *metadataRegistry) CallTool(_ context.Context, params *ToolsCallParams) (RawToolResult, error) {
@@ -752,10 +729,11 @@ func (templatedRegistry) ResourceTemplates(context.Context) ([]ResourceTemplateD
 type subscriptionTestRegistry struct {
 	mu         sync.Mutex
 	resource   string
-	changes    chan struct{}
+	changes    chan ResourceUpdate
 	heartbeats chan struct{}
 	readErr    error
 	callResult RawToolResult
+	readCalls  int
 	listCalls  int
 	seqCalls   int
 }
@@ -763,7 +741,7 @@ type subscriptionTestRegistry struct {
 func newSubscriptionTestRegistry() *subscriptionTestRegistry {
 	return &subscriptionTestRegistry{
 		resource:   "initial",
-		changes:    make(chan struct{}, 1),
+		changes:    make(chan ResourceUpdate, 1),
 		heartbeats: make(chan struct{}, 1),
 	}
 }
@@ -799,20 +777,21 @@ func (r *subscriptionTestRegistry) Resources(context.Context) iter.Seq2[Resource
 func (r *subscriptionTestRegistry) ReadResource(context.Context, *ResourcesReadParams) (ResourcesReadResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.readCalls++
 	if r.readErr != nil {
 		return ResourcesReadResult{}, r.readErr
 	}
 	return ResourcesReadResult{ResultType: ResultTypeComplete, Contents: []ResourceContent{{URI: "test://resource", MimeType: "application/json", Text: r.resource}}}, nil
 }
 
-func (r *subscriptionTestRegistry) SubscribeResourceUpdates(ctx context.Context, params *SubscriptionsListenParams) (iter.Seq2[ResourceUpdate, error], error) {
+func (r *subscriptionTestRegistry) SubscribeResourceUpdates(ctx context.Context, _ *SubscriptionsListenParams) (iter.Seq2[ResourceUpdate, error], error) {
 	return func(yield func(ResourceUpdate, error) bool) {
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-r.changes:
-				if !yield(ResourceUpdate{ResourceURIs: params.Notifications.ResourceSubscriptions}, nil) {
+			case change := <-r.changes:
+				if !yield(change, nil) {
 					return
 				}
 			case <-r.heartbeats:
@@ -836,7 +815,7 @@ func (r *subscriptionTestRegistry) setResource(value string) {
 	r.resource = value
 	r.mu.Unlock()
 	select {
-	case r.changes <- struct{}{}:
+	case r.changes <- ResourceUpdate{ResourceURIs: []string{"test://resource"}}:
 	default:
 	}
 }
@@ -852,14 +831,14 @@ func nativeMCPRequestJSON(method, paramsFields string) string {
 
 // openSubscriptionStream opens a subscriptions/listen SSE stream for one
 // resource target and returns the body reader.
-func openSubscriptionStream(t *testing.T, h *Handler, uri string) (*bufio.Reader, context.CancelFunc) {
+func openSubscriptionStream(t *testing.T, h *Handler, uri string, catalog bool) *bufio.Reader {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(h.HandleMCP))
 	t.Cleanup(server.Close)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 1500*time.Millisecond)
 	t.Cleanup(cancel)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, strings.NewReader(nativeMCPRequestJSON("subscriptions/listen", fmt.Sprintf(`"notifications":{"resourceSubscriptions":[%q]}`, uri))))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, strings.NewReader(nativeMCPRequestJSON("subscriptions/listen", fmt.Sprintf(`"notifications":{"resourceSubscriptions":[%q],"resourcesListChanged":%t}`, uri, catalog))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -877,7 +856,7 @@ func openSubscriptionStream(t *testing.T, h *Handler, uri string) (*bufio.Reader
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
-	return bufio.NewReader(resp.Body), cancel
+	return bufio.NewReader(resp.Body)
 }
 
 func readSSEMessage(t *testing.T, r *bufio.Reader) JSONRPCNotification {
@@ -1353,7 +1332,6 @@ type registrationTestRegistry struct {
 	setupErr   bool
 	setup      func()
 	read       func()
-	catalog    func()
 }
 
 func (r *registrationTestRegistry) SubscribeResourceUpdates(ctx context.Context, _ *SubscriptionsListenParams) (iter.Seq2[ResourceUpdate, error], error) {
@@ -1375,19 +1353,6 @@ func (r *registrationTestRegistry) ReadResource(ctx context.Context, p *Resource
 		r.read()
 	}
 	return r.subscriptionTestRegistry.ReadResource(ctx, p)
-}
-func (r *registrationTestRegistry) Resources(ctx context.Context) iter.Seq2[ResourceDescriptor, error] {
-	resources := r.subscriptionTestRegistry.Resources(ctx)
-	return func(yield func(ResourceDescriptor, error) bool) {
-		for resource, err := range resources {
-			if r.catalog != nil {
-				r.catalog()
-			}
-			if !yield(resource, err) {
-				return
-			}
-		}
-	}
 }
 
 type failingSubscriptionWriter struct {
