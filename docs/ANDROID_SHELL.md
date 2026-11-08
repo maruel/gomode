@@ -409,7 +409,7 @@ while a session connects or remains active:
   shell opens a WebSocket to the gateway text route, sends `session.setup` and
   `user.message`, synthesizes `assistant.text.delta`, and executes `tool.call`
   through the skill's MCP endpoint. The gateway sends no audio. Contract:
-  [VOICE_GATEWAY.md](VOICE_GATEWAY.md#text-sessions). The shell owns microphone
+  [gateway protocol](../voicegateway/api/v2/protocol.go). The shell owns microphone
   capture through [MicrophoneAudioSource](../android/gomode/src/main/java/com/fghbuild/gomode/voice/MicrophoneAudioSource.kt)
   and keeps recognizing during assistant playback; recognized speech interrupts
   the reply.

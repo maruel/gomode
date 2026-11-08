@@ -31,8 +31,11 @@ import (
 )
 
 // NewHandler returns the frontend's discovery, MCP, voice and asset routes.
+//
 // Loopback listeners require local peers and authorities; other listeners allow
 // remote access. The address includes the actual port assigned by the listener.
+// These routes have no host authentication; anyone who can reach the listener
+// can use the configured voice backends.
 func NewHandler(addr net.Addr, bridge voicegateway.MediaBridge, text voicegateway.TextSessionServer) (http.Handler, error) {
 	host, port, err := net.SplitHostPort(addr.String())
 	if err != nil {

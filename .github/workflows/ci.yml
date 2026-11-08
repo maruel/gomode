@@ -78,7 +78,3 @@ jobs:
           go-version-file: go.mod
       - name: Test Go voice gateway
         run: go test ./cmd/voice-gateway ./voicegateway/...
-      - name: Build and install with PowerShell
-        shell: powershell
-        run: |
-          ./contrib/setup-voice-gateway.ps1 -InstallDir "$env:RUNNER_TEMP/voice gateway/bin" -ConfigPath "$env:RUNNER_TEMP/voice gateway/config.toml"

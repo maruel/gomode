@@ -1,8 +1,8 @@
 # Go Mode Local Voice Stack
 
 Compose ASR, LLM, and TTS stages to mix local models and hosted providers through
-the [voice gateway](VOICE_GATEWAY.md). For a fully local stack, install `uv` on
-the gateway's `PATH` and select local stages that need no provider API keys.
+the [voice gateway](../voicegateway/config.go). For a fully local stack, install
+`uv` on the gateway's `PATH` and select local stages that need no provider API keys.
 
 ## Configuration
 

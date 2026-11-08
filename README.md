@@ -21,8 +21,7 @@ to a host through `/.well-known/gomode.json` and renders its web frontend.
 - `sdk/`: generated TypeScript, Kotlin, and Swift protocol clients plus the
   Halo Android SDK.
 - `web/src/`: `@maruel/gomode` SolidJS browser integration.
-- `frontend/`: opt-in standalone voice gateway test app; run `voice-gateway -frontend`
-  and open <http://127.0.0.1:3480/>. See the [gateway guide](docs/VOICE_GATEWAY.md#test-frontend).
+- `frontend/`: optional test app embedded by `cmd/voice-gateway`.
 - `android/gomode/`: native WebView, voice, notifications, settings, and Halo
   shell.
 

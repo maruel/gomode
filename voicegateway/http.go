@@ -165,6 +165,7 @@ type handler struct {
 	verifier           *oauthverify.Verifier
 	sessions           sync.Map // session ID to serviceSessionIdentity
 
+	// Tickets are instance-local; issuance and redemption must reach this handler.
 	textTicketMu sync.Mutex
 	textTickets  map[string]textTicket
 }

@@ -50,7 +50,7 @@ A host owns:
 
 The adapter builds `gomode.Settings`, advertises its skills and MCP endpoints,
 and mounts the embedded gateway when configured. Gateway token rules are in
-[VOICE_GATEWAY.md](VOICE_GATEWAY.md#authorization).
+[the gateway HTTP handlers](../voicegateway/http.go).
 
 ### MCP resource notifications
 
