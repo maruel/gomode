@@ -23,7 +23,8 @@ if ($null -ne $task -and (@($task.Actions).Count -ne 1 -or $task.Actions[0].Exec
 }
 Push-Location (Split-Path $PSScriptRoot -Parent)
 try {
-    & go install ./cmd/voice-gateway
+    # Build as windowsgui so no console appears on startup.
+    & go install -ldflags='-H windowsgui' ./cmd/voice-gateway
     if ($LASTEXITCODE -ne 0) { throw "go install failed with exit code $LASTEXITCODE" }
     $goEnv = & go env -json GOBIN GOPATH | ConvertFrom-Json
 } finally {
