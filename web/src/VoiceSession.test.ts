@@ -2145,7 +2145,10 @@ describe("VoiceSession", () => {
   });
 
   it("sends an MCP result through its originating voice connection", async () => {
-    mcpMocks.mcpCallTool.mockResolvedValue({ structuredContent: { answer: 42 } });
+    mcpMocks.mcpCallTool.mockResolvedValue({
+      structuredContent: { answer: 42 },
+      _meta: { "example.org/private": { dependency: "host://one" } },
+    });
     const session = new VoiceSession();
     await session.connect();
     const channel = FakePeerConnection.dataChannels[0];

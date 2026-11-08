@@ -1,4 +1,4 @@
-// Tests host-configured MCP routing and identity in the reusable browser client.
+// Tests browser MCP requests, opaque result metadata, and subscription ownership.
 import { afterEach, describe, it } from "node:test";
 import { ok } from "node:assert/strict";
 import { expect } from "../tests/expect";
@@ -13,6 +13,38 @@ afterEach(() => {
 });
 
 describe("configureMcpClient", () => {
+  it("preserves opaque tool metadata separately from native and released result content", async (t) => {
+    for (const protocol of ["native", "released"]) {
+      for (const format of ["structured", "text"]) {
+        for (const isError of [false, true]) {
+          await t.test(`${protocol}/${format}/${isError ? "error" : "success"}`, async () => {
+            configureMcpClient("/mcp", "host");
+            const meta = {
+              "example.org/dependencies": { uris: ["host://one"], revision: 7 },
+              "other.example/opaque": [null, true, { nested: "private transport value" }],
+            };
+            globalThis.fetch = async () =>
+              Response.json({
+                result: {
+                  ...(protocol === "native" ? { resultType: "complete" } : {}),
+                  content: [{ type: "text", text: "Readable tool message" }],
+                  ...(format === "structured" ? { structuredContent: { state: "ready" } } : {}),
+                  isError,
+                  _meta: meta,
+                },
+              });
+            const result = await mcpClient.callTool("read_item", {});
+            expect(result._meta).toEqual(meta);
+            expect(result.isError).toBe(isError);
+            expect(result.structuredContent).toEqual(
+              format === "structured" ? { state: "ready" } : { error: "Readable tool message" },
+            );
+          });
+        }
+      }
+    }
+  });
+
   it("sends device hints and caller-owned conversation IDs without changing arguments", async (t) => {
     configureMcpClient("/mcp", "host");
     let timezone = "America/Toronto";

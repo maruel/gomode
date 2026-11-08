@@ -1,4 +1,4 @@
-// Verifies conversation and timezone metadata on native MCP reads and subscription reconnects.
+// Verifies native MCP metadata on tool results, resource reads, and subscription reconnects.
 package com.fghbuild.gomode.voice
 
 import com.fghbuild.mcp.sdk.v1.ResourcesReadParams
@@ -16,6 +16,42 @@ import org.junit.Test
 import java.util.TimeZone
 
 class McpClientResourceTest {
+    @Test
+    fun toolResultsPreserveOpaqueMetadata() =
+        runTest {
+            MockWebServer().use { server ->
+                server.start()
+                val client = McpClient(server.url("/mcp").toString(), "2026-07-28", { null })
+                val meta =
+                    Json
+                        .parseToJsonElement(
+                            """{"example.org/dependencies":{"uris":["host://one"],"revision":7},
+                        "other.example/opaque":[null,true,{"nested":"private transport value"}]}""",
+                        ).jsonObject
+                for (isError in listOf(false, true)) {
+                    val structuredField = if (isError) "" else """, "structuredContent":{"state":"ready"}"""
+                    server.enqueue(
+                        MockResponse().setBody(
+                            """
+                            {"jsonrpc":"2.0","id":1,"result":{
+                            "resultType":"complete","content":[{"type":"text","text":"Readable tool message"}],
+                            "isError":$isError,"_meta":$meta$structuredField}}
+                            """.trimIndent(),
+                        ),
+                    )
+                    val result = client.callTool("read_item", Json.parseToJsonElement("{}").jsonObject)
+                    assertEquals(meta, result.meta)
+                    assertEquals(isError, result.isError)
+                    assertEquals(
+                        Json.parseToJsonElement(
+                            if (isError) """{"error":"Readable tool message"}""" else """{"state":"ready"}""",
+                        ),
+                        result.structuredContent,
+                    )
+                }
+            }
+        }
+
     @Test
     fun resourceRequestsUseDeviceTimezone() =
         runTest {

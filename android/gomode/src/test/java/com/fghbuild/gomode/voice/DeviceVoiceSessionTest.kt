@@ -1166,12 +1166,8 @@ class DeviceVoiceSessionTest {
                                             ),
                                         )
                                     assertEquals(
-                                        "Unavailable",
-                                        result
-                                            ?.jsonObject
-                                            ?.get("error")
-                                            ?.jsonPrimitive
-                                            ?.content,
+                                        Json.parseToJsonElement("""{"error":"Unavailable"}"""),
+                                        result,
                                     )
                                     onDelta("Second sentence.")
                                     return EngineTurnResult(assistantText = "First sentence. Second sentence.")
@@ -1237,6 +1233,13 @@ class DeviceVoiceSessionTest {
                 connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"First sentence. "}""")
                 connected.onMessage(socket, """{"kind":"tool.call","id":"call-1","name":"example_tool","args":{}}""")
                 session.state.first { it.transcript.size == 2 }
+                socket.awaitSent { messages -> messages.any { it.contains("tool.result") } }
+                assertEquals(
+                    Json.parseToJsonElement("""{"error":"Unavailable"}"""),
+                    Json
+                        .parseToJsonElement(socket.sent.single { it.contains("tool.result") })
+                        .jsonObject["result"],
+                )
                 connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Second sentence."}""")
                 connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
                 assertEquals(
@@ -1316,7 +1319,8 @@ class DeviceVoiceSessionTest {
         MockResponse().setBody(
             """
             {"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","content":[],
-              "isError":true,"structuredContent":{"error":"Unavailable"}}}
+              "isError":true,"structuredContent":{"error":"Unavailable"},
+              "_meta":{"example.org/private":{"dependency":"host://one"}}}}
             """.trimIndent(),
         )
 

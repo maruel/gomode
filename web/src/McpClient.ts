@@ -1,6 +1,6 @@
 // MCP JSON-RPC client for server guidance, tools, and resources used by browser Go Mode.
 
-import type { RequestMeta, ResourcesCapability, ServerDiscoverResult } from "../../sdk/mcp/ts/v1/types.gen";
+import type { MetaObject, RequestMeta, ResourcesCapability, ServerDiscoverResult } from "../../sdk/mcp/ts/v1/types.gen";
 import { readMcpNotificationStream } from "./McpEvents";
 
 const MCP_PROTOCOL_VERSION = "2026-07-28";
@@ -183,6 +183,8 @@ async function mcpReadAdvertisedTextResource(
 export interface McpToolResult {
   structuredContent: JsonObject;
   isError?: boolean;
+  /** Opaque transport metadata, separate from model-visible tool content. */
+  _meta?: MetaObject;
 }
 
 export interface McpToolCallOptions {
@@ -198,11 +200,13 @@ async function mcpCallTool(name: string, args: JsonObject, opts?: McpToolCallOpt
     { name, arguments: args },
     { ...opts, name, paramHeaders: mcpParamHeaders(_toolCache.get(name), args) },
   )) as {
+    _meta?: MetaObject;
     structuredContent?: JsonObject;
     content?: Array<{ type?: string; text?: string }>;
     isError?: boolean;
   };
   return {
+    _meta: result._meta,
     structuredContent: result.structuredContent ?? textContentAsStructuredError(result.content),
     isError: result.isError,
   };

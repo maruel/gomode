@@ -9,6 +9,7 @@ import com.fghbuild.mcp.sdk.v1.ClientCapabilities
 import com.fghbuild.mcp.sdk.v1.Implementation
 import com.fghbuild.mcp.sdk.v1.JSONRPCNotification
 import com.fghbuild.mcp.sdk.v1.JSONRPCRequest
+import com.fghbuild.mcp.sdk.v1.MetaObject
 import com.fghbuild.mcp.sdk.v1.Method
 import com.fghbuild.mcp.sdk.v1.OpenAIUserLocation
 import com.fghbuild.mcp.sdk.v1.PaginatedRequestParams
@@ -50,6 +51,8 @@ private val idCounter = AtomicInteger(0)
 data class McpToolResult(
     val structuredContent: JsonObject,
     val isError: Boolean = false,
+    // Opaque transport metadata, separate from model-visible tool content.
+    val meta: MetaObject? = null,
 )
 
 class McpClient(
@@ -164,6 +167,7 @@ class McpClient(
         return McpToolResult(
             structuredContent = structuredContent,
             isError = result.isError ?: false,
+            meta = result._meta,
         )
     }
 

@@ -1,4 +1,4 @@
-// Unit tests for Go Mode MCP client requests and SSE configuration.
+// Tests native MCP requests, opaque result metadata, and SSE configuration.
 package com.fghbuild.gomode.voice
 
 import com.fghbuild.mcp.sdk.v1.NotificationMethod
@@ -23,6 +23,44 @@ import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
 class McpClientTest {
+    @Test
+    fun `tool results retain opaque metadata outside normalized content`() =
+        runTest {
+            MockWebServer().use { server ->
+                server.start()
+                val client = McpClient(server.url("/mcp").toString(), "2026-07-28", { null })
+                val meta =
+                    Json
+                        .parseToJsonElement(
+                            """{"example.org/dependencies":{"uris":["host://one"],"revision":7},
+                        "other.example/opaque":[null,true,{"nested":"private transport value"}]}""",
+                        ).jsonObject
+                for (structured in listOf(false, true)) {
+                    for (isError in listOf(false, true)) {
+                        val structuredField = if (structured) """, "structuredContent":{"state":"ready"}""" else ""
+                        server.enqueue(
+                            MockResponse().setBody(
+                                """
+                                {"jsonrpc":"2.0","id":1,"result":{
+                                "resultType":"complete","content":[{"type":"text","text":"Readable tool message"}],
+                                "isError":$isError,"_meta":$meta$structuredField}}
+                                """.trimIndent(),
+                            ),
+                        )
+                        val result = client.callTool("read_item", Json.parseToJsonElement("{}").jsonObject)
+                        assertEquals(meta, result.meta)
+                        assertEquals(isError, result.isError)
+                        assertEquals(
+                            Json.parseToJsonElement(
+                                if (structured) """{"state":"ready"}""" else """{"error":"Readable tool message"}""",
+                            ),
+                            result.structuredContent,
+                        )
+                    }
+                }
+            }
+        }
+
     @Test
     fun `tool arguments pass unchanged and HTTP success does not hide invalid params`() =
         runTest {
