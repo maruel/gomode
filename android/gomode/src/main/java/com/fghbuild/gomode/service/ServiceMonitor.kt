@@ -1,4 +1,4 @@
-// ServiceMonitor turns MCP resources into service notifications and voice context state.
+// ServiceMonitor owns background alerts or conversation item streams with cancellable resource lifetimes.
 package com.fghbuild.gomode.service
 
 import com.fghbuild.gomode.sdk.v1.Settings
@@ -65,9 +65,15 @@ data class ServiceMonitorState(
     val retryReason: String? = null,
 )
 
+enum class ServiceMonitorPurpose {
+    BACKGROUND_ALERTS,
+    CONVERSATION_ITEMS,
+}
+
 class ServiceMonitor(
     private val scope: CoroutineScope,
     private val sessionID: String? = null,
+    private val purpose: ServiceMonitorPurpose = ServiceMonitorPurpose.BACKGROUND_ALERTS,
     private val clientFactory: (endpointURL: String, protocolVersion: String) -> ServiceResourceClient,
 ) {
     private val _state = MutableStateFlow(ServiceMonitorState())
@@ -178,7 +184,7 @@ class ServiceMonitor(
         client: ServiceResourceClient,
         publishEvents: Boolean,
     ): ServiceMonitoringPlan? {
-        val plan = serviceMonitoringPlan(client.listResources(sessionID))
+        val plan = monitoringPlan(client.listResources(sessionID))
         if (plan == null) {
             _state.value = ServiceMonitorState(activeNotifications = emptyList())
             return null
@@ -195,7 +201,7 @@ class ServiceMonitor(
         client: ServiceResourceClient,
         plan: ServiceMonitoringPlan,
     ): ServiceMonitoringPlan? {
-        val newPlan = serviceMonitoringPlan(client.listResources(sessionID))
+        val newPlan = monitoringPlan(client.listResources(sessionID))
         if (newPlan == null) {
             _state.value = ServiceMonitorState(activeNotifications = emptyList())
             return null
@@ -205,6 +211,14 @@ class ServiceMonitor(
         }
         return newPlan
     }
+
+    private fun monitoringPlan(resources: List<ResourceDescriptor>): ServiceMonitoringPlan? =
+        serviceMonitoringPlan(
+            when (purpose) {
+                ServiceMonitorPurpose.BACKGROUND_ALERTS -> resources
+                ServiceMonitorPurpose.CONVERSATION_ITEMS -> resources.filter { it.uri == GOMODE_ITEMS_RESOURCE_URI }
+            },
+        )
 
     private suspend fun refreshSnapshot(
         client: ServiceResourceClient,

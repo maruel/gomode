@@ -24,9 +24,26 @@ const (
 	compatHeartbeatInterval = 15 * time.Second
 )
 
-// Session fields are protected by Handler.compatMu. A connected stream retains
+// SessionStore owns bounded released-protocol notification sessions. Share one
+// store across request-local handlers and authenticate every request before
+// calling Handler.HandleMCP. Registry authorization remains request-local.
+type SessionStore struct {
+	owner func(context.Context) (string, error)
+
+	mu       sync.Mutex
+	sessions map[string]*compatSession
+}
+
+// NewSessionStore creates a notification-session owner. owner must return a
+// stable, opaque authenticated principal key including its authorization scope,
+// never credentials. It must be non-nil.
+func NewSessionStore(owner func(context.Context) (string, error)) *SessionStore {
+	return &SessionStore{owner: owner, sessions: make(map[string]*compatSession)}
+}
+
+// Session fields are protected by SessionStore.mu. A connected stream retains
 // the session; disconnected sessions expire after the idle window. State is
-// bounded per Handler, and the host's owner key binds all requests to the same
+// bounded per store, and the host's owner key binds all requests to the same
 // authenticated authorization boundary.
 type compatSession struct {
 	owner        string
@@ -45,7 +62,7 @@ func (s *compatSession) notifyLocked() {
 
 func (h *Handler) compatStreamingEnabled() bool {
 	_, ok := h.Registry.(SubscriptionRegistry)
-	return ok && h.SessionOwner != nil
+	return ok && h.Sessions != nil
 }
 
 func (h *Handler) compatCapabilities() compatServerCapabilities {
@@ -58,28 +75,25 @@ func (h *Handler) compatCapabilities() compatServerCapabilities {
 }
 
 func (h *Handler) createCompatSession(w http.ResponseWriter, r *http.Request) bool {
-	owner, err := h.SessionOwner(r.Context())
+	owner, err := h.Sessions.owner(r.Context())
 	if err != nil || owner == "" {
 		http.Error(w, "session owner unavailable", http.StatusUnauthorized)
 		return false
 	}
 	now := time.Now()
-	h.compatMu.Lock()
-	defer h.compatMu.Unlock()
-	for id, session := range h.compatSessions {
+	h.Sessions.mu.Lock()
+	defer h.Sessions.mu.Unlock()
+	for id, session := range h.Sessions.sessions {
 		if session.streamCancel == nil && !session.expiresAt.After(now) {
-			delete(h.compatSessions, id)
+			delete(h.Sessions.sessions, id)
 		}
 	}
-	if len(h.compatSessions) >= compatSessionLimit {
+	if len(h.Sessions.sessions) >= compatSessionLimit {
 		http.Error(w, "MCP session capacity reached", http.StatusServiceUnavailable)
 		return false
 	}
-	if h.compatSessions == nil {
-		h.compatSessions = make(map[string]*compatSession)
-	}
 	id := rand.Text()
-	h.compatSessions[id] = &compatSession{owner: owner, expiresAt: now.Add(compatSessionIdleTTL), changed: make(chan struct{})}
+	h.Sessions.sessions[id] = &compatSession{owner: owner, expiresAt: now.Add(compatSessionIdleTTL), changed: make(chan struct{})}
 	w.Header().Set("Mcp-Session-Id", id)
 	return true
 }
@@ -94,21 +108,21 @@ func (h *Handler) compatRequestSession(w http.ResponseWriter, r *http.Request) (
 		http.Error(w, "Mcp-Session-Id is required", http.StatusBadRequest)
 		return nil, false
 	}
-	owner, err := h.SessionOwner(r.Context())
+	owner, err := h.Sessions.owner(r.Context())
 	if err != nil || owner == "" {
 		http.Error(w, "session owner unavailable", http.StatusUnauthorized)
 		return nil, false
 	}
-	h.compatMu.Lock()
-	defer h.compatMu.Unlock()
-	session := h.compatSessions[id]
+	h.Sessions.mu.Lock()
+	defer h.Sessions.mu.Unlock()
+	session := h.Sessions.sessions[id]
 	now := time.Now()
 	if session == nil || session.owner != owner {
 		http.Error(w, "unknown MCP session", http.StatusNotFound)
 		return nil, false
 	}
 	if session.streamCancel == nil && !session.expiresAt.After(now) {
-		delete(h.compatSessions, id)
+		delete(h.Sessions.sessions, id)
 		http.Error(w, "expired MCP session", http.StatusNotFound)
 		return nil, false
 	}
@@ -140,9 +154,9 @@ func (h *Handler) handleCompatResourceSubscription(w http.ResponseWriter, r *htt
 			return
 		}
 	}
-	h.compatMu.Lock()
-	if h.compatSessions[r.Header.Get("Mcp-Session-Id")] != session {
-		h.compatMu.Unlock()
+	h.Sessions.mu.Lock()
+	if h.Sessions.sessions[r.Header.Get("Mcp-Session-Id")] != session {
+		h.Sessions.mu.Unlock()
 		http.Error(w, "unknown MCP session", http.StatusNotFound)
 		return
 	}
@@ -159,7 +173,7 @@ func (h *Handler) handleCompatResourceSubscription(w http.ResponseWriter, r *htt
 		session.resources = slices.DeleteFunc(session.resources, func(uri string) bool { return uri == params.URI })
 		session.notifyLocked()
 	}
-	h.compatMu.Unlock()
+	h.Sessions.mu.Unlock()
 	if rpcErr != nil {
 		h.writeResponse(w, http.StatusOK, JSONRPCResponse{JSONRPC: jsonRPCVersion, ID: req.ID, Error: rpcErr})
 		return
@@ -178,13 +192,13 @@ func (h *Handler) handleCompatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodDelete {
-		h.compatMu.Lock()
-		delete(h.compatSessions, r.Header.Get("Mcp-Session-Id"))
+		h.Sessions.mu.Lock()
+		delete(h.Sessions.sessions, r.Header.Get("Mcp-Session-Id"))
 		if session.streamCancel != nil {
 			session.streamCancel()
 		}
 		session.notifyLocked()
-		h.compatMu.Unlock()
+		h.Sessions.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -194,9 +208,9 @@ func (h *Handler) handleCompatStream(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	h.compatMu.Lock()
-	if h.compatSessions[r.Header.Get("Mcp-Session-Id")] != session {
-		h.compatMu.Unlock()
+	h.Sessions.mu.Lock()
+	if h.Sessions.sessions[r.Header.Get("Mcp-Session-Id")] != session {
+		h.Sessions.mu.Unlock()
 		http.Error(w, "unknown MCP session", http.StatusNotFound)
 		return
 	}
@@ -206,14 +220,14 @@ func (h *Handler) handleCompatStream(w http.ResponseWriter, r *http.Request) {
 	session.streamID++
 	streamID := session.streamID
 	session.streamCancel = cancel
-	h.compatMu.Unlock()
+	h.Sessions.mu.Unlock()
 	defer func() {
-		h.compatMu.Lock()
+		h.Sessions.mu.Lock()
 		if session.streamID == streamID {
 			session.streamCancel = nil
 			session.expiresAt = time.Now().Add(compatSessionIdleTTL)
 		}
-		h.compatMu.Unlock()
+		h.Sessions.mu.Unlock()
 	}()
 	stream := sse.New(w)
 	if err := stream.KeepAlive(); err != nil {
@@ -236,38 +250,37 @@ func (h *Handler) handleCompatStream(w http.ResponseWriter, r *http.Request) {
 // disconnection; these are invalidations, not a durable occurrence log. MCP
 // resource notifications do not request a model turn: that is client policy.
 func (h *Handler) streamCompatResources(ctx context.Context, stream *sse.Stream, session *compatSession) (bool, error) {
-	h.compatMu.Lock()
+	h.Sessions.mu.Lock()
 	filter := SubscriptionFilter{ResourcesListChanged: session.listChanged, ResourceSubscriptions: slices.Clone(session.resources)}
 	changed := session.changed
-	h.compatMu.Unlock()
+	h.Sessions.mu.Unlock()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var updates <-chan compatResourceUpdate
 	var wg sync.WaitGroup
-	if filter.ResourcesListChanged || len(filter.ResourceSubscriptions) > 0 {
-		// Released GET streams carry no request metadata. Their invalidations
-		// remain sessionless; metadata-bearing resource POSTs retain their scope.
-		changes, err := h.Registry.(SubscriptionRegistry).SubscribeResourceUpdates(ctx, &SubscriptionsListenParams{Notifications: filter})
-		if err != nil {
-			return false, err
-		}
-		channel := make(chan compatResourceUpdate)
-		updates = channel
-		wg.Go(func() {
-			defer close(channel)
-			for update, err := range changes {
-				select {
-				case <-ctx.Done():
-					return
-				case channel <- compatResourceUpdate{update: update, err: err}:
-				}
-				if err != nil {
-					return
-				}
-			}
-		})
-		defer func() { cancel(); wg.Wait() }()
+	// Arm even an empty filter: the registry owns ongoing authorization checks.
+	// Released GET invalidations remain sessionless; metadata-bearing POSTs
+	// retain their per-request conversation instead of caching it in transport state.
+	changes, err := h.Registry.(SubscriptionRegistry).SubscribeResourceUpdates(ctx, &SubscriptionsListenParams{Notifications: filter})
+	if err != nil {
+		return false, err
 	}
+	channel := make(chan compatResourceUpdate)
+	updates = channel
+	wg.Go(func() {
+		defer close(channel)
+		for update, err := range changes {
+			select {
+			case <-ctx.Done():
+				return
+			case channel <- compatResourceUpdate{update: update, err: err}:
+			}
+			if err != nil {
+				return
+			}
+		}
+	})
+	defer func() { cancel(); wg.Wait() }()
 	// Changes during setup must re-arm before reading or notifying under an old filter.
 	select {
 	case <-changed:

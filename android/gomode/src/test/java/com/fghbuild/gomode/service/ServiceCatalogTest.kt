@@ -1,8 +1,14 @@
-// Tests independent service discovery, schema routing, credential generations, and globally bounded context.
+// Tests independent discovery, authority-bound conversation context, cancellation, and startup request budgets.
 package com.fghbuild.gomode.service
 
 import android.net.Uri
 import android.webkit.WebView
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.emptyPreferences
+import com.fghbuild.gomode.data.OnDeviceEngine
+import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.sdk.v1.Settings
 import com.fghbuild.gomode.sdk.v1.ToolGroup
 import com.fghbuild.gomode.sdk.v1.VoiceGatewaySettings
@@ -13,6 +19,7 @@ import com.fghbuild.gomode.ui.web.ServiceShellSession
 import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.ui.web.completeFrontendPreparation
 import com.fghbuild.gomode.voice.McpToolResult
+import com.fghbuild.gomode.voice.VoiceConversation
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,14 +27,19 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -64,6 +76,314 @@ class ServiceCatalogTest {
     fun tearDown() {
         Dispatchers.resetMain()
     }
+
+    @Test
+    fun `conversation items progress without reading a blocked alert resource`() =
+        runTest {
+            Fixture("Independent").use { fixture ->
+                fixture.includeAlerts = true
+                fixture.blockContextAlerts = true
+                val entry = fixture.entry("a")
+                val catalog = ServiceCatalog(backgroundScope)
+                try {
+                    catalog.reconcile(mapOf(entry.key to entry), emptyMap())
+                    catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.READY }
+                    val contexts = catalog.monitorVoiceContext(backgroundScope, "independent")
+                    val snapshot =
+                        withContext(Dispatchers.Default) {
+                            withTimeout(2000) { contexts.first { entry.key in it } }
+                        }
+                    assertEquals(
+                        "Same item",
+                        snapshot
+                            .getValue(entry.key)
+                            .items
+                            .single()
+                            .title,
+                    )
+                    assertFalse(fixture.resourceReads.any { it == GOMODE_NOTIFICATIONS_RESOURCE_URI to "independent" })
+                } finally {
+                    fixture.releaseContext.countDown()
+                    catalog.close()
+                    entry.close()
+                }
+            }
+        }
+
+    @Test
+    fun `adding a participant keeps verified context without restarting unchanged streams`() =
+        runTest {
+            Fixture("A").use { first ->
+                Fixture("B").use { second ->
+                    val a = first.entry("a")
+                    val b = second.entry("b")
+                    val catalog = ServiceCatalog(backgroundScope)
+                    try {
+                        catalog.reconcile(mapOf(a.key to a), emptyMap())
+                        catalog.state.first { it[a.key]?.readiness == ServiceReadiness.READY }
+                        val contexts = catalog.monitorVoiceContext(backgroundScope, "retained")
+                        val before = contexts.first { a.key in it }
+                        first.blockContextItems = true
+                        second.blockContextItems = true
+                        catalog.reconcile(mapOf(a.key to a, b.key to b), emptyMap())
+                        catalog.state.first { it[b.key]?.readiness == ServiceReadiness.READY }
+                        runCurrent()
+                        assertEquals(before.getValue(a.key), contexts.value[a.key])
+                        assertEquals(1, first.resourceReads.count { it == GOMODE_ITEMS_RESOURCE_URI to "retained" })
+                    } finally {
+                        first.releaseContext.countDown()
+                        second.releaseContext.countDown()
+                        catalog.close()
+                        a.close()
+                        b.close()
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun `schema refresh retains the same context authority and its pending subscription`() =
+        runTest {
+            Fixture("Schemas").use { fixture ->
+                fixture.supportsSubscriptions = true
+                fixture.blockContextSubscription = true
+                fixture.withdrawItemsForSession = "schemas"
+                val entry = fixture.entry("a")
+                val catalog = ServiceCatalog(backgroundScope)
+                try {
+                    catalog.reconcile(mapOf(entry.key to entry), emptyMap())
+                    catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.READY }
+                    val contexts = catalog.monitorVoiceContext(backgroundScope, "schemas")
+                    val before = contexts.first { entry.key in it }
+                    withContext(Dispatchers.IO) {
+                        assertTrue(fixture.contextSubscriptionEntered.await(5, TimeUnit.SECONDS))
+                    }
+                    fixture.minimum = 2
+                    val refreshed = catalog.execute("discover_service", objectOf("server_id" to "a")) { true }
+                    assertFalse(checkNotNull(refreshed).isError)
+                    catalog.reconcile(mapOf(entry.key to entry), mapOf("a" to "Refreshed label"))
+                    runCurrent()
+                    assertEquals(before[entry.key], contexts.value[entry.key])
+                    assertEquals(1, fixture.resourceReads.count { it == GOMODE_ITEMS_RESOURCE_URI to "schemas" })
+                    fixture.releaseContextSubscription.countDown()
+                    withContext(Dispatchers.Default) {
+                        withTimeout(2000) { contexts.first { it[entry.key]?.items?.isEmpty() == true } }
+                    }
+                } finally {
+                    fixture.releaseContextSubscription.countDown()
+                    catalog.close()
+                    entry.close()
+                }
+            }
+        }
+
+    @Test
+    fun `unknown replacement authority never inherits verified context from revoked credentials`() =
+        runTest {
+            Fixture("Authority").use { fixture ->
+                val entry = fixture.entry("a")
+                val catalog = ServiceCatalog(backgroundScope)
+                try {
+                    catalog.reconcile(mapOf(entry.key to entry), emptyMap())
+                    catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.READY }
+                    val contexts = catalog.monitorVoiceContext(backgroundScope, "authority")
+                    val verified = contexts.first { entry.key in it }
+                    assertTrue(catalog.contextText(verified).contains("Same item"))
+                    entry.bearerStore.invalidateIdentity()
+                    assertFalse(catalog.contextText(verified).contains("Same item"))
+                    contexts.first { entry.key !in it }
+                    fixture.blockContextItems = true
+                    signIn(entry, "replacement-token")
+                    catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.READY }
+                    runCurrent()
+                    assertFalse(catalog.contextText(contexts.value).contains("Same item"))
+                    assertTrue(catalog.contextText(contexts.value).contains("have not been read"))
+                } finally {
+                    fixture.releaseContext.countDown()
+                    catalog.close()
+                    entry.close()
+                }
+            }
+        }
+
+    @Test
+    fun `local conversation startup uses one item read per source without waiting for an unrelated host`() =
+        runTest {
+            Fixture("Healthy").use { first ->
+                Fixture("Slow").use { second ->
+                    val settings = SettingsRepository(ContextPreferences())
+                    val aID = settings.addService("Healthy", first.server.url("/").toString())
+                    val bID = settings.addService("Slow", second.server.url("/").toString())
+                    settings.switchService(aID)
+                    settings.updateVoiceMode(VoiceMode.DEVICE)
+                    settings.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+                    settings.settings.first {
+                        it.activeServiceId == aID && it.voiceMode == VoiceMode.DEVICE &&
+                            it.onDeviceEngine == OnDeviceEngine.LOCAL_LLM
+                    }
+                    val a = first.entry(aID)
+                    val b = second.entry(bID)
+                    val catalog = ServiceCatalog(backgroundScope)
+                    val owner =
+                        VoiceConversation(settings, ServiceSettingsClient(), catalog) { mapOf(a.key to a, b.key to b) }
+                    try {
+                        catalog.reconcile(mapOf(a.key to a, b.key to b), emptyMap())
+                        catalog.state.first {
+                            it[a.key]?.readiness == ServiceReadiness.READY &&
+                                it[b.key]?.readiness == ServiceReadiness.READY
+                        }
+                        second.blockContextItems = true
+                        val started = System.nanoTime()
+                        val prepared = withContext(Dispatchers.Default) { withTimeout(2000) { owner.prepareLocal() } }
+                        val context = owner.state.first { it?.serviceContext?.contains("Same item") == true }
+                        val elapsedMS = (System.nanoTime() - started) / 1_000_000
+                        assertTrue(prepared.setup.serviceContextText.contains("Same item"))
+                        assertTrue(checkNotNull(context).serviceContext.orEmpty().contains("Same item"))
+                        assertEquals(
+                            1,
+                            first.resourceReads.count { it == GOMODE_ITEMS_RESOURCE_URI to owner.sessionID },
+                        )
+                        println(
+                            "Native context startup: healthy item reads=1, unrelated response pending, elapsedMS=$elapsedMS",
+                        )
+                    } finally {
+                        second.releaseContext.countDown()
+                        owner.finish()
+                        catalog.close()
+                        a.close()
+                        b.close()
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun `unread selected context has a half second advisory startup budget`() =
+        runTest {
+            Fixture("Selected").use { fixture ->
+                val settings = SettingsRepository(ContextPreferences())
+                val id = settings.addService("Selected", fixture.server.url("/").toString())
+                settings.updateVoiceMode(VoiceMode.DEVICE)
+                settings.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+                settings.settings.first {
+                    it.activeServiceId == id && it.voiceMode == VoiceMode.DEVICE &&
+                        it.onDeviceEngine == OnDeviceEngine.LOCAL_LLM
+                }
+                val entry = fixture.entry(id)
+                val catalog = ServiceCatalog(backgroundScope)
+                val owner = VoiceConversation(settings, ServiceSettingsClient(), catalog) { mapOf(entry.key to entry) }
+                try {
+                    catalog.reconcile(mapOf(entry.key to entry), emptyMap())
+                    catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.READY }
+                    fixture.blockContextItems = true
+                    val preparing = async { owner.prepareLocal() }
+                    runCurrent()
+                    assertFalse(preparing.isCompleted)
+                    advanceTimeBy(499)
+                    runCurrent()
+                    assertFalse(preparing.isCompleted)
+                    advanceTimeBy(1)
+                    runCurrent()
+                    assertTrue(preparing.isCompleted)
+                    assertTrue(
+                        preparing
+                            .await()
+                            .setup.serviceContextText
+                            .contains("have not been read"),
+                    )
+                } finally {
+                    fixture.releaseContext.countDown()
+                    owner.finish()
+                    catalog.close()
+                    entry.close()
+                }
+            }
+        }
+
+    @Test
+    fun `local conversation reuses one verified startup baseline per source`() =
+        runTest {
+            Fixture("A").use { first ->
+                Fixture("B").use { second ->
+                    val settings = SettingsRepository(ContextPreferences())
+                    val aID = settings.addService("A", first.server.url("/").toString())
+                    val bID = settings.addService("B", second.server.url("/").toString())
+                    settings.updateVoiceMode(VoiceMode.DEVICE)
+                    settings.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+                    settings.settings.first {
+                        it.voiceMode == VoiceMode.DEVICE &&
+                            it.onDeviceEngine == OnDeviceEngine.LOCAL_LLM
+                    }
+                    val a = first.entry(aID)
+                    val b = second.entry(bID)
+                    val catalog = ServiceCatalog(backgroundScope)
+                    val owner =
+                        VoiceConversation(settings, ServiceSettingsClient(), catalog) { mapOf(a.key to a, b.key to b) }
+                    try {
+                        catalog.reconcile(mapOf(a.key to a, b.key to b), emptyMap())
+                        catalog.state.first {
+                            it[a.key]?.readiness == ServiceReadiness.READY &&
+                                it[b.key]?.readiness == ServiceReadiness.READY
+                        }
+                        val started = System.nanoTime()
+                        owner.prepareLocal()
+                        owner.state.first { value ->
+                            val context = value?.serviceContext.orEmpty()
+                            context.split("Current service items:").size == 3 &&
+                                context.contains("No active service item is reported.")
+                        }
+                        val counts =
+                            listOf(first, second).map { fixture ->
+                                fixture.resourceReads.count {
+                                    it ==
+                                        GOMODE_ITEMS_RESOURCE_URI to owner.sessionID
+                                }
+                            }
+                        val elapsedMS = (System.nanoTime() - started) / 1_000_000
+                        println("Native startup baseline: item reads=$counts elapsedMS=$elapsedMS")
+                        assertEquals(listOf(1, 1), counts)
+                    } finally {
+                        owner.finish()
+                        catalog.close()
+                        a.close()
+                        b.close()
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun `retiring conversation context cancels its HTTP call before fixture cleanup`() =
+        runTest {
+            Fixture("Cancellation").use { fixture ->
+                val entry = fixture.entry("a")
+                val catalog = ServiceCatalog(backgroundScope)
+                val lifetime = SupervisorJob()
+                val idle = CompletableDeferred<Unit>()
+                val dispatcher = credentialedHTTPClient.dispatcher
+                val previousIdle = dispatcher.idleCallback
+                try {
+                    catalog.reconcile(mapOf(entry.key to entry), emptyMap())
+                    catalog.state.first { it[entry.key]?.monitoring?.snapshot != null }
+                    fixture.blockContextItems = true
+                    dispatcher.idleCallback = Runnable { idle.complete(Unit) }
+                    catalog.monitorVoiceContext(
+                        CoroutineScope(backgroundScope.coroutineContext + lifetime),
+                        "cancelled",
+                    )
+                    withContext(Dispatchers.IO) { assertTrue(fixture.contextReadEntered.await(5, TimeUnit.SECONDS)) }
+                    lifetime.cancelAndJoin()
+                    withContext(Dispatchers.Default) { withTimeout(2000) { idle.await() } }
+                    assertFalse(dispatcher.runningCalls().any { it.request().url.port == fixture.server.port })
+                } finally {
+                    dispatcher.idleCallback = previousIdle
+                    fixture.releaseContext.countDown()
+                    lifetime.cancelAndJoin()
+                    catalog.close()
+                    entry.close()
+                }
+            }
+        }
 
     @Test
     fun `voice context streams use their conversation and stop when the participant is removed`() =
@@ -138,7 +458,7 @@ class ServiceCatalogTest {
                             snapshot.copy(activeItem = ActiveServiceItem("same", "Item #1"))
                         }
                     assertTrue(catalog.contextText(focused).contains("Active service item: Item #1 (same)."))
-                    val withdrawn = contexts.first { it.isEmpty() }
+                    val withdrawn = contexts.first { it[entry.key]?.items?.isEmpty() == true }
                     val cleared = catalog.contextText(withdrawn)
                     assertTrue(cleared.contains("No active service item is reported."))
                     assertFalse(cleared.contains("Active service item:"))
@@ -239,7 +559,9 @@ class ServiceCatalogTest {
                         val detail = discover.structuredContent.getValue("result").jsonObject
                         assertTrue(detail.getValue("mcp_tools").toString().contains("additionalProperties"))
                         assertEquals("B instructions", detail.getValue("instructions").jsonPrimitive.content)
-                        val context = catalog.voiceContextText("conversation-one")
+                        val contexts = catalog.monitorVoiceContext(backgroundScope, "conversation-one")
+                        val snapshot = contexts.first { it.keys.containsAll(listOf(a.key, b.key)) }
+                        val context = catalog.contextText(snapshot)
                         assertTrue(context.contains("Alpha"))
                         assertTrue(context.contains("Beta"))
                         assertTrue(context.contains("Same item"))
@@ -522,6 +844,9 @@ class ServiceCatalogTest {
                         )
                     assertTrue(read.isError)
                     assertEquals("Tools only", dispatch(catalog, "a").resultString("source"))
+                    assertFalse(catalog.hasContextResources(entry.key))
+                    assertTrue(catalog.contextText(emptyMap()).contains("No active service item is reported."))
+                    assertFalse(catalog.contextText(emptyMap()).contains("have not been read"))
                     assertTrue(fixture.requests.none { it.getHeader("Mcp-Method")?.startsWith("resources/") == true })
                 } finally {
                     catalog.close()
@@ -590,7 +915,7 @@ class ServiceCatalogTest {
                             "label".repeat(1000)
                     },
                 )
-                val context = catalog.voiceContextText("conversation-one")
+                val context = catalog.contextText(emptyMap())
                 assertTrue(context.contains("replaces the previous service overview"))
                 assertTrue(context.length <= 12_000)
                 assertTrue(context.contains("More servers omitted"))
@@ -599,6 +924,17 @@ class ServiceCatalogTest {
                 catalog.close()
             }
         }
+
+    private class ContextPreferences : DataStore<Preferences> {
+        private val mutex = Mutex()
+        private val state = MutableStateFlow(emptyPreferences())
+        override val data: Flow<Preferences> = state
+
+        override suspend fun updateData(transform: suspend (t: Preferences) -> Preferences): Preferences =
+            mutex.withLock {
+                transform(state.value).also { state.value = it }
+            }
+    }
 
     private class DeferredWebView(
         private val documentURL: String,
@@ -632,6 +968,19 @@ class ServiceCatalogTest {
     ) : AutoCloseable {
         val server = MockWebServer()
         val requests = CopyOnWriteArrayList<RecordedRequest>()
+
+        @Volatile var includeAlerts = false
+
+        @Volatile var blockContextItems = false
+
+        @Volatile var blockContextAlerts = false
+
+        @Volatile var blockContextSubscription = false
+        val contextSubscriptionEntered = CountDownLatch(1)
+        val releaseContextSubscription = CountDownLatch(1)
+        val releaseContext = CountDownLatch(1)
+        val contextReadEntered = CountDownLatch(1)
+        val resourceReads = CopyOnWriteArrayList<Pair<String, String?>>()
         var supportsResources = true
         var supportsSubscriptions = false
         var scopedItems = false
@@ -667,6 +1016,10 @@ class ServiceCatalogTest {
                                 ?.content
                         requestSessions += method to session
                         if (method == "subscriptions/listen") {
+                            if (session != null && blockContextSubscription) {
+                                contextSubscriptionEntered.countDown()
+                                check(releaseContextSubscription.await(5, TimeUnit.SECONDS))
+                            }
                             val withdrawal =
                                 if (session != null && session == withdrawItemsForSession) {
                                     itemsVisible = false
@@ -740,9 +1093,24 @@ class ServiceCatalogTest {
                                     if (!itemsVisible) {
                                         """{"resources":[]}"""
                                     } else {
-                                        """
-                                        {"resources":[{"name":"items","uri":"gomode://items","mimeType":"application/json"}]}
-                                        """.trimIndent()
+                                        val resources =
+                                            mutableListOf(
+                                                Json.parseToJsonElement(
+                                                    """{"name":"items","uri":"gomode://items","mimeType":"application/json"}""",
+                                                ),
+                                            )
+                                        if (includeAlerts) {
+                                            resources +=
+                                                Json.parseToJsonElement(
+                                                    """{"name":"alerts","uri":"gomode://notifications","mimeType":"application/json"}""",
+                                                )
+                                        }
+                                        buildJsonObject {
+                                            put(
+                                                "resources",
+                                                kotlinx.serialization.json.JsonArray(resources),
+                                            )
+                                        }.toString()
                                     }
                                 }
 
@@ -751,6 +1119,39 @@ class ServiceCatalogTest {
                                 }
 
                                 "resources/read" -> {
+                                    val uri =
+                                        body
+                                            .getValue("params")
+                                            .jsonObject
+                                            .getValue("uri")
+                                            .jsonPrimitive.content
+                                    resourceReads += uri to session
+                                    if (session != null &&
+                                        (
+                                            (uri == GOMODE_ITEMS_RESOURCE_URI && blockContextItems) ||
+                                                (uri == GOMODE_NOTIFICATIONS_RESOURCE_URI && blockContextAlerts)
+                                        )
+                                    ) {
+                                        contextReadEntered.countDown()
+                                        check(releaseContext.await(5, TimeUnit.SECONDS))
+                                    }
+                                    if (uri == GOMODE_NOTIFICATIONS_RESOURCE_URI) {
+                                        return MockResponse().setBody(
+                                            buildJsonObject {
+                                                put("jsonrpc", "2.0")
+                                                put("id", body.getValue("id"))
+                                                put(
+                                                    "result",
+                                                    Json.parseToJsonElement(
+                                                        """
+                                                        {"resultType":"complete","ttlMs":0,"cacheScope":"private",
+                                                        "contents":[{"uri":"gomode://notifications","text":"[]"}]}
+                                                        """.trimIndent(),
+                                                    ),
+                                                )
+                                            }.toString(),
+                                        )
+                                    }
                                     val title = if (scopedItems) session ?: "sessionless" else "Same item"
                                     buildJsonObject {
                                         put(
@@ -805,7 +1206,7 @@ class ServiceCatalogTest {
             id: String,
             authenticated: Boolean = true,
         ): ServiceShellSession {
-            val entry = ServiceShellSession(ServiceShellKey(id, server.url("/").toString())) {}
+            val entry = ServiceShellSession(ServiceShellKey(id, server.url("/").toString().trimEnd('/'))) {}
             entry.updateBootstrap(
                 ServiceBootstrapState.Ready(
                     Settings(

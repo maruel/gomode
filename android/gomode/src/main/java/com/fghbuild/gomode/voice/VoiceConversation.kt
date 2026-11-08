@@ -4,6 +4,7 @@ package com.fghbuild.gomode.voice
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.service.ServiceCatalog
+import com.fghbuild.gomode.service.ServiceMonitoringSnapshot
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.service.VoiceTokenClient
 import com.fghbuild.gomode.service.serviceCatalogTools
@@ -16,14 +17,21 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import java.util.UUID
 
 internal const val FRONTEND_NOT_READY = "Frontend not ready."
+
+// Give the selected host half a second to supply advisory context; other hosts
+// update independently and never extend connection startup behind a slow peer.
+private const val INITIAL_CONTEXT_BUDGET_MS = 500L
 
 internal data class VoiceConversationState(
     val sponsor: String,
@@ -108,18 +116,20 @@ internal class VoiceConversation(
         requireCurrent()
         mutableState.value =
             VoiceConversationState(settings.services.firstOrNull { it.id == key.serviceID }?.label ?: key.url)
+        monitorContext(checkNotNull(conversation))
     }
 
     private fun monitorContext(current: Conversation) {
-        if (current.contextJob != null) return
-        current.contextJob =
-            current.lifetime.scope.launch {
-                catalog.monitorVoiceContext(this, current.lifetime.sessionID).collect { snapshots ->
-                    if (conversation === current && isCurrent()) {
-                        mutableState.value = mutableState.value?.copy(serviceContext = catalog.contextText(snapshots))
-                    }
+        if (current.contextSnapshots != null) return
+        val snapshots = catalog.monitorVoiceContext(current.lifetime.scope, current.lifetime.sessionID)
+        current.contextSnapshots = snapshots
+        current.lifetime.scope.launch {
+            snapshots.collect { snapshots ->
+                if (conversation === current && isCurrent()) {
+                    mutableState.value = mutableState.value?.copy(serviceContext = catalog.contextText(snapshots))
                 }
             }
+        }
     }
 
     fun finish() {
@@ -212,9 +222,7 @@ internal class VoiceConversation(
                 choice = setup.choiceID.orEmpty(),
                 voice = setup.voiceName,
             )
-        val prepared = setup.copy(serviceContextText = refreshContextText())
-        monitorContext(current)
-        return prepared
+        return setup.copy(serviceContextText = initialContextText(current))
     }
 
     // Each new idle preparation follows an explicit disconnect/model/account boundary, never a focus change.
@@ -237,9 +245,8 @@ internal class VoiceConversation(
                     systemInstruction =
                         "You are Go Mode. Use the service catalog to discover and call tools on explicit servers. " +
                             "Each server's instructions apply only to that server. Selecting a server changes focus only.",
-                    serviceContextText = refreshContextText(),
+                    serviceContextText = initialContextText(current),
                 )
-            monitorContext(current)
             prepared = true
             return LocalConversationPreparation(setup, current.lifetime)
         } finally {
@@ -247,12 +254,16 @@ internal class VoiceConversation(
         }
     }
 
-    private suspend fun refreshContextText(): String {
-        val current = conversation ?: throw VoiceSetupException("Voice conversation ended")
-        val context = catalog.voiceContextText(current.lifetime.sessionID)
+    private suspend fun initialContextText(current: Conversation): String {
+        val snapshots = checkNotNull(current.contextSnapshots)
+        val selected = ServiceShellKey(current.settings.activeServiceId, current.settings.activeServiceURL)
+        if (catalog.hasContextResources(selected) && selected !in snapshots.value) {
+            // Other services continue independently. Reconnect reuses this same
+            // baseline and stream rather than starting another discovery pass.
+            withTimeoutOrNull(INITIAL_CONTEXT_BUDGET_MS) { snapshots.first { selected in it } }
+        }
         if (conversation !== current) throw VoiceSetupException("Voice conversation was replaced")
         requireCurrent()
-        mutableState.value = mutableState.value?.copy(serviceContext = context)
         return contextText()
     }
 
@@ -262,7 +273,7 @@ internal class VoiceConversation(
         requireCurrent()
         val settings = settingsRepository.settings.value
         val focus = Json.encodeToString(listOf(settings.activeServiceId.take(128), settings.activeServiceURL.take(512)))
-        val context = mutableState.value?.serviceContext ?: catalog.contextText(emptyMap())
+        val context = catalog.contextText(conversation?.contextSnapshots?.value.orEmpty())
         return "Selected server (focus only): $focus\n$context"
     }
 
@@ -315,7 +326,7 @@ private class Conversation(
     val bearer: String?,
     val lifetime: VoiceConversationLifetime,
 ) {
-    var contextJob: Job? = null
+    var contextSnapshots: StateFlow<Map<ServiceShellKey, ServiceMonitoringSnapshot>>? = null
     val admitted = mutableMapOf<ServiceShellKey, AdmittedIdentity>()
     val credentials = mutableMapOf<String, String?>()
     var setup: VoiceSetup? = null

@@ -56,11 +56,14 @@ and mounts the embedded gateway when configured. Gateway token rules are in
 
 Implement `mcp.SubscriptionRegistry` to publish resource changes. Draft clients
 use `subscriptions/listen`. For released Streamable HTTP clients, configure
-`mcp.Handler.SessionOwner` to return the host's stable authenticated principal
-key, including task or authorization scope boundaries. Authenticate every
-request before dispatch; the session ID does not grant authorization. A nil
-owner callback leaves released requests stateless.
-Keep the handler alive across requests for the lifetime of its sessions.
+one `mcp.NewSessionStore(owner)` for the server lifetime and pass it through
+`mcp.Handler.Sessions`. The owner returns a stable authenticated principal key,
+including login session, task, or authorization scope boundaries, never credentials.
+Authenticate every request before dispatch; the session ID does not grant
+authorization. A nil store leaves released requests stateless. Handlers and their
+authorized registries may be request-local while sharing the store. Bind streaming
+request contexts to the host's login-session expiry and revocation lifecycle;
+registries must recheck changing workspace or role authorization.
 
 Released clients initialize an owner-bound `Mcp-Session-Id`, subscribe with
 `resources/subscribe`, and open a GET with `Accept: text/event-stream`. Resource

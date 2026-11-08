@@ -17,7 +17,7 @@ func TestCompatSession(t *testing.T) {
 	t.Run("idleExpiry", func(t *testing.T) {
 		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
-			h := &Handler{Registry: newSubscriptionTestRegistry(), SessionOwner: func(context.Context) (string, error) { return "owner", nil }}
+			h := &Handler{Registry: newSubscriptionTestRegistry(), Sessions: NewSessionStore(func(context.Context) (string, error) { return "owner", nil })}
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", nil)
 			w := httptest.NewRecorder()
 			if !h.createCompatSession(w, req) {
@@ -35,7 +35,7 @@ func TestCompatSession(t *testing.T) {
 	})
 	t.Run("ownerFailure", func(t *testing.T) {
 		t.Parallel()
-		h := &Handler{Registry: newSubscriptionTestRegistry(), SessionOwner: func(context.Context) (string, error) { return "", errors.New("no principal") }}
+		h := &Handler{Registry: newSubscriptionTestRegistry(), Sessions: NewSessionStore(func(context.Context) (string, error) { return "", errors.New("no principal") })}
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", nil)
 		w := httptest.NewRecorder()
 		if h.createCompatSession(w, req) || w.Code != http.StatusUnauthorized || w.Header().Get("Mcp-Session-Id") != "" {

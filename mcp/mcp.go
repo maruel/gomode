@@ -17,7 +17,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/invopop/jsonschema"
 
@@ -146,15 +145,10 @@ type Handler struct {
 	// (RFC 6749 §4.4), letting machine-to-machine clients skip interactive
 	// user authorization.
 	OAuthClientCredentials bool
-	// SessionOwner returns a stable, opaque authenticated principal key for a
-	// released-protocol session. Include authorization boundaries such as task
-	// scope in the key. It must not return credentials. The host must authenticate
-	// every request before HandleMCP. A nil callback keeps released clients
-	// stateless; configuring it enables their resource notification streams.
-	SessionOwner func(context.Context) (string, error)
-
-	compatMu       sync.Mutex
-	compatSessions map[string]*compatSession
+	// Sessions owns released-protocol notification sessions independently of
+	// request-local registry authorization. Hosts may share it across handlers.
+	// A nil store keeps released clients stateless.
+	Sessions *SessionStore
 }
 
 // HandleMCP handles one MCP HTTP request, dispatching to the native
@@ -452,6 +446,10 @@ func (h *Handler) handleSubscription(ctx context.Context, w http.ResponseWriter,
 	if !ok {
 		return rpcError(InternalErrorCode, "streaming unavailable")
 	}
+	// Registration may allocate before its iterator starts. Own cancellation
+	// across acknowledgment/initial-state failures as well as normal streaming.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	subID := mcpSubscriptionID(id)
 	changes, err := registry.SubscribeResourceUpdates(ctx, &p)
 	if err != nil {
@@ -773,12 +771,12 @@ func (h *Handler) handleCompat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.Method == MethodResourcesList && session != nil {
-		h.compatMu.Lock()
+		h.Sessions.mu.Lock()
 		if !session.listChanged {
 			session.listChanged = true
 			session.notifyLocked()
 		}
-		h.compatMu.Unlock()
+		h.Sessions.mu.Unlock()
 	}
 	h.writeResponse(w, http.StatusOK, JSONRPCResponse{JSONRPC: jsonRPCVersion, ID: req.ID, Result: result})
 }

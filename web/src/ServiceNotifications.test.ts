@@ -1,10 +1,11 @@
-// Tests shared browser item snapshots, alert wake-up, quiet baselines, expiry, and monitor isolation.
+// Tests shared browser context and measures catalog traffic, burst delivery, idle work, and recovery.
 
 import { afterEach, beforeEach, it } from "node:test";
 import type { Mock } from "@vitest/spy";
 import { expect, vi } from "../tests/expect";
 import { deferred } from "../tests/deferred";
 import {
+  configureMcpClient,
   mcpClient,
   type McpResourceNotification,
   type McpResourceSubscription,
@@ -48,6 +49,139 @@ afterEach(() => {
   monitor?.close();
   vi.restoreAllMocks();
   vi.useRealTimers();
+});
+
+// This workload deliberately uses the real resource discovery/read client.
+// Only notification delivery is driven directly, so it reports RPC work rather
+// than timing an in-memory formatter. Diagnostics are a before/after baseline,
+// not assertions preserving today's redundant requests. Optimization budgets:
+// warm target changes require no catalog walk and at most one target read;
+// idle clients perform no reads; repeated invalidations never repeat speech.
+// Run with node's tap reporter to retain every workload diagnostic.
+it("measures 2,000-node focus changes, missing resources, bursts, idle, and reconnect traffic", async (t) => {
+  vi.restoreAllMocks();
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  for (const advertisedAlerts of [false, true]) {
+    monitor?.close();
+    configureMcpClient("/mcp", "update-workload");
+    let itemTitle = "Opening page";
+    let alerts: ReturnType<typeof alert>[] = [];
+    const nodes = Array.from({ length: 2000 }, (_, i) => ({ uri: `mddb://workspaces/workspace/nodes/${i}` }));
+    let calls: Record<string, number> = {};
+    let requestBytes = 0;
+    let responseBytes = 0;
+    let descriptors = 0;
+    const published: Array<{ text: string; generate: boolean }> = [];
+    const failures: unknown[] = [];
+    globalThis.fetch = async (_input, init) => {
+      const encoded = String(init?.body);
+      requestBytes += new TextEncoder().encode(encoded).byteLength;
+      const body = JSON.parse(encoded) as {
+        method: string;
+        params: { cursor?: string; uri?: string; _meta: { "openai/session"?: string } };
+      };
+      expect(body.params._meta["openai/session"]).toBe("workload-conversation");
+      calls[body.method] = (calls[body.method] ?? 0) + 1;
+      let result: unknown;
+      switch (body.method) {
+        case "server/discover":
+          result = { capabilities: { resources: { subscribe: true, listChanged: true } } };
+          break;
+        case "resources/list": {
+          const start = Number(body.params.cursor ?? "0");
+          const resources = nodes.slice(start, start + 50);
+          descriptors += resources.length;
+          if (start === 0) {
+            resources.unshift({ uri: "gomode://items" });
+            if (advertisedAlerts) resources.unshift({ uri: "gomode://notifications" });
+          }
+          result = { resources, ...(start + 50 < nodes.length ? { nextCursor: String(start + 50) } : {}) };
+          break;
+        }
+        case "resources/read": {
+          const uri = body.params.uri;
+          expect(["gomode://items", "gomode://notifications"]).toContain(uri);
+          const text =
+            uri === "gomode://items"
+              ? JSON.stringify({ items: [{ id: "selected", title: itemTitle }] })
+              : JSON.stringify(alerts);
+          result = { contents: [{ uri, text }] };
+          break;
+        }
+        default:
+          throw new Error(`Unexpected workload method: ${body.method}`);
+      }
+      const response = JSON.stringify({ jsonrpc: "2.0", result });
+      responseBytes += new TextEncoder().encode(response).byteLength;
+      return new Response(response, { headers: { "Content-Type": "application/json" } });
+    };
+    vi.spyOn(mcpClient, "subscribeResources").mockImplementation((configuration, callback) => {
+      options = configuration;
+      changed = callback;
+      return { close: () => {} };
+    });
+    const measure = (phase: string) => {
+      t.diagnostic(
+        JSON.stringify({
+          workload: advertisedAlerts ? "items-and-alerts" : "missing-alerts",
+          phase,
+          calls,
+          nodeDescriptors: descriptors,
+          requestBytes,
+          responseBytes,
+          contextBytes: published.reduce((sum, entry) => sum + new TextEncoder().encode(entry.text).byteLength, 0),
+          quietUpdates: published.filter((entry) => !entry.generate).length,
+          wakeups: published.filter((entry) => entry.generate).length,
+        }),
+      );
+      calls = {};
+      requestBytes = 0;
+      responseBytes = 0;
+      descriptors = 0;
+      published.length = 0;
+    };
+    monitor = monitorServiceNotifications(
+      (text, generate) => published.push({ text, generate }),
+      (failure) => failures.push(failure),
+      { sessionID: "workload-conversation" },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(published.at(-1)?.text).toContain("Opening page");
+    expect(published.every((entry) => !entry.generate)).toBe(true);
+    options.onReady?.();
+    await vi.advanceTimersByTimeAsync(0);
+    measure("setup-and-acknowledgment");
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(calls).toEqual({});
+    expect(published).toEqual([]);
+    measure("idle-minute");
+
+    itemTitle = "New selected page";
+    changed({ uri: "gomode://items" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(published.at(-1)?.text).toContain(itemTitle);
+    expect(published.every((entry) => !entry.generate)).toBe(true);
+    measure("focus-change");
+
+    if (advertisedAlerts) alerts = Array.from({ length: 20 }, (_, i) => alert(`burst-${i}`));
+    for (let i = 0; i < 20; i++) changed({ uri: "gomode://notifications" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(published.filter((entry) => entry.generate)).toHaveLength(advertisedAlerts ? 1 : 0);
+    if (advertisedAlerts) expect(published.find((entry) => entry.generate)?.text).toContain("burst-19");
+    measure("twenty-invalidations");
+
+    options.onReady?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(published.filter((entry) => entry.generate)).toEqual([]);
+    expect(failures).toEqual([]);
+    measure("reconnect");
+    monitor.close();
+    vi.restoreAllMocks();
+  }
 });
 
 it("provides a quiet baseline, announces new occurrences once, and replaces withdrawn alert context", async () => {

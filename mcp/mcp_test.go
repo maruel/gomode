@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/invopop/jsonschema"
@@ -50,6 +51,53 @@ func (r *metadataRegistry) SubscribeResourceUpdates(_ context.Context, params *S
 
 func TestHandler(t *testing.T) { //nolint:paralleltest // HandleMCP cases replace the process logger.
 	t.Run("HandleMCP", func(t *testing.T) { //nolint:paralleltest // HandleMCP cases replace the process logger.
+		t.Run("subscription setup cleanup on error", func(t *testing.T) {
+			for _, tc := range []struct {
+				name     string
+				failAt   int
+				list     bool
+				setupErr bool
+			}{
+				{name: "acknowledgment write", failAt: 1},
+				{name: "initial-state write", failAt: 2},
+				{name: "legacy resource-update write", failAt: 3},
+				{name: "resource-list write", failAt: 2, list: true},
+				{name: "registry setup", setupErr: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					synctest.Test(t, func(t *testing.T) {
+						registry := &registrationTestRegistry{subscriptionTestRegistry: newSubscriptionTestRegistry(), released: make(chan struct{}), setupErr: tc.setupErr}
+						h := &Handler{Registry: registry}
+						notifications := fmt.Sprintf(`"notifications":{"resourceSubscriptions":["test://resource"],"resourcesListChanged":%t}`, tc.list)
+						req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", strings.NewReader(nativeMCPRequestJSON("subscriptions/listen", notifications)))
+						req.Header.Set("Mcp-Protocol-Version", ProtocolVersion)
+						req.Header.Set("Mcp-Method", string(MethodSubscriptionsListen))
+						w := &failingSubscriptionWriter{ResponseRecorder: httptest.NewRecorder(), failAt: tc.failAt}
+						h.HandleMCP(w, req)
+						if !registry.registered {
+							t.Fatal("subscription was never registered")
+						}
+						if registry.consumed {
+							t.Fatal("setup failure unexpectedly consumed the iterator")
+						}
+						if tc.failAt != 0 && w.writes != tc.failAt {
+							t.Fatalf("writes=%d, want failure on write%d", w.writes, tc.failAt)
+						}
+						// Wait only for scheduled callbacks, without canceling the
+						// request or invoking test cleanup to release registration.
+						synctest.Wait()
+						select {
+						case <-registry.released:
+						default:
+							t.Fatal("handler returned without releasing the unconsumed registration")
+						}
+						if req.Context().Err() != nil {
+							t.Fatal("test request was canceled before the cleanup assertion")
+						}
+					})
+				})
+			}
+		})
 		t.Run("protocol", func(t *testing.T) {
 			t.Run("successful tool result omits metadata", func(t *testing.T) {
 				registry := &subscriptionTestRegistry{callResult: RawToolResult{Structured: TextOutput{Result: "ok"}}}
@@ -1129,4 +1177,39 @@ func TestMCPHeaderCompatibleSchema(t *testing.T) {
 			}
 		})
 	}
+}
+
+// registrationTestRegistry models setup work owned by context cancellation even
+// when the returned iterator never starts, as production broker adapters require.
+type registrationTestRegistry struct {
+	*subscriptionTestRegistry
+	released   chan struct{}
+	registered bool
+	consumed   bool
+	setupErr   bool
+}
+
+func (r *registrationTestRegistry) SubscribeResourceUpdates(ctx context.Context, _ *SubscriptionsListenParams) (iter.Seq2[ResourceUpdate, error], error) {
+	r.registered = true
+	context.AfterFunc(ctx, func() { close(r.released) })
+	if r.setupErr {
+		return nil, errors.New("registration failed after setup")
+	}
+	return func(func(ResourceUpdate, error) bool) {
+		r.consumed = true
+	}, nil
+}
+
+type failingSubscriptionWriter struct {
+	*httptest.ResponseRecorder
+	failAt int
+	writes int
+}
+
+func (w *failingSubscriptionWriter) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes == w.failAt {
+		return 0, errors.New("subscription transport write failed")
+	}
+	return w.ResponseRecorder.Write(p)
 }

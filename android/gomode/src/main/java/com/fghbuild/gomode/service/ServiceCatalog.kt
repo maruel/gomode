@@ -18,6 +18,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -130,6 +131,12 @@ internal class ServiceCatalog(
         return member.prepared?.let(member::current) == true
     }
 
+    fun hasContextResources(key: ServiceShellKey): Boolean {
+        val member = members[key] ?: return false
+        val prepared = member.prepared ?: return false
+        return member.current(prepared) && prepared.mcp?.capabilities?.resources != null
+    }
+
     fun notificationForDelivery(notification: CatalogNotification): CatalogNotification? {
         val member = members[notification.source] ?: return null
         val prepared = member.prepared ?: return null
@@ -161,75 +168,92 @@ internal class ServiceCatalog(
             },
         )
 
-    // The caller's scope owns these streams. They produce voice context only;
-    // the background catalog remains the sole owner of user-visible alerts.
+    // The conversation owns one item-only stream per prepared authority. Keep
+    // unchanged sources alive when another participant joins or leaves; alerts
+    // remain exclusively owned by each participant's background monitor.
     fun monitorVoiceContext(
         scope: CoroutineScope,
         sessionID: String,
     ): StateFlow<Map<ServiceShellKey, ServiceMonitoringSnapshot>> {
         val snapshots = MutableStateFlow<Map<ServiceShellKey, ServiceMonitoringSnapshot>>(emptyMap())
         scope.launch {
-            state
-                .map {
-                    members
-                        .mapNotNull { (key, participant) ->
-                            val prepared = participant.prepared
-                            prepared
-                                ?.mcp
-                                ?.takeIf {
-                                    participant.current(prepared) && it.capabilities.resources != null
-                                }?.let { key to it }
-                        }.toMap()
-                }.distinctUntilChanged()
-                .collectLatest { participants ->
-                    snapshots.value = emptyMap()
-                    coroutineScope {
-                        for ((key, mcp) in participants) {
-                            val participant = members[key] ?: continue
-                            val ready =
-                                participant.entry.state.value.bootstrap as? ServiceBootstrapState.Ready ?: continue
-                            launch {
-                                val monitor = ServiceMonitor(this, sessionID) { _, _ -> mcp.client }
-                                try {
-                                    monitor.start(key.url, ready.settings)
-                                    monitor.state.collect { value ->
-                                        if (members[key] !== participant ||
-                                            !mcp.authorization.isCurrent()
-                                        ) {
-                                            return@collect
-                                        }
-                                        val snapshot = value.snapshot
-                                        if (snapshot != null) {
-                                            snapshots.update { it + (key to snapshot) }
-                                        } else if (value.activeNotifications != null) {
-                                            snapshots.update { it - key }
-                                        }
-                                    }
-                                } finally {
-                                    monitor.stop()
-                                }
+            val workers = mutableMapOf<ServiceShellKey, Pair<ServiceMcp, Job>>()
+            try {
+                state
+                    .map {
+                        members
+                            .mapNotNull { (key, participant) ->
+                                val prepared = participant.prepared
+                                prepared
+                                    ?.mcp
+                                    ?.takeIf {
+                                        participant.current(prepared) && it.capabilities.resources != null
+                                    }?.let { key to it }
+                            }.toMap()
+                    }.distinctUntilChanged()
+                    .collect { participants ->
+                        for (key in workers.keys.toList()) {
+                            if (workers.getValue(key).first.authorization !== participants[key]?.authorization) {
+                                workers.remove(key)?.second?.cancelAndJoin()
+                                snapshots.update { it - key }
                             }
                         }
-                        awaitCancellation()
+                        for ((key, mcp) in participants) {
+                            if (key in workers) continue
+                            val participant = members[key] ?: continue
+                            val authority = participant.prepared ?: continue
+                            if (authority.mcp !== mcp) continue
+                            val ready =
+                                participant.entry.state.value.bootstrap as? ServiceBootstrapState.Ready ?: continue
+                            val worker =
+                                launch {
+                                    val monitor =
+                                        ServiceMonitor(
+                                            this,
+                                            sessionID,
+                                            ServiceMonitorPurpose.CONVERSATION_ITEMS,
+                                        ) { _, _ -> mcp.client }
+                                    try {
+                                        monitor.start(key.url, ready.settings)
+                                        monitor.state.collect { value ->
+                                            val prepared = participant.prepared
+                                            // Tool-schema refresh replaces PreparedService, but it
+                                            // does not replace this credential-bound context owner.
+                                            if (members[key] !== participant || prepared == null ||
+                                                !participant.current(prepared) ||
+                                                prepared.identity != authority.identity ||
+                                                prepared.mcp?.authorization !== mcp.authorization
+                                            ) {
+                                                return@collect
+                                            }
+                                            val snapshot = value.snapshot
+                                            if (snapshot != null) {
+                                                snapshots.update { it + (key to snapshot) }
+                                            } else if (value.activeNotifications != null) {
+                                                // No items resource is verified absence, unlike an
+                                                // unread snapshot or a transient transport failure.
+                                                snapshots.update {
+                                                    it + (
+                                                        key to
+                                                            ServiceMonitoringSnapshot(
+                                                                emptyList(),
+                                                            )
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    } finally {
+                                        monitor.stop()
+                                    }
+                                }
+                            workers[key] = mcp to worker
+                        }
                     }
-                }
+            } finally {
+                workers.values.forEach { it.second.cancel() }
+            }
         }
         return snapshots.asStateFlow()
-    }
-
-    // A voice baseline must be read with its conversation; background monitoring
-    // intentionally keeps a sessionless overview for notifications outside voice.
-    suspend fun voiceContextText(sessionID: String?): String {
-        val contexts = mutableMapOf<ServiceShellKey, String>()
-        for ((key, participant) in members.toMap()) {
-            val prepared = participant.prepared ?: continue
-            if (!participant.current(prepared)) continue
-            val mcp = prepared.mcp ?: continue
-            if (mcp.capabilities.resources == null) continue
-            contexts[key] = readInitialServiceContext(mcp.client, sessionID)
-            check(participant.current(prepared)) { "Service authentication changed during voice context discovery." }
-        }
-        return formatContextText(contexts)
     }
 
     private fun formatContextText(contexts: Map<ServiceShellKey, String>): String =
@@ -247,7 +271,13 @@ internal class ServiceCatalog(
                     } else {
                         entry.readiness
                     }
-                val context = contexts[entry.key]?.takeIf { current } ?: NO_ACTIVE_SERVICE_ITEM_CONTEXT
+                val context =
+                    if (!current || !hasContextResources(entry.key)) {
+                        NO_ACTIVE_SERVICE_ITEM_CONTEXT
+                    } else {
+                        contexts[entry.key]
+                            ?: "Service items have not been read; retain the previous context for this server."
+                    }
                 val source = Json.encodeToString(listOf(entry.key.serviceID, entry.label, entry.key.url))
                 val body = "Server $source: ${readiness.text}\n$context\n"
                 if (length + body.take(2_000).length > 11_900) {

@@ -150,7 +150,8 @@ internal suspend fun prepareVoiceSetup(
     val tools = (participant?.tools ?: serviceCatalogTools) + nativeVoiceTools(settings)
     val serviceContextText =
         if (sharedCatalog != null) {
-            sharedCatalog.voiceContextText(sessionID)
+            // The conversation's item streams own setup and subsequent context.
+            ""
         } else {
             readInitialServiceContext(requireNotNull(client), sessionID)
         }
