@@ -3496,3 +3496,15 @@ describe("formatVoiceRTCDiagnostics", () => {
     );
   });
 });
+
+it("pins the gateway base path for RTC signaling and cleanup", async () => {
+  configureVoiceGateway("/test/", null);
+  const session = new VoiceSession();
+  await session.connect();
+  expect(offerRequests[0]?.url).toBe(window.location.origin + "/test/api/voicegateway/v2/voice/rtc/offer");
+  configureVoiceGateway("/replacement/", null);
+  session.disconnect();
+  await vi.waitFor(() =>
+    expect(closeRequests[0]?.url).toBe(window.location.origin + "/test/api/voicegateway/v2/voice/rtc/session-1"),
+  );
+});

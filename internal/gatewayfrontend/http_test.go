@@ -14,13 +14,14 @@ import (
 
 	"github.com/andybalholm/brotli"
 
+	"github.com/maruel/gomode/internal/gatewayhttp"
 	"github.com/maruel/gomode/mcp"
 	"github.com/maruel/gomode/voicegateway"
 )
 
 func TestNewHandler(t *testing.T) {
 	t.Parallel()
-	h, err := NewHandler(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 3480}, nil, nil)
+	h, err := NewHandler(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 3480}, "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +81,7 @@ func TestNewHandler(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &settings); err != nil {
 			t.Fatal(err)
 		}
-		if settings.Service != "voice-gateway" || settings.WebShell.VoiceGateway.URL != "/" {
+		if settings.Service != "voice-gateway" || settings.WebShell.VoiceGateway.URL != "/test/" {
 			t.Fatalf("settings=%+v", settings)
 		}
 		for _, method := range []string{"server/discover", "tools/list", "resources/list", "tools/call"} {
@@ -219,11 +220,11 @@ func TestRemoteFrontend(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = ln.Close() })
-			h, err := NewHandler(ln.Addr(), nil, nil)
+			h, err := NewHandler(ln.Addr(), "", nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, target := range []string{"/", "/.well-known/gomode.json", "/api/voicegateway/v2/voice/choices"} {
+			for _, target := range []string{"/", "/.well-known/gomode.json", "/test/api/voicegateway/v2/voice/choices"} {
 				r := httptest.NewRequest("GET", origin+target, nil)
 				r.RemoteAddr = "192.0.2.2:12345"
 				r.Header.Set("Origin", origin)
@@ -300,4 +301,48 @@ func TestRegistry(t *testing.T) {
 			}
 		})
 	})
+}
+
+func TestProxyFrontend(t *testing.T) {
+	t.Parallel()
+	frontend, err := NewHandler(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 3479}, "https://Voice.Example:443/", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api, err := voicegateway.NewHandler(nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/api/voicegateway/", api)
+	mux.Handle("/", frontend)
+	h, err := gatewayhttp.NewHandler(mux, "https://voice.example", []string{"127.0.0.1/32"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		path, origin string
+		status       int
+	}{
+		{"/", "https://voice.example", 200},
+		{"/.well-known/gomode.json", "https://voice.example", 200},
+		{"/test/api/voicegateway/v2/voice/choices", "https://voice.example", 200},
+		{"/test/api/voicegateway/v2/voice/choices", "http://voice.example", 403},
+	} {
+		r := httptest.NewRequestWithContext(t.Context(), "GET", "https://voice.example"+tc.path, http.NoBody)
+		r.RemoteAddr = "127.0.0.1:123"
+		r.Header.Set("Origin", tc.origin)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != tc.status {
+			t.Errorf("%s origin %s: status = %d, body = %s", tc.path, tc.origin, w.Code, w.Body.String())
+		}
+	}
+	r := httptest.NewRequestWithContext(t.Context(), "POST", "https://voice.example/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(`{"sdp":"test","service":{"kind":"test","instanceID":"local","baseURL":"https://voice.example","token":"invalid"}}`))
+	r.RemoteAddr = "127.0.0.1:123"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("standalone offer status = %d", w.Code)
+	}
 }

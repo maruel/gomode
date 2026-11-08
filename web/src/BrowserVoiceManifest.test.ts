@@ -162,3 +162,20 @@ it("rejects an aborted discovery even when response parsing completes after repl
   parsed.resolve(manifest("/"));
   await expect(result).rejects.toThrow();
 });
+
+it("preserves safe same-origin gateway base paths and rejects ambiguous paths", () => {
+  for (const base of ["/test/", origin + "/test/"]) {
+    expect(resolveBrowserVoiceEndpoints(manifest(base), expected, origin)?.gatewayURL).toBe(origin + "/test/");
+  }
+  for (const base of [
+    "//evil.example/",
+    "/test/../",
+    "/test/%2e/",
+    "/test/?x=1",
+    "/test/#x",
+    "/test\\evil/",
+    "https://voice.example/test/",
+  ]) {
+    expect(() => resolveBrowserVoiceEndpoints(manifest(base, "/token"), expected, origin)).toThrow();
+  }
+});

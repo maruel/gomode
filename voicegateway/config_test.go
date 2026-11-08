@@ -726,7 +726,12 @@ openrouter_sort = "latency"
 		path := filepath.Join(t.TempDir(), "config.toml")
 		data := fmt.Sprintf(`[server]
 http = ":4444"
+external_url = "https://voice.example"
+trusted_proxies = ["127.0.0.1/32"]
+debug_frontend = true
 webrtc_udp_port = 4445
+[debug]
+trace = "gateway.trace"
 [[realtime]]
 label = "Gemini"
 provider = "gemini"
@@ -746,7 +751,7 @@ public_key = %q
 		if _, err := cfg.Resolve(); err != nil {
 			t.Fatal(err)
 		}
-		if cfg.Server != (ServerConfig{HTTP: ":4444", WebRTCUDPPort: 4445}) || cfg.Realtime[0].Model != "gemini-live-test" || cfg.TrustedIssuers[0].Service != "example" {
+		if (cfg.Server.HTTP != ":4444" || cfg.Server.WebRTCUDPPort != 4445 || cfg.Server.ExternalURL != "https://voice.example" || !cfg.Server.DebugFrontend || len(cfg.Server.TrustedProxies) != 1 || cfg.Debug.Trace != "gateway.trace") || cfg.Realtime[0].Model != "gemini-live-test" || cfg.TrustedIssuers[0].Service != "example" {
 			t.Fatalf("config = %+v", cfg)
 		}
 	})

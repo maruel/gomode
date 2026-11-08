@@ -17,9 +17,11 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-/** Gateways use HTTPS, same-origin HTTP, or HTTP loopback for local development. */
-export function voiceGatewayOrigin(value: string, origin: string): string {
-  if (value !== "/" && !/^https?:\/\/[^/?#@\\]+\/?$/.test(value)) {
+/** Gateways use HTTPS, same-origin HTTP, or HTTP loopback. Same-origin bases may include a path. */
+export function voiceGatewayBaseURL(value: string, origin: string): string {
+  const path = value.startsWith(origin + "/") ? value.slice(origin.length) : value;
+  const localPath = /^\/(?:[A-Za-z0-9_-]+\/)*$/.test(path);
+  if (!localPath && !/^https?:\/\/[^/?#@\\]+\/?$/.test(value)) {
     throw new Error("Voice gateway must be a secure origin");
   }
   const url = new URL(value, origin);
@@ -30,7 +32,7 @@ export function voiceGatewayOrigin(value: string, origin: string): string {
     (url.protocol !== "https:" && !(url.protocol === "http:" && (loopback || url.origin === origin))) ||
     url.username ||
     url.password ||
-    url.pathname !== "/" ||
+    (!localPath && url.pathname !== "/") ||
     url.search ||
     url.hash
   )
@@ -69,7 +71,7 @@ export function resolveBrowserVoiceEndpoints(
   if (gateway === null) throw new Error("Go Mode manifest has no voice gateway settings");
   if (gateway.url === undefined || gateway.url === "") return null;
   if (typeof gateway.url !== "string") throw new Error("Invalid voice gateway URL");
-  const gatewayURL = voiceGatewayOrigin(gateway.url, origin);
+  const gatewayURL = voiceGatewayBaseURL(gateway.url, origin);
   let tokenEndpoint: string | null = null;
   if (gateway.tokenEndpoint !== undefined && gateway.tokenEndpoint !== null) {
     if (typeof gateway.tokenEndpoint !== "string" || !gateway.tokenEndpoint)

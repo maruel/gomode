@@ -26,6 +26,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/maruel/gomode"
+	"github.com/maruel/gomode/httpserver"
 )
 
 // Config declares reusable voice stages and presets. Hosts may embed it in their
@@ -447,6 +448,7 @@ type configFile struct {
 	Config
 	Server         ServerConfig          `toml:"server"`
 	TrustedIssuers []TrustedIssuerConfig `toml:"trusted_issuers"`
+	Debug          DebugConfig           `toml:"debug"`
 }
 
 // Resolve validates the standalone settings and resolves shared voice declarations.
@@ -626,9 +628,21 @@ func (c *ResolvedConfig) Validate() error {
 	return errors.Join(errs...)
 }
 
+// DebugConfig configures standalone execution tracing.
+type DebugConfig struct {
+	// Trace is the output file for a Go execution trace; empty disables tracing.
+	Trace string `toml:"trace"`
+}
+
 // ServerConfig configures gateway listeners and standalone logging.
 type ServerConfig struct {
-	HTTP          string     `toml:"http"`
+	HTTP string `toml:"http"`
+	// ExternalURL is the expected public HTTP(S) origin. Empty accepts the request authority.
+	ExternalURL string `toml:"external_url"`
+	// TrustedProxies lists direct proxy CIDRs allowed to supply client IP headers.
+	TrustedProxies []string `toml:"trusted_proxies"`
+	// DebugFrontend enables the unauthenticated live-test UI on the API listener.
+	DebugFrontend bool       `toml:"debug_frontend"`
 	WebRTCUDPPort int        `toml:"webrtc_udp_port"`
 	LogLevel      slog.Level `toml:"log_level"`
 }
@@ -636,6 +650,14 @@ type ServerConfig struct {
 // Validate checks the WebRTC port, where -1 disables media transport. The caller
 // owns HTTP listener requirements and may bind its own HTTP server.
 func (c *ServerConfig) Validate() error {
+	origin, err := httpserver.CanonicalOrigin(c.ExternalURL)
+	if err != nil {
+		return fmt.Errorf("server.external_url: %w", err)
+	}
+	c.ExternalURL = origin
+	if _, err := httpserver.ParseTrustedProxies(c.TrustedProxies); err != nil {
+		return fmt.Errorf("server.trusted_proxies: %w", err)
+	}
 	if c.WebRTCUDPPort < -1 || c.WebRTCUDPPort > 65535 {
 		return fmt.Errorf("server.webrtc_udp_port must be between -1 and 65535, got %d", c.WebRTCUDPPort)
 	}

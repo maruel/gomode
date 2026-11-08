@@ -7,6 +7,7 @@ import { FakeMicrophoneContext, microphoneFrames } from "../tests/microphone-aud
 import { FakeRecognition, fakeSynthesis, installBrowserSpeech } from "../tests/browser-speech";
 import { configureVoiceGateway, VoiceSession } from "./VoiceSession";
 import { deferred } from "../tests/deferred";
+import { resolveBrowserVoiceEndpoints } from "./BrowserVoiceManifest";
 import { mcpClient } from "./McpClient";
 
 class FakeWebSocket {
@@ -1203,4 +1204,27 @@ describe("browser voice sessions", () => {
     vi.advanceTimersByTime(15000);
     expect(session.state.error).toContain("timed out");
   });
+});
+
+it("routes discovered standalone text tickets and WebSockets through the gateway base path", async () => {
+  const origin = window.location.origin;
+  const endpoints = resolveBrowserVoiceEndpoints(
+    {
+      apiVersion: 1,
+      service: "voice-gateway",
+      webShell: { voiceGateway: { url: "/test/" }, toolGroups: [{ name: "test", endpoint: "/api/mcp" }] },
+    },
+    { service: "voice-gateway", toolGroup: "test" },
+    origin,
+  );
+  ok(endpoints);
+  configureVoiceGateway(endpoints.gatewayURL, null);
+  session.selectSpeechInput("client");
+  session.selectSpeechOutput("client");
+  const socket = await readySocket();
+  expect(requests[0]?.url).toBe(origin + "/test/api/voicegateway/v2/voice/text/ticket");
+  const expected = new URL("/test/api/voicegateway/v2/voice/text/browser", origin);
+  expected.protocol = expected.protocol === "https:" ? "wss:" : "ws:";
+  expect(socket.url.href).toBe(expected.href);
+  expect(socket.protocols).toEqual(["gomode.text.v2", "gomode.ticket.one-time-ticket"]);
 });

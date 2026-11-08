@@ -16,6 +16,7 @@ to a host through `/.well-known/gomode.json` and renders its web frontend.
 - Go module `github.com/maruel/gomode`: discovery manifest and voice token
   contracts.
   - `mcp/`, `oauth/`, `sse/`: reusable HTTP protocol implementations.
+  - `httpserver/`: trusted proxies, client-IP resolution, and origin validation.
   - `devicelogin/`: browser pairing with explicit approval and host session issuance.
   - `voicegateway/`: standalone or embedded WebRTC voice gateway.
 - `sdk/`: generated TypeScript, Kotlin, and Swift protocol clients plus the
@@ -28,3 +29,9 @@ to a host through `/.well-known/gomode.json` and renders its web frontend.
 See [the server library guide](docs/SERVER_LIBRARY.md) to integrate a host.
 See [on-device models](docs/ON_DEVICE_VOICE_MODELS.md#lfm3-17b)
 for Android model downloads and the LFM3 export and upload workflow.
+
+## Standalone voice gateway
+
+Copy [contrib/config.toml](contrib/config.toml) to
+`~/.config/voice-gateway/config.toml`. It documents proxy trust, the public URL,
+execution tracing, and the optional unauthenticated debug frontend.

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -254,14 +255,31 @@ func TestMainImpl(t *testing.T) {
 			t.Fatalf("disabled standalone transport = %v", err)
 		}
 	})
-	t.Run("frontend flags", func(t *testing.T) {
-		// The frontend flags do not interfere with config loading.
-		missing := filepath.Join(t.TempDir(), "missing.toml")
-		if err := mainImpl([]string{"-config", missing, "-frontend-http", "0.0.0.0:0"}); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("disabled frontend affected startup: %v", err)
+	t.Run("trace flushes on startup failure", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.toml")
+		tracePath := filepath.Join(dir, "execution.trace")
+		data := fmt.Sprintf(`[server]
+http = "invalid-listen-address"
+[debug]
+trace = %q
+[[llm]]
+id = "test"
+label = "Test"
+provider = "openaicompatible"
+remote = "http://127.0.0.1:1/v1/chat/completions"
+model = "test"
+`, filepath.ToSlash(tracePath))
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
 		}
-		if err := mainImpl([]string{"-config", missing, "-frontend", "-frontend-http", "0.0.0.0:0"}); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("remote frontend did not reach config loading: %v", err)
+		if err := mainImpl([]string{"-config", path}); err == nil || !strings.Contains(err.Error(), "missing port") {
+			t.Fatalf("startup error: %v", err)
+		}
+		cmd := exec.CommandContext(t.Context(), "go", "tool", "trace", "-d=parsed", tracePath) //nolint:gosec // The trace path is generated inside t.TempDir.
+		cmd.Stdout = io.Discard
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("read execution trace: %v", err)
 		}
 	})
 }
@@ -269,29 +287,24 @@ func TestMainImpl(t *testing.T) {
 func TestServeHTTP(t *testing.T) {
 	t.Parallel()
 	for _, failListener := range []bool{false, true} {
-		name := "cancellation closes both listeners"
+		name := "cancellation closes listener"
 		if failListener {
-			name = "listener failure cancels both servers"
+			name = "listener failure cancels server"
 		}
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := context.WithCancelCause(t.Context())
-			servers := make([]*http.Server, 0, 2)
-			listeners := make([]net.Listener, 0, 2)
-			for range 2 {
-				var lc net.ListenConfig
-				ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
-				if err != nil {
-					t.Fatal(err)
-				}
-				listeners = append(listeners, ln)
-				servers = append(servers, &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })})
+			var lc net.ListenConfig
+			ln, err := lc.Listen(ctx, "tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
 			}
+			server := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })}
 			done := make(chan error, 1)
 			var wg sync.WaitGroup
-			wg.Go(func() { done <- serveHTTP(ctx, cancel, servers, listeners) })
+			wg.Go(func() { done <- serveHTTP(ctx, cancel, server, ln) })
 			t.Cleanup(func() { cancel(nil); wg.Wait() })
-			for _, ln := range listeners {
+			{
 				req, err := http.NewRequestWithContext(ctx, "GET", "http://"+ln.Addr().String(), nil)
 				if err != nil {
 					t.Fatal(err)
@@ -308,7 +321,7 @@ func TestServeHTTP(t *testing.T) {
 				}
 			}
 			if failListener {
-				if err := listeners[1].Close(); err != nil {
+				if err := ln.Close(); err != nil {
 					t.Fatal(err)
 				}
 			} else {
@@ -326,7 +339,7 @@ func TestServeHTTP(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("servers did not stop")
 			}
-			for _, ln := range listeners {
+			{
 				conn, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
 				if err == nil {
 					_ = conn.Close()

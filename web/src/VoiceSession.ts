@@ -1,5 +1,6 @@
 // Browser voice sessions prepare host context before setup and dispatch conversation-bound tools.
 
+import { voiceGatewayBaseURL } from "./BrowserVoiceManifest";
 import { BrowserSpeechBuffer } from "./BrowserSpeechBuffer";
 import { MicrophoneLevel } from "./MicrophoneLevel";
 import { MicrophoneInput } from "./MicrophoneInput";
@@ -119,9 +120,7 @@ export function configureVoiceGateway(
   headersProvider?: () => HeadersInit,
   prepareSession?: PrepareVoiceSession,
 ): void {
-  const u = new URL(baseURL, window.location.origin);
-  if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("Voice gateway URL must use HTTP or HTTPS");
-  gatewayBaseURL = u.origin;
+  gatewayBaseURL = voiceGatewayBaseURL(baseURL, window.location.origin);
   serviceAuthorizationProvider = provider;
   gatewayBearerTokenProvider = tokenProvider ?? null;
   gatewayHeadersProvider = headersProvider ?? null;
@@ -132,12 +131,13 @@ export function configureVoiceGateway(
 type BearerTokenProvider = () => string | null | Promise<string | null>;
 
 async function gatewayFetch(
-  origin: string,
+  baseURL: string,
   bearerProvider: BearerTokenProvider | null,
   hostHeaders: HeadersInit | undefined,
   path: string,
   init?: RequestInit,
 ): Promise<Response> {
+  const origin = new URL(baseURL).origin;
   const headers = new Headers(init?.headers);
   if (origin === window.location.origin) {
     new Headers(hostHeaders).forEach((value, key) => headers.set(key, value));
@@ -148,7 +148,7 @@ async function gatewayFetch(
   }
   let response: Response;
   try {
-    response = await fetch(new URL(path, origin).toString(), { ...init, headers });
+    response = await fetch(new URL(path.slice(1), baseURL).toString(), { ...init, headers });
   } catch (error: unknown) {
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     const message =
@@ -190,7 +190,7 @@ function gatewayHTTPError(status: number, path: string): string | null {
 // Late-bound API for callers outside VoiceSession; session operations use a pinned client.
 export const voiceGatewayApi = voicegatewaySDK.createApiClient((path, init) =>
   gatewayFetch(
-    gatewayBaseURL ?? window.location.origin,
+    gatewayBaseURL ?? window.location.origin + "/",
     gatewayBearerTokenProvider,
     gatewayHeadersProvider?.(),
     path,
@@ -199,8 +199,8 @@ export const voiceGatewayApi = voicegatewaySDK.createApiClient((path, init) =>
 );
 
 interface GatewaySnapshot {
+  url: URL;
   version: number;
-  origin: string;
   serviceProvider: ServiceAuthorizationProvider | null;
   bearerProvider: BearerTokenProvider | null;
   prepareSession: PrepareVoiceSession | null;
@@ -208,18 +208,18 @@ interface GatewaySnapshot {
 }
 
 function gatewaySnapshot(): GatewaySnapshot {
-  const origin = gatewayBaseURL ?? window.location.origin;
+  const url = new URL(gatewayBaseURL ?? window.location.origin + "/");
   const serviceProvider = serviceAuthorizationProvider;
   const bearerProvider = gatewayBearerTokenProvider;
   // Keep host identity fixed for this session's signaling, retries and cleanup.
   const headers = new Headers(gatewayHeadersProvider?.());
   return {
+    url,
     version: untrack(gatewayVersion),
-    origin,
     serviceProvider,
     bearerProvider,
     prepareSession: sessionPreparation,
-    api: voicegatewaySDK.createApiClient((path, init) => gatewayFetch(origin, bearerProvider, headers, path, init)),
+    api: voicegatewaySDK.createApiClient((path, init) => gatewayFetch(url.href, bearerProvider, headers, path, init)),
   };
 }
 
@@ -890,7 +890,7 @@ export class VoiceSession {
   constructor(chime?: VoiceChimePlayer, thinkingEarcon?: ThinkingEarcon) {
     let setup: VoiceSetupPreference | null = null;
     try {
-      setup = savedSetup(gatewaySnapshot().origin);
+      setup = savedSetup(gatewaySnapshot().url.origin);
     } catch (error) {
       console.warn("Could not load the voice setup", error);
     }
@@ -981,7 +981,7 @@ export class VoiceSession {
   }
 
   private _setupPreference(): VoiceSetupPreference {
-    const origin = gatewaySnapshot().origin;
+    const origin = gatewaySnapshot().url.origin;
     const saved = savedSetup(origin);
     if (this._choicesVersion !== untrack(gatewayVersion))
       return (
@@ -1063,7 +1063,7 @@ export class VoiceSession {
       preference.recognitionModelID = models.input;
       preference.synthesisModelID = models.output;
     }
-    const origin = gatewaySnapshot().origin;
+    const origin = gatewaySnapshot().url.origin;
     let name: string | null = null;
     let voiceError: string | null = null;
     let voiceStatus: VoiceState["voiceStatus"] = "ready";
@@ -1161,7 +1161,7 @@ export class VoiceSession {
     )
       throw new Error("Choose an available speaking voice");
     const choiceID = this.state.choiceIDs.webrtc!;
-    localStorage.setItem(speakingVoiceStorageKey(gatewaySnapshot().origin, choiceID), name);
+    localStorage.setItem(speakingVoiceStorageKey(gatewaySnapshot().url.origin, choiceID), name);
     this._update((s) => {
       s.voiceName = name;
       s.voiceError = null;
@@ -1193,17 +1193,17 @@ export class VoiceSession {
         s.voiceStatus = "idle";
         s.voiceError = null;
       });
-      const setup = savedSetup(snapshot.origin);
+      const setup = savedSetup(snapshot.url.origin);
       const speechModelIDs = {
-        input: setup?.recognitionModelID ?? localStorage.getItem(speechModelStorageKey(snapshot.origin, "input")),
-        output: setup?.synthesisModelID ?? localStorage.getItem(speechModelStorageKey(snapshot.origin, "output")),
+        input: setup?.recognitionModelID ?? localStorage.getItem(speechModelStorageKey(snapshot.url.origin, "input")),
+        output: setup?.synthesisModelID ?? localStorage.getItem(speechModelStorageKey(snapshot.url.origin, "output")),
       };
       if (this._choicesVersion !== snapshot.version) {
         const choiceIDs = {
-          text: savedVoiceChoice(snapshot.origin, "text"),
-          webrtc: savedVoiceChoice(snapshot.origin, "webrtc"),
+          text: savedVoiceChoice(snapshot.url.origin, "text"),
+          webrtc: savedVoiceChoice(snapshot.url.origin, "webrtc"),
         };
-        const setup = savedSetup(snapshot.origin);
+        const setup = savedSetup(snapshot.url.origin);
         this._choicesVersion = snapshot.version;
         this._update((s) => {
           s.setupMode = setup?.mode ?? "parts";
@@ -1233,7 +1233,7 @@ export class VoiceSession {
         s.speechModelIDs = speechModelIDs;
         s.choicesStatus = "ready";
       });
-      this._resolveFamilies(snapshot.origin, metadata);
+      this._resolveFamilies(snapshot.url.origin, metadata);
     } catch (error) {
       if (snapshot.version !== untrack(gatewayVersion) || attempt !== this._choicesAttempt) return;
       this._update((s) => {
@@ -1326,7 +1326,7 @@ export class VoiceSession {
     }
     let choiceID: string | null;
     try {
-      const stored = savedSetup(snapshot.origin);
+      const stored = savedSetup(snapshot.url.origin);
       const selected = metadata.choices.find(
         (choice) => choice.id === (this._sessionChoiceID ?? defaultChoiceID(metadata, this.transport)),
       );
@@ -1374,7 +1374,7 @@ export class VoiceSession {
       const name =
         this.state.speechOutput !== "gateway"
           ? ""
-          : (this._sessionVoiceName ?? savedSpeakingVoice(snapshot.origin, choice, this.state.speechOutput));
+          : (this._sessionVoiceName ?? savedSpeakingVoice(snapshot.url.origin, choice, this.state.speechOutput));
       this._sessionVoiceName = name;
       voiceError = this.state.speechOutput === "gateway" ? speakingVoiceError(choice, name) : null;
       if (snapshot.version === untrack(gatewayVersion))
@@ -1747,7 +1747,7 @@ export class VoiceSession {
 
   private _restoreColdSetup(snapshot: GatewaySnapshot): VoiceSetupPreference | null {
     if (this._choicesVersion === snapshot.version && this.state.choicesStatus === "ready") return null;
-    const setup = savedSetup(snapshot.origin);
+    const setup = savedSetup(snapshot.url.origin);
     this.setState((s) => ({
       ...s,
       setupMode: setup?.mode ?? "parts",
@@ -1898,15 +1898,15 @@ export class VoiceSession {
         this._sessionSpeechModelIDs[stage] = catalogReady
           ? this.state.speechModelIDs[stage]
           : ((stage === "input" ? setup?.recognitionModelID : setup?.synthesisModelID) ??
-            localStorage.getItem(speechModelStorageKey(this._sessionGateway.origin, stage)));
+            localStorage.getItem(speechModelStorageKey(this._sessionGateway.url.origin, stage)));
       }
       this._sessionChoiceID = catalogReady
         ? this.state.choiceIDs[this.transport]
-        : savedVoiceChoice(this._sessionGateway.origin, this.transport);
+        : savedVoiceChoice(this._sessionGateway.url.origin, this.transport);
       if (catalogReady) {
         const choice = this.state.choices.find((choice) => choice.id === this._sessionChoiceID);
         if (choice && (this.state.speechOutput !== "gateway" || choice.voices?.length))
-          this._sessionVoiceName = savedSpeakingVoice(this._sessionGateway.origin, choice, this.state.speechOutput);
+          this._sessionVoiceName = savedSpeakingVoice(this._sessionGateway.url.origin, choice, this.state.speechOutput);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2200,7 +2200,7 @@ export class VoiceSession {
       this._monitorMicrophone(stream);
       const response = await snapshot.api.voiceTextTicket(service === null ? { choiceID } : { choiceID, service });
       if (attempt !== this._connectionAttempt) return;
-      const url = new URL("/api/voicegateway/v2/voice/text/browser", snapshot.origin);
+      const url = new URL("api/voicegateway/v2/voice/text/browser", snapshot.url);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       const socket = new WebSocket(url, ["gomode.text.v2", `gomode.ticket.${response.ticket}`]);
       this._textSocket = socket;

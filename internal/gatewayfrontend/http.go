@@ -26,6 +26,7 @@ import (
 
 	"github.com/maruel/gomode"
 	"github.com/maruel/gomode/frontend"
+	"github.com/maruel/gomode/httpserver"
 	"github.com/maruel/gomode/mcp"
 	"github.com/maruel/gomode/voicegateway"
 )
@@ -34,9 +35,15 @@ import (
 //
 // Loopback listeners require local peers and authorities; other listeners allow
 // remote access. The address includes the actual port assigned by the listener.
-// These routes have no host authentication; anyone who can reach the listener
-// can use the configured voice backends.
-func NewHandler(addr net.Addr, bridge voicegateway.MediaBridge, text voicegateway.TextSessionServer) (http.Handler, error) {
+// An explicit externalURL permits proxy access to a loopback listener; the caller
+// must enforce that expected origin. These routes have no host authentication;
+// anyone who can reach the listener can use the configured voice backends.
+func NewHandler(addr net.Addr, externalURL string, bridge voicegateway.MediaBridge, text voicegateway.TextSessionServer) (http.Handler, error) {
+	origin, err := httpserver.CanonicalOrigin(externalURL)
+	if err != nil {
+		return nil, err
+	}
+	externalURL = origin
 	host, port, err := net.SplitHostPort(addr.String())
 	if err != nil {
 		return nil, err
@@ -45,7 +52,7 @@ func NewHandler(addr net.Addr, bridge voicegateway.MediaBridge, text voicegatewa
 	if err != nil {
 		return nil, fmt.Errorf("frontend listener IP: %w", err)
 	}
-	localOnly := ip.IsLoopback()
+	localOnly := ip.IsLoopback() && externalURL == ""
 	dist, err := fs.Sub(frontend.Files, "dist")
 	if err != nil {
 		return nil, err
@@ -55,7 +62,7 @@ func NewHandler(addr net.Addr, bridge voicegateway.MediaBridge, text voicegatewa
 		WebShell: gomode.WebShellSettings{
 			BridgeVersion: 3,
 			ToolGroups:    []gomode.ToolGroup{{Name: "test", Description: "Voice testing tools", Endpoint: "/api/mcp", ProtocolVersion: mcp.ProtocolVersion}},
-			VoiceGateway:  gomode.VoiceGatewaySettings{URL: "/"},
+			VoiceGateway:  gomode.VoiceGatewaySettings{URL: "/test/"},
 		},
 	}
 	discovery, err := gomode.NewHandler(&settings)
@@ -67,7 +74,7 @@ func NewHandler(addr net.Addr, bridge voicegateway.MediaBridge, text voicegatewa
 	registry := newRegistry()
 	mh := &mcp.Handler{Registry: registry, ServerInfo: mcp.Implementation{Name: "voice-gateway", Version: "1.0.0"}}
 	mux.HandleFunc("/api/mcp", mh.HandleMCP)
-	mux.Handle("/api/voicegateway/", voicegateway.NewEmbeddedHandler(func() voicegateway.MediaBridge { return bridge }, text))
+	mux.Handle("/test/api/voicegateway/", http.StripPrefix("/test", voicegateway.NewEmbeddedHandler(func() voicegateway.MediaBridge { return bridge }, text)))
 	assets := &assetHandler{dist: dist}
 	mux.Handle("GET /{$}", assets)
 	mux.Handle("GET /assets/", assets)
@@ -85,7 +92,12 @@ func NewHandler(addr net.Addr, bridge voicegateway.MediaBridge, text voicegatewa
 		}
 		// TLS may terminate at a reverse proxy. Require the same authority for
 		// either HTTP scheme without trusting forwarded headers.
-		if origin := r.Header.Get("Origin"); (origin != "" && origin != "http://"+r.Host && origin != "https://"+r.Host) || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		origin := r.Header.Get("Origin")
+		sameOrigin := origin == "" || origin == "http://"+r.Host || origin == "https://"+r.Host
+		if externalURL != "" {
+			sameOrigin = origin == "" || origin == externalURL
+		}
+		if !sameOrigin || r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 			http.Error(w, "same-origin frontend access required", http.StatusForbidden)
 			return
 		}
