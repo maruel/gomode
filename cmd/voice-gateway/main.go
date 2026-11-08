@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -14,12 +15,13 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/joho/godotenv"
 	"github.com/lmittmann/tint"
 	"github.com/mattn/go-colorable"
 	"github.com/mattn/go-isatty"
@@ -38,19 +40,22 @@ func mainImpl(args []string) (err error) {
 
 	flags := flag.NewFlagSet("voice-gateway", flag.ContinueOnError)
 	configPath := flags.String("config", voicegateway.DefaultConfigPath(), "voice gateway config.toml path")
-	addr := flags.String("http", envDefault("VOICE_GATEWAY_HTTP", ""), "HTTP listen address for signaling")
-	udpPort := flags.String("udp-port", envDefault("VOICE_GATEWAY_WEBRTC_UDP_PORT", ""), "UDP port for WebRTC ICE")
 	frontend := flags.Bool("frontend", false, "serve the standalone live-test frontend")
 	frontendAddr := flags.String("frontend-http", "127.0.0.1:3480", "HTTP listen address for the frontend (requires -frontend)")
-	logLevel := flags.String("log-level", envDefault("VOICE_GATEWAY_LOG_LEVEL", "info"), "log level (debug, info, warn, error)")
 	logFile := flags.String("log-file", "", "append stdout and stderr to this file instead of the console")
+	envFile := flags.String("env-file", "", "load process environment from this dotenv file; file values override inherited values")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-
-	log, err := initLogging(*logLevel, *logFile)
+	var logLevel slog.LevelVar
+	log, err := initLogging(*logFile, &logLevel)
 	if err != nil {
 		return err
+	}
+	if *envFile != "" {
+		if err := loadEnvFile(*envFile); err != nil {
+			return err
+		}
 	}
 	closeShutdown, err := startPlatformShutdown(cancel)
 	if err != nil {
@@ -77,16 +82,7 @@ func mainImpl(args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	if *addr != "" {
-		cfg.Server.HTTP = *addr
-	}
-	if *udpPort != "" {
-		port, err := strconv.Atoi(*udpPort)
-		if err != nil {
-			return fmt.Errorf("parse udp port: %w", err)
-		}
-		cfg.Server.WebRTCUDPPort = port
-	}
+	logLevel.Set(cfg.Server.LogLevel)
 	if err := validateStandaloneConfig(&cfg.Server); err != nil {
 		return err
 	}
@@ -201,23 +197,14 @@ func validateStandaloneConfig(cfg *voicegateway.ServerConfig) error {
 	return nil
 }
 
-func initLogging(level, path string) (*slog.Logger, error) {
+func initLogging(path string, level *slog.LevelVar) (*slog.Logger, error) {
 	if path != "" {
 		if err := redirectOutput(path); err != nil {
 			return nil, fmt.Errorf("redirect output to %s: %w", path, err)
 		}
 	}
-	ll := &slog.LevelVar{}
-	switch level {
-	case "debug":
-		ll.Set(slog.LevelDebug)
-	case "warn":
-		ll.Set(slog.LevelWarn)
-	case "error":
-		ll.Set(slog.LevelError)
-	}
 	l := slog.New(tint.NewTextHandler(colorable.NewColorable(os.Stderr), &tint.Options{
-		Level: ll,
+		Level: level,
 		ReplaceAttr: func(groups []string, attr slog.Attr) slog.Attr {
 			if path == "" && len(groups) == 0 && attr.Key == slog.TimeKey {
 				return slog.Attr{}
@@ -231,11 +218,32 @@ func initLogging(level, path string) (*slog.Logger, error) {
 	return l, nil
 }
 
-func envDefault(name, def string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
+// loadEnvFile changes only this process and its children. Windows tasks and macOS
+// launch agents can pass -env-file without exporting credentials for the whole user.
+func loadEnvFile(path string) error {
+	f, err := os.Open(path) // #nosec G304 -- The operator selects the CLI env path.
+	if err != nil {
+		return fmt.Errorf("open env file: %w", err)
 	}
-	return def
+	const maxEnvFileSize = 1 << 20
+	data, readErr := io.ReadAll(io.LimitReader(f, maxEnvFileSize+1))
+	if err := errors.Join(readErr, f.Close()); err != nil {
+		return fmt.Errorf("read env file %s: %w", path, err)
+	}
+	if len(data) > maxEnvFileSize {
+		return fmt.Errorf("env file %s exceeds 1 MiB", path)
+	}
+	values, err := godotenv.Unmarshal(strings.TrimPrefix(string(data), "\uFEFF"))
+	if err != nil {
+		// Parser errors can quote credentials from the offending line.
+		return fmt.Errorf("parse env file %s: invalid dotenv syntax", path)
+	}
+	for name, value := range values {
+		if err := os.Setenv(name, value); err != nil {
+			return fmt.Errorf("set env variable %s from %s: %w", name, path, err)
+		}
+	}
+	return nil
 }
 
 // startRestartWatch triggers graceful shutdown after a rebuild or config change.

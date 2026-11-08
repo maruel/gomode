@@ -3,6 +3,8 @@
 #
 # With systemd, put API keys in ~/.config/systemd/user/voice-gateway.env,
 # beside voice-gateway.service. See voice-gateway.env.example for the format.
+# Windows setup passes its preserved voice-gateway.env via -env-file.
+# macOS launch agents can also pass -env-file; see voice-gateway.env.example.
 #
 # Provider names come from genai's providers.All registry at https://github.com/maruel/genai
 #
@@ -20,6 +22,8 @@
 http = "127.0.0.1:3479"
 # The WebRTC UDP port must be reachable by clients (directly or through NAT).
 webrtc_udp_port = 3480
+# Log level: debug, info (default), warn, or error.
+# log_level = "info"
 
 # Managed LLMs, speech stages, and native llama.cpp audio load on first use.
 # A choice counts as one instance, including its ASR/LLM/TTS workers. Active

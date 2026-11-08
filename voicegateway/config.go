@@ -626,10 +626,11 @@ func (c *ResolvedConfig) Validate() error {
 	return errors.Join(errs...)
 }
 
-// ServerConfig configures gateway HTTP and WebRTC listeners.
+// ServerConfig configures gateway listeners and standalone logging.
 type ServerConfig struct {
-	HTTP          string `toml:"http"`
-	WebRTCUDPPort int    `toml:"webrtc_udp_port"`
+	HTTP          string     `toml:"http"`
+	WebRTCUDPPort int        `toml:"webrtc_udp_port"`
+	LogLevel      slog.Level `toml:"log_level"`
 }
 
 // Validate checks the WebRTC port, where -1 disables media transport. The caller

@@ -17,6 +17,7 @@ $configPath = Join-Path $configHome 'voice-gateway/config.toml'
 if ($configPath -notmatch '^(?:[A-Za-z]:[\\/]|\\\\)') { throw "Configuration path '$configPath' must be absolute." }
 $exe = Join-Path $InstallDir 'voice-gateway.exe'
 $logFile = Join-Path $InstallDir 'voice-gateway.log'
+$envFile = Join-Path $InstallDir 'voice-gateway.env'
 $task = Get-ScheduledTask | Where-Object { $_.TaskPath -eq '\' -and $_.TaskName -eq $TaskName }
 if ($null -ne $task -and (@($task.Actions).Count -ne 1 -or $task.Actions[0].Execute -ne $exe)) {
     throw "Task '$TaskName' does not run '$exe'. Use the original -InstallDir or a different -TaskName."
@@ -35,6 +36,9 @@ if (-not $goBin) { $goBin = Join-Path ($goEnv.GOPATH -split [IO.Path]::PathSepar
 $source = Join-Path $goBin 'voice-gateway.exe'
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+if (-not (Test-Path -LiteralPath $envFile)) {
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'voice-gateway.env.example') -Destination $envFile
+}
 if (-not (Test-Path -LiteralPath $configPath)) {
     New-Item -ItemType Directory -Force -Path (Split-Path $configPath -Parent) | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'config.toml') -Destination $configPath
@@ -65,7 +69,7 @@ try {
     if ($source -ne $exe) { Copy-Item -LiteralPath $source -Destination $exe -Force }
 
     $user = [Environment]::UserDomainName + '\' + [Environment]::UserName
-    $action = New-ScheduledTaskAction -Execute $exe -Argument ('-log-file "' + $logFile + '"') -WorkingDirectory $InstallDir
+    $action = New-ScheduledTaskAction -Execute $exe -Argument ('-log-file "' + $logFile + '" -env-file "' + $envFile + '"') -WorkingDirectory $InstallDir
     # Interactive tasks run only while signed in and use the persistent user environment,
     # not shell-only variables from this setup session.
     $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
@@ -86,5 +90,6 @@ try {
 
 Write-Host "Installed: $exe"
 Write-Host "Edit configuration: $configPath"
+Write-Host "Edit API keys: $envFile"
 Write-Host "Requested start of scheduled task: $TaskName"
 Write-Host "Investigate logs: Get-Content -LiteralPath '$($logFile.Replace("'", "''"))' -Tail 100 -Wait"
