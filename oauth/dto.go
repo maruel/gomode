@@ -1,7 +1,7 @@
 // Package oauth is an OAuth 2.0 authorization server and client library.
 //
-// This package will be split into a standalone Go module (stdlib only).
-// No caic-internal types or backend dependencies may leak in.
+// This package uses only the standard library.
+// Keep host-specific types and backend dependencies outside this package.
 //
 // Subpackages:
 //

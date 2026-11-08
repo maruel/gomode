@@ -1,10 +1,10 @@
 // Tests native LiteRT tool declarations, manual tool-result rounds, and local model lifecycle.
 package com.fghbuild.gomode.voice
 
-import com.caic.voicegateway.sdk.v2.ToolCall
 import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
+import com.fghbuild.voicegateway.sdk.v2.ToolCall
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ConversationConfig

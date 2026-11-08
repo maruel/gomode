@@ -39,7 +39,7 @@ var SDKAPI = apispec.Config[voiceapi.ErrorCode]{
 		reflect.TypeFor[Error](),
 	},
 	DocumentExtraSeeds: true,
-	KotlinPackage:      "com.caic.voicegateway.sdk.v1",
+	KotlinPackage:      "com.fghbuild.voicegateway.sdk.v1",
 	APIDocTitle:        "Voice Gateway API Reference",
 	APIDocIntro:        "RESTful JSON signaling API served at `/api/voicegateway/v1/voice/`.",
 	SpecialTypes: []apispec.SpecialType{

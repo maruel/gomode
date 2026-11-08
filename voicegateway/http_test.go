@@ -54,7 +54,7 @@ func TestNewHandler(t *testing.T) {
 	t.Parallel()
 	t.Run("invalid issuer policy", func(t *testing.T) {
 		t.Parallel()
-		_, err := NewHandler([]TrustedIssuerConfig{{Service: "caic", Issuer: "https://caic.example.com", PublicKey: "invalid"}}, nil, nil)
+		_, err := NewHandler([]TrustedIssuerConfig{{Service: "example", Issuer: "https://service.example.com", PublicKey: "invalid"}}, nil, nil)
 		if err == nil || !strings.Contains(err.Error(), "trusted_issuers[0].public_key") {
 			t.Fatalf("invalid handler issuer = %v", err)
 		}
@@ -104,7 +104,7 @@ func TestNewHandler(t *testing.T) {
 	t.Run("browser preflight from trusted issuer", func(t *testing.T) {
 		t.Parallel()
 		cfg := configFile{}
-		cfg.TrustedIssuers = []TrustedIssuerConfig{{Service: "caic", Issuer: "https://caic.example.com", OAuth: true}}
+		cfg.TrustedIssuers = []TrustedIssuerConfig{{Service: "example", Issuer: "https://service.example.com", OAuth: true}}
 		handler, err := NewHandler(cfg.TrustedIssuers, nil, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -113,7 +113,7 @@ func TestNewHandler(t *testing.T) {
 			origin string
 			status int
 		}{
-			{"https://caic.example.com", http.StatusNoContent},
+			{"https://service.example.com", http.StatusNoContent},
 			{"https://attacker.example.com", http.StatusMethodNotAllowed},
 		} {
 			w := httptest.NewRecorder()
@@ -189,9 +189,9 @@ func TestNewHandler(t *testing.T) {
 			t.Fatal(err)
 		}
 		token, err := gomode.IssueServiceScopedToken(&gomode.ScopedTokenClaims{
-			ServiceKind:       "caic",
+			ServiceKind:       "example",
 			ServiceInstanceID: "home",
-			BackendOrigin:     "https://caic.example.com",
+			BackendOrigin:     "https://service.example.com",
 			Subject:           "user-1",
 			Capabilities:      []string{"voice.session"},
 			Audience:          gomode.ScopedTokenAudience,
@@ -205,12 +205,12 @@ func TestNewHandler(t *testing.T) {
 			t.Fatal(err)
 		}
 		w := httptest.NewRecorder()
-		body := `{"sdp":"offer","service":{"kind":"caic","instanceID":"home","baseURL":"https://caic.example.com","token":"` + token + `"}}`
+		body := `{"sdp":"offer","service":{"kind":"example","instanceID":"home","baseURL":"https://service.example.com","token":"` + token + `"}}`
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(body))
 		cfg := configFile{}
 		cfg.TrustedIssuers = []TrustedIssuerConfig{{
-			Service:   "caic",
-			Issuer:    "https://caic.example.com",
+			Service:   "example",
+			Issuer:    "https://service.example.com",
 			PublicKey: encodedPublicKey,
 		}}
 		handler, err := NewHandler(cfg.TrustedIssuers, nil, nil)
@@ -294,7 +294,7 @@ func TestNewHandler(t *testing.T) {
 			t.Fatal(err)
 		}
 		w := httptest.NewRecorder()
-		body := `{"sdp":"offer","service":{"kind":"caic","instanceID":"home","baseURL":"https://caic.example.com","token":"dummy"}}`
+		body := `{"sdp":"offer","service":{"kind":"example","instanceID":"home","baseURL":"https://service.example.com","token":"dummy"}}`
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/voicegateway/v2/voice/rtc/offer", strings.NewReader(body))
 		handler.ServeHTTP(w, req)
 		assertErrorResponse(t, w, http.StatusUnauthorized, voiceapi.CodeUnauthorized, "no trusted issuer configured for service")
@@ -405,9 +405,9 @@ func testServiceAuth(t *testing.T, capabilities ...string) (cfg configFile, serv
 		t.Fatal(err)
 	}
 	token, err := gomode.IssueServiceScopedToken(&gomode.ScopedTokenClaims{
-		ServiceKind:       "caic",
+		ServiceKind:       "example",
 		ServiceInstanceID: "home",
-		BackendOrigin:     "https://caic.example.com",
+		BackendOrigin:     "https://service.example.com",
 		Subject:           "user-1",
 		Capabilities:      capabilities,
 		Audience:          gomode.ScopedTokenAudience,
@@ -422,11 +422,11 @@ func testServiceAuth(t *testing.T, capabilities ...string) (cfg configFile, serv
 	}
 	cfg = configFile{}
 	cfg.TrustedIssuers = []TrustedIssuerConfig{{
-		Service:   "caic",
-		Issuer:    "https://caic.example.com",
+		Service:   "example",
+		Issuer:    "https://service.example.com",
 		PublicKey: encodedPublicKey,
 	}}
-	service = `{"kind":"caic","instanceID":"home","baseURL":"https://caic.example.com","token":"` + token + `"}`
+	service = `{"kind":"example","instanceID":"home","baseURL":"https://service.example.com","token":"` + token + `"}`
 	return cfg, service
 }
 

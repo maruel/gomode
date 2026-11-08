@@ -325,7 +325,7 @@ private fun subscriptionFilter(
     )
 }
 
-// Tracks the opening window of a subscription stream: the caic-native
+// Tracks the opening window of a subscription stream: the protocol's
 // initial_state payloads, the legacy resources/updated re-read burst that
 // always follows each payload, and the leading resources/list_changed
 // notification. A payload that covers every monitored URI is the authoritative

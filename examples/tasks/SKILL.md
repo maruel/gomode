@@ -15,8 +15,8 @@ gomode:
           longitude: -73.5673
           radiusMeters: 100
   mcpServers:
-    - name: caic-tasks
-      endpoint: /api/caic/v1/mcp
+    - name: task-server
+      endpoint: /api/example/v1/mcp
       protocolVersion: "2026-07-28"
       authRequired: true
       tools:
@@ -24,8 +24,8 @@ gomode:
         - tasks_create
         - tasks_input
         - tasks_cancel
-    - name: caic-repos
-      endpoint: /api/caic/v1/mcp
+    - name: repo-server
+      endpoint: /api/example/v1/mcp
       protocolVersion: "2026-07-28"
       authRequired: true
       tools:

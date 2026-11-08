@@ -50,11 +50,11 @@ class VoiceTokenClientTest {
             try {
                 server.enqueue(
                     MockResponse().setBody(
-                        """{"kind":"caic","instanceID":"home","baseURL":"https://caic.example.com","token":"signed"}""",
+                        """{"kind":"example","instanceID":"home","baseURL":"https://service.example.com","token":"signed"}""",
                     ),
                 )
                 val auth = VoiceTokenClient().fetch(server.url("/voice/token").toString(), "session=abc")
-                assertEquals("caic", auth.kind)
+                assertEquals("example", auth.kind)
                 assertEquals("signed", auth.token)
                 assertEquals("session=abc", server.takeRequest().getHeader("Cookie"))
             } finally {

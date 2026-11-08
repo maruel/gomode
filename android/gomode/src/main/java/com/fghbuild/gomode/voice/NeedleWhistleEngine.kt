@@ -3,10 +3,10 @@ package com.fghbuild.gomode.voice
 
 import android.content.Context
 import android.util.Log
-import com.caic.voicegateway.sdk.v2.MessageKind
-import com.caic.voicegateway.sdk.v2.ToolCall
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
+import com.fghbuild.voicegateway.sdk.v2.MessageKind
+import com.fghbuild.voicegateway.sdk.v2.ToolCall
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject

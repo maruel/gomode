@@ -25,9 +25,9 @@ func TestAccessTokenService(t *testing.T) {
 	t.Parallel()
 
 	const (
-		issuer   = "https://caic.example.com"
-		audience = "https://caic.example.com/api/caic/v1/mcp"
-		scope    = "caic:mcp.read caic:tasks.read"
+		issuer   = "https://example.test"
+		audience = "https://example.test/api/example/v1/mcp"
+		scope    = "example:mcp.read example:tasks.read"
 	)
 	user := oauth.User{ID: "usr_1", Username: "alice", Provider: "github"}
 
@@ -179,7 +179,7 @@ func TestAccessTokenService(t *testing.T) {
 		if err != nil {
 			t.Fatalf("IssueAccessToken: %v", err)
 		}
-		if _, err := svc.VerifyAccessToken(token, issuer, "https://caic.example.com/api/wrong", time.Now(), nil, &tokenTestSession{user: user}); err == nil || !strings.Contains(err.Error(), "invalid token audience") {
+		if _, err := svc.VerifyAccessToken(token, issuer, "https://example.test/api/wrong", time.Now(), nil, &tokenTestSession{user: user}); err == nil || !strings.Contains(err.Error(), "invalid token audience") {
 			t.Fatalf("VerifyAccessToken error = %v, want invalid token audience", err)
 		}
 	})
@@ -723,8 +723,8 @@ func testIssueClientCredentialsAccessToken(t *testing.T) {
 	t.Parallel()
 
 	const (
-		issuer   = "https://caic.example.com"
-		audience = "https://caic.example.com/resource"
+		issuer   = "https://example.test"
+		audience = "https://example.test/resource"
 		scope    = "read write"
 	)
 	_, jwk := testDPoPRSAKeyPair(t)

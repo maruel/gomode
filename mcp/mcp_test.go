@@ -54,7 +54,7 @@ func TestHandler(t *testing.T) { //nolint:paralleltest // HandleMCP cases replac
 			t.Run("successful tool result omits metadata", func(t *testing.T) {
 				registry := &subscriptionTestRegistry{callResult: RawToolResult{Structured: TextOutput{Result: "ok"}}}
 				h := &Handler{Registry: registry}
-				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/caic/v1/mcp", strings.NewReader(nativeMCPRequestJSON("tools/call", `"name":"echo","arguments":{}`)))
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/example/v1/mcp", strings.NewReader(nativeMCPRequestJSON("tools/call", `"name":"echo","arguments":{}`)))
 				req.Header.Set("Mcp-Protocol-Version", ProtocolVersion)
 				req.Header.Set("Mcp-Method", string(MethodToolsCall))
 				req.Header.Set("Mcp-Name", "echo")
@@ -82,7 +82,7 @@ func TestHandler(t *testing.T) { //nolint:paralleltest // HandleMCP cases replac
 				registry := &subscriptionTestRegistry{}
 				registry.callResult = result
 				h := &Handler{Registry: registry}
-				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/caic/v1/mcp", strings.NewReader(nativeMCPRequestJSON("tools/call", `"name":"echo","arguments":{}`)))
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/example/v1/mcp", strings.NewReader(nativeMCPRequestJSON("tools/call", `"name":"echo","arguments":{}`)))
 				req.Header.Set("Mcp-Protocol-Version", ProtocolVersion)
 				req.Header.Set("Mcp-Method", string(MethodToolsCall))
 				req.Header.Set("Mcp-Name", "echo")
@@ -119,7 +119,7 @@ func TestHandler(t *testing.T) { //nolint:paralleltest // HandleMCP cases replac
 				req := httptest.NewRequestWithContext(
 					t.Context(),
 					http.MethodPost,
-					"/api/caic/v1/mcp",
+					"/api/example/v1/mcp",
 					strings.NewReader(`{"jsonrpc":"2.0","method":"server/discover","params":{}}`),
 				)
 				w := httptest.NewRecorder()
@@ -635,7 +635,7 @@ func nativeMCPRequestJSON(method, paramsFields string) string {
 	} else {
 		paramsFields += ","
 	}
-	return `{"jsonrpc":"2.0","id":"test","method":"` + method + `","params":{` + paramsFields + `"_meta":{"io.modelcontextprotocol/protocolVersion":"` + ProtocolVersion + `","io.modelcontextprotocol/clientInfo":{"name":"caic-test","version":"1.0.0"},"io.modelcontextprotocol/clientCapabilities":{}}}}`
+	return `{"jsonrpc":"2.0","id":"test","method":"` + method + `","params":{` + paramsFields + `"_meta":{"io.modelcontextprotocol/protocolVersion":"` + ProtocolVersion + `","io.modelcontextprotocol/clientInfo":{"name":"example-test","version":"1.0.0"},"io.modelcontextprotocol/clientCapabilities":{}}}}`
 }
 
 // openSubscriptionStream opens a subscriptions/listen SSE stream for one

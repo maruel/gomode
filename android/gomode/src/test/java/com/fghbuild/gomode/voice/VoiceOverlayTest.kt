@@ -2,7 +2,7 @@
 package com.fghbuild.gomode.voice
 
 import android.media.AudioDeviceInfo
-import com.caic.voicegateway.sdk.v2.TurnState
+import com.fghbuild.voicegateway.sdk.v2.TurnState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

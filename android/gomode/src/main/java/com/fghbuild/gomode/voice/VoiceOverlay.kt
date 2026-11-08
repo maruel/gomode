@@ -123,8 +123,8 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
-import com.caic.voicegateway.sdk.v2.TokenUsage
-import com.caic.voicegateway.sdk.v2.TurnState
+import com.fghbuild.voicegateway.sdk.v2.TokenUsage
+import com.fghbuild.voicegateway.sdk.v2.TurnState
 import kotlinx.coroutines.launch
 
 private const val PULSE_MIN_ALPHA = 0.5f
@@ -825,7 +825,7 @@ internal fun TranscriptLog(
     modifier: Modifier = Modifier,
     showUsageStats: Boolean = false,
     close: (@Composable () -> Unit)? = null,
-    draft: com.caic.voicegateway.sdk.v2.TranscriptDraft? = null,
+    draft: com.fghbuild.voicegateway.sdk.v2.TranscriptDraft? = null,
 ) {
     val listState = rememberLazyListState()
     val leading = if (close != null) minOf(4, entries.size) else 0

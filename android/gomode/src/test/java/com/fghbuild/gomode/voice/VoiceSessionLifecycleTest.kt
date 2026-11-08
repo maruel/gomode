@@ -5,9 +5,6 @@ import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
-import com.caic.voicegateway.sdk.v2.ApiClient
-import com.caic.voicegateway.sdk.v2.MessageKind
-import com.caic.voicegateway.sdk.v2.ToolCall
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
@@ -18,6 +15,9 @@ import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellRegistry
 import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.ui.web.completeFrontendPreparation
+import com.fghbuild.voicegateway.sdk.v2.ApiClient
+import com.fghbuild.voicegateway.sdk.v2.MessageKind
+import com.fghbuild.voicegateway.sdk.v2.ToolCall
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -135,7 +135,7 @@ class VoiceSessionLifecycleTest {
                             ?.inputTokens,
                     )
                     assertNull(session.state.value.activeTool)
-                    assertEquals(com.caic.voicegateway.sdk.v2.TurnState.Idle, session.state.value.turnState)
+                    assertEquals(com.fghbuild.voicegateway.sdk.v2.TurnState.Idle, session.state.value.turnState)
                     assertEquals(if (failure == "closed") 0 else 1, channel.sendAttempts)
                     assertTrue(channel.sent.isEmpty())
                     assertFalse(ShadowLog.getLogsForTag("GoModeVoiceSession").any { it.msg.contains("private result") })

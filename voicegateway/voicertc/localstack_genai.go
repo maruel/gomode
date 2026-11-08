@@ -367,7 +367,7 @@ func localStackLlamaCacheDir() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("get user cache dir: %w", err)
 	}
-	return filepath.Join(cacheBase, "caic", "llama-server"), nil
+	return filepath.Join(cacheBase, "gomode", "llama-server"), nil
 }
 
 // speechASRAdapter binds the gateway's capture sample rate to a shared recognizer.

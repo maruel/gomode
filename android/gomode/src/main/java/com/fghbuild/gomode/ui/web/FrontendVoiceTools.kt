@@ -5,8 +5,8 @@ import android.os.Handler
 import android.os.Looper
 import android.webkit.WebView
 import androidx.core.net.toUri
-import com.caic.voicegateway.sdk.v2.ToolDeclaration
 import com.fghbuild.gomode.voice.nativeVoiceToolNames
+import com.fghbuild.voicegateway.sdk.v2.ToolDeclaration
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine

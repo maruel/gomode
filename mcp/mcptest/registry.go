@@ -11,7 +11,7 @@ import (
 )
 
 // FakeRegistry is a minimal mcp.Registry: it advertises one "echo" tool and one
-// "caic://tasks" resource, enough to exercise protocol envelopes. Set CallErr,
+// "example://tasks" resource, enough to exercise protocol envelopes. Set CallErr,
 // CallResult, ListErr, or ReadErr to customize a tool or resource response.
 type FakeRegistry struct {
 	CallErr    error
@@ -55,14 +55,14 @@ func (f FakeRegistry) ListResources(context.Context, string) (mcp.ResourcesListR
 	}
 	return mcp.ResourcesListResult{
 		ResultType: mcp.ResultTypeComplete,
-		Resources:  []mcp.ResourceDescriptor{{URI: "caic://tasks", Name: "tasks", MimeType: "application/json"}},
+		Resources:  []mcp.ResourceDescriptor{{URI: "example://tasks", Name: "tasks", MimeType: "application/json"}},
 	}, nil
 }
 
 // Resources implements mcp.Registry.
 func (FakeRegistry) Resources(context.Context) iter.Seq2[mcp.ResourceDescriptor, error] {
 	return func(yield func(mcp.ResourceDescriptor, error) bool) {
-		yield(mcp.ResourceDescriptor{URI: "caic://tasks", Name: "tasks", MimeType: "application/json"}, nil)
+		yield(mcp.ResourceDescriptor{URI: "example://tasks", Name: "tasks", MimeType: "application/json"}, nil)
 	}
 }
 

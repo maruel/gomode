@@ -17,9 +17,9 @@ func TestServiceScopedToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	claims := ScopedTokenClaims{
-		ServiceKind:       "caic",
+		ServiceKind:       "example",
 		ServiceInstanceID: "home",
-		BackendOrigin:     "https://caic.example.com",
+		BackendOrigin:     "https://example.test",
 		Subject:           "user-1",
 		Capabilities:      []string{"voice.session"},
 		Audience:          ScopedTokenAudience,
@@ -36,8 +36,8 @@ func TestServiceScopedToken(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.ServiceKind != "caic" {
-			t.Fatalf("ServiceKind = %q, want caic", got.ServiceKind)
+		if got.ServiceKind != "example" {
+			t.Fatalf("ServiceKind = %q, want example", got.ServiceKind)
 		}
 	})
 

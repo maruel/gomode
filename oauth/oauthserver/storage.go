@@ -127,8 +127,8 @@ func newEmptyStore(path string) *Store {
 	return store
 }
 
-// LoadStore loads durable OAuth state from path. Existing files must use version 5,
-// the format used by caic v0.13.2; missing files start an empty store.
+// LoadStore loads durable OAuth state from path. Existing files must use version 5;
+// missing files start an empty store.
 func LoadStore(path string) (*Store, error) {
 	store := newEmptyStore(path)
 	if path == "" {

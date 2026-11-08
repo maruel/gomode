@@ -121,7 +121,7 @@ func (ti *oauthTestIssuer) authorization(t *testing.T, key oauthTestKey, scope s
 	t.Helper()
 	token := ti.token(t, key, "voice-gateway", scope, expiry)
 	body, err := json.Marshal(voicev2.ServiceAuthorization{
-		Kind: "caic", InstanceID: "home", BaseURL: ti.issuer, Token: token,
+		Kind: "example", InstanceID: "home", BaseURL: ti.issuer, Token: token,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +134,7 @@ func oauthConfig(t *testing.T, issuers ...*oauthTestIssuer) configFile {
 	cfg := configFile{}
 	for _, ti := range issuers {
 		cfg.TrustedIssuers = append(cfg.TrustedIssuers, TrustedIssuerConfig{
-			Service: "caic", Issuer: ti.issuer, OAuth: true,
+			Service: "example", Issuer: ti.issuer, OAuth: true,
 		})
 	}
 	return cfg
@@ -209,7 +209,7 @@ func testOAuthOfferRejectsUnknownIssuerBeforeFetch(t *testing.T) {
 	// The envelope names the trusted issuer, but the token claims another one.
 	rogue := &oauthTestIssuer{issuer: "https://rogue.example.com", key: key}
 	token := rogue.token(t, key, "voice-gateway", "voice.session", time.Now().Add(time.Minute))
-	service, err := json.Marshal(voicev2.ServiceAuthorization{Kind: "caic", InstanceID: "home", BaseURL: ti.issuer, Token: token})
+	service, err := json.Marshal(voicev2.ServiceAuthorization{Kind: "example", InstanceID: "home", BaseURL: ti.issuer, Token: token})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func testOAuthOfferRejections(t *testing.T) {
 	t.Run("wrong audience", func(t *testing.T) {
 		t.Parallel()
 		token := ti.token(t, key, "other-service", "voice.session", time.Now().Add(time.Minute))
-		service, err := json.Marshal(voicev2.ServiceAuthorization{Kind: "caic", InstanceID: "home", BaseURL: ti.issuer, Token: token})
+		service, err := json.Marshal(voicev2.ServiceAuthorization{Kind: "example", InstanceID: "home", BaseURL: ti.issuer, Token: token})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -284,7 +284,7 @@ func testOAuthOfferMixedWithScopedIssuer(t *testing.T) {
 	key := newOAuthTestKey(t, "key-a")
 	ti := newOAuthTestIssuer(t, key)
 	cfg, scoped := testServiceAuth(t)
-	cfg.TrustedIssuers = append(cfg.TrustedIssuers, TrustedIssuerConfig{Service: "caic", Issuer: ti.issuer, OAuth: true})
+	cfg.TrustedIssuers = append(cfg.TrustedIssuers, TrustedIssuerConfig{Service: "example", Issuer: ti.issuer, OAuth: true})
 	handler, err := NewHandler(cfg.TrustedIssuers, &fakeMediaBridge{}, nil)
 	if err != nil {
 		t.Fatal(err)

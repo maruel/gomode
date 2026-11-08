@@ -1,7 +1,7 @@
 // Released Streamable HTTP protocol compatibility for shipped MCP clients.
 //
 // Version ownership map:
-//   - 2026-07-28: native caic path in mcp.go. It uses server/discover,
+//   - 2026-07-28: native protocol path in mcp.go. It uses server/discover,
 //     Mcp-Method/Mcp-Name headers, _meta-nested params, resultType, ttlMs, and
 //     cacheScope.
 //   - 2025-11-25: Claude Code 2.1.177 fixture. Needs this file's released
@@ -25,11 +25,11 @@ import (
 )
 
 // compatDefaultProtocolVersion is the version returned when a client requests
-// one caic does not recognize. 2025-06-18 is the oldest released Streamable
+// one the server does not recognize. 2025-06-18 is the oldest released Streamable
 // HTTP revision with a current shipped-client fixture (Codex 0.137.0).
 const compatDefaultProtocolVersion = "2025-06-18"
 
-// compatProtocolVersions enumerates released MCP revisions caic answers in the
+// compatProtocolVersions enumerates released MCP revisions the server answers in the
 // released wire format. The native 2026-07-28 revision is handled by the primary
 // endpoint. Entries marked negotiation-only can be removed independently once we
 // stop accepting that version in initialize.
@@ -50,7 +50,7 @@ type compatInitializeResult struct {
 	Instructions    string                   `json:"instructions,omitempty"`
 }
 
-// compatServerCapabilities advertises caic's released features for initialize.
+// compatServerCapabilities advertises the server's released features for initialize.
 // The tools and resources structs marshal to `{}` when empty, which signals
 // support per the 2025-06-18 and 2025-11-25 schemas.
 type compatServerCapabilities struct {
@@ -117,7 +117,7 @@ type compatReadResourceResult struct {
 }
 
 // negotiateCompatVersion echoes the client's requested protocol version when
-// caic recognizes it, otherwise falls back to a known-good default. The released
+// the server recognizes it, otherwise falls back to a known-good default. The released
 // spec lets the server answer with a different supported version.
 func negotiateCompatVersion(requested string) string {
 	if _, ok := compatProtocolVersions[requested]; ok {

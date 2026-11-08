@@ -1,7 +1,7 @@
 // Fetches a host-issued scoped authorization block for standalone voice gateways.
 package com.fghbuild.gomode.service
 
-import com.caic.voicegateway.sdk.v2.ServiceAuthorization
+import com.fghbuild.voicegateway.sdk.v2.ServiceAuthorization
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json

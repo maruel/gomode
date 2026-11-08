@@ -1,9 +1,9 @@
 // Tests idempotent usage snapshots, reconnect accounting and unknown metrics.
 package com.fghbuild.gomode.voice
 
-import com.caic.voicegateway.sdk.v2.MessageKind
-import com.caic.voicegateway.sdk.v2.SessionUsage
-import com.caic.voicegateway.sdk.v2.TokenUsage
+import com.fghbuild.voicegateway.sdk.v2.MessageKind
+import com.fghbuild.voicegateway.sdk.v2.SessionUsage
+import com.fghbuild.voicegateway.sdk.v2.TokenUsage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue

@@ -1,8 +1,8 @@
 // Carries gateway usage snapshots across automatic reconnects in one conversation.
 package com.fghbuild.gomode.voice
 
-import com.caic.voicegateway.sdk.v2.SessionUsage
-import com.caic.voicegateway.sdk.v2.TokenUsage
+import com.fghbuild.voicegateway.sdk.v2.SessionUsage
+import com.fghbuild.voicegateway.sdk.v2.TokenUsage
 
 /** Reported conversation totals and the latest gateway connection snapshot. */
 data class VoiceUsage(

@@ -2,12 +2,6 @@
 package com.fghbuild.gomode.voice
 
 import android.webkit.CookieManager
-import com.caic.voicegateway.sdk.v2.ApiClient
-import com.caic.voicegateway.sdk.v2.VoiceChoice
-import com.caic.voicegateway.sdk.v2.VoiceChoiceDefault
-import com.caic.voicegateway.sdk.v2.VoiceChoicesResp
-import com.caic.voicegateway.sdk.v2.VoiceRTCDiagnosticsReq
-import com.caic.voicegateway.sdk.v2.VoiceTransport
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsState
@@ -15,6 +9,12 @@ import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.sdk.v1.Settings
 import com.fghbuild.gomode.sdk.v1.VoiceGatewaySettings
 import com.fghbuild.gomode.sdk.v1.WebShellSettings
+import com.fghbuild.voicegateway.sdk.v2.ApiClient
+import com.fghbuild.voicegateway.sdk.v2.VoiceChoice
+import com.fghbuild.voicegateway.sdk.v2.VoiceChoiceDefault
+import com.fghbuild.voicegateway.sdk.v2.VoiceChoicesResp
+import com.fghbuild.voicegateway.sdk.v2.VoiceRTCDiagnosticsReq
+import com.fghbuild.voicegateway.sdk.v2.VoiceTransport
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json

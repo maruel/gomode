@@ -1189,7 +1189,7 @@ func TestGenaiConversation(t *testing.T) {
 			Description: "List tasks",
 			Parameters:  json.RawMessage(`{"type":"object"}`),
 		}}, true)
-		conv.addContext("Project: caic")
+		conv.addContext("Project: example")
 
 		step, err := conv.user(t.Context(), "What is next?")
 		if err != nil {
@@ -1237,7 +1237,7 @@ func TestGenaiConversation(t *testing.T) {
 				t.Fatal("generation omitted requested reasoning output")
 			}
 		}
-		if got := calls[0].messages[0].String(); got != "Current context:\nProject: caic\n\nUser said:\nWhat is next?" {
+		if got := calls[0].messages[0].String(); got != "Current context:\nProject: example\n\nUser said:\nWhat is next?" {
 			t.Errorf("first user message = %q", got)
 		}
 		if len(calls[1].messages) != 3 {

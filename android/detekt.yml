@@ -1,4 +1,4 @@
-# Detekt configuration for caic Android project.
+# Detekt configuration for the Go Mode Android project.
 build:
   maxIssues: 0
 

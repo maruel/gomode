@@ -14,39 +14,39 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
-import com.caic.voicegateway.sdk.v2.ApiClient
-import com.caic.voicegateway.sdk.v2.ContextUpdate
-import com.caic.voicegateway.sdk.v2.Error
-import com.caic.voicegateway.sdk.v2.MessageEnvelope
-import com.caic.voicegateway.sdk.v2.MessageKind
-import com.caic.voicegateway.sdk.v2.ReasoningDelta
-import com.caic.voicegateway.sdk.v2.SessionSetup
-import com.caic.voicegateway.sdk.v2.SessionStatus
-import com.caic.voicegateway.sdk.v2.SessionUsage
-import com.caic.voicegateway.sdk.v2.Speaker
-import com.caic.voicegateway.sdk.v2.TokenUsage
-import com.caic.voicegateway.sdk.v2.ToolCall
-import com.caic.voicegateway.sdk.v2.ToolDeclaration
-import com.caic.voicegateway.sdk.v2.ToolResult
-import com.caic.voicegateway.sdk.v2.TranscriptDelta
-import com.caic.voicegateway.sdk.v2.TranscriptDraft
-import com.caic.voicegateway.sdk.v2.TurnState
-import com.caic.voicegateway.sdk.v2.TurnStatus
-import com.caic.voicegateway.sdk.v2.UserMessage
-import com.caic.voicegateway.sdk.v2.VoiceConfig
-import com.caic.voicegateway.sdk.v2.VoiceRTCClientDiagnostics
-import com.caic.voicegateway.sdk.v2.VoiceRTCDataChannelState
-import com.caic.voicegateway.sdk.v2.VoiceRTCDiagnosticsReq
-import com.caic.voicegateway.sdk.v2.VoiceRTCDiagnosticsResp
-import com.caic.voicegateway.sdk.v2.VoiceRTCICEConnectionState
-import com.caic.voicegateway.sdk.v2.VoiceRTCICEGatheringState
-import com.caic.voicegateway.sdk.v2.VoiceRTCOfferReq
-import com.caic.voicegateway.sdk.v2.VoiceRTCSignalingState
 import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.service.VoiceTokenClient
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
+import com.fghbuild.voicegateway.sdk.v2.ApiClient
+import com.fghbuild.voicegateway.sdk.v2.ContextUpdate
+import com.fghbuild.voicegateway.sdk.v2.Error
+import com.fghbuild.voicegateway.sdk.v2.MessageEnvelope
+import com.fghbuild.voicegateway.sdk.v2.MessageKind
+import com.fghbuild.voicegateway.sdk.v2.ReasoningDelta
+import com.fghbuild.voicegateway.sdk.v2.SessionSetup
+import com.fghbuild.voicegateway.sdk.v2.SessionStatus
+import com.fghbuild.voicegateway.sdk.v2.SessionUsage
+import com.fghbuild.voicegateway.sdk.v2.Speaker
+import com.fghbuild.voicegateway.sdk.v2.TokenUsage
+import com.fghbuild.voicegateway.sdk.v2.ToolCall
+import com.fghbuild.voicegateway.sdk.v2.ToolDeclaration
+import com.fghbuild.voicegateway.sdk.v2.ToolResult
+import com.fghbuild.voicegateway.sdk.v2.TranscriptDelta
+import com.fghbuild.voicegateway.sdk.v2.TranscriptDraft
+import com.fghbuild.voicegateway.sdk.v2.TurnState
+import com.fghbuild.voicegateway.sdk.v2.TurnStatus
+import com.fghbuild.voicegateway.sdk.v2.UserMessage
+import com.fghbuild.voicegateway.sdk.v2.VoiceConfig
+import com.fghbuild.voicegateway.sdk.v2.VoiceRTCClientDiagnostics
+import com.fghbuild.voicegateway.sdk.v2.VoiceRTCDataChannelState
+import com.fghbuild.voicegateway.sdk.v2.VoiceRTCDiagnosticsReq
+import com.fghbuild.voicegateway.sdk.v2.VoiceRTCDiagnosticsResp
+import com.fghbuild.voicegateway.sdk.v2.VoiceRTCICEConnectionState
+import com.fghbuild.voicegateway.sdk.v2.VoiceRTCICEGatheringState
+import com.fghbuild.voicegateway.sdk.v2.VoiceRTCOfferReq
+import com.fghbuild.voicegateway.sdk.v2.VoiceRTCSignalingState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -1743,7 +1743,7 @@ internal fun gatewaySessionSetup(
         ),
     tools = tools,
     context =
-        com.caic.voicegateway.sdk.v2.Context(
+        com.fghbuild.voicegateway.sdk.v2.Context(
             systemInstruction = combineSystemInstructions(systemInstruction),
             text = serviceContextText,
         ),
@@ -1774,7 +1774,7 @@ internal fun gatewayContextUpdate(
     generate = true.takeIf { generate },
     kind = MessageKind.ContextUpdate,
     context =
-        com.caic.voicegateway.sdk.v2
+        com.fghbuild.voicegateway.sdk.v2
             .Context(text = text),
 )
 

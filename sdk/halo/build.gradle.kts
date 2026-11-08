@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.caic.halo.ble"
+    namespace = "com.fghbuild.halo.ble"
 
     compileSdk {
         version = release(36)

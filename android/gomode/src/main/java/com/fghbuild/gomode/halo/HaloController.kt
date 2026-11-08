@@ -4,9 +4,9 @@
 package com.fghbuild.gomode.halo
 
 import android.content.Context
-import com.caic.halo.ble.HaloConnection
-import com.caic.halo.ble.HaloScannedDevice
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.halo.ble.HaloConnection
+import com.fghbuild.halo.ble.HaloScannedDevice
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job

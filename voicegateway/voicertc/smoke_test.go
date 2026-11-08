@@ -339,7 +339,7 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 	})
 
 	// web/src/VoiceSession.ts greets on session.ready, so the spoken request
-	// is the second user turn, as it is in caic.
+	// is the second user turn, as in browser-hosted sessions.
 	s.send(ctx, t, &voicev2.UserMessage{Kind: voicev2.MessageKindUserMessage, Text: "Say exactly one word: Ready"})
 	data := s.waitMessage(ctx, t, voicev2.MessageKindAssistantTextDelta)
 	var greeting voicev2.AssistantTextDelta
@@ -472,7 +472,7 @@ func smokeGatewayCall(ctx context.Context, method, url, token string, in, out an
 
 // isolateSmokeHost gives the test its own home, cache, configuration, data,
 // and state directories. Managed runtimes, uv, and the gateway then never read
-// or write host files such as the voice gateway configuration or caic caches.
+// or write host files such as the voice gateway configuration or runtime caches.
 // Only the Hugging Face cache stays shared, through HF_HOME, so runs reuse
 // multi-gigabyte model downloads.
 func isolateSmokeHost(t *testing.T) {

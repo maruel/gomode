@@ -22,7 +22,7 @@ func TestStore(t *testing.T) {
 	t.Parallel()
 	t.Run("version five fixture preserves restart and disk shape", func(t *testing.T) {
 		t.Parallel()
-		// This literal format is the gomode v0.1.1 store used by caic v0.13.2.
+		// This literal fixture defines the version 5 storage format.
 		fixture, err := os.ReadFile("testdata/store_v5.json")
 		if err != nil {
 			t.Fatal(err)
@@ -99,8 +99,8 @@ func TestStore(t *testing.T) {
 			t.Fatalf("LoadStore: %v", err)
 		}
 		store.Clients["client-1"] = Client{ID: "client-1", Name: "Claude", RedirectURIs: []string{"https://example.com/callback"}, TokenEndpointAuthMethod: oauth.TokenEndpointAuthNone, CreatedAt: now}
-		store.RefreshTokens["refresh-hash"] = v5.RefreshToken{GrantID: "grant-1", UserID: "usr_1", ClientID: "client-1", Resource: "https://caic.example.com/mcp", Scope: "caic:mcp.read", ExpiresAt: now.Add(time.Hour)}
-		store.Grants["grant-1"] = v5.Grant{ID: "grant-1", UserID: "usr_1", ClientID: "client-1", ClientName: "Claude", Resource: "https://caic.example.com/mcp", Scope: "caic:mcp.read", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+		store.RefreshTokens["refresh-hash"] = v5.RefreshToken{GrantID: "grant-1", UserID: "usr_1", ClientID: "client-1", Resource: "https://example.test/mcp", Scope: "example:mcp.read", ExpiresAt: now.Add(time.Hour)}
+		store.Grants["grant-1"] = v5.Grant{ID: "grant-1", UserID: "usr_1", ClientID: "client-1", ClientName: "Claude", Resource: "https://example.test/mcp", Scope: "example:mcp.read", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
 		if err := store.Save(); err != nil {
 			t.Fatalf("Save: %v", err)
 		}

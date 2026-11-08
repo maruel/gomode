@@ -2,8 +2,8 @@
 
 The server library turns a product backend into a Go Mode host. It serves the
 discovery manifest, the MCP endpoint plumbing, the voice gateway, and the voice
-token contract. caic and mddb are hosts. Each host owns its auth, product APIs,
-hosted frontend, and MCP tool and resource semantics.
+token contract. Each host owns its auth, product APIs, hosted frontend, and
+MCP tool and resource semantics.
 
 ## Packages
 
@@ -48,9 +48,8 @@ A host owns:
 - gateway deployment mode and URL
 - voice token issuance for an external gateway
 
-The adapter stays thin. caic builds `gomode.Settings`, exposes the `tasks` skill
-at `/api/caic/v1/mcp`, and mounts the embedded gateway when configured. mddb
-exposes the `workspace` skill. Gateway token rules are in
+The adapter builds `gomode.Settings`, advertises its skills and MCP endpoints,
+and mounts the embedded gateway when configured. Gateway token rules are in
 [VOICE_GATEWAY.md](VOICE_GATEWAY.md#authorization).
 
 ### MCP resource notifications
@@ -127,7 +126,7 @@ issuance. Each adapter retains its code format and polling enforcement.
 The host serves `GET /.well-known/gomode.json`: a public, cacheable document
 with ETag revalidation.
 
-- `service`: product identity, such as `caic`
+- `service`: product identity, such as `example`
 - `serviceVersion`: optional host version
 - `apiVersion`: discovery schema version. Clients reject versions they do not
   support.

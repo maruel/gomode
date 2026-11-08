@@ -65,7 +65,7 @@ var SDKAPI = apispec.Config[string]{
 		SwiftDetailsExpr: "nil",
 	},
 	DocumentExtraSeeds: true,
-	KotlinPackage:      "com.caic.oauth.sdk.v1",
+	KotlinPackage:      "com.fghbuild.oauth.sdk.v1",
 	APIDocTitle:        "OAuth 2.0 Types Reference",
 	APIDocIntro:        "DTO types for the OAuth 2.0 authorization server. Includes discovery metadata, client registration, token responses, introspection, and device authorization types.",
 	SectionComments: map[string]string{

@@ -869,7 +869,7 @@ const DefaultVoiceScope = "voice.session"
 // the transitional scoped Ed25519 token. OAuth verifies a standard OAuth 2.0
 // access token through issuer metadata discovery and its published JWKS.
 type TrustedIssuerConfig struct {
-	// Service is the service kind allowed to issue tokens, for example "caic" or "mddb".
+	// Service is the service kind allowed to issue tokens, for example "example".
 	Service string `toml:"service"`
 	// Issuer is the backend origin that owns the signing key.
 	//

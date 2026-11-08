@@ -18,14 +18,12 @@ Go Mode owns native platform capabilities:
 - Screenshot capture when native MediaProjection is required.
 - Halo/BLE integration when the shell owns the native capability.
 
-The backend-hosted web frontend owns screen-mode product UI. Do not copy caic
-task list, task detail, diff, process, widget, or screen-mode Compose UI into
-Go Mode.
+The backend-hosted web frontend owns screen-mode product UI. Keep product
+lists, detail views, diffs, processes, and widgets in the hosted frontend.
 
-Go Mode must not depend on caic domain APIs or SDK types. In Go Mode app code
-and tests, do not import `com.caic.sdk.v1`, create/list/input caic tasks, or
-assert caic-specific routes such as `/task/...`. Treat caic as one possible
-hosted web app, opaque behind the WebView.
+Go Mode app code and tests must not depend on a host's domain APIs or SDK
+types, perform product operations, or assert host-specific routes. Treat
+each hosted web app as opaque behind the WebView.
 
 ## Architecture
 
@@ -52,15 +50,15 @@ capabilities only when the WebView shell needs them.
 
 ## Rules
 
-- Package/application ID is `com.fghbuild.gomode`; do not reuse caic package
+- Package/application ID is `com.fghbuild.gomode`; do not reuse host package
   names, DataStore names, notification channels, deep-link schemes, or test
   package names.
 - Keep service identity explicit. Settings should be keyed by service type and
   service instance, not only by URL.
 - Load backend-hosted web frontends; do not bundle frontend assets into the APK.
-- Do not link Go Mode against caic API clients, generated SDKs, task DTOs, task
-  routes, or other caic product concepts.
-- Do not proxy normal caic API calls through a JavaScript bridge.
+- Do not link Go Mode against host API clients, generated SDKs, domain DTOs,
+  routes, or other product concepts.
+- Do not proxy host product API calls through a JavaScript bridge.
 - Keep the JavaScript bridge narrow, versioned, and capability-oriented.
 - Android back handling must account for SPA route ownership, not only
   `WebView.canGoBack()`.

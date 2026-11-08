@@ -52,7 +52,8 @@ export default function App() {
         <details class={styles.help}>
           <summary>What can I test?</summary>
           <p>
-            Choose a voice backend in the controls below, then connect. The same controls are used in caic and mddb.
+            Choose a voice backend in the controls below, then connect. These controls are shared with hosted
+            applications.
           </p>
           <p>
             Ask the assistant to echo a phrase to test a server MCP tool, or set the test note to test a browser tool.

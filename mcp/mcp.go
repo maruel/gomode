@@ -27,7 +27,7 @@ import (
 const (
 	jsonRPCVersion = "2.0"
 
-	// ProtocolVersion is caic's native MCP protocol version.
+	// ProtocolVersion is the native MCP protocol version.
 	//
 	// Native support owns server/discover, required per-request _meta,
 	// Mcp-Method/Mcp-Name headers, resultType, ttlMs, and cacheScope. Released
@@ -66,7 +66,7 @@ const (
 type Method string
 
 // Official MCP extensions are negotiated through the capabilities.extensions map.
-// caic currently implements Skills and OAuth Client Credentials:
+// This package implements Skills and OAuth Client Credentials:
 //
 //   - MCP Apps (io.modelcontextprotocol/ui):
 //     https://modelcontextprotocol.io/extensions/apps/overview
@@ -157,7 +157,7 @@ type Handler struct {
 	compatSessions map[string]*compatSession
 }
 
-// HandleMCP handles one MCP HTTP request, dispatching to caic's native
+// HandleMCP handles one MCP HTTP request, dispatching to the native
 // 2026-07-28 protocol or the released Streamable HTTP compatibility handler
 // based on the request shape.
 func (h *Handler) HandleMCP(w http.ResponseWriter, r *http.Request) {
@@ -180,9 +180,9 @@ func (h *Handler) HandleMCP(w http.ResponseWriter, r *http.Request) {
 	h.handleCompat(w, r)
 }
 
-// isNativeMCPRequest reports whether a POST uses caic's native 2026-07-28
+// isNativeMCPRequest reports whether a POST uses the native 2026-07-28
 // revision. That transport requires an Mcp-Method header on every request,
-// which every caic-native client (frontend, Android, generated SDKs) always
+// which every native client (frontend, Android, generated SDKs) always
 // sets. server/discover is exclusive to the 2026-07-28 revision, so it is
 // treated as native even without the header to preserve protocol diagnostics.
 // Released clients send neither the header nor server/discover.
@@ -197,7 +197,7 @@ func isNativeMCPRequest(r *http.Request, body []byte) bool {
 	return probe.Method == MethodServerDiscover
 }
 
-// handleNative handles one MCP HTTP request using caic's native 2026-07-28
+// handleNative handles one MCP HTTP request using the native 2026-07-28
 // protocol revision.
 func (h *Handler) handleNative(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -973,12 +973,12 @@ type unsupportedProtocolVersionData struct {
 // reverse-DNS keys for their own metadata.
 type MetaObject map[string]any
 
-// ToolErrorCodeMetaKey identifies a caic semantic error code on a tool result.
+// ToolErrorCodeMetaKey identifies an application semantic error code on a tool result.
 //
-// The value is a string from caic's REST error-code catalog. It is carried in
+// The value is a string from the application's error-code catalog. It is carried in
 // _meta so tool execution errors retain their established content and
 // structuredContent envelopes.
-const ToolErrorCodeMetaKey = "xyz.caic/errorCode"
+const ToolErrorCodeMetaKey = "com.fghbuild.gomode/errorCode"
 
 // OpenAIUserLocation contains optional client location hints. Only the device's
 // IANA timezone is used; these untrusted hints must not influence authorization.

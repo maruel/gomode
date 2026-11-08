@@ -28,8 +28,8 @@ func TestAccessTokenSigningKeyLifecycle(t *testing.T) {
 		t.Parallel()
 
 		const (
-			issuer   = "https://caic.example.com"
-			audience = issuer + "/api/caic/v1/mcp"
+			issuer   = "https://example.test"
+			audience = issuer + "/api/example/v1/mcp"
 			clientID = "client-1"
 			grantID  = "grant-1"
 		)
@@ -130,8 +130,8 @@ func testRFC9068AccessTokenExternalVerification(t *testing.T) {
 	t.Parallel()
 
 	const (
-		issuer   = "https://caic.example.com"
-		audience = issuer + "/api/caic/v1/mcp"
+		issuer   = "https://example.test"
+		audience = issuer + "/api/example/v1/mcp"
 		clientID = "client-1"
 	)
 	service := newTestAccessTokenService(t, "external-key")

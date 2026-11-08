@@ -62,7 +62,7 @@ func TestNewHandler(t *testing.T) {
 		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 			t.Fatal(err)
 		}
-		if resp.Service != "caic" || resp.ServiceVersion != "v1.2.3" || resp.APIVersion != 1 {
+		if resp.Service != "example" || resp.ServiceVersion != "v1.2.3" || resp.APIVersion != 1 {
 			t.Fatalf("resp identity = %+v", resp)
 		}
 		if resp.WebShell.BridgeVersion != 1 {
@@ -71,7 +71,7 @@ func TestNewHandler(t *testing.T) {
 		if len(resp.WebShell.ToolGroups) != 1 {
 			t.Fatalf("toolGroups = %+v, want 1", resp.WebShell.ToolGroups)
 		}
-		if grp := resp.WebShell.ToolGroups[0]; grp.Name != "tasks" || grp.Endpoint != "/api/caic/v1/mcp" || grp.ProtocolVersion != "2026-07-28" || !grp.AuthRequired {
+		if grp := resp.WebShell.ToolGroups[0]; grp.Name != "tasks" || grp.Endpoint != "/api/example/v1/mcp" || grp.ProtocolVersion != "2026-07-28" || !grp.AuthRequired {
 			t.Fatalf("toolGroup = %+v", resp.WebShell.ToolGroups[0])
 		}
 		if resp.WebShell.VoiceGateway.URL != "https://voice.example.com" || !resp.WebShell.VoiceGateway.AuthRequired {
@@ -395,7 +395,7 @@ func TestVoiceGatewaySettings(t *testing.T) {
 
 func validSettings() Settings {
 	return Settings{
-		Service:        "caic",
+		Service:        "example",
 		ServiceVersion: "v1.2.3",
 		APIVersion:     1,
 		WebShell: WebShellSettings{
@@ -410,7 +410,7 @@ func validToolGroup() ToolGroup {
 	return ToolGroup{
 		Name:            "tasks",
 		Description:     "Task management",
-		Endpoint:        "/api/caic/v1/mcp",
+		Endpoint:        "/api/example/v1/mcp",
 		ProtocolVersion: "2026-07-28",
 		AuthRequired:    true,
 	}
@@ -431,8 +431,8 @@ func validSkillFrontmatter() SkillFrontmatter {
 				}},
 			}},
 			MCPServers: []SkillMCPServer{{
-				Name:            "caic",
-				Endpoint:        "/api/caic/v1/mcp",
+				Name:            "example",
+				Endpoint:        "/api/example/v1/mcp",
 				ProtocolVersion: "2026-07-28",
 				AuthRequired:    true,
 				Tools:           []string{"tasks_list"},

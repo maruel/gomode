@@ -23,7 +23,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
-import com.caic.voicegateway.sdk.v2.VoiceTransport
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
@@ -32,6 +31,7 @@ import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.voice.GatewayVoiceChoices
 import com.fghbuild.gomode.voice.discoverVoiceChoices
 import com.fghbuild.gomode.voice.voiceTransport
+import com.fghbuild.voicegateway.sdk.v2.VoiceTransport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch

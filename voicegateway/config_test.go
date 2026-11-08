@@ -732,8 +732,8 @@ label = "Gemini"
 provider = "gemini"
 model = "gemini-live-test"
 [[trusted_issuers]]
-service = "caic"
-issuer = "https://caic.example.com"
+service = "example"
+issuer = "https://service.example.com"
 public_key = %q
 `, newTestPublicKey(t))
 		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
@@ -746,7 +746,7 @@ public_key = %q
 		if _, err := cfg.Resolve(); err != nil {
 			t.Fatal(err)
 		}
-		if cfg.Server != (ServerConfig{HTTP: ":4444", WebRTCUDPPort: 4445}) || cfg.Realtime[0].Model != "gemini-live-test" || cfg.TrustedIssuers[0].Service != "caic" {
+		if cfg.Server != (ServerConfig{HTTP: ":4444", WebRTCUDPPort: 4445}) || cfg.Realtime[0].Model != "gemini-live-test" || cfg.TrustedIssuers[0].Service != "example" {
 			t.Fatalf("config = %+v", cfg)
 		}
 	})
@@ -1539,8 +1539,8 @@ func TestConfigFile(t *testing.T) {
 		t.Parallel()
 		cfg := testStandaloneConfig()
 		cfg.TrustedIssuers = []TrustedIssuerConfig{{
-			Service:   "caic",
-			Issuer:    "https://caic.example.com",
+			Service:   "example",
+			Issuer:    "https://service.example.com",
 			PublicKey: newTestPublicKey(t),
 		}}
 		if _, err := cfg.Resolve(); err != nil {
@@ -1551,7 +1551,7 @@ func TestConfigFile(t *testing.T) {
 		t.Parallel()
 		cfg := testStandaloneConfig()
 		cfg.TrustedIssuers = []TrustedIssuerConfig{{
-			Service:   "caic",
+			Service:   "example",
 			Issuer:    "not a url",
 			PublicKey: newTestPublicKey(t),
 		}}
@@ -1587,8 +1587,8 @@ func TestConfigFile(t *testing.T) {
 		t.Parallel()
 		cfg := testStandaloneConfig()
 		cfg.TrustedIssuers = []TrustedIssuerConfig{{
-			Service:   "caic",
-			Issuer:    "https://caic.example.com",
+			Service:   "example",
+			Issuer:    "https://service.example.com",
 			PublicKey: "bogus",
 		}}
 		_, err := cfg.Resolve()
@@ -1603,8 +1603,8 @@ func TestConfigFile(t *testing.T) {
 		t.Parallel()
 		cfg := testStandaloneConfig()
 		cfg.TrustedIssuers = []TrustedIssuerConfig{{
-			Service: "caic",
-			Issuer:  "https://caic.example.com",
+			Service: "example",
+			Issuer:  "https://service.example.com",
 			OAuth:   true,
 		}}
 		if _, err := cfg.Resolve(); err != nil {
@@ -1617,7 +1617,7 @@ func TestConfigFile(t *testing.T) {
 	t.Run("rejects issuer with neither token form", func(t *testing.T) {
 		t.Parallel()
 		cfg := testStandaloneConfig()
-		cfg.TrustedIssuers = []TrustedIssuerConfig{{Service: "caic", Issuer: "https://caic.example.com"}}
+		cfg.TrustedIssuers = []TrustedIssuerConfig{{Service: "example", Issuer: "https://service.example.com"}}
 		_, err := cfg.Resolve()
 		if err == nil {
 			t.Fatal("expected error")
@@ -1630,8 +1630,8 @@ func TestConfigFile(t *testing.T) {
 		t.Parallel()
 		cfg := testStandaloneConfig()
 		cfg.TrustedIssuers = []TrustedIssuerConfig{{
-			Service:   "caic",
-			Issuer:    "https://caic.example.com",
+			Service:   "example",
+			Issuer:    "https://service.example.com",
 			PublicKey: newTestPublicKey(t),
 			OAuth:     true,
 		}}

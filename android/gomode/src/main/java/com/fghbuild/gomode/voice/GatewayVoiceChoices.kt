@@ -1,10 +1,6 @@
 // Discovers gateway voice choices, explains gateway HTTP failures, and resolves pinned transport-compatible selections.
 package com.fghbuild.gomode.voice
 
-import com.caic.voicegateway.sdk.v2.ApiClient
-import com.caic.voicegateway.sdk.v2.VoiceChoice
-import com.caic.voicegateway.sdk.v2.VoiceChoicesResp
-import com.caic.voicegateway.sdk.v2.VoiceTransport
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsState
@@ -13,6 +9,10 @@ import com.fghbuild.gomode.sdk.v1.Settings
 import com.fghbuild.gomode.service.credentialedHTTPClient
 import com.fghbuild.gomode.service.resolveServiceURL
 import com.fghbuild.gomode.service.serviceOrigin
+import com.fghbuild.voicegateway.sdk.v2.ApiClient
+import com.fghbuild.voicegateway.sdk.v2.VoiceChoice
+import com.fghbuild.voicegateway.sdk.v2.VoiceChoicesResp
+import com.fghbuild.voicegateway.sdk.v2.VoiceTransport
 import java.io.IOException
 import java.net.SocketTimeoutException
 

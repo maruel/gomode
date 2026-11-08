@@ -2,7 +2,6 @@
 package com.fghbuild.gomode.voice
 
 import android.webkit.CookieManager
-import com.caic.voicegateway.sdk.v2.ServiceAuthorization
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.service.ServiceCatalog
@@ -13,6 +12,7 @@ import com.fghbuild.gomode.service.resolveServiceURL
 import com.fghbuild.gomode.service.serviceCatalogTools
 import com.fghbuild.gomode.service.serviceOrigin
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
+import com.fghbuild.voicegateway.sdk.v2.ServiceAuthorization
 
 /** VoiceSetupException reports a configuration or sign-in problem the user can act on. */
 internal class VoiceSetupException(

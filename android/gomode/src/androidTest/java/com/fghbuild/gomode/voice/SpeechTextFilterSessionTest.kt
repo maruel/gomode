@@ -9,10 +9,10 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.GrantPermissionRule
-import com.caic.voicegateway.sdk.v2.AssistantTextDelta
-import com.caic.voicegateway.sdk.v2.MessageKind
 import com.fghbuild.gomode.MainActivity
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.voicegateway.sdk.v2.AssistantTextDelta
+import com.fghbuild.voicegateway.sdk.v2.MessageKind
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow

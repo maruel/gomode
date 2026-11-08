@@ -181,9 +181,9 @@ let independentSpeech = false;
 
 function serviceToken(subject: string, serial: number): string {
   const claims = {
-    serviceKind: "caic",
+    serviceKind: "example",
     serviceInstanceID: "home",
-    backendOrigin: "https://caic.example.com",
+    backendOrigin: "https://service.example.com",
     sub: subject,
   };
   return `${btoa(JSON.stringify(claims)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "")}.${serial}`;
@@ -192,7 +192,7 @@ function serviceToken(subject: string, serial: number): string {
 function oauthToken(subject: string, serial: number): string {
   const encode = (value: unknown) =>
     btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-  return `${encode({ alg: "ES256", kid: "test-key", typ: "at+jwt" })}.${encode({ iss: "https://caic.example.com", sub: subject, aud: "voice-gateway", scope: "voice.session", serial })}.signature-${serial}`;
+  return `${encode({ alg: "ES256", kid: "test-key", typ: "at+jwt" })}.${encode({ iss: "https://service.example.com", sub: subject, aud: "voice-gateway", scope: "voice.session", serial })}.signature-${serial}`;
 }
 
 afterEach(() => {
@@ -1777,9 +1777,9 @@ describe("VoiceSession", () => {
   it("refreshes the token for a late external session close without restoring UI on failure", async () => {
     let issued = 0;
     configureVoiceGateway("https://voice.example.com", async () => ({
-      kind: "caic",
+      kind: "example",
       instanceID: "home",
-      baseURL: "https://caic.example.com",
+      baseURL: "https://service.example.com",
       token: serviceToken("user-1", ++issued),
     }));
     const offer = deferred<VoiceRTCAnswerResp>();
@@ -2519,9 +2519,9 @@ describe("VoiceSession", () => {
   it("includes host-issued authorization for an external gateway", async () => {
     let issued = 0;
     const service = {
-      kind: "caic",
+      kind: "example",
       instanceID: "home",
-      baseURL: "https://caic.example.com",
+      baseURL: "https://service.example.com",
       token: serviceToken("user-1", 1),
     };
     configureVoiceGateway("https://voice.example.com", async () => ({
@@ -2551,9 +2551,9 @@ describe("VoiceSession", () => {
   it("refreshes an OAuth access token by issuer and subject", async () => {
     let issued = 0;
     const service = {
-      kind: "caic",
+      kind: "example",
       instanceID: "home",
-      baseURL: "https://caic.example.com",
+      baseURL: "https://service.example.com",
       token: oauthToken("user-1", 1),
     };
     configureVoiceGateway("https://voice.example.com", async () => ({
@@ -2581,9 +2581,9 @@ describe("VoiceSession", () => {
       if (issued) throw new Error("token endpoint unavailable");
       issued = true;
       return {
-        kind: "caic",
+        kind: "example",
         instanceID: "home",
-        baseURL: "https://caic.example.com",
+        baseURL: "https://service.example.com",
         token: serviceToken("user-1", 1),
       };
     });
@@ -2610,9 +2610,9 @@ describe("VoiceSession", () => {
   it("keeps the offer gateway and account when configuration changes before close", async () => {
     let issued = 0;
     configureVoiceGateway("https://old-voice.example.com", async () => ({
-      kind: "caic",
+      kind: "example",
       instanceID: "home",
-      baseURL: "https://caic.example.com",
+      baseURL: "https://service.example.com",
       token: serviceToken(++issued === 1 ? "user-1" : "user-2", issued),
     }));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -2620,9 +2620,9 @@ describe("VoiceSession", () => {
     try {
       await session.connect();
       configureVoiceGateway("https://new-voice.example.com", async () => ({
-        kind: "caic",
+        kind: "example",
         instanceID: "home",
-        baseURL: "https://caic.example.com",
+        baseURL: "https://service.example.com",
         token: serviceToken("user-2", 3),
       }));
       session.disconnect();
@@ -2650,15 +2650,15 @@ describe("VoiceSession", () => {
     const connecting = session.connect();
     await vi.waitFor(() => expect(oldProvider).toHaveBeenCalledOnce());
     configureVoiceGateway("https://new-voice.example.com", async () => ({
-      kind: "caic",
+      kind: "example",
       instanceID: "home",
-      baseURL: "https://caic.example.com",
+      baseURL: "https://service.example.com",
       token: serviceToken("user-2", 2),
     }));
     const service = {
-      kind: "caic",
+      kind: "example",
       instanceID: "home",
-      baseURL: "https://caic.example.com",
+      baseURL: "https://service.example.com",
       token: serviceToken("user-1", 1),
     };
     authorization.resolve(service);
@@ -2681,9 +2681,9 @@ describe("VoiceSession", () => {
   it("keeps the offer gateway and account for a late response after reconfiguration", async () => {
     let issued = 0;
     configureVoiceGateway("https://old-voice.example.com", async () => ({
-      kind: "caic",
+      kind: "example",
       instanceID: "home",
-      baseURL: "https://caic.example.com",
+      baseURL: "https://service.example.com",
       token: serviceToken(++issued === 1 ? "user-1" : "user-2", issued),
     }));
     const offer = deferred<VoiceRTCAnswerResp>();
@@ -2695,9 +2695,9 @@ describe("VoiceSession", () => {
       await vi.waitFor(() => expect(offerRequests).toHaveLength(1));
       session.disconnect();
       configureVoiceGateway("https://new-voice.example.com", async () => ({
-        kind: "caic",
+        kind: "example",
         instanceID: "home",
-        baseURL: "https://caic.example.com",
+        baseURL: "https://service.example.com",
         token: serviceToken("user-2", 3),
       }));
       offer.resolve({ sdp: "answer-sdp", sessionID: "late-session" });
@@ -2810,9 +2810,9 @@ describe("VoiceSession", () => {
   it("refreshes host authorization for standalone diagnostics", async () => {
     let issue = 0;
     configureVoiceGateway("https://voice.example.com", async () => ({
-      kind: "caic",
+      kind: "example",
       instanceID: "home",
-      baseURL: "https://caic.example.com",
+      baseURL: "https://service.example.com",
       token: serviceToken("user-1", ++issue),
     }));
     diagnosticResponse = {} as VoiceRTCDiagnosticsResp;
@@ -2821,9 +2821,9 @@ describe("VoiceSession", () => {
     try {
       await session.connect();
       configureVoiceGateway("https://new-voice.example.com", async () => ({
-        kind: "caic",
+        kind: "example",
         instanceID: "home",
-        baseURL: "https://caic.example.com",
+        baseURL: "https://service.example.com",
         token: serviceToken("user-2", 3),
       }));
       triggerIceState("closed");

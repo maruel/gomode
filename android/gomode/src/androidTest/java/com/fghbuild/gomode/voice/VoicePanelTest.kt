@@ -64,9 +64,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
-import com.caic.voicegateway.sdk.v2.TurnState
 import com.fghbuild.gomode.LockedCarCall
 import com.fghbuild.gomode.ui.theme.GoModeTheme
+import com.fghbuild.voicegateway.sdk.v2.TurnState
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -89,11 +89,11 @@ class VoicePanelTest {
         val narrow = mutableStateOf(false)
         val error = mutableStateOf<String?>(null)
         val counts =
-            com.caic.voicegateway.sdk.v2
+            com.fghbuild.voicegateway.sdk.v2
                 .TokenUsage(inputTokens = 1234, outputTokens = 64, cachedTokens = 128, reasoningTokens = 8)
         val report =
-            com.caic.voicegateway.sdk.v2.SessionUsage(
-                com.caic.voicegateway.sdk.v2.MessageKind.SessionUsage,
+            com.fghbuild.voicegateway.sdk.v2.SessionUsage(
+                com.fghbuild.voicegateway.sdk.v2.MessageKind.SessionUsage,
                 "fixture",
                 "llamacpp",
                 "LFM3-audio",
@@ -168,7 +168,7 @@ class VoicePanelTest {
                                                 true,
                                                 responseID = "third",
                                                 responseUsage =
-                                                    com.caic.voicegateway.sdk.v2
+                                                    com.fghbuild.voicegateway.sdk.v2
                                                         .TokenUsage(outputTokens = 12),
                                             ),
                                         ),
@@ -269,8 +269,8 @@ class VoicePanelTest {
                 VoiceState(
                     connected = true,
                     transcriptDraft =
-                        com.caic.voicegateway.sdk.v2.TranscriptDraft(
-                            com.caic.voicegateway.sdk.v2.MessageKind.TranscriptDraft,
+                        com.fghbuild.voicegateway.sdk.v2.TranscriptDraft(
+                            com.fghbuild.voicegateway.sdk.v2.MessageKind.TranscriptDraft,
                             "a",
                             "I love pears",
                         ),
@@ -306,8 +306,8 @@ class VoicePanelTest {
         composeRule.runOnIdle {
             state.value =
                 state.value.withTranscriptDraft(
-                    com.caic.voicegateway.sdk.v2.TranscriptDraft(
-                        com.caic.voicegateway.sdk.v2.MessageKind.TranscriptDraft,
+                    com.fghbuild.voicegateway.sdk.v2.TranscriptDraft(
+                        com.fghbuild.voicegateway.sdk.v2.MessageKind.TranscriptDraft,
                         "a",
                         "I love bananas",
                     ),
@@ -318,9 +318,9 @@ class VoicePanelTest {
         composeRule.runOnIdle {
             state.value =
                 state.value.withCommittedTranscript(
-                    com.caic.voicegateway.sdk.v2.TranscriptDelta(
-                        com.caic.voicegateway.sdk.v2.MessageKind.TranscriptDelta,
-                        com.caic.voicegateway.sdk.v2.Speaker.User,
+                    com.fghbuild.voicegateway.sdk.v2.TranscriptDelta(
+                        com.fghbuild.voicegateway.sdk.v2.MessageKind.TranscriptDelta,
+                        com.fghbuild.voicegateway.sdk.v2.Speaker.User,
                         "I love bananas.",
                         draft_id = "a",
                     ),
@@ -332,8 +332,8 @@ class VoicePanelTest {
         composeRule.runOnIdle {
             state.value =
                 state.value.withTranscriptDraft(
-                    com.caic.voicegateway.sdk.v2.TranscriptDraft(
-                        com.caic.voicegateway.sdk.v2.MessageKind.TranscriptDraft,
+                    com.fghbuild.voicegateway.sdk.v2.TranscriptDraft(
+                        com.fghbuild.voicegateway.sdk.v2.MessageKind.TranscriptDraft,
                         "b",
                         "Canceled",
                     ),
@@ -343,8 +343,8 @@ class VoicePanelTest {
         composeRule.runOnIdle {
             state.value =
                 state.value.withTranscriptDraft(
-                    com.caic.voicegateway.sdk.v2.TranscriptDraft(
-                        com.caic.voicegateway.sdk.v2.MessageKind.TranscriptDraft,
+                    com.fghbuild.voicegateway.sdk.v2.TranscriptDraft(
+                        com.fghbuild.voicegateway.sdk.v2.MessageKind.TranscriptDraft,
                         "b",
                         "",
                     ),
@@ -1369,8 +1369,8 @@ class VoicePanelTest {
                             )
                         },
                     transcriptDraft =
-                        com.caic.voicegateway.sdk.v2.TranscriptDraft(
-                            com.caic.voicegateway.sdk.v2.MessageKind.TranscriptDraft,
+                        com.fghbuild.voicegateway.sdk.v2.TranscriptDraft(
+                            com.fghbuild.voicegateway.sdk.v2.MessageKind.TranscriptDraft,
                             "a",
                             (1..100).joinToString("\n") { "Recognized phrase $it." },
                         ),
@@ -1605,11 +1605,11 @@ class VoicePanelTest {
     @Test
     fun unknownUsageTotalsKeepTheModelAndReportingStatusVisible() {
         val counts =
-            com.caic.voicegateway.sdk.v2
+            com.fghbuild.voicegateway.sdk.v2
                 .TokenUsage()
         val report =
-            com.caic.voicegateway.sdk.v2.SessionUsage(
-                com.caic.voicegateway.sdk.v2.MessageKind.SessionUsage,
+            com.fghbuild.voicegateway.sdk.v2.SessionUsage(
+                com.fghbuild.voicegateway.sdk.v2.MessageKind.SessionUsage,
                 "fixture",
                 "llamacpp",
                 "LFM3-audio",

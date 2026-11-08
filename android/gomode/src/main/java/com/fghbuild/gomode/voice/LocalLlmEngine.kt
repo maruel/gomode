@@ -4,11 +4,11 @@ package com.fghbuild.gomode.voice
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
-import com.caic.voicegateway.sdk.v2.MessageKind
-import com.caic.voicegateway.sdk.v2.ToolCall
 import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.OnDeviceEngine
+import com.fghbuild.voicegateway.sdk.v2.MessageKind
+import com.fghbuild.voicegateway.sdk.v2.ToolCall
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents

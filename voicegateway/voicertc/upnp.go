@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	upnpMappingDescription = "caic voice WebRTC"
+	upnpMappingDescription = "Go Mode voice WebRTC"
 	upnpProtocolUDP        = "UDP"
 	upnpLeaseDuration      = 30 * time.Minute
 	upnpRefreshInterval    = upnpLeaseDuration / 2

@@ -35,7 +35,7 @@ import (
 )
 
 const (
-	testBaseURL     = "https://caic.example.com"
+	testBaseURL     = "https://example.test"
 	testResourceURL = testBaseURL + "/resource"
 	testVerifier    = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 )
@@ -198,7 +198,7 @@ func TestServer(t *testing.T) {
 		path := t.TempDir() + "/oauth.json"
 		user := testUser()
 		const (
-			issuer   = "https://Caic.Example.COM"
+			issuer   = "https://Example.TEST"
 			resource = issuer + "/resource"
 			clientID = "case-compatible-client"
 			grantID  = "case-compatible-grant"
@@ -583,7 +583,7 @@ func TestServer(t *testing.T) {
 		if w.Code != http.StatusUnauthorized {
 			t.Fatalf("unauthorized status = %d, want %d", w.Code, http.StatusUnauthorized)
 		}
-		want := `Bearer resource_metadata="https://caic.example.com/.well-known/oauth-protected-resource/resource", scope="read write admin repos"`
+		want := `Bearer resource_metadata="https://example.test/.well-known/oauth-protected-resource/resource", scope="read write admin repos"`
 		if got := w.Header().Get("WWW-Authenticate"); got != want {
 			t.Fatalf("WWW-Authenticate = %q, want %q", got, want)
 		}
@@ -3669,9 +3669,9 @@ func makeDPoPRequestProofSigned(t *testing.T, alg string, signer crypto.Signer, 
 }
 
 // addForwardedHeaders sets X-Forwarded headers on a test request so that
-// effectiveRequestHostAndScheme returns https://caic.example.com.
+// effectiveRequestHostAndScheme returns https://example.test.
 func addForwardedHeaders(r *http.Request) {
-	r.Header.Set("X-Forwarded-Host", "caic.example.com")
+	r.Header.Set("X-Forwarded-Host", "example.test")
 	r.Header.Set("X-Forwarded-Proto", "https")
 }
 

@@ -120,7 +120,7 @@ type ScopeItem struct {
 //
 // The package owns protocol behavior. Callers inject product seams for login,
 // users, audit, rate limiting, base URL discovery, and consent rendering so
-// package oauth never depends on caic auth, MCP, API, or UI packages.
+// package oauth never depends on host auth, MCP, API, or UI packages.
 type ServerConfig struct {
 	KeyPEM          []byte
 	KeyID           string
@@ -212,7 +212,7 @@ func NewServer(c ServerConfig) (*Server, error) { //nolint:gocritic // ServerCon
 	if dpopNonceTTL == 0 {
 		dpopNonceTTL = defaultDPoPNonceTTL
 	}
-	dpopNonceKey := sha256.Sum256(append([]byte("caic oauth dpop nonce\x00"), c.KeyPEM...))
+	dpopNonceKey := sha256.Sum256(append([]byte("gomode oauth dpop nonce\x00"), c.KeyPEM...))
 	if c.Session == nil {
 		return nil, errors.New("oauth: Session is required")
 	}

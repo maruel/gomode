@@ -19,11 +19,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
-import com.caic.voicegateway.sdk.v2.VoiceChoice
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.voice.GatewayVoiceChoices
+import com.fghbuild.voicegateway.sdk.v2.VoiceChoice
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 

@@ -222,10 +222,10 @@ still owns serialization.
   functional option pattern.
 - **Auth style probing**: GitHub and GitLab both accept `client_id`/`client_secret`
   in POST body params.
-- **`TokenSource` interface + `Transport`**: caic only calls userinfo via
-  `ProviderConfig.FetchUser()`; no multi-endpoint API usage yet.
+- **`TokenSource` interface + `Transport`**: `ProviderConfig.FetchUser()`
+  covers userinfo; a general authenticated API transport is not provided.
 - **Google-specific flows** (JWT, external account, impersonation): not
-  relevant to caic's current use case.
+  provided by this package.
 - **Device authorization grant**: not implemented.
 - **`NoContext` / `RegisterBrokenAuthHeaderProvider`**: legacy cruft from
   `x/oauth2`'s long history, don't replicate.
