@@ -10,7 +10,9 @@ For an embedded gateway, mount `voicegateway.NewEmbeddedHandler` behind the
 host's session authentication. See the [server library guide](SERVER_LIBRARY.md)
 for host integration.
 
-For the standalone gateway, install:
+For Windows, follow the [Windows setup guide](VOICE_GATEWAY_WINDOWS.md).
+
+For a standalone Linux gateway with systemd, install:
 
 - `cmd/voice-gateway` as `~/.local/bin/voice-gateway`.
 - An edited copy of [config.toml](../contrib/config.toml) as

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -118,6 +119,9 @@ func TestStartRestartWatch(t *testing.T) {
 	})
 	t.Run("executable replacement", func(t *testing.T) {
 		t.Parallel()
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows locks running executables; stop the gateway before replacing its binary")
+		}
 		dir := t.TempDir()
 		exe, err := os.Executable()
 		if err != nil {
