@@ -2168,7 +2168,12 @@ describe("VoiceSession", () => {
     });
     mcpMocks.mcpCallTool.mockResolvedValue({ structuredContent: {} });
     const preparation = createFrontendPreparationClient().publishAuth({ authChanged: true, nativeAccess: true });
-    const scope = preparation.createScope();
+    const contextPublish = vi.fn(async () => {});
+    contextPublish.mockRejectedValueOnce(new Error("Context unavailable"));
+    const scope = preparation.createScope({
+      selection: () => "selected",
+      createPublisher: () => ({ publish: contextPublish, dispose() {} }),
+    });
     const frontend = vi.fn((_args: Record<string, unknown>, context: FrontendVoiceToolContext) => ({
       sessionID: context.sessionID,
     }));
@@ -2176,8 +2181,9 @@ describe("VoiceSession", () => {
       { declaration: { name: "select_item", description: "Select", parameters: {} }, execute: frontend },
     ]);
     scope.setDataReady(true);
-    const prepare = vi.fn(async (_sessionID: string, _signal: AbortSignal) => {});
-    configureVoiceGateway("/", null, undefined, undefined, prepare);
+    const prepare = vi.fn((sessionID: string, signal: AbortSignal) => scope.prepareSession(sessionID, signal));
+    const retireSession = vi.fn((sessionID: string) => scope.retireSession(sessionID));
+    configureVoiceGateway("/", null, undefined, undefined, { prepareSession: prepare, retireSession });
     const session = new VoiceSession();
     session.selectLanguage("fr-CA");
     await session.connect();
@@ -2189,11 +2195,20 @@ describe("VoiceSession", () => {
     expect(mcpMocks.mcpReadAdvertisedTextResource.mock.calls[0]?.[2]?.sessionID).toBe(firstID);
     expect(firstID).toMatch(/^[0-9a-f]{32}$/);
     expect(mcpMocks.mcpCallTool.mock.calls[0]?.[2]?.locale).toBe("fr-CA");
+    expect(scope.contextPublication()).toEqual({ failure: "request", pending: false });
+    const reconnect = deferred<void>();
+    contextPublish.mockImplementationOnce(() => reconnect.promise);
     vi.useFakeTimers();
     try {
       triggerIceState("failed");
       await vi.advanceTimersByTimeAsync(0);
+      expect(scope.contextPublication()).toEqual({ failure: "request", pending: true });
+      expect(mcpMocks.mcpReadAdvertisedTextResource).toHaveBeenCalledOnce();
+      reconnect.resolve();
+      await vi.advanceTimersByTimeAsync(0);
       await vi.waitFor(() => expect(offerRequests).toHaveLength(2));
+      expect(scope.contextPublication()).toEqual({ failure: null, pending: false });
+      expect(retireSession).not.toHaveBeenCalled();
       dispatchToolCall(FakePeerConnection.dataChannels[1], "reconnected", "lookup");
       expect(mcpMocks.mcpCallTool.mock.calls[1]?.[2]).toEqual({ locale: "fr-CA", sessionID: firstID });
       dispatchToolCall(FakePeerConnection.dataChannels[1], "frontend-recovered", "select_item");
@@ -2201,6 +2216,8 @@ describe("VoiceSession", () => {
       expect(frontend.mock.calls[1]?.[1].sessionID).toBe(firstID);
       expect(mcpMocks.mcpReadAdvertisedTextResource.mock.calls[1]?.[2]?.sessionID).toBe(firstID);
       session.disconnect();
+      expect(retireSession).toHaveBeenCalledWith(firstID);
+      expect(scope.contextPublication()).toEqual({ failure: null, pending: false });
       session.selectLanguage("de-DE");
       await session.connect();
       dispatchToolCall(FakePeerConnection.dataChannels[2], "new", "lookup");
@@ -2843,7 +2860,7 @@ describe("VoiceSession", () => {
   it("awaits host session preparation before reading setup MCP context", async () => {
     const gate = deferred<void>();
     const prepare = vi.fn(async (_sessionID: string, _signal: AbortSignal) => gate.promise);
-    configureVoiceGateway("/", null, undefined, undefined, prepare);
+    configureVoiceGateway("/", null, undefined, undefined, { prepareSession: prepare, retireSession: vi.fn() });
     const session = new VoiceSession();
     try {
       const connecting = session.connect();
@@ -2866,13 +2883,13 @@ describe("VoiceSession", () => {
     const gate = deferred<void>();
     const original = vi.fn(async (_sessionID: string, _signal: AbortSignal) => gate.promise);
     const replacement = vi.fn(async (_sessionID: string, _signal: AbortSignal) => {});
-    configureVoiceGateway("/", null, undefined, undefined, original);
+    configureVoiceGateway("/", null, undefined, undefined, { prepareSession: original, retireSession: vi.fn() });
     const session = new VoiceSession();
     try {
       const old = session.connect();
       await vi.waitFor(() => expect(original).toHaveBeenCalledOnce());
       const firstID = session.conversationID;
-      configureVoiceGateway("/", null, undefined, undefined, replacement);
+      configureVoiceGateway("/", null, undefined, undefined, { prepareSession: replacement, retireSession: vi.fn() });
       expect(replacement).not.toHaveBeenCalled();
       session.disconnect();
       expect(original.mock.calls[0]?.[1].aborted).toBe(true);
@@ -2894,16 +2911,22 @@ describe("VoiceSession", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const session = new VoiceSession();
     try {
-      configureVoiceGateway("/", null, undefined, undefined, async () => {
-        throw new Error("Focus publication unavailable");
+      configureVoiceGateway("/", null, undefined, undefined, {
+        prepareSession: async () => {
+          throw new Error("Focus publication unavailable");
+        },
+        retireSession: vi.fn(),
       });
       await session.connect();
       expect(mcpMocks.mcpReadAdvertisedTextResource).toHaveBeenCalledOnce();
-      expect(warn).toHaveBeenCalledWith("Could not prepare voice context", expect.any(Error));
+      expect(warn).not.toHaveBeenCalled();
       session.disconnect();
       const reads = mcpMocks.mcpReadAdvertisedTextResource.mock.calls.length;
-      configureVoiceGateway("/", null, undefined, undefined, async () => {
-        throw new DOMException("Owner retired", "AbortError");
+      configureVoiceGateway("/", null, undefined, undefined, {
+        prepareSession: async () => {
+          throw new DOMException("Owner retired", "AbortError");
+        },
+        retireSession: vi.fn(),
       });
       await session.connect();
       expect(mcpMocks.mcpReadAdvertisedTextResource).toHaveBeenCalledTimes(reads);
@@ -3498,12 +3521,17 @@ describe("formatVoiceRTCDiagnostics", () => {
 });
 
 it("pins the gateway base path for RTC signaling and cleanup", async () => {
-  configureVoiceGateway("/test/", null);
+  const prepareSession = vi.fn(async (_sessionID: string, _signal: AbortSignal) => {});
+  const retireSession = vi.fn();
+  configureVoiceGateway("/test/", null, undefined, undefined, { prepareSession, retireSession });
   const session = new VoiceSession();
   await session.connect();
+  expect(prepareSession).toHaveBeenCalledOnce();
+  expect(prepareSession.mock.calls[0]?.[0]).toBe(session.conversationID);
   expect(offerRequests[0]?.url).toBe(window.location.origin + "/test/api/voicegateway/v2/voice/rtc/offer");
   configureVoiceGateway("/replacement/", null);
   session.disconnect();
+  expect(retireSession).toHaveBeenCalledExactlyOnceWith(session.conversationID);
   await vi.waitFor(() =>
     expect(closeRequests[0]?.url).toBe(window.location.origin + "/test/api/voicegateway/v2/voice/rtc/session-1"),
   );

@@ -1,4 +1,4 @@
-// Owner-bound released MCP sessions deliver resource invalidations over reconnectable SSE streams.
+// Owner-bound released MCP sessions register cancellable subscriptions before opening SSE streams.
 
 package mcp
 
@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -229,58 +230,95 @@ func (h *Handler) handleCompatStream(w http.ResponseWriter, r *http.Request) {
 		}
 		h.Sessions.mu.Unlock()
 	}()
-	stream := sse.New(w)
-	if err := stream.KeepAlive(); err != nil {
+	subscription, err := h.subscribeCompatResources(ctx, session)
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		rpcErr := registryError(err)
+		status := rpcHTTPStatus(rpcErr)
+		logMCPFailure(r, status, nil, rpcErr, err)
+		h.writeResponse(w, status, JSONRPCResponse{JSONRPC: jsonRPCVersion, Error: rpcErr})
 		return
 	}
-	for ctx.Err() == nil {
-		changed, err := h.streamCompatResources(ctx, stream, session)
+	stream := sse.New(w)
+	for {
+		changed, err := h.streamCompatResources(stream, subscription)
 		if err != nil {
 			slog.WarnContext(ctx, "released MCP notification stream stopped", "err", err)
 			return
 		}
-		if !changed {
+		if !changed || ctx.Err() != nil {
+			return
+		}
+		subscription, err = h.subscribeCompatResources(ctx, session)
+		if err != nil {
+			slog.WarnContext(ctx, "rearm released MCP notification stream", "err", err)
 			return
 		}
 	}
 }
 
-// streamCompatResources re-arms the registry on filter changes. Every new GET
-// invalidates subscribed snapshots so reconnecting clients catch up after a
-// disconnection; these are invalidations, not a durable occurrence log. MCP
-// resource notifications do not request a model turn: that is client policy.
-func (h *Handler) streamCompatResources(ctx context.Context, stream *sse.Stream, session *compatSession) (bool, error) {
+// compatResourceSubscription owns one registered filter until streaming ends or
+// a filter replacement retires it. Setup failure cancels before ownership transfers.
+type compatResourceSubscription struct {
+	ctx     context.Context
+	cancel  context.CancelFunc
+	filter  SubscriptionFilter
+	changed <-chan struct{}
+	changes iter.Seq2[ResourceUpdate, error]
+}
+
+func (h *Handler) subscribeCompatResources(ctx context.Context, session *compatSession) (compatResourceSubscription, error) {
 	h.Sessions.mu.Lock()
 	filter := SubscriptionFilter{ResourcesListChanged: session.listChanged, ResourceSubscriptions: slices.Clone(session.resources)}
 	changed := session.changed
 	h.Sessions.mu.Unlock()
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	var updates <-chan compatResourceUpdate
-	var wg sync.WaitGroup
-	// Arm even an empty filter: the registry owns ongoing authorization checks.
-	// Released GET invalidations remain sessionless; metadata-bearing POSTs
-	// retain their per-request conversation instead of caching it in transport state.
+	// Empty filters still register ongoing authorization checks. Released GETs
+	// remain sessionless; only metadata-bearing POSTs bind a conversation.
 	changes, err := h.Registry.(SubscriptionRegistry).SubscribeResourceUpdates(ctx, &SubscriptionsListenParams{Notifications: filter})
 	if err != nil {
-		return false, err
+		cancel()
+		return compatResourceSubscription{}, err
 	}
-	channel := make(chan compatResourceUpdate)
-	updates = channel
+	if err := ctx.Err(); err != nil {
+		cancel()
+		return compatResourceSubscription{}, err
+	}
+	return compatResourceSubscription{ctx: ctx, cancel: cancel, filter: filter, changed: changed, changes: changes}, nil
+}
+
+// streamCompatResources serves one registered filter and retires it before
+// returning true for replacement. Each registration invalidates its snapshots;
+// these notifications are not a durable occurrence log and do not request a
+// model turn. The client owns that policy.
+func (h *Handler) streamCompatResources(stream *sse.Stream, subscription compatResourceSubscription) (bool, error) {
+	ctx, filter, changed := subscription.ctx, subscription.filter, subscription.changed
+	var wg sync.WaitGroup
+	defer func() { subscription.cancel(); wg.Wait() }()
+	if ctx.Err() != nil {
+		return false, nil
+	}
+	updates := make(chan compatResourceUpdate)
 	wg.Go(func() {
-		defer close(channel)
-		for update, err := range changes {
+		defer close(updates)
+		for update, err := range subscription.changes {
 			select {
 			case <-ctx.Done():
 				return
-			case channel <- compatResourceUpdate{update: update, err: err}:
+			case updates <- compatResourceUpdate{update: update, err: err}:
 			}
 			if err != nil {
 				return
 			}
 		}
 	})
-	defer func() { cancel(); wg.Wait() }()
+	// Initial and replacement filters register before their first response
+	// write, including filters with no resource interest.
+	if err := stream.KeepAlive(); err != nil {
+		return false, err
+	}
 	// Changes during setup must re-arm before reading or notifying under an old filter.
 	select {
 	case <-changed:

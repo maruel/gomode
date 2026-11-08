@@ -28,10 +28,7 @@ const manifest = {
 };
 function mount(
   preparation: () => FrontendPreparationScope,
-  options?: Pick<
-    BrowserVoiceShellProps,
-    "authorize" | "mcpEndpoint" | "gatewayHeaders" | "prepareSession" | "messages" | "children"
-  >,
+  options?: Pick<BrowserVoiceShellProps, "authorize" | "mcpEndpoint" | "gatewayHeaders" | "messages" | "children">,
 ) {
   const { children, ...configuration } = options ?? {};
   return render(() => (
@@ -115,7 +112,16 @@ it("captures the host preparation callback and aborts it when its runtime retire
   try {
     scope.setTools([]);
     scope.setDataReady(true);
-    mount(() => scope, { prepareSession: prepare });
+    scope = owner.createScope({
+      selection: () => null,
+      createPublisher: (sessionID) => ({
+        publish: (_selection, _current, signal) => prepare(sessionID, signal),
+        dispose() {},
+      }),
+    });
+    scope.setTools([]);
+    scope.setDataReady(true);
+    mount(() => scope);
     await screen.findByTestId("voice-runtime");
     const pending = voiceSession.connect();
     await waitFor(() => expect(prepare).toHaveBeenCalledOnce());
@@ -397,3 +403,31 @@ for (const interruption of ["disposal", "replacement", "native mode"]) {
     }
   });
 }
+
+it("renders one native advisory and shares keyboard-retry work without loading browser voice", async () => {
+  window.history.replaceState({}, "", "/?goModeHost=1");
+  const gate = deferred<void>();
+  const publish = vi.fn(async () => {});
+  publish.mockRejectedValueOnce(new Error("private server response"));
+  scope = owner.createScope({ selection: () => "selected", createPublisher: () => ({ publish, dispose() {} }) });
+  scope.setTools([]);
+  scope.setDataReady(true);
+  mount(() => scope);
+  await expect(scope.prepareSession("native", new AbortController().signal)).rejects.toThrow();
+  const notice = await screen.findByRole("status");
+  expect(notice.textContent).toContain(defaultVoiceMessages.contextUnavailable);
+  expect(screen.getAllByRole("status")).toHaveLength(1);
+  expect(scope.ready()).toBe(true);
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+  const retry = screen.getByRole("button", { name: "Retry" });
+  publish.mockImplementationOnce(() => gate.promise);
+  retry.focus();
+  fireEvent.click(retry);
+  expect(retry).toBeDisabled();
+  expect(screen.getByRole("status")).toBe(notice);
+  await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(2));
+  gate.resolve();
+  await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+  expect(errors).not.toHaveBeenCalled();
+});

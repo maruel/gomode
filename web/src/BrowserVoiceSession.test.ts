@@ -99,7 +99,10 @@ afterEach(() => {
 it("awaits host focus publication before browser-speech setup reads", async () => {
   const gate = deferred<void>();
   const prepare = vi.fn(async (_sessionID: string, _signal: AbortSignal) => gate.promise);
-  configureVoiceGateway("https://gateway.example", null, undefined, undefined, prepare);
+  configureVoiceGateway("https://gateway.example", null, undefined, undefined, {
+    prepareSession: prepare,
+    retireSession: vi.fn(),
+  });
   const pending = session.connect();
   await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
   expect(mcpClient.serverInstructions).not.toHaveBeenCalled();

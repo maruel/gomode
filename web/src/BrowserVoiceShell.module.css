@@ -1,0 +1,47 @@
+/* Shared advisory voice context notice, separate from the lazy browser controls. */
+.contextNotice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  box-sizing: border-box;
+  padding: 0.75rem 1rem;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-surface);
+  border-top: 1px solid var(--color-border);
+  font-family: system-ui, sans-serif;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.contextNotice span {
+  flex: 1 1 16rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.contextNotice button {
+  flex-shrink: 0;
+  min-height: 2.75rem;
+  padding: 0.5rem 0.75rem;
+  color: var(--color-primary);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-medium);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  cursor: pointer;
+}
+
+.contextNotice button:hover {
+  background: var(--color-bg-hover);
+}
+
+.contextNotice button:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.contextNotice button:disabled {
+  color: var(--color-text-muted);
+  cursor: default;
+}

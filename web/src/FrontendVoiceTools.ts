@@ -1,4 +1,4 @@
-// Owns authenticated frontend preparation, native conversation lifetimes, and scoped voice-tool dispatch.
+// Owns authenticated frontend preparation, shared context publication, native lifetimes, and scoped tool dispatch.
 //
 // Bridge-3 wire contract, as enforced here:
 // 1. Capture window.goModeFrontendDocument, gomodeAuth, and
@@ -23,6 +23,18 @@
 // sessionID; their host context receives null and must not publish conversation focus.
 
 import { createSignal, untrack, type Accessor } from "solid-js";
+import {
+  createFrontendVoiceContext,
+  type FrontendVoiceContextPolicy,
+  type FrontendVoiceContextPublication,
+} from "./FrontendVoiceContext";
+export { FrontendVoiceContextConflict } from "./FrontendVoiceContext";
+export type {
+  FrontendVoiceContextPolicy,
+  FrontendVoiceContextPublisher,
+  FrontendVoiceContextRelease,
+  FrontendVoiceContextPublication,
+} from "./FrontendVoiceContext";
 import type { ToolDeclaration } from "../../sdk/voicegateway/ts/v2/types.gen";
 
 export interface FrontendVoiceToolContext {
@@ -51,7 +63,16 @@ export interface FrontendVoiceToolsSnapshot {
   ): Promise<Record<string, unknown>>;
 }
 
-export interface FrontendPreparationScope {
+export interface FrontendSessionPreparation {
+  prepareSession(sessionID: string, signal: AbortSignal): Promise<void>;
+  retireSession(sessionID: string): void;
+}
+
+export interface FrontendPreparationScope extends FrontendSessionPreparation {
+  contextPublication: Accessor<FrontendVoiceContextPublication>;
+  retryContext(): Promise<void>;
+  /** Publish the selected context for an explicit tool without inventing a legacy manual-selection lifetime. */
+  publishContext(sessionID: string, signal: AbortSignal): Promise<void>;
   /** Local readiness works in browsers without waiting for a native acknowledgement. */
   ready: Accessor<boolean>;
   /** Authenticated native conversation lifetime; absent on older shells and after retirement. */
@@ -65,7 +86,7 @@ export interface FrontendPreparationScope {
 
 export interface FrontendPreparation {
   /** Replace preparation; optionally await initial native focus publication before voice setup. */
-  createScope(prepareSession?: (sessionID: string, signal: AbortSignal) => Promise<void>): FrontendPreparationScope;
+  createScope(context?: FrontendVoiceContextPolicy): FrontendPreparationScope;
   dispose(): void;
 }
 
@@ -185,11 +206,11 @@ export function createFrontendPreparationClient(): {
         scope.receiveVoiceSession(validSessionID(reply.sessionID) ? reply.sessionID : null);
       };
       const owner: FrontendPreparation = {
-        createScope(prepareSession) {
+        createScope(context) {
           scope?.dispose();
           const [ready, setReady] = createSignal(false);
           const [nativeVoiceSessionID, setNativeVoiceSessionID] = createSignal<string | null>(null);
-          const prepareVoiceSession = prepareSession ?? null;
+          const voiceContext = disposed || context === undefined ? null : createFrontendVoiceContext(context, ready);
           let nativeLifetime = new AbortController();
           let tools: Map<string, FrontendVoiceTool> | null = null;
           let dataReady = false;
@@ -202,6 +223,7 @@ export function createFrontendPreparationClient(): {
             lifetime = new AbortController();
             registration = String(++nextRegistration);
             current.receiveVoiceSession(null);
+            voiceContext?.reset();
           };
           const owns = (request: NativeInvocation) =>
             untrack(
@@ -261,9 +283,28 @@ export function createFrontendPreparationClient(): {
           const current: ActiveScope = {
             ready,
             nativeVoiceSessionID,
+            contextPublication: voiceContext?.contextPublication ?? (() => ({ failure: null, pending: false })),
+            async retryContext() {
+              if (!released && untrack(ready)) await voiceContext?.retryContext();
+            },
+            async prepareSession(sessionID, signal) {
+              if (released || !untrack(ready) || signal.aborted || !validSessionID(sessionID))
+                throw new DOMException("Frontend preparation retired.", "AbortError");
+              await voiceContext?.prepareSession(sessionID, signal);
+            },
+            async publishContext(sessionID, signal) {
+              if (released || !untrack(ready) || signal.aborted || !validSessionID(sessionID))
+                throw new DOMException("Frontend preparation retired.", "AbortError");
+              await voiceContext?.publishContext(sessionID, signal);
+            },
+            retireSession(sessionID) {
+              voiceContext?.retireSession(sessionID);
+            },
             receiveVoiceSession(sessionID) {
               if (untrack(nativeVoiceSessionID) === sessionID) return;
               nativeLifetime.abort();
+              const previous = untrack(nativeVoiceSessionID);
+              if (previous !== null) voiceContext?.retireSession(previous);
               nativeLifetime = new AbortController();
               const signal = nativeLifetime.signal;
               preparedSessionID = null;
@@ -275,12 +316,11 @@ export function createFrontendPreparationClient(): {
                 }
               }
               if (sessionID === null) return;
-              const prepare = prepareVoiceSession;
               void (async () => {
                 try {
-                  await prepare?.(sessionID, signal);
-                } catch (error) {
-                  if (!signal.aborted) console.warn("Could not prepare native voice context", error);
+                  await current.prepareSession(sessionID, signal);
+                } catch {
+                  // The shared context owner reports advisory outcomes once.
                 }
                 if (signal.aborted || released || !untrack(ready)) return;
                 preparedSessionID = sessionID;
@@ -323,6 +363,7 @@ export function createFrontendPreparationClient(): {
               if (released) return;
               released = true;
               invalidate();
+              voiceContext?.dispose();
               pending.forEach(({ controller }) => controller.abort());
               pending.clear();
               setReady(false);

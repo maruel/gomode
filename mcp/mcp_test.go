@@ -98,6 +98,170 @@ func TestHandler(t *testing.T) { //nolint:paralleltest // HandleMCP cases replac
 				})
 			}
 		})
+		t.Run("released subscription setup", func(t *testing.T) {
+			request := func(t *testing.T, h *Handler, ctx context.Context, version string) *http.Request {
+				init := httptest.NewRequestWithContext(ctx, http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"`+version+`"}}`))
+				init.Header.Set("Mcp-Protocol-Version", version)
+				w := httptest.NewRecorder()
+				h.HandleMCP(w, init)
+				if w.Code != http.StatusOK {
+					t.Fatalf("initialize status = %d", w.Code)
+				}
+				req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/mcp", nil)
+				req.Header.Set("Mcp-Protocol-Version", version)
+				req.Header.Set("Mcp-Session-Id", w.Header().Get("Mcp-Session-Id"))
+				req.Header.Set("Accept", "text/event-stream")
+				return req
+			}
+			for _, version := range []string{"2025-06-18", "2025-11-25"} {
+				t.Run(version, func(t *testing.T) {
+					t.Run("error/registration", func(t *testing.T) {
+						synctest.Test(t, func(t *testing.T) {
+							reg := &registrationTestRegistry{subscriptionTestRegistry: newSubscriptionTestRegistry(), released: make(chan struct{}), setupErr: true}
+							h := &Handler{Registry: reg, Sessions: NewSessionStore(func(context.Context) (string, error) { return "owner", nil })}
+							req := request(t, h, t.Context(), version)
+							w := httptest.NewRecorder()
+							h.HandleMCP(w, req)
+							if w.Code != http.StatusOK || w.Flushed || w.Header().Get("Content-Type") != "application/json" {
+								t.Fatalf("failed setup advertised SSE readiness: status=%d, flushed=%t", w.Code, w.Flushed)
+							}
+							var response JSONRPCResponse
+							if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+								t.Fatal(err)
+							}
+							if response.Error == nil || response.Error.Code != InternalErrorCode {
+								t.Fatalf("setup response=%+v", response)
+							}
+							synctest.Wait()
+							select {
+							case <-reg.released:
+							default:
+								t.Fatal("failed setup registration was not released")
+							}
+							if req.Context().Err() != nil {
+								t.Fatal("request cleanup masked registration release")
+							}
+						})
+					})
+					t.Run("error/initial flush", func(t *testing.T) {
+						synctest.Test(t, func(t *testing.T) {
+							reg := &registrationTestRegistry{subscriptionTestRegistry: newSubscriptionTestRegistry(), released: make(chan struct{})}
+							h := &Handler{Registry: reg, Sessions: NewSessionStore(func(context.Context) (string, error) { return "owner", nil })}
+							req := request(t, h, t.Context(), version)
+							w := &registrationFlushWriter{ResponseRecorder: httptest.NewRecorder(), registry: reg}
+							h.HandleMCP(w, req)
+							if !w.registeredAtFlush {
+								t.Fatal("initial response flushed before registry registration")
+							}
+							synctest.Wait()
+							select {
+							case <-reg.released:
+							default:
+								t.Fatal("initial flush failure retained registration")
+							}
+							if req.Context().Err() != nil {
+								t.Fatal("request cleanup masked registration release")
+							}
+						})
+					})
+					t.Run("error/canceled setup", func(t *testing.T) {
+						synctest.Test(t, func(t *testing.T) {
+							ctx, cancel := context.WithCancel(t.Context())
+							reg := &registrationTestRegistry{subscriptionTestRegistry: newSubscriptionTestRegistry(), released: make(chan struct{}), setup: cancel}
+							h := &Handler{Registry: reg, Sessions: NewSessionStore(func(context.Context) (string, error) { return "owner", nil })}
+							req := request(t, h, ctx, version)
+							w := httptest.NewRecorder()
+							h.HandleMCP(w, req)
+							if w.Flushed {
+								t.Fatal("canceled setup flushed readiness")
+							}
+							synctest.Wait()
+							select {
+							case <-reg.released:
+							default:
+								t.Fatal("canceled setup retained registration")
+							}
+						})
+					})
+					t.Run("valid/filter replacement during setup", func(t *testing.T) {
+						synctest.Test(t, func(t *testing.T) {
+							reg := &filterReplacingRegistry{subscriptionTestRegistry: newSubscriptionTestRegistry()}
+							h := &Handler{Registry: reg, Sessions: NewSessionStore(func(context.Context) (string, error) { return "owner", nil })}
+							req := request(t, h, t.Context(), version)
+							reg.replace = func() {
+								post := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"resources/list","params":{}}`))
+								post.Header = req.Header.Clone()
+								w := httptest.NewRecorder()
+								h.HandleMCP(w, post)
+								if w.Code != http.StatusOK {
+									t.Fatalf("filter replacement status=%d", w.Code)
+								}
+							}
+							w := &failingSubscriptionWriter{ResponseRecorder: httptest.NewRecorder(), failAt: 2}
+							h.HandleMCP(w, req)
+							if len(reg.filters) != 2 || reg.filters[0].ResourcesListChanged || !reg.filters[1].ResourcesListChanged {
+								t.Fatalf("registered filters=%+v", reg.filters)
+							}
+							for _, ctx := range reg.contexts {
+								if ctx.Err() == nil {
+									t.Fatal("retired filter registration remains active")
+								}
+							}
+							if w.Body.String() != ": keepalive\n\n" {
+								t.Fatalf("stale filter emitted initial state: %q", w.Body.String())
+							}
+							if req.Context().Err() != nil {
+								t.Fatal("request cleanup masked filter retirement")
+							}
+						})
+					})
+				})
+			}
+		})
+		t.Run("canceled native subscription setup", func(t *testing.T) {
+			for _, stage := range []string{"registration", "resource read", "catalog iteration"} {
+				t.Run(stage, func(t *testing.T) {
+					synctest.Test(t, func(t *testing.T) {
+						ctx, cancel := context.WithCancel(t.Context())
+						t.Cleanup(cancel)
+						reg := &registrationTestRegistry{subscriptionTestRegistry: newSubscriptionTestRegistry(), released: make(chan struct{})}
+						switch stage {
+						case "registration":
+							reg.setup = cancel
+						case "resource read":
+							reg.read = cancel
+						case "catalog iteration":
+							reg.catalog = cancel
+						}
+						h := &Handler{Registry: reg}
+						req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/mcp", strings.NewReader(nativeMCPRequestJSON("subscriptions/listen", `"notifications":{"resourcesListChanged":true,"resourceSubscriptions":["test://resource"]}`)))
+						req.Header.Set("Mcp-Protocol-Version", ProtocolVersion)
+						req.Header.Set("Mcp-Method", string(MethodSubscriptionsListen))
+						w := httptest.NewRecorder()
+						h.HandleMCP(w, req)
+						if !reg.registered || ctx.Err() != context.Canceled {
+							t.Fatal("setup did not register and cancel at the selected boundary")
+						}
+						if w.Flushed || w.Body.Len() != 0 {
+							t.Fatalf("canceled native setup announced readiness: flushed=%t body=%q", w.Flushed, w.Body.String())
+						}
+						if reg.consumed {
+							t.Fatal("canceled setup started its iterator")
+						}
+						synctest.Wait()
+						select {
+						case <-reg.released:
+						default:
+							t.Fatal("canceled native setup retained registration")
+						}
+						if t.Context().Err() != nil {
+							t.Fatal("test cleanup masked registration release")
+						}
+					})
+				})
+			}
+		})
+
 		t.Run("protocol", func(t *testing.T) {
 			t.Run("successful tool result omits metadata", func(t *testing.T) {
 				registry := &subscriptionTestRegistry{callResult: RawToolResult{Structured: TextOutput{Result: "ok"}}}
@@ -1187,17 +1351,43 @@ type registrationTestRegistry struct {
 	registered bool
 	consumed   bool
 	setupErr   bool
+	setup      func()
+	read       func()
+	catalog    func()
 }
 
 func (r *registrationTestRegistry) SubscribeResourceUpdates(ctx context.Context, _ *SubscriptionsListenParams) (iter.Seq2[ResourceUpdate, error], error) {
 	r.registered = true
 	context.AfterFunc(ctx, func() { close(r.released) })
+	if r.setup != nil {
+		r.setup()
+	}
 	if r.setupErr {
 		return nil, errors.New("registration failed after setup")
 	}
 	return func(func(ResourceUpdate, error) bool) {
 		r.consumed = true
 	}, nil
+}
+
+func (r *registrationTestRegistry) ReadResource(ctx context.Context, p *ResourcesReadParams) (ResourcesReadResult, error) {
+	if r.read != nil {
+		r.read()
+	}
+	return r.subscriptionTestRegistry.ReadResource(ctx, p)
+}
+func (r *registrationTestRegistry) Resources(ctx context.Context) iter.Seq2[ResourceDescriptor, error] {
+	resources := r.subscriptionTestRegistry.Resources(ctx)
+	return func(yield func(ResourceDescriptor, error) bool) {
+		for resource, err := range resources {
+			if r.catalog != nil {
+				r.catalog()
+			}
+			if !yield(resource, err) {
+				return
+			}
+		}
+	}
 }
 
 type failingSubscriptionWriter struct {
@@ -1212,4 +1402,33 @@ func (w *failingSubscriptionWriter) Write(p []byte) (int, error) {
 		return 0, errors.New("subscription transport write failed")
 	}
 	return w.ResponseRecorder.Write(p)
+}
+
+// registrationFlushWriter observes the registry at the first response flush.
+type registrationFlushWriter struct {
+	*httptest.ResponseRecorder
+	registry          *registrationTestRegistry
+	registeredAtFlush bool
+}
+
+func (w *registrationFlushWriter) FlushError() error {
+	w.registeredAtFlush = w.registry.registered
+	return errors.New("first response flush failed")
+}
+
+// filterReplacingRegistry changes discovery interest while the first filter registers.
+type filterReplacingRegistry struct {
+	*subscriptionTestRegistry
+	contexts []context.Context
+	filters  []SubscriptionFilter
+	replace  func()
+}
+
+func (r *filterReplacingRegistry) SubscribeResourceUpdates(ctx context.Context, p *SubscriptionsListenParams) (iter.Seq2[ResourceUpdate, error], error) {
+	r.contexts = append(r.contexts, ctx)
+	r.filters = append(r.filters, p.Notifications)
+	if len(r.filters) == 1 {
+		r.replace()
+	}
+	return func(func(ResourceUpdate, error) bool) { <-ctx.Done() }, nil
 }

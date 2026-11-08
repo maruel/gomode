@@ -1,12 +1,12 @@
-// Lazily mounts browser voice and binds host context preparation to the current frontend owner.
+// Renders shared context recovery for hosted voice and lazily mounts the browser runtime.
 
 import { createEffect, createSignal, onCleanup, Show, type Accessor, type Component, type JSX } from "solid-js";
 import { useHostMode } from "./HostMode";
 import { discoverBrowserVoice, sameOriginVoiceEndpoint, type BrowserVoiceEndpoints } from "./BrowserVoiceManifest";
 import type { FrontendPreparationScope } from "./FrontendVoiceTools";
-import type { VoiceMessages } from "./VoiceMessages";
+import { defaultVoiceMessages, type VoiceMessages } from "./VoiceMessages";
+import styles from "./BrowserVoiceShell.module.css";
 import type { ServiceAuthorization } from "../../sdk/voicegateway/ts/v2/types.gen";
-import type { PrepareVoiceSession } from "./VoiceSession";
 import type { BrowserVoiceRuntime } from "./BrowserVoiceRuntime";
 
 export interface BrowserVoiceShellProps {
@@ -19,8 +19,6 @@ export interface BrowserVoiceShellProps {
   /** Decorate the validated MCP endpoint with captured host session authority if needed. */
   mcpEndpoint?: (endpoint: string) => string;
   gatewayHeaders?: HeadersInit;
-  /** Publish selected host context before conversation setup reads; ordinary failures are advisory. */
-  prepareSession?: PrepareVoiceSession;
   /** Read the host’s current localized voice catalog. */
   messages?: Accessor<VoiceMessages>;
   setupFailed: string;
@@ -35,7 +33,7 @@ export interface BrowserVoiceRuntimeProps {
   clientName: string;
   authorize?: BrowserVoiceShellProps["authorize"];
   gatewayHeaders?: HeadersInit;
-  prepareSession?: PrepareVoiceSession;
+  preparation: FrontendPreparationScope;
   messages?: BrowserVoiceShellProps["messages"];
   onError: BrowserVoiceShellProps["onError"];
   children?: BrowserVoiceShellProps["children"];
@@ -62,7 +60,7 @@ export default function BrowserVoiceShell(props: BrowserVoiceShellProps) {
       authorize: props.authorize,
       mcpEndpoint: props.mcpEndpoint,
       gatewayHeaders: new Headers(props.gatewayHeaders),
-      prepareSession: props.prepareSession,
+      preparation: scope,
       onError: props.onError,
     };
     const controller = new AbortController();
@@ -98,6 +96,18 @@ export default function BrowserVoiceShell(props: BrowserVoiceShellProps) {
   });
   return (
     <>
+      <Show when={props.preparation.contextPublication().failure}>
+        <div role="status" class={styles.contextNotice}>
+          <span>{(props.messages?.() ?? defaultVoiceMessages).contextUnavailable}</span>
+          <button
+            type="button"
+            disabled={props.preparation.contextPublication().pending}
+            onClick={() => void props.preparation.retryContext()}
+          >
+            {(props.messages?.() ?? defaultVoiceMessages).contextRetry}
+          </button>
+        </div>
+      </Show>
       <Show when={loaded()} keyed>
         {({ component: Runtime, configuration }) => (
           <Runtime {...configuration} messages={props.messages}>

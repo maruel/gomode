@@ -455,6 +455,9 @@ func (h *Handler) handleSubscription(ctx context.Context, w http.ResponseWriter,
 	if err != nil {
 		return registryError(err)
 	}
+	if ctx.Err() != nil {
+		return nil
+	}
 	// Read every subscribed target before acknowledging. The delivered initial
 	// state doubles as the dedup baseline for the change loop; taking it first
 	// establishes a happens-before edge so a mutation that lands as soon as the
@@ -464,6 +467,9 @@ func (h *Handler) handleSubscription(ctx context.Context, w http.ResponseWriter,
 	lastResources := ""
 	if p.Notifications.ResourcesListChanged {
 		lastResources = h.subscriptionResourcesHash(ctx)
+	}
+	if ctx.Err() != nil {
+		return nil
 	}
 	out := sse.New(stream)
 	w.WriteHeader(http.StatusOK)

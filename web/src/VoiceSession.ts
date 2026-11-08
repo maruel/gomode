@@ -60,7 +60,11 @@ import {
 } from "../../sdk/voicegateway/ts/v2/types.gen";
 
 import { mcpClient, type McpToolDescriptor } from "./McpClient";
-import { captureFrontendVoiceTools, type FrontendVoiceToolsSnapshot } from "./FrontendVoiceTools";
+import {
+  captureFrontendVoiceTools,
+  type FrontendVoiceToolsSnapshot,
+  type FrontendSessionPreparation,
+} from "./FrontendVoiceTools";
 import { GO_MODE_ITEMS_RESOURCE_URI, initialServiceContext } from "./ServiceItems";
 import { WebAudioVoiceChime, type VoiceChimePlayer } from "./VoiceChime";
 import { WebAudioThinkingEarcon, type ThinkingEarcon } from "./ThinkingEarcon";
@@ -109,8 +113,7 @@ type ServiceAuthorizationProvider = () => Promise<ServiceAuthorization>;
 let serviceAuthorizationProvider: ServiceAuthorizationProvider | null = null;
 let gatewayBearerTokenProvider: (() => string | null | Promise<string | null>) | null = null;
 let gatewayHeadersProvider: (() => HeadersInit) | null = null;
-export type PrepareVoiceSession = (sessionID: string, signal: AbortSignal) => Promise<void>;
-let sessionPreparation: PrepareVoiceSession | null = null;
+let sessionPreparation: FrontendSessionPreparation | null = null;
 
 /** Configure gateway authorization; host headers are captured per session and sent only to same-origin endpoints. */
 export function configureVoiceGateway(
@@ -118,13 +121,13 @@ export function configureVoiceGateway(
   provider: ServiceAuthorizationProvider | null,
   tokenProvider?: () => string | null | Promise<string | null>,
   headersProvider?: () => HeadersInit,
-  prepareSession?: PrepareVoiceSession,
+  preparation?: FrontendSessionPreparation,
 ): void {
   gatewayBaseURL = voiceGatewayBaseURL(baseURL, window.location.origin);
   serviceAuthorizationProvider = provider;
   gatewayBearerTokenProvider = tokenProvider ?? null;
   gatewayHeadersProvider = headersProvider ?? null;
-  sessionPreparation = prepareSession ?? null;
+  sessionPreparation = preparation ?? null;
   setGatewayVersion((version) => version + 1);
 }
 
@@ -203,7 +206,7 @@ interface GatewaySnapshot {
   version: number;
   serviceProvider: ServiceAuthorizationProvider | null;
   bearerProvider: BearerTokenProvider | null;
-  prepareSession: PrepareVoiceSession | null;
+  preparation: FrontendSessionPreparation | null;
   api: ReturnType<typeof voicegatewaySDK.createApiClient>;
 }
 
@@ -218,7 +221,7 @@ function gatewaySnapshot(): GatewaySnapshot {
     version: untrack(gatewayVersion),
     serviceProvider,
     bearerProvider,
-    prepareSession: sessionPreparation,
+    preparation: sessionPreparation,
     api: voicegatewaySDK.createApiClient((path, init) => gatewayFetch(url.href, bearerProvider, headers, path, init)),
   };
 }
@@ -1885,6 +1888,7 @@ export class VoiceSession {
 
   /** Start a new voice session via WebRTC data channel through the host backend. */
   async connect(): Promise<void> {
+    this._sessionGateway?.preparation?.retireSession(this.conversationID);
     this._frontendTools = captureFrontendVoiceTools();
     this._setConversationID(newConversationID());
     this._sessionGateway = gatewaySnapshot();
@@ -1925,7 +1929,7 @@ export class VoiceSession {
   private async _prepareHostSession(snapshot: GatewaySnapshot, attempt: number, signal: AbortSignal): Promise<boolean> {
     if (signal.aborted || attempt !== this._connectionAttempt) return false;
     try {
-      await snapshot.prepareSession?.(this.conversationID, signal);
+      await snapshot.preparation?.prepareSession(this.conversationID, signal);
     } catch (error) {
       if (signal.aborted || attempt !== this._connectionAttempt) return false;
       if (error instanceof DOMException && error.name === "AbortError") {
@@ -1934,7 +1938,7 @@ export class VoiceSession {
       }
       // Selected-item context is advisory; an ordinary publication failure must
       // not prevent the otherwise independent voice transport from starting.
-      console.warn("Could not prepare voice context", error);
+      // Publication diagnostics and recovery belong to the preparation owner.
     }
     return !signal.aborted && attempt === this._connectionAttempt;
   }
@@ -2352,6 +2356,7 @@ export class VoiceSession {
   }
 
   disconnect(): void {
+    this._sessionGateway?.preparation?.retireSession(this.conversationID);
     this._frontendInvocationLifetime.abort();
     this._frontendInvocationLifetime = new AbortController();
     this._leaveVoiceMode();
@@ -2613,6 +2618,7 @@ export class VoiceSession {
   }
 
   private _setError(message: string): void {
+    this._sessionGateway?.preparation?.retireSession(this.conversationID);
     this._reconnectEnabled = false;
     if (this._reconnectTimer !== null) clearTimeout(this._reconnectTimer);
     this._reconnectTimer = null;

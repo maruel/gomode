@@ -3,6 +3,9 @@
 import type { VoiceMessages } from "../VoiceMessages";
 
 export const voiceMessages: VoiceMessages = {
+  contextUnavailable:
+    "Le contexte vocal n’a pas pu être actualisé. L’assistant peut utiliser une sélection précédente.",
+  contextRetry: "Réessayer",
   voiceSetup: "Configuration vocale",
   allInOne: "Modèle tout-en-un",
   selectParts: "Choisir les composants",

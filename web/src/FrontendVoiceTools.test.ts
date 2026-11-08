@@ -1,10 +1,12 @@
 // Tests frontend preparation, authenticated scopes, per-invocation sessions, and dispatch retirement.
 
 import { afterEach, beforeEach, it } from "node:test";
+import { createSignal } from "solid-js";
 import { expect, vi } from "../tests/expect";
 import { deferred } from "../tests/deferred";
 import {
   captureFrontendVoiceTools,
+  FrontendVoiceContextConflict,
   createFrontendPreparationClient,
   executeFrontendVoiceTool,
   type FrontendPreparation,
@@ -36,6 +38,17 @@ afterEach(() => {
 function authenticate() {
   owner = createFrontendPreparationClient().publishAuth({ authChanged: true, nativeAccess: true });
   return owner;
+}
+function contextPolicy(prepare: (sessionID: string, signal: AbortSignal) => Promise<void>) {
+  const dispose = vi.fn();
+  return {
+    dispose,
+    selection: () => null,
+    createPublisher: (sessionID: string) => ({
+      publish: (_selection: string | null, _current: () => boolean, signal: AbortSignal) => prepare(sessionID, signal),
+      dispose,
+    }),
+  };
 }
 function acknowledge(request: Record<string, unknown>, token: string) {
   bridge.onmessage?.({ data: JSON.stringify({ ...request, frontendToken: token }) });
@@ -108,7 +121,8 @@ function nativeSession(sessionID: string | null, overrides?: Record<string, unkn
 it("binds native lifetime and awaited initial publication to authenticated document and product scope", async () => {
   const initial = deferred<void>();
   const prepare = vi.fn((_sessionID: string, _signal: AbortSignal) => initial.promise);
-  const scope = authenticate().createScope(prepare);
+  const context = contextPolicy(prepare);
+  const scope = authenticate().createScope(context);
   scope.setTools([]);
   scope.setDataReady(true);
   await Promise.resolve();
@@ -125,27 +139,26 @@ it("binds native lifetime and awaited initial publication to authenticated docum
   }
   nativeSession("first");
   expect(scope.nativeVoiceSessionID()).toBe("first");
-  expect(prepare).toHaveBeenCalledOnce();
+  await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
   expect(prepare.mock.calls[0]?.[0]).toBe("first");
   expect(readiness.at(-1)?.voiceSessionPrepared).toBeNull();
   nativeSession("first");
-  expect(prepare).toHaveBeenCalledOnce();
+  await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
   initial.resolve();
   await Promise.resolve();
   await Promise.resolve();
-  expect(readiness.at(-1)?.voiceSessionPrepared).toBe("first");
-  const signal = prepare.mock.calls[0]![1];
+  await vi.waitFor(() => expect(readiness.at(-1)?.voiceSessionPrepared).toBe("first"));
   scope.setDataReady(false);
-  expect(signal.aborted).toBe(true);
+  expect(context.dispose).toHaveBeenCalledOnce();
   expect(scope.nativeVoiceSessionID()).toBeNull();
   expect(readiness.at(-1)?.voiceSessionPrepared).toBeNull();
   scope.setDataReady(true);
   nativeSession("second");
   expect(scope.nativeVoiceSessionID()).toBe("second");
-  expect(prepare).toHaveBeenCalledTimes(2);
+  await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(2));
   owner?.dispose();
   expect(scope.nativeVoiceSessionID()).toBeNull();
-  expect(prepare.mock.calls[1]![1].aborted).toBe(true);
+  expect(context.dispose).toHaveBeenCalledTimes(2);
 });
 
 it("admits negotiated native wire dispatch only for the live conversation ID", async () => {
@@ -230,7 +243,7 @@ it("acknowledges advisory publication failure but never a cancelled or retired p
     .fn<(sessionID: string, signal: AbortSignal) => Promise<void>>()
     .mockRejectedValueOnce(new Error("Publication unavailable"))
     .mockImplementationOnce(() => blocked.promise);
-  const scope = authenticate().createScope(prepare);
+  const scope = authenticate().createScope(contextPolicy(prepare));
   scope.setTools([]);
   scope.setDataReady(true);
   await Promise.resolve();
@@ -238,9 +251,10 @@ it("acknowledges advisory publication failure but never a cancelled or retired p
   nativeSession("first");
   await Promise.resolve();
   await Promise.resolve();
-  expect(readiness.at(-1)?.voiceSessionPrepared).toBe("first");
+  await vi.waitFor(() => expect(readiness.at(-1)?.voiceSessionPrepared).toBe("first"));
   expect(warning).toHaveBeenCalledOnce();
   nativeSession("second");
+  await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(2));
   nativeSession(null);
   const count = readiness.length;
   blocked.resolve();
@@ -309,10 +323,24 @@ it("retires identity scopes and ignores stale acknowledgement callbacks or dispo
   acknowledge(oldRequest, "old");
   expect(readiness).toEqual([]);
   expect(scope.ready()).toBe(false);
-  const retiredScope = first.createScope();
+  const [selection, select] = createSignal<string | null>("selected");
+  // The policy evaluates this accessor in its own tracked root; spy on those reads.
+  // eslint-disable-next-line solid/reactivity
+  const readSelection = vi.fn(() => selection());
+  const createPublisher = vi.fn(() => ({ publish: vi.fn(async () => {}), dispose: vi.fn() }));
+  const retiredScope = first.createScope({ selection: readSelection, createPublisher });
   retiredScope.setTools([tool]);
   retiredScope.setDataReady(true);
   expect(retiredScope.ready()).toBe(false);
+  await expect(retiredScope.prepareSession("retired", new AbortController().signal)).rejects.toHaveProperty(
+    "name",
+    "AbortError",
+  );
+  retiredScope.dispose();
+  first.dispose();
+  select("replacement");
+  expect(readSelection).not.toHaveBeenCalled();
+  expect(createPublisher).not.toHaveBeenCalled();
   await Promise.resolve();
   acknowledge(requests.at(-1)!, "current");
   const next = current.createScope();
@@ -601,4 +629,234 @@ it("allows legacy native navigation without inventing conversation focus", async
   await vi.waitFor(() => expect(navigate).toHaveBeenCalledOnce());
   expect(navigate.mock.calls[0]?.[1].sessionID).toBeNull();
   expect(publishFocus).not.toHaveBeenCalled();
+});
+
+it("shares only pending context work and follows selection supersession before native acknowledgement", async () => {
+  const [selection, select] = createSignal<string | null>("first");
+  const gates = [deferred<void>(), deferred<void>()];
+  const signals: AbortSignal[] = [];
+  const publish = vi.fn((_key: string | null, _current: () => boolean, signal: AbortSignal) => {
+    signals.push(signal);
+    return gates[signals.length - 1]!.promise;
+  });
+  const dispose = vi.fn();
+  const scope = authenticate().createScope({ selection, createPublisher: () => ({ publish, dispose }) });
+  scope.setTools([]);
+  scope.setDataReady(true);
+  await Promise.resolve();
+  acknowledge({ ...requests[0], voiceSessionVersion: 1 }, "identity");
+  nativeSession("conversation");
+  const pending = scope.publishContext("conversation", new AbortController().signal);
+  await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(1));
+  select("second");
+  expect(signals[0]!.aborted).toBe(true);
+  await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(2));
+  gates[0]!.resolve();
+  await Promise.resolve();
+  expect(readiness.at(-1)?.voiceSessionPrepared).toBeNull();
+  gates[1]!.resolve();
+  await pending;
+  await vi.waitFor(() => expect(readiness.at(-1)?.voiceSessionPrepared).toBe("conversation"));
+  nativeSession(null);
+  expect(dispose).toHaveBeenCalledOnce();
+});
+
+it("retries a settled failed publication for the same selected item", async () => {
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const publish = vi.fn(async () => {});
+  publish.mockRejectedValueOnce(new Error("Publication failed"));
+  const scope = authenticate().createScope({
+    selection: () => "selected",
+    createPublisher: () => ({ publish, dispose() {} }),
+  });
+  scope.setTools([]);
+  scope.setDataReady(true);
+  try {
+    await expect(scope.prepareSession("conversation", new AbortController().signal)).rejects.toThrow(
+      "Publication failed",
+    );
+    expect(scope.contextPublication()).toEqual({ failure: "request", pending: false });
+    await scope.retryContext();
+    expect(scope.contextPublication()).toEqual({ failure: null, pending: false });
+    expect(publish).toHaveBeenCalledTimes(2);
+  } finally {
+    warning.mockRestore();
+  }
+});
+
+it("cancels a browser attempt without retiring its conversation publisher", async () => {
+  const gate = deferred<void>();
+  const signals: AbortSignal[] = [];
+  const publish = vi.fn((_key: string | null, _current: () => boolean, signal: AbortSignal) => {
+    signals.push(signal);
+    return signals.length === 1 ? gate.promise : Promise.resolve();
+  });
+  const dispose = vi.fn();
+  const createPublisher = vi.fn(() => ({ publish, dispose }));
+  const scope = authenticate().createScope({ selection: () => "selected", createPublisher });
+  scope.setTools([]);
+  scope.setDataReady(true);
+  const attempt = new AbortController();
+  const pending = scope.prepareSession("conversation", attempt.signal);
+  await vi.waitFor(() => expect(publish).toHaveBeenCalledOnce());
+  attempt.abort(new DOMException("Caller deadline", "TimeoutError"));
+  await expect(pending).rejects.toHaveProperty("name", "AbortError");
+  expect(signals[0]!.aborted).toBe(true);
+  expect(scope.contextPublication()).toEqual({ failure: null, pending: false });
+  await scope.prepareSession("conversation", new AbortController().signal);
+  expect(createPublisher).toHaveBeenCalledOnce();
+  expect(dispose).not.toHaveBeenCalled();
+  scope.retireSession("conversation");
+  expect(dispose).toHaveBeenCalledOnce();
+  gate.resolve();
+});
+
+it("publishes invocation-only context without following later manual selections", async () => {
+  const [selection, select] = createSignal<string | null>("selected");
+  const publish = vi.fn(async () => {});
+  const dispose = vi.fn();
+  const createPublisher = vi.fn(() => ({ publish, dispose }));
+  const scope = authenticate().createScope({ selection, createPublisher });
+  scope.setTools([]);
+  scope.setDataReady(true);
+  await scope.publishContext("invocation-only", new AbortController().signal);
+  expect(createPublisher).toHaveBeenCalledWith("invocation-only", "invocation", expect.any(Function));
+  select("manual-change");
+  expect(publish).toHaveBeenCalledOnce();
+  await scope.publishContext("next-invocation", new AbortController().signal);
+  expect(dispose).toHaveBeenCalledOnce();
+  expect(publish).toHaveBeenCalledTimes(2);
+});
+
+it("bounds a non-cooperating context publication and permits a later same-item retry", async () => {
+  vi.useFakeTimers();
+  const signals: AbortSignal[] = [];
+  const publish = vi.fn((_key: string | null, _current: () => boolean, signal: AbortSignal) => {
+    signals.push(signal);
+    return signals.length === 1 ? new Promise<void>(() => {}) : Promise.resolve();
+  });
+  const createPublisher = vi.fn(() => ({ publish, dispose() {} }));
+  const scope = authenticate().createScope({ selection: () => "selected", createPublisher });
+  scope.setTools([]);
+  scope.setDataReady(true);
+  try {
+    const pending = scope.prepareSession("conversation", new AbortController().signal);
+    const rejected = expect(pending).rejects.toHaveProperty("name", "TimeoutError");
+    await vi.advanceTimersByTimeAsync(2500);
+    await rejected;
+    expect(signals[0]!.aborted).toBe(true);
+    expect(scope.contextPublication()).toEqual({ failure: "timeout", pending: false });
+    await scope.retryContext();
+    expect(scope.contextPublication()).toEqual({ failure: null, pending: false });
+    expect(publish).toHaveBeenCalledTimes(2);
+    expect(createPublisher).toHaveBeenCalledOnce();
+  } finally {
+    scope.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("derives current context recovery and isolates late retired-release diagnostics", async () => {
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const [selection, select] = createSignal<string | null>("first");
+  let failRelease!: (error: Error) => void;
+  const release = new Promise<void>((_resolve, reject) => {
+    failRelease = reject;
+  });
+  const retry = deferred<void>();
+  const publish = vi.fn(async () => {});
+  const scope = authenticate().createScope({
+    selection,
+    createPublisher: (sessionID, _kind, runRelease) => ({
+      publish,
+      dispose: () => {
+        if (sessionID === "first") runRelease(() => release);
+      },
+    }),
+  });
+  scope.setTools([]);
+  scope.setDataReady(true);
+  try {
+    await scope.prepareSession("first", new AbortController().signal);
+    publish.mockRejectedValueOnce(new FrontendVoiceContextConflict());
+    select("second");
+    await vi.waitFor(() =>
+      expect(scope.contextPublication()).toEqual({ failure: "concurrent-update", pending: false }),
+    );
+    expect(warning).toHaveBeenCalledTimes(1);
+    expect(warning.mock.calls[0]).toEqual([
+      "Voice context operation failed",
+      { operation: "publish", failure: "concurrent-update" },
+    ]);
+    publish.mockImplementationOnce(() => retry.promise);
+    const pending = scope.retryContext();
+    const shared = scope.retryContext();
+    expect(scope.contextPublication()).toEqual({ failure: "concurrent-update", pending: true });
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(3));
+    scope.retireSession("first");
+    expect(scope.contextPublication()).toEqual({ failure: null, pending: false });
+    select("third");
+    await scope.retryContext();
+    expect(publish).toHaveBeenCalledTimes(3);
+    await scope.prepareSession("replacement", new AbortController().signal);
+    retry.resolve();
+    await Promise.all([pending, shared]);
+    failRelease(new Error("private request/auth material"));
+    await vi.waitFor(() => expect(warning).toHaveBeenCalledTimes(2));
+    const diagnostic = warning.mock.calls[1]![1];
+    expect(diagnostic).toEqual({ operation: "release", failure: "request" });
+    expect(Object.isFrozen(diagnostic)).toBe(true);
+    expect(scope.contextPublication()).toEqual({ failure: null, pending: false });
+    expect(scope.ready()).toBe(true);
+  } finally {
+    scope.dispose();
+    await Promise.resolve();
+    await Promise.resolve();
+    warning.mockRestore();
+  }
+});
+
+it("keeps supersession quiet and bounds detached release without changing retired context", async () => {
+  vi.useFakeTimers();
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const [selection, select] = createSignal<string | null>("first");
+  let releaseSignal: AbortSignal | undefined;
+  const publish = vi.fn(async () => {});
+  const scope = authenticate().createScope({
+    selection,
+    createPublisher: (_sessionID, _kind, runRelease) => ({
+      publish,
+      dispose: () =>
+        runRelease((signal) => {
+          releaseSignal = signal;
+          return new Promise<void>(() => {});
+        }),
+    }),
+  });
+  scope.setTools([]);
+  scope.setDataReady(true);
+  try {
+    await scope.prepareSession("conversation", new AbortController().signal);
+    publish.mockImplementationOnce(() => new Promise<void>(() => {}));
+    select("pending");
+    await Promise.resolve();
+    select("latest");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(warning).not.toHaveBeenCalled();
+    expect(scope.contextPublication()).toEqual({ failure: null, pending: false });
+    scope.retireSession("conversation");
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(releaseSignal?.aborted).toBe(true);
+    expect(warning).toHaveBeenCalledExactlyOnceWith("Voice context operation failed", {
+      operation: "release",
+      failure: "timeout",
+    });
+    expect(scope.contextPublication()).toEqual({ failure: null, pending: false });
+    await scope.retryContext();
+    expect(publish).toHaveBeenCalledTimes(3);
+  } finally {
+    scope.dispose();
+    warning.mockRestore();
+    vi.useRealTimers();
+  }
 });

@@ -37,8 +37,7 @@ export default function BrowserVoiceRuntime(props: BrowserVoiceRuntimeProps) {
     const endpoints = props.endpoints;
     const clientName = props.clientName;
     const authorize = props.authorize;
-    const prepareSession = props.prepareSession;
-    const canStart = props.canStart;
+    const preparation = props.preparation;
     const headers = new Headers(props.gatewayHeaders);
     untrack(() => {
       // Route transitions may construct a replacement before disposing its predecessor.
@@ -61,14 +60,7 @@ export default function BrowserVoiceRuntime(props: BrowserVoiceRuntimeProps) {
         endpoint !== null && authorize !== undefined ? () => authorize(endpoint) : null,
         undefined,
         () => headers,
-        prepareSession === undefined
-          ? undefined
-          : async (sessionID, signal) => {
-              const current = () => !released && canStart() && !signal.aborted;
-              if (!current()) throw new DOMException("Frontend preparation retired.", "AbortError");
-              await prepareSession(sessionID, signal);
-              if (!current()) throw new DOMException("Frontend preparation retired.", "AbortError");
-            },
+        preparation,
       );
       setActive(true);
     });
