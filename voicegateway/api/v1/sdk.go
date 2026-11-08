@@ -13,8 +13,13 @@ import (
 
 // SDKAPI returns the SDK generation specification for the voice gateway API.
 func SDKAPI() apispec.Config[voiceapi.ErrorCode] {
+	routes := slices.Clone(Routes)
+	for i := range routes {
+		routes[i].Category = "Voice"
+		routes[i].HeadersArg = true
+	}
 	return apispec.Config[voiceapi.ErrorCode]{
-		Routes: sdkRoutes(),
+		Routes: routes,
 		SDKPackagePaths: map[string]struct{}{
 			reflect.TypeFor[StatusResp]().PkgPath():             {},
 			reflect.TypeFor[voiceapi.ErrorResponse]().PkgPath(): {},
@@ -66,25 +71,4 @@ func SDKAPI() apispec.Config[voiceapi.ErrorCode] {
 			{Code: voiceapi.CodeVoiceOfferFailed, Status: 500},
 		},
 	}
-}
-
-func sdkRoutes() []apispec.Route {
-	routes := make([]apispec.Route, len(Routes))
-	for i := range Routes {
-		r := &Routes[i]
-		routes[i] = apispec.Route{
-			Name:        r.Name,
-			Doc:         r.Doc,
-			Method:      r.Method,
-			Path:        r.Path,
-			Category:    r.CategoryName(),
-			Req:         r.Req,
-			Resp:        r.Resp,
-			IsArray:     r.IsArray,
-			IsSSE:       r.IsSSE,
-			QueryParams: slices.Clone(r.QueryParams),
-			HeadersArg:  true,
-		}
-	}
-	return routes
 }

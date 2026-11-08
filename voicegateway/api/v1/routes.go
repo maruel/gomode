@@ -4,53 +4,15 @@ package v1
 
 import (
 	"reflect"
-	"strings"
+
+	"github.com/maruel/apisdkgen/apispec"
 )
-
-// Route describes a single API endpoint for code generation.
-type Route struct {
-	Name        string       // Function name, e.g. "voiceRTCOffer"
-	Doc         string       // One-line description for SDK comments and docs.
-	Method      string       // HTTP method, e.g. "GET" or "POST"
-	Path        string       // "/api/voicegateway/v1/voice/rtc/offer"
-	Req         reflect.Type // Request body type; nil for no body.
-	Resp        reflect.Type // Response body type.
-	IsArray     bool         // response is T[] not T
-	IsSSE       bool         // SSE stream, not JSON
-	QueryParams []string     // Query parameter names (GET endpoints only).
-}
-
-// ReqName returns the request type name, or "" if Req is nil.
-func (r *Route) ReqName() string {
-	if r.Req == nil {
-		return ""
-	}
-	return r.Req.Name()
-}
-
-// RespName returns the response type name.
-func (r *Route) RespName() string {
-	return r.Resp.Name()
-}
-
-// CategoryName returns the doc section derived from the first path segment
-// after "/api/voicegateway/v1/", with the first letter uppercased.
-func (r *Route) CategoryName() string {
-	p := strings.TrimPrefix(r.Path, "/api/voicegateway/v1/")
-	if i := strings.IndexByte(p, '/'); i >= 0 {
-		p = p[:i]
-	}
-	if p == "" {
-		return "Other"
-	}
-	return strings.ToUpper(p[:1]) + p[1:]
-}
 
 // Routes lists the voice gateway JSON API endpoints used by the SDK generator.
 // It excludes the WebSocket text-session routes, GET
 // /api/voicegateway/v1/voice/text and /api/voicegateway/v1/voice/text/browser,
 // which carry no JSON request or response body.
-var Routes = []Route{
+var Routes = []apispec.Route{
 	{Name: "voiceChoices", Doc: "Lists available voice choices and their supported transports.", Method: "GET", Path: "/api/voicegateway/v1/voice/choices", Resp: reflect.TypeFor[VoiceChoicesResp]()},
 	{
 		Name:   "voiceTextTicket",

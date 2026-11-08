@@ -4,28 +4,30 @@ package v1
 import (
 	"net/http"
 	"testing"
+
+	"github.com/maruel/apisdkgen/apispec"
 )
 
 func TestRoute(t *testing.T) {
 	t.Parallel()
 
-	t.Run("ReqName", func(t *testing.T) {
+	t.Run("request types", func(t *testing.T) {
 		t.Parallel()
 		r := routeByName(t, "diagnoseVoiceRTC")
-		if r.ReqName() != "VoiceRTCDiagnosticsReq" {
-			t.Fatalf("request = %q, want VoiceRTCDiagnosticsReq", r.ReqName())
+		if r.Req.Name() != "VoiceRTCDiagnosticsReq" {
+			t.Fatalf("request = %q, want VoiceRTCDiagnosticsReq", r.Req.Name())
 		}
 	})
 
-	t.Run("RespName", func(t *testing.T) {
+	t.Run("response types", func(t *testing.T) {
 		t.Parallel()
 		r := routeByName(t, "diagnoseVoiceRTC")
-		if r.RespName() != "VoiceRTCDiagnosticsResp" {
-			t.Fatalf("response = %q, want VoiceRTCDiagnosticsResp", r.RespName())
+		if r.Resp.Name() != "VoiceRTCDiagnosticsResp" {
+			t.Fatalf("response = %q, want VoiceRTCDiagnosticsResp", r.Resp.Name())
 		}
 		rClose := routeByName(t, "closeVoiceRTC")
-		if rClose.RespName() != "StatusResp" {
-			t.Fatalf("response = %q, want StatusResp", rClose.RespName())
+		if rClose.Resp.Name() != "StatusResp" {
+			t.Fatalf("response = %q, want StatusResp", rClose.Resp.Name())
 		}
 	})
 
@@ -49,12 +51,12 @@ func TestRoute(t *testing.T) {
 	})
 }
 
-func routeByName(t *testing.T, name string) Route {
+func routeByName(t *testing.T, name string) apispec.Route {
 	for i := range Routes {
 		if Routes[i].Name == name {
 			return Routes[i]
 		}
 	}
 	t.Fatalf("route %q not found", name)
-	return Route{}
+	return apispec.Route{}
 }

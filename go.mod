@@ -9,7 +9,7 @@ require (
 	github.com/huin/goupnp v1.3.0
 	github.com/invopop/jsonschema v0.14.0
 	github.com/lmittmann/tint v1.2.1
-	github.com/maruel/apisdkgen v0.2.2-0.20261108001324-b02e5ded132c
+	github.com/maruel/apisdkgen v0.2.2-0.20261108035725-22dcb5a84c21
 	github.com/maruel/genai v0.10.3-0.20261106195550-2e881ff72134
 	github.com/maruel/genaipy v0.1.2
 	github.com/mattn/go-colorable v0.1.16
