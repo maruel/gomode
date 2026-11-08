@@ -26,14 +26,14 @@ func run() error {
 	flag.Parse()
 	for _, api := range []apisdkgen.API{
 		apisdkgen.NewAPI("sdk/gomode", "GoModeSDK",
-			apisdkgen.NewVersion("v1", ".", gomode.SDKAPI())),
+			apisdkgen.NewVersion("v1", ".", gomode.SDKAPI)),
 		apisdkgen.NewAPI("sdk/mcp", "MCPSDK",
-			apisdkgen.NewVersion("v1", "mcp", mcp.SDKAPI())),
+			apisdkgen.NewVersion("v1", "mcp", mcp.SDKAPI)),
 		apisdkgen.NewAPI("sdk/oauth", "OAuthSDK",
-			apisdkgen.NewVersion("v1", "oauth", oauth.SDKAPI())),
+			apisdkgen.NewVersion("v1", "oauth", oauth.SDKAPI)),
 		apisdkgen.NewAPI("sdk/voicegateway", "VoiceGatewaySDK",
-			apisdkgen.NewVersion("v1", "voicegateway/api/v1", voicev1.SDKAPI()),
-			apisdkgen.NewVersion("v2", "voicegateway/api/v2", voicev2.SDKAPI())),
+			apisdkgen.NewVersion("v1", "voicegateway/api/v1", voicev1.SDKAPI),
+			apisdkgen.NewVersion("v2", "voicegateway/api/v2", voicev2.SDKAPI)),
 	} {
 		var err error
 		if *check {
