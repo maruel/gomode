@@ -227,6 +227,8 @@ function mcpParamHeaders(tool: McpToolDescriptor | undefined, args: JsonObject):
 function collectMcpParamHeaders(schema: JsonObject, args: unknown, headers: Record<string, string>): void {
   const headerName = schema["x-mcp-header"];
   if (typeof headerName === "string" && args !== null && args !== undefined) {
+    // Preserve JavaScript coercion for existing MCP header schemas.
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string
     headers[`Mcp-Param-${headerName}`] = encodeMcpHeaderValue(String(args));
   }
 

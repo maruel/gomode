@@ -8,7 +8,7 @@ interface NotificationOptions {
 function requestNotificationPermission(options: NotificationOptions): void {
   if (!options.enabled) return;
   if ("Notification" in window && window.Notification.permission === "default") {
-    window.Notification.requestPermission();
+    void window.Notification.requestPermission();
   }
 }
 

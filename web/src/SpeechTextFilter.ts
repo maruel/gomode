@@ -32,7 +32,7 @@ export class SpeechTextFilter {
   push(text: string): string {
     let output = "";
     for (let i = 0; i < text.length; i++) {
-      this.pending += text[i]!;
+      this.pending += text.charAt(i);
       output += this.drain(false);
     }
     return output;
@@ -57,14 +57,14 @@ export class SpeechTextFilter {
 
   // null waits for bounded lookahead; zero preserves a literal run.
   private emphasisEnd(count: number, final: boolean): number | null {
-    const marker = this.pending[0]!;
+    const marker = this.pending.charAt(0);
     if (count > 3 || WORD.test(this.previous) || this.previous === marker) return 0;
     if (/\s/.test(this.pending[count] ?? "")) return 0;
     let code = false;
     let label = false;
     let destination = 0;
     for (let i = count; i < this.pending.length; i++) {
-      const c = this.pending[i]!;
+      const c = this.pending.charAt(i);
       if (c === "\n" || c === "\r") return 0;
       if (destination > 0) {
         if (c === "(") destination = Math.min(32, destination + 1);
@@ -72,7 +72,7 @@ export class SpeechTextFilter {
       } else if (c === "\\" && !code && ASCII_PUNCTUATION.test(this.pending[i + 1] ?? "")) {
         i++;
       } else if (c === "`") {
-        const ticks = /^`{1,3}/.exec(this.pending.slice(i))![0];
+        const ticks = /^`{1,3}/.exec(this.pending.slice(i))?.[0] ?? "";
         i += ticks.length - 1;
         code = !code;
       } else if (!code && c === "[") label = true;
@@ -88,7 +88,7 @@ export class SpeechTextFilter {
         let end = i;
         while (this.pending[end] === marker) end++;
         const run = end - i;
-        if (run >= count && run <= 3 && !/\s/.test(this.pending[i - 1]!)) {
+        if (run >= count && run <= 3 && !/\s/.test(this.pending.charAt(i - 1))) {
           if (end === this.pending.length && !final) break;
           if (end < EMPHASIS_LOOKAHEAD && !WORD.test(this.pending[end] ?? "")) return end - count;
         }
@@ -101,7 +101,7 @@ export class SpeechTextFilter {
   private drain(final: boolean): string {
     let output = "";
     while (this.pending !== "") {
-      const c = this.pending[0]!;
+      const c = this.pending.charAt(0);
       let count = 1;
       let spoken = "";
       if (c === "\n" || c === "\r") {
@@ -144,7 +144,7 @@ export class SpeechTextFilter {
         }
         if (this.fence !== "") spoken = c;
         else if (c === "`") {
-          const ticks = /^`{1,3}/.exec(this.pending)![0];
+          const ticks = /^`{1,3}/.exec(this.pending)?.[0] ?? "";
           if (!final && ticks.length === this.pending.length && ticks.length < 3) break;
           count = ticks.length;
           this.inlineCode = !this.inlineCode;
@@ -153,10 +153,10 @@ export class SpeechTextFilter {
           if (!final && this.pending.length === 1) break;
           if (ASCII_PUNCTUATION.test(this.pending[1] ?? "")) {
             count = 2;
-            spoken = this.pending[1]!;
+            spoken = this.pending.charAt(1);
           } else spoken = c;
         } else if (c === "_" || c === "*") {
-          const markers = /^(?:\*{1,4}|_{1,4})/.exec(this.pending)![0];
+          const markers = /^(?:\*{1,4}|_{1,4})/.exec(this.pending)?.[0] ?? "";
           count = markers.length;
           if (!final && count === this.pending.length && count < 4) break;
           const end = this.emphasisEnd(count, final);

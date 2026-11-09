@@ -115,7 +115,8 @@ export function createFrontendVoiceContext(policy: FrontendVoiceContextPolicy, r
         clearTimeout(timer);
         if (!current(value) || untrack(value.pending) !== publication) return;
         // Ordinary cancellation is an expected attempt/supersession boundary.
-        const canceled = signal.aborted && signal.reason?.name !== "TimeoutError";
+        const canceled =
+          signal.aborted && !(signal.reason instanceof DOMException && signal.reason.name === "TimeoutError");
         batch(() => {
           value.setPending(null);
           if (untrack(conversation) === value && untrack(selected) === selection)
@@ -140,7 +141,11 @@ export function createFrontendVoiceContext(policy: FrontendVoiceContextPolicy, r
           await captured.promise;
         } catch (error) {
           // Supersession redirects preparation to its newer selected item.
-          if (!captured.controller.signal.aborted || captured.controller.signal.reason?.name === "TimeoutError")
+          if (
+            !captured.controller.signal.aborted ||
+            (captured.controller.signal.reason instanceof DOMException &&
+              captured.controller.signal.reason.name === "TimeoutError")
+          )
             throw error;
         } finally {
           signal.removeEventListener("abort", abort);
@@ -246,7 +251,7 @@ function retired(): DOMException {
 function abortable(work: Promise<void>, signal: AbortSignal): Promise<void> {
   let abort: () => void;
   const canceled = new Promise<never>((_resolve, reject) => {
-    abort = () => reject(signal.reason);
+    abort = () => reject(signal.reason instanceof Error ? signal.reason : retired());
     if (signal.aborted) abort();
     else signal.addEventListener("abort", abort, { once: true });
   });

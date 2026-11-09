@@ -169,7 +169,7 @@ export default function VoiceSettings(props: {
                 if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
                 event.preventDefault();
                 const tabs = Array.from(
-                  event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
+                  event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [],
                 );
                 const target =
                   event.key === "Home" ? tabs[0] : event.key === "End" ? tabs[1] : tabs[mode === "parts" ? 0 : 1];
@@ -591,8 +591,8 @@ function SpeechStageSelect(props: {
           }
         }}
       >
-        <Show when={!voiceSession.composableChoice && fixed()?.transports.includes("webrtc")}>
-          <option value="gateway">{fixed()!.label}</option>
+        <Show when={!voiceSession.composableChoice && fixed()?.transports.includes("webrtc") ? fixed() : null}>
+          {(choice) => <option value="gateway">{choice().label}</option>}
         </Show>
         <Show
           when={

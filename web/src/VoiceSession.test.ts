@@ -686,6 +686,8 @@ describe("VoiceSession", () => {
     vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
     let audio: HTMLAudioElement | null = null;
     const create = window.Audio;
+    // This mock must be constructible.
+    // eslint-disable-next-line prefer-arrow-callback
     vi.stubGlobal("Audio", function () {
       audio = new create();
       return audio;

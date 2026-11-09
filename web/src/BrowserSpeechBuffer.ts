@@ -41,7 +41,7 @@ export class BrowserSpeechBuffer {
       this.offset += chunk.length;
       this.segmenter.push(this.filter.push(chunk), this.emit);
     }
-    return this.fragments.shift()!;
+    return this.fragments.shift() ?? null;
   }
 
   clear(): void {

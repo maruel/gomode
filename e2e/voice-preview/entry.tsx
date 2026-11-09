@@ -7,7 +7,7 @@ import scene from "./scene/conversation.json";
 
 const originalFetch = window.fetch.bind(window);
 window.fetch = (input, init) =>
-  String(input).endsWith("/voice/choices")
+  (input instanceof Request ? input.url : String(input)).endsWith("/voice/choices")
     ? Promise.resolve(
         new Response(
           JSON.stringify({

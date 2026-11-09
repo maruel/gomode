@@ -265,10 +265,10 @@ export function createFrontendPreparationClient(): {
                 authentication.grant !== null &&
                 (request.sessionID === undefined || validSessionID(request.sessionID)) &&
                 ready() &&
-                (!authentication.grant?.voiceSessionCapable ||
+                (!authentication.grant.voiceSessionCapable ||
                   request.sessionID === (nativePreparation()?.sessionID ?? null)) &&
                 request.document === authentication.document &&
-                request.token === authentication.grant?.token &&
+                request.token === authentication.grant.token &&
                 request.scope === bound.id,
             );
 
@@ -473,7 +473,7 @@ function unavailableTool(name: string): Record<string, unknown> {
 
 /** Capture declarations and dispatch together before handing tools to a conversation. */
 export function captureFrontendVoiceTools(): FrontendVoiceToolsSnapshot {
-  return activeScope?.snapshot() ?? { declarations: [], execute: async (name) => unavailableTool(name) };
+  return activeScope?.snapshot() ?? { declarations: [], execute: (name) => Promise.resolve(unavailableTool(name)) };
 }
 
 export function executeFrontendVoiceTool(
@@ -525,7 +525,7 @@ function runTool(
           }
           // Serialization validates the same JSON-object contract in browsers and Android.
           const encoded = JSON.stringify(value);
-          const result: unknown = encoded === undefined ? null : JSON.parse(encoded);
+          const result: unknown = JSON.parse(encoded);
           if (typeof result !== "object" || result === null || Array.isArray(result)) {
             finish({ error: "Frontend voice tool returned an invalid result." });
           } else finish(result as Record<string, unknown>);

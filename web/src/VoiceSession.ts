@@ -1000,7 +1000,7 @@ export class VoiceSession {
       browserSpeechRate: savedBrowserSpeechRate(),
     });
     this.state = state;
-    this.setState = setState as (fn: (s: VoiceState) => VoiceState) => void;
+    this.setState = setState;
     this._chime = chime ?? new WebAudioVoiceChime();
     this._thinkingEarcon = thinkingEarcon ?? new WebAudioThinkingEarcon();
   }
@@ -1158,7 +1158,7 @@ export class VoiceSession {
     const next = this._setupPreference();
     next.mode = mode;
     const key = mode === "all-in-one" ? "nativeChoiceID" : "partsChoiceID";
-    if (next[key] === null) next[key] = choices[0]!.id;
+    if (next[key] === null) next[key] = choices[0]?.id ?? null;
     this._applySetup(next, true);
   }
 
@@ -1213,7 +1213,8 @@ export class VoiceSession {
       (name !== "" && !this.speakingVoices.includes(name))
     )
       throw new Error("Choose an available speaking voice");
-    const choiceID = this.state.choiceIDs.webrtc!;
+    const choiceID = this.state.choiceIDs.webrtc;
+    if (choiceID === null) throw new Error("Choose a voice model first");
     localStorage.setItem(speakingVoiceStorageKey(gatewaySnapshot().url.origin, choiceID), name);
     this._update((s) => {
       s.voiceName = name;
@@ -1333,10 +1334,11 @@ export class VoiceSession {
           parts.find((choice) => choice.id === defaultChoiceID(metadata, "text"))?.id ?? parts[0]?.id ?? null;
       }
       // Fixed presets are omitted when named language models are available.
+      const partsChoiceID = preference.partsChoiceID;
       if (
-        preference.partsChoiceID !== null &&
-        metadata.choices.some((choice) => choice.id === preference!.partsChoiceID) &&
-        !setupChoices(metadata.choices, "parts").some((choice) => choice.id === preference!.partsChoiceID)
+        partsChoiceID !== null &&
+        metadata.choices.some((choice) => choice.id === partsChoiceID) &&
+        !setupChoices(metadata.choices, "parts").some((choice) => choice.id === partsChoiceID)
       )
         preference.partsChoiceID = null;
     }
@@ -1407,7 +1409,8 @@ export class VoiceSession {
     if (choiceID === null)
       throw new Error("The voice gateway has no model for the selected recognition and speech output");
     this._sessionChoiceID = choiceID;
-    const choice = metadata.choices.find((choice) => choice.id === choiceID)!;
+    const choice = metadata.choices.find((choice) => choice.id === choiceID);
+    if (!choice) throw new Error("Selected voice model is no longer available");
     this._sessionComposable = choice.composable === true;
     for (const stage of ["input", "output"] as const) {
       if (this._sessionComposable && this.speech[stage] === "gateway")
@@ -1649,8 +1652,6 @@ export class VoiceSession {
         s.audioSwitching = "input";
         s.audioInputError = null;
       });
-      let newStream: MediaStream | null = null;
-      let outgoing: ReturnType<MicrophoneInput["connect"]> | null = null;
       let pending: PendingMicrophoneCapture | null = null;
       const releasePending = () => {
         const capture = pending;
@@ -1667,7 +1668,7 @@ export class VoiceSession {
           video: false,
         };
         if (this._connection !== connection) return;
-        newStream = await navigator.mediaDevices.getUserMedia(constraints);
+        const newStream = await navigator.mediaDevices.getUserMedia(constraints);
         if (this._connection !== connection) {
           newStream.getTracks().forEach((track) => track.stop());
           return;
@@ -1679,7 +1680,7 @@ export class VoiceSession {
         newStream.getAudioTracks().forEach((track) => {
           track.enabled = false;
         });
-        outgoing = this._microphoneInput.connect(newStream);
+        const outgoing = this._microphoneInput.connect(newStream);
         capture.outgoing = outgoing;
         // Replace tracks on the PeerConnection.
         const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
@@ -1878,7 +1879,7 @@ export class VoiceSession {
     };
     if (navigator.permissions) {
       void navigator.permissions
-        .query({ name: "microphone" as PermissionName })
+        .query({ name: "microphone" })
         .then((status) => {
           if (disposed) return;
           permission = status;
@@ -2027,7 +2028,11 @@ export class VoiceSession {
       this._setError("Browser recognition or speech output is unavailable. Use the gateway.");
       return;
     }
-    const attempt = new VoiceConnection(this._sessionGateway!);
+    if (!this._sessionGateway) {
+      this._setError("Voice gateway session is unavailable");
+      return;
+    }
+    const attempt = new VoiceConnection(this._sessionGateway);
     this._replaceConnection(attempt, true);
     if (this._connection !== attempt) return;
     if (!preserveTranscript) {
@@ -2209,7 +2214,11 @@ export class VoiceSession {
   }
 
   private async _connectBrowser(preserveTranscript: boolean): Promise<void> {
-    const attempt = new VoiceConnection(this._sessionGateway!);
+    if (!this._sessionGateway) {
+      this._setError("Voice gateway session is unavailable");
+      return;
+    }
+    const attempt = new VoiceConnection(this._sessionGateway);
     this._replaceConnection(attempt, true);
     if (this._connection !== attempt) return;
     this._reconnectEnabled = false;
@@ -3049,12 +3058,16 @@ export class VoiceSession {
       const frontend = this._frontendTools?.declarations.some((tool) => tool.name === msg.name)
         ? this._frontendTools
         : null;
+      const rawArgs: unknown = msg.args;
+      if (rawArgs != null && (typeof rawArgs !== "object" || Array.isArray(rawArgs)))
+        throw new Error("Voice tool arguments must be an object");
+      const toolArgs = (rawArgs ?? {}) as Record<string, unknown>;
       const result = frontend
         ? {
-            structuredContent: await frontend.execute(msg.name, msg.args ?? {}, sessionID, attempt.lifetime.signal),
+            structuredContent: await frontend.execute(msg.name, toolArgs, sessionID, attempt.lifetime.signal),
             isError: false,
           }
-        : await mcpClient.callTool(msg.name, msg.args ?? {}, {
+        : await mcpClient.callTool(msg.name, toolArgs, {
             locale: this.state.languageTag,
             sessionID,
           });
@@ -3074,7 +3087,7 @@ export class VoiceSession {
             ...s.transcript,
             {
               kind: "transcript",
-              speaker: "assistant" as TranscriptSpeaker,
+              speaker: "assistant",
               text: `[${msg.name}] ${errMsg}`,
               final: true,
             },
@@ -3096,7 +3109,7 @@ export class VoiceSession {
           ...s.transcript,
           {
             kind: "transcript",
-            speaker: "assistant" as TranscriptSpeaker,
+            speaker: "assistant",
             text: `[${msg.name}] ${errMsg}`,
             final: true,
           },

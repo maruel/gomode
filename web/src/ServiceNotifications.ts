@@ -187,7 +187,10 @@ export function monitorServiceNotifications(
       for (const alert of alerts) {
         observed.delete(alert.id);
         observed.add(alert.id);
-        if (observed.size > MAX_OBSERVED_IDS) observed.delete(observed.values().next().value!);
+        if (observed.size > MAX_OBSERVED_IDS) {
+          const oldest = observed.values().next().value;
+          if (oldest !== undefined) observed.delete(oldest);
+        }
       }
     },
     () => Math.min(...alerts.flatMap((alert) => (alert.expiresAt === null ? [] : [alert.expiresAt]))),

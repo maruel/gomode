@@ -65,7 +65,7 @@ export function resolveBrowserVoiceEndpoints(
 ): BrowserVoiceEndpoints | null {
   const manifest = record(value);
   if (manifest?.apiVersion !== 1) throw new Error("Unsupported Go Mode discovery API version");
-  if (manifest?.service !== expected.service) throw new Error("Unexpected Go Mode service");
+  if (manifest.service !== expected.service) throw new Error("Unexpected Go Mode service");
   const shell = record(manifest.webShell);
   const gateway = record(shell?.voiceGateway);
   if (gateway === null) throw new Error("Go Mode manifest has no voice gateway settings");

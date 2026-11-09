@@ -6,20 +6,45 @@ run:
   tests: true
 linters:
   enable:
+    - asasalint
     - asciicheck
+    - bidichk
     - bodyclose
     - copyloopvar
+    - dupl
+    - dupword
     - durationcheck
     - errcheck
+    - errchkjson
+    - errname
     - errorlint
+    - exptostd
+    - fatcontext
+    - gocheckcompilerdirectives
+    - gochecksumtype
     - gocritic
+    - gomoddirectives
+    - goprintffuncname
     - gosec
+    - gosmopolitan
+    - grouper
+    - iface
+    - importas
     - ineffassign
-    - misspell
+    - iotamixing
+    - loggercheck
+    - makezero
+    - mirror
+    - nakedret
     - nilerr
+    - nilnesserr
     - nilnil
+    - nosprintfhostport
     - prealloc
+    - reassign
     - revive
+    - sloglint
+    - sqlclosecheck
     - staticcheck
     - unconvert
     - unused
