@@ -13,8 +13,10 @@ require (
 	github.com/maruel/apisdkgen v0.2.2-0.20261108141113-a5edecdbc0b9
 	github.com/maruel/genai v0.10.3-0.20261108213537-284216ad07af
 	github.com/maruel/genaipy v0.1.2
+	github.com/maruel/roundtrippers v0.5.1
 	github.com/mattn/go-colorable v0.1.16
 	github.com/mattn/go-isatty v0.0.24
+	github.com/oschwald/maxminddb-golang/v2 v2.6.0
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/pion/ice/v4 v4.4.8
 	github.com/pion/rtcp v1.2.20
@@ -154,7 +156,6 @@ require (
 	github.com/maratori/testableexamples v1.0.1 // indirect
 	github.com/maratori/testpackage v1.1.2 // indirect
 	github.com/maruel/httpjson v0.5.3 // indirect
-	github.com/maruel/roundtrippers v0.5.1 // indirect
 	github.com/matoous/godox v1.1.0 // indirect
 	github.com/mattn/go-runewidth v0.0.31 // indirect
 	github.com/mgechev/revive v1.17.1 // indirect

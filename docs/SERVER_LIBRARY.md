@@ -17,7 +17,8 @@ oauth/               OAuth 2.0 DTOs
   oauthclient/       client helpers
   oauthverify/       access-token verification
 sse/                 deadline-bounded Server-Sent Event frames
-httplog/             slog HTTP access logging
+httpserver/          request metadata, host policies, access logs and tracing
+  geoip/             optional MMDB lookup and network allowlists
 voicegateway/        voice gateway HTTP server and config
   api/v1/            published v0.3.0 signaling and data-channel contract
   api/v2/            current signaling and data-channel contract

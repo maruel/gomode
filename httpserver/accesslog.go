@@ -1,30 +1,33 @@
-// Package httplog provides slog HTTP access logging middleware.
+// HTTP access logging with streaming and upgrade support.
 
-package httplog
+package httpserver
 
 import (
 	"bufio"
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
 	"time"
 )
 
-// Handler wraps an HTTP handler and logs each request after it completes.
+// AccessLog wraps an HTTP handler and logs each request after it completes.
 //
 // It records the response status, transmitted byte count, duration, and
-// hijack state. Successful 2xx responses are logged at debug level; all other
+// hijack state. The ip field uses ClientIP from request context; origin is
+// included only when Origin is nonempty. NewHandler populates this metadata. Responses below 300 use SuccessLevel; all other
 // responses are logged at info level.
-type Handler struct {
+type AccessLog struct {
 	http.Handler
 
 	Logger *slog.Logger
-	Attrs  func(*http.Request) []slog.Attr
+	// SuccessLevel controls logging for responses below 300. Zero is Info.
+	SuccessLevel slog.Level
 }
 
 // ServeHTTP implements http.Handler.
-func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h AccessLog) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	rw := &recordingWriter{ResponseWriter: w}
 	ww := http.ResponseWriter(rw)
@@ -35,14 +38,14 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.log(r.Context(), r, rw, time.Since(start))
 }
 
-func (h Handler) log(ctx context.Context, r *http.Request, rw *recordingWriter, d time.Duration) {
+func (h AccessLog) log(ctx context.Context, r *http.Request, rw *recordingWriter, d time.Duration) {
 	if h.Logger == nil {
 		panic("logger is required")
 	}
 	status := rw.statusCode()
 	level := slog.LevelInfo
 	if status < http.StatusMultipleChoices {
-		level = slog.LevelDebug
+		level = h.SuccessLevel
 	}
 	method := r.Method
 	attrs := []slog.Attr{
@@ -51,13 +54,14 @@ func (h Handler) log(ctx context.Context, r *http.Request, rw *recordingWriter, 
 		slog.Int("s", status),
 		slog.Duration("d", roundDuration(d)),
 		slog.Int("b", rw.size),
+		slog.String("ip", ClientIP(ctx)),
 	}
 	if rw.hijacked {
 		attrs[0] = slog.String("m", "HIJACKED")
 		attrs = append(attrs, slog.Bool("hijacked", true))
 	}
-	if h.Attrs != nil {
-		attrs = append(attrs, h.Attrs(r)...)
+	if origin := Origin(ctx); origin != "" {
+		attrs = append(attrs, slog.String("origin", origin))
 	}
 	h.Logger.LogAttrs(ctx, level, "http", attrs...)
 }
@@ -76,6 +80,10 @@ func (rw *recordingWriter) WriteHeader(code int) {
 	if rw.wroteHeader {
 		return
 	}
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
+		rw.ResponseWriter.WriteHeader(code)
+		return
+	}
 	rw.wroteHeader = true
 	rw.status = code
 	rw.ResponseWriter.WriteHeader(code)
@@ -90,15 +98,20 @@ func (rw *recordingWriter) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// Flush implements http.Flusher so streaming handlers can flush through the wrapper.
-func (rw *recordingWriter) Flush() {
-	if !rw.wroteHeader {
+// Flush implements http.Flusher for streaming handlers.
+func (rw *recordingWriter) Flush() { _ = rw.FlushError() }
+
+// FlushError lets http.ResponseController propagate transport flush failures.
+func (rw *recordingWriter) FlushError() error {
+	err := http.NewResponseController(rw.ResponseWriter).Flush()
+	// A supported flush commits the implicit status before flushing buffered
+	// transport data, even when that flush fails. Unsupported flushes leave
+	// headers writable so the handler can send a fallback response.
+	if !errors.Is(err, http.ErrNotSupported) && !rw.wroteHeader {
 		rw.wroteHeader = true
 		rw.status = http.StatusOK
 	}
-	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+	return err
 }
 
 // Unwrap returns the underlying ResponseWriter for http.ResponseController.

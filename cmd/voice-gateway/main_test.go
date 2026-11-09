@@ -1,10 +1,11 @@
-// Tests for standalone voice gateway restart watching and shutdown exit policy.
+// Tests standalone gateway request policy, restart watching and shutdown exit behavior.
 
 package main
 
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -241,6 +242,12 @@ func TestIsNormalShutdown(t *testing.T) {
 }
 
 func TestMainImpl(t *testing.T) {
+	if path := os.Getenv("GOMODE_GATEWAY_HTTP_TEST_CONFIG"); path != "" {
+		if err := mainImpl([]string{"-config", path}); !isNormalShutdown(err) {
+			t.Fatal(err)
+		}
+		return
+	}
 	t.Parallel()
 	// Each invocation owns the process-wide named Windows shutdown event.
 	t.Run("rejects disabled webrtc port", func(t *testing.T) {
@@ -259,8 +266,21 @@ func TestMainImpl(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "config.toml")
 		tracePath := filepath.Join(dir, "execution.trace")
+		encoded, err := os.ReadFile("../../httpserver/geoip/testdata/country.mmdb.base64")
+		if err != nil {
+			t.Fatal(err)
+		}
+		rawDB, err := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(string(encoded)), ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		dbPath := filepath.Join(dir, "country.mmdb")
+		if err := os.WriteFile(dbPath, rawDB, 0600); err != nil { //nolint:gosec // Test-owned path inside t.TempDir.
+			t.Fatal(err)
+		}
 		data := fmt.Sprintf(`[server]
 http = "invalid-listen-address"
+geo_db = %q
 [debug]
 trace = %q
 [[llm]]
@@ -269,17 +289,172 @@ label = "Test"
 provider = "openaicompatible"
 remote = "http://127.0.0.1:1/v1/chat/completions"
 model = "test"
-`, filepath.ToSlash(tracePath))
+`, filepath.ToSlash(dbPath), filepath.ToSlash(tracePath))
 		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := mainImpl([]string{"-config", path}); err == nil || !strings.Contains(err.Error(), "missing port") {
 			t.Fatalf("startup error: %v", err)
 		}
+		// On platforms that retain mapped files, this also proves startup failure
+		// released the optional MMDB reader before returning.
+		if err := os.Rename(dbPath, dbPath+".closed"); err != nil {
+			t.Fatal(err)
+		}
 		cmd := exec.CommandContext(t.Context(), "go", "tool", "trace", "-d=parsed", tracePath) //nolint:gosec // The trace path is generated inside t.TempDir.
 		cmd.Stdout = io.Discard
 		if err := cmd.Run(); err != nil {
 			t.Fatalf("read execution trace: %v", err)
+		}
+	})
+	t.Run("database failure precedes provider startup", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		raw := `[server]
+http = "invalid-listen-address"
+geo_db = "missing.mmdb"
+[[realtime]]
+label = "Gemini"
+provider = "gemini"
+model = "gemini-3.8-live"
+`
+		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := mainImpl([]string{"-config", path}); err == nil || !strings.HasPrefix(err.Error(), "server.geo_db:") || !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("startup failure=%v", err)
+		}
+	})
+	t.Run("configured proxy origin policy", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.toml")
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr := ln.Addr().String()
+		if err := ln.Close(); err != nil {
+			t.Fatal(err)
+		}
+		raw := fmt.Sprintf(`[server]
+http = %q
+external_url = "https://voice.example"
+trusted_proxies = ["127.0.0.1/32"]
+allow_origins = ["192.0.2.0/24"]
+debug_frontend = true
+webrtc_udp_port = 0
+log_level = "debug"
+[[llm]]
+id = "test"
+label = "Test"
+provider = "openaicompatible"
+remote = "http://127.0.0.1:1/v1/chat/completions"
+model = "test"
+`, addr)
+		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+			t.Fatal(err)
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		cmd := exec.CommandContext(ctx, exe, "-test.run=^TestMainImpl$") //nolint:gosec // Runs the currently executing test binary.
+		cmd.Env = append(os.Environ(), "GOMODE_GATEWAY_HTTP_TEST_CONFIG="+path, "XDG_CACHE_HOME="+dir, "LOCALAPPDATA="+dir)
+		var output bytes.Buffer
+		cmd.Stdout = &output
+		cmd.Stderr = &output
+		if err := cmd.Start(); err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		var waitErr error
+		var wg sync.WaitGroup
+		wg.Go(func() { waitErr = cmd.Wait(); close(done) })
+		t.Cleanup(func() { cancel(); wg.Wait() })
+		client := &http.Client{Timeout: time.Second}
+		// Readiness waits on the actual listener; the model is never invoked.
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			req, err := http.NewRequestWithContext(ctx, "GET", "http://"+addr+"/", http.NoBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = "voice.example"
+			resp, err := client.Do(req)
+			if err == nil {
+				if err := resp.Body.Close(); err != nil {
+					t.Fatal(err)
+				}
+				break
+			}
+			select {
+			case <-done:
+				t.Fatalf("gateway startup: %v\n%s", waitErr, output.String())
+			default:
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("gateway listener did not become ready")
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		for _, tc := range []struct {
+			host, forwarded string
+			status          int
+		}{
+			{"voice.example", "192.0.2.8", 200},
+			{"voice.example", "203.0.113.8", 403},
+			{"voice.example", "", 403},
+			{"evil.example", "192.0.2.8", 403},
+		} {
+			req, err := http.NewRequestWithContext(ctx, "GET", "http://"+addr+"/", http.NoBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Host = tc.host
+			if tc.forwarded != "" {
+				req.Header.Set("X-Forwarded-For", tc.forwarded)
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := resp.Body.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != tc.status {
+				t.Errorf("host=%s forwarded=%s: status=%d, want %d", tc.host, tc.forwarded, resp.StatusCode, tc.status)
+			}
+		}
+		if err := os.WriteFile(path, []byte(raw+"\n# stop gateway after policy assertions\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("gateway did not stop after config change")
+		}
+		if waitErr != nil {
+			t.Fatalf("gateway shutdown: %v\n%s", waitErr, output.String())
+		}
+		found := false
+		for line := range strings.SplitSeq(output.String(), "\n") {
+			attrs := map[string]string{}
+			for _, field := range strings.Fields(line) {
+				if key, value, ok := strings.Cut(field, "="); ok {
+					attrs[key] = value
+				}
+			}
+			if attrs["m"] == "GET" && attrs["p"] == "/" && attrs["s"] == "403" && attrs["ip"] == "127.0.0.1" && attrs["origin"] == "local" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("enriched rejected request missing from gateway access logs:\n%s", output.String())
 		}
 	})
 }

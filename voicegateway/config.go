@@ -27,6 +27,7 @@ import (
 
 	"github.com/maruel/gomode"
 	"github.com/maruel/gomode/httpserver"
+	"github.com/maruel/gomode/httpserver/geoip"
 )
 
 // Config declares reusable voice stages and presets. Hosts may embed it in their
@@ -560,6 +561,7 @@ func (c *Config) Resolve() (ResolvedConfig, error) {
 
 // LoadConfig reads standalone gateway settings with listener defaults. Its result
 // embeds Config and adds Server and TrustedIssuers; call Resolve before startup.
+// Relative geo_db paths resolve beside this file; leading ~ expands to home.
 // Hosts should embed Config in their own schema and call Config.Resolve instead.
 func LoadConfig(path string) (configFile, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // config path is selected by the operator.
@@ -575,6 +577,29 @@ func LoadConfig(path string) (configFile, error) {
 			return configFile{}, fmt.Errorf("parse %s:%d:%d: %w", path, line, column, err)
 		}
 		return configFile{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if err := cfg.Server.Config.Validate(); err != nil {
+		return configFile{}, fmt.Errorf("server.%w", err)
+	}
+	if cfg.Server.DB != "" {
+		db := cfg.Server.DB
+		if db == "~" || strings.HasPrefix(db, "~/") || strings.HasPrefix(db, `~\`) {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return configFile{}, fmt.Errorf("server.geo_db: expand home: %w", err)
+			}
+			sub := ""
+			if len(db) > 1 {
+				sub = strings.ReplaceAll(db[2:], `\`, "/")
+			}
+			db = filepath.Join(home, filepath.FromSlash(sub))
+		} else if !filepath.IsAbs(db) {
+			db = filepath.Join(filepath.Dir(path), db)
+		}
+		cfg.Server.DB, err = filepath.Abs(db)
+		if err != nil {
+			return configFile{}, fmt.Errorf("server.geo_db: resolve path: %w", err)
+		}
 	}
 	return cfg, nil
 }
@@ -634,8 +659,9 @@ type DebugConfig struct {
 	Trace string `toml:"trace"`
 }
 
-// ServerConfig configures gateway listeners and standalone logging.
+// ServerConfig configures gateway listeners, HTTP policies and standalone logging.
 type ServerConfig struct {
+	geoip.Config
 	HTTP string `toml:"http"`
 	// ExternalURL is the expected public HTTP(S) origin. Empty accepts the request authority.
 	ExternalURL string `toml:"external_url"`
@@ -647,9 +673,12 @@ type ServerConfig struct {
 	LogLevel      slog.Level `toml:"log_level"`
 }
 
-// Validate checks the WebRTC port, where -1 disables media transport. The caller
-// owns HTTP listener requirements and may bind its own HTTP server.
+// Validate checks HTTP policies and the WebRTC port, where -1 disables media
+// transport. The caller owns listener requirements and may bind its own server.
 func (c *ServerConfig) Validate() error {
+	if err := c.Config.Validate(); err != nil {
+		return fmt.Errorf("server.%w", err)
+	}
 	origin, err := httpserver.CanonicalOrigin(c.ExternalURL)
 	if err != nil {
 		return fmt.Errorf("server.external_url: %w", err)

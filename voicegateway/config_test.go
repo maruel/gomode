@@ -755,6 +755,74 @@ public_key = %q
 			t.Fatalf("config = %+v", cfg)
 		}
 	})
+	t.Run("GeoIP configuration", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, settings string
+			db             string
+			allow          []string
+		}{
+			{name: "disabled"},
+			{name: "enrichment", settings: `geo_db = "country.mmdb"`, db: "country.mmdb"},
+			{name: "filter", settings: `allow_origins = ["local", "tailscale", "192.0.2.0/24"]`, allow: []string{"local", "tailscale", "192.0.2.0/24"}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "config.toml")
+				if err := os.WriteFile(path, []byte("[server]\n"+tc.settings), 0600); err != nil {
+					t.Fatal(err)
+				}
+				cfg, err := LoadConfig(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantDB := tc.db
+				if wantDB != "" {
+					wantDB = filepath.Join(dir, wantDB)
+				}
+				if cfg.Server.DB != wantDB || !slices.Equal(cfg.Server.AllowOrigins, tc.allow) {
+					t.Errorf("shared config=%+v", cfg.Server.Config)
+				}
+				if err := cfg.Server.Validate(); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+		t.Run("home paths", func(t *testing.T) {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, db := range []string{"~", "~/country.mmdb", `~\country.mmdb`} {
+				path := filepath.Join(t.TempDir(), "config.toml")
+				raw := fmt.Sprintf("[server]\ngeo_db = '%s'\n", db)
+				if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+					t.Fatal(err)
+				}
+				cfg, err := LoadConfig(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := home
+				if db != "~" {
+					want = filepath.Join(home, "country.mmdb")
+				}
+				if cfg.Server.DB != want {
+					t.Errorf("resolved %s=%s, want %s", db, cfg.Server.DB, want)
+				}
+			}
+		})
+		t.Run("invalid settings", func(t *testing.T) {
+			for _, raw := range []string{`allow_origins = ["GB"]`, `allow_origins = ["bogus"]`, `allow_origins = [""]`, `geo_db = ' '`} {
+				path := filepath.Join(t.TempDir(), "config.toml")
+				if err := os.WriteFile(path, []byte("[server]\n"+raw), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := LoadConfig(path); err == nil || !strings.HasPrefix(err.Error(), "server.") {
+					t.Errorf("invalid settings error=%v", err)
+				}
+			}
+		})
+	})
 	t.Run("unknown fields", func(t *testing.T) {
 		for _, data := range []string{"bogus = 1", "[[llm]]\nslots = 2", "[[asr]]\nunknown = true", "[[tts]]\nunknown = true", "[[voice]]\nunknown = true"} {
 			path := filepath.Join(t.TempDir(), "config.toml")

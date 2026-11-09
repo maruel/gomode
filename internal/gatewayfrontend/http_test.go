@@ -6,15 +6,17 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 
 	"github.com/andybalholm/brotli"
 
-	"github.com/maruel/gomode/internal/gatewayhttp"
+	"github.com/maruel/gomode/httpserver"
 	"github.com/maruel/gomode/mcp"
 	"github.com/maruel/gomode/voicegateway"
 )
@@ -316,7 +318,11 @@ func TestProxyFrontend(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle("/api/voicegateway/", api)
 	mux.Handle("/", frontend)
-	h, err := gatewayhttp.NewHandler(mux, "https://voice.example", []string{"127.0.0.1/32"})
+	hosts, err := httpserver.NewHostPolicy(httpserver.HostPolicyOptions{ExternalURL: "https://voice.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := httpserver.NewHandler(mux, httpserver.Options{Logger: slog.New(slog.DiscardHandler), Hosts: hosts, TrustedProxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}})
 	if err != nil {
 		t.Fatal(err)
 	}

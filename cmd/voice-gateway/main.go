@@ -27,9 +27,8 @@ import (
 	"github.com/mattn/go-colorable"
 	"github.com/mattn/go-isatty"
 
-	"github.com/maruel/gomode/httplog"
+	"github.com/maruel/gomode/httpserver"
 	"github.com/maruel/gomode/internal/gatewayfrontend"
-	"github.com/maruel/gomode/internal/gatewayhttp"
 	"github.com/maruel/gomode/voicegateway"
 	"github.com/maruel/gomode/voicegateway/voicertc"
 )
@@ -75,6 +74,18 @@ func mainImpl(args []string) (err error) {
 	if err != nil {
 		return fmt.Errorf("resolve %s: %w", *configPath, err)
 	}
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return fmt.Errorf("get user cache dir: %w", err)
+	}
+	cacheDir = filepath.Join(cacheDir, "voice-gateway")
+	geoChecker, err := cfg.Server.Open(ctx, log.With("cmp", "geoip"), cacheDir)
+	if err != nil {
+		return fmt.Errorf("server.%w", err)
+	}
+	if geoChecker != nil {
+		defer func() { err = errors.Join(err, geoChecker.Close()) }()
+	}
 	if cfg.Debug.Trace != "" {
 		f, openErr := os.Create(cfg.Debug.Trace)
 		if openErr != nil {
@@ -110,11 +121,7 @@ func mainImpl(args []string) (err error) {
 	}
 	defer func() { err = errors.Join(err, watcher.Close()) }()
 
-	cacheDir, err := os.UserCacheDir()
-	if err != nil {
-		return fmt.Errorf("get user cache dir: %w", err)
-	}
-	bridge, err := voicertc.NewBridge(ctx, &resolved, cfg.Server.WebRTCUDPPort, filepath.Join(cacheDir, "voice-gateway"))
+	bridge, err := voicertc.NewBridge(ctx, &resolved, cfg.Server.WebRTCUDPPort, cacheDir)
 	if err != nil {
 		if ctx.Err() != nil {
 			return context.Cause(ctx)
@@ -140,10 +147,24 @@ func mainImpl(args []string) (err error) {
 		mux.Handle("/", frontendHandler)
 		handler = mux
 	}
-	handler = httplog.Handler{Handler: handler, Logger: log, Attrs: func(r *http.Request) []slog.Attr {
-		return []slog.Attr{slog.String("ip", gatewayhttp.ClientIP(r.Context()))}
-	}}
-	handler, err = gatewayhttp.NewHandler(handler, cfg.Server.ExternalURL, cfg.Server.TrustedProxies)
+	prefixes, err := httpserver.ParseTrustedProxies(cfg.Server.TrustedProxies)
+	if err != nil {
+		return fmt.Errorf("server.trusted_proxies: %w", err)
+	}
+	opts := httpserver.Options{
+		TrustedProxies: prefixes,
+		Logger:         log, SuccessLevel: slog.LevelDebug,
+	}
+	if cfg.Server.ExternalURL != "" {
+		opts.Hosts, err = httpserver.NewHostPolicy(httpserver.HostPolicyOptions{ExternalURL: cfg.Server.ExternalURL})
+		if err != nil {
+			return fmt.Errorf("server.external_url: %w", err)
+		}
+	}
+	if geoChecker != nil {
+		opts.GeoIP = geoChecker
+	}
+	handler, err = httpserver.NewHandler(handler, opts)
 	if err != nil {
 		return err
 	}

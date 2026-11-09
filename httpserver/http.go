@@ -1,6 +1,6 @@
-// Package httpserver provides origin validation and trusted proxy helpers for HTTP hosts.
+// Package httpserver provides shared HTTP request infrastructure.
 //
-// Callers own routing, authentication, request contexts, logging, and tracing.
+// Callers own routing, authentication and server lifetime.
 // Forwarded client addresses never replace the request's transport peer.
 package httpserver
 
@@ -46,10 +46,7 @@ func ResolveClientIP(r *http.Request, prefixes []netip.Prefix) string {
 		return ""
 	}
 	direct := peer.Addr().Unmap().String()
-	trusts := func(a netip.Addr) bool {
-		return slices.ContainsFunc(prefixes, func(p netip.Prefix) bool { return p.Contains(a.Unmap()) })
-	}
-	if !trusts(peer.Addr()) {
+	if !TrustsAddress(peer.Addr(), prefixes) {
 		return direct
 	}
 	if values := r.Header.Values("X-Forwarded-For"); len(values) > 0 {
@@ -64,7 +61,7 @@ func ResolveClientIP(r *http.Request, prefixes []netip.Prefix) string {
 			}
 		}
 		for _, a := range slices.Backward(chain) {
-			if !trusts(a) {
+			if !TrustsAddress(a, prefixes) {
 				return a.Unmap().String()
 			}
 		}
