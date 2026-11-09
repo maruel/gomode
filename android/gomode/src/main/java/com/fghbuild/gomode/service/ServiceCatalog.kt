@@ -77,6 +77,7 @@ internal class ServiceCatalog(
     private val scope = CoroutineScope(parentScope.coroutineContext + SupervisorJob(parentScope.coroutineContext[Job]))
     private val members = linkedMapOf<ServiceShellKey, Participant>()
     private var nextIdentityGeneration = 0L
+    private var networkAvailable = true
     private val mutableState = MutableStateFlow<Map<ServiceShellKey, CatalogService>>(emptyMap())
     val state = mutableState.asStateFlow()
     private val mutableNotifications = MutableSharedFlow<CatalogNotification>(extraBufferCapacity = 64)
@@ -106,6 +107,12 @@ internal class ServiceCatalog(
 
     fun retry(key: ServiceShellKey) {
         members[key]?.retry?.let { it.value++ }
+    }
+
+    // A route change invalidates idle streams too: TCP may stay open on the abandoned network.
+    fun networkChanged(available: Boolean) {
+        networkAvailable = available
+        members.values.forEach { it.retry.value++ }
     }
 
     // Return the original prepared authority, not credentials recaptured from a page URL.
@@ -447,6 +454,12 @@ internal class ServiceCatalog(
                         error = null
                         val ready = identity.bootstrap as? ServiceBootstrapState.Ready
                         when {
+                            !networkAvailable -> {
+                                status = ServiceReadiness.RECONNECTING
+                                error = "Waiting for network"
+                                publish()
+                            }
+
                             ready == null -> {
                                 status = ServiceReadiness.UNAVAILABLE
                                 error =
@@ -483,7 +496,8 @@ internal class ServiceCatalog(
         }
 
         fun current(value: PreparedService): Boolean =
-            members[entry.key] === this && prepared === value && entry.bearerStore.authReady.value &&
+            networkAvailable && members[entry.key] === this && prepared === value &&
+                entry.bearerStore.authReady.value &&
                 entry.state.value.load == WebShellLoadState.Ready &&
                 value.identity.bootstrap == entry.state.value.bootstrap &&
                 value.identity.epoch == entry.bearerStore.authEpoch.value &&

@@ -17,6 +17,7 @@ import android.util.Log
 import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.service.DefaultNetworkMonitor
 import com.fghbuild.gomode.service.VoiceTokenClient
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import com.fghbuild.voicegateway.sdk.v2.ApiClient
@@ -50,6 +51,7 @@ import com.fghbuild.voicegateway.sdk.v2.VoiceRTCSignalingState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -61,6 +63,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
@@ -80,6 +84,7 @@ import org.webrtc.PeerConnectionFactory
 import org.webrtc.RtpReceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.util.UUID
@@ -90,7 +95,7 @@ private const val MIC_LEVEL_POLL_MS = 100L
 private const val SETUP_TIMEOUT_MS = 15_000L
 private const val ICE_GATHERING_TIMEOUT_MS = 10_000L
 private const val ICE_DISCONNECTED_GRACE_MS = 5_000L
-private const val MAX_RECONNECT_ATTEMPTS = 3
+internal const val MAX_RECONNECT_ATTEMPTS = 3
 
 /** Conservative data-channel/model-safe bound for a recovery context update. */
 internal const val MAX_RECOVERY_CONTEXT_CHARS = 8_000
@@ -204,6 +209,8 @@ internal class VoiceSession(
     private var setupTimeoutJob: Job? = null
     private var reconnectJob: Job? = null
     private var connectJob: Job? = null
+    private val networkMonitor = DefaultNetworkMonitor(appContext)
+    private var networkJob: Job? = null
 
     // Recovery keeps its captured request instead of acquiring a newer UI owner.
     private var startupTimingOwner: VoiceStartupTiming? = null
@@ -259,6 +266,7 @@ internal class VoiceSession(
         }
 
     override fun setError(message: String) {
+        stopNetworkMonitoring()
         recordFailure(message)
         voiceConversation.finish()
         val attempt = invalidateAttempt()
@@ -372,6 +380,7 @@ internal class VoiceSession(
         registerDeviceCallback()
         registerScoReceiver()
         setStatus("Setting up WebRTC…")
+        startNetworkMonitoring()
 
         connectJob =
             scope.launch {
@@ -498,7 +507,6 @@ internal class VoiceSession(
                                     if (!ownsAttempt(attempt)) return@launch
                                     Log.d(TAG, "DC state: ${dc.state()}")
                                     if (dc.state() == DataChannel.State.OPEN) {
-                                        recoveryPolicy.reset()
                                         setStatus("Waiting for server…")
                                         sendSetupMessage(systemInstruction, serviceContextText, setup.voiceName)
                                     }
@@ -584,8 +592,21 @@ internal class VoiceSession(
                                             throw e
                                         } catch (e: GatewayConnectionException) {
                                             if (ownsAttempt(attempt)) {
-                                                timing?.finishFailure(e)
-                                                setError(requireNotNull(e.message))
+                                                if (preserveTranscript && e.cause is IOException) {
+                                                    scheduleReconnect("Network connection failed", 1_000L)
+                                                } else {
+                                                    timing?.finishFailure(e)
+                                                    setError(requireNotNull(e.message))
+                                                }
+                                            }
+                                        } catch (e: IOException) {
+                                            if (ownsAttempt(attempt)) {
+                                                if (preserveTranscript) {
+                                                    scheduleReconnect("Network connection failed", 1_000L)
+                                                } else {
+                                                    timing?.finishFailure(e)
+                                                    setError("SDP exchange failed: ${e.message}")
+                                                }
                                             }
                                         } catch (e: Exception) {
                                             if (ownsAttempt(attempt)) {
@@ -615,6 +636,15 @@ internal class VoiceSession(
                     }
                 } catch (e: CancellationException) {
                     throw e
+                } catch (e: IOException) {
+                    if (ownsAttempt(attempt)) {
+                        if (preserveTranscript) {
+                            scheduleReconnect("Network connection failed", 1_000L)
+                        } else {
+                            timing?.finishFailure(e)
+                            setError("WebRTC connection failed: ${e.message}")
+                        }
+                    }
                 } catch (e: Exception) {
                     if (ownsAttempt(attempt)) {
                         timing?.finishFailure(e)
@@ -630,6 +660,8 @@ internal class VoiceSession(
         gatewayClient: ApiClient,
         headers: Map<String, String>,
     ) = object : PeerConnection.Observer {
+        private val network = networkMonitor.network.value
+
         override fun onIceCandidate(candidate: IceCandidate) {
             if (!ownsAttempt(attempt)) return
             if (isUsableICECandidate(candidate.sdp)) {
@@ -646,13 +678,15 @@ internal class VoiceSession(
                     PeerConnection.IceConnectionState.FAILED,
                     PeerConnection.IceConnectionState.DISCONNECTED,
                     -> {
-                        scheduleReconnect(peerConnection ?: return@launch, state, recoveryDelayMs(state))
+                        scheduleReconnect("WebRTC ICE $state", recoveryDelayMs(state))
                     }
 
                     PeerConnection.IceConnectionState.CONNECTED -> {
-                        recoveryPolicy.cancelPending()
-                        reconnectJob?.cancel()
-                        reconnectJob = null
+                        if (network != null && networkMonitor.network.value == network) {
+                            recoveryPolicy.cancelPending()
+                            reconnectJob?.cancel()
+                            reconnectJob = null
+                        }
                     }
 
                     PeerConnection.IceConnectionState.CLOSED -> {
@@ -738,12 +772,35 @@ internal class VoiceSession(
         _state.update { it.copy(micLevel = 0f) }
     }
 
+    private fun startNetworkMonitoring() {
+        if (networkJob != null) return
+        networkMonitor.start()
+        networkJob =
+            scope.launch {
+                var previous = networkMonitor.network.value
+                networkMonitor.network.collect { network ->
+                    if (network != previous) {
+                        previous = network
+                        scheduleReconnect(
+                            if (network == null) "Waiting for network" else "Network changed",
+                            if (network == null) ICE_DISCONNECTED_GRACE_MS else 0L,
+                        )
+                    }
+                }
+            }
+    }
+
+    private fun stopNetworkMonitoring() {
+        networkJob?.cancel()
+        networkJob = null
+        networkMonitor.close()
+    }
+
     private fun scheduleReconnect(
-        pc: PeerConnection,
-        state: PeerConnection.IceConnectionState,
+        reason: String,
         delayMs: Long,
     ) {
-        if (peerConnection !== pc) return
+        val attempt = attemptGeneration.get()
         if (reconnectJob != null) {
             if (delayMs != 0L) return
             reconnectJob?.cancel()
@@ -752,18 +809,29 @@ internal class VoiceSession(
             setError("Voice connection lost after $MAX_RECONNECT_ATTEMPTS recovery attempts")
             return
         }
-        setStatus("WebRTC ICE $state; reconnecting…")
+        setStatus("$reason; reconnecting…")
         reconnectJob =
-            scope.launch {
+            scope.launch(start = CoroutineStart.LAZY) {
                 delay(delayMs)
+                if (!ownsAttempt(attempt)) return@launch
+                val recoveryAttempt = invalidateAttempt()
+                setupTimeoutJob?.cancel()
+                setupTimeoutJob = null
+                releaseTransport()
+                closePeerConnection()
+                _state.update {
+                    it.copy(connected = false, listening = false, speaking = false, activeTool = null, micLevel = 0f)
+                }
+                networkMonitor.network.filterNotNull().first()
                 reconnectJob = null
-                if (peerConnection === pc && recoveryPolicy.beginScheduledRecovery()) {
+                if (ownsAttempt(recoveryAttempt) && recoveryPolicy.beginScheduledRecovery()) {
                     speakerActive = false
                     _state.update { it.copy(speaking = false, turnState = TurnState.Idle, transcriptDraft = null) }
                     recoveryContext = buildNetworkRecoveryContext(_state.value.transcript)
                     connect(preserveTranscript = true)
                 }
             }
+        reconnectJob?.start()
     }
 
     private fun startSetupTimeout(
@@ -989,6 +1057,7 @@ internal class VoiceSession(
     }
 
     override fun disconnect() {
+        stopNetworkMonitoring()
         voiceConversation.finish()
         pinnedVoice = null
         val attempt = invalidateAttempt()
@@ -1175,6 +1244,7 @@ internal class VoiceSession(
 
                 MessageKind.SessionReady -> {
                     Log.i(TAG, "session.ready received")
+                    if (reconnectJob == null) recoveryPolicy.reset()
                     setupTimeoutJob?.cancel()
                     setupTimeoutJob = null
                     _state.update {

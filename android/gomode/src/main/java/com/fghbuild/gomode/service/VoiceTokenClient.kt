@@ -6,7 +6,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.Request
-import java.io.IOException
+
+class VoiceTokenException(
+    message: String,
+) : Exception(message)
 
 class VoiceTokenClient {
     private val json = Json { ignoreUnknownKeys = true }
@@ -26,9 +29,9 @@ class VoiceTokenClient {
                     .build()
             credentialedHTTPClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    throw IOException("Voice token request failed: HTTP ${response.code}")
+                    throw VoiceTokenException("Voice token request failed: HTTP ${response.code}")
                 }
-                val body = response.body?.string() ?: throw IOException("Voice token response is empty")
+                val body = response.body?.string() ?: throw VoiceTokenException("Voice token response is empty")
                 json.decodeFromString(ServiceAuthorization.serializer(), body)
             }
         }

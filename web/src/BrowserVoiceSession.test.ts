@@ -96,6 +96,82 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+it("recovers a browser-speech call when the network returns", async (t) => {
+  vi.useFakeTimers();
+  let online = true;
+  t.mock.getter(navigator, "onLine", () => online);
+  await session.connect();
+  const socket = FakeWebSocket.instances[0];
+  ok(socket);
+  socket.open();
+  socket.message({ kind: "session.ready" });
+  online = false;
+  window.dispatchEvent(new window.Event("offline"));
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(FakeWebSocket.instances).toHaveLength(1);
+  expect(session.state.error).toBeNull();
+  session.injectText("Alert received during handoff", true);
+  const preparing = deferred<string>();
+  vi.mocked(mcpClient.serverInstructions).mockReturnValueOnce(preparing.promise);
+  online = true;
+  window.dispatchEvent(new window.Event("online"));
+  await vi.advanceTimersByTimeAsync(0);
+  session.injectText("Alert received while preparing the new connection", true);
+  preparing.resolve("Host instructions");
+  await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+  expect(socket.readyState).toBe(3);
+  FakeWebSocket.instances[1]?.open();
+  FakeWebSocket.instances[1]?.message({ kind: "session.ready" });
+  expect(session.state.connected).toBe(true);
+  expect(FakeWebSocket.instances[1]?.sent.some((text) => text.includes("Alert received during handoff"))).toBe(true);
+  expect(FakeWebSocket.instances[1]?.sent.some((text) => text.includes("Alert received while preparing"))).toBe(true);
+});
+
+it("keeps a gateway policy rejection terminal instead of reconnecting", async () => {
+  vi.useFakeTimers();
+  const socket = await readySocket();
+  socket.onclose?.(new window.CloseEvent("close", { code: 1008 }));
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(session.state.error).toBe("Text voice connection closed (1008)");
+  expect(FakeWebSocket.instances).toHaveLength(1);
+});
+
+it("keeps an HTTP authentication rejection terminal even when the browser reports offline", async (t) => {
+  vi.useFakeTimers();
+  t.mock.getter(navigator, "onLine", () => false);
+  globalThis.fetch = async () => new Response(null, { status: 401 });
+  await session.connect();
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(session.state.error).toBe("Voice authorization failed (HTTP 401).");
+  expect(FakeWebSocket.instances).toHaveLength(0);
+});
+
+it("retries a failed gateway fetch but preserves a programming error during recovery", async () => {
+  vi.useFakeTimers();
+  const socket = await readySocket();
+  const fetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = async (input, init) => {
+    if (++requests === 1) throw new TypeError("Failed to fetch");
+    return fetch(input, init);
+  };
+  socket.onerror?.();
+  await vi.advanceTimersByTimeAsync(2_000);
+  await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+  const replacement = FakeWebSocket.instances[1];
+  ok(replacement);
+  replacement.open();
+  replacement.message({ kind: "session.ready" });
+  expect(session.state.error).toBeNull();
+  vi.mocked(mcpClient.serverInstructions).mockImplementationOnce(() => {
+    throw new TypeError("Broken application invariant");
+  });
+  replacement.onerror?.();
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(session.state.error).toBe("Broken application invariant");
+  expect(FakeWebSocket.instances).toHaveLength(2);
+});
+
 it("awaits host focus publication before browser-speech setup reads", async () => {
   const gate = deferred<void>();
   const prepare = vi.fn(async (_sessionID: string, _signal: AbortSignal) => gate.promise);

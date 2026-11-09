@@ -221,6 +221,36 @@ describe("configureMcpClient", () => {
 });
 
 describe("subscribeResources", () => {
+  it("retires a stalled stream offline and reconnects immediately with the same session", async (t) => {
+    configureMcpClient("/mcp", "host");
+    let online = true;
+    t.mock.getter(navigator, "onLine", () => online);
+    const attempts: Array<{ signal: AbortSignal; session: string }> = [];
+    globalThis.fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { params: SubscriptionsListenParams };
+      attempts.push({ signal: init?.signal as AbortSignal, session: String(body.params._meta?.["openai/session"]) });
+      return new Response(new ReadableStream());
+    };
+    const subscription = mcpClient.subscribeResources({ sessionID: "same-call", resourcesListChanged: true }, () => {});
+    t.after(() => subscription.close());
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(attempts).toHaveLength(1);
+    online = false;
+    window.dispatchEvent(new window.Event("offline"));
+    expect(attempts[0]?.signal.aborted).toBe(true);
+    expect(attempts).toHaveLength(1);
+    online = true;
+    window.dispatchEvent(new window.Event("online"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(attempts.map((attempt) => attempt.session)).toEqual(["same-call", "same-call"]);
+    subscription.close();
+    window.dispatchEvent(new window.Event("online"));
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1]?.signal.aborted).toBe(true);
+  });
+
   it("retains its conversation when a subscription reconnects", async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
     configureMcpClient("/mcp", "host");

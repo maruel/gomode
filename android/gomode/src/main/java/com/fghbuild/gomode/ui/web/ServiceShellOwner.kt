@@ -4,6 +4,7 @@ package com.fghbuild.gomode.ui.web
 import android.content.Context
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
+import com.fghbuild.gomode.service.DefaultNetworkMonitor
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceReadiness
 import com.fghbuild.gomode.service.ServiceSettingsClient
@@ -45,10 +46,22 @@ internal class ServiceShellOwner(
     val entries: Map<ServiceShellKey, ServiceShellSession> get() = state.value.entries
 
     private var settingsJob: Job? = null
+    private val networkMonitor = DefaultNetworkMonitor(context)
 
     // Cold dial construction must not start page/network work before Telecom ownership.
     fun start() {
         if (settingsJob != null) return
+        networkMonitor.start()
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            var previous = networkMonitor.network.value
+            catalog.networkChanged(previous != null)
+            networkMonitor.network.collect { network ->
+                if (network != previous) {
+                    previous = network
+                    catalog.networkChanged(network != null)
+                }
+            }
+        }
         reconcile(settingsRepository.settings.value)
         val job =
             scope.launch(start = CoroutineStart.LAZY) {
@@ -74,8 +87,38 @@ internal class ServiceShellOwner(
     private suspend fun maintain(entry: ServiceShellSession) =
         coroutineScope {
             launch {
-                entry.state.map { it.bootstrapReloadToken }.distinctUntilChanged().collectLatest {
-                    if (entry.key.url.isNotBlank()) {
+                var previous = networkMonitor.network.value
+                var routeChanged = false
+                combine(
+                    networkMonitor.network,
+                    entry.state.map { it.load }.distinctUntilChanged(),
+                ) { network, load -> network to load }.collect { (network, load) ->
+                    if (network != previous) {
+                        previous = network
+                        if (network != null) {
+                            routeChanged = true
+                            entry.resetAutomaticRetryBudget()
+                        }
+                    }
+                    // A failed load can arrive after the new route's callback. Retain one
+                    // retry for that route, without repeatedly reloading an unreachable host.
+                    if (network != null && routeChanged &&
+                        (load as? WebShellLoadState.Failed)?.networkFailure == true
+                    ) {
+                        entry.retryWebAutomatically()
+                    }
+                }
+            }
+            launch {
+                var previousReload: Int? = null
+                combine(
+                    entry.state.map { it.bootstrapReloadToken }.distinctUntilChanged(),
+                    networkMonitor.network,
+                ) { reload, network -> reload to network }.collectLatest { (reload, network) ->
+                    if (network != null && entry.key.url.isNotBlank() &&
+                        (previousReload != reload || entry.state.value.bootstrap !is ServiceBootstrapState.Ready)
+                    ) {
+                        previousReload = reload
                         entry.updateBootstrap(ServiceBootstrapState.Unvalidated())
                         entry.updateBootstrap(fetchBootstrapState(entry.key.url, ServiceSettingsClient()))
                     }
@@ -130,6 +173,7 @@ internal class ServiceShellOwner(
 
     override fun close() {
         scope.cancel()
+        networkMonitor.close()
         catalog.close()
         registry.close()
     }

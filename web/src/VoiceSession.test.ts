@@ -1055,6 +1055,47 @@ describe("VoiceSession", () => {
     }
   });
 
+  for (const outcome of ["resolve", "reject"] as const) {
+    it(`ignores a pending playback ${outcome} after going offline`, async (t) => {
+      vi.useFakeTimers();
+      let online = true;
+      t.mock.getter(navigator, "onLine", () => online);
+      const connection = new EventTarget();
+      Object.defineProperty(navigator, "connection", { configurable: true, value: connection });
+      t.after(() => Reflect.deleteProperty(navigator, "connection"));
+      vi.stubGlobal("Audio", window.Audio);
+      const playback = deferred<void>();
+      const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockReturnValue(playback.promise);
+      const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+      const session = new VoiceSession();
+      try {
+        await session.connect();
+        FakePeerConnection.last?.ontrack?.call(
+          FakePeerConnection.last as unknown as RTCPeerConnection,
+          { streams: [{}] } as unknown as RTCTrackEvent,
+        );
+        expect(play).toHaveBeenCalledOnce();
+        online = false;
+        connection.dispatchEvent(new Event("change"));
+        session.setState((state) => ({ ...state, audioPlaybackError: "Current playback warning" }));
+        if (outcome === "reject") playback.reject(new DOMException("Playback interrupted", "AbortError"));
+        else playback.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(session.state.audioPlaybackError).toBe("Current playback warning");
+        await session.resumeAudio();
+        expect(play).toHaveBeenCalledOnce();
+        expect(session.state.error).toBeNull();
+        expect(session.state.connectStatus).toContain("Waiting for network");
+      } finally {
+        playback.resolve();
+        session.disconnect();
+        play.mockRestore();
+        pause.mockRestore();
+        vi.useRealTimers();
+      }
+    });
+  }
+
   it("offers microphone recovery after denial without starting a session on re-enable", async () => {
     const session = new VoiceSession();
     const getMedia = vi.mocked(navigator.mediaDevices.getUserMedia);
@@ -1811,9 +1852,16 @@ describe("VoiceSession", () => {
     }
   });
 
-  for (const retirement of ["disconnect", "replacement"] as const) {
+  for (const retirement of ["disconnect", "replacement", "offline"] as const) {
     for (const settlement of ["resolve", "reject"] as const) {
-      it(`releases pending microphone resources on ${retirement} before a late ${settlement}`, async () => {
+      it(`releases pending microphone resources on ${retirement} before a late ${settlement}`, async (t) => {
+        let online = true;
+        const connection = new EventTarget();
+        if (retirement === "offline") {
+          t.mock.getter(navigator, "onLine", () => online);
+          Object.defineProperty(navigator, "connection", { configurable: true, value: connection });
+          t.after(() => Reflect.deleteProperty(navigator, "connection"));
+        }
         const oldTrack = { stop: vi.fn(), enabled: true };
         const pendingTrack = { stop: vi.fn(), enabled: true };
         const currentTrack = { stop: vi.fn(), enabled: true };
@@ -1851,10 +1899,13 @@ describe("VoiceSession", () => {
           if (retirement === "replacement") {
             await session.connect();
             session.setState((state) => ({ ...state, audioInputError: "Current microphone warning" }));
+          } else if (retirement === "offline") {
+            online = false;
+            connection.dispatchEvent(new Event("change"));
           } else session.disconnect();
           // These checks happen while replaceTrack remains gated. Test cleanup
           // and a late operation settlement must not be what releases capture.
-          expect(oldTrack.stop).toHaveBeenCalledOnce();
+          expect(oldTrack.stop).toHaveBeenCalledTimes(retirement === "offline" ? 0 : 1);
           expect(pendingTrack.stop).toHaveBeenCalledOnce();
           expect(outgoing.stop).toHaveBeenCalledOnce();
           expect(gain.disconnect).toHaveBeenCalledOnce();
@@ -3170,6 +3221,46 @@ describe("VoiceSession", () => {
     }
   });
 
+  for (const outcome of ["response", "failure"]) {
+    it(`ignores a delayed diagnostic ${outcome} after the network goes offline`, async (t) => {
+      vi.useFakeTimers();
+      let online = true;
+      t.mock.getter(navigator, "onLine", () => online);
+      const connection = new EventTarget();
+      Object.defineProperty(navigator, "connection", { configurable: true, value: connection });
+      t.after(() => {
+        Reflect.deleteProperty(navigator, "connection");
+      });
+      const response = deferred<Response>();
+      const requested = deferred<void>();
+      const fetch = globalThis.fetch;
+      globalThis.fetch = async (input, init) => {
+        if (String(input).endsWith("/diagnostics")) {
+          requested.resolve();
+          return response.promise;
+        }
+        return fetch(input, init);
+      };
+      const session = new VoiceSession();
+      try {
+        await session.connect();
+        await vi.advanceTimersByTimeAsync(15_000);
+        await requested.promise;
+        online = false;
+        connection.dispatchEvent(new Event("change"));
+        await vi.advanceTimersByTimeAsync(0);
+        if (outcome === "response") response.resolve(Response.json({}));
+        else response.reject(new TypeError("Old network diagnostics failed"));
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(session.state.error).toBeNull();
+        expect(session.state.connectPhase).toBe("reconnecting");
+      } finally {
+        session.disconnect();
+        vi.useRealTimers();
+      }
+    });
+  }
+
   it("awaits host session preparation before reading setup MCP context", async () => {
     const gate = deferred<void>();
     const prepare = vi.fn(async (_sessionID: string, _signal: AbortSignal) => gate.promise);
@@ -3728,6 +3819,74 @@ describe("voice network recovery", () => {
       await vi.advanceTimersByTimeAsync(1);
 
       expect(FakePeerConnection.instances).toHaveLength(1);
+    } finally {
+      session.disconnect();
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits offline without using recovery attempts and reconnects when online", async (t) => {
+    vi.useFakeTimers();
+    let online = true;
+    t.mock.getter(navigator, "onLine", () => online);
+    const connection = new EventTarget();
+    Object.defineProperty(navigator, "connection", { configurable: true, value: connection });
+    t.after(() => {
+      Reflect.deleteProperty(navigator, "connection");
+    });
+    const session = new VoiceSession();
+    try {
+      await session.connect();
+      online = false;
+      connection.dispatchEvent(new Event("change"));
+      triggerIceState("failed");
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(FakePeerConnection.instances).toHaveLength(1);
+      expect(session.state.error).toBeNull();
+      expect(session.state.connectStatus).toContain("Waiting for network");
+      online = true;
+      connection.dispatchEvent(new Event("change"));
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(() => expect(FakePeerConnection.instances).toHaveLength(2));
+      session.disconnect();
+      connection.dispatchEvent(new Event("change"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(FakePeerConnection.instances).toHaveLength(2);
+    } finally {
+      session.disconnect();
+      vi.useRealTimers();
+    }
+  });
+
+  it("releases microphone acquisition that finishes after its network was lost", async (t) => {
+    vi.useFakeTimers();
+    let online = true;
+    t.mock.getter(navigator, "onLine", () => online);
+    const connection = new EventTarget();
+    Object.defineProperty(navigator, "connection", { configurable: true, value: connection });
+    t.after(() => {
+      Reflect.deleteProperty(navigator, "connection");
+    });
+    const media = deferred<MediaStream>();
+    const requested = deferred<void>();
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockImplementationOnce(() => {
+      requested.resolve();
+      return media.promise;
+    });
+    const session = new VoiceSession();
+    const connecting = session.connect();
+    try {
+      await requested.promise;
+      online = false;
+      connection.dispatchEvent(new Event("change"));
+      await vi.advanceTimersByTimeAsync(0);
+      const stop = vi.fn();
+      media.resolve({ getTracks: () => [{ stop }] } as unknown as MediaStream);
+      await connecting;
+      expect(stop).toHaveBeenCalledOnce();
+      expect(offerRequests).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(session.state.error).toBeNull();
     } finally {
       session.disconnect();
       vi.useRealTimers();

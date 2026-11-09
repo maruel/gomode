@@ -3,16 +3,37 @@ package com.fghbuild.gomode.ui.web
 
 import android.content.Intent
 import android.net.Uri
+import android.webkit.TimeoutWebResourceError
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.ScriptHandler
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.Implementation
+import org.robolectric.annotation.Implements
 
 @RunWith(RobolectricTestRunner::class)
+@Config(
+    shadows = [HostedWebViewFeatures::class, HostedWebViewCompat::class],
+    instrumentedPackages = ["androidx.webkit"],
+)
 class WebShellScreenTest {
     @Test
     fun attachmentsBrowseDocumentsWithAllAcceptedFileTypes() {
@@ -91,32 +112,63 @@ class WebShellScreenTest {
     }
 
     @Test
-    fun firstTimeoutIsRetriedSilently() {
-        assertEquals(true, shouldAutomaticallyRetryWebLoadError(WebViewClient.ERROR_TIMEOUT, retryAttempts = 0))
-        assertEquals(false, shouldAutomaticallyRetryWebLoadError(WebViewClient.ERROR_TIMEOUT, retryAttempts = 1))
-    }
+    fun timeoutAndRouteRecoveryShareOneAutomaticRetryBudget() =
+        runTest {
+            Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+            try {
+                for (routeReload in listOf(false, true)) {
+                    val entry = ServiceShellSession(ServiceShellKey("test", "https://service.test")) {}
+                    try {
+                        val page = entry.page(RuntimeEnvironment.getApplication())
+                        val view = page.webView
+                        val shadow = shadowOf(view)
+                        val client = shadow.webViewClient
+                        page.load(0)
+                        if (routeReload) {
+                            entry.updateLoad(WebShellLoadState.Failed("Old route", networkFailure = true))
+                            entry.resetAutomaticRetryBudget()
+                            entry.retryWebAutomatically()
+                            page.load(entry.state.value.webReloadToken)
+                        } else {
+                            client.onPageStarted(view, entry.key.url, null)
+                            client.onReceivedError(view, mainFrameRequest(entry.key.url), TimeoutWebResourceError())
+                            // A new route can arrive while the timeout retry is still pending.
+                            entry.resetAutomaticRetryBudget()
+                            advanceTimeBy(1_000)
+                            runCurrent()
+                        }
+                        assertEquals(1, shadow.reloadInvocations)
+                        client.onPageStarted(view, entry.key.url, null)
+                        client.onReceivedError(view, mainFrameRequest(entry.key.url), TimeoutWebResourceError())
+                        advanceTimeBy(2_000)
+                        runCurrent()
+                        entry.retryWebAutomatically()
+                        page.load(entry.state.value.webReloadToken)
+                        assertEquals(1, shadow.reloadInvocations)
+                        assertEquals(true, entry.state.value.load is WebShellLoadState.Failed)
+                    } finally {
+                        entry.close()
+                    }
+                }
+            } finally {
+                Dispatchers.resetMain()
+            }
+        }
 
-    @Test
-    fun nonTimeoutFailuresAreNotRetriedAutomatically() {
-        assertEquals(false, shouldAutomaticallyRetryWebLoadError(WebViewClient.ERROR_CONNECT, retryAttempts = 0))
-    }
+    private fun mainFrameRequest(url: String) =
+        object : WebResourceRequest {
+            override fun getUrl(): Uri = Uri.parse(url)
 
-    @Test
-    fun newNavigationCancelsPendingAutomaticRetryAndResetsItsBudget() {
-        val state = AutomaticTimeoutRetryState(attempts = 1, pending = true)
+            override fun isForMainFrame(): Boolean = true
 
-        assertEquals(AutomaticTimeoutRetryState(), automaticTimeoutRetryStateOnPageStarted(state))
-    }
+            override fun isRedirect(): Boolean = false
 
-    @Test
-    fun automaticRetryNavigationPreservesItsBudget() {
-        val state = AutomaticTimeoutRetryState(attempts = 1, inProgress = true)
+            override fun hasGesture(): Boolean = false
 
-        assertEquals(
-            AutomaticTimeoutRetryState(attempts = 1),
-            automaticTimeoutRetryStateOnPageStarted(state),
-        )
-    }
+            override fun getMethod(): String = "GET"
+
+            override fun getRequestHeaders(): Map<String, String> = emptyMap()
+        }
 
     @Test
     fun timeoutMessageExplainsRecoveryAfterAutomaticRetryFails() {
@@ -171,5 +223,40 @@ class WebShellScreenTest {
     fun newWindowRequestUriIgnoresBlankAndRelativeUrls() {
         assertNull(newWindowRequestUriOrNull(WebView.HitTestResult.SRC_ANCHOR_TYPE, ""))
         assertNull(newWindowRequestUriOrNull(WebView.HitTestResult.SRC_ANCHOR_TYPE, "/docs"))
+    }
+}
+
+// Robolectric has no Chromium provider; advertise only the page-isolation capabilities.
+@Suppress("UtilityClassWithPublicConstructor") // Robolectric constructs shadow instances.
+@Implements(WebViewFeature::class)
+class HostedWebViewFeatures {
+    companion object {
+        @JvmStatic
+        @Implementation
+        fun isFeatureSupported(feature: String): Boolean =
+            feature == WebViewFeature.MUTE_AUDIO || feature == WebViewFeature.DOCUMENT_START_SCRIPT
+    }
+}
+
+@Suppress("UtilityClassWithPublicConstructor") // Robolectric constructs shadow instances.
+@Implements(WebViewCompat::class)
+class HostedWebViewCompat {
+    companion object {
+        @JvmStatic
+        @Implementation
+        @Suppress("UnusedParameter") // Match the platform API; Robolectric has no media renderer.
+        fun setAudioMuted(
+            view: WebView,
+            muted: Boolean,
+        ) = Unit
+
+        @JvmStatic
+        @Implementation
+        @Suppress("UnusedParameter") // Match the platform API; the test invokes page callbacks directly.
+        fun addDocumentStartJavaScript(
+            view: WebView,
+            script: String,
+            origins: Set<String>,
+        ): ScriptHandler = ScriptHandler {}
     }
 }

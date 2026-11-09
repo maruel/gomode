@@ -7,7 +7,6 @@ import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 class VoiceTokenClientTest {
@@ -31,7 +30,7 @@ class VoiceTokenClientTest {
                         VoiceTokenClient().fetch(service.url("/voice/token").toString(), "session=secret", "bearer")
                     }
 
-                assertTrue(result.exceptionOrNull() is IOException)
+                assertTrue(result.exceptionOrNull() is VoiceTokenException)
                 val request = service.takeRequest()
                 assertEquals("session=secret", request.getHeader("Cookie"))
                 assertEquals("Bearer bearer", request.getHeader("Authorization"))
@@ -70,7 +69,7 @@ class VoiceTokenClientTest {
             try {
                 server.enqueue(MockResponse().setResponseCode(401))
                 val result = runCatching { VoiceTokenClient().fetch(server.url("/voice/token").toString(), null) }
-                assertTrue(result.exceptionOrNull() is IOException)
+                assertTrue(result.exceptionOrNull() is VoiceTokenException)
             } finally {
                 server.shutdown()
             }

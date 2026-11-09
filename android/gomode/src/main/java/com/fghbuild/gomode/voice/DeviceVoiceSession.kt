@@ -7,6 +7,7 @@ import android.util.Log
 import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.service.DefaultNetworkMonitor
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.ui.web.FrontendVoiceTools
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
@@ -42,6 +43,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.job
@@ -59,12 +62,14 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 private const val TAG = "GoModeDeviceVoice"
 private const val TEXT_SESSION_PATH = "/api/voicegateway/v2/voice/text"
+private const val RECOVERY_READINESS_TIMEOUT_MS = 15_000L
 
 private val VoiceState.needsThinkingAudio: Boolean
     get() = connected && turnState == TurnState.Thinking && !speaking && !muted
@@ -187,6 +192,13 @@ internal class DeviceVoiceSession(
         }
 
     private var connectJob: Job? = null
+    private val networkMonitor = DefaultNetworkMonitor(appContext)
+    private var networkJob: Job? = null
+    private var reconnectJob: Job? = null
+    private var readinessJob: Job? = null
+    private val recoveryPolicy = VoiceRecoveryPolicy(maxAttempts = MAX_RECONNECT_ATTEMPTS)
+    private var recoveryContext = ""
+    private var pinnedVoice: GatewayVoiceSelection? = null
 
     // Recovery keeps its captured request instead of acquiring a newer UI owner.
     private var startupTimingOwner: VoiceStartupTiming? = null
@@ -252,6 +264,9 @@ internal class DeviceVoiceSession(
             it.copy(turnState = TurnState.Idle, connected = false, listening = false, speaking = false, micLevel = 0f)
         }
         val attempt = invalidateAttempt()
+        cancelReadinessTimeout()
+        reconnectJob?.cancel()
+        reconnectJob = null
         awaitingModelTurn = false
         connectJob?.cancel()
         connectJob = null
@@ -261,7 +276,6 @@ internal class DeviceVoiceSession(
         releaseEngine()
         speech.stopListening()
         speech.stopSpeaking()
-        pendingNotifications.clear()
         muteOnceActive = false
         speakerActive = false
         turnIdle = false
@@ -274,11 +288,15 @@ internal class DeviceVoiceSession(
         speechTextFilter.clear()
         otherSetup = null
         if (!preserveTranscript) {
+            pendingNotifications.clear()
+            recoveryPolicy.reset()
+            recoveryContext = ""
+            pinnedVoice = null
             this.conversationID = conversationID ?: UUID.randomUUID().toString()
             clearTranscript()
             _state.update { it.copy(usage = null, toolHistory = emptyList()) }
         }
-        if (!frontendTools.isReady) {
+        if (!preserveTranscript && !frontendTools.isReady) {
             setError(FRONTEND_NOT_READY)
             return
         }
@@ -326,7 +344,8 @@ internal class DeviceVoiceSession(
                     timing?.enter(VoiceStartupStage.TOOLS)
                     val setup =
                         preparedLocalModel?.setup ?: try {
-                            voiceConversation?.prepare() ?: setupProvider(this@DeviceVoiceSession.conversationID)
+                            voiceConversation?.prepare(pinnedVoice)
+                                ?: setupProvider(this@DeviceVoiceSession.conversationID)
                         } catch (e: VoiceSetupException) {
                             if (engineType == OnDeviceEngine.REMOTE_GATEWAY || engineType == OnDeviceEngine.LOCAL_LLM) {
                                 if (ownsAttempt(attempt)) setError(e.message ?: "Voice setup failed")
@@ -340,13 +359,15 @@ internal class DeviceVoiceSession(
                             }
                         }
                     if (!ownsAttempt(attempt)) return@launch
-                    if (!frontendTools.isReady || voiceConversation?.frontendReadyForConnection() == false) {
+                    if (!preserveTranscript &&
+                        (!frontendTools.isReady || voiceConversation?.frontendReadyForConnection() == false)
+                    ) {
                         setError(FRONTEND_NOT_READY)
                         return@launch
                     }
                     foreground.start(setup.serverName)
                     if (preparedLocalModel == null) otherSetup = setup
-                    if (callController.isSupported() &&
+                    if (!callController.isStarted && callController.isSupported() &&
                         !callController.start(setup.serverName, setup.serverID) { disconnect() }
                     ) {
                         setError("Could not start the voice call")
@@ -354,6 +375,12 @@ internal class DeviceVoiceSession(
                     }
                     timing?.enter(VoiceStartupStage.TRANSPORT)
                     if (engineType == OnDeviceEngine.REMOTE_GATEWAY) {
+                        pinnedVoice =
+                            setup.choiceID?.let {
+                                GatewayVoiceSelection(setup.gatewayEndpointURL, it, setup.voiceName)
+                            }
+                        startNetworkMonitoring()
+                        if (preserveTranscript) startReadinessTimeout(attempt)
                         openWebSocket(attempt, setup, timing)
                     } else {
                         openLocalEngine(attempt, setup, engineType)
@@ -368,6 +395,15 @@ internal class DeviceVoiceSession(
                     throw e
                 } catch (e: CancellationException) {
                     throw e
+                } catch (e: IOException) {
+                    if (ownsAttempt(attempt)) {
+                        if (preserveTranscript && engineType == OnDeviceEngine.REMOTE_GATEWAY && networkJob != null) {
+                            scheduleReconnect("Network connection failed")
+                        } else {
+                            timing?.finishFailure(e)
+                            setError("connection: ${describeFailure(e)}")
+                        }
+                    }
                 } catch (
                     @Suppress("TooGenericExceptionCaught") e: Exception,
                 ) {
@@ -481,6 +517,12 @@ internal class DeviceVoiceSession(
                         // so accept any socket while this attempt owns none.
                         val current = this@DeviceVoiceSession.webSocket
                         if (ownsAttempt(attempt) && (current == null || current === webSocket)) {
+                            if (response == null && t is IOException &&
+                                (_state.value.connected || recoveryPolicy.attempts > 0)
+                            ) {
+                                scheduleReconnect("Network connection lost")
+                                return@launch
+                            }
                             timing?.finishFailure(t)
                             val message =
                                 response?.let { gatewayHTTPError(it.code, it.request.url.encodedPath) }
@@ -497,7 +539,13 @@ internal class DeviceVoiceSession(
                 ) {
                     scope.launch {
                         if (ownsAttempt(attempt) && this@DeviceVoiceSession.webSocket === webSocket) {
-                            disconnect()
+                            if (code in setOf(1001, 1011, 1012, 1013, 1014) &&
+                                (_state.value.connected || recoveryPolicy.attempts > 0)
+                            ) {
+                                scheduleReconnect("Voice gateway restarting")
+                            } else {
+                                disconnect()
+                            }
                         }
                     }
                 }
@@ -518,6 +566,86 @@ internal class DeviceVoiceSession(
                 put("Authorization", "Bearer ${service.token}")
             }
         }
+
+    private fun startNetworkMonitoring() {
+        if (networkJob != null) return
+        networkMonitor.start()
+        networkJob =
+            scope.launch {
+                var previous = networkMonitor.network.value
+                networkMonitor.network.collect { network ->
+                    if (network != previous) {
+                        previous = network
+                        scheduleReconnect(if (network == null) "Waiting for network" else "Network changed")
+                    }
+                }
+            }
+    }
+
+    private fun stopNetworkMonitoring() {
+        cancelReadinessTimeout()
+        networkJob?.cancel()
+        networkJob = null
+        reconnectJob?.cancel()
+        reconnectJob = null
+        networkMonitor.close()
+    }
+
+    private fun scheduleReconnect(reason: String) {
+        if (reconnectJob != null) return
+        if (!recoveryPolicy.schedule()) {
+            setError("Voice connection lost after $MAX_RECONNECT_ATTEMPTS recovery attempts")
+            return
+        }
+        val attempt = invalidateAttempt()
+        cancelReadinessTimeout()
+        connectJob?.cancel()
+        connectJob = null
+        val abandoned = webSocket
+        webSocket = null
+        abandoned?.cancel()
+        speech.stopListening()
+        speech.stopSpeaking()
+        thinkingEarcon.setThinking(false)
+        _state.update {
+            it.copy(
+                connected = false,
+                listening = false,
+                speaking = false,
+                activeTool = null,
+                turnState = TurnState.Idle,
+                micLevel = 0f,
+            )
+        }
+        setStatus("$reason; reconnecting…")
+        reconnectJob =
+            scope.launch {
+                delay(1_000L)
+                networkMonitor.network.filterNotNull().first()
+                reconnectJob = null
+                if (ownsAttempt(attempt) && recoveryPolicy.beginScheduledRecovery()) {
+                    recoveryContext = buildNetworkRecoveryContext(_state.value.transcript)
+                    connect(preserveTranscript = true)
+                }
+            }
+    }
+
+    private fun cancelReadinessTimeout() {
+        readinessJob?.cancel()
+        readinessJob = null
+    }
+
+    private fun startReadinessTimeout(attempt: Long) {
+        cancelReadinessTimeout()
+        // Fresh starts have a UI-owned startup budget. Recovery reuses a completed
+        // startup lease, so this transport owns its replacement readiness deadline.
+        readinessJob =
+            scope.launch {
+                delay(RECOVERY_READINESS_TIMEOUT_MS)
+                readinessJob = null
+                if (ownsAttempt(attempt)) setError("Voice connection timed out waiting for session readiness.")
+            }
+    }
 
     @Suppress("TooGenericExceptionCaught") // Error boundary: malformed messages must not crash.
     private suspend fun handleServerMessage(
@@ -543,11 +671,17 @@ internal class DeviceVoiceSession(
 
                 MessageKind.SessionReady -> {
                     Log.i(TAG, "session.ready received")
+                    cancelReadinessTimeout()
+                    recoveryPolicy.reset()
                     _state.update {
                         it.copy(connectStatus = null, connected = true, error = null)
                     }
                     callController.activate()
                     voiceModeChime.connected()
+                    if (recoveryContext.isNotEmpty()) {
+                        send(json.encodeToString(ContextUpdate.serializer(), gatewayContextUpdate(recoveryContext)))
+                        recoveryContext = ""
+                    }
                     val announcing = pendingNotifications.hasAlerts()
                     flushPendingNotifications()
                     if (!ownsAttempt(attempt) || webSocket !== origin) return
@@ -1189,6 +1323,10 @@ internal class DeviceVoiceSession(
     }
 
     override fun disconnect() {
+        stopNetworkMonitoring()
+        recoveryPolicy.reset()
+        recoveryContext = ""
+        pinnedVoice = null
         languageJob?.cancel()
         languageJob = null
         voiceConversation?.finish()
@@ -1228,6 +1366,7 @@ internal class DeviceVoiceSession(
     }
 
     override fun setError(message: String) {
+        stopNetworkMonitoring()
         recordFailure(message)
         voiceConversation?.finish()
         thinkingEarcon.setThinking(false)

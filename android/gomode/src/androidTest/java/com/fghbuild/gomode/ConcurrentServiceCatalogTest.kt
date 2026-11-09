@@ -119,6 +119,23 @@ class ConcurrentServiceCatalogTest {
                         .count { it.readiness == ServiceReadiness.READY } == 2 &&
                         first.streams.get() >= 1 && second.streams.get() >= 1
                 }
+                val identities = entries.map { it.bearerStore.identityEpoch.value }
+                val streamCounts = first.streams.get() to second.streams.get()
+                composeRule.runOnIdle { catalog.networkChanged(false) }
+                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+                    catalog.state.value.values
+                        .all { it.readiness == ServiceReadiness.RECONNECTING }
+                }
+                composeRule.runOnIdle { catalog.networkChanged(true) }
+                composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+                    catalog.state.value.values
+                        .all { it.readiness == ServiceReadiness.READY } &&
+                        first.streams.get() > streamCounts.first && second.streams.get() > streamCounts.second
+                }
+                composeRule.runOnIdle {
+                    assertEquals(identities, entries.map { it.bearerStore.identityEpoch.value })
+                    assertTrue(entries.all { it.state.value.load == WebShellLoadState.Ready })
+                }
                 first.notificationVersion.set(1)
                 second.notificationVersion.set(1)
                 composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {

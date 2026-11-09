@@ -53,6 +53,7 @@ import androidx.webkit.WebViewFeature
 import com.fghbuild.gomode.R
 import com.fghbuild.gomode.service.serviceOrigin
 import com.fghbuild.gomode.ui.ServiceBootstrapState
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -167,11 +168,7 @@ internal class ServiceWebPage(
     var loading by mutableStateOf(true)
         private set
     private var loadFailed = false
-    private var automaticRetryState = AutomaticTimeoutRetryState()
-        set(value) {
-            field = value
-            if (value.pending) scheduleRetry()
-        }
+    private var automaticRetryJob: Job? = null
     private var recoveryLoadInProgress = false
     private var appliedReloadToken: Int? = null
     var fileChooserCallback: ValueCallback<Array<Uri>>? = null
@@ -335,6 +332,8 @@ internal class ServiceWebPage(
                             return true
                         }
                         if (request.isForMainFrame) {
+                            cancelAutomaticRetry()
+                            if (request.hasGesture()) serviceSession.resetAutomaticRetryBudget()
                             serviceSession.invalidatePageAuthentication()
                             authHandler.onNavigation(request.url.toString())
                         }
@@ -378,7 +377,7 @@ internal class ServiceWebPage(
                         }
                         mediaPermissions.onNavigation()
 
-                        automaticRetryState = automaticTimeoutRetryStateOnPageStarted(automaticRetryState)
+                        cancelAutomaticRetry()
                         loadFailed = false
                         loading = true
                         serviceSession.updateLoad(
@@ -404,11 +403,10 @@ internal class ServiceWebPage(
                         }
 
                         if (!loadFailed) {
-                            automaticRetryState = automaticRetryState.copy(attempts = 0)
                             recoveryLoadInProgress = false
                             serviceSession.updateLoad(WebShellLoadState.Ready)
                         }
-                        loading = automaticRetryState.pending
+                        loading = automaticRetryJob != null
                         if (serviceSession.state.value.bootstrap is ServiceBootstrapState.Unvalidated) {
                             serviceSession.reloadBootstrap()
                         }
@@ -428,20 +426,24 @@ internal class ServiceWebPage(
                         frontendTools.clear(view)
 
                         loadFailed = true
-                        if (shouldAutomaticallyRetryWebLoadError(error.errorCode, automaticRetryState.attempts)) {
-                            automaticRetryState =
-                                automaticRetryState.copy(
-                                    attempts = automaticRetryState.attempts + 1,
-                                    pending = true,
-                                )
+                        if (error.errorCode == WebViewClient.ERROR_TIMEOUT && request.method == "GET" &&
+                            serviceSession.canRetryAutomatically
+                        ) {
+                            scheduleRetry()
                             recoveryLoadInProgress = true
                             loading = true
                             serviceSession.updateLoad(WebShellLoadState.Reconnecting)
                         } else {
+                            cancelAutomaticRetry()
                             val message = webLoadErrorMessage(error.errorCode)
                             recoveryLoadInProgress = false
                             loading = false
-                            serviceSession.updateLoad(WebShellLoadState.Failed(message))
+                            serviceSession.updateLoad(
+                                WebShellLoadState.Failed(
+                                    message,
+                                    networkFailure = request.method == "GET" && error.errorCode in networkLoadErrors,
+                                ),
+                            )
                         }
                     }
 
@@ -460,7 +462,7 @@ internal class ServiceWebPage(
                         authHandler.onNavigation(null)
                         frontendTools.clear(view)
                         loadFailed = true
-                        automaticRetryState = automaticRetryState.copy(pending = false)
+                        cancelAutomaticRetry()
                         recoveryLoadInProgress = false
                         loading = false
                         serviceSession.updateLoad(WebShellLoadState.Failed("Service page certificate is invalid."))
@@ -679,7 +681,7 @@ internal class ServiceWebPage(
         if (initialLoad) {
             webView.loadUrl(destination ?: hostURL)
         } else {
-            automaticRetryState = AutomaticTimeoutRetryState()
+            cancelAutomaticRetry()
             recoveryLoadInProgress = true
             loadFailed = false
             loading = true
@@ -697,14 +699,20 @@ internal class ServiceWebPage(
     }
 
     private fun scheduleRetry() {
-        scope.launch {
-            if (rendererLost || !automaticRetryState.pending) return@launch
-            delay(AUTOMATIC_TIMEOUT_RETRY_DELAY_MILLIS)
-            if (automaticRetryState.pending) {
-                automaticRetryState = automaticRetryState.copy(pending = false, inProgress = true)
-                serviceSession.reloadPage(webView::reload)
+        cancelAutomaticRetry()
+        automaticRetryJob =
+            scope.launch {
+                delay(AUTOMATIC_TIMEOUT_RETRY_DELAY_MILLIS)
+                automaticRetryJob = null
+                if (!rendererLost && serviceSession.consumeAutomaticRetry()) {
+                    serviceSession.reloadPage(webView::reload)
+                }
             }
-        }
+    }
+
+    private fun cancelAutomaticRetry() {
+        automaticRetryJob?.cancel()
+        automaticRetryJob = null
     }
 
     fun goBack() {
@@ -730,6 +738,7 @@ internal class ServiceWebPage(
             // If the SPA was already at its root, use normal WebView back
             // navigation for any full-page loads that may be in history.
             if (handled != "true" && webView.canGoBack()) {
+                serviceSession.resetAutomaticRetryBudget()
                 webView.goBack()
             }
         }
@@ -820,26 +829,17 @@ internal sealed interface WebShellLoadState {
         val message: String,
         val canRetry: Boolean = true,
         val recreatePage: Boolean = false,
+        val networkFailure: Boolean = false,
     ) : WebShellLoadState
 }
 
-internal data class AutomaticTimeoutRetryState(
-    val attempts: Int = 0,
-    val pending: Boolean = false,
-    val inProgress: Boolean = false,
-)
-
-internal fun automaticTimeoutRetryStateOnPageStarted(state: AutomaticTimeoutRetryState): AutomaticTimeoutRetryState =
-    if (state.inProgress) {
-        state.copy(inProgress = false)
-    } else {
-        AutomaticTimeoutRetryState()
-    }
-
-internal fun shouldAutomaticallyRetryWebLoadError(
-    errorCode: Int,
-    retryAttempts: Int,
-): Boolean = errorCode == WebViewClient.ERROR_TIMEOUT && retryAttempts == 0
+private val networkLoadErrors =
+    setOf(
+        WebViewClient.ERROR_CONNECT,
+        WebViewClient.ERROR_HOST_LOOKUP,
+        WebViewClient.ERROR_IO,
+        WebViewClient.ERROR_TIMEOUT,
+    )
 
 internal fun webLoadErrorMessage(errorCode: Int): String =
     if (errorCode == WebViewClient.ERROR_TIMEOUT) {

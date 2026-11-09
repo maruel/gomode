@@ -78,6 +78,33 @@ class ServiceCatalogTest {
     }
 
     @Test
+    fun routeChangeRetiresIdleStreamsAndKeepsTheHostedIdentity() =
+        runTest {
+            Fixture("Network").use { fixture ->
+                val entry = fixture.entry("network")
+                val catalog = ServiceCatalog(backgroundScope)
+                try {
+                    catalog.reconcile(mapOf(entry.key to entry), emptyMap())
+                    catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.READY }
+                    val originalAuthority = catalog.authorization(entry.key)
+                    val originalIdentity = entry.bearerStore.identityEpoch.value
+                    catalog.networkChanged(false)
+                    catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.RECONNECTING }
+                    assertFalse(catalog.isReady(entry.key))
+                    assertEquals(WebShellLoadState.Ready, entry.state.value.load)
+                    catalog.networkChanged(true)
+                    catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.READY }
+                    assertTrue(catalog.isReady(entry.key))
+                    assertTrue(catalog.authorization(entry.key) !== originalAuthority)
+                    assertEquals(originalIdentity, entry.bearerStore.identityEpoch.value)
+                } finally {
+                    catalog.close()
+                    entry.close()
+                }
+            }
+        }
+
+    @Test
     fun `conversation items progress without reading a blocked alert resource`() =
         runTest {
             Fixture("Independent").use { fixture ->

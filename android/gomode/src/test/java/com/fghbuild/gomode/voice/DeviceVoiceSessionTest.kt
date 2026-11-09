@@ -1,6 +1,8 @@
 // Unit tests for the on-device text voice session state machine and helpers.
 package com.fghbuild.gomode.voice
 
+import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Uri
 import android.os.Bundle
 import android.os.Looper
@@ -15,7 +17,9 @@ import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceSettingsClient
+import com.fghbuild.gomode.service.VoiceTokenClient
 import com.fghbuild.gomode.ui.observeVoiceStartup
+import com.fghbuild.gomode.ui.web.FrontendVoiceTools
 import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellSession
 import com.fghbuild.gomode.ui.web.WebShellLoadState
@@ -68,6 +72,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.shadows.ShadowLog
+import org.robolectric.shadows.ShadowNetwork
 import org.robolectric.shadows.ShadowSpeechRecognizer
 import org.robolectric.shadows.ShadowSystemClock
 import java.io.IOException
@@ -78,6 +83,176 @@ import java.util.concurrent.TimeUnit
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 class DeviceVoiceSessionTest {
+    @Test
+    fun replacementReadinessIsBoundedAndHangupCancelsItsDeadline() =
+        runTest {
+            Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+            for (hangup in listOf(false, true)) {
+                val sockets = mutableListOf<FakeWebSocket>()
+                val listeners = mutableListOf<WebSocketListener>()
+                val session =
+                    createSession(FakeSpeech()) { _, listener ->
+                        listeners += listener
+                        FakeWebSocket().also { sockets += it }
+                    }
+                try {
+                    session.connect()
+                    runCurrent()
+                    listeners.first().onOpen(sockets.first(), upgradeResponse())
+                    listeners.first().onMessage(sockets.first(), """{"kind":"session.ready"}""")
+                    runCurrent()
+                    listeners.first().onFailure(sockets.first(), IOException("route lost"), null)
+                    runCurrent()
+                    advanceTimeBy(1_000)
+                    runCurrent()
+                    assertEquals(2, sockets.size)
+                    listeners.last().onOpen(sockets.last(), upgradeResponse())
+                    runCurrent()
+                    if (hangup) session.disconnect()
+                    advanceTimeBy(15_000)
+                    runCurrent()
+                    assertTrue(sockets.last().closed)
+                    assertFalse(session.state.value.connected)
+                    if (hangup) {
+                        assertNull(session.state.value.error)
+                    } else {
+                        assertTrue(
+                            session.state.value.error
+                                .orEmpty()
+                                .contains("session readiness"),
+                        )
+                    }
+                    val terminal = session.state.value
+                    listeners.last().onMessage(sockets.last(), """{"kind":"session.ready"}""")
+                    runCurrent()
+                    assertEquals(terminal, session.state.value)
+                } finally {
+                    session.close()
+                }
+            }
+        }
+
+    @Test
+    fun tokenRejectionDuringRecoveryIsTerminalAndKeepsItsCause() =
+        runTest {
+            Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+            MockWebServer().use { server ->
+                server.enqueue(MockResponse().setResponseCode(401))
+                server.start()
+                val socket = FakeWebSocket()
+                var listener: WebSocketListener? = null
+                var preparations = 0
+                val calls = FakeVoiceCallController()
+                val session =
+                    createSession(
+                        FakeSpeech(),
+                        calls = calls,
+                        setupProvider = {
+                            if (preparations++ > 0) {
+                                VoiceTokenClient().fetch(server.url("/token").toString(), null)
+                            }
+                            testSetup()
+                        },
+                    ) { _, captured ->
+                        listener = captured
+                        socket
+                    }
+                try {
+                    session.connect()
+                    runCurrent()
+                    requireNotNull(listener).onOpen(socket, upgradeResponse())
+                    requireNotNull(listener).onMessage(socket, """{"kind":"session.ready"}""")
+                    runCurrent()
+                    requireNotNull(listener).onFailure(socket, IOException("old route"), null)
+                    runCurrent()
+                    advanceTimeBy(1_000)
+                    runCurrent()
+                    val error =
+                        withContext(Dispatchers.Default) {
+                            withTimeout(5_000) { session.state.first { it.error != null }.error }
+                        }
+                    assertTrue(error.orEmpty().contains("HTTP 401"))
+                    advanceTimeBy(60_000)
+                    runCurrent()
+                    assertEquals(2, preparations)
+                    assertEquals(1, server.requestCount)
+                    assertEquals(1, calls.endedLocal)
+                } finally {
+                    session.close()
+                }
+            }
+        }
+
+    @Test
+    fun gatewayWaitsOfflineAndRestoresTheSameConversationOnANewRoute() =
+        runTest {
+            Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+            val sockets = mutableListOf<FakeWebSocket>()
+            val listeners = mutableListOf<WebSocketListener>()
+            var frontendReady = true
+            val session =
+                createSession(FakeSpeech(), frontendTools = FrontendVoiceTools { frontendReady }) { _, listener ->
+                    listeners += listener
+                    FakeWebSocket().also { sockets += it }
+                }
+            try {
+                session.connect()
+                runCurrent()
+                listeners.single().onOpen(sockets.single(), upgradeResponse())
+                listeners.single().onMessage(sockets.single(), """{"kind":"session.ready"}""")
+                runCurrent()
+                assertTrue(session.state.value.connected)
+                val conversation =
+                    DeviceVoiceSession::class.java.getDeclaredField("conversationID").run {
+                        isAccessible = true
+                        get(session)
+                    }
+                val context = RuntimeEnvironment.getApplication()
+                val connectivity = shadowOf(context.getSystemService(ConnectivityManager::class.java))
+                val callback = connectivity.networkCallbacks.single()
+                callback.onLost(requireNotNull(context.getSystemService(ConnectivityManager::class.java).activeNetwork))
+                runCurrent()
+                advanceTimeBy(60_000)
+                runCurrent()
+                assertEquals(1, sockets.size)
+                assertTrue(sockets.first().closed)
+                assertNull(session.state.value.error)
+                assertFalse(session.state.value.connected)
+                frontendReady = false
+                session.injectText("Alert received during handoff", generate = true)
+                callback.onLinkPropertiesChanged(ShadowNetwork.newInstance(42), LinkProperties())
+                runCurrent()
+                assertEquals(2, sockets.size)
+                listeners.last().onOpen(sockets.last(), upgradeResponse())
+                listeners.last().onMessage(sockets.last(), """{"kind":"session.ready"}""")
+                runCurrent()
+                assertTrue(session.state.value.connected)
+                assertTrue(sockets.last().sent.any { it.contains("Alert received during handoff") })
+                advanceTimeBy(20_000)
+                runCurrent()
+                assertTrue(session.state.value.connected)
+                assertEquals(
+                    conversation,
+                    DeviceVoiceSession::class.java.getDeclaredField("conversationID").run {
+                        isAccessible = true
+                        get(session)
+                    },
+                )
+                // A late failure on the abandoned socket cannot end the replacement call.
+                listeners.first().onFailure(sockets.first(), IOException("old route"), null)
+                runCurrent()
+                assertNull(session.state.value.error)
+                session.disconnect()
+                callback.onLinkPropertiesChanged(ShadowNetwork.newInstance(43), LinkProperties())
+                advanceTimeBy(10_000)
+                runCurrent()
+                assertEquals(2, sockets.size)
+                assertTrue(connectivity.networkCallbacks.isEmpty())
+            } finally {
+                session.close()
+            }
+        }
+
     @Test
     fun gatewayResponseCountsMatchIdentityAcrossStreamingAndFinalization() {
         val socket = FakeWebSocket()
@@ -2797,6 +2972,7 @@ class DeviceVoiceSessionTest {
         voiceConversation: VoiceConversation? = null,
         thinkingEarcon: ThinkingEarcon = RecordingThinkingEarcon(),
         startupTiming: () -> VoiceStartupTiming? = { null },
+        frontendTools: FrontendVoiceTools = FrontendVoiceTools(),
         factory: (Request, WebSocketListener) -> WebSocket = { _, _ -> FakeWebSocket() },
     ): DeviceVoiceSession {
         val localConversation =
@@ -2818,6 +2994,7 @@ class DeviceVoiceSessionTest {
             settingsRepository = settingsRepo,
             voiceConversation = localConversation,
             speech = speech,
+            frontendTools = frontendTools,
             languageTag = languageTag,
             localModelOwner = localModelOwner,
             voiceChimePlayer = NoopChime(),

@@ -43,6 +43,8 @@ internal class ServiceShellSession(
             active && bearerStore.authReady.value && frontendPreparation.ready.value &&
                 state.value.load == WebShellLoadState.Ready
     private var active = true
+    private var automaticRetryAvailable = true
+    val canRetryAutomatically: Boolean get() = active && automaticRetryAvailable
     private var pageGeneration = 0L
     private var releasePage: (() -> Unit)? = null
     private var webPage: ServiceWebPage? = null
@@ -127,6 +129,7 @@ internal class ServiceShellSession(
     fun navigate(url: String) {
         if (!active) return
         val target = requireNotNull(resolveNotificationURL(key.url, url)) { "Destination is outside this service" }
+        resetAutomaticRetryBudget()
         invalidatePageAuthentication()
         mutableState.update {
             it.copy(navigationURL = target, webReloadToken = it.webReloadToken + 1, pageRequested = true)
@@ -139,8 +142,27 @@ internal class ServiceShellSession(
         return url
     }
 
-    fun reloadWeb() {
+    fun resetAutomaticRetryBudget() {
+        automaticRetryAvailable = true
+    }
+
+    fun consumeAutomaticRetry(): Boolean {
+        if (!canRetryAutomatically) return false
+        automaticRetryAvailable = false
+        return true
+    }
+
+    fun reloadWeb() = requestReload(automatic = false)
+
+    fun retryWebAutomatically() = requestReload(automatic = true)
+
+    private fun requestReload(automatic: Boolean) {
         if (!active || (mutableState.value.load as? WebShellLoadState.Failed)?.canRetry == false) return
+        if (automatic) {
+            if (!consumeAutomaticRetry()) return
+        } else {
+            resetAutomaticRetryBudget()
+        }
         invalidatePageAuthentication()
         mutableState.update { state ->
             val failure = state.load as? WebShellLoadState.Failed

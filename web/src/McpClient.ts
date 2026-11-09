@@ -2,6 +2,7 @@
 
 import type { MetaObject, RequestMeta, ResourcesCapability, ServerDiscoverResult } from "../../sdk/mcp/ts/v1/types.gen";
 import { readMcpNotificationStream } from "./McpEvents";
+import { NetworkRequestError, observeNetworkChanges } from "./NetworkChanges";
 
 const MCP_PROTOCOL_VERSION = "2026-07-28";
 const CLIENT_VERSION = "1.0.0";
@@ -39,7 +40,13 @@ async function authenticatedFetch(path: string, init?: RequestInit): Promise<Res
   const headers = new Headers(init?.headers);
   const token = await bearerTokenProvider?.();
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  return fetch(path, { ...init, headers });
+  try {
+    return await fetch(path, { ...init, headers });
+  } catch (error) {
+    if (error instanceof TypeError || (error instanceof DOMException && error.name === "TimeoutError"))
+      throw new NetworkRequestError(error.message, { cause: error });
+    throw error;
+  }
 }
 
 function configuredEndpoint(): string {
@@ -315,12 +322,15 @@ function subscribeMcpResources(
   const scheduleRetry = (error: unknown): void => {
     if (closed) return;
     options.onError?.(error);
+    if (!navigator.onLine) return;
     retryTimer = setTimeout(() => void run(), MCP_SUBSCRIPTION_RETRY_MS);
   };
 
   const run = async (): Promise<void> => {
-    if (closed) return;
-    controller = new AbortController();
+    if (closed || !navigator.onLine) return;
+    const attempt = new AbortController();
+    controller = attempt;
+    const current = (): boolean => !closed && controller === attempt;
     try {
       const resp = await authenticatedFetch(configuredEndpoint(), {
         method: "POST",
@@ -336,14 +346,19 @@ function subscribeMcpResources(
           method: "subscriptions/listen",
           params: { notifications: filter, _meta: mcpMeta(options) },
         }),
-        signal: controller.signal,
+        signal: attempt.signal,
       });
+      if (!current()) {
+        await resp.body?.cancel();
+        return;
+      }
       if (!resp.ok || resp.body === null) {
         scheduleRetry(new Error(`MCP subscriptions/listen returned HTTP ${resp.status}`));
         return;
       }
       let acknowledged = false;
       await readMcpNotificationStream(resp.body, (notification) => {
+        if (!current()) return;
         if (notification.method === "notifications/subscriptions/acknowledged") {
           if (!acknowledged) {
             acknowledged = true;
@@ -360,16 +375,26 @@ function subscribeMcpResources(
           report({ uri: typeof uri === "string" ? uri : undefined });
         }
       });
-      scheduleRetry(new Error("MCP subscription stream ended"));
+      if (current()) scheduleRetry(new Error("MCP subscription stream ended"));
     } catch (error) {
-      scheduleRetry(error);
+      if (current()) scheduleRetry(error);
     }
   };
+
+  const stopObservingNetwork = observeNetworkChanges(() => {
+    if (retryTimer !== undefined) clearTimeout(retryTimer);
+    retryTimer = undefined;
+    const previous = controller;
+    controller = null;
+    previous?.abort();
+    if (!closed) void run();
+  });
 
   const subscription: McpResourceSubscription = {
     close(): void {
       if (closed) return;
       closed = true;
+      stopObservingNetwork();
       _subscriptions.delete(subscription);
       if (retryTimer !== undefined) clearTimeout(retryTimer);
       controller?.abort();

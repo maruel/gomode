@@ -1,6 +1,8 @@
 // Tests voice startup failure attribution and rejection of callbacks from disconnected attempts.
 package com.fghbuild.gomode.voice
 
+import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
@@ -56,6 +58,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.shadows.ShadowLog
+import org.robolectric.shadows.ShadowNetwork
 import org.robolectric.shadows.ShadowSystemClock
 import org.webrtc.DataChannel
 import org.webrtc.NativePeerConnectionFactory
@@ -86,6 +89,58 @@ class VoiceSessionLifecycleTest {
         cleanup.asReversed().forEach { it() }
         Dispatchers.resetMain()
     }
+
+    @Test
+    fun offlineRecoveryReleasesTransportWithoutSpendingRetriesAndHangupCancelsIt() =
+        runTest {
+            Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+            val context = RuntimeEnvironment.getApplication()
+            val session = createCloudSession(SettingsRepository(InMemoryPreferencesDataStore()))
+            val peer = RecordingPeerConnection()
+            attachWaitingPeer(session, peer)
+            VoiceSession::class.java.getDeclaredMethod("startNetworkMonitoring").apply {
+                isAccessible = true
+                invoke(session)
+            }
+            runCurrent()
+            val observer =
+                VoiceSession::class.java
+                    .getDeclaredMethod(
+                        "createPeerConnectionObserver",
+                        Long::class.javaPrimitiveType,
+                        ApiClient::class.java,
+                        Map::class.java,
+                    ).run {
+                        isAccessible = true
+                        invoke(session, 0L, ApiClient("https://gateway.example"), emptyMap<String, String>())
+                            as PeerConnection.Observer
+                    }
+            val connectivity = shadowOf(context.getSystemService(ConnectivityManager::class.java))
+            val callback = connectivity.networkCallbacks.single()
+            val wifi = ShadowNetwork.newInstance(41)
+            callback.onLinkPropertiesChanged(wifi, LinkProperties())
+            callback.onLost(wifi)
+            observer.onIceConnectionChange(PeerConnection.IceConnectionState.CONNECTED)
+            runCurrent()
+            advanceTimeBy(60_000)
+            runCurrent()
+            val policy =
+                VoiceSession::class.java.getDeclaredField("recoveryPolicy").run {
+                    isAccessible = true
+                    get(session) as VoiceRecoveryPolicy
+                }
+            assertEquals(0, policy.attempts)
+            assertTrue(peer.closed)
+            assertTrue(peer.disposed)
+            assertNull(session.state.value.error)
+            session.disconnect()
+            callback.onLinkPropertiesChanged(ShadowNetwork.newInstance(42), LinkProperties())
+            runCurrent()
+            assertEquals(0, policy.attempts)
+            assertNull(session.state.value.connectStatus)
+            assertTrue(connectivity.networkCallbacks.isEmpty())
+            session.close()
+        }
 
     @Test
     fun toolResultDeliveryFailureStopsTheAttemptWithoutRepeatingTheAction() =
