@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -25,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,6 +44,207 @@ const (
 
 func TestServer(t *testing.T) {
 	t.Parallel()
+	t.Run("per-user revocation removes pending authority durably", func(t *testing.T) {
+		user := testUser()
+		path := t.TempDir() + "/oauth.json"
+		s, h, _ := newTestFlowServer(t, path, []oauth.User{user})
+		client := registerOAuthTestClient(t, h, "Client", []string{"https://client.example/callback"})
+		authorizeOAuthTestCode(t, h, user, &client, client.RedirectURIs[0], []string{"read"}, "")
+		startOAuthTestConsent(t, h, user, authorizationCodeForm(client.ClientID, client.RedirectURIs[0], "read"))
+		if err := s.RevokeAllUserGrants(user.ID); err != nil {
+			t.Fatal(err)
+		}
+		reloaded, err := LoadStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(reloaded.Codes) != 0 || len(reloaded.Consents) != 0 {
+			t.Fatalf("revocation retained pending codes=%d consents=%d", len(reloaded.Codes), len(reloaded.Consents))
+		}
+	})
+
+	t.Run("account authority", func(t *testing.T) {
+		t.Run("legacy generation survives upgrade but never retirement or failed cleanup", func(t *testing.T) {
+			path := t.TempDir() + "/oauth.json"
+			host := &accountAuthorityHost{user: testUser()}
+			cfg := &ServerConfig{RefreshTokenStorePath: path, Session: host}
+			s := newTestServer(t, cfg)
+			h := newTestServerHandler(s)
+			client := registerOAuthTestClient(t, h, "Client", []string{"https://claude.example.com/callback"})
+			initial := authorizeOAuthTestClient(t, h, host.user, &client, []string{"read"})
+			code := authorizeOAuthTestCode(t, h, host.user, &client, client.RedirectURIs[0], []string{"read"}, "")
+			consent := startOAuthTestConsent(t, h, host.user, authorizationCodeForm(client.ClientID, client.RedirectURIs[0], "read"))
+			// Older records have no authority field; the host's initial generation is empty.
+			s.Close()
+			s = newTestServer(t, cfg)
+			h = newTestServerHandler(s)
+			refreshOAuthTestToken(t, h, client.ClientID, initial.RefreshToken, http.StatusOK)
+			if _, err := s.verifyBearer(newTestResourceRequest(t), initial.AccessToken); err != nil {
+				t.Fatal(err)
+			}
+			current := authorizeOAuthTestClient(t, h, host.user, &client, []string{"read"})
+			host.retire()
+			s.state.io = failingRenameStoreIO{storeIO: osStoreIO{}}
+			if err := s.RevokeAllUserGrants(host.user.ID); err == nil {
+				t.Fatal("cleanup unexpectedly succeeded")
+			}
+			s.Close()
+			s = newTestServer(t, cfg)
+			h = newTestServerHandler(s)
+			if _, err := s.verifyBearer(newTestResourceRequest(t), current.AccessToken); err == nil {
+				t.Fatal("old bearer upgraded account authority")
+			}
+			refreshOAuthTestToken(t, h, client.ClientID, current.RefreshToken, http.StatusBadRequest)
+			request := url.Values{"grant_type": {oauth.GrantAuthorizationCode}, "client_id": {client.ClientID}, "redirect_uri": {client.RedirectURIs[0]}, "code": {code}, "code_verifier": {testVerifier}}
+			w := accountAuthorityRequest(t, h, "/oauth/token", request, host.user)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("old code status %d: %s", w.Code, w.Body.String())
+			}
+			w = accountAuthorityRequest(t, h, "/oauth/authorize", url.Values{"consent_token": {consent}}, host.user)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("old consent status %d", w.Code)
+			}
+			authorizeOAuthTestClient(t, h, host.user, &client, []string{"read"})
+			if err := s.RevokeAllUserGrants(host.user.ID); err != nil {
+				t.Fatal(err)
+			}
+			s.Close()
+		})
+		t.Run("revocation between consent read and publication cannot create a code", func(t *testing.T) {
+			host := &accountAuthorityHost{user: testUser()}
+			gate := &accountAuthorityGate{SessionManager: host, entered: make(chan struct{}), release: make(chan struct{})}
+			s := newTestServer(t, &ServerConfig{Session: gate})
+			t.Cleanup(s.Close)
+			h := newTestServerHandler(s)
+			client := registerOAuthTestClient(t, h, "Client", []string{"https://claude.example.com/callback"})
+			consent := startOAuthTestConsent(t, h, host.user, authorizationCodeForm(client.ClientID, client.RedirectURIs[0], "read"))
+			gate.active.Store(true)
+			done := make(chan *httptest.ResponseRecorder, 1)
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				done <- accountAuthorityRequest(t, h, "/oauth/authorize", url.Values{"consent_token": {consent}}, host.user)
+			})
+			<-gate.entered
+			// Keep host generation unchanged: gomode itself must atomically consume the
+			// original consent when publishing a code, even for ordinary sign-out.
+			if err := s.RevokeAllUserGrants(host.user.ID); err != nil {
+				t.Fatal(err)
+			}
+			close(gate.release)
+			w := <-done
+			wg.Wait()
+			if w.Code == http.StatusSeeOther {
+				t.Fatal("late approval published a code")
+			}
+			if len(s.state.Codes) != 0 {
+				t.Fatal("late code retained")
+			}
+		})
+		t.Run("late requests cannot publish after disable and reenable", func(t *testing.T) {
+			for _, stage := range []string{"consent", "code", "code exchange", "refresh", "device", "device exchange"} {
+				t.Run(stage, func(t *testing.T) {
+					host := &accountAuthorityHost{user: testUser()}
+					host.user.Authority = "original"
+					gate := &accountAuthorityGate{SessionManager: host, entered: make(chan struct{}), release: make(chan struct{})}
+					path := t.TempDir() + "/oauth.json"
+					s := newTestServer(t, &ServerConfig{Session: gate, RefreshTokenStorePath: path})
+					t.Cleanup(s.Close)
+					h := newTestServerHandler(s)
+					client := registerOAuthTestClient(t, h, "Client", []string{"https://claude.example.com/callback"})
+					stale := host.user
+					endpoint := "/oauth/authorize"
+					var form url.Values
+					switch stage {
+					case "consent":
+						// A browser GET already holding a stale session must not publish consent.
+						form = authorizationCodeForm(client.ClientID, client.RedirectURIs[0], "read")
+					case "code":
+						consent := startOAuthTestConsent(t, h, stale, authorizationCodeForm(client.ClientID, client.RedirectURIs[0], "read"))
+						form = url.Values{"consent_token": {consent}}
+					case "code exchange":
+						code := authorizeOAuthTestCode(t, h, stale, &client, client.RedirectURIs[0], []string{"read"}, "")
+						endpoint = "/oauth/token"
+						form = url.Values{"grant_type": {oauth.GrantAuthorizationCode}, "client_id": {client.ClientID}, "redirect_uri": {client.RedirectURIs[0]}, "code": {code}, "code_verifier": {testVerifier}}
+					case "refresh":
+						token := authorizeOAuthTestClient(t, h, stale, &client, []string{"read"})
+						endpoint = "/oauth/token"
+						form = url.Values{"grant_type": {oauth.GrantRefreshToken}, "client_id": {client.ClientID}, "refresh_token": {token.RefreshToken}}
+					case "device", "device exchange":
+						response := accountAuthorityRequest(t, h, "/oauth/device_authorization", url.Values{"client_id": {client.ClientID}, "scope": {"read"}}, oauth.User{})
+						if response.Code != http.StatusOK {
+							t.Fatalf("device authorization status %d: %s", response.Code, response.Body.String())
+						}
+						var device oauth.DeviceAuthorizationResponse
+						if err := json.NewDecoder(response.Body).Decode(&device); err != nil {
+							t.Fatal(err)
+						}
+						if device.DeviceCode == "" || device.UserCode == "" {
+							t.Fatal("device authorization did not issue credentials")
+						}
+						if stage == "device exchange" {
+							response = accountAuthorityRequest(t, h, "/oauth/device", url.Values{"user_code": {device.UserCode}}, stale)
+							if response.Code != http.StatusOK {
+								t.Fatalf("device approval status %d: %s", response.Code, response.Body.String())
+							}
+							disk, err := LoadStore(path)
+							if err != nil {
+								t.Fatal(err)
+							}
+							approved := disk.DeviceCodes[oauth.RefreshTokenKey(device.DeviceCode)]
+							if approved == nil || approved.flow.State != pairing.Approved || approved.flow.Subject != stale.ID || approved.Authority != stale.Authority {
+								t.Fatalf("public device approval lost original authority: %+v", approved)
+							}
+							endpoint = "/oauth/token"
+							form = url.Values{"grant_type": {oauth.GrantDeviceCode}, "client_id": {client.ClientID}, "device_code": {device.DeviceCode}}
+						} else {
+							endpoint = "/oauth/device"
+							form = url.Values{"user_code": {device.UserCode}}
+						}
+					}
+					gate.active.Store(true)
+					done := make(chan *httptest.ResponseRecorder, 1)
+					var wg sync.WaitGroup
+					wg.Go(func() {
+						if stage == "consent" {
+							w := httptest.NewRecorder()
+							h.ServeHTTP(w, newOAuthTestRequest(t, http.MethodGet, endpoint+"?"+form.Encode(), http.NoBody, stale))
+							done <- w
+						} else {
+							done <- accountAuthorityRequest(t, h, endpoint, form, stale)
+						}
+					})
+					<-gate.entered
+					host.retire()
+					if err := s.RevokeAllUserGrants(stale.ID); err != nil {
+						t.Fatal(err)
+					}
+					close(gate.release)
+					w := <-done
+					wg.Wait()
+					if w.Code < 400 {
+						t.Fatalf("late %s status %d: %s", stage, w.Code, w.Body.String())
+					}
+					disk, err := LoadStore(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(disk.Codes) != 0 || len(disk.Consents) != 0 {
+						t.Fatal("stale pending authority persisted")
+					}
+					for _, grant := range disk.Grants {
+						if grant.RevokedAt.IsZero() {
+							t.Fatal("late grant persisted")
+						}
+					}
+					for _, dc := range disk.DeviceCodes {
+						if dc.flow.State == pairing.Approved {
+							t.Fatal("late device approval persisted")
+						}
+					}
+				})
+			}
+		})
+	})
 
 	t.Run("issuer and audience ignore request authority headers", func(t *testing.T) {
 		t.Parallel()
@@ -1520,6 +1723,50 @@ func TestServer(t *testing.T) {
 	t.Run("IssueNarrowToken", func(t *testing.T) {
 		t.Parallel()
 
+		t.Run("current account authority", func(t *testing.T) {
+			host := &accountAuthorityHost{user: testUser()}
+			host.retire()
+			var handler http.Handler
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handler.ServeHTTP(w, r) }))
+			t.Cleanup(ts.Close)
+			s := newTestServer(t, &ServerConfig{Issuer: ts.URL, Session: host})
+			handler = newTestServerHandler(s)
+			t.Cleanup(s.Close)
+			token, err := s.IssueNarrowToken(host.user, "voice-gateway", "voice.session", time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			claims, err := oauthverify.New(nil).Verify(t.Context(), token, ts.URL, "voice-gateway", "voice.session")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if claims.Subject != host.user.ID {
+				t.Fatalf("wrong subject: %q", claims.Subject)
+			}
+			payload, err := base64.RawURLEncoding.DecodeString(strings.Split(token, ".")[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var signed oauth.AccessTokenClaims
+			if err := json.Unmarshal(payload, &signed); err != nil {
+				t.Fatal(err)
+			}
+			if signed.Authority != host.user.Authority {
+				t.Fatalf("token lost captured authority: %q", signed.Authority)
+			}
+		})
+		t.Run("retired account authority", func(t *testing.T) {
+			host := &accountAuthorityHost{user: testUser()}
+			stale := host.user
+			s := newTestServer(t, &ServerConfig{Session: host})
+			t.Cleanup(s.Close)
+			host.retire()
+			token, err := s.IssueNarrowToken(stale, "voice-gateway", "voice.session", time.Minute)
+			if !errors.Is(err, ErrUserAuthority) || token != "" {
+				t.Fatalf("retired authority issued token=%t err=%v", token != "", err)
+			}
+		})
+
 		t.Run("valid", func(t *testing.T) {
 			t.Parallel()
 			var handler http.Handler
@@ -1527,10 +1774,9 @@ func TestServer(t *testing.T) {
 				handler.ServeHTTP(w, r)
 			}))
 			t.Cleanup(ts.Close)
-			s := newTestServer(t, &ServerConfig{Issuer: ts.URL})
-			handler = newTestServerHandler(s)
-
 			user := oauth.User{ID: "user-1", Username: "alice"}
+			s := newTestServer(t, &ServerConfig{Issuer: ts.URL, Session: &testSessionManager{users: map[string]oauth.User{user.ID: user}}})
+			handler = newTestServerHandler(s)
 			token, err := s.IssueNarrowToken(user, "voice-gateway", "voice.session", 5*time.Minute)
 			if err != nil {
 				t.Fatalf("IssueNarrowToken: %v", err)
@@ -1660,7 +1906,7 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 			t.Fatalf("Save: %v", err)
 		}
 		store.io = failingRenameStoreIO{storeIO: osStoreIO{}}
-		server := &Server{state: store, refreshTokenTTL: time.Hour}
+		server := &Server{state: store, refreshTokenTTL: time.Hour, session: &testSessionManager{users: map[string]oauth.User{"user": {ID: "user"}}}}
 		if result, _, err := server.exchangeRefreshToken("refresh", Client{ID: "client"}, "user", "next-refresh", dpopBinding{}); err == nil || result != refreshExchangeRotated {
 			t.Fatalf("exchangeRefreshToken = %d, %v; want rotation persistence failure", result, err)
 		}
@@ -1687,7 +1933,7 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 			t.Fatalf("Save: %v", err)
 		}
 		store.io = failingRenameStoreIO{storeIO: osStoreIO{}}
-		server := &Server{state: store}
+		server := &Server{state: store, session: &testSessionManager{users: map[string]oauth.User{"user": {ID: "user"}}}}
 		if revoked, err := server.RevokeUserGrant("user", "grant"); err == nil || !revoked {
 			t.Fatalf("RevokeUserGrant = %t, %v; want matched grant and persistence failure", revoked, err)
 		}
@@ -3763,9 +4009,19 @@ func (u *testAuthorizationUI) RenderOAuthConsent(w http.ResponseWriter, data *Co
 	return err
 }
 
+// testSessionManager owns an immutable registry of enabled fixture accounts.
 type testSessionManager struct {
 	users       map[string]oauth.User
 	endRedirect string
+}
+
+// WithUserAuthority validates this fixture's immutable account registry.
+func (m *testSessionManager) WithUserAuthority(u oauth.User, publish func() error) error {
+	current, found := m.users[u.ID]
+	if !found || current.Authority != u.Authority {
+		return ErrUserAuthority
+	}
+	return publish()
 }
 
 func (m *testSessionManager) CurrentUser(ctx context.Context) (oauth.User, bool) {
@@ -4499,7 +4755,7 @@ func TestClientLifecyclePolicy(t *testing.T) {
 
 	t.Run("refresh eligibility is rechecked inside rotation", func(t *testing.T) {
 		t.Parallel()
-		server := newTestServer(t)
+		server := newTestServer(t, &ServerConfig{Session: &testSessionManager{users: map[string]oauth.User{"user": {ID: "user"}}}})
 		now := time.Now()
 		server.state.Clients["client"] = Client{ID: "client", RedirectURIs: []string{"https://example.com/callback"}, GrantTypes: []string{oauth.GrantAuthorizationCode}}
 		server.state.Grants["grant"] = v5.Grant{ID: "grant", UserID: "user", ClientID: "client", Resource: testResourceURL, ExpiresAt: now.Add(time.Hour)}
@@ -5611,4 +5867,62 @@ func testFlowServerConfig(path string, users []oauth.User) ServerConfig {
 		},
 	}
 	return cfg
+}
+
+// accountAuthorityHost owns account generations independently of OAuth storage.
+type accountAuthorityHost struct {
+	mu   sync.Mutex
+	user oauth.User
+}
+
+func (h *accountAuthorityHost) CurrentUser(ctx context.Context) (oauth.User, bool) {
+	u, ok := ctx.Value(testUserContextKey{}).(oauth.User)
+	return u, ok
+}
+func (h *accountAuthorityHost) FindUser(id string) (oauth.User, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.user, h.user.ID == id
+}
+func (h *accountAuthorityHost) AttachUser(ctx context.Context, u oauth.User) context.Context {
+	return context.WithValue(ctx, testUserContextKey{}, u)
+}
+func (h *accountAuthorityHost) EndSession(context.Context, *http.Request, oauth.User) string {
+	return ""
+}
+func (h *accountAuthorityHost) WithUserAuthority(u oauth.User, publish func() error) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if u.ID != h.user.ID || u.Authority != h.user.Authority {
+		return ErrUserAuthority
+	}
+	return publish()
+}
+func (h *accountAuthorityHost) retire() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.user.Authority = "retired"
+}
+
+// accountAuthorityGate pauses before entering the real host barrier.
+type accountAuthorityGate struct {
+	SessionManager
+	active  atomic.Bool
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *accountAuthorityGate) WithUserAuthority(u oauth.User, publish func() error) error {
+	if g.active.Load() {
+		g.once.Do(func() { close(g.entered); <-g.release })
+	}
+	return g.SessionManager.WithUserAuthority(u, publish)
+}
+func accountAuthorityRequest(t *testing.T, h http.Handler, path string, form url.Values, user oauth.User) *httptest.ResponseRecorder {
+	req := newOAuthTestRequest(t, http.MethodPost, path, strings.NewReader(form.Encode()), user)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	return w
 }

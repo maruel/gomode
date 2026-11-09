@@ -24,9 +24,13 @@ type TokenConfirmation struct {
 
 // User is the package-neutral OAuth view of an authenticated resource owner.
 type User struct {
-	ID       string
-	Username string
-	Provider string
+	// Authority is the host's opaque account generation. The host must change it
+	// whenever old authority is retired. The empty value represents the initial
+	// generation and must never be reused after it has been retired.
+	Authority string
+	ID        string
+	Username  string
+	Provider  string
 }
 
 // BearerClaims holds verified bearer-token identity and authorization claims.
@@ -205,6 +209,7 @@ type JWTHeader struct {
 
 // AccessTokenClaims are JWT access-token claims.
 type AccessTokenClaims struct {
+	Authority    string             `json:"authority,omitempty"`
 	Issuer       string             `json:"iss"`
 	Subject      string             `json:"sub"`
 	Audience     string             `json:"aud"`

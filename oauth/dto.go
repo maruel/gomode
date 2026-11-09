@@ -6,12 +6,14 @@
 // Subpackages:
 //
 //	oauth/oauthclient - Authorization-code client helpers and provider
-//	    (GitHub/GitLab) configurations.
+//	    (GitHub/GitLab/Google) configurations.
 //	oauth/oauthserver - OAuth authorization server HTTP handlers and
 //	    token management.
+//	oauth/oauthverify - JWT access-token verification using trusted issuer
+//	    discovery and signing keys.
 //
 // This root package holds shared constants and protocol-level DTOs used
-// by both subpackages. Server-side types live in dto_server.go;
+// by the subpackages. Server-side types live in dto_server.go;
 // client-side types live in dto_client.go.
 //
 // Implemented RFCs: 6749 (Authorization Framework), 6750 (Bearer Token
@@ -22,6 +24,11 @@
 // Grant), 9126 (Pushed Authorization Requests), 9207 (Issuer
 // Identification), 9449 (DPoP), and 9700 (OAuth Security BCP).
 // Client ID Metadata Documents are implemented from the current IETF draft.
+//
+// Client credentials (RFC 6749 section 4.4) require confidential clients using
+// private_key_jwt (RFC 7523) asymmetric assertions; the server issues no shared
+// secrets. This supports the MCP OAuth Client Credentials extension
+// (io.modelcontextprotocol/oauth-client-credentials).
 //
 // Not implemented: 8693 (Token Exchange). Issue audience-scoped tokens at
 // the authorization endpoint via the resource parameter (RFC 8707) instead.

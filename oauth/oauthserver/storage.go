@@ -81,6 +81,7 @@ type Client struct {
 
 // DeviceCode holds an in-progress device authorization flow (RFC 8628).
 type DeviceCode struct {
+	Authority   string
 	UserCodeKey string
 	ClientID    string
 	Scope       string
@@ -247,7 +248,7 @@ func (s *Store) ListUserGrants(userID string) []Grant {
 	for id := range s.Grants {
 		grant := s.Grants[id]
 		if grant.UserID == userID {
-			grants = append(grants, Grant(grant))
+			grants = append(grants, Grant{ID: grant.ID, UserID: grant.UserID, ClientID: grant.ClientID, ClientName: grant.ClientName, Resource: grant.Resource, Scope: grant.Scope, CreatedAt: grant.CreatedAt, LastUsedAt: grant.LastUsedAt, ExpiresAt: grant.ExpiresAt, RevokedAt: grant.RevokedAt})
 		}
 	}
 	slices.SortFunc(grants, func(a, b Grant) int {
@@ -261,7 +262,7 @@ func (s *Store) ListUserGrants(userID string) []Grant {
 
 // RevokeUserGrant revokes one user's grant and all refresh tokens for it.
 func (s *Store) RevokeUserGrant(userID, grantID string, now time.Time) bool {
-	file := storeState{Grants: s.Grants, RefreshTokens: s.RefreshTokens}
+	file := storeState{Grants: s.Grants, RefreshTokens: s.RefreshTokens, Codes: s.Codes, Consents: s.Consents, DeviceCodes: s.DeviceCodes}
 	return revokeUserGrant(&file, userID, grantID, now)
 }
 
@@ -334,53 +335,48 @@ func revokeGrant(file *storeState, grantID string, now time.Time) bool {
 	return changed
 }
 
-// RevokeAllUserGrants revokes all grants and refresh tokens for a user.
-// Returns true if any grants were revoked.
+// RevokeAllUserGrants invalidates a user's pending authorizations, grants, and refresh tokens.
+// Returns true if any authority was invalidated.
 func (s *Store) RevokeAllUserGrants(userID string, now time.Time) bool {
-	file := storeState{Grants: s.Grants, RefreshTokens: s.RefreshTokens}
+	file := storeState{Grants: s.Grants, RefreshTokens: s.RefreshTokens, Codes: s.Codes, Consents: s.Consents, DeviceCodes: s.DeviceCodes}
 	return revokeAllUserGrants(&file, userID, now)
 }
 
 func revokeAllUserGrants(file *storeState, userID string, now time.Time) bool {
 	changed := false
-	for id := range file.Grants {
-		grant := file.Grants[id]
-		if grant.UserID == userID && grant.RevokedAt.IsZero() {
-			file.Grants[id] = v5.Grant{
-				ID:         grant.ID,
-				UserID:     grant.UserID,
-				ClientID:   grant.ClientID,
-				ClientName: grant.ClientName,
-				Resource:   grant.Resource,
-				Scope:      grant.Scope,
-				CreatedAt:  grant.CreatedAt,
-				LastUsedAt: grant.LastUsedAt,
-				ExpiresAt:  grant.ExpiresAt,
-				RevokedAt:  now,
-			}
+	for key, entry := range file.Codes {
+		if entry.UserID == userID {
+			delete(file.Codes, key)
 			changed = true
 		}
 	}
-	if !changed {
-		return false
-	}
-	for tokenHash := range file.RefreshTokens {
-		token := file.RefreshTokens[tokenHash]
-		if token.UserID == userID && token.RevokedAt.IsZero() {
-			file.RefreshTokens[tokenHash] = v5.RefreshToken{
-				GrantID:   token.GrantID,
-				UserID:    token.UserID,
-				ClientID:  token.ClientID,
-				Resource:  token.Resource,
-				Scope:     token.Scope,
-				DPoPJKT:   token.DPoPJKT,
-				ExpiresAt: token.ExpiresAt,
-				UsedAt:    token.UsedAt,
-				RevokedAt: now,
-			}
+	for key, entry := range file.Consents {
+		if entry.UserID == userID {
+			delete(file.Consents, key)
+			changed = true
 		}
 	}
-	return true
+	for key, entry := range file.DeviceCodes {
+		if entry != nil && entry.flow.Subject == userID {
+			delete(file.DeviceCodes, key)
+			changed = true
+		}
+	}
+	for id, grant := range file.Grants {
+		if grant.UserID == userID && grant.RevokedAt.IsZero() {
+			grant.RevokedAt = now
+			file.Grants[id] = grant
+			changed = true
+		}
+	}
+	for key, token := range file.RefreshTokens {
+		if token.UserID == userID && token.RevokedAt.IsZero() {
+			token.RevokedAt = now
+			file.RefreshTokens[key] = token
+			changed = true
+		}
+	}
+	return changed
 }
 
 // PruneExpiredRefreshTokens removes expired refresh tokens.
@@ -543,7 +539,7 @@ func (s *storeState) disk() v5.Store {
 			devices[key] = nil
 			continue
 		}
-		devices[key] = &v5.DeviceCode{UserCodeKey: d.UserCodeKey, ClientID: d.ClientID, Scope: d.Scope, UserID: d.flow.Subject, Status: string(d.flow.State), ExpiresAt: d.flow.ExpiresAt, IssuedAt: d.flow.CreatedAt}
+		devices[key] = &v5.DeviceCode{Authority: d.Authority, UserCodeKey: d.UserCodeKey, ClientID: d.ClientID, Scope: d.Scope, UserID: d.flow.Subject, Status: string(d.flow.State), ExpiresAt: d.flow.ExpiresAt, IssuedAt: d.flow.CreatedAt}
 	}
 	return v5.Store{Version: storeVersion, Clients: clients, RefreshTokens: s.RefreshTokens, Grants: s.Grants, Codes: s.Codes, Consents: s.Consents, DeviceCodes: devices, DPoPProofs: s.DPoPProofs, DPoPNonces: s.DPoPNonces, ClientAssertionJTIs: s.ClientAssertionJTIs, AccessTokenSigningKeys: s.AccessTokenSigningKeys, CurrentSigningKID: s.CurrentSigningKID}
 }
@@ -618,7 +614,7 @@ func loadDeviceCodes(src map[string]*v5.DeviceCode) map[string]*DeviceCode {
 			dst[key] = nil
 			continue
 		}
-		dst[key] = &DeviceCode{UserCodeKey: d.UserCodeKey, ClientID: d.ClientID, Scope: d.Scope, flow: pairing.Flow{Subject: d.UserID, State: pairing.State(d.Status), ExpiresAt: d.ExpiresAt, CreatedAt: d.IssuedAt}}
+		dst[key] = &DeviceCode{Authority: d.Authority, UserCodeKey: d.UserCodeKey, ClientID: d.ClientID, Scope: d.Scope, flow: pairing.Flow{Subject: d.UserID, State: pairing.State(d.Status), ExpiresAt: d.ExpiresAt, CreatedAt: d.IssuedAt}}
 	}
 	return dst
 }

@@ -673,9 +673,16 @@ func TestAccessTokenService(t *testing.T) {
 }
 
 // tokenTestSession is a minimal SessionManager for token tests.
-// FindUser returns the hardcoded user; other methods panic if called.
+// The fixture account is immutable; authority checks reject other identities.
 type tokenTestSession struct {
 	user oauth.User
+}
+
+func (s *tokenTestSession) WithUserAuthority(u oauth.User, publish func() error) error {
+	if u.ID != s.user.ID || u.Authority != s.user.Authority {
+		return ErrUserAuthority
+	}
+	return publish()
 }
 
 func (s *tokenTestSession) CurrentUser(ctx context.Context) (oauth.User, bool) {

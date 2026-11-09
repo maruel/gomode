@@ -33,6 +33,7 @@ type Client struct {
 
 // Code is an issued authorization code with PKCE binding.
 type Code struct {
+	Authority     string    `json:"authority,omitempty"`
 	UserID        string    `json:"userID"`
 	ClientID      string    `json:"clientID"`
 	RedirectURI   string    `json:"redirectURI"`
@@ -44,6 +45,7 @@ type Code struct {
 
 // ConsentParams holds in-progress OAuth authorization consent state.
 type ConsentParams struct {
+	Authority string            `json:"authority,omitempty"`
 	UserID    string            `json:"userID"`
 	Params    map[string]string `json:"params"`
 	ExpiresAt time.Time         `json:"expiresAt"`
@@ -64,6 +66,7 @@ type RefreshToken struct {
 
 // DeviceCode holds an in-progress device authorization flow (RFC 8628).
 type DeviceCode struct {
+	Authority   string    `json:"authority,omitempty"`
 	UserCodeKey string    `json:"userCodeKey,omitempty"`
 	ClientID    string    `json:"clientID"`
 	Scope       string    `json:"scope"`
@@ -75,6 +78,7 @@ type DeviceCode struct {
 
 // Grant ties a user authorization grant to a client and token.
 type Grant struct {
+	Authority  string    `json:"authority,omitempty"`
 	ID         string    `json:"id"`
 	UserID     string    `json:"userID"`
 	ClientID   string    `json:"clientID"`

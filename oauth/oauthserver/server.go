@@ -1,10 +1,10 @@
-// OAuth authorization-server HTTP handlers.
+// OAuth authorization-server HTTP handlers with host account authority barriers.
 
 // Package oauthserver is a generic OAuth 2.0 authorization server.
 //
-// The caller plugs in session management, consent UI rendering, and
-// token storage via interfaces (SessionManager, AuthorizationUI,
-// Storage). Dependency-free.
+// The caller supplies SessionManager for login and account authority, and
+// AuthorizationUI for consent rendering.
+// The server owns durable OAuth authorization state and uses the standard library.
 package oauthserver
 
 import (
@@ -62,12 +62,34 @@ type IntrospectionPrincipal struct {
 type IntrospectionAuthenticator func(*http.Request) (IntrospectionPrincipal, bool)
 
 // SessionManager manages user sessions for the authorization server.
-// The caller implements browser login, user lookup, and session teardown.
+// The caller owns browser login, account authority, user lookup, and session teardown.
 type SessionManager interface {
+	UserAuthority
 	CurrentUser(ctx context.Context) (oauth.User, bool)
 	AttachUser(ctx context.Context, u oauth.User) context.Context
 	FindUser(id string) (oauth.User, bool)
 	EndSession(ctx context.Context, r *http.Request, u oauth.User) (redirectURL string)
+}
+
+// ErrUserAuthority indicates that an account is disabled or its generation is stale.
+var ErrUserAuthority = errors.New("oauth: account authority is no longer valid")
+
+// UserAuthority serializes OAuth publication with host account authority changes.
+//
+// Only the supplied user's ID and Authority are guaranteed to be populated.
+// WithUserAuthority must check that user.ID is enabled and user.Authority matches
+// its current generation, then hold the same account lock used for
+// disabling or retiring generations until publish returns. Return ErrUserAuthority
+// for a stale account. Call publish exactly once on success, and propagate its error.
+// The callback only accesses OAuth state; it never calls SessionManager or the host.
+// Lock order is host authority followed by OAuth state. Do not call Server methods
+// from publish or hold an OAuth lock while invoking this interface.
+//
+// The empty authority represents the initial generation. Hosts must reject it
+// after that generation has been retired. See Server.RevokeAllUserGrants for
+// the lifecycle contract between account retirement and OAuth cleanup.
+type UserAuthority interface {
+	WithUserAuthority(user oauth.User, publish func() error) error
 }
 
 // AuthorizationUI renders the OAuth authorization user interface.
@@ -413,7 +435,12 @@ func (s *Server) RevokeUserGrant(userID, grantID string) (bool, error) {
 	return revoked, err
 }
 
-// RevokeAllUserGrants revokes all grants and refresh tokens for a user, then saves durable state.
+// RevokeAllUserGrants durably invalidates pending authorizations, grants, and refresh tokens for a user.
+// When disabling an account, the session owner must durably retire its generation
+// even if OAuth cleanup fails, so credentials remain unusable across restart or
+// re-enablement. Retry
+// cleanup independently. SessionManager's authority barrier rejects stale requests
+// that raced revocation before publishing new authority.
 func (s *Server) RevokeAllUserGrants(userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -427,7 +454,8 @@ func (s *Server) RevokeAllUserGrants(userID string) error {
 // (such as the voice gateway) that are not the server's protected resource. The
 // token carries no grant, so it cannot be refreshed or introspected as a client
 // grant, and this server's own BearerAuth rejects it because its audience
-// differs from the configured protected resource.
+// differs from the configured protected resource. The supplied user must carry
+// the original authenticated account authority.
 func (s *Server) IssueNarrowToken(user oauth.User, audience, scope string, ttl time.Duration) (string, error) {
 	if user.ID == "" {
 		return "", errors.New("oauth: token subject is required")
@@ -438,7 +466,21 @@ func (s *Server) IssueNarrowToken(user oauth.User, audience, scope string, ttl t
 	if scope == "" {
 		return "", errors.New("oauth: token scope is required")
 	}
-	return s.tokens.IssueAccessTokenTTL(s.issuer, user, audience, scope, "", "", ttl)
+	var token string
+	err := s.session.WithUserAuthority(user, func() error {
+		var err error
+		token, err = s.tokens.IssueAccessTokenTTL(s.issuer, user, audience, scope, "", "", ttl)
+		return err
+	})
+	return token, err
+}
+
+func (s *Server) transactUser(user oauth.User, update func(*storeState) bool) error {
+	return s.session.WithUserAuthority(user, func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.state.transact(update)
+	})
 }
 
 func (s *Server) currentRequestUser(ctx context.Context) (oauth.User, bool) {
@@ -618,7 +660,6 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request, user oaut
 		oauth.WriteError(w, http.StatusInternalServerError, "server_error", "could not start consent")
 		return
 	}
-	s.mu.Lock()
 	params := make(map[string]string)
 	for k, vals := range values {
 		if len(vals) > 0 {
@@ -627,16 +668,15 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request, user oaut
 	}
 	now := time.Now()
 	capacityExceeded := false
-	err = s.state.transact(func(next *storeState) bool {
+	err = s.transactUser(user, func(next *storeState) bool {
 		changed := pruneExpiredStore(next, now)
 		if len(next.Consents) >= maxPendingConsents {
 			capacityExceeded = true
 			return changed
 		}
-		next.Consents[oauth.RefreshTokenKey(consentToken)] = v5.ConsentParams{UserID: user.ID, Params: params, ExpiresAt: now.Add(s.authCodeTTL)}
+		next.Consents[oauth.RefreshTokenKey(consentToken)] = v5.ConsentParams{Authority: user.Authority, UserID: user.ID, Params: params, ExpiresAt: now.Add(s.authCodeTTL)}
 		return true
 	})
-	s.mu.Unlock()
 	if err != nil {
 		slog.WarnContext(r.Context(), "save oauth consent", "err", err)
 		oauth.WriteError(w, http.StatusInternalServerError, "server_error", "could not start consent")
@@ -745,22 +785,9 @@ func (s *Server) handleOAuthAuthorizePOST(w http.ResponseWriter, r *http.Request
 	consentToken := r.PostForm.Get("consent_token")
 	consentHash := oauth.RefreshTokenKey(consentToken)
 	s.mu.Lock()
-	var c v5.ConsentParams
-	var consentFound bool
-	err := s.state.transact(func(next *storeState) bool {
-		c, consentFound = next.Consents[consentHash]
-		if consentFound {
-			delete(next.Consents, consentHash)
-		}
-		return consentFound
-	})
+	c, consentFound := s.state.Consents[consentHash]
 	s.mu.Unlock()
-	if err != nil {
-		slog.WarnContext(r.Context(), "consume oauth consent", "err", err)
-		oauth.WriteError(w, http.StatusInternalServerError, "server_error", "could not consume consent")
-		return
-	}
-	if !consentFound || c.UserID != user.ID || time.Now().After(c.ExpiresAt) {
+	if !consentFound || c.UserID != user.ID || c.Authority != user.Authority || time.Now().After(c.ExpiresAt) {
 		oauth.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid or expired consent")
 		return
 	}
@@ -775,6 +802,14 @@ func (s *Server) handleOAuthAuthorizePOST(w http.ResponseWriter, r *http.Request
 	switch r.PostForm.Get("decision") {
 	case "approve", "":
 	case "deny":
+		if err := s.transactUser(user, func(next *storeState) bool {
+			_, found := next.Consents[consentHash]
+			delete(next.Consents, consentHash)
+			return found
+		}); err != nil {
+			oauth.WriteError(w, http.StatusBadRequest, "invalid_request", "could not deny consent")
+			return
+		}
 		s.recordAudit(r, "", "oauth/authorize", values.Get("client_id"), "deny", "denied", map[string]any{
 			"redirectURI": values.Get("redirect_uri"),
 			"resource":    values.Get("resource"),
@@ -797,19 +832,27 @@ func (s *Server) handleOAuthAuthorizePOST(w http.ResponseWriter, r *http.Request
 		oauth.WriteError(w, http.StatusBadRequest, "invalid_scope", err.Error())
 		return
 	}
-	entry := v5.Code{UserID: user.ID, ClientID: values.Get("client_id"), RedirectURI: values.Get("redirect_uri"), CodeChallenge: values.Get("code_challenge"), Resource: values.Get("resource"), Scope: scope, ExpiresAt: time.Now().Add(s.authCodeTTL)}
-	s.mu.Lock()
-	err = s.state.transact(func(next *storeState) bool {
+	entry := v5.Code{Authority: user.Authority, UserID: user.ID, ClientID: values.Get("client_id"), RedirectURI: values.Get("redirect_uri"), CodeChallenge: values.Get("code_challenge"), Resource: values.Get("resource"), Scope: scope, ExpiresAt: time.Now().Add(s.authCodeTTL)}
+	published := false
+	err = s.transactUser(user, func(next *storeState) bool {
+		current, found := next.Consents[consentHash]
+		if !found || current.UserID != user.ID || current.Authority != user.Authority || time.Now().After(current.ExpiresAt) {
+			return false
+		}
+		delete(next.Consents, consentHash)
 		next.Codes[oauth.RefreshTokenKey(code)] = entry
+		published = true
 		return true
 	})
 	if err != nil {
 		slog.WarnContext(r.Context(), "save oauth code", "err", err)
 		oauth.WriteError(w, http.StatusInternalServerError, "server_error", "could not authorize client")
-		s.mu.Unlock()
 		return
 	}
-	s.mu.Unlock()
+	if !published {
+		oauth.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid or expired consent")
+		return
+	}
 	redirectURL, err := url.Parse(entry.RedirectURI)
 	if err != nil {
 		oauth.WriteError(w, http.StatusBadRequest, "invalid_redirect_uri", "invalid redirect URI")
@@ -940,8 +983,8 @@ func (s *Server) handleOAuthAuthorizationCodeToken(w http.ResponseWriter, r *htt
 		return
 	}
 	user, ok := s.findUserByID(entry.UserID)
-	if !ok {
-		oauth.WriteError(w, http.StatusBadRequest, "invalid_grant", "user no longer exists")
+	if !ok || user.Authority != entry.Authority {
+		oauth.WriteError(w, http.StatusBadRequest, "invalid_grant", "user authority no longer exists")
 		return
 	}
 	grantID, err := randomToken()
@@ -951,7 +994,7 @@ func (s *Server) handleOAuthAuthorizationCodeToken(w http.ResponseWriter, r *htt
 		return
 	}
 	now := time.Now()
-	grant := v5.Grant{ID: grantID, UserID: entry.UserID, ClientID: entry.ClientID, Resource: entry.Resource, Scope: entry.Scope, CreatedAt: now, ExpiresAt: now.Add(s.refreshTokenTTL)}
+	grant := v5.Grant{Authority: entry.Authority, ID: grantID, UserID: entry.UserID, ClientID: entry.ClientID, Resource: entry.Resource, Scope: entry.Scope, CreatedAt: now, ExpiresAt: now.Add(s.refreshTokenTTL)}
 	refreshToken := ""
 	refreshEntry := v5.RefreshToken{}
 	if clientSupportsGrant(&client, oauth.GrantRefreshToken) {
@@ -971,8 +1014,7 @@ func (s *Server) handleOAuthAuthorizationCodeToken(w http.ResponseWriter, r *htt
 	}
 	redeemed := false
 	proofRejected := false
-	s.mu.Lock()
-	err = s.state.transact(func(next *storeState) bool {
+	err = s.transactUser(user, func(next *storeState) bool {
 		current, found := next.Codes[codeHash]
 		if !found || current != entry {
 			return false
@@ -1004,7 +1046,10 @@ func (s *Server) handleOAuthAuthorizationCodeToken(w http.ResponseWriter, r *htt
 		redeemed = true
 		return true
 	})
-	s.mu.Unlock()
+	if errors.Is(err, ErrUserAuthority) {
+		oauth.WriteError(w, http.StatusBadRequest, "invalid_grant", "account authority is no longer valid")
+		return
+	}
 	if err != nil {
 		slog.WarnContext(r.Context(), "exchange oauth authorization code", "err", err)
 		oauth.WriteError(w, http.StatusInternalServerError, "server_error", "could not exchange authorization code")
@@ -1059,6 +1104,10 @@ func (s *Server) handleOAuthRefreshToken(w http.ResponseWriter, r *http.Request,
 		}
 	}
 	result, exchanged, err := s.exchangeRefreshToken(refreshToken, client, entry.UserID, nextRefreshToken, binding)
+	if errors.Is(err, ErrUserAuthority) {
+		oauth.WriteError(w, http.StatusBadRequest, "invalid_grant", "account authority is no longer valid")
+		return
+	}
 	if err != nil {
 		slog.WarnContext(r.Context(), "exchange oauth refresh token", "err", err)
 		oauth.WriteError(w, http.StatusInternalServerError, "server_error", "could not rotate refresh token")
@@ -1352,8 +1401,11 @@ func (s *Server) exchangeRefreshToken(token string, client Client, userID, nextT
 	result := refreshExchangeUnknown
 	var exchanged v5.RefreshToken
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	err := s.state.transact(func(state *storeState) bool {
+	original := s.state.RefreshTokens[tokenHash]
+	originalGrant := s.state.Grants[original.GrantID]
+	s.mu.Unlock()
+	user := oauth.User{ID: userID, Authority: originalGrant.Authority}
+	err := s.transactUser(user, func(state *storeState) bool {
 		entry, found := state.RefreshTokens[tokenHash]
 		if !found {
 			return false
@@ -1432,13 +1484,13 @@ func (s *Server) touchGrant(grantID string, now time.Time) (active bool, clientI
 		return true, "", nil
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	grant, ok := s.state.Grants[grantID]
+	s.mu.Unlock()
 	if !ok || !grant.RevokedAt.IsZero() || now.After(grant.ExpiresAt) {
 		return false, "", nil
 	}
 	if grant.Resource != s.resourceURL {
-		err := s.state.transact(func(next *storeState) bool {
+		err := s.transactUser(oauth.User{ID: grant.UserID, Authority: grant.Authority}, func(next *storeState) bool {
 			return revokeGrant(next, grantID, now)
 		})
 		return false, "", err
@@ -1446,6 +1498,11 @@ func (s *Server) touchGrant(grantID string, now time.Time) (active bool, clientI
 	// Bearer validation is deliberately read-only. Refresh rotation records the
 	// durable last-use timestamp without rewriting the complete store on every
 	// protected-resource request.
+	if grant.UserID != "" {
+		if err := s.session.WithUserAuthority(oauth.User{ID: grant.UserID, Authority: grant.Authority}, func() error { return nil }); err != nil {
+			return false, "", err
+		}
+	}
 	return true, grant.ClientID, nil
 }
 
@@ -2485,14 +2542,14 @@ func (s *Server) handleOAuthDeviceApprove(w http.ResponseWriter, r *http.Request
 		oauth.WriteError(w, http.StatusBadRequest, "invalid_request", "missing user_code")
 		return
 	}
-	s.mu.Lock()
 	var dc *DeviceCode
 	userCodeKey := oauth.RefreshTokenKey(userCode)
-	err := s.state.transact(func(next *storeState) bool {
+	err := s.transactUser(user, func(next *storeState) bool {
 		for _, d := range next.DeviceCodes {
 			now := time.Now()
 			if d != nil && d.UserCodeKey == userCodeKey && d.flow.Reserve(now) {
 				dc = d
+				d.Authority = user.Authority
 				d.flow.Finish(now, user.ID, true, true)
 				return true
 			}
@@ -2500,17 +2557,14 @@ func (s *Server) handleOAuthDeviceApprove(w http.ResponseWriter, r *http.Request
 		return false
 	})
 	if dc == nil && err == nil {
-		s.mu.Unlock()
 		oauth.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid or expired user code")
 		return
 	}
 	if err != nil {
-		s.mu.Unlock()
 		slog.WarnContext(r.Context(), "save device approval", "err", err)
 		oauth.WriteError(w, http.StatusInternalServerError, "server_error", "could not approve device")
 		return
 	}
-	s.mu.Unlock()
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(`<html><body><p>Device authorized. You may close this page.</p></body></html>`))
@@ -2592,8 +2646,8 @@ func (s *Server) handleOAuthDeviceCodeToken(w http.ResponseWriter, r *http.Reque
 	}
 
 	user, ok := s.findUserByID(dc.flow.Subject)
-	if !ok {
-		oauth.WriteError(w, http.StatusBadRequest, "invalid_grant", "user no longer exists")
+	if !ok || user.Authority != dc.Authority {
+		oauth.WriteError(w, http.StatusBadRequest, "invalid_grant", "user authority no longer exists")
 		return
 	}
 	grantID, err := randomToken()
@@ -2603,7 +2657,7 @@ func (s *Server) handleOAuthDeviceCodeToken(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	now = time.Now()
-	grant := v5.Grant{ID: grantID, UserID: dc.flow.Subject, ClientID: dc.ClientID, Resource: s.resourceURL, Scope: dc.Scope, CreatedAt: now, ExpiresAt: now.Add(s.refreshTokenTTL)}
+	grant := v5.Grant{Authority: dc.Authority, ID: grantID, UserID: dc.flow.Subject, ClientID: dc.ClientID, Resource: s.resourceURL, Scope: dc.Scope, CreatedAt: now, ExpiresAt: now.Add(s.refreshTokenTTL)}
 	refreshToken := ""
 	refreshEntry := v5.RefreshToken{}
 	if clientSupportsGrant(&client, oauth.GrantRefreshToken) {
@@ -2622,8 +2676,7 @@ func (s *Server) handleOAuthDeviceCodeToken(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	consumed := false
-	s.mu.Lock()
-	err = s.state.transact(func(next *storeState) bool {
+	err = s.transactUser(user, func(next *storeState) bool {
 		current, found := next.DeviceCodes[codeHash]
 		currentClient := client
 		clientFound := currentClient.ID == dc.ClientID
@@ -2645,7 +2698,10 @@ func (s *Server) handleOAuthDeviceCodeToken(w http.ResponseWriter, r *http.Reque
 		consumed = true
 		return true
 	})
-	s.mu.Unlock()
+	if errors.Is(err, ErrUserAuthority) {
+		oauth.WriteError(w, http.StatusBadRequest, "invalid_grant", "account authority is no longer valid")
+		return
+	}
 	if err != nil {
 		slog.WarnContext(r.Context(), "exchange device code", "err", err)
 		oauth.WriteError(w, http.StatusInternalServerError, "server_error", "could not exchange device code")

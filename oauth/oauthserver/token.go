@@ -1,4 +1,4 @@
-// OAuth access-token signing and verification.
+// OAuth access-token signing and verification bound to account authority.
 
 package oauthserver
 
@@ -316,15 +316,16 @@ func (s *AccessTokenService) IssueAccessTokenTTL(issuer string, user oauth.User,
 		return "", fmt.Errorf("generate access token ID: %w", err)
 	}
 	return s.issueAccessTokenAt(&oauth.AccessTokenClaims{
-		Issuer:   issuer,
-		Subject:  user.ID,
-		Audience: audience,
-		ClientID: clientID,
-		JWTID:    jti,
-		Username: user.Username,
-		Scope:    scope,
-		GrantID:  grantID,
-		Type:     accessTokenType,
+		Issuer:    issuer,
+		Subject:   user.ID,
+		Authority: user.Authority,
+		Audience:  audience,
+		ClientID:  clientID,
+		JWTID:     jti,
+		Username:  user.Username,
+		Scope:     scope,
+		GrantID:   grantID,
+		Type:      accessTokenType,
 	}, now, now.Add(ttl))
 }
 
@@ -338,6 +339,7 @@ func (s *AccessTokenService) IssueDPoPAccessToken(issuer string, user oauth.User
 	return s.issueAccessTokenAt(&oauth.AccessTokenClaims{
 		Issuer:       issuer,
 		Subject:      user.ID,
+		Authority:    user.Authority,
 		Audience:     audience,
 		ClientID:     clientID,
 		JWTID:        jti,
@@ -446,8 +448,8 @@ func (s *AccessTokenService) VerifyAccessToken(token, issuer, audience string, n
 		return nil, errors.New("user lookup callback is required")
 	}
 	user, ok := session.FindUser(claims.Subject)
-	if !ok {
-		return nil, errors.New("token subject is unknown")
+	if !ok || user.Authority != claims.Authority {
+		return nil, errors.New("token subject authority is unknown")
 	}
 	return &oauth.BearerClaims{
 		User:         user,

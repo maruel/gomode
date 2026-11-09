@@ -20,6 +20,51 @@ import (
 
 func TestStore(t *testing.T) {
 	t.Parallel()
+	t.Run("RevokeAllUserGrants persistence failures preserve one coherent state", func(t *testing.T) {
+		for _, fault := range []string{"rename", "sync"} {
+			t.Run(fault, func(t *testing.T) {
+				path := t.TempDir() + "/oauth.json"
+				store, err := LoadStore(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				now := time.Now()
+				expires := now.Add(time.Hour)
+				store.Codes["code"] = v5.Code{UserID: "user", Authority: "generation", ExpiresAt: expires}
+				store.Consents["consent"] = v5.ConsentParams{UserID: "user", Authority: "generation", ExpiresAt: expires}
+				store.Grants["grant"] = v5.Grant{ID: "grant", UserID: "user", Authority: "generation", ExpiresAt: expires}
+				store.RefreshTokens["refresh"] = v5.RefreshToken{GrantID: "grant", UserID: "user", ExpiresAt: expires}
+				if err := store.Save(); err != nil {
+					t.Fatal(err)
+				}
+				if fault == "rename" {
+					store.io = failingRenameStoreIO{storeIO: osStoreIO{}}
+				} else {
+					store.io = postRenameStoreIO{storeIO: osStoreIO{}, fault: "sync"}
+				}
+				server := &Server{state: store, session: &testSessionManager{users: map[string]oauth.User{"user": {ID: "user"}}}}
+				if err := server.RevokeAllUserGrants("user"); err == nil {
+					t.Fatal("expected persistence failure")
+				}
+				disk, err := LoadStore(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, state := range []*Store{store, disk} {
+					if fault == "rename" {
+						if len(state.Codes) != 1 || len(state.Consents) != 1 || !state.Grants["grant"].RevokedAt.IsZero() || !state.RefreshTokens["refresh"].RevokedAt.IsZero() {
+							t.Fatal("failed replacement partially revoked authority")
+						}
+					} else {
+						if len(state.Codes) != 0 || len(state.Consents) != 0 || state.Grants["grant"].RevokedAt.IsZero() || state.RefreshTokens["refresh"].RevokedAt.IsZero() {
+							t.Fatal("committed replacement partially retained authority")
+						}
+					}
+				}
+			})
+		}
+	})
+
 	t.Run("version five fixture preserves restart and disk shape", func(t *testing.T) {
 		t.Parallel()
 		// This literal fixture defines the version 5 storage format.
@@ -321,7 +366,7 @@ func TestStore(t *testing.T) {
 			if err := store.Save(); err != nil {
 				t.Fatalf("Save: %v", err)
 			}
-			server := &Server{state: store, refreshTokenTTL: time.Hour}
+			server := &Server{state: store, refreshTokenTTL: time.Hour, session: &testSessionManager{users: map[string]oauth.User{"user": {ID: "user"}}}}
 			const attempts = 32
 			var wg sync.WaitGroup
 			winners := make(chan string, attempts)
@@ -425,7 +470,7 @@ func BenchmarkBearerGrantCheck(b *testing.B) {
 	if err := store.Save(); err != nil {
 		b.Fatalf("Save: %v", err)
 	}
-	server := &Server{state: store}
+	server := &Server{state: store, session: &testSessionManager{users: map[string]oauth.User{"user": {ID: "user"}}}}
 
 	b.Run("read_only", func(b *testing.B) {
 		for b.Loop() {
