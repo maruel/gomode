@@ -1,10 +1,10 @@
 # Voice gateway configuration.
 # Copy to ~/.config/voice-gateway/config.toml.
 #
-# With systemd, put API keys in ~/.config/systemd/user/voice-gateway.env,
-# beside voice-gateway.service. See voice-gateway.env.example for the format.
-# Windows setup passes its preserved voice-gateway.env via -env-file.
-# macOS launch agents can also pass -env-file; see voice-gateway.env.example.
+# systemd loads the preserved credentials file; macOS and Windows use -env-file.
+# Linux defaults to ~/.config/systemd/user/voice-gateway.env; Windows keeps it
+# beside the executable; macOS keeps it beside this configuration file.
+# See voice-gateway.env.example for the format and contrib/README.md for options.
 #
 # Provider names come from genai's providers.All registry at https://github.com/maruel/genai
 #

@@ -1,0 +1,30 @@
+# Publish checksummed standalone voice gateway archives on version tags pushed to maruel/gomode.
+name: Release voice gateway
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+
+jobs:
+  release:
+    # Repository tag-push permissions authorize publishers; forks cannot publish here.
+    if: github.repository == 'maruel/gomode'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            Makefile
+            go.mod
+            go.sum
+      - name: Publish release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: make release

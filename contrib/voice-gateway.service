@@ -1,12 +1,11 @@
-# Example systemd user service for the standalone voice gateway.
+# systemd user service for the standalone voice gateway.
 [Unit]
 Description=Go Mode voice gateway
 
 [Service]
 Type=exec
 ExecStart=%h/.local/bin/voice-gateway
-Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin
-# Optional for local-only deployments. See voice-gateway.env.example.
+Environment="PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
 EnvironmentFile=-%h/.config/systemd/user/voice-gateway.env
 # The current gateway catches SIGINT to close sessions before exiting.
 KillSignal=SIGINT

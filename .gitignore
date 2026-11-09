@@ -9,6 +9,7 @@
 /android/local.properties
 /coverage.html
 /coverage.out
+/dist/
 /e2e/screenshots/.android-publish-*/
 /e2e/screenshots/.android.capture.lock
 /e2e/screenshots/.android.previous/

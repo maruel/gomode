@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Example launchd user agent for the standalone voice gateway. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.maruel.voice-gateway</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>~/.local/bin/voice-gateway</string>
+        <string>-env-file</string>
+        <string>~/.config/voice-gateway/voice-gateway.env</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>XDG_CONFIG_HOME</key>
+        <string>~/.config</string>
+        <key>PATH</key>
+        <string>~/.local/bin:~/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>~/Library/Logs/voice-gateway.log</string>
+    <key>StandardErrorPath</key>
+    <string>~/Library/Logs/voice-gateway.log</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+    <key>Umask</key>
+    <integer>63</integer>
+</dict>
+</plist>

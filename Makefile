@@ -1,6 +1,9 @@
 # Build and verification targets for the standalone Go Mode contracts and shell.
 .DEFAULT_GOAL := help
-.PHONY: android-check android-e2e android-export-lfm android-push android-sdk android-setup-emulator android-start-emulator android-stop-emulator benchmark build coverage fix frontend-build generate-sdks git-hooks help refresh-generated screenshots-check screenshots-generate screenshots-update test test-race test-smoke upgrade verify
+.PHONY: android-check android-e2e android-export-lfm android-push android-sdk android-setup-emulator android-start-emulator android-stop-emulator benchmark build coverage fix frontend-build generate-sdks git-hooks help refresh-generated release screenshots-check screenshots-generate screenshots-update test test-race test-smoke upgrade verify
+
+# Keep local and CI release tooling on the same version.
+GORELEASER ?= go run github.com/goreleaser/goreleaser/v2@v2.20.0
 
 # Keep Java processes scoped to each build, including Gradle launched by Python helpers.
 # Compile Kotlin inside Gradle's single-use JVM so it cannot leave a compiler daemon.
@@ -21,6 +24,7 @@ help:
 	@printf '  %-27s - %s\n' 'make test' 'Run Go, browser, and Android unit tests'
 	@printf '  %-27s - %s\n' 'make test-race' 'Run race-safe voice gateway concurrency tests'
 	@printf '  %-27s - %s\n' 'make build' 'Build Go packages and Android app and SDKs'
+	@printf '  %-27s - %s\n' 'make release' 'Publish gateway archives from a version tag (requires GITHUB_TOKEN)'
 	@printf '  %-27s - %s\n' 'make benchmark' 'Run Go benchmarks'
 	@printf '  %-27s - %s\n' 'make coverage' 'Generate Go coverage report'
 	@printf '  %-27s - %s\n' 'make test-smoke' 'Run local model voice smoke tests (slow, downloads models)'
@@ -71,8 +75,12 @@ verify: node_modules/.modules.yaml
 git-hooks:
 	@./scripts/install-git-hooks.sh
 
+release:
+	@$(GORELEASER) release --clean
+
 test: node_modules/.modules.yaml
-	@./scripts/run-concurrently.sh go,browser-scripts,browser,android \
+	@./scripts/run-concurrently.sh release,go,browser-scripts,browser,android \
+		'$(GORELEASER) check' \
 		'go test ./...' \
 		'pnpm exec node --test --test-reporter=./scripts/quiet-test-reporter.mjs scripts/browser_integration.test.mjs scripts/build_frontend.test.mjs scripts/css_module_types.test.mjs scripts/voice_preview.test.mjs' \
 		'NODE_OPTIONS=--no-experimental-webstorage pnpm exec tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts "frontend/src/**/*.test.tsx" "web/src/**/*.test.ts" "web/src/**/*.test.tsx"' \

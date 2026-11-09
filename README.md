@@ -32,6 +32,11 @@ for Android model downloads and the LFM3 export and upload workflow.
 
 ## Standalone voice gateway
 
+Run `bash contrib/install.sh` on Linux/macOS or `& .\contrib\install.ps1` in
+Windows PowerShell to install or update a checksummed release. See
+[gateway installation](contrib/README.md) for download commands, service options,
+custom paths, and offline installation from release archives.
+
 Copy [contrib/config.toml](contrib/config.toml) to
 `~/.config/voice-gateway/config.toml`. It documents proxy trust, the public URL,
 execution tracing, and the optional unauthenticated debug frontend.

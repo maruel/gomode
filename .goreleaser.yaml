@@ -1,0 +1,77 @@
+# Standalone voice gateway release archive contract for download installers.
+version: 2
+project_name: voice-gateway
+
+builds:
+  - id: unix
+    main: ./cmd/voice-gateway
+    binary: voice-gateway
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+  - id: windows
+    main: ./cmd/voice-gateway
+    binary: voice-gateway
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    # Keep scheduled startup free of console windows.
+    ldflags:
+      - -s -w -H=windowsgui
+
+archives:
+  - id: unix
+    ids:
+      - unix
+    formats:
+      - tar.gz
+    # The release tag in the URL owns the version; basenames stay stable.
+    name_template: voice-gateway_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - src: contrib/config.toml
+        strip_parent: true
+      - src: contrib/voice-gateway.env.example
+        strip_parent: true
+      - src: 'contrib/voice-gateway.{{ if eq .Os "linux" }}service{{ else }}plist{{ end }}'
+        strip_parent: true
+  - id: windows
+    ids:
+      - windows
+    formats:
+      - zip
+    name_template: voice-gateway_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - src: contrib/config.toml
+        strip_parent: true
+      - src: contrib/voice-gateway.env.example
+        strip_parent: true
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+release:
+  github:
+    owner: maruel
+    name: gomode
+  prerelease: auto
+
+changelog:
+  use: git
