@@ -320,6 +320,10 @@ func TestServeHTTP(t *testing.T) {
 					t.Fatalf("status=%d", resp.StatusCode)
 				}
 			}
+			// Bound Accept below so a shutdown regression cannot hang the test.
+			if err := ln.(*net.TCPListener).SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
 			if failListener {
 				if err := ln.Close(); err != nil {
 					t.Fatal(err)
@@ -340,10 +344,13 @@ func TestServeHTTP(t *testing.T) {
 				t.Fatal("servers did not stop")
 			}
 			{
-				conn, err := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
-				if err == nil {
+				// Check this listener directly: its port may already be reused.
+				conn, err := ln.Accept()
+				if conn != nil {
 					_ = conn.Close()
-					t.Fatal("listener still open")
+				}
+				if !errors.Is(err, net.ErrClosed) {
+					t.Fatalf("Accept after shutdown = %v, want net.ErrClosed", err)
 				}
 			}
 		})
