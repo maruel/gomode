@@ -1,9 +1,8 @@
 # Standalone voice gateway deployment
 
-The installers download a checksummed release, preserve existing configuration
-and credentials, and start a per-user service.
-
-## Install or update
+The installers download the latest stable release, verify its checksum, preserve
+existing configuration and credentials, and start the user service. Repeat the
+same command to update. The scripts take no arguments.
 
 Linux or macOS:
 
@@ -19,14 +18,10 @@ Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/maruel/gomo
 & "$env:TEMP\install-voice-gateway.ps1"
 ```
 
-Repeat to update. Use `--version v0.4.0` / `-Version v0.4.0` to select a release,
-or `--no-service` / `-NoService` to install files only.
-
-## Configuration and services
-
 Configuration is at `~/.config/voice-gateway/config.toml` (Windows:
 `%USERPROFILE%\.config\voice-gateway\config.toml`), or under `XDG_CONFIG_HOME`
-when set. See [config.toml](config.toml) for settings and
+when set. Windows uses the persistent user or machine value. See
+[config.toml](config.toml) for settings and
 [voice-gateway.env.example](voice-gateway.env.example) for credentials.
 
 | Setting | Linux | macOS | Windows |
@@ -36,26 +31,12 @@ when set. See [config.toml](config.toml) for settings and
 | Service | systemd user `voice-gateway.service` | launchd user `com.maruel.voice-gateway` | Scheduled task `GoModeVoiceGateway` |
 | Logs | `journalctl --user -u voice-gateway.service` | `~/Library/Logs/voice-gateway.log` | `voice-gateway.log` beside executable |
 
-Override paths with `--install-dir`, `--config-path`, and `--env-file` on Unix,
-or `-InstallDir`, `-ConfigPath`, and `-EnvFile` on Windows.
-
-## Offline installation
-
-Download a [release archive and checksums.txt](https://github.com/maruel/gomode/releases)
-and transfer them together to the offline machine:
+For other installation workflows, build from source:
 
 ```sh
-bash contrib/install.sh --archive "$PWD/voice-gateway_linux_amd64.tar.gz" --no-service
-# macOS: voice-gateway_darwin_arm64.tar.gz or voice-gateway_darwin_amd64.tar.gz
+go install github.com/maruel/gomode/cmd/voice-gateway@latest
 ```
-
-```powershell
-& .\contrib\install.ps1 -Archive "$PWD\voice-gateway_windows_amd64.zip" -NoService
-```
-
-## Releases
 
 [.goreleaser.yaml](../.goreleaser.yaml) defines the Linux, macOS and Windows
-archives for amd64 and arm64. Pushing a `v*` tag publishes a release.
-`make test` validates the definition; `make release` publishes the current
-version tag with `GITHUB_TOKEN`.
+release archives for amd64 and arm64. `make test` validates the definition;
+pushing a `v*` tag publishes a release.

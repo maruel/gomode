@@ -4,7 +4,7 @@
 # systemd loads the preserved credentials file; macOS and Windows use -env-file.
 # Linux defaults to ~/.config/systemd/user/voice-gateway.env; Windows keeps it
 # beside the executable; macOS keeps it beside this configuration file.
-# See voice-gateway.env.example for the format and contrib/README.md for options.
+# See voice-gateway.env.example for the format and contrib/README.md for installation.
 #
 # Provider names come from genai's providers.All registry at https://github.com/maruel/genai
 #

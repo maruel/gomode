@@ -34,8 +34,8 @@ for Android model downloads and the LFM3 export and upload workflow.
 
 Run `bash contrib/install.sh` on Linux/macOS or `& .\contrib\install.ps1` in
 Windows PowerShell to install or update a checksummed release. See
-[gateway installation](contrib/README.md) for download commands, service options,
-custom paths, and offline installation from release archives.
+[gateway installation](contrib/README.md) for download commands and user service
+configuration. The installers take no arguments and use the latest stable release.
 
 Copy [contrib/config.toml](contrib/config.toml) to
 `~/.config/voice-gateway/config.toml`. It documents proxy trust, the public URL,
