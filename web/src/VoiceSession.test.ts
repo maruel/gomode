@@ -1543,6 +1543,165 @@ describe("VoiceSession", () => {
     session.disconnect();
   });
 
+  it("applies a manual speaker selection queued during a microphone replacement", async () => {
+    const sink = vi.fn(async (_id: string) => {});
+    Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true, value: sink });
+    const audio = new window.Audio();
+    vi.spyOn(audio, "play").mockResolvedValue();
+    vi.stubGlobal(
+      "Audio",
+      class {
+        constructor() {
+          return audio;
+        }
+      },
+    );
+    const session = new VoiceSession();
+    try {
+      await session.connect();
+      const pc = FakePeerConnection.last;
+      pc?.ontrack?.call(pc as unknown as RTCPeerConnection, { streams: [{}] } as unknown as RTCTrackEvent);
+      const acquiring = deferred<MediaStream>();
+      vi.mocked(navigator.mediaDevices.getUserMedia).mockReturnValueOnce(acquiring.promise);
+      const input = session.selectInputDevice("usb-mic");
+      await vi.waitFor(() => expect(session.state.audioSwitching).toBe("input"));
+      await session.selectOutputDevice("usb-out");
+      acquiring.resolve({ getTracks: () => [], getAudioTracks: () => [] } as unknown as MediaStream);
+      await input;
+      await vi.waitFor(() => expect(sink).toHaveBeenCalledWith("usb-out"));
+      expect(session.state.selectedOutputId).toBe("usb-out");
+      expect(localStorage.getItem("gomode.voiceOutputDevice")).toBe("usb-out");
+    } finally {
+      session.disconnect();
+      Reflect.deleteProperty(HTMLMediaElement.prototype, "setSinkId");
+    }
+  });
+
+  for (const source of ["manual", "bluetooth", "departed-bluetooth"] as const) {
+    for (const kind of ["input", "output"] as const) {
+      it(
+        source === "departed-bluetooth"
+          ? `restores saved ${kind} after a queued Bluetooth arrival disappears during initial capture`
+          : `preserves a queued ${source} ${kind} over repeated saved-preference refreshes during initial capture`,
+        async () => {
+          const desired = source === "manual" ? "manual-usb" : "bt-headset";
+          const expected = source === "departed-bluetooth" ? "saved-usb" : desired;
+          const preference = kind === "input" ? "Input" : "Output";
+          localStorage.setItem(`gomode.voice${preference}Device`, "saved-usb");
+          const sink = vi.fn(async (_id: string) => {});
+          Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true, value: sink });
+          const audio = new window.Audio();
+          vi.spyOn(audio, "play").mockResolvedValue();
+          vi.stubGlobal(
+            "Audio",
+            class {
+              constructor() {
+                return audio;
+              }
+            },
+          );
+          const initial = deferred<MediaStream>();
+          const stream = { getTracks: () => [], getAudioTracks: () => [] } as unknown as MediaStream;
+          vi.mocked(navigator.mediaDevices.getUserMedia).mockReturnValueOnce(initial.promise).mockResolvedValue(stream);
+          vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue([
+            { kind: `audio${kind}`, deviceId: "saved-usb", label: "Saved USB device" } as MediaDeviceInfo,
+            {
+              kind: `audio${kind}`,
+              deviceId: desired,
+              label: source === "manual" ? "Manual USB device" : "Bluetooth headset",
+            } as MediaDeviceInfo,
+          ]);
+          const session = new VoiceSession();
+          try {
+            const connecting = session.connect();
+            await vi.waitFor(() => expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledOnce());
+            if (source === "manual") {
+              if (kind === "input") await session.selectInputDevice(desired);
+              else await session.selectOutputDevice(desired);
+            }
+            await session.enumerateDevices();
+            if (source === "departed-bluetooth")
+              vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue([
+                { kind: `audio${kind}`, deviceId: "saved-usb", label: "Saved USB device" } as MediaDeviceInfo,
+              ]);
+            await session.enumerateDevices();
+            initial.resolve(stream);
+            await connecting;
+            const pc = FakePeerConnection.last;
+            pc?.ontrack?.call(pc as unknown as RTCPeerConnection, { streams: [{}] } as unknown as RTCTrackEvent);
+            await vi.waitFor(() =>
+              expect(kind === "input" ? session.state.selectedInputId : session.state.selectedOutputId).toBe(expected),
+            );
+            expect(localStorage.getItem(`gomode.voice${preference}Device`)).toBe(expected);
+            if (kind === "output") expect(sink).toHaveBeenCalledWith(expected);
+            else
+              expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
+                audio: { deviceId: { exact: expected } },
+                video: false,
+              });
+          } finally {
+            initial.resolve(stream);
+            session.disconnect();
+            Reflect.deleteProperty(HTMLMediaElement.prototype, "setSinkId");
+          }
+        },
+      );
+    }
+  }
+
+  for (const retire of [false, true]) {
+    it(`${retire ? "retires" : "applies"} a queued system-default microphone while a speaker replacement is pending`, async () => {
+      const sink = vi.fn(async (_id: string) => {});
+      Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", { configurable: true, value: sink });
+      const audio = new window.Audio();
+      vi.spyOn(audio, "play").mockResolvedValue();
+      vi.stubGlobal(
+        "Audio",
+        class {
+          constructor() {
+            return audio;
+          }
+        },
+      );
+      const session = new VoiceSession();
+      const speaker = deferred<void>();
+      try {
+        vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue([
+          { kind: "audioinput", deviceId: "usb-mic", label: "USB microphone" } as MediaDeviceInfo,
+        ]);
+        await session.selectInputDevice("usb-mic");
+        await session.connect();
+        const pc = FakePeerConnection.last;
+        pc?.ontrack?.call(pc as unknown as RTCPeerConnection, { streams: [{}] } as unknown as RTCTrackEvent);
+        sink.mockReturnValueOnce(speaker.promise);
+        const output = session.selectOutputDevice("usb-out");
+        await vi.waitFor(() => expect(session.state.audioSwitching).toBe("output"));
+        const captures = vi.mocked(navigator.mediaDevices.getUserMedia).mock.calls.length;
+        await session.selectInputDevice("");
+        await session.enumerateDevices();
+        expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(captures);
+        if (retire) {
+          session.disconnect();
+          expect(session.state.audioSwitching).toBeNull();
+        }
+        speaker.resolve();
+        await output;
+        if (retire) {
+          expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(captures);
+          expect(session.state.selectedInputId).toBe("usb-mic");
+          expect(localStorage.getItem("gomode.voiceInputDevice")).toBe("usb-mic");
+        } else {
+          await vi.waitFor(() => expect(session.state.selectedInputId).toBe(""));
+          expect(localStorage.getItem("gomode.voiceInputDevice")).toBeNull();
+        }
+      } finally {
+        speaker.resolve();
+        session.disconnect();
+        Reflect.deleteProperty(HTMLMediaElement.prototype, "setSinkId");
+      }
+    });
+  }
+
   it("ignores an older device list that omits a currently selected microphone", async () => {
     const devices = [{ kind: "audioinput", deviceId: "usb", label: "USB headset" } as MediaDeviceInfo];
     vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue(devices);

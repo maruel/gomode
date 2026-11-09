@@ -17,7 +17,8 @@ import {
 import { Portal } from "solid-js/web";
 
 import { TurnStateThinking, TurnStateTranscribing } from "../../sdk/voicegateway/ts/v2/types.gen";
-import { bluetoothAudioDeviceLabel, microphoneMuted, previousErrors, voiceSession } from "./VoiceSession";
+import { bluetoothAudioDeviceLabel } from "./AudioRoutes";
+import { microphoneMuted, previousErrors, voiceSession } from "./VoiceSession";
 import type { MicrophoneMode, VoiceState, TranscriptEntry, ToolInvocation } from "./VoiceSession";
 import { notifications } from "./notifications";
 import VoiceSettings from "./VoiceSettings";

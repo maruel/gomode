@@ -1,5 +1,6 @@
-// Browser voice sessions own transport attempts and dispatch conversation-bound tools after host preparation.
+// Browser voice sessions own transport attempts and delegate audio routes and conversation-bound host tools.
 
+import { AudioRoutes, type AudioRouteState } from "./AudioRoutes";
 import { voiceGatewayBaseURL } from "./BrowserVoiceManifest";
 import { BrowserSpeechBuffer } from "./BrowserSpeechBuffer";
 import { MicrophoneLevel } from "./MicrophoneLevel";
@@ -366,13 +367,6 @@ export interface TranscriptEntry {
   responseUsage?: TokenUsage;
 }
 
-/** Describes a single audio input/output device. Mirrors Android's AudioDevice. */
-export interface AudioDevice {
-  deviceId: string;
-  kind: MediaDeviceKind;
-  label: string;
-}
-
 export type SpeechSelection = Required<SpeechConfig>;
 type VoiceChannel = RTCDataChannel | WebSocket;
 
@@ -413,11 +407,9 @@ export interface ToolInvocation {
 
 export type VoiceSetupMode = "all-in-one" | "parts";
 
-export interface VoiceState {
+export interface VoiceState extends AudioRouteState {
   setupMode: VoiceSetupMode;
   usage: VoiceUsage | null;
-  speechInput: SpeechLocation;
-  speechOutput: SpeechLocation;
   choices: VoiceChoice[];
   speechModels: Record<"input" | "output", SpeechModel[]>;
   speechModelIDs: Record<"input" | "output", string | null>;
@@ -456,18 +448,9 @@ export interface VoiceState {
   microphoneAccessPending: boolean;
   audioPlaybackError: string | null;
   /** Available audio input devices (microphones). */
-  audioInputs: AudioDevice[];
   /** Available audio output devices (speakers, headsets). */
-  audioOutputs: AudioDevice[];
   /** Currently selected input device ID, empty string for system default. */
-  selectedInputId: string;
   /** Currently selected output device ID, empty string for system default. */
-  selectedOutputId: string;
-  audioDevicesError: string | null;
-  audioInputError: string | null;
-  audioOutputError: string | null;
-  /** The route being changed, or null when no switch is pending. */
-  audioSwitching: "input" | "output" | null;
   /** Saved BCP 47 speech language, independent of the browser locale. */
   languageTag: string;
   /** Saved browser synthesis voice URI; empty string uses the browser default. */
@@ -774,51 +757,11 @@ function resolveVoiceChoice(
   return choice?.id ?? null;
 }
 
-// bluetoothAudioDeviceLabel recognizes explicit Bluetooth and common AirPods labels.
-// Browsers do not expose audio transport types.
-export function bluetoothAudioDeviceLabel(label: string): boolean {
-  return /\b(bluetooth|airpods|bt)\b/i.test(label);
-}
-
-// Opaque Bluetooth device names are restored by their saved device ID.
-function bluetoothAudioDevice(device: AudioDevice, rememberedId: string | null): boolean {
-  return (
-    device.deviceId !== "default" &&
-    device.deviceId !== "communications" &&
-    (device.deviceId === rememberedId || bluetoothAudioDeviceLabel(device.label))
-  );
-}
-
-type AudioDevicePreference = "BluetoothInput" | "BluetoothOutput" | "Input" | "Output";
-
-function savedAudioDevice(kind: AudioDevicePreference): string | null {
-  try {
-    return localStorage.getItem(`gomode.voice${kind}Device`);
-  } catch (error) {
-    console.warn("Could not load voice audio device", error);
-    return null;
-  }
-}
-
-function rememberAudioDevice(kind: AudioDevicePreference, deviceId: string): void {
-  try {
-    if (deviceId) localStorage.setItem(`gomode.voice${kind}Device`, deviceId);
-    else localStorage.removeItem(`gomode.voice${kind}Device`);
-  } catch (error) {
-    console.warn("Could not save voice audio device", error);
-  }
-}
-
 // VoiceSession
 
 function newConversationID(): string {
   // getRandomValues also works in HTTP-hosted native shells.
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-interface PendingMicrophoneCapture {
-  stream: MediaStream;
-  outgoing: ReturnType<MicrophoneInput["connect"]> | null;
 }
 
 // One transport attempt owns resources until replacement, disconnect, or failure.
@@ -929,12 +872,7 @@ export class VoiceSession {
   private _reconnectEnabled = false;
   private _reconnectAttempts = 0;
   private _recoveryContext = "";
-  private _audioSelectionAttempt = 0;
-  private _deviceEnumerationAttempt = 0;
-  private _pendingAudioInput: string | null = null;
-  private _pendingAudioOutput: string | null = null;
-  private _inputPreferenceProvisional = false;
-  private _outputPreferenceProvisional = false;
+  private readonly _audioRoutes: AudioRoutes;
   private _voiceModeActive = false;
   private _callMetadata: MediaMetadata | null = null;
   private readonly _chime: VoiceChimePlayer;
@@ -1000,6 +938,16 @@ export class VoiceSession {
       browserSpeechRate: savedBrowserSpeechRate(),
     });
     this.state = state;
+    this._audioRoutes = new AudioRoutes({
+      state,
+      update: (change) => this._update(change),
+      connection: () => this._connection,
+      input: this._microphoneInput,
+      microphoneActive: () => this._microphoneActive(),
+      microphoneMuted: () => microphoneMuted(this.state),
+      monitorMicrophone: (stream) => this._monitorMicrophone(stream),
+      microphoneDenied: () => this._microphoneDenied(),
+    });
     this.setState = setState;
     this._chime = chime ?? new WebAudioVoiceChime();
     this._thinkingEarcon = thinkingEarcon ?? new WebAudioThinkingEarcon();
@@ -1513,234 +1461,14 @@ export class VoiceSession {
     this.setState((s) => ({ ...s, showUsageStats: show }));
   }
 
-  /** Enumerate available audio devices and auto-select defaults. Call before connect(). */
-  async enumerateDevices(): Promise<void> {
-    const attempt = ++this._deviceEnumerationAttempt;
-    // In insecure contexts and unsupported browsers there is no device API.
-    // The microphone control owns the capability warning and recovery guidance.
-    if (!navigator.mediaDevices?.enumerateDevices) return;
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      if (attempt !== this._deviceEnumerationAttempt) return;
-      const previousInputs = this.state.audioInputs;
-      const previousOutputs = this.state.audioOutputs;
-      const inputs: AudioDevice[] = [];
-      const outputs: AudioDevice[] = [];
-      for (const d of devices) {
-        if (d.kind === "audioinput") {
-          inputs.push({
-            deviceId: d.deviceId,
-            kind: d.kind,
-            label: d.label || "Microphone",
-          });
-        } else if (d.kind === "audiooutput") {
-          outputs.push({
-            deviceId: d.deviceId,
-            kind: d.kind,
-            label: d.label || "Speaker",
-          });
-        }
-      }
-      this._update((s) => {
-        s.audioInputs = inputs;
-        s.audioOutputs = outputs;
-        s.audioDevicesError = null;
-      });
-      // Drop concrete queued routes when their devices disappear. The system
-      // default uses an empty ID and stays valid independently of enumeration.
-      if (this._pendingAudioInput && !inputs.some((d) => d.deviceId === this._pendingAudioInput))
-        this._pendingAudioInput = null;
-      if (this._pendingAudioOutput && !outputs.some((d) => d.deviceId === this._pendingAudioOutput))
-        this._pendingAudioOutput = null;
-      // Only arrivals override a manual selection. Re-enumeration alone leaves it alone.
-      const preferred = (
-        available: AudioDevice[],
-        previous: AudioDevice[],
-        current: string,
-        kind: "Input" | "Output",
-      ) => {
-        const rememberedBluetooth = savedAudioDevice(`Bluetooth${kind}`);
-        const bluetooth = available.filter((d) => bluetoothAudioDevice(d, rememberedBluetooth));
-        const arrived = bluetooth.find(
-          (d) => !previous.some((old) => old.deviceId === d.deviceId && bluetoothAudioDevice(old, rememberedBluetooth)),
-        );
-        const lastBluetooth = arrived ?? bluetooth[0];
-        if (lastBluetooth) rememberAudioDevice(`Bluetooth${kind}`, lastBluetooth.deviceId);
-        const provisional = kind === "Input" ? this._inputPreferenceProvisional : this._outputPreferenceProvisional;
-        return (
-          arrived?.deviceId ??
-          (!current && !provisional
-            ? available.find((d) => d.deviceId === savedAudioDevice(kind))?.deviceId
-            : undefined)
-        );
-      };
-      this._pendingAudioOutput =
-        preferred(outputs, previousOutputs, this.state.selectedOutputId, "Output") ?? this._pendingAudioOutput;
-      this._pendingAudioInput =
-        preferred(inputs, previousInputs, this.state.selectedInputId, "Input") ?? this._pendingAudioInput;
-      const curOut = this.state.selectedOutputId;
-      if (curOut && !outputs.some((d) => d.deviceId === curOut)) {
-        if (this.state.audioSwitching !== null) {
-          // An output switch already owns recovery and will report its outcome.
-          if (this.state.audioSwitching !== "output")
-            this._update((s) => {
-              s.audioOutputError = "Speaker disconnected. Choose another speaker.";
-            });
-        } else {
-          await this._selectOutputDevice("", false);
-        }
-      }
-      const curSel = this.state.selectedInputId;
-      if (attempt !== this._deviceEnumerationAttempt) return;
-      if (curSel && !inputs.some((d) => d.deviceId === curSel)) {
-        if (this.state.audioSwitching !== null) {
-          // Preserve warnings about the other route while this switch completes.
-          if (this.state.audioSwitching !== "input")
-            this._update((s) => {
-              s.audioInputError = "Microphone disconnected. Choose another microphone.";
-            });
-        } else {
-          // Keep the displayed choice until a replacement track is working.
-          await this._selectInputDevice("", false);
-        }
-      }
-      if (attempt !== this._deviceEnumerationAttempt) return;
-      await this._applyPendingAudioDevices();
-    } catch (error) {
-      if (attempt !== this._deviceEnumerationAttempt) return;
-      this._update((s) => {
-        s.audioDevicesError = `Could not list audio devices: ${String(error)}`;
-      });
-    }
+  /** Enumerate audio devices and apply the route owner's arrival policy. */
+  enumerateDevices(): Promise<void> {
+    return this._audioRoutes.enumerateDevices();
   }
 
-  // Arrivals can occur during a manual switch or a previous automatic switch.
-  // Consume each requested route once; failures stay visible until the user retries.
-  private async _applyPendingAudioDevices(): Promise<void> {
-    if (this.state.audioSwitching !== null) return;
-    const output = this._pendingAudioOutput;
-    this._pendingAudioOutput = null;
-    const speaker = this._connection?.speaker ?? null;
-    const needsOutput =
-      output !== this.state.selectedOutputId ||
-      this._outputPreferenceProvisional ||
-      (speaker !== null && speaker.sinkId !== output);
-    if (output !== null && needsOutput && "setSinkId" in HTMLMediaElement.prototype)
-      await this._selectOutputDevice(output, true);
-    if (this.state.audioSwitching !== null) return;
-    const input = this._pendingAudioInput;
-    this._pendingAudioInput = null;
-    if (input && input !== this.state.selectedInputId) await this._selectInputDevice(input, true);
-  }
-
-  /** Select an audio input device. If connected, replaces the mic track. */
-  async selectInputDevice(deviceId: string): Promise<void> {
-    if (this.state.speechInput !== "gateway") return;
-    this._pendingAudioInput = null;
-    await this._selectInputDevice(deviceId, true);
-  }
-
-  private async _selectInputDevice(deviceId: string, remember: boolean): Promise<void> {
-    if (this.state.speechInput !== "gateway") return;
-    if (this.state.audioSwitching !== null) return;
-    const selection = ++this._audioSelectionAttempt;
-    const connection = this._connection;
-    const pc = connection?.pc;
-    const oldStream = connection?.microphone;
-    if (connection && pc && oldStream) {
-      this._update((s) => {
-        s.audioSwitching = "input";
-        s.audioInputError = null;
-      });
-      let pending: PendingMicrophoneCapture | null = null;
-      const releasePending = () => {
-        const capture = pending;
-        pending = null;
-        capture?.outgoing?.close();
-        capture?.stream.getTracks().forEach((track) => track.stop());
-      };
-      const signal = connection.lifetime.signal;
-      signal.addEventListener("abort", releasePending, { once: true });
-      try {
-        // Acquire new mic stream with the selected device.
-        const constraints: MediaStreamConstraints = {
-          audio: deviceId ? { deviceId: { exact: deviceId } } : true,
-          video: false,
-        };
-        if (this._connection !== connection) return;
-        const newStream = await navigator.mediaDevices.getUserMedia(constraints);
-        if (this._connection !== connection) {
-          newStream.getTracks().forEach((track) => track.stop());
-          return;
-        }
-        // Until installation commits, cancellation owns the pending capture
-        // and graph while the previous working input remains installed.
-        const capture: PendingMicrophoneCapture = { stream: newStream, outgoing: null };
-        pending = capture;
-        newStream.getAudioTracks().forEach((track) => {
-          track.enabled = false;
-        });
-        const outgoing = this._microphoneInput.connect(newStream);
-        capture.outgoing = outgoing;
-        // Replace tracks on the PeerConnection.
-        const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
-        for (const t of outgoing.stream.getAudioTracks()) {
-          // Keep the pending sender silent until installation can apply the current mode.
-          t.enabled = false;
-          if (sender) {
-            await sender.replaceTrack(t);
-            if (this._connection !== connection) return;
-          } else {
-            pc.addTrack(t, outgoing.stream);
-          }
-        }
-        if (this._connection !== connection) return;
-        newStream.getAudioTracks().forEach((track) => {
-          track.enabled = !microphoneMuted(this.state);
-        });
-        outgoing.stream.getAudioTracks().forEach((track) => {
-          track.enabled = this._microphoneActive();
-        });
-        const previous = connection.outgoing;
-        connection.outgoing = outgoing;
-        connection.microphone = newStream;
-        pending = null;
-        previous?.close();
-        oldStream.getTracks().forEach((track) => track.stop());
-        this._update((s) => {
-          s.selectedInputId = deviceId;
-          s.audioInputError = null;
-        });
-        if (this._connection !== connection) return;
-        if (remember) rememberAudioDevice("Input", deviceId);
-        this._inputPreferenceProvisional = false;
-        this._monitorMicrophone(newStream);
-      } catch (error) {
-        releasePending();
-        if (this._connection === connection && error instanceof DOMException && error.name === "NotAllowedError") {
-          this._microphoneDenied();
-          return;
-        }
-        if (this._connection === connection)
-          this._update((s) => {
-            s.audioInputError = `Could not switch microphone: ${String(error)}`;
-          });
-      } finally {
-        signal.removeEventListener("abort", releasePending);
-        if (this._connection === connection && selection === this._audioSelectionAttempt) {
-          this._update((s) => {
-            s.audioSwitching = null;
-          });
-          void this._applyPendingAudioDevices();
-        }
-      }
-    } else {
-      this._update((s) => {
-        s.selectedInputId = deviceId;
-        s.audioInputError = null;
-      });
-      this._inputPreferenceProvisional = remember;
-    }
+  /** Select an input immediately or queue it behind the current replacement. */
+  selectInputDevice(deviceId: string): Promise<void> {
+    return this._audioRoutes.selectInputDevice(deviceId);
   }
 
   private _microphoneActive(): boolean {
@@ -1772,51 +1500,9 @@ export class VoiceSession {
     return Promise.all([activation, processing]).then(() => undefined);
   }
 
-  /** Select an audio output device. Applies immediately if connected. */
-  async selectOutputDevice(deviceId: string): Promise<void> {
-    if (this.state.speechOutput !== "gateway") return;
-    this._pendingAudioOutput = null;
-    await this._selectOutputDevice(deviceId, true);
-  }
-
-  private async _selectOutputDevice(deviceId: string, remember: boolean): Promise<void> {
-    if (this.state.speechOutput !== "gateway") return;
-    if (this.state.audioSwitching !== null) return;
-    const selection = ++this._audioSelectionAttempt;
-    const audio = this._connection?.speaker ?? null;
-    this._update((s) => {
-      s.audioSwitching = "output";
-      s.audioOutputError = null;
-    });
-    try {
-      if (!("setSinkId" in HTMLMediaElement.prototype))
-        throw new Error("Use your device's sound settings to change the speaker");
-      if (audio) await audio.setSinkId(deviceId);
-      if ((this._connection?.speaker ?? null) !== audio || selection !== this._audioSelectionAttempt) return;
-      this._update((s) => {
-        s.selectedOutputId = deviceId;
-        s.audioOutputError = null;
-      });
-      // Before remote audio exists, this is a provisional route selection.
-      if (audio) {
-        if (remember) rememberAudioDevice("Output", deviceId);
-        this._outputPreferenceProvisional = false;
-      } else {
-        this._outputPreferenceProvisional = remember;
-      }
-    } catch (error) {
-      if ((this._connection?.speaker ?? null) === audio && selection === this._audioSelectionAttempt)
-        this._update((s) => {
-          s.audioOutputError = `Could not switch speaker: ${String(error)}`;
-        });
-    } finally {
-      if (selection === this._audioSelectionAttempt) {
-        this._update((s) => {
-          s.audioSwitching = null;
-        });
-        void this._applyPendingAudioDevices();
-      }
-    }
+  /** Select an output immediately or queue it behind the current replacement. */
+  selectOutputDevice(deviceId: string): Promise<void> {
+    return this._audioRoutes.selectOutputDevice(deviceId);
   }
 
   private _restoreColdSetup(snapshot: GatewaySnapshot): VoiceSetupPreference | null {
@@ -2080,9 +1766,7 @@ export class VoiceSession {
       };
       // Initial acquisition owns input routing too: devicechange must queue any
       // arrival until the first stream has been installed on the PeerConnection.
-      this._update((s) => {
-        s.audioSwitching = "input";
-      });
+      const inputInstalled = this._audioRoutes.beginCapture();
       if (!navigator.mediaDevices?.getUserMedia)
         throw new Error("Microphone access requires HTTPS and a supported browser.");
       const micStream = await navigator.mediaDevices.getUserMedia(micConstraints);
@@ -2094,10 +1778,6 @@ export class VoiceSession {
       this._update((s) => {
         s.microphoneAccess = "granted";
       });
-      if (this._inputPreferenceProvisional) {
-        rememberAudioDevice("Input", inputId);
-        this._inputPreferenceProvisional = false;
-      }
       micStream.getAudioTracks().forEach((track) => {
         track.enabled = this._microphoneActive();
       });
@@ -2110,9 +1790,7 @@ export class VoiceSession {
       } else {
         pc.addTransceiver("audio", { direction: "recvonly" });
       }
-      this._update((s) => {
-        s.audioSwitching = null;
-      });
+      inputInstalled(inputId);
       await this.enumerateDevices();
       if (attempt !== this._connection) return;
       const activeMicStream = attempt.microphone;
@@ -2126,10 +1804,7 @@ export class VoiceSession {
         const audio = new Audio();
         attempt.speaker = audio;
         audio.srcObject = evt.streams[0] ?? new MediaStream([evt.track]);
-        if (this.state.selectedOutputId || this._outputPreferenceProvisional) {
-          this._pendingAudioOutput ??= this.state.selectedOutputId;
-          void this._applyPendingAudioDevices();
-        }
+        this._audioRoutes.speakerAttached();
         void this.resumeAudio();
       };
 
@@ -2427,10 +2102,6 @@ export class VoiceSession {
     batch(() => {
       this._sessionGateway?.preparation?.retireSession(this.conversationID);
       this._leaveVoiceMode();
-      this._audioSelectionAttempt++;
-      this._deviceEnumerationAttempt++;
-      this._pendingAudioInput = null;
-      this._pendingAudioOutput = null;
       this._reconnectEnabled = false;
       this._replaceConnection(null, false);
       // Preserve transcript for review; mark all entries final.
@@ -2444,7 +2115,6 @@ export class VoiceSession {
         s.activeTool = null;
         s.turnState = TurnStateIdle;
         s.micLevel = 0;
-        s.audioSwitching = null;
         s.audioDevicesError = null;
         s.audioInputError = null;
         s.audioOutputError = null;
@@ -2549,6 +2219,7 @@ export class VoiceSession {
       this._audioAccess = new AbortController();
       const previous = this._connection;
       this._connection = next;
+      this._audioRoutes.reset();
       previous?.dispose();
       if (this._connection !== next) return;
       this._thinkingEarcon.setThinking(false);
@@ -2676,10 +2347,6 @@ export class VoiceSession {
       this._reconnectEnabled = false;
       this._recordError(message);
       this._leaveVoiceMode();
-      this._audioSelectionAttempt++;
-      this._deviceEnumerationAttempt++;
-      this._pendingAudioInput = null;
-      this._pendingAudioOutput = null;
       this._replaceConnection(null, false);
       this._update((s) => {
         s.connectStatus = null;
@@ -2690,7 +2357,6 @@ export class VoiceSession {
         s.turnState = TurnStateIdle;
         s.activeTool = null;
         s.error = message;
-        s.audioSwitching = null;
       });
     });
   }
