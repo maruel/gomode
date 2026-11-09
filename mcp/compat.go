@@ -1,4 +1,8 @@
-// Released Streamable HTTP protocol compatibility for shipped MCP clients.
+// Supports MCP protocol revisions before 2026-07-28 for initialize-based clients.
+//
+// TODO(2027-01-01): Recheck supported clients' MCP protocol versions. If none
+// require pre-2026-07-28 support, delete this handler, compat_sessions.go,
+// their tests, compatibility routing, and host session-store wiring.
 //
 // Version ownership map:
 //   - 2026-07-28: native protocol path in mcp.go. It uses server/discover,
@@ -11,11 +15,6 @@
 //     2025-11-25.
 //   - 2025-03-26 and 2024-11-05: recognized only for protocol negotiation. We
 //     have no current shipped-client fixture for version-specific behavior.
-//
-// When dropping support for 2025-11-25 and 2025-06-18 clients, delete this file,
-// HandleMCP's released fallback, server.go's GET route, and compat_test.go. When
-// dropping only 2025-03-26 or 2024-11-05, remove just the corresponding
-// negotiation entry below.
 
 package mcp
 

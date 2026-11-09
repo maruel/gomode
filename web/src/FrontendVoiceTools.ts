@@ -1,4 +1,4 @@
-// Owns authenticated frontend preparation, shared context publication, native lifetimes, and scoped tool dispatch.
+// Binds authenticated frontend preparation, registration, native sessions, and tool dispatch to their owning records.
 //
 // Bridge-3 wire contract, as enforced here:
 // 1. Capture window.goModeFrontendDocument, gomodeAuth, and
@@ -121,8 +121,34 @@ interface NativeToolInvocation extends NativeInvocation {
 type ActiveScope = FrontendPreparationScope & {
   snapshot(): FrontendVoiceToolsSnapshot;
   binding(): string;
+  preparedNativeSessionID(): string | null;
   receiveVoiceSession(sessionID: string | null): void;
 };
+interface FrontendAuthentication {
+  request: string;
+  message: Record<string, unknown>;
+  grantsAccess: boolean;
+  document: string | null;
+  grant: { token: string; voiceSessionCapable: boolean } | null;
+}
+
+interface ToolRegistration {
+  id: string;
+  tools: Map<string, FrontendVoiceTool> | null;
+  lifetime: AbortController;
+  pending: Map<string, { controller: AbortController; sessionID: string | null }>;
+}
+
+interface NativePreparation {
+  sessionID: string;
+  lifetime: AbortController;
+  state: "pending" | "settled";
+}
+
+function createRegistration(tools: Map<string, FrontendVoiceTool> | null): ToolRegistration {
+  return { id: String(++nextRegistration), tools, lifetime: new AbortController(), pending: new Map() };
+}
+
 let preparation: FrontendPreparation | null = null;
 let activeScope: ActiveScope | null = null;
 let nextPreparationRequest = 0;
@@ -139,29 +165,32 @@ export function createFrontendPreparationClient(): {
   return {
     publishAuth(auth) {
       preparation?.dispose();
-      const request = String(++nextPreparationRequest);
-      const authMessage = { ...auth };
-      const grantsAccess =
-        (typeof authMessage.bearerToken === "string" && authMessage.bearerToken.length > 0) ||
-        (authMessage.authChanged === true && authMessage.nativeAccess === true);
-      let document: string | null = null;
-      let token: string | null = null;
-      let voiceSessionCapable = false;
-      let preparedSessionID: string | null = null;
+      const message = { ...auth };
+      const authentication: FrontendAuthentication = {
+        request: String(++nextPreparationRequest),
+        message,
+        grantsAccess:
+          (typeof message.bearerToken === "string" && message.bearerToken.length > 0) ||
+          (message.authChanged === true && message.nativeAccess === true),
+        document: null,
+        grant: null,
+      };
       let disposed = false;
       let scope: ActiveScope | null = null;
       const publish = () =>
         untrack(() => {
-          if (disposed || token === null) return;
+          if (disposed || authentication.grant === null) return;
           const ready = scope?.ready() === true;
           readinessBridge?.postMessage(
             JSON.stringify({
-              document,
-              token,
+              document: authentication.document,
+              token: authentication.grant.token,
               scope: scope?.binding() ?? "",
               ready,
               tools: ready ? scope?.snapshot().declarations : [],
-              ...(voiceSessionCapable ? { voiceSessionVersion: 1, voiceSessionPrepared: preparedSessionID } : {}),
+              ...(authentication.grant.voiceSessionCapable
+                ? { voiceSessionVersion: 1, voiceSessionPrepared: scope?.preparedNativeSessionID() ?? null }
+                : {}),
             }),
           );
         });
@@ -176,13 +205,12 @@ export function createFrontendPreparationClient(): {
         if (disposed || typeof value !== "object" || value === null) return;
         const reply = value as Record<string, unknown>;
         if (
-          reply.frontendDocument !== document ||
-          reply.frontendRequest !== request ||
+          reply.frontendDocument !== authentication.document ||
+          reply.frontendRequest !== authentication.request ||
           typeof reply.frontendToken !== "string"
         )
           return;
-        token = reply.frontendToken;
-        voiceSessionCapable = reply.voiceSessionVersion === 1;
+        authentication.grant = { token: reply.frontendToken, voiceSessionCapable: reply.voiceSessionVersion === 1 };
         publish();
       };
       const receiveVoiceSession = (event: { data: string }) => {
@@ -193,12 +221,19 @@ export function createFrontendPreparationClient(): {
           console.error("Invalid Go Mode voice lifetime", error);
           return;
         }
-        if (disposed || !voiceSessionCapable || typeof value !== "object" || value === null || !scope) return;
+        if (
+          disposed ||
+          !authentication.grant?.voiceSessionCapable ||
+          typeof value !== "object" ||
+          value === null ||
+          !scope
+        )
+          return;
         const reply = value as Record<string, unknown>;
         if (
           reply.voiceSessionVersion !== 1 ||
-          reply.document !== document ||
-          reply.token !== token ||
+          reply.document !== authentication.document ||
+          reply.token !== authentication.grant.token ||
           reply.scope !== scope.binding() ||
           !scope.ready()
         )
@@ -209,80 +244,85 @@ export function createFrontendPreparationClient(): {
         createScope(context) {
           scope?.dispose();
           const [ready, setReady] = createSignal(false);
-          const [nativeVoiceSessionID, setNativeVoiceSessionID] = createSignal<string | null>(null);
+          const [nativePreparation, setNativePreparation] = createSignal<NativePreparation | null>(null);
           const voiceContext = disposed || context === undefined ? null : createFrontendVoiceContext(context, ready);
-          let nativeLifetime = new AbortController();
-          let tools: Map<string, FrontendVoiceTool> | null = null;
+          let registration = createRegistration(null);
           let dataReady = false;
           let released = disposed;
-          let registration = String(++nextRegistration);
-          let lifetime = new AbortController();
-          const pending = new Map<string, { controller: AbortController; sessionID: string | null }>();
-          const invalidate = () => {
-            lifetime.abort();
-            lifetime = new AbortController();
-            registration = String(++nextRegistration);
+          const invalidate = (tools: Map<string, FrontendVoiceTool> | null) => {
+            registration.lifetime.abort();
+            registration.pending.forEach(({ controller }) => controller.abort());
+            registration.pending.clear();
             current.receiveVoiceSession(null);
             voiceContext?.reset();
+            registration = createRegistration(tools);
           };
-          const owns = (request: NativeInvocation) =>
+          const owns = (bound: ToolRegistration, request: NativeInvocation) =>
             untrack(
               () =>
                 activeScope === current &&
+                registration === bound &&
+                authentication.grant !== null &&
                 (request.sessionID === undefined || validSessionID(request.sessionID)) &&
                 ready() &&
-                (!voiceSessionCapable || request.sessionID === nativeVoiceSessionID()) &&
-                request.document === document &&
-                request.token === token &&
-                request.scope === registration,
+                (!authentication.grant?.voiceSessionCapable ||
+                  request.sessionID === (nativePreparation()?.sessionID ?? null)) &&
+                request.document === authentication.document &&
+                request.token === authentication.grant?.token &&
+                request.scope === bound.id,
             );
 
           const captureExecution = () => {
-            const captured = tools;
-            const capturedRegistration = registration;
-            const capturedLifetime = lifetime.signal;
-            const capturedNativeLifetime = nativeLifetime.signal;
+            const bound = registration;
+            const native = untrack(nativePreparation);
             return (name: string, args: Record<string, unknown>, sessionID: string | null, signal?: AbortSignal) => {
               const isCurrent = () =>
                 activeScope === current &&
                 ready() &&
-                capturedRegistration === registration &&
-                (!voiceSessionCapable || sessionID === nativeVoiceSessionID());
-              const tool = isCurrent() ? captured?.get(name) : null;
+                bound === registration &&
+                native === untrack(nativePreparation) &&
+                (!authentication.grant?.voiceSessionCapable || sessionID === native?.sessionID);
+              const tool = isCurrent() ? bound.tools?.get(name) : null;
               return tool
-                ? runTool(tool, args, sessionID, [capturedLifetime, capturedNativeLifetime, signal], isCurrent)
+                ? runTool(tool, args, sessionID, [bound.lifetime.signal, native?.lifetime.signal, signal], isCurrent)
                 : Promise.resolve(unavailableTool(name));
             };
           };
           const dispatch = (request: NativeToolInvocation) => {
-            if (!owns(request) || pending.has(request.invocation)) return;
+            const bound = registration;
+            if (!owns(bound, request) || bound.pending.has(request.invocation)) return;
             const controller = new AbortController();
             const invocation = { controller, sessionID: request.sessionID ?? null };
-            pending.set(request.invocation, invocation);
+            bound.pending.set(request.invocation, invocation);
             // Only omitted legacy native wire IDs may reach the nullable internal runner.
             void captureExecution()(request.name, request.args, request.sessionID ?? null, controller.signal).then(
               (result) => {
-                if (pending.get(request.invocation) !== invocation) return;
-                pending.delete(request.invocation);
-                if (owns(request))
+                if (bound.pending.get(request.invocation) !== invocation) return;
+                bound.pending.delete(request.invocation);
+                if (owns(bound, request))
                   resultBridge?.postMessage(JSON.stringify({ ...request, name: undefined, args: undefined, result }));
               },
             );
           };
           const cancel = (request: NativeInvocation) => {
-            if (!owns(request)) return;
-            const invocation = pending.get(request.invocation);
+            const bound = registration;
+            if (!owns(bound, request)) return;
+            const invocation = bound.pending.get(request.invocation);
             if (!invocation || (request.sessionID !== undefined && invocation.sessionID !== request.sessionID)) return;
             invocation.controller.abort();
-            pending.delete(request.invocation);
+            bound.pending.delete(request.invocation);
           };
           const update = () => {
-            setReady(!released && grantsAccess && tools !== null && dataReady);
+            setReady(!released && authentication.grantsAccess && registration.tools !== null && dataReady);
             publish();
           };
           const current: ActiveScope = {
             ready,
-            nativeVoiceSessionID,
+            nativeVoiceSessionID: () => nativePreparation()?.sessionID ?? null,
+            preparedNativeSessionID: () => {
+              const native = untrack(nativePreparation);
+              return native?.state === "settled" ? native.sessionID : null;
+            },
             contextPublication: voiceContext?.contextPublication ?? (() => ({ failure: null, pending: false })),
             async retryContext() {
               if (!released && untrack(ready)) await voiceContext?.retryContext();
@@ -301,33 +341,44 @@ export function createFrontendPreparationClient(): {
               voiceContext?.retireSession(sessionID);
             },
             receiveVoiceSession(sessionID) {
-              if (untrack(nativeVoiceSessionID) === sessionID) return;
-              nativeLifetime.abort();
-              const previous = untrack(nativeVoiceSessionID);
-              if (previous !== null) voiceContext?.retireSession(previous);
-              nativeLifetime = new AbortController();
-              const signal = nativeLifetime.signal;
-              preparedSessionID = null;
-              setNativeVoiceSessionID(sessionID);
-              for (const [id, invocation] of pending) {
+              const previous = untrack(nativePreparation);
+              if ((previous?.sessionID ?? null) === sessionID) return;
+              previous?.lifetime.abort();
+              if (previous) voiceContext?.retireSession(previous.sessionID);
+              const native: NativePreparation | null =
+                sessionID === null
+                  ? null
+                  : {
+                      sessionID,
+                      lifetime: new AbortController(),
+                      state: "pending",
+                    };
+              setNativePreparation(native);
+              for (const [id, invocation] of registration.pending) {
                 if (invocation.sessionID !== sessionID) {
                   invocation.controller.abort();
-                  pending.delete(id);
+                  registration.pending.delete(id);
                 }
               }
-              if (sessionID === null) return;
+              if (native === null) return;
               void (async () => {
                 try {
-                  await current.prepareSession(sessionID, signal);
+                  await current.prepareSession(native.sessionID, native.lifetime.signal);
                 } catch {
                   // The shared context owner reports advisory outcomes once.
                 }
-                if (signal.aborted || released || !untrack(ready)) return;
-                preparedSessionID = sessionID;
+                if (
+                  native !== untrack(nativePreparation) ||
+                  native.lifetime.signal.aborted ||
+                  released ||
+                  !untrack(ready)
+                )
+                  return;
+                native.state = "settled";
                 publish();
               })();
             },
-            binding: () => registration,
+            binding: () => registration.id,
             setTools(values) {
               if (released) return;
               const next = new Map<string, FrontendVoiceTool>();
@@ -336,18 +387,17 @@ export function createFrontendPreparationClient(): {
                 if (name === "hang_up" || next.has(name)) throw new Error(`Voice tool "${name}" is already reserved.`);
                 next.set(name, tool);
               }
-              invalidate();
-              tools = next;
+              invalidate(next);
               update();
             },
             setDataReady(value) {
               if (released) return;
-              if (dataReady && !value) invalidate();
+              if (dataReady && !value) invalidate(registration.tools);
               dataReady = value;
               update();
             },
             snapshot() {
-              const captured = tools;
+              const captured = registration.tools;
               const execute = captureExecution();
               return {
                 declarations:
@@ -362,10 +412,8 @@ export function createFrontendPreparationClient(): {
             dispose() {
               if (released) return;
               released = true;
-              invalidate();
+              invalidate(null);
               voiceContext?.dispose();
-              pending.forEach(({ controller }) => controller.abort());
-              pending.clear();
               setReady(false);
               if (scope === current) scope = null;
               if (activeScope === current) {
@@ -389,7 +437,7 @@ export function createFrontendPreparationClient(): {
           if (disposed) return;
           scope?.dispose();
           disposed = true;
-          token = null;
+          authentication.grant = null;
           if (bridge?.onmessage === receive) bridge.onmessage = null;
           if (readinessBridge?.onmessage === receiveVoiceSession) readinessBridge.onmessage = null;
           if (preparation === owner) preparation = null;
@@ -397,15 +445,21 @@ export function createFrontendPreparationClient(): {
       };
       preparation = owner;
       if (bridge && documentBinding !== undefined) {
-        if (grantsAccess) {
+        if (authentication.grantsAccess) {
           bridge.onmessage = receive;
           if (readinessBridge) readinessBridge.onmessage = receiveVoiceSession;
         }
         void documentBinding.then((boundDocument) => {
           // Revocations remain ordered; retired grants can never post late authentication.
-          if (disposed && grantsAccess) return;
-          document = boundDocument;
-          bridge.postMessage(JSON.stringify({ ...authMessage, frontendDocument: document, frontendRequest: request }));
+          if (disposed && authentication.grantsAccess) return;
+          authentication.document = boundDocument;
+          bridge.postMessage(
+            JSON.stringify({
+              ...authentication.message,
+              frontendDocument: authentication.document,
+              frontendRequest: authentication.request,
+            }),
+          );
         });
       }
       return owner;

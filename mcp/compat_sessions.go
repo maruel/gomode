@@ -1,4 +1,4 @@
-// Owner-bound released MCP sessions register cancellable subscriptions before opening SSE streams.
+// Owns authenticated pre-2026-07-28 MCP sessions and subscription startup.
 
 package mcp
 

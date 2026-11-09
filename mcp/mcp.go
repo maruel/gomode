@@ -151,7 +151,7 @@ type Handler struct {
 }
 
 // HandleMCP handles one MCP HTTP request, dispatching to the native
-// 2026-07-28 protocol or the released Streamable HTTP compatibility handler
+// 2026-07-28 protocol or the released Streamable HTTP protocol handler
 // based on the request shape.
 func (h *Handler) HandleMCP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

@@ -1,11 +1,11 @@
-// Browser voice sessions prepare host context before setup and dispatch conversation-bound tools.
+// Browser voice sessions own transport attempts and dispatch conversation-bound tools after host preparation.
 
 import { voiceGatewayBaseURL } from "./BrowserVoiceManifest";
 import { BrowserSpeechBuffer } from "./BrowserSpeechBuffer";
 import { MicrophoneLevel } from "./MicrophoneLevel";
 import { MicrophoneInput } from "./MicrophoneInput";
 import { mergeVoiceUsage, type VoiceUsage } from "./VoiceUsage";
-import { createSignal, untrack } from "solid-js";
+import { batch, createSignal, untrack } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 
 // TODO: Cleanup imports.
@@ -816,13 +816,79 @@ function newConversationID(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+interface PendingMicrophoneCapture {
+  stream: MediaStream;
+  outgoing: ReturnType<MicrophoneInput["connect"]> | null;
+}
+
+// One transport attempt owns resources until replacement, disconnect, or failure.
+class VoiceConnection {
+  readonly lifetime = new AbortController();
+  pc: RTCPeerConnection | null = null;
+  channel: VoiceChannel | null = null;
+  speech: BrowserSpeech | null = null;
+  readonly speechBuffer = new BrowserSpeechBuffer();
+  microphone: MediaStream | null = null;
+  outgoing: ReturnType<MicrophoneInput["connect"]> | null = null;
+  speaker: HTMLAudioElement | null = null;
+  rtc: { sessionID: string; service: ServiceAuthorization | null } | null = null;
+  offerSDP = "";
+  answerSDP = "";
+  setupTimer: ReturnType<typeof setTimeout> | null = null;
+  reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(readonly gateway: GatewaySnapshot) {}
+
+  clearSetupTimer(): void {
+    if (this.setupTimer !== null) clearTimeout(this.setupTimer);
+    this.setupTimer = null;
+  }
+
+  setSetupTimer(callback: () => void): void {
+    this.clearSetupTimer();
+    if (!this.lifetime.signal.aborted) this.setupTimer = setTimeout(callback, SETUP_TIMEOUT_MS);
+  }
+
+  dispose(): void {
+    this.lifetime.abort();
+    this.clearSetupTimer();
+    if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer);
+    this.speaker?.pause();
+    if (this.speaker !== null) this.speaker.srcObject = null;
+    this.speechBuffer.clear();
+    this.speech?.close();
+    if (this.channel instanceof WebSocket) this.channel.close(1000);
+    else this.channel?.close();
+    this.pc?.close();
+    this.outgoing?.close();
+    this.microphone?.getTracks().forEach((track) => track.stop());
+    this.channel = null;
+    this.pc = null;
+    this.speech = null;
+    this.speaker = null;
+    this.outgoing = null;
+    this.microphone = null;
+    this.offerSDP = "";
+    this.answerSDP = "";
+    this.reconnectTimer = null;
+    if (this.rtc !== null) {
+      void closeVoiceGatewaySession(this.gateway, this.rtc.sessionID, this.rtc.service).catch((error: unknown) => {
+        console.warn("Could not close voice gateway session", error);
+      });
+      this.rtc = null;
+    }
+  }
+}
+
 export class VoiceSession {
   private readonly _microphoneInput = new MicrophoneInput();
-  private _outgoingMicrophone: ReturnType<MicrophoneInput["connect"]> | null = null;
   readonly state: VoiceState;
   /** Public store updater (also the seam tests use to arrange session state). */
   readonly setState: (fn: (s: VoiceState) => VoiceState) => void;
 
+  private _connection: VoiceConnection | null = null;
+  // User-gesture audio activation also exists while no transport is connected.
+  private _audioAccess = new AbortController();
   private _choicesVersion = -1;
   private _choicesRequest: { version: number; promise: Promise<void> } | null = null;
   private _choicesAttempt = 0;
@@ -838,23 +904,12 @@ export class VoiceSession {
   get conversationID(): string {
     return this._conversationID();
   }
-  private _frontendInvocationLifetime = new AbortController();
   private _frontendTools: FrontendVoiceToolsSnapshot | null = null;
-  private _pc: RTCPeerConnection | null = null;
-  private _dc: RTCDataChannel | null = null;
-  private _textSocket: WebSocket | null = null;
-  private _browserSpeech: BrowserSpeech | null = null;
-  private readonly _browserSpeechBuffer = new BrowserSpeechBuffer();
   private _browserTurnIdle = false;
   private _browserUserSpeechActive = false;
   // The cancelled generation can still report idle after its interruption.
   // Admit output again only when the next submitted user turn starts thinking.
   private _browserCancellation: "none" | "pending" | "acknowledged" = "none";
-  private _rtcSessionID: string | null = null;
-  private _rtcGatewaySnapshot: GatewaySnapshot | null = null;
-  private _rtcOfferService: ServiceAuthorization | null = null;
-  private _lastOfferSDP = "";
-  private _lastAnswerSDP = "";
   private readonly _microphoneMeter = new MicrophoneLevel(
     (level) =>
       this._update((s) => {
@@ -865,20 +920,15 @@ export class VoiceSession {
         s.micLevelError = error;
       }),
   );
-  private _micStream: MediaStream | null = null;
   /** The <audio> element playing remote RTP audio, stored so we can call setSinkId(). */
-  private _speakerAudio: HTMLAudioElement | null = null;
   /** True while the model is speaking — injected text is buffered and flushed after the turn ends. */
   private _speakerActive = false;
   /** Text notifications buffered while the model is speaking; flushed on turn end. */
   private _pendingNotifications: Array<{ text: string; generate: boolean }> = [];
   private _pendingServiceContext: string | null = null;
-  private _setupTimer: ReturnType<typeof setTimeout> | null = null;
-  private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private _reconnectEnabled = false;
   private _reconnectAttempts = 0;
   private _recoveryContext = "";
-  private _connectionAttempt = 0;
   private _audioSelectionAttempt = 0;
   private _deviceEnumerationAttempt = 0;
   private _pendingAudioInput: string | null = null;
@@ -1310,9 +1360,10 @@ export class VoiceSession {
     this._applySetup(next, true);
   }
 
-  private async _resolveSessionChoice(snapshot: GatewaySnapshot, attempt: number): Promise<string | null> {
+  private async _resolveSessionChoice(attempt: VoiceConnection): Promise<string | null> {
+    const snapshot = attempt.gateway;
     const metadata = validateVoiceChoices(await snapshot.api.voiceChoices());
-    if (attempt !== this._connectionAttempt) return null;
+    if (attempt !== this._connection) return null;
     if (snapshot.version === untrack(gatewayVersion)) {
       // A connect-time refresh owns publication over an older settings request.
       this._choicesAttempt++;
@@ -1566,10 +1617,11 @@ export class VoiceSession {
     if (this.state.audioSwitching !== null) return;
     const output = this._pendingAudioOutput;
     this._pendingAudioOutput = null;
+    const speaker = this._connection?.speaker ?? null;
     const needsOutput =
       output !== this.state.selectedOutputId ||
       this._outputPreferenceProvisional ||
-      (this._speakerAudio !== null && this._speakerAudio.sinkId !== output);
+      (speaker !== null && speaker.sinkId !== output);
     if (output !== null && needsOutput && "setSinkId" in HTMLMediaElement.prototype)
       await this._selectOutputDevice(output, true);
     if (this.state.audioSwitching !== null) return;
@@ -1589,30 +1641,46 @@ export class VoiceSession {
     if (this.state.speechInput !== "gateway") return;
     if (this.state.audioSwitching !== null) return;
     const selection = ++this._audioSelectionAttempt;
-    const pc = this._pc;
-    const oldStream = this._micStream;
-    if (pc && oldStream) {
+    const connection = this._connection;
+    const pc = connection?.pc;
+    const oldStream = connection?.microphone;
+    if (connection && pc && oldStream) {
       this._update((s) => {
         s.audioSwitching = "input";
         s.audioInputError = null;
       });
       let newStream: MediaStream | null = null;
       let outgoing: ReturnType<MicrophoneInput["connect"]> | null = null;
+      let pending: PendingMicrophoneCapture | null = null;
+      const releasePending = () => {
+        const capture = pending;
+        pending = null;
+        capture?.outgoing?.close();
+        capture?.stream.getTracks().forEach((track) => track.stop());
+      };
+      const signal = connection.lifetime.signal;
+      signal.addEventListener("abort", releasePending, { once: true });
       try {
         // Acquire new mic stream with the selected device.
         const constraints: MediaStreamConstraints = {
           audio: deviceId ? { deviceId: { exact: deviceId } } : true,
           video: false,
         };
+        if (this._connection !== connection) return;
         newStream = await navigator.mediaDevices.getUserMedia(constraints);
-        if (this._pc !== pc) {
+        if (this._connection !== connection) {
           newStream.getTracks().forEach((track) => track.stop());
           return;
         }
+        // Until installation commits, cancellation owns the pending capture
+        // and graph while the previous working input remains installed.
+        const capture: PendingMicrophoneCapture = { stream: newStream, outgoing: null };
+        pending = capture;
         newStream.getAudioTracks().forEach((track) => {
           track.enabled = false;
         });
         outgoing = this._microphoneInput.connect(newStream);
+        capture.outgoing = outgoing;
         // Replace tracks on the PeerConnection.
         const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
         for (const t of outgoing.stream.getAudioTracks()) {
@@ -1620,47 +1688,45 @@ export class VoiceSession {
           t.enabled = false;
           if (sender) {
             await sender.replaceTrack(t);
-            if (this._pc !== pc) {
-              outgoing.close();
-              newStream.getTracks().forEach((track) => track.stop());
-              return;
-            }
+            if (this._connection !== connection) return;
           } else {
             pc.addTrack(t, outgoing.stream);
           }
         }
+        if (this._connection !== connection) return;
         newStream.getAudioTracks().forEach((track) => {
           track.enabled = !microphoneMuted(this.state);
         });
         outgoing.stream.getAudioTracks().forEach((track) => {
           track.enabled = this._microphoneActive();
         });
-        this._outgoingMicrophone?.close();
-        this._outgoingMicrophone = outgoing;
-        this._micStream = newStream;
+        const previous = connection.outgoing;
+        connection.outgoing = outgoing;
+        connection.microphone = newStream;
+        pending = null;
+        previous?.close();
         oldStream.getTracks().forEach((track) => track.stop());
         this._update((s) => {
           s.selectedInputId = deviceId;
           s.audioInputError = null;
         });
+        if (this._connection !== connection) return;
         if (remember) rememberAudioDevice("Input", deviceId);
         this._inputPreferenceProvisional = false;
         this._monitorMicrophone(newStream);
       } catch (error) {
-        if (this._micStream !== newStream) {
-          outgoing?.close();
-          newStream?.getTracks().forEach((track) => track.stop());
-        }
-        if (this._pc === pc && error instanceof DOMException && error.name === "NotAllowedError") {
+        releasePending();
+        if (this._connection === connection && error instanceof DOMException && error.name === "NotAllowedError") {
           this._microphoneDenied();
           return;
         }
-        if (this._pc === pc)
+        if (this._connection === connection)
           this._update((s) => {
             s.audioInputError = `Could not switch microphone: ${String(error)}`;
           });
       } finally {
-        if (selection === this._audioSelectionAttempt) {
+        signal.removeEventListener("abort", releasePending);
+        if (this._connection === connection && selection === this._audioSelectionAttempt) {
           this._update((s) => {
             s.audioSwitching = null;
           });
@@ -1681,23 +1747,27 @@ export class VoiceSession {
   }
 
   private _monitorMicrophone(stream: MediaStream): void {
-    this._microphoneMeter.start(stream, () => this._micStream === stream && this._microphoneActive());
+    this._microphoneMeter.start(
+      stream,
+      () => (this._connection?.microphone ?? null) === stream && this._microphoneActive(),
+    );
   }
 
   /** Resume analysis from a user activation if browser audio policy paused it. */
   enableMicrophoneMeter(): Promise<void> {
-    const attempt = this._connectionAttempt;
+    const signal = this._audioAccess.signal;
     const activation = this._microphoneMeter.prepare();
     const processing =
       this.state.speechInput === "gateway"
         ? this._microphoneInput.prepare().catch((error: unknown) => {
-            if (attempt === this._connectionAttempt)
+            if (!signal.aborted)
               this._update((s) => {
                 s.error = `Could not activate microphone processing: ${String(error)}`;
               });
           })
         : Promise.resolve();
-    if (this._micStream !== null) this._monitorMicrophone(this._micStream);
+    const microphone = this._connection?.microphone;
+    if (microphone) this._monitorMicrophone(microphone);
     return Promise.all([activation, processing]).then(() => undefined);
   }
 
@@ -1712,7 +1782,7 @@ export class VoiceSession {
     if (this.state.speechOutput !== "gateway") return;
     if (this.state.audioSwitching !== null) return;
     const selection = ++this._audioSelectionAttempt;
-    const audio = this._speakerAudio;
+    const audio = this._connection?.speaker ?? null;
     this._update((s) => {
       s.audioSwitching = "output";
       s.audioOutputError = null;
@@ -1721,7 +1791,7 @@ export class VoiceSession {
       if (!("setSinkId" in HTMLMediaElement.prototype))
         throw new Error("Use your device's sound settings to change the speaker");
       if (audio) await audio.setSinkId(deviceId);
-      if (this._speakerAudio !== audio || selection !== this._audioSelectionAttempt) return;
+      if ((this._connection?.speaker ?? null) !== audio || selection !== this._audioSelectionAttempt) return;
       this._update((s) => {
         s.selectedOutputId = deviceId;
         s.audioOutputError = null;
@@ -1734,7 +1804,7 @@ export class VoiceSession {
         this._outputPreferenceProvisional = remember;
       }
     } catch (error) {
-      if (this._speakerAudio === audio && selection === this._audioSelectionAttempt)
+      if ((this._connection?.speaker ?? null) === audio && selection === this._audioSelectionAttempt)
         this._update((s) => {
           s.audioOutputError = `Could not switch speaker: ${String(error)}`;
         });
@@ -1798,7 +1868,7 @@ export class VoiceSession {
       if (
         access === "denied" &&
         this.state.microphoneAccess !== "denied" &&
-        (this._pc !== null || this._textSocket !== null || this.state.connectStatus !== null)
+        (this._connection !== null || this.state.connectStatus !== null)
       ) {
         this.disconnect();
       }
@@ -1831,7 +1901,7 @@ export class VoiceSession {
   /** A user gesture can request access without starting voice or retaining a microphone stream. */
   async requestMicrophoneAccess(): Promise<void> {
     if (this.state.microphoneAccessPending) return;
-    const attempt = this._connectionAttempt;
+    const signal = this._audioAccess.signal;
     this._update((s) => {
       s.microphoneAccessPending = true;
     });
@@ -1840,14 +1910,14 @@ export class VoiceSession {
         throw new Error("Microphone access requires HTTPS and a supported browser.");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach((track) => track.stop());
-      if (attempt !== this._connectionAttempt) return;
+      if (signal.aborted) return;
       this._update((s) => {
         s.microphoneAccess = "granted";
         s.error = null;
       });
       await this.enumerateDevices();
     } catch (error) {
-      if (attempt !== this._connectionAttempt) return;
+      if (signal.aborted) return;
       if (error instanceof DOMException && error.name === "NotAllowedError") this._microphoneDenied();
       else
         this._update((s) => {
@@ -1870,16 +1940,16 @@ export class VoiceSession {
 
   /** Retry playback directly from a user gesture after browser autoplay restrictions. */
   async resumeAudio(): Promise<void> {
-    const audio = this._speakerAudio;
+    const audio = this._connection?.speaker ?? null;
     if (audio === null) return;
     try {
       await audio.play();
-      if (this._speakerAudio === audio)
+      if ((this._connection?.speaker ?? null) === audio)
         this._update((s) => {
           s.audioPlaybackError = null;
         });
     } catch (error) {
-      if (this._speakerAudio === audio)
+      if ((this._connection?.speaker ?? null) === audio)
         this._update((s) => {
           s.audioPlaybackError = `Sound could not start: ${String(error)}`;
         });
@@ -1926,12 +1996,14 @@ export class VoiceSession {
     await this._connect(false);
   }
 
-  private async _prepareHostSession(snapshot: GatewaySnapshot, attempt: number, signal: AbortSignal): Promise<boolean> {
-    if (signal.aborted || attempt !== this._connectionAttempt) return false;
+  private async _prepareHostSession(attempt: VoiceConnection): Promise<boolean> {
+    const snapshot = attempt.gateway;
+    const signal = attempt.lifetime.signal;
+    if (signal.aborted || attempt !== this._connection) return false;
     try {
       await snapshot.preparation?.prepareSession(this.conversationID, signal);
     } catch (error) {
-      if (signal.aborted || attempt !== this._connectionAttempt) return false;
+      if (signal.aborted || attempt !== this._connection) return false;
       if (error instanceof DOMException && error.name === "AbortError") {
         this.disconnect();
         return false;
@@ -1940,7 +2012,7 @@ export class VoiceSession {
       // not prevent the otherwise independent voice transport from starting.
       // Publication diagnostics and recovery belong to the preparation owner.
     }
-    return !signal.aborted && attempt === this._connectionAttempt;
+    return !signal.aborted && attempt === this._connection;
   }
 
   private async _connect(preserveTranscript: boolean): Promise<void> {
@@ -1955,16 +2027,9 @@ export class VoiceSession {
       this._setError("Browser recognition or speech output is unavailable. Use the gateway.");
       return;
     }
-    this._frontendInvocationLifetime.abort();
-    this._frontendInvocationLifetime = new AbortController();
-    const attempt = ++this._connectionAttempt;
-    if (this._reconnectTimer !== null) {
-      clearTimeout(this._reconnectTimer);
-      this._reconnectTimer = null;
-    }
-    this._releaseAll(true);
-    this._lastOfferSDP = "";
-    this._lastAnswerSDP = "";
+    const attempt = new VoiceConnection(this._sessionGateway!);
+    this._replaceConnection(attempt, true);
+    if (this._connection !== attempt) return;
     if (!preserveTranscript) {
       this._update((s) => {
         s.usage = null;
@@ -1976,10 +2041,10 @@ export class VoiceSession {
     this._setStatus("setup", "Setting up WebRTC…");
 
     try {
-      const snapshot = this._sessionGateway!;
-      if (!(await this._prepareHostSession(snapshot, attempt, this._frontendInvocationLifetime.signal))) return;
-      const choiceID = await this._resolveSessionChoice(snapshot, attempt);
-      if (choiceID === null) return;
+      const snapshot = attempt.gateway;
+      if (!(await this._prepareHostSession(attempt))) return;
+      const choiceID = await this._resolveSessionChoice(attempt);
+      if (choiceID === null || this._connection !== attempt) return;
       const [systemInstruction, mcpTools, serviceItemsText] = await Promise.all([
         mcpClient.serverInstructions({ sessionID: this.conversationID }),
         mcpClient.listTools({ sessionID: this.conversationID }),
@@ -1989,7 +2054,7 @@ export class VoiceSession {
           .readAdvertisedTextResource(GO_MODE_ITEMS_RESOURCE_URI, undefined, { sessionID: this.conversationID })
           .catch(() => null),
       ]);
-      if (attempt !== this._connectionAttempt) return;
+      if (attempt !== this._connection) return;
       // This client owns the bounded session baseline and refreshes it on every
       // reconnect; see gomode/docs/ANDROID_SHELL.md#service-item-voice-context-ownership.
       const serviceContext = initialServiceContext(serviceItemsText);
@@ -1998,10 +2063,10 @@ export class VoiceSession {
       const pc = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
       });
-      this._pc = pc;
+      attempt.pc = pc;
 
       if (this.state.speechInput === "gateway") await this._microphoneInput.prepare();
-      if (attempt !== this._connectionAttempt) return;
+      if (attempt !== this._connection) return;
       // Browser AEC precedes outgoing attenuation and Opus encoding.
       const inputId = this.state.selectedInputId;
       const micConstraints: MediaStreamConstraints = {
@@ -2016,11 +2081,11 @@ export class VoiceSession {
       if (!navigator.mediaDevices?.getUserMedia)
         throw new Error("Microphone access requires HTTPS and a supported browser.");
       const micStream = await navigator.mediaDevices.getUserMedia(micConstraints);
-      if (attempt !== this._connectionAttempt) {
+      if (attempt !== this._connection) {
         micStream.getTracks().forEach((track) => track.stop());
         return;
       }
-      this._micStream = micStream;
+      attempt.microphone = micStream;
       this._update((s) => {
         s.microphoneAccess = "granted";
       });
@@ -2032,10 +2097,10 @@ export class VoiceSession {
         track.enabled = this._microphoneActive();
       });
       if (this.state.speechInput === "gateway") {
-        this._outgoingMicrophone = this._microphoneInput.connect(micStream);
-        for (const track of this._outgoingMicrophone.stream.getAudioTracks()) {
+        attempt.outgoing = this._microphoneInput.connect(micStream);
+        for (const track of attempt.outgoing.stream.getAudioTracks()) {
           track.enabled = this._microphoneActive();
-          pc.addTrack(track, this._outgoingMicrophone.stream);
+          pc.addTrack(track, attempt.outgoing.stream);
         }
       } else {
         pc.addTransceiver("audio", { direction: "recvonly" });
@@ -2044,17 +2109,17 @@ export class VoiceSession {
         s.audioSwitching = null;
       });
       await this.enumerateDevices();
-      if (attempt !== this._connectionAttempt) return;
-      const activeMicStream = this._micStream;
+      if (attempt !== this._connection) return;
+      const activeMicStream = attempt.microphone;
       if (activeMicStream === null) return;
 
       this._monitorMicrophone(activeMicStream);
 
       // Speaker audio from remote RTP track.
       pc.ontrack = (evt) => {
-        if (attempt !== this._connectionAttempt || this._pc !== pc || this.state.speechOutput !== "gateway") return;
+        if (attempt !== this._connection || this.state.speechOutput !== "gateway") return;
         const audio = new Audio();
-        this._speakerAudio = audio;
+        attempt.speaker = audio;
         audio.srcObject = evt.streams[0] ?? new MediaStream([evt.track]);
         if (this.state.selectedOutputId || this._outputPreferenceProvisional) {
           this._pendingAudioOutput ??= this.state.selectedOutputId;
@@ -2065,27 +2130,27 @@ export class VoiceSession {
 
       // Create data channel carrying the voice gateway control protocol.
       const dc = pc.createDataChannel("voice-gateway", { ordered: true });
-      this._dc = dc;
+      attempt.channel = dc;
       this._createBrowserSpeech(attempt, dc);
 
       dc.onmessage = (evt: MessageEvent<string>) => {
-        if (attempt !== this._connectionAttempt || this._dc !== dc) return;
+        if (!this._ownsChannel(attempt, dc)) return;
         this._handleMessage(evt.data, attempt, dc).catch((err: unknown) => {
-          if (attempt === this._connectionAttempt) {
+          if (attempt === this._connection) {
             this._setError(err instanceof Error ? err.message : "Message handling failed");
           }
         });
       };
 
       dc.onopen = () => {
-        if (attempt !== this._connectionAttempt || this._dc !== dc) return;
+        if (!this._ownsChannel(attempt, dc)) return;
         this._reconnectAttempts = 0;
         this._setStatus("waiting", "Waiting for server…");
         this._sendSetup(mcpTools, systemInstruction, serviceContext);
       };
 
       dc.onclose = () => {
-        if (this._dc !== dc) return;
+        if (!this._ownsChannel(attempt, dc)) return;
         if (this.state.connected) {
           this._update((s) => {
             s.connected = false;
@@ -2101,9 +2166,9 @@ export class VoiceSession {
           this._scheduleReconnect(pc, `WebRTC ICE ${st}`, 0);
         } else if (st === "disconnected") {
           this._scheduleReconnect(pc, `WebRTC ICE ${st}`, ICE_DISCONNECTED_GRACE_MS);
-        } else if (st === "connected" && this._reconnectTimer !== null) {
-          clearTimeout(this._reconnectTimer);
-          this._reconnectTimer = null;
+        } else if (st === "connected" && attempt.reconnectTimer !== null) {
+          clearTimeout(attempt.reconnectTimer);
+          attempt.reconnectTimer = null;
         } else if (st === "closed") {
           void this._setDiagnosticError(pc, `WebRTC ICE ${st}`);
         }
@@ -2112,33 +2177,31 @@ export class VoiceSession {
       // SDP offer/answer exchange.
       this._setStatus("signaling", "Signaling…");
       const offer = await pc.createOffer();
-      if (attempt !== this._connectionAttempt) return;
+      if (attempt !== this._connection) return;
       const offerSDP = await completeLocalOffer(pc, offer);
-      if (attempt !== this._connectionAttempt) return;
-      this._lastOfferSDP = offerSDP;
+      if (attempt !== this._connection) return;
+      attempt.offerSDP = offerSDP;
       const service = snapshot.serviceProvider === null ? null : await snapshot.serviceProvider();
-      if (attempt !== this._connectionAttempt) return;
+      if (attempt !== this._connection) return;
       const request = service === null ? { sdp: offerSDP, choiceID } : { sdp: offerSDP, choiceID, service };
       const resp = await snapshot.api.voiceRTCOffer(request);
-      if (attempt !== this._connectionAttempt) {
+      if (attempt !== this._connection) {
         void closeVoiceGatewaySession(snapshot, resp.sessionID, service).catch((error: unknown) =>
           console.warn("Could not close cancelled voice session", error),
         );
         return;
       }
-      this._rtcSessionID = resp.sessionID;
-      this._rtcGatewaySnapshot = snapshot;
-      this._rtcOfferService = service;
-      this._lastAnswerSDP = resp.sdp;
+      attempt.rtc = { sessionID: resp.sessionID, service };
+      attempt.answerSDP = resp.sdp;
       await pc.setRemoteDescription({ type: "answer", sdp: resp.sdp });
-      if (attempt !== this._connectionAttempt) return;
+      if (attempt !== this._connection) return;
       this._startSetupTimer(pc);
 
       this._update((s) => {
         s.listening = true;
       });
     } catch (e: unknown) {
-      if (attempt === this._connectionAttempt) {
+      if (attempt === this._connection) {
         if (e instanceof DOMException && e.name === "NotAllowedError") this._microphoneDenied();
         else this._setError(e instanceof Error ? e.message : "WebRTC connection failed");
       }
@@ -2146,15 +2209,10 @@ export class VoiceSession {
   }
 
   private async _connectBrowser(preserveTranscript: boolean): Promise<void> {
-    this._frontendInvocationLifetime.abort();
-    this._frontendInvocationLifetime = new AbortController();
-    const attempt = ++this._connectionAttempt;
+    const attempt = new VoiceConnection(this._sessionGateway!);
+    this._replaceConnection(attempt, true);
+    if (this._connection !== attempt) return;
     this._reconnectEnabled = false;
-    if (this._reconnectTimer !== null) clearTimeout(this._reconnectTimer);
-    if (this._setupTimer !== null) clearTimeout(this._setupTimer);
-    this._reconnectTimer = null;
-    this._setupTimer = null;
-    this._releaseAll(true);
     this._speakerActive = false;
     this._pendingNotifications = [];
     this._pendingServiceContext = null;
@@ -2176,10 +2234,10 @@ export class VoiceSession {
       return;
     }
     try {
-      const snapshot = this._sessionGateway!;
-      if (!(await this._prepareHostSession(snapshot, attempt, this._frontendInvocationLifetime.signal))) return;
-      const choiceID = await this._resolveSessionChoice(snapshot, attempt);
-      if (choiceID === null) return;
+      const snapshot = attempt.gateway;
+      if (!(await this._prepareHostSession(attempt))) return;
+      const choiceID = await this._resolveSessionChoice(attempt);
+      if (choiceID === null || this._connection !== attempt) return;
       const [systemInstruction, tools, serviceItems, service] = await Promise.all([
         mcpClient.serverInstructions({ sessionID: this.conversationID }),
         mcpClient.listTools({ sessionID: this.conversationID }),
@@ -2188,13 +2246,13 @@ export class VoiceSession {
           .catch(() => null),
         snapshot.serviceProvider?.() ?? Promise.resolve(null),
       ]);
-      if (attempt !== this._connectionAttempt) return;
+      if (attempt !== this._connection) return;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      if (attempt !== this._connectionAttempt) {
+      if (attempt !== this._connection) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
-      this._micStream = stream;
+      attempt.microphone = stream;
       stream.getAudioTracks().forEach((track) => {
         track.enabled = this._microphoneActive();
       });
@@ -2203,11 +2261,11 @@ export class VoiceSession {
       });
       this._monitorMicrophone(stream);
       const response = await snapshot.api.voiceTextTicket(service === null ? { choiceID } : { choiceID, service });
-      if (attempt !== this._connectionAttempt) return;
+      if (attempt !== this._connection) return;
       const url = new URL("api/voicegateway/v2/voice/text/browser", snapshot.url);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       const socket = new WebSocket(url, ["gomode.text.v2", `gomode.ticket.${response.ticket}`]);
-      this._textSocket = socket;
+      attempt.channel = socket;
       this._createBrowserSpeech(attempt, socket);
       socket.onopen = () => {
         if (!this._ownsChannel(attempt, socket)) return;
@@ -2229,21 +2287,21 @@ export class VoiceSession {
         if (event.code === 1000) this.disconnect();
         else this._setError(`Text voice connection closed (${event.code})`);
       };
-      this._setupTimer = setTimeout(() => {
+      attempt.setSetupTimer(() => {
         if (this._ownsChannel(attempt, socket) && !this.state.connected) this._setError("Voice connection timed out.");
-      }, SETUP_TIMEOUT_MS);
+      });
     } catch (error) {
-      if (attempt === this._connectionAttempt) {
+      if (attempt === this._connection) {
         if (error instanceof DOMException && error.name === "NotAllowedError") this._microphoneDenied();
         else this._setError(error instanceof Error ? error.message : "Text voice connection failed");
       }
     }
   }
 
-  private _createBrowserSpeech(attempt: number, channel: VoiceChannel): void {
+  private _createBrowserSpeech(attempt: VoiceConnection, channel: VoiceChannel): void {
     if (this.state.speechInput !== "client" && this.state.speechOutput !== "client") return;
     const speech = new BrowserSpeech(this.state.languageTag, this.state.browserVoiceURI, this.state.browserSpeechRate, {
-      nextSpeech: () => this._browserSpeechBuffer.next(),
+      nextSpeech: () => attempt.speechBuffer.next(),
       listening: (value) => {
         if (this._ownsChannel(attempt, channel))
           this._update((s) => {
@@ -2286,7 +2344,7 @@ export class VoiceSession {
         else this._setError(message);
       },
     });
-    this._browserSpeech = speech;
+    attempt.speech = speech;
   }
 
   private _browserUserText(text: string, final: boolean): void {
@@ -2310,9 +2368,10 @@ export class VoiceSession {
     this._browserCancellation = "pending";
     this._browserTurnIdle = true;
     this._speakerActive = false;
-    this._browserSpeechBuffer.clear();
-    this._browserSpeech?.stopSpeaking();
-    if (this._speakerAudio !== null) this._speakerAudio.muted = true;
+    this._connection?.speechBuffer.clear();
+    this._connection?.speech?.stopSpeaking();
+    const speaker = this._connection?.speaker;
+    if (speaker) speaker.muted = true;
     this._update((s) => {
       s.speaking = false;
       s.activeTool = null;
@@ -2330,7 +2389,7 @@ export class VoiceSession {
       (this.state.speaking || this._browserTurnIdle)
     ) {
       this._thinkingEarcon.setThinking(false);
-      this._browserSpeech?.listen();
+      this._connection?.speech?.listen();
     }
   }
 
@@ -2340,8 +2399,8 @@ export class VoiceSession {
       s.transcript = s.transcript.map((entry) => ({ ...entry, final: true }));
     });
     this._browserTurnIdle = true;
-    this._browserSpeechBuffer.finish();
-    this._browserSpeech?.speak();
+    this._connection?.speechBuffer.finish();
+    this._connection?.speech?.speak();
     this._drainBrowserTurn();
   }
 
@@ -2356,42 +2415,33 @@ export class VoiceSession {
   }
 
   disconnect(): void {
-    this._sessionGateway?.preparation?.retireSession(this.conversationID);
-    this._frontendInvocationLifetime.abort();
-    this._frontendInvocationLifetime = new AbortController();
-    this._leaveVoiceMode();
-    this._connectionAttempt++;
-    this._audioSelectionAttempt++;
-    this._deviceEnumerationAttempt++;
-    this._pendingAudioInput = null;
-    this._pendingAudioOutput = null;
-    this._reconnectEnabled = false;
-    if (this._reconnectTimer !== null) {
-      clearTimeout(this._reconnectTimer);
-      this._reconnectTimer = null;
-    }
-    if (this._setupTimer !== null) {
-      clearTimeout(this._setupTimer);
-      this._setupTimer = null;
-    }
-    this._releaseAll(false);
-    // Preserve transcript for review; mark all entries final.
-    this._update((s) => {
-      s.connected = false;
-      s.listening = false;
-      s.speaking = false;
-      s.microphoneMode = "listening";
-      s.connectStatus = null;
-      s.connectPhase = null;
-      s.activeTool = null;
-      s.turnState = TurnStateIdle;
-      s.micLevel = 0;
-      s.audioSwitching = null;
-      s.audioDevicesError = null;
-      s.audioInputError = null;
-      s.audioOutputError = null;
-      s.transcript = s.transcript.map((e) => ({ ...e, final: true }));
-      s.transcriptDraft = null;
+    batch(() => {
+      this._sessionGateway?.preparation?.retireSession(this.conversationID);
+      this._leaveVoiceMode();
+      this._audioSelectionAttempt++;
+      this._deviceEnumerationAttempt++;
+      this._pendingAudioInput = null;
+      this._pendingAudioOutput = null;
+      this._reconnectEnabled = false;
+      this._replaceConnection(null, false);
+      // Preserve transcript for review; mark all entries final.
+      this._update((s) => {
+        s.connected = false;
+        s.listening = false;
+        s.speaking = false;
+        s.microphoneMode = "listening";
+        s.connectStatus = null;
+        s.connectPhase = null;
+        s.activeTool = null;
+        s.turnState = TurnStateIdle;
+        s.micLevel = 0;
+        s.audioSwitching = null;
+        s.audioDevicesError = null;
+        s.audioInputError = null;
+        s.audioOutputError = null;
+        s.transcript = s.transcript.map((e) => ({ ...e, final: true }));
+        s.transcriptDraft = null;
+      });
     });
   }
 
@@ -2399,8 +2449,9 @@ export class VoiceSession {
     this._update((s) => {
       s.microphoneMode = mode;
     });
-    if (this._browserSpeech !== null) {
-      if (microphoneMuted(this.state)) this._browserSpeech.stopListening();
+    const speech = this._connection?.speech;
+    if (speech) {
+      if (microphoneMuted(this.state)) speech.stopListening();
       else this._startBrowserListening();
     }
   }
@@ -2465,12 +2516,12 @@ export class VoiceSession {
 
   /** Send a message via the WebRTC data channel. */
   private _send(msg: string): void {
-    const channel = this._textSocket ?? this._dc;
+    const channel = this._connection?.channel ?? null;
     if (channel !== null) this._sendOn(channel, msg, VOICE_MESSAGE_DELIVERY_ERROR);
   }
 
   private _sendOn(channel: VoiceChannel, msg: string, failureMessage: string): void {
-    if (channel !== this._textSocket && channel !== this._dc) return;
+    if (channel !== this._connection?.channel) return;
     try {
       if (voiceChannelOpen(channel)) {
         channel.send(msg);
@@ -2482,43 +2533,29 @@ export class VoiceSession {
     this._setError(failureMessage);
   }
 
-  /** Release WebRTC transport and audio resources. */
-  private _releaseAll(keepMeterContext: boolean): void {
-    if (this._speakerAudio !== null) {
-      this._speakerAudio.pause();
-      this._speakerAudio.srcObject = null;
-    }
-    this._speakerAudio = null;
-    this._update((s) => {
-      s.audioPlaybackError = null;
-    });
-    this._thinkingEarcon.setThinking(false);
-    const socket = this._textSocket;
-    const speech = this._browserSpeech;
-    this._textSocket = null;
-    this._browserSpeech = null;
-    this._browserSpeechBuffer.clear();
-    this._browserTurnIdle = false;
-    this._browserUserSpeechActive = false;
-    this._browserCancellation = "none";
-    speech?.close();
-    socket?.close(1000);
-    const sessionID = this._rtcSessionID;
-    const snapshot = this._rtcGatewaySnapshot;
-    const service = this._rtcOfferService;
-    this._rtcSessionID = null;
-    this._rtcGatewaySnapshot = null;
-    this._rtcOfferService = null;
-    this._dc?.close();
-    this._dc = null;
-    this._pc?.close();
-    this._pc = null;
-    this._releaseAudio(keepMeterContext);
-    if (sessionID !== null && snapshot !== null) {
-      void closeVoiceGatewaySession(snapshot, sessionID, service).catch((error: unknown) => {
-        console.warn("Could not close voice gateway session", error);
+  /** Install the successor before closing resources or publishing cleanup state. */
+  private _replaceConnection(next: VoiceConnection | null, keepMeterContext: boolean): void {
+    batch(() => {
+      this._audioAccess.abort();
+      this._audioAccess = new AbortController();
+      const previous = this._connection;
+      this._connection = next;
+      previous?.dispose();
+      if (this._connection !== next) return;
+      this._thinkingEarcon.setThinking(false);
+      this._browserTurnIdle = false;
+      this._browserUserSpeechActive = false;
+      this._browserCancellation = "none";
+      this._microphoneInput.setSpeaking(false);
+      if (!keepMeterContext) this._microphoneInput.close();
+      this._microphoneMeter.stop(keepMeterContext);
+      this._speakerActive = false;
+      this._pendingNotifications = [];
+      this._pendingServiceContext = null;
+      this._update((s) => {
+        s.audioPlaybackError = null;
       });
-    }
+    });
   }
 
   private _setStatus(phase: Exclude<VoiceState["connectPhase"], null>, status: string): void {
@@ -2530,18 +2567,22 @@ export class VoiceSession {
   }
 
   private _scheduleReconnect(pc: RTCPeerConnection, reason: string, delay: number): void {
-    if (this._pc !== pc || !this._reconnectEnabled) return;
+    const connection = this._connection;
+    if (connection === null || connection.pc !== pc) return;
+    if (!this._reconnectEnabled) return;
     if (this._reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
       this._setError(`Voice connection lost after ${MAX_RECONNECT_ATTEMPTS} recovery attempts`);
       return;
     }
-    if (this._reconnectTimer !== null) {
+    if (connection.reconnectTimer !== null) {
       if (delay !== 0) return;
-      clearTimeout(this._reconnectTimer);
+      clearTimeout(connection.reconnectTimer);
     }
     this._setStatus("reconnecting", `${reason}; reconnecting…`);
-    this._reconnectTimer = setTimeout(() => {
-      this._reconnectTimer = null;
+    if (connection !== this._connection) return;
+    connection.reconnectTimer = setTimeout(() => {
+      if (connection !== this._connection) return;
+      connection.reconnectTimer = null;
       if (!this._reconnectEnabled) return;
       this._reconnectAttempts++;
       this._speakerActive = false;
@@ -2551,18 +2592,20 @@ export class VoiceSession {
         s.turnState = TurnStateIdle;
         s.transcriptDraft = null;
       });
+      if (connection !== this._connection) return;
       this._recoveryContext = buildRecoveryContext(this.state.transcript);
       void this._connect(true);
     }, delay);
   }
 
   private _startSetupTimer(pc: RTCPeerConnection): void {
-    if (this._setupTimer !== null) clearTimeout(this._setupTimer);
-    this._setupTimer = setTimeout(() => {
-      if (this._pc === pc && !this.state.connected && !this.state.error) {
+    const connection = this._connection;
+    if (connection === null || connection.pc !== pc) return;
+    connection.setSetupTimer(() => {
+      if (connection === this._connection && connection.pc === pc && !this.state.connected && !this.state.error) {
         void this._setConnectionTimeoutError(pc);
       }
-    }, SETUP_TIMEOUT_MS);
+    });
   }
 
   private async _setConnectionTimeoutError(pc: RTCPeerConnection): Promise<void> {
@@ -2570,43 +2613,44 @@ export class VoiceSession {
   }
 
   private async _setDiagnosticError(pc: RTCPeerConnection, fallback: string): Promise<void> {
-    if (this._pc !== pc || this.state.error) {
-      return;
-    }
-    const sessionID = this._rtcSessionID;
-    const snapshot = this._rtcGatewaySnapshot;
-    if (!sessionID || snapshot === null) {
+    const connection = this._connection;
+    if (connection === null || connection.pc !== pc) return;
+    if (this.state.error) return;
+    const sessionID = connection.rtc?.sessionID;
+    const snapshot = connection.gateway;
+    if (!sessionID) {
       this._setError(fallback);
       return;
     }
     try {
-      const token = await refreshedServiceToken(snapshot, this._rtcOfferService);
-      if (this._pc !== pc) return;
+      const token = await refreshedServiceToken(snapshot, connection.rtc?.service ?? null);
+      if (connection !== this._connection || connection.pc !== pc) return;
       const diagnostics = await snapshot.api.diagnoseVoiceRTC(
         sessionID,
         { client: this._clientDiagnostics(pc) },
         token === null ? {} : { Authorization: `Bearer ${token}` },
       );
-      if (this._pc !== pc) return;
-      logVoiceRTCDiagnostics(diagnostics, this._lastOfferSDP, this._lastAnswerSDP);
-      if (this._pc === pc && !this.state.connected && !this.state.error) {
+      if (connection !== this._connection || connection.pc !== pc) return;
+      logVoiceRTCDiagnostics(diagnostics, connection.offerSDP, connection.answerSDP);
+      if (connection === this._connection && connection.pc === pc && !this.state.connected && !this.state.error) {
         this._setError(formatVoiceRTCDiagnostics(diagnostics));
       }
     } catch (e: unknown) {
       const detail = e instanceof Error ? ` (${e.message})` : "";
-      if (this._pc === pc && !this.state.connected && !this.state.error) {
+      if (connection === this._connection && connection.pc === pc && !this.state.connected && !this.state.error) {
         this._setError(`${fallback}${detail}`);
       }
     }
   }
 
   private _clientDiagnostics(pc: RTCPeerConnection): VoiceRTCClientDiagnostics {
+    const channelState = this._connection?.channel?.readyState;
     return {
       iceConnectionState: pc.iceConnectionState,
       iceGatheringState: pc.iceGatheringState,
       connectionState: pc.connectionState,
       signalingState: pc.signalingState,
-      dataChannelState: this._dc?.readyState,
+      dataChannelState: typeof channelState === "string" ? channelState : undefined,
     };
   }
 
@@ -2618,31 +2662,27 @@ export class VoiceSession {
   }
 
   private _setError(message: string): void {
-    this._sessionGateway?.preparation?.retireSession(this.conversationID);
-    this._reconnectEnabled = false;
-    if (this._reconnectTimer !== null) clearTimeout(this._reconnectTimer);
-    this._reconnectTimer = null;
-    this._recordError(message);
-    this._frontendInvocationLifetime.abort();
-    this._leaveVoiceMode();
-    this._connectionAttempt++;
-    this._audioSelectionAttempt++;
-    this._deviceEnumerationAttempt++;
-    this._pendingAudioInput = null;
-    this._pendingAudioOutput = null;
-    this._releaseAll(false);
-    if (this._setupTimer !== null) clearTimeout(this._setupTimer);
-    this._setupTimer = null;
-    this._update((s) => {
-      s.connectStatus = null;
-      s.connectPhase = null;
-      s.connected = false;
-      s.listening = false;
-      s.speaking = false;
-      s.turnState = TurnStateIdle;
-      s.activeTool = null;
-      s.error = message;
-      s.audioSwitching = null;
+    batch(() => {
+      this._sessionGateway?.preparation?.retireSession(this.conversationID);
+      this._reconnectEnabled = false;
+      this._recordError(message);
+      this._leaveVoiceMode();
+      this._audioSelectionAttempt++;
+      this._deviceEnumerationAttempt++;
+      this._pendingAudioInput = null;
+      this._pendingAudioOutput = null;
+      this._replaceConnection(null, false);
+      this._update((s) => {
+        s.connectStatus = null;
+        s.connectPhase = null;
+        s.connected = false;
+        s.listening = false;
+        s.speaking = false;
+        s.turnState = TurnStateIdle;
+        s.activeTool = null;
+        s.error = message;
+        s.audioSwitching = null;
+      });
     });
   }
 
@@ -2659,12 +2699,12 @@ export class VoiceSession {
     if (this.state.speechOutput !== "client" || !browserSpeechAvoidsChimes()) this._chime.playDisconnected();
   }
 
-  private async _publishCallMetadata(attempt: number): Promise<void> {
+  private async _publishCallMetadata(attempt: VoiceConnection): Promise<void> {
     if (!("mediaSession" in navigator) || typeof MediaMetadata === "undefined") return;
     try {
       // The caller is the host service, even when it uses an external voice gateway.
       const settings = await createGoModeClient().getSettings();
-      if (attempt !== this._connectionAttempt || !this._voiceModeActive) return;
+      if (attempt !== this._connection || !this._voiceModeActive) return;
       if (typeof settings.service !== "string" || settings.service.trim() === "") {
         throw new Error("Go Mode service name is missing");
       }
@@ -2691,10 +2731,10 @@ export class VoiceSession {
       const active = this._microphoneActive();
       this._microphoneInput.setSpeaking(this.state.speaking);
       if (active !== wasActive) {
-        this._micStream?.getAudioTracks().forEach((track) => {
+        this._connection?.microphone?.getAudioTracks().forEach((track) => {
           track.enabled = active;
         });
-        this._outgoingMicrophone?.stream.getAudioTracks().forEach((track) => {
+        this._connection?.outgoing?.stream.getAudioTracks().forEach((track) => {
           track.enabled = active;
         });
       }
@@ -2708,7 +2748,7 @@ export class VoiceSession {
       this._thinkingEarcon.setThinking(
         state.speechOutput === "client" &&
           !browserSpeechAvoidsChimes() &&
-          this._browserSpeech !== null &&
+          (this._connection?.speech ?? null) !== null &&
           state.connected &&
           state.turnState === TurnStateThinking &&
           !state.listening &&
@@ -2743,11 +2783,11 @@ export class VoiceSession {
   // Message handling
   // -----------------------------------------------------------------------
 
-  private _ownsChannel(attempt: number, channel: VoiceChannel): boolean {
-    return attempt === this._connectionAttempt && (channel === this._dc || channel === this._textSocket);
+  private _ownsChannel(attempt: VoiceConnection, channel: VoiceChannel): boolean {
+    return attempt === this._connection && channel === attempt.channel;
   }
 
-  private async _handleMessage(text: string, attempt: number, channel: VoiceChannel): Promise<void> {
+  private async _handleMessage(text: string, attempt: VoiceConnection, channel: VoiceChannel): Promise<void> {
     if (!this._ownsChannel(attempt, channel)) return;
     let env: MessageEnvelope;
     try {
@@ -2801,18 +2841,14 @@ export class VoiceSession {
       this._update((s) => {
         s.connectStatus = msg.message;
       });
-      if (this._setupTimer !== null) clearTimeout(this._setupTimer);
-      this._setupTimer = setTimeout(() => {
+      attempt.setSetupTimer(() => {
         if (this._ownsChannel(attempt, channel) && !this.state.connected) this._setError("Voice connection timed out.");
-      }, SETUP_TIMEOUT_MS);
+      });
       return;
     }
 
     if (env.kind === MessageKindSessionReady) {
-      if (this._setupTimer !== null) {
-        clearTimeout(this._setupTimer);
-        this._setupTimer = null;
-      }
+      attempt.clearSetupTimer();
       this._update((s) => {
         s.connectStatus = null;
         s.connectPhase = null;
@@ -2823,7 +2859,7 @@ export class VoiceSession {
         this._voiceModeActive = true;
         if (this.state.speechOutput !== "client" || !browserSpeechAvoidsChimes()) this._chime.playConnected();
       }
-      if (this._callMetadata === null) void this._publishCallMetadata(this._connectionAttempt);
+      if (this._callMetadata === null) void this._publishCallMetadata(attempt);
       if (this._recoveryContext !== "") {
         this._send(JSON.stringify(gatewayContextUpdate(this._recoveryContext)));
         this._recoveryContext = "";
@@ -2866,8 +2902,8 @@ export class VoiceSession {
       this._update((s) => {
         s.transcript = appendChunk(s.transcript, "assistant", delta.text, "transcript", delta.responseID, s.usage);
       });
-      this._browserSpeechBuffer.append(delta.text);
-      this._browserSpeech?.speak();
+      attempt.speechBuffer.append(delta.text);
+      attempt.speech?.speak();
       return;
     }
 
@@ -2887,7 +2923,7 @@ export class VoiceSession {
       this._update((s) => {
         s.speaking = true;
       });
-      if (microphoneMuted(this.state)) this._browserSpeech?.stopListening();
+      if (microphoneMuted(this.state)) attempt.speech?.stopListening();
       else this._startBrowserListening();
       return;
     }
@@ -2907,8 +2943,8 @@ export class VoiceSession {
     if (env.kind === MessageKindInterrupted) {
       if (this.state.speechOutput === "client") {
         this._browserTurnIdle = true;
-        this._browserSpeechBuffer.clear();
-        this._browserSpeech?.stopSpeaking();
+        attempt.speechBuffer.clear();
+        attempt.speech?.stopSpeaking();
         this._update((s) => {
           s.speaking = false;
           s.activeTool = null;
@@ -2943,8 +2979,8 @@ export class VoiceSession {
         } else {
           this._browserTurnIdle = false;
           this._speakerActive = true;
-          if (this._speakerAudio !== null) this._speakerAudio.muted = false;
-          if (!this.state.speaking) this._browserSpeech?.stopListening();
+          if (attempt.speaker !== null) attempt.speaker.muted = false;
+          if (!this.state.speaking) attempt.speech?.stopListening();
         }
       } else if (msg.state === TurnStateIdle) {
         if (!this.state.speaking) this._speakerActive = false;
@@ -2990,7 +3026,7 @@ export class VoiceSession {
     });
   }
 
-  private async _handleToolCall(msg: ToolCall, attempt: number, channel: VoiceChannel): Promise<void> {
+  private async _handleToolCall(msg: ToolCall, attempt: VoiceConnection, channel: VoiceChannel): Promise<void> {
     if (!this._ownsChannel(attempt, channel)) return;
     if (!msg.id || !msg.name) return;
     const sessionID = this.conversationID;
@@ -3015,12 +3051,7 @@ export class VoiceSession {
         : null;
       const result = frontend
         ? {
-            structuredContent: await frontend.execute(
-              msg.name,
-              msg.args ?? {},
-              sessionID,
-              this._frontendInvocationLifetime.signal,
-            ),
+            structuredContent: await frontend.execute(msg.name, msg.args ?? {}, sessionID, attempt.lifetime.signal),
             isError: false,
           }
         : await mcpClient.callTool(msg.name, msg.args ?? {}, {
@@ -3078,27 +3109,6 @@ export class VoiceSession {
 
   private _sendToolResult(channel: VoiceChannel, id: string, name: string, result: Record<string, unknown>): void {
     this._sendOn(channel, JSON.stringify(gatewayToolResult(id, name, result)), VOICE_TOOL_RESULT_DELIVERY_ERROR);
-  }
-
-  // -----------------------------------------------------------------------
-  // Audio cleanup
-  // -----------------------------------------------------------------------
-
-  private _releaseAudio(keepMeterContext: boolean): void {
-    this._outgoingMicrophone?.close();
-    this._outgoingMicrophone = null;
-    this._microphoneInput.setSpeaking(false);
-    if (!keepMeterContext) this._microphoneInput.close();
-    try {
-      this._micStream?.getTracks().forEach((t) => t.stop());
-      this._micStream = null;
-    } catch {
-      // ignore
-    }
-    this._microphoneMeter.stop(keepMeterContext);
-    this._speakerActive = false;
-    this._pendingNotifications = [];
-    this._pendingServiceContext = null;
   }
 }
 

@@ -1,4 +1,4 @@
-// Tests for the released Streamable HTTP compatibility handler.
+// Tests for the released Streamable HTTP protocol handler.
 
 package mcp_test
 

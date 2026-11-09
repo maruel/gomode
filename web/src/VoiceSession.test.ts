@@ -1650,6 +1650,123 @@ describe("VoiceSession", () => {
     }
   });
 
+  for (const retirement of ["disconnect", "replacement"] as const) {
+    for (const settlement of ["resolve", "reject"] as const) {
+      it(`releases pending microphone resources on ${retirement} before a late ${settlement}`, async () => {
+        const oldTrack = { stop: vi.fn(), enabled: true };
+        const pendingTrack = { stop: vi.fn(), enabled: true };
+        const currentTrack = { stop: vi.fn(), enabled: true };
+        const stream = (track: typeof oldTrack) =>
+          ({
+            getTracks: () => [track],
+            getAudioTracks: () => [track],
+          }) as unknown as MediaStream;
+        vi.mocked(navigator.mediaDevices.getUserMedia)
+          .mockResolvedValueOnce(stream(oldTrack))
+          .mockResolvedValueOnce(stream(pendingTrack))
+          .mockResolvedValue(stream(currentTrack));
+        const session = new VoiceSession();
+        const entered = deferred<void>();
+        const replacement = deferred<void>();
+        let switching: Promise<void> | null = null;
+        try {
+          await session.connect();
+          FakePeerConnection.last!.sender.replaceTrack.mockImplementation(() => {
+            entered.resolve();
+            return replacement.promise;
+          });
+          switching = session.selectInputDevice("headset");
+          await entered.promise;
+          const outgoing = outgoingMicrophoneTrack()!;
+          const processing = [...FakeMicrophoneContext.instances]
+            .reverse()
+            .find((context) =>
+              context.destinations.some((destination) => destination.stream.getAudioTracks()[0] === outgoing),
+            )!;
+          const gain = processing.gains.at(-1)!;
+          expect(oldTrack.stop).not.toHaveBeenCalled();
+          expect(pendingTrack.stop).not.toHaveBeenCalled();
+          expect(outgoing.stop).not.toHaveBeenCalled();
+          if (retirement === "replacement") {
+            await session.connect();
+            session.setState((state) => ({ ...state, audioInputError: "Current microphone warning" }));
+          } else session.disconnect();
+          // These checks happen while replaceTrack remains gated. Test cleanup
+          // and a late operation settlement must not be what releases capture.
+          expect(oldTrack.stop).toHaveBeenCalledOnce();
+          expect(pendingTrack.stop).toHaveBeenCalledOnce();
+          expect(outgoing.stop).toHaveBeenCalledOnce();
+          expect(gain.disconnect).toHaveBeenCalledOnce();
+          expect(currentTrack.stop).not.toHaveBeenCalled();
+          if (settlement === "reject") replacement.reject(new Error("retired sender"));
+          else replacement.resolve();
+          await switching;
+          expect(pendingTrack.stop).toHaveBeenCalledOnce();
+          expect(outgoing.stop).toHaveBeenCalledOnce();
+          expect(gain.disconnect).toHaveBeenCalledOnce();
+          expect(currentTrack.stop).not.toHaveBeenCalled();
+          expect(session.state.selectedInputId).toBe("");
+          expect(session.state.audioInputError).toBe(
+            retirement === "replacement" ? "Current microphone warning" : null,
+          );
+          expect(session.state.error).toBeNull();
+        } finally {
+          replacement.resolve();
+          await switching;
+          session.disconnect();
+        }
+      });
+    }
+  }
+
+  for (const failure of ["graph", "sender"] as const) {
+    it(`releases failed ${failure} replacement resources and keeps the working microphone until retry`, async () => {
+      const oldTrack = { stop: vi.fn(), enabled: true };
+      const pendingTrack = { stop: vi.fn(), enabled: true };
+      const retryTrack = { stop: vi.fn(), enabled: true };
+      const stream = (track: typeof oldTrack) =>
+        ({
+          getTracks: () => [track],
+          getAudioTracks: () => [track],
+        }) as unknown as MediaStream;
+      vi.mocked(navigator.mediaDevices.getUserMedia)
+        .mockResolvedValueOnce(stream(oldTrack))
+        .mockResolvedValueOnce(stream(pendingTrack))
+        .mockResolvedValueOnce(stream(retryTrack));
+      const session = new VoiceSession();
+      try {
+        await session.connect();
+        const processing = [...FakeMicrophoneContext.instances]
+          .reverse()
+          .find((context) => context.destinations.length > 0)!;
+        const originalGain = processing.gains.at(-1)!;
+        if (failure === "graph")
+          processing.source.connect.mockImplementationOnce(() => {
+            throw new Error("graph failed");
+          });
+        else FakePeerConnection.last!.sender.replaceTrack.mockRejectedValueOnce(new Error("sender failed"));
+        await session.selectInputDevice("headset");
+        const failedOutgoing = outgoingMicrophoneTrack()!;
+        const failedGain = processing.gains.at(-1)!;
+        expect(oldTrack.stop).not.toHaveBeenCalled();
+        expect(originalGain.disconnect).not.toHaveBeenCalled();
+        expect(pendingTrack.stop).toHaveBeenCalledOnce();
+        expect(failedOutgoing.stop).toHaveBeenCalledOnce();
+        expect(failedGain.disconnect).toHaveBeenCalledOnce();
+        expect(session.state.audioInputError).toContain(`${failure} failed`);
+        expect(session.state.selectedInputId).toBe("");
+        await session.selectInputDevice("headset");
+        expect(session.state.audioInputError).toBeNull();
+        expect(session.state.selectedInputId).toBe("headset");
+        expect(oldTrack.stop).toHaveBeenCalledOnce();
+        expect(pendingTrack.stop).toHaveBeenCalledOnce();
+        expect(retryTrack.stop).not.toHaveBeenCalled();
+      } finally {
+        session.disconnect();
+      }
+    });
+  }
+
   it("keeps an in-flight microphone replacement gated when agent speech starts", async () => {
     const oldTrack = { stop: vi.fn(), enabled: true };
     const newTrack = { stop: vi.fn(), enabled: true };
@@ -1990,6 +2107,38 @@ describe("VoiceSession", () => {
     } finally {
       session.disconnect();
       preparation.dispose();
+    }
+  });
+
+  it("keeps replacement setup alive when fatal-error observers reconnect", async () => {
+    const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
+    let replacement: Promise<void> | null = null;
+    const dispose = createRoot((dispose) => {
+      createEffect(() => {
+        if (session.state.errorHistory.length > 0 && replacement === null) replacement = session.connect();
+      });
+      return dispose;
+    });
+    try {
+      await session.connect();
+      const retired = FakePeerConnection.dataChannels[0]!;
+      retired.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({ kind: MessageKindError, message: "retired failure" }),
+        }),
+      );
+      await vi.waitFor(() => expect(replacement).not.toBeNull());
+      await replacement;
+      expect(FakePeerConnection.instances).toHaveLength(2);
+      const current = FakePeerConnection.dataChannels[1]!;
+      current.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindSessionReady }) }));
+      expect(session.state.connected).toBe(true);
+      expect(session.state.error).toBeNull();
+      expect(retired.readyState).toBe("closed");
+      expect(current.readyState).toBe("open");
+    } finally {
+      dispose();
+      session.disconnect();
     }
   });
 
@@ -3374,6 +3523,31 @@ describe("voice network recovery", () => {
       const secondSetup = FakePeerConnection.dataChannels[1]?.send.mock.calls[0]?.[0];
       expect(JSON.parse(firstSetup as string).context.text).toContain("Old state");
       expect(JSON.parse(secondSetup as string).context.text).toContain("Fresh state");
+    } finally {
+      session.disconnect();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps replacement recovery scheduled when a retired peer reports connected", async () => {
+    vi.useFakeTimers();
+    const session = new VoiceSession();
+    try {
+      await session.connect();
+      const retired = FakePeerConnection.last!;
+      const close = vi.spyOn(retired, "close");
+      const retiredChannel = FakePeerConnection.dataChannels[0]!;
+      await session.connect();
+      expect(close).toHaveBeenCalledOnce();
+      expect(retiredChannel.readyState).toBe("closed");
+      triggerIceState("disconnected");
+      retired.iceConnectionState = "connected";
+      retired.oniceconnectionstatechange?.call(
+        retired as unknown as RTCPeerConnection,
+        new Event("iceconnectionstatechange"),
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.waitFor(() => expect(FakePeerConnection.instances).toHaveLength(3));
     } finally {
       session.disconnect();
       vi.useRealTimers();

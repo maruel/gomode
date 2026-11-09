@@ -1,4 +1,4 @@
-// Attenuates outgoing WebRTC microphone audio during assistant speech.
+// Attenuates outgoing WebRTC microphone audio and owns partial capture-graph construction.
 
 import { AudioGain } from "./AudioGain";
 
@@ -16,22 +16,28 @@ export class MicrophoneInput {
     const context = this.context;
     if (context === null || context.state !== "running") throw new Error("Microphone audio processing is paused.");
     const source = context.createMediaStreamSource(stream);
-    const gain = context.createGain();
-    const destination = context.createMediaStreamDestination();
-    // -20 dB reduces speaker leakage while leaving louder user interruptions possible.
-    const envelope = new AudioGain(gain.gain, this.speaking ? 0.1 : 1);
-    source.connect(gain);
-    gain.connect(destination);
-    this.gains.set(gain, envelope);
-    return {
-      stream: destination.stream,
-      close: () => {
-        source.disconnect();
-        gain.disconnect();
-        destination.stream.getTracks().forEach((track) => track.stop());
-        this.gains.delete(gain);
-      },
+    let gain: GainNode | null = null;
+    let destination: MediaStreamAudioDestinationNode | null = null;
+    const close = () => {
+      source.disconnect();
+      gain?.disconnect();
+      destination?.stream.getTracks().forEach((track) => track.stop());
+      if (gain !== null) this.gains.delete(gain);
     };
+    try {
+      gain = context.createGain();
+      destination = context.createMediaStreamDestination();
+      // -20 dB reduces speaker leakage while leaving louder user interruptions possible.
+      const envelope = new AudioGain(gain.gain, this.speaking ? 0.1 : 1);
+      source.connect(gain);
+      gain.connect(destination);
+      this.gains.set(gain, envelope);
+      return { stream: destination.stream, close };
+    } catch (error) {
+      // Construction owns the partial graph; the caller still owns its input stream.
+      close();
+      throw error;
+    }
   }
 
   setSpeaking(speaking: boolean): void {

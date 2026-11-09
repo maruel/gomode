@@ -161,6 +161,108 @@ it("binds native lifetime and awaited initial publication to authenticated docum
   expect(context.dispose).toHaveBeenCalledTimes(2);
 });
 
+it("keeps a replacement native preparation current when the previous publication settles late", async () => {
+  const first = deferred<void>();
+  const second = deferred<void>();
+  const prepare = vi.fn((id: string, _signal: AbortSignal) => (id === "first" ? first.promise : second.promise));
+  const scope = authenticate().createScope(contextPolicy(prepare));
+  scope.setTools([]);
+  scope.setDataReady(true);
+  await Promise.resolve();
+  acknowledge({ ...requests[0], voiceSessionVersion: 1 }, "identity");
+  nativeSession("first");
+  await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(1));
+  nativeSession("second");
+  expect(prepare.mock.calls[0]![1].aborted).toBe(true);
+  await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(2));
+  first.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(scope.nativeVoiceSessionID()).toBe("second");
+  expect(readiness.at(-1)?.voiceSessionPrepared).toBeNull();
+  second.resolve();
+  await vi.waitFor(() => expect(readiness.at(-1)?.voiceSessionPrepared).toBe("second"));
+});
+
+it("requires new preparation when the same native ID returns after registration replacement", async () => {
+  const first = deferred<void>();
+  const second = deferred<void>();
+  const prepare = vi
+    .fn<(id: string, signal: AbortSignal) => Promise<void>>()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementationOnce(() => second.promise);
+  const scope = authenticate().createScope(contextPolicy(prepare));
+  scope.setTools([]);
+  scope.setDataReady(true);
+  await Promise.resolve();
+  acknowledge({ ...requests[0], voiceSessionVersion: 1 }, "identity");
+  nativeSession("conversation");
+  await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(1));
+  const previousBinding = readiness.at(-1)?.scope;
+  scope.setTools([]);
+  expect(readiness.at(-1)?.scope).not.toBe(previousBinding);
+  expect(prepare.mock.calls[0]![1].aborted).toBe(true);
+  nativeSession("conversation");
+  await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(2));
+  first.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(readiness.at(-1)?.voiceSessionPrepared).toBeNull();
+  second.resolve();
+  await vi.waitFor(() => expect(readiness.at(-1)?.voiceSessionPrepared).toBe("conversation"));
+});
+
+it("binds captured native dispatch and cancellation to the registration despite reused invocation IDs", async () => {
+  const responses: Record<string, unknown>[] = [];
+  window.gomodeFrontendToolResult = { postMessage: (value) => responses.push(JSON.parse(value)) };
+  try {
+    const first = deferred<Record<string, unknown>>();
+    const second = deferred<Record<string, unknown>>();
+    const contexts: FrontendVoiceToolContext[] = [];
+    const execute = vi.fn((_args: Record<string, unknown>, context: FrontendVoiceToolContext) => {
+      contexts.push(context);
+      return contexts.length === 1 ? first.promise : second.promise;
+    });
+    const scope = authenticate().createScope();
+    scope.setTools([{ ...tool, execute }]);
+    scope.setDataReady(true);
+    await Promise.resolve();
+    acknowledge(requests[0]!, "identity");
+    const request = () => ({
+      document: "document",
+      token: "identity",
+      scope: String(readiness.at(-1)?.scope),
+      invocation: "reused",
+      sessionID: "conversation",
+      name: "select_item",
+      args: {},
+    });
+    const oldDispatch = window.dispatchGoModeVoiceTool!;
+    const oldCancel = window.cancelGoModeVoiceTool!;
+    const previous = request();
+    oldDispatch(previous);
+    expect(execute).toHaveBeenCalledTimes(1);
+    scope.setTools([{ ...tool, execute }]);
+    expect(contexts[0]!.signal.aborted).toBe(true);
+    const replacement = request();
+    oldDispatch(previous);
+    expect(execute).toHaveBeenCalledTimes(1);
+    window.dispatchGoModeVoiceTool!(replacement);
+    expect(execute).toHaveBeenCalledTimes(2);
+    oldCancel(previous);
+    expect(contexts[1]!.signal.aborted).toBe(false);
+    first.resolve({ stale: true });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(responses).toEqual([]);
+    second.resolve({ current: true });
+    await vi.waitFor(() => expect(responses).toHaveLength(1));
+    expect(responses[0]).toMatchObject({ scope: replacement.scope, invocation: "reused", result: { current: true } });
+  } finally {
+    delete window.gomodeFrontendToolResult;
+  }
+});
+
 it("admits negotiated native wire dispatch only for the live conversation ID", async () => {
   const responses: Record<string, unknown>[] = [];
   window.gomodeFrontendToolResult = { postMessage: (value) => responses.push(JSON.parse(value)) };
@@ -201,6 +303,7 @@ it("admits negotiated native wire dispatch only for the live conversation ID", a
   });
   nativeSession(null);
   dispatch("after-retirement", "live-conversation");
+  dispatch("missing-after-retirement");
   await Promise.resolve();
   expect(execute).toHaveBeenCalledOnce();
   expect(responses).toHaveLength(1);
