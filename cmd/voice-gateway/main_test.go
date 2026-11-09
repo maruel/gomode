@@ -372,7 +372,9 @@ model = "test"
 		var wg sync.WaitGroup
 		wg.Go(func() { waitErr = cmd.Wait(); close(done) })
 		t.Cleanup(func() { cancel(); wg.Wait() })
-		client := &http.Client{Timeout: time.Second}
+		transport := &http.Transport{}
+		t.Cleanup(transport.CloseIdleConnections)
+		client := &http.Client{Timeout: time.Second, Transport: transport}
 		// Readiness waits on the actual listener; the model is never invoked.
 		deadline := time.Now().Add(10 * time.Second)
 		for {
@@ -383,7 +385,8 @@ model = "test"
 			req.Host = "voice.example"
 			resp, err := client.Do(req)
 			if err == nil {
-				if err := resp.Body.Close(); err != nil {
+				_, readErr := io.Copy(io.Discard, resp.Body)
+				if err := errors.Join(readErr, resp.Body.Close()); err != nil {
 					t.Fatal(err)
 				}
 				break
@@ -423,20 +426,26 @@ model = "test"
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := resp.Body.Close(); err != nil {
+			_, readErr := io.Copy(io.Discard, resp.Body)
+			if err := errors.Join(readErr, resp.Body.Close()); err != nil {
 				t.Fatal(err)
 			}
 			if resp.StatusCode != tc.status {
 				t.Errorf("host=%s forwarded=%s: status=%d, want %d", tc.host, tc.forwarded, resp.StatusCode, tc.status)
 			}
 		}
+		// Release pooled and in-flight unused dials before asking the server to
+		// shut down: a connection awaiting its first request delays Shutdown.
+		transport.CloseIdleConnections()
 		if err := os.WriteFile(path, []byte(raw+"\n# stop gateway after policy assertions\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			t.Fatal("gateway did not stop after config change")
+			cancel()
+			<-done
+			t.Fatalf("gateway did not stop after config change:\n%s", output.String())
 		}
 		if waitErr != nil {
 			t.Fatalf("gateway shutdown: %v\n%s", waitErr, output.String())
