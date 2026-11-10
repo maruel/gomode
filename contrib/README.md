@@ -31,6 +31,10 @@ when set. Windows uses the persistent user or machine value. See
 | Service | systemd user `voice-gateway.service` | launchd user `com.maruel.voice-gateway` | Scheduled task `GoModeVoiceGateway` |
 | Logs | `journalctl --user -u voice-gateway.service` | `~/Library/Logs/voice-gateway.log` | `voice-gateway.log` beside executable |
 
+To rebuild from a Windows checkout and restart the installed scheduled task, run
+`./contrib/rebuild-windows.ps1` from PowerShell. Go must be installed and
+the task must first be set up using the Windows installer above.
+
 For other installation workflows, build from source:
 
 ```sh
