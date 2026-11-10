@@ -297,6 +297,21 @@ describe("voice choices", () => {
     expect(screen.getByRole("alert")).toBeEmptyDOMElement();
   });
 
+  it("rejects choices without valid transports", async () => {
+    const session = new VoiceSession();
+    try {
+      for (const transports of [null, [], ["invalid"]]) {
+        globalThis.fetch = async () =>
+          new Response(JSON.stringify({ ...independent, choices: [{ id: "a", label: "A", transports }] }));
+        await session.loadVoiceChoices();
+        expect(session.state.choicesStatus).toBe("error");
+        expect(session.state.choicesError).toContain("invalid choices");
+      }
+    } finally {
+      session.disconnect();
+    }
+  });
+
   it("rejects malformed and duplicate stage catalogs", async () => {
     const session = new VoiceSession();
     try {

@@ -513,6 +513,7 @@ internal class ServiceCatalog(
                 try {
                     val mcp =
                         if (ready.settings.webShell.toolGroups
+                                .orEmpty()
                                 .isEmpty()
                         ) {
                             null

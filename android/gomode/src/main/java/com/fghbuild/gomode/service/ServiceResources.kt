@@ -204,7 +204,7 @@ private fun resourceText(
 ): String {
     val readResult = readResults[uri] ?: throw IllegalArgumentException("resource read result is missing $uri")
     val content =
-        readResult.contents.firstOrNull { it.uri == uri }
+        readResult.contents.orEmpty().firstOrNull { it.uri == uri }
             ?: throw IllegalArgumentException("resource read result is missing $uri")
     require(content.mimeType == null || content.mimeType == JSON_MIME_TYPE) {
         "resource $uri must be JSON, got ${content.mimeType.orEmpty()}"

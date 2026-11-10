@@ -82,7 +82,8 @@ class Lfm3ModelTest {
                         calls++
                         assertEquals("record_value", call.name)
                         val value =
-                            call.args.jsonObject
+                            requireNotNull(call.args)
+                                .jsonObject
                                 .getValue("value")
                                 .jsonPrimitive.content
                         // Compare the transport with actual output, independently of model copying ability.
@@ -94,7 +95,8 @@ class Lfm3ModelTest {
                         )
                         assertEquals(
                             "9007199254740993",
-                            call.args.jsonObject
+                            requireNotNull(call.args)
+                                .jsonObject
                                 .getValue("id")
                                 .jsonPrimitive.content,
                         )

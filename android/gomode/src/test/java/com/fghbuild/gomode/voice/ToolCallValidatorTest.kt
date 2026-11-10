@@ -193,7 +193,9 @@ class ToolCallValidatorTest {
 
     @Test
     fun missingMalformedAndUnresolvableSchemasCannotEnableDispatch() {
-        assertTrue(runCatching { ToolCallValidator(listOf(ToolDescriptor(name = "missing"))) }.isFailure)
+        assertTrue(
+            runCatching { ToolCallValidator(listOf(ToolDescriptor(name = "missing", inputSchema = null))) }.isFailure,
+        )
         for (schema in listOf(
             """{"type":"imaginary"}""",
             """{"required":"task"}""",

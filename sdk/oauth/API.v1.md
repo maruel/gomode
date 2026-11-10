@@ -36,10 +36,10 @@ AuthorizationServerMetadata is OAuth/OIDC discovery metadata.
 | `registration_endpoint` | `string` |  | yes |
 | `revocation_endpoint` | `string` |  |  |
 | `end_session_endpoint` | `string` |  |  |
-| `response_types_supported` | `string[]` |  | yes |
-| `grant_types_supported` | `string[]` |  | yes |
-| `code_challenge_methods_supported` | `string[]` |  | yes |
-| `token_endpoint_auth_methods_supported` | `string[]` |  | yes |
+| `response_types_supported` | `string[] \| null` |  | yes |
+| `grant_types_supported` | `string[] \| null` |  | yes |
+| `code_challenge_methods_supported` | `string[] \| null` |  | yes |
+| `token_endpoint_auth_methods_supported` | `string[] \| null` |  | yes |
 | `introspection_endpoint_auth_methods_supported` | `string[]` |  |  |
 | `revocation_endpoint_auth_methods_supported` | `string[]` |  |  |
 | `scopes_supported` | `string[]` |  |  |
@@ -56,7 +56,7 @@ ProtectedResourceMetadata is OAuth 2.0 Protected Resource Metadata.
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
 | `resource` | `string` |  | yes |
-| `authorization_servers` | `string[]` |  | yes |
+| `authorization_servers` | `string[] \| null` |  | yes |
 | `scopes_supported` | `string[]` |  |  |
 | `resource_documentation` | `string` |  |  |
 
@@ -84,7 +84,7 @@ JWKSet is a JSON Web Key Set response.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `keys` | `JWK[]` |  | yes |
+| `keys` | `JWK[] \| null` |  | yes |
 
 ### ClientIDMetadataDocument
 
@@ -94,7 +94,7 @@ ClientIDMetadataDocument describes an OAuth client identified by its HTTPS metad
 |-------|------|-------------|----------|
 | `client_id` | `string` |  | yes |
 | `client_name` | `string` |  | yes |
-| `redirect_uris` | `string[]` |  | yes |
+| `redirect_uris` | `string[] \| null` |  | yes |
 | `token_endpoint_auth_method` | `string` |  |  |
 | `grant_types` | `string[]` |  |  |
 | `response_types` | `string[]` |  |  |
@@ -108,7 +108,7 @@ RegisterRequest is a dynamic client registration request.
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
 | `client_name` | `string` |  | yes |
-| `redirect_uris` | `string[]` |  | yes |
+| `redirect_uris` | `string[] \| null` |  | yes |
 | `token_endpoint_auth_method` | `string` |  | yes |
 | `grant_types` | `string[]` |  |  |
 
@@ -121,7 +121,7 @@ RegisterResponse is a dynamic client registration response (RFC 7592).
 | `client_id` | `string` |  | yes |
 | `client_id_issued_at` | `int64` |  | yes |
 | `client_name` | `string` |  |  |
-| `redirect_uris` | `string[]` |  | yes |
+| `redirect_uris` | `string[] \| null` |  | yes |
 | `token_endpoint_auth_method` | `string` |  | yes |
 | `grant_types` | `string[]` |  |  |
 | `registration_access_token` | `string` |  |  |
@@ -135,9 +135,9 @@ Nil pointer fields leave the corresponding client field unchanged.
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
 | `client_name` | `string` |  |  |
-| `redirect_uris` | `string[]` |  |  |
+| `redirect_uris` | `string[] \| null` |  |  |
 | `token_endpoint_auth_method` | `string` |  |  |
-| `grant_types` | `string[]` |  |  |
+| `grant_types` | `string[] \| null` |  |  |
 
 ### Token
 

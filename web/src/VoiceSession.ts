@@ -327,17 +327,17 @@ function normalizeToolParameters(parameters: unknown): Record<string, unknown> {
 export function voiceToolDeclarations(
   mcpTools: McpToolDescriptor[],
   frontendTools: SessionSetup["tools"],
-): SessionSetup["tools"] {
+): NonNullable<SessionSetup["tools"]> {
   if (mcpTools.some((tool) => tool.name === HANG_UP_TOOL_NAME)) {
     throw new Error(`MCP tool "${HANG_UP_TOOL_NAME}" conflicts with the reserved voice command.`);
   }
-  for (const tool of frontendTools) {
+  for (const tool of frontendTools ?? []) {
     if (mcpTools.some((mcp) => mcp.name === tool.name)) {
       throw new Error(`MCP tool "${tool.name}" conflicts with a frontend voice tool.`);
     }
   }
   return [
-    ...frontendTools.map((tool) => ({ ...tool, parameters: normalizeToolParameters(tool.parameters) })),
+    ...(frontendTools ?? []).map((tool) => ({ ...tool, parameters: normalizeToolParameters(tool.parameters) })),
     {
       name: HANG_UP_TOOL_NAME,
       description:
@@ -408,10 +408,12 @@ export interface ToolInvocation {
 
 export type VoiceSetupMode = "all-in-one" | "parts";
 
+export type ValidatedVoiceChoice = VoiceChoice & { transports: VoiceTransport[] };
+
 export interface VoiceState extends AudioRouteState {
   setupMode: VoiceSetupMode;
   usage: VoiceUsage | null;
-  choices: VoiceChoice[];
+  choices: ValidatedVoiceChoice[];
   speechModels: Record<"input" | "output", SpeechModel[]>;
   speechModelIDs: Record<"input" | "output", string | null>;
   /** Effective gateway choice per family, null when the gateway offers none. */
@@ -590,11 +592,11 @@ function savedSetup(origin: string): VoiceSetupPreference | null {
   }
 }
 
-function nativeVoiceChoice(choice: VoiceChoice): boolean {
+function nativeVoiceChoice(choice: ValidatedVoiceChoice): boolean {
   return choice.composable !== true && !choice.transports.includes("text");
 }
 
-function setupChoices(choices: VoiceChoice[], mode: VoiceSetupMode): VoiceChoice[] {
+function setupChoices(choices: ValidatedVoiceChoice[], mode: VoiceSetupMode): ValidatedVoiceChoice[] {
   const composable = choices.some((choice) => choice.composable === true);
   return choices.filter((choice) =>
     mode === "all-in-one"
@@ -607,7 +609,7 @@ function transportFor(speech: SpeechSelection): VoiceTransport {
   return speech.input === "client" && speech.output === "client" ? "text" : "webrtc";
 }
 
-function choiceSupportsSpeech(choice: VoiceChoice, speech: SpeechSelection): boolean {
+function choiceSupportsSpeech(choice: ValidatedVoiceChoice, speech: SpeechSelection): boolean {
   const modes =
     choice.speechModes ??
     choice.transports.map((transport) =>
@@ -617,10 +619,10 @@ function choiceSupportsSpeech(choice: VoiceChoice, speech: SpeechSelection): boo
 }
 
 function compatibleChoices(
-  choices: VoiceChoice[],
+  choices: ValidatedVoiceChoice[],
   transport: VoiceTransport,
   speech: SpeechSelection | null,
-): VoiceChoice[] {
+): ValidatedVoiceChoice[] {
   return choices.filter(
     (choice) =>
       (!choices.some((candidate) => candidate.composable === true) ||
@@ -691,7 +693,12 @@ function speakingVoiceError(choice: VoiceChoice, name: string): string | null {
   return available ? null : "The saved speaking voice is unavailable. Choose another speaking voice.";
 }
 
-function validateVoiceChoices(value: VoiceChoicesResp): VoiceChoicesResp {
+type ValidatedVoiceChoices = Omit<VoiceChoicesResp, "choices" | "defaults"> & {
+  choices: ValidatedVoiceChoice[];
+  defaults: NonNullable<VoiceChoicesResp["defaults"]>;
+};
+
+function validateVoiceChoices(value: VoiceChoicesResp): ValidatedVoiceChoices {
   if (
     !Array.isArray(value.choices) ||
     !Array.isArray(value.defaults) ||
@@ -721,28 +728,34 @@ function validateVoiceChoices(value: VoiceChoicesResp): VoiceChoicesResp {
                 !["client", "gateway"].includes(mode.output ?? ""),
             ))),
     ) ||
-    value.defaults.some(
-      (fallback) =>
-        !VOICE_TRANSPORTS.includes(fallback.transport) ||
-        typeof fallback.id !== "string" ||
-        fallback.id === "" ||
-        !value.choices.some((choice) => choice.id === fallback.id && choice.transports.includes(fallback.transport)),
-    ) ||
     new Set(value.choices.map((choice) => choice.id)).size !== value.choices.length ||
     new Set(value.defaults.map((fallback) => fallback.transport)).size !== value.defaults.length
   )
     throw new Error("The voice gateway returned invalid choices");
-  return value;
+  const validated = value as ValidatedVoiceChoices;
+  if (
+    validated.defaults.some(
+      (fallback) =>
+        !VOICE_TRANSPORTS.includes(fallback.transport) ||
+        typeof fallback.id !== "string" ||
+        fallback.id === "" ||
+        !validated.choices.some(
+          (choice) => choice.id === fallback.id && choice.transports.includes(fallback.transport),
+        ),
+    )
+  )
+    throw new Error("The voice gateway returned invalid choices");
+  return validated;
 }
 
-function defaultChoiceID(metadata: VoiceChoicesResp, transport: VoiceTransport): string | null {
+function defaultChoiceID(metadata: ValidatedVoiceChoices, transport: VoiceTransport): string | null {
   return metadata.defaults.find((fallback) => fallback.transport === transport)?.id ?? null;
 }
 
 // resolveVoiceChoice keeps a saved choice for its own family, and falls back to
 // the family default when the saved choice serves only the other family.
 function resolveVoiceChoice(
-  metadata: VoiceChoicesResp,
+  metadata: ValidatedVoiceChoices,
   transport: VoiceTransport,
   selected: string | null,
   speech: SpeechSelection | null,
@@ -973,7 +986,7 @@ export class VoiceSession {
     return transportFor(this.speech);
   }
 
-  get compatibleChoices(): VoiceChoice[] {
+  get compatibleChoices(): ValidatedVoiceChoice[] {
     return compatibleChoices(setupChoices(this.state.choices, this.state.setupMode), this.transport, this.speech);
   }
 
@@ -982,7 +995,7 @@ export class VoiceSession {
   }
 
   /** Available native models or independently selectable language models. */
-  choicesForSetup(mode: VoiceSetupMode): VoiceChoice[] {
+  choicesForSetup(mode: VoiceSetupMode): ValidatedVoiceChoice[] {
     return setupChoices(this.state.choices, mode);
   }
 
@@ -1251,7 +1264,7 @@ export class VoiceSession {
   }
 
   /** Restore the saved setup, retaining unavailable selections for explicit recovery. */
-  private _resolveFamilies(origin: string, metadata: VoiceChoicesResp): void {
+  private _resolveFamilies(origin: string, metadata: ValidatedVoiceChoices): void {
     let preference = savedSetup(origin);
     if (preference === null) {
       const selected = this.state.choiceIDs[this.transport] ?? savedVoiceChoice(origin, this.transport);

@@ -93,9 +93,9 @@ JSONRPCRequest is a JSON-RPC request that expects a response.
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
 | `jsonrpc` | `string` |  | yes |
-| `id` | `JSONValue` |  |  |
+| `id` | `JSONValue \| null` |  |  |
 | `method` | `Method` |  | yes |
-| `params` | `JSONValue` |  |  |
+| `params` | `JSONValue \| null` |  |  |
 
 ### JSONRPCError
 
@@ -114,13 +114,13 @@ JSONRPCResponse is a JSON-RPC response containing either a result or an error.
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
 | `jsonrpc` | `string` |  | yes |
-| `id` | `JSONValue` |  |  |
+| `id` | `JSONValue \| null` |  |  |
 | `result` | `JSONValue` |  |  |
 | `error` | `JSONRPCError` |  |  |
 
 ### Extensions
 
-`type Extensions = Record<string, JSONValue>`
+`type Extensions = Record<string, (JSONValue | null)>`
 
 ### MetaObject
 
@@ -200,7 +200,7 @@ ServerDiscoverResult is the result returned for a server/discover request.
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
 | `resultType` | `ResultType` |  | yes |
-| `supportedVersions` | `string[]` | SupportedVersions lists MCP protocol versions supported by this server. | yes |
+| `supportedVersions` | `string[] \| null` | SupportedVersions lists MCP protocol versions supported by this server. | yes |
 | `capabilities` | `Capabilities` | Capabilities advertises server features. | yes |
 | `serverInfo` | `Implementation` | ServerInfo describes the server software implementation. | yes |
 | `instructions` | `string` | Instructions gives natural-language guidance for using the server effectively.
@@ -209,82 +209,6 @@ Clients may include it in an LLM system prompt. It should not duplicate tool
 descriptions. |  |
 | `ttlMs` | `int` | TTLMS hints how long clients may cache this response in milliseconds. | yes |
 | `cacheScope` | `CacheScope` | CacheScope indicates whether the response may be cached publicly or privately. | yes |
-
-### SamplingCapability
-
-SamplingCapability describes deprecated client sampling support.
-
-| Field | Type | Description | Required |
-|-------|------|-------------|----------|
-| `context` | `MetaObject` | Context declares context inclusion support. |  |
-| `tools` | `MetaObject` | Tools declares tool-use support. |  |
-
-### ElicitationCapability
-
-ElicitationCapability describes client elicitation support.
-
-| Field | Type | Description | Required |
-|-------|------|-------------|----------|
-| `form` | `MetaObject` | Form declares support for form-mode elicitation. |  |
-| `url` | `MetaObject` | URL declares support for URL-mode elicitation. |  |
-
-### ClientCapabilities
-
-ClientCapabilities describes capabilities the client supports for a request.
-
-| Field | Type | Description | Required |
-|-------|------|-------------|----------|
-| `experimental` | `Extensions` | Experimental contains non-standard capabilities supported by the client. |  |
-| `roots` | `MetaObject` | DeprecatedRoots is present if the client supports listing roots.
-
-Deprecated as of protocol version 2026-07-28, but still present in that
-schema. This is native 2026-07-28 compatibility, not released-version
-compat.go support; remove it only after the upstream 2026+ schema drops it. |  |
-| `sampling` | `SamplingCapability` | DeprecatedSampling is present if the client supports server-initiated LLM sampling.
-
-Deprecated as of protocol version 2026-07-28, but still present in that
-schema. This is native 2026-07-28 compatibility, not released-version
-compat.go support; remove it only after the upstream 2026+ schema drops it. |  |
-| `elicitation` | `ElicitationCapability` | Elicitation is present if the client supports server-initiated user elicitation. |  |
-| `extensions` | `Extensions` | Extensions contains optional MCP extensions supported by the client. |  |
-
-### OpenAIUserLocation
-
-OpenAIUserLocation contains optional client location hints. Only the device's
-IANA timezone is used; these untrusted hints must not influence authorization.
-
-| Field | Type | Description | Required |
-|-------|------|-------------|----------|
-| `timezone` | `string` | Timezone is the caller device's IANA timezone, such as America/Toronto. |  |
-
-### RequestMeta
-
-RequestMeta is the metadata object required in MCP request params.
-
-| Field | Type | Description | Required |
-|-------|------|-------------|----------|
-| `io.modelcontextprotocol/protocolVersion` | `string` | ProtocolVersion is the MCP protocol version used for this request.
-
-For HTTP, it must match the MCP-Protocol-Version header. | yes |
-| `io.modelcontextprotocol/clientInfo` | `Implementation` | ClientInfo identifies the client software making the request. | yes |
-| `io.modelcontextprotocol/clientCapabilities` | `ClientCapabilities` | ClientCapabilities declares client capabilities for this request. | yes |
-| `progressToken` | `JSONValue` | ProgressToken requests out-of-band progress notifications for this request. |  |
-| `io.modelcontextprotocol/logLevel` | `string` | DeprecatedLogLevel requests server log message notifications for this request.
-
-Deprecated as of protocol version 2026-07-28, but still present in that
-schema. This is native 2026-07-28 compatibility, not released-version
-compat.go support; remove it only after the upstream 2026+ schema drops it. |  |
-| `openai/locale` | `string` | Locale requests a language and regional convention using a BCP 47 tag,
-such as en-CA or fr-CA. |  |
-| `openai/organization` | `string` | Organization carries an anonymized identifier for the caller's ChatGPT
-organization, when the client provides one. |  |
-| `openai/session` | `string` | Session groups tool calls from the same ChatGPT conversation using an
-anonymized conversation identifier. |  |
-| `openai/subject` | `string` | Subject carries an anonymized user identifier for call correlation or
-rate-limit accounting; it is not an authentication credential. |  |
-| `openai/userAgent` | `string` | UserAgent is a best-effort client hint for analytics or presentation;
-it is not a reliable indication of client capabilities. |  |
-| `openai/userLocation` | `OpenAIUserLocation` | UserLocation is an optional formatting hint supplied by the client. |  |
 
 ### PaginatedRequestParams
 
@@ -318,8 +242,8 @@ ToolDescriptor describes a tool the client can call.
 | `name` | `string` | Name is the programmatic tool identifier. | yes |
 | `title` | `string` | Title is a human-readable display name. |  |
 | `description` | `string` | Description helps clients and LLMs understand the tool. |  |
-| `inputSchema` | `JSONSchema` | InputSchema defines the expected JSON object arguments for the tool. |  |
-| `outputSchema` | `JSONSchema` | OutputSchema defines the structuredContent shape for successful results. |  |
+| `inputSchema` | `JSONSchema \| null` | InputSchema defines the expected JSON object arguments for the tool. | yes |
+| `outputSchema` | `JSONSchema \| null` | OutputSchema defines the structuredContent shape for successful results. |  |
 | `annotations` | `ToolAnnotations` | Annotations contains optional tool behavior hints. |  |
 
 ### ToolsListResult
@@ -331,7 +255,7 @@ ToolsListResult is the response payload for tools/list.
 | `_meta` | `MetaObject` |  |  |
 | `resultType` | `ResultType` |  | yes |
 | `nextCursor` | `string` |  |  |
-| `tools` | `ToolDescriptor[]` |  | yes |
+| `tools` | `ToolDescriptor[] \| null` |  | yes |
 | `ttlMs` | `int` |  | yes |
 | `cacheScope` | `CacheScope` |  | yes |
 
@@ -342,10 +266,10 @@ ToolsCallParams is the request params payload for tools/call.
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
 | `_meta` | `RequestMeta` |  | yes |
-| `inputResponses` | `JSONValue` | InputResponses carries responses to server-initiated requests from a prior input_required result. |  |
+| `inputResponses` | `JSONValue \| null` | InputResponses carries responses to server-initiated requests from a prior input_required result. |  |
 | `requestState` | `string` | RequestState carries opaque state from a prior input_required result. |  |
 | `name` | `string` | Name identifies the tool to invoke. | yes |
-| `arguments` | `JSONValue` | Arguments contains tool arguments as a JSON object. |  |
+| `arguments` | `JSONValue \| null` | Arguments contains tool arguments as a JSON object. |  |
 
 ### ResourceContent
 
@@ -400,7 +324,7 @@ ToolCallResult is the response payload for a tool call.
 |-------|------|-------------|----------|
 | `_meta` | `MetaObject` |  |  |
 | `resultType` | `ResultType` |  | yes |
-| `content` | `ContentBlock[]` | Content is the unstructured result of the tool call. | yes |
+| `content` | `ContentBlock[] \| null` | Content is the unstructured result of the tool call. | yes |
 | `structuredContent` | `JSONValue` | StructuredContent is optional JSON matching the tool output schema on success. |  |
 | `isError` | `boolean` | IsError indicates the tool call ended in an error visible to the model. |  |
 
@@ -429,7 +353,7 @@ ResourcesListResult is the response payload for resources/list.
 | `_meta` | `MetaObject` |  |  |
 | `resultType` | `ResultType` |  | yes |
 | `nextCursor` | `string` |  |  |
-| `resources` | `ResourceDescriptor[]` |  | yes |
+| `resources` | `ResourceDescriptor[] \| null` |  | yes |
 | `ttlMs` | `int` |  | yes |
 | `cacheScope` | `CacheScope` |  | yes |
 
@@ -457,7 +381,7 @@ ResourceTemplatesListResult is the response payload for resources/templates/list
 | `_meta` | `MetaObject` |  |  |
 | `resultType` | `ResultType` |  | yes |
 | `nextCursor` | `string` |  |  |
-| `resourceTemplates` | `ResourceTemplateDescriptor[]` |  | yes |
+| `resourceTemplates` | `ResourceTemplateDescriptor[] \| null` |  | yes |
 | `ttlMs` | `int` |  | yes |
 | `cacheScope` | `CacheScope` |  | yes |
 
@@ -468,7 +392,7 @@ ResourcesReadParams is the request params payload for resources/read.
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
 | `_meta` | `RequestMeta` |  | yes |
-| `inputResponses` | `JSONValue` | InputResponses carries responses to server-initiated requests from a prior input_required result. |  |
+| `inputResponses` | `JSONValue \| null` | InputResponses carries responses to server-initiated requests from a prior input_required result. |  |
 | `requestState` | `string` | RequestState carries opaque state from a prior input_required result. |  |
 | `uri` | `string` | URI identifies the resource to read. | yes |
 
@@ -480,7 +404,7 @@ ResourcesReadResult is the response payload for resources/read.
 |-------|------|-------------|----------|
 | `_meta` | `MetaObject` |  |  |
 | `resultType` | `ResultType` |  | yes |
-| `contents` | `ResourceContent[]` | Contents contains text or blob resource contents. | yes |
+| `contents` | `ResourceContent[] \| null` | Contents contains text or blob resource contents. | yes |
 | `ttlMs` | `int` | TTLMS hints how long clients may cache this response in milliseconds. | yes |
 | `cacheScope` | `CacheScope` | CacheScope indicates whether the response may be cached publicly or privately. | yes |
 
@@ -531,6 +455,53 @@ notifications/subscriptions/initial_state notification.
 |-------|------|-------------|----------|
 | `_meta` | `MetaObject` |  |  |
 | `uri` | `string` | URI is the subscribed target whose initial state was delivered. | yes |
-| `contents` | `ResourceContent[]` | Contents is the resources/read result for the same target, so a client
+| `contents` | `ResourceContent[] \| null` | Contents is the resources/read result for the same target, so a client
 that applies the payload holds the post-subscription state without a
 second read. | yes |
+
+### SamplingCapability
+
+SamplingCapability describes deprecated client sampling support.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `context` | `MetaObject` | Context declares context inclusion support. |  |
+| `tools` | `MetaObject` | Tools declares tool-use support. |  |
+
+### ElicitationCapability
+
+ElicitationCapability describes client elicitation support.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `form` | `MetaObject` | Form declares support for form-mode elicitation. |  |
+| `url` | `MetaObject` | URL declares support for URL-mode elicitation. |  |
+
+### ClientCapabilities
+
+ClientCapabilities describes capabilities the client supports for a request.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `experimental` | `Extensions` | Experimental contains non-standard capabilities supported by the client. |  |
+| `roots` | `MetaObject` | DeprecatedRoots is present if the client supports listing roots.
+
+Deprecated as of protocol version 2026-07-28, but still present in that
+schema. This is native 2026-07-28 compatibility, not released-version
+compat.go support; remove it only after the upstream 2026+ schema drops it. |  |
+| `sampling` | `SamplingCapability` | DeprecatedSampling is present if the client supports server-initiated LLM sampling.
+
+Deprecated as of protocol version 2026-07-28, but still present in that
+schema. This is native 2026-07-28 compatibility, not released-version
+compat.go support; remove it only after the upstream 2026+ schema drops it. |  |
+| `elicitation` | `ElicitationCapability` | Elicitation is present if the client supports server-initiated user elicitation. |  |
+| `extensions` | `Extensions` | Extensions contains optional MCP extensions supported by the client. |  |
+
+### OpenAIUserLocation
+
+OpenAIUserLocation contains optional client location hints. Only the device's
+IANA timezone is used; these untrusted hints must not influence authorization.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `timezone` | `string` | Timezone is the caller device's IANA timezone, such as America/Toronto. |  |

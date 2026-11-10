@@ -3,6 +3,7 @@
 package mcp
 
 import (
+	_ "embed"
 	"encoding/json"
 	"reflect"
 
@@ -10,6 +11,15 @@ import (
 
 	"github.com/maruel/apisdkgen/apispec"
 )
+
+//go:embed sdktypes/RequestMeta.ts
+var requestMetaTS string
+
+//go:embed sdktypes/RequestMeta.kt
+var requestMetaKotlin string
+
+//go:embed sdktypes/RequestMeta.swift
+var requestMetaSwift string
 
 // SDKAPI is the SDK generation specification for the MCP API.
 //
@@ -50,8 +60,13 @@ var SDKAPI = apispec.Config[string]{
 	APIDocTitle:        "MCP API Reference",
 	APIDocIntro:        "JSON-RPC MCP endpoint client. Construct clients with the MCP endpoint URL advertised by the service. Requests must include MCP transport headers such as `Mcp-Protocol-Version` and `Mcp-Method`; method-specific requests may also require `Mcp-Name` and `Mcp-Param-*` headers.",
 	ErrorDoc:           "MCP errors are JSON-RPC error objects in `JSONRPCResponse.error`. Transport-layer validation failures may use non-2xx HTTP statuses; method-level JSON-RPC errors can still use HTTP 200. Tool execution errors preserve their human-readable content and expose an application semantic code in `result._meta[\"com.fghbuild.gomode/errorCode\"]` when one is available.",
-	MCPProtocolVersion: ProtocolVersion,
 	SpecialTypes: []apispec.SpecialType{
+		{
+			Type: reflect.TypeFor[RequestMeta](), TSType: "RequestMeta", KTType: "RequestMeta", SwiftType: "RequestMeta", DocType: "RequestMeta",
+			TSSource: requestMetaTS, KotlinSource: requestMetaKotlin, SwiftSource: requestMetaSwift,
+			Dependencies:  []reflect.Type{reflect.TypeFor[Implementation](), reflect.TypeFor[ClientCapabilities](), reflect.TypeFor[OpenAIUserLocation]()},
+			KotlinSymbols: []string{"RequestMetaSerializer"}, SwiftSymbols: []string{"RequestMetaKey"},
+		},
 		{
 			Type:       reflect.TypeFor[json.RawMessage](),
 			TSType:     "unknown /* json.RawMessage */",

@@ -4,6 +4,27 @@ import Foundation
 /// ISO 8601 timestamp string (e.g. "2026-04-13T12:00:00Z").
 public typealias ISOTimestamp = String
 
+/// A JSON field that may be omitted, null, or a value.
+public enum JSONPresence<Value: Codable>: Codable {
+    case missing
+    case null
+    case value(Value)
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self = container.decodeNil() ? .null : .value(try container.decode(Value.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .missing: throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "Missing fields must be omitted"))
+        case .null: try container.encodeNil()
+        case .value(let value): try container.encode(value)
+        }
+    }
+}
+
 /// A Codable representation of an arbitrary JSON value.
 public enum JSONValue: Codable, Equatable {
     case string(String)
@@ -58,6 +79,15 @@ public struct ToolGroup: Codable {
     /// SkillURL points to the SKILL.md file whose frontmatter defines activation,
     /// instructions, and the MCP tool subset for this skill.
     public let skillUrl: String?
+
+    public init(name: String, description: String? = nil, endpoint: String, protocolVersion: String, authRequired: Bool, skillUrl: String? = nil) {
+        self.name = name
+        self.description = description
+        self.endpoint = endpoint
+        self.protocolVersion = protocolVersion
+        self.authRequired = authRequired
+        self.skillUrl = skillUrl
+    }
 }
 
 /// VoiceGatewaySettings describes the preferred voice gateway for this service.
@@ -66,6 +96,13 @@ public struct VoiceGatewaySettings: Codable {
     public let url: String?
     public let authRequired: Bool?
     public let tokenEndpoint: String?
+
+    public init(required: Bool, url: String? = nil, authRequired: Bool? = nil, tokenEndpoint: String? = nil) {
+        self.required = required
+        self.url = url
+        self.authRequired = authRequired
+        self.tokenEndpoint = tokenEndpoint
+    }
 }
 
 /// WebShellSettings describes the hosted frontend's native-shell contract.
@@ -74,8 +111,34 @@ public struct WebShellSettings: Codable {
     /// shell must reject manifests whose bridge version differs from the bridge
     /// version implemented by that shell.
     public let bridgeVersion: Int
-    public let toolGroups: [ToolGroup]
+    public let toolGroups: [ToolGroup]?
     public let voiceGateway: VoiceGatewaySettings
+
+    private enum CodingKeys: String, CodingKey {
+        case bridgeVersion
+        case toolGroups
+        case voiceGateway
+    }
+
+    public init(bridgeVersion: Int, toolGroups: [ToolGroup]?, voiceGateway: VoiceGatewaySettings) {
+        self.bridgeVersion = bridgeVersion
+        self.toolGroups = toolGroups
+        self.voiceGateway = voiceGateway
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.bridgeVersion = try c.decode(Int.self, forKey: .bridgeVersion)
+        self.toolGroups = try c.decode([ToolGroup]?.self, forKey: .toolGroups)
+        self.voiceGateway = try c.decode(VoiceGatewaySettings.self, forKey: .voiceGateway)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.bridgeVersion, forKey: .bridgeVersion)
+        try c.encode(self.toolGroups, forKey: .toolGroups)
+        try c.encode(self.voiceGateway, forKey: .voiceGateway)
+    }
 }
 
 /// Settings is the service compatibility document consumed by Go Mode clients.
@@ -88,24 +151,45 @@ public struct Settings: Codable {
     /// manifests with an API version it does not explicitly support.
     public let apiVersion: Int
     public let webShell: WebShellSettings
+
+    public init(service: String, serviceVersion: String? = nil, apiVersion: Int, webShell: WebShellSettings) {
+        self.service = service
+        self.serviceVersion = serviceVersion
+        self.apiVersion = apiVersion
+        self.webShell = webShell
+    }
 }
 
 /// ErrorBody describes a Go Mode API error.
 public struct ErrorBody: Codable {
     public let code: String
     public let message: String
+
+    public init(code: String, message: String) {
+        self.code = code
+        self.message = message
+    }
 }
 
 /// ErrorResponse is the standard JSON error envelope for Go Mode SDK clients.
 public struct ErrorResponse: Codable {
     public let error: ErrorBody
     public let details: [String: JSONValue]?
+
+    public init(error: ErrorBody, details: [String: JSONValue]? = nil) {
+        self.error = error
+        self.details = details
+    }
 }
 
 /// LocationWiFi matches any one of the configured Wi-Fi SSIDs.
 public struct LocationWiFi: Codable {
     /// SSIDs are Wi-Fi network names that can activate the skill.
     public let ssids: [String]?
+
+    public init(ssids: [String]? = nil) {
+        self.ssids = ssids
+    }
 }
 
 /// PhysicalPosition matches a named latitude and longitude within RadiusMeters.
@@ -116,12 +200,24 @@ public struct PhysicalPosition: Codable {
     public let longitude: Double
     /// RadiusMeters is the activation radius around the latitude and longitude.
     public let radiusMeters: Double
+
+    public init(name: String, latitude: Double, longitude: Double, radiusMeters: Double) {
+        self.name = name
+        self.latitude = latitude
+        self.longitude = longitude
+        self.radiusMeters = radiusMeters
+    }
 }
 
 /// LocationActivation groups one location-based activation signal for a skill.
 public struct LocationActivation: Codable {
     public let wifi: LocationWiFi?
     public let physicalPosition: PhysicalPosition?
+
+    public init(wifi: LocationWiFi? = nil, physicalPosition: PhysicalPosition? = nil) {
+        self.wifi = wifi
+        self.physicalPosition = physicalPosition
+    }
 }
 
 /// SkillActivation carries hints the shell matches against current context to
@@ -131,6 +227,10 @@ public struct SkillActivation: Codable {
     /// Locations are local physical-location and Wi-Fi hints that make this skill
     /// an activation candidate.
     public let locations: [LocationActivation]?
+
+    public init(locations: [LocationActivation]? = nil) {
+        self.locations = locations
+    }
 }
 
 /// SkillMCPServer declares which tools from an MCP endpoint belong to one skill.
@@ -141,13 +241,69 @@ public struct SkillMCPServer: Codable {
     public let protocolVersion: String
     public let authRequired: Bool
     /// Tools is the explicit allowlist of MCP tool names activated by the skill.
-    public let tools: [String]
+    public let tools: [String]?
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case endpoint
+        case protocolVersion
+        case authRequired
+        case tools
+    }
+
+    public init(name: String, endpoint: String, protocolVersion: String, authRequired: Bool, tools: [String]?) {
+        self.name = name
+        self.endpoint = endpoint
+        self.protocolVersion = protocolVersion
+        self.authRequired = authRequired
+        self.tools = tools
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.endpoint = try c.decode(String.self, forKey: .endpoint)
+        self.protocolVersion = try c.decode(String.self, forKey: .protocolVersion)
+        self.authRequired = try c.decode(Bool.self, forKey: .authRequired)
+        self.tools = try c.decode([String]?.self, forKey: .tools)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.name, forKey: .name)
+        try c.encode(self.endpoint, forKey: .endpoint)
+        try c.encode(self.protocolVersion, forKey: .protocolVersion)
+        try c.encode(self.authRequired, forKey: .authRequired)
+        try c.encode(self.tools, forKey: .tools)
+    }
 }
 
 /// SkillGoMode contains Go Mode-specific SKILL.md frontmatter fields.
 public struct SkillGoMode: Codable {
     public let activation: SkillActivation?
-    public let mcpServers: [SkillMCPServer]
+    public let mcpServers: [SkillMCPServer]?
+
+    private enum CodingKeys: String, CodingKey {
+        case activation
+        case mcpServers
+    }
+
+    public init(activation: SkillActivation? = nil, mcpServers: [SkillMCPServer]?) {
+        self.activation = activation
+        self.mcpServers = mcpServers
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.activation = try c.decodeIfPresent(SkillActivation.self, forKey: .activation)
+        self.mcpServers = try c.decode([SkillMCPServer]?.self, forKey: .mcpServers)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encodeIfPresent(self.activation, forKey: .activation)
+        try c.encode(self.mcpServers, forKey: .mcpServers)
+    }
 }
 
 /// SkillFrontmatter is the YAML frontmatter schema for a Go Mode SKILL.md file.
@@ -159,4 +315,10 @@ public struct SkillFrontmatter: Codable {
     public let name: String
     public let description: String
     public let gomode: SkillGoMode
+
+    public init(name: String, description: String, gomode: SkillGoMode) {
+        self.name = name
+        self.description = description
+        self.gomode = gomode
+    }
 }

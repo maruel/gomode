@@ -204,7 +204,7 @@ class GatewayAuthorizationTest {
                                 webShell =
                                     settings.webShell.copy(
                                         toolGroups =
-                                            settings.webShell.toolGroups.map {
+                                            settings.webShell.toolGroups.orEmpty().map {
                                                 it.copy(endpoint = "/api/other")
                                             },
                                     ),

@@ -69,7 +69,7 @@ WebShellSettings describes the hosted frontend's native-shell contract.
 | `bridgeVersion` | `int` | BridgeVersion is the hosted-frontend/native bridge contract version. A
 shell must reject manifests whose bridge version differs from the bridge
 version implemented by that shell. | yes |
-| `toolGroups` | `ToolGroup[]` |  | yes |
+| `toolGroups` | `ToolGroup[] \| null` |  | yes |
 | `voiceGateway` | `VoiceGatewaySettings` |  | yes |
 
 ### Settings
@@ -152,7 +152,7 @@ SkillMCPServer declares which tools from an MCP endpoint belong to one skill.
 | `endpoint` | `string` |  | yes |
 | `protocolVersion` | `string` | ProtocolVersion is the MCP protocol version spoken by this endpoint. | yes |
 | `authRequired` | `boolean` |  | yes |
-| `tools` | `string[]` | Tools is the explicit allowlist of MCP tool names activated by the skill. | yes |
+| `tools` | `string[] \| null` | Tools is the explicit allowlist of MCP tool names activated by the skill. | yes |
 
 ### SkillGoMode
 
@@ -161,7 +161,7 @@ SkillGoMode contains Go Mode-specific SKILL.md frontmatter fields.
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
 | `activation` | `SkillActivation` |  |  |
-| `mcpServers` | `SkillMCPServer[]` |  | yes |
+| `mcpServers` | `SkillMCPServer[] \| null` |  | yes |
 
 ### SkillFrontmatter
 

@@ -3,6 +3,7 @@ package com.fghbuild.gomode.service
 
 import com.fghbuild.gomode.sdk.v1.Settings
 import com.fghbuild.mcp.sdk.v1.CacheScope
+import com.fghbuild.mcp.sdk.v1.JSONPresence
 import com.fghbuild.mcp.sdk.v1.JSONRPCNotification
 import com.fghbuild.mcp.sdk.v1.NotificationMethod
 import com.fghbuild.mcp.sdk.v1.ResourceContent
@@ -105,7 +106,9 @@ class ServiceMonitor(
     @Suppress("TooGenericExceptionCaught") // Native monitoring must retry transient service and network failures.
     private suspend fun run(serviceURL: String, settings: Settings) {
         val group =
-            settings.webShell.toolGroups.firstOrNull() ?: run {
+            settings.webShell.toolGroups
+                .orEmpty()
+                .firstOrNull() ?: run {
                 _state.value = ServiceMonitorState()
                 return
             }
@@ -157,7 +160,7 @@ class ServiceMonitor(
             val initialState = notification.initialStatePayload()
             when {
                 initialState != null -> {
-                    initial.recordInitialState(initialState.uri, initialState.contents)
+                    initial.recordInitialState(initialState.uri, initialState.contents.orEmpty())
                     if (plan.resourceURIs.all { it in initial.deliveredContents }) {
                         applyDeliveredSnapshot(plan, initial.deliveredContents)
                     }
@@ -272,7 +275,7 @@ private fun readServiceNotifications(
     val uri = plan.notificationResourceURI ?: return emptyList()
     val readResult = readResults[uri] ?: throw IllegalArgumentException("resource read result is missing $uri")
     val content =
-        readResult.contents.firstOrNull { it.uri == uri }
+        readResult.contents.orEmpty().firstOrNull { it.uri == uri }
             ?: throw IllegalArgumentException("resource read result is missing $uri")
     val text = content.text ?: throw IllegalArgumentException("resource $uri is missing text content")
     val events =
@@ -374,11 +377,11 @@ private class InitialStateWindow {
 }
 
 private fun JSONRPCNotification.resourceUri(): String? =
-    (params as? JsonObject)?.get("uri")?.jsonPrimitive?.contentOrNull
+    ((params as? JSONPresence.Value)?.value as? JsonObject)?.get("uri")?.jsonPrimitive?.contentOrNull
 
 private fun JSONRPCNotification.initialStatePayload(): SubscriptionsInitialStateParams? {
     if (method != NotificationMethod.SubscriptionsInitialState) return null
-    val params = this.params as? JsonObject ?: return null
+    val params = (this.params as? JSONPresence.Value)?.value as? JsonObject ?: return null
     return try {
         mcpJson.decodeFromJsonElement(params)
     } catch (_: SerializationException) {

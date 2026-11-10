@@ -97,7 +97,7 @@ internal data class GatewayVoiceChoices(
     fun compatible(settings: SettingsState): List<VoiceChoice> = compatible(voiceTransport(settings))
 
     private fun compatible(transport: VoiceTransport): List<VoiceChoice> =
-        catalog.choices.filter { transport in it.transports }
+        catalog.choices.orEmpty().filter { transport in it.transports.orEmpty() }
 
     fun speakingVoice(
         settings: SettingsState,
@@ -134,7 +134,10 @@ internal data class GatewayVoiceChoices(
             throw VoiceSetupException("Gateway voice choice changed. Start a new voice session.")
         }
         val choice =
-            catalog.choices.firstOrNull { it.id == pinned.choiceID && voiceTransport(settings) in it.transports }
+            catalog.choices.orEmpty().firstOrNull {
+                it.id == pinned.choiceID &&
+                    voiceTransport(settings) in it.transports.orEmpty()
+            }
                 ?: throw VoiceSetupException("Session voice choice is unavailable. Start a new voice session.")
         val voices = if (settings.voiceMode == VoiceMode.CLOUD) speakingVoices(choice) else emptyList()
         if (pinned.voiceName.isNotEmpty() && pinned.voiceName !in voices) {
@@ -147,11 +150,15 @@ internal data class GatewayVoiceChoices(
         requireLoadedVoiceSettings(settings)
         val transport = voiceTransport(settings)
         val saved = settings.voiceChoices[gatewayURL]?.get(transport.value)
-        if (saved != null && catalog.choices.none { it.id == saved }) {
+        if (saved != null && catalog.choices.orEmpty().none { it.id == saved }) {
             throw VoiceSetupException("Saved voice choice is unavailable. Select a voice choice in Settings.")
         }
         val compatible = compatible(transport)
-        val advertised = catalog.defaults.firstOrNull { it.transport == transport }?.id
+        val advertised =
+            catalog.defaults
+                .orEmpty()
+                .firstOrNull { it.transport == transport }
+                ?.id
         return compatible.firstOrNull { it.id == saved }
             ?: compatible.firstOrNull { it.id == advertised }
             ?: compatible.firstOrNull()
@@ -183,18 +190,23 @@ internal suspend fun discoverVoiceChoices(
     val catalog = ApiClient(gatewayURL, httpClient = voiceGatewayHTTPClient).voiceChoices(headers)
     // Each family advertises one default that must name a choice offering it.
     val invalidDefaults =
-        catalog.defaults.any { advertised ->
+        catalog.defaults.orEmpty().any { advertised ->
             advertised.id.isBlank() ||
-                catalog.choices.none { advertised.transport in it.transports && it.id == advertised.id }
+                catalog.choices.orEmpty().none {
+                    advertised.transport in it.transports.orEmpty() &&
+                        it.id == advertised.id
+                }
         } || catalog.defaults
+            .orEmpty()
             .map { it.transport }
             .toSet()
-            .size != catalog.defaults.size
-    if (catalog.choices.any { it.id.isBlank() || it.label.isBlank() } ||
+            .size != catalog.defaults.orEmpty().size
+    if (catalog.choices.orEmpty().any { it.id.isBlank() || it.label.isBlank() } ||
         catalog.choices
+            .orEmpty()
             .map { it.id }
             .toSet()
-            .size != catalog.choices.size ||
+            .size != catalog.choices.orEmpty().size ||
         invalidDefaults
     ) {
         throw VoiceSetupException("Gateway returned invalid voice choices")

@@ -2,11 +2,14 @@
 package com.fghbuild.gomode.voice
 
 import com.fghbuild.mcp.sdk.v1.NotificationMethod
+import com.fghbuild.mcp.sdk.v1.RequestMeta
 import com.fghbuild.mcp.sdk.v1.SubscriptionFilter
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -23,6 +26,29 @@ import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
 class McpClientTest {
+    @Test
+    fun `request metadata preserves extensions and validates known fields`() {
+        val input =
+            """{"io.modelcontextprotocol/protocolVersion":"2026-07-28",""" +
+                """"io.modelcontextprotocol/clientInfo":{"name":"client","version":"1"},""" +
+                """"io.modelcontextprotocol/clientCapabilities":{},"openai/locale":"fr-CA",""" +
+                """"progressToken":null,"example/future":{"nested":[true,42]}}"""
+        val json = Json { ignoreUnknownKeys = true }
+        val decoded = json.decodeFromString<RequestMeta>(input)
+        assertEquals("fr-CA", decoded.locale)
+        assertEquals(Json.parseToJsonElement("""{"nested":[true,42]}"""), decoded.extra["example/future"])
+        assertEquals(json.parseToJsonElement(input), json.parseToJsonElement(json.encodeToString(decoded)))
+        for (invalid in listOf("42", "true", "null", "{}", "[]")) {
+            val bad = input.replace("\"fr-CA\"", invalid)
+            try {
+                json.decodeFromString<RequestMeta>(bad)
+                throw AssertionError("accepted locale $invalid")
+            } catch (_: SerializationException) {
+                // Each malformed known field must be rejected.
+            }
+        }
+    }
+
     @Test
     fun `tool results retain opaque metadata outside normalized content`() =
         runTest {
@@ -305,7 +331,7 @@ class McpClientTest {
 
                 val result = client.readResource("service://items")
 
-                assertEquals("[]", result.contents.single().text)
+                assertEquals("[]", requireNotNull(result.contents).single().text)
                 val request = server.takeRequest()
                 val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
                 assertEquals("resources/read", request.getHeader("Mcp-Method"))

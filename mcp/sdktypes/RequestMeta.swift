@@ -1,0 +1,72 @@
+// MCP request metadata preserves typed fields and arbitrary extension keys.
+import Foundation
+
+private struct RequestMetaKey: CodingKey {
+    let stringValue: String
+    var intValue: Int? { nil }
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
+}
+
+public struct RequestMeta: Codable {
+    public var protocolVersion: String
+    public var clientInfo: Implementation
+    public var clientCapabilities: ClientCapabilities
+    public var progressToken: JSONValue?
+    public var deprecatedLogLevel: String?
+    public var locale: String?
+    public var organization: String?
+    public var session: String?
+    public var subject: String?
+    public var userAgent: String?
+    public var userLocation: OpenAIUserLocation?
+    public var extra: [String: JSONValue]
+
+    private static let known: Set<String> = [
+        "io.modelcontextprotocol/protocolVersion", "io.modelcontextprotocol/clientInfo",
+        "io.modelcontextprotocol/clientCapabilities", "progressToken", "io.modelcontextprotocol/logLevel",
+        "openai/locale", "openai/organization", "openai/session", "openai/subject", "openai/userAgent", "openai/userLocation",
+    ]
+
+    public init(protocolVersion: String, clientInfo: Implementation, clientCapabilities: ClientCapabilities,
+                progressToken: JSONValue? = nil, deprecatedLogLevel: String? = nil, locale: String? = nil,
+                organization: String? = nil, session: String? = nil, subject: String? = nil,
+                userAgent: String? = nil, userLocation: OpenAIUserLocation? = nil, extra: [String: JSONValue] = [:]) {
+        self.protocolVersion = protocolVersion; self.clientInfo = clientInfo; self.clientCapabilities = clientCapabilities
+        self.progressToken = progressToken; self.deprecatedLogLevel = deprecatedLogLevel; self.locale = locale
+        self.organization = organization; self.session = session; self.subject = subject
+        self.userAgent = userAgent; self.userLocation = userLocation; self.extra = extra
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: RequestMetaKey.self)
+        func key(_ value: String) -> RequestMetaKey { RequestMetaKey(stringValue: value)! }
+        protocolVersion = try c.decode(String.self, forKey: key("io.modelcontextprotocol/protocolVersion"))
+        clientInfo = try c.decode(Implementation.self, forKey: key("io.modelcontextprotocol/clientInfo"))
+        clientCapabilities = try c.decode(ClientCapabilities.self, forKey: key("io.modelcontextprotocol/clientCapabilities"))
+        progressToken = c.contains(key("progressToken")) ? try c.decode(JSONValue.self, forKey: key("progressToken")) : nil
+        deprecatedLogLevel = try c.decodeIfPresent(String.self, forKey: key("io.modelcontextprotocol/logLevel"))
+        locale = try c.decodeIfPresent(String.self, forKey: key("openai/locale"))
+        organization = try c.decodeIfPresent(String.self, forKey: key("openai/organization"))
+        session = try c.decodeIfPresent(String.self, forKey: key("openai/session"))
+        subject = try c.decodeIfPresent(String.self, forKey: key("openai/subject"))
+        userAgent = try c.decodeIfPresent(String.self, forKey: key("openai/userAgent"))
+        userLocation = try c.decodeIfPresent(OpenAIUserLocation.self, forKey: key("openai/userLocation"))
+        extra = [:]
+        for k in c.allKeys where !Self.known.contains(k.stringValue) { extra[k.stringValue] = try c.decode(JSONValue.self, forKey: k) }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: RequestMetaKey.self)
+        func key(_ value: String) -> RequestMetaKey { RequestMetaKey(stringValue: value)! }
+        for (name, value) in extra where !Self.known.contains(name) { try c.encode(value, forKey: key(name)) }
+        try c.encode(protocolVersion, forKey: key("io.modelcontextprotocol/protocolVersion"))
+        try c.encode(clientInfo, forKey: key("io.modelcontextprotocol/clientInfo"))
+        try c.encode(clientCapabilities, forKey: key("io.modelcontextprotocol/clientCapabilities"))
+        try c.encodeIfPresent(progressToken, forKey: key("progressToken"))
+        for (name, value) in [("io.modelcontextprotocol/logLevel", deprecatedLogLevel), ("openai/locale", locale), ("openai/organization", organization), ("openai/session", session), ("openai/subject", subject), ("openai/userAgent", userAgent)] {
+            if let value, !value.isEmpty { try c.encode(value, forKey: key(name)) }
+        }
+        if let location = userLocation, let timezone = location.timezone, !timezone.isEmpty { try c.encode(location, forKey: key("openai/userLocation")) }
+    }
+}

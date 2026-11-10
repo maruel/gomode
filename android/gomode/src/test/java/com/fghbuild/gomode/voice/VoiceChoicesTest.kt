@@ -181,7 +181,7 @@ class VoiceChoicesTest {
         assertThrows(VoiceSetupException::class.java) {
             original.copy(gatewayURL = "https://other.example").resolve(settings, pinned)
         }
-        val oldChoice = original.catalog.choices.single()
+        val oldChoice = requireNotNull(original.catalog.choices).single()
         val alternative = oldChoice.copy(id = "alternative")
         val updated =
             original.copy(

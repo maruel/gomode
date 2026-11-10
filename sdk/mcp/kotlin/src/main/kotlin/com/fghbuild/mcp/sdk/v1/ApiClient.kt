@@ -13,6 +13,10 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.serializer
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.nullable
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -43,9 +47,8 @@ class ApiClient(
     private val baseURL: String = baseURL.trimEnd('/')
     private val json = Json { ignoreUnknownKeys = true }
     private val jsonMediaType = "application/json".toMediaType()
-    private val mcpID = java.util.concurrent.atomic.AtomicInteger(0)
 
-    private suspend inline fun <reified T> request(method: String, path: String, body: String? = null, headers: Map<String, String> = emptyMap()): T {
+    private suspend inline fun <reified T> request(method: String, path: String, body: String? = null, headers: Map<String, String> = emptyMap(), crossinline decode: (String) -> T = { json.decodeFromString<T>(it) }): T {
         val url = "$baseURL$path"
         val needsBody = method in listOf("POST", "PUT", "PATCH")
         val requestBody = body?.toRequestBody(jsonMediaType)
@@ -80,7 +83,7 @@ class ApiClient(
                                 }
                                 throw failure
                             }
-                            json.decodeFromString<T>(responseBody)
+                            decode(responseBody)
                         }
                     } catch (e: Exception) {
                         cont.resumeWithException(e)
@@ -96,70 +99,19 @@ class ApiClient(
     /** Sends a raw MCP JSON-RPC request to the client base URL. The caller supplies required MCP transport headers. */
     suspend fun mcp(req: JSONRPCRequest, headers: Map<String, String> = emptyMap()): JSONRPCResponse = request("POST", "", json.encodeToString(req), headers = headers)
 
-    /** Discovers server metadata, capabilities, and instructions. */
-    suspend fun serverDiscover(headers: Map<String, String> = emptyMap()): ServerDiscoverResult {
-        val response = mcp(
-            req = JSONRPCRequest(
-                jsonrpc = "2.0",
-                id = kotlinx.serialization.json.JsonPrimitive(mcpID.incrementAndGet()),
-                method = Method.ServerDiscover,
-                params = mcpMetaParams(),
-            ),
-            headers = mcpHeaders(Method.ServerDiscover, headers),
-        )
-        response.error?.let { error(it.message) }
-        val result = response.result ?: error("Missing result in MCP response")
-        return json.decodeFromString(ServerDiscoverResult.serializer(), result.toString())
-    }
-
-    /** Returns server instructions, or an empty string when none are advertised. */
-    suspend fun serverInstructions(headers: Map<String, String> = emptyMap()): String =
-        serverDiscover(headers).instructions.orEmpty()
-
-    private fun mcpHeaders(method: Method, headers: Map<String, String>): Map<String, String> = buildMap {
-        put("Mcp-Protocol-Version", "2026-07-28")
-        put("Mcp-Method", method.value)
-        putAll(headers)
-    }
-
-    private fun mcpMetaParams(): kotlinx.serialization.json.JsonObject {
-        val clientInfo = kotlinx.serialization.json.JsonObject(mapOf(
-            "name" to kotlinx.serialization.json.JsonPrimitive("mcp-kotlin-sdk"),
-            "version" to kotlinx.serialization.json.JsonPrimitive("1.0.0"),
-        ))
-        val meta = kotlinx.serialization.json.JsonObject(mapOf(
-            "io.modelcontextprotocol/protocolVersion" to kotlinx.serialization.json.JsonPrimitive("2026-07-28"),
-            "io.modelcontextprotocol/clientInfo" to clientInfo,
-            "io.modelcontextprotocol/clientCapabilities" to kotlinx.serialization.json.JsonObject(emptyMap()),
-        ))
-        return kotlinx.serialization.json.JsonObject(mapOf("_meta" to meta))
-    }
-
-    /** Opens a POST-based MCP subscription stream. */
-    fun subscriptionsListen(
-        req: JSONRPCRequest,
-        headers: Map<String, String> = emptyMap(),
-    ): Flow<JSONRPCNotification> = sseFlow(
-        method = "POST",
-        path = "",
-        body = json.encodeToString(req),
-        headers = headers,
-    )
-
     // SSE endpoints
 
-    private inline fun <reified T> sseFlow(
-        path: String,
-        method: String = "GET",
-        body: String? = null,
-        headers: Map<String, String> = emptyMap(),
-    ): Flow<T> = callbackFlow {
+    private inline fun <reified T> sseFlow(path: String): Flow<T> = stream(path) { json.decodeFromString<T>(it) }
+
+    /** Opens a cold event stream, decoding each data frame with the supplied function. */
+    fun <T> stream(path: String, method: String = "GET", body: String? = null, headers: Map<String, String> = emptyMap(), decode: (String) -> T): Flow<T> = callbackFlow {
         val requestBody = body?.toRequestBody(jsonMediaType)
+            ?: if (method in listOf("PATCH", "POST", "PROPPATCH", "PUT", "REPORT")) "".toRequestBody(null) else null
         val request = Request.Builder()
             .url("$baseURL$path")
             .header("Accept", "text/event-stream")
             .apply {
-                if (requestBody != null) header("Content-Type", "application/json")
+                if (body != null) header("Content-Type", "application/json")
                 headers.forEach { (name, value) -> header(name, value) }
                 tokenProvider?.invoke()?.let { header("Authorization", "Bearer $it") }
             }
@@ -169,7 +121,7 @@ class ApiClient(
         val source = factory.newEventSource(request, object : EventSourceListener() {
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
                 try {
-                    val event = json.decodeFromString<T>(data)
+                    val event = decode(data)
                     // OkHttp invokes this on an IO callback thread; suspend reads until delivery.
                     trySendBlocking(event).getOrThrow()
                 } catch (e: Exception) {

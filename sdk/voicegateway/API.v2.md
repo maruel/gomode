@@ -228,7 +228,7 @@ VoiceChoice describes a selectable backend without exposing its credentials.
 |-------|------|-------------|----------|
 | `id` | `string` |  | yes |
 | `label` | `string` |  | yes |
-| `transports` | `VoiceTransport[]` |  | yes |
+| `transports` | `VoiceTransport[] \| null` |  | yes |
 | `voices` | `string[]` | Voices lists supported audio voice names. Omitted when the choice does not offer voice selection. |  |
 | `speechModes` | `SpeechConfig[]` | SpeechModes lists supported input/output ownership combinations.
 Missing metadata from older gateways means transport defaults only. |  |
@@ -261,8 +261,8 @@ offered family.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `choices` | `VoiceChoice[]` |  | yes |
-| `defaults` | `VoiceChoiceDefault[]` | Defaults holds one entry per offered transport, ordered by transport name. | yes |
+| `choices` | `VoiceChoice[] \| null` |  | yes |
+| `defaults` | `VoiceChoiceDefault[] \| null` | Defaults holds one entry per offered transport, ordered by transport name. | yes |
 | `recognitionModels` | `SpeechModel[]` | RecognitionModels lists gateway recognition stages in preference order. |  |
 | `synthesisModels` | `SpeechModel[]` | SynthesisModels lists gateway synthesis stages in preference order. |  |
 
@@ -429,7 +429,7 @@ ToolDeclaration is a provider-neutral service tool declaration.
 |-------|------|-------------|----------|
 | `name` | `string` | Name is the tool name the assistant uses in tool.call messages. | yes |
 | `description` | `string` | Description explains when and how the assistant should use the tool. | yes |
-| `parameters` | `JSONValue` | Parameters is a JSON Schema object describing the tool arguments. When
+| `parameters` | `JSONValue \| null` | Parameters is a JSON Schema object describing the tool arguments. When
 present, it must declare "type": "object". | yes |
 
 ### Context
@@ -449,7 +449,7 @@ SessionSetup is the client message that initializes a voice session.
 |-------|------|-------------|----------|
 | `kind` | `MessageKind` | Kind must be "session.setup". | yes |
 | `voice` | `VoiceConfig` | Voice contains the requested voice and language. | yes |
-| `tools` | `ToolDeclaration[]` | Tools declares the client-side tools the assistant may call. | yes |
+| `tools` | `ToolDeclaration[] \| null` | Tools declares the client-side tools the assistant may call. | yes |
 | `context` | `Context` | Context provides initial instructions or text context for the session. | yes |
 | `includeReasoning` | `boolean` | IncludeReasoning requests optional provider reasoning output for this session.
 It does not enable thinking or change reasoning effort. |  |
@@ -490,7 +490,7 @@ ToolResult is a client message that returns a tool execution result.
 | `kind` | `MessageKind` | Kind must be "tool.result". | yes |
 | `id` | `string` | ID matches the tool.call ID being answered. | yes |
 | `name` | `string` | Name is the tool name that produced the result. | yes |
-| `result` | `JSONValue` | Result is the JSON result returned to the assistant. | yes |
+| `result` | `JSONValue \| null` | Result is the JSON result returned to the assistant. | yes |
 
 ### TurnCancel
 
@@ -648,7 +648,7 @@ ToolCall is a gateway message that asks the client to execute a tool.
 | `kind` | `MessageKind` | Kind is "tool.call". | yes |
 | `id` | `string` | ID uniquely identifies this tool call for the matching tool.result. | yes |
 | `name` | `string` | Name is the requested tool name. | yes |
-| `args` | `JSONValue` | Args is the JSON argument object for the requested tool. | yes |
+| `args` | `JSONValue \| null` | Args is the JSON argument object for the requested tool. | yes |
 
 ### TurnStatus
 

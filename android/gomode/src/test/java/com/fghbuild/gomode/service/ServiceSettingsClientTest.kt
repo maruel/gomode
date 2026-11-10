@@ -29,10 +29,10 @@ class ServiceSettingsClientTest {
                 assertEquals("/.well-known/gomode.json", request.path)
                 assertEquals("example-coding-service", settings.service)
                 assertEquals(1, settings.apiVersion)
-                assertEquals(1, settings.webShell.toolGroups.size)
-                assertEquals("/api/service/v1/mcp", settings.webShell.toolGroups[0].endpoint)
-                assertEquals("2026-07-28", settings.webShell.toolGroups[0].protocolVersion)
-                assertTrue(settings.webShell.toolGroups[0].authRequired)
+                assertEquals(1, requireNotNull(settings.webShell.toolGroups).size)
+                assertEquals("/api/service/v1/mcp", requireNotNull(settings.webShell.toolGroups)[0].endpoint)
+                assertEquals("2026-07-28", requireNotNull(settings.webShell.toolGroups)[0].protocolVersion)
+                assertTrue(requireNotNull(settings.webShell.toolGroups)[0].authRequired)
                 assertEquals("/", settings.webShell.voiceGateway.url)
             } finally {
                 server.shutdown()
@@ -163,7 +163,7 @@ class ServiceSettingsClientTest {
         )
 
         val settings = settings()
-        val group = settings.webShell.toolGroups[0]
+        val group = requireNotNull(settings.webShell.toolGroups)[0]
         val badEndpoint =
             settings.copy(
                 webShell = settings.webShell.copy(toolGroups = listOf(group.copy(endpoint = "api/service/v1/mcp"))),

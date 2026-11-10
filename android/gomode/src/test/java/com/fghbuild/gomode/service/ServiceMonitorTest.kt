@@ -9,6 +9,7 @@ import com.fghbuild.gomode.voice.McpClient
 import com.fghbuild.mcp.sdk.v1.CacheScope
 import com.fghbuild.mcp.sdk.v1.Capabilities
 import com.fghbuild.mcp.sdk.v1.Implementation
+import com.fghbuild.mcp.sdk.v1.JSONPresence
 import com.fghbuild.mcp.sdk.v1.JSONRPCNotification
 import com.fghbuild.mcp.sdk.v1.NotificationMethod
 import com.fghbuild.mcp.sdk.v1.ResourceContent
@@ -875,7 +876,7 @@ class ServiceMonitorTest {
             JSONRPCNotification(
                 jsonrpc = "2.0",
                 method = NotificationMethod.ResourcesUpdated,
-                params = buildJsonObject { put("uri", uri) },
+                params = JSONPresence.Value(buildJsonObject { put("uri", uri) }),
             )
 
         fun resourceListChanged(): JSONRPCNotification =
@@ -892,10 +893,15 @@ class ServiceMonitorTest {
                 jsonrpc = "2.0",
                 method = NotificationMethod.SubscriptionsInitialState,
                 params =
-                    Json.encodeToJsonElement(
-                        SubscriptionsInitialStateParams(
-                            uri = uri,
-                            contents = listOf(ResourceContent(uri = uri, mimeType = "application/json", text = text)),
+                    JSONPresence.Value(
+                        Json.encodeToJsonElement(
+                            SubscriptionsInitialStateParams(
+                                uri = uri,
+                                contents =
+                                    listOf(
+                                        ResourceContent(uri = uri, mimeType = "application/json", text = text),
+                                    ),
+                            ),
                         ),
                     ),
             )

@@ -4,6 +4,27 @@ import Foundation
 /// ISO 8601 timestamp string (e.g. "2026-04-13T12:00:00Z").
 public typealias ISOTimestamp = String
 
+/// A JSON field that may be omitted, null, or a value.
+public enum JSONPresence<Value: Codable>: Codable {
+    case missing
+    case null
+    case value(Value)
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self = container.decodeNil() ? .null : .value(try container.decode(Value.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .missing: throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "Missing fields must be omitted"))
+        case .null: try container.encodeNil()
+        case .value(let value): try container.encode(value)
+        }
+    }
+}
+
 /// A Codable representation of an arbitrary JSON value.
 public enum JSONValue: Codable, Equatable {
     case string(String)
@@ -52,10 +73,10 @@ public struct AuthorizationServerMetadata: Codable {
     public let registration_endpoint: String
     public let revocation_endpoint: String?
     public let end_session_endpoint: String?
-    public let response_types_supported: [String]
-    public let grant_types_supported: [String]
-    public let code_challenge_methods_supported: [String]
-    public let token_endpoint_auth_methods_supported: [String]
+    public let response_types_supported: [String]?
+    public let grant_types_supported: [String]?
+    public let code_challenge_methods_supported: [String]?
+    public let token_endpoint_auth_methods_supported: [String]?
     public let introspection_endpoint_auth_methods_supported: [String]?
     public let revocation_endpoint_auth_methods_supported: [String]?
     public let scopes_supported: [String]?
@@ -64,6 +85,100 @@ public struct AuthorizationServerMetadata: Codable {
     public let pushed_authorization_request_endpoint: String?
     public let require_pushed_authorization_requests: Bool
     public let client_id_metadata_document_supported: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case issuer
+        case authorization_endpoint
+        case token_endpoint
+        case introspection_endpoint
+        case jwks_uri
+        case registration_endpoint
+        case revocation_endpoint
+        case end_session_endpoint
+        case response_types_supported
+        case grant_types_supported
+        case code_challenge_methods_supported
+        case token_endpoint_auth_methods_supported
+        case introspection_endpoint_auth_methods_supported
+        case revocation_endpoint_auth_methods_supported
+        case scopes_supported
+        case dpop_signing_alg_values_supported
+        case authorization_response_iss_parameter_supported
+        case pushed_authorization_request_endpoint
+        case require_pushed_authorization_requests
+        case client_id_metadata_document_supported
+    }
+
+    public init(issuer: String, authorization_endpoint: String, token_endpoint: String, introspection_endpoint: String? = nil, jwks_uri: String, registration_endpoint: String, revocation_endpoint: String? = nil, end_session_endpoint: String? = nil, response_types_supported: [String]?, grant_types_supported: [String]?, code_challenge_methods_supported: [String]?, token_endpoint_auth_methods_supported: [String]?, introspection_endpoint_auth_methods_supported: [String]? = nil, revocation_endpoint_auth_methods_supported: [String]? = nil, scopes_supported: [String]? = nil, dpop_signing_alg_values_supported: [String]? = nil, authorization_response_iss_parameter_supported: Bool, pushed_authorization_request_endpoint: String? = nil, require_pushed_authorization_requests: Bool, client_id_metadata_document_supported: Bool? = nil) {
+        self.issuer = issuer
+        self.authorization_endpoint = authorization_endpoint
+        self.token_endpoint = token_endpoint
+        self.introspection_endpoint = introspection_endpoint
+        self.jwks_uri = jwks_uri
+        self.registration_endpoint = registration_endpoint
+        self.revocation_endpoint = revocation_endpoint
+        self.end_session_endpoint = end_session_endpoint
+        self.response_types_supported = response_types_supported
+        self.grant_types_supported = grant_types_supported
+        self.code_challenge_methods_supported = code_challenge_methods_supported
+        self.token_endpoint_auth_methods_supported = token_endpoint_auth_methods_supported
+        self.introspection_endpoint_auth_methods_supported = introspection_endpoint_auth_methods_supported
+        self.revocation_endpoint_auth_methods_supported = revocation_endpoint_auth_methods_supported
+        self.scopes_supported = scopes_supported
+        self.dpop_signing_alg_values_supported = dpop_signing_alg_values_supported
+        self.authorization_response_iss_parameter_supported = authorization_response_iss_parameter_supported
+        self.pushed_authorization_request_endpoint = pushed_authorization_request_endpoint
+        self.require_pushed_authorization_requests = require_pushed_authorization_requests
+        self.client_id_metadata_document_supported = client_id_metadata_document_supported
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.issuer = try c.decode(String.self, forKey: .issuer)
+        self.authorization_endpoint = try c.decode(String.self, forKey: .authorization_endpoint)
+        self.token_endpoint = try c.decode(String.self, forKey: .token_endpoint)
+        self.introspection_endpoint = try c.decodeIfPresent(String.self, forKey: .introspection_endpoint)
+        self.jwks_uri = try c.decode(String.self, forKey: .jwks_uri)
+        self.registration_endpoint = try c.decode(String.self, forKey: .registration_endpoint)
+        self.revocation_endpoint = try c.decodeIfPresent(String.self, forKey: .revocation_endpoint)
+        self.end_session_endpoint = try c.decodeIfPresent(String.self, forKey: .end_session_endpoint)
+        self.response_types_supported = try c.decode([String]?.self, forKey: .response_types_supported)
+        self.grant_types_supported = try c.decode([String]?.self, forKey: .grant_types_supported)
+        self.code_challenge_methods_supported = try c.decode([String]?.self, forKey: .code_challenge_methods_supported)
+        self.token_endpoint_auth_methods_supported = try c.decode([String]?.self, forKey: .token_endpoint_auth_methods_supported)
+        self.introspection_endpoint_auth_methods_supported = try c.decodeIfPresent([String].self, forKey: .introspection_endpoint_auth_methods_supported)
+        self.revocation_endpoint_auth_methods_supported = try c.decodeIfPresent([String].self, forKey: .revocation_endpoint_auth_methods_supported)
+        self.scopes_supported = try c.decodeIfPresent([String].self, forKey: .scopes_supported)
+        self.dpop_signing_alg_values_supported = try c.decodeIfPresent([String].self, forKey: .dpop_signing_alg_values_supported)
+        self.authorization_response_iss_parameter_supported = try c.decode(Bool.self, forKey: .authorization_response_iss_parameter_supported)
+        self.pushed_authorization_request_endpoint = try c.decodeIfPresent(String.self, forKey: .pushed_authorization_request_endpoint)
+        self.require_pushed_authorization_requests = try c.decode(Bool.self, forKey: .require_pushed_authorization_requests)
+        self.client_id_metadata_document_supported = try c.decodeIfPresent(Bool.self, forKey: .client_id_metadata_document_supported)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.issuer, forKey: .issuer)
+        try c.encode(self.authorization_endpoint, forKey: .authorization_endpoint)
+        try c.encode(self.token_endpoint, forKey: .token_endpoint)
+        try c.encodeIfPresent(self.introspection_endpoint, forKey: .introspection_endpoint)
+        try c.encode(self.jwks_uri, forKey: .jwks_uri)
+        try c.encode(self.registration_endpoint, forKey: .registration_endpoint)
+        try c.encodeIfPresent(self.revocation_endpoint, forKey: .revocation_endpoint)
+        try c.encodeIfPresent(self.end_session_endpoint, forKey: .end_session_endpoint)
+        try c.encode(self.response_types_supported, forKey: .response_types_supported)
+        try c.encode(self.grant_types_supported, forKey: .grant_types_supported)
+        try c.encode(self.code_challenge_methods_supported, forKey: .code_challenge_methods_supported)
+        try c.encode(self.token_endpoint_auth_methods_supported, forKey: .token_endpoint_auth_methods_supported)
+        try c.encodeIfPresent(self.introspection_endpoint_auth_methods_supported, forKey: .introspection_endpoint_auth_methods_supported)
+        try c.encodeIfPresent(self.revocation_endpoint_auth_methods_supported, forKey: .revocation_endpoint_auth_methods_supported)
+        try c.encodeIfPresent(self.scopes_supported, forKey: .scopes_supported)
+        try c.encodeIfPresent(self.dpop_signing_alg_values_supported, forKey: .dpop_signing_alg_values_supported)
+        try c.encode(self.authorization_response_iss_parameter_supported, forKey: .authorization_response_iss_parameter_supported)
+        try c.encodeIfPresent(self.pushed_authorization_request_endpoint, forKey: .pushed_authorization_request_endpoint)
+        try c.encode(self.require_pushed_authorization_requests, forKey: .require_pushed_authorization_requests)
+        try c.encodeIfPresent(self.client_id_metadata_document_supported, forKey: .client_id_metadata_document_supported)
+    }
 }
 
 // OAuth 2.0 Protected Resource Metadata (RFC 9728)
@@ -71,9 +186,39 @@ public struct AuthorizationServerMetadata: Codable {
 /// ProtectedResourceMetadata is OAuth 2.0 Protected Resource Metadata.
 public struct ProtectedResourceMetadata: Codable {
     public let resource: String
-    public let authorization_servers: [String]
+    public let authorization_servers: [String]?
     public let scopes_supported: [String]?
     public let resource_documentation: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case resource
+        case authorization_servers
+        case scopes_supported
+        case resource_documentation
+    }
+
+    public init(resource: String, authorization_servers: [String]?, scopes_supported: [String]? = nil, resource_documentation: String? = nil) {
+        self.resource = resource
+        self.authorization_servers = authorization_servers
+        self.scopes_supported = scopes_supported
+        self.resource_documentation = resource_documentation
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.resource = try c.decode(String.self, forKey: .resource)
+        self.authorization_servers = try c.decode([String]?.self, forKey: .authorization_servers)
+        self.scopes_supported = try c.decodeIfPresent([String].self, forKey: .scopes_supported)
+        self.resource_documentation = try c.decodeIfPresent(String.self, forKey: .resource_documentation)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.resource, forKey: .resource)
+        try c.encode(self.authorization_servers, forKey: .authorization_servers)
+        try c.encodeIfPresent(self.scopes_supported, forKey: .scopes_supported)
+        try c.encodeIfPresent(self.resource_documentation, forKey: .resource_documentation)
+    }
 }
 
 // JSON Web Key (RFC 7517)
@@ -91,13 +236,44 @@ public struct JWK: Codable {
     public let x: String?
     public let y: String?
     public let key_ops: [String]?
+
+    public init(kty: String, use: String? = nil, alg: String? = nil, kid: String? = nil, n: String? = nil, e: String? = nil, crv: String? = nil, x: String? = nil, y: String? = nil, key_ops: [String]? = nil) {
+        self.kty = kty
+        self.use = use
+        self.alg = alg
+        self.kid = kid
+        self.n = n
+        self.e = e
+        self.crv = crv
+        self.x = x
+        self.y = y
+        self.key_ops = key_ops
+    }
 }
 
 // JSON Web Key Set (RFC 7517)
 
 /// JWKSet is a JSON Web Key Set response.
 public struct JWKSet: Codable {
-    public let keys: [JWK]
+    public let keys: [JWK]?
+
+    private enum CodingKeys: String, CodingKey {
+        case keys
+    }
+
+    public init(keys: [JWK]?) {
+        self.keys = keys
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.keys = try c.decode([JWK]?.self, forKey: .keys)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.keys, forKey: .keys)
+    }
 }
 
 // OAuth Client ID Metadata Document
@@ -106,12 +282,58 @@ public struct JWKSet: Codable {
 public struct ClientIDMetadataDocument: Codable {
     public let client_id: String
     public let client_name: String
-    public let redirect_uris: [String]
+    public let redirect_uris: [String]?
     public let token_endpoint_auth_method: String?
     public let grant_types: [String]?
     public let response_types: [String]?
     public let jwks: JWKSet?
     public let jwks_uri: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case client_id
+        case client_name
+        case redirect_uris
+        case token_endpoint_auth_method
+        case grant_types
+        case response_types
+        case jwks
+        case jwks_uri
+    }
+
+    public init(client_id: String, client_name: String, redirect_uris: [String]?, token_endpoint_auth_method: String? = nil, grant_types: [String]? = nil, response_types: [String]? = nil, jwks: JWKSet? = nil, jwks_uri: String? = nil) {
+        self.client_id = client_id
+        self.client_name = client_name
+        self.redirect_uris = redirect_uris
+        self.token_endpoint_auth_method = token_endpoint_auth_method
+        self.grant_types = grant_types
+        self.response_types = response_types
+        self.jwks = jwks
+        self.jwks_uri = jwks_uri
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.client_id = try c.decode(String.self, forKey: .client_id)
+        self.client_name = try c.decode(String.self, forKey: .client_name)
+        self.redirect_uris = try c.decode([String]?.self, forKey: .redirect_uris)
+        self.token_endpoint_auth_method = try c.decodeIfPresent(String.self, forKey: .token_endpoint_auth_method)
+        self.grant_types = try c.decodeIfPresent([String].self, forKey: .grant_types)
+        self.response_types = try c.decodeIfPresent([String].self, forKey: .response_types)
+        self.jwks = try c.decodeIfPresent(JWKSet.self, forKey: .jwks)
+        self.jwks_uri = try c.decodeIfPresent(String.self, forKey: .jwks_uri)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.client_id, forKey: .client_id)
+        try c.encode(self.client_name, forKey: .client_name)
+        try c.encode(self.redirect_uris, forKey: .redirect_uris)
+        try c.encodeIfPresent(self.token_endpoint_auth_method, forKey: .token_endpoint_auth_method)
+        try c.encodeIfPresent(self.grant_types, forKey: .grant_types)
+        try c.encodeIfPresent(self.response_types, forKey: .response_types)
+        try c.encodeIfPresent(self.jwks, forKey: .jwks)
+        try c.encodeIfPresent(self.jwks_uri, forKey: .jwks_uri)
+    }
 }
 
 // OAuth 2.0 Dynamic Client Registration request (RFC 7591)
@@ -119,9 +341,39 @@ public struct ClientIDMetadataDocument: Codable {
 /// RegisterRequest is a dynamic client registration request.
 public struct RegisterRequest: Codable {
     public let client_name: String
-    public let redirect_uris: [String]
+    public let redirect_uris: [String]?
     public let token_endpoint_auth_method: String
     public let grant_types: [String]?
+
+    private enum CodingKeys: String, CodingKey {
+        case client_name
+        case redirect_uris
+        case token_endpoint_auth_method
+        case grant_types
+    }
+
+    public init(client_name: String, redirect_uris: [String]?, token_endpoint_auth_method: String, grant_types: [String]? = nil) {
+        self.client_name = client_name
+        self.redirect_uris = redirect_uris
+        self.token_endpoint_auth_method = token_endpoint_auth_method
+        self.grant_types = grant_types
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.client_name = try c.decode(String.self, forKey: .client_name)
+        self.redirect_uris = try c.decode([String]?.self, forKey: .redirect_uris)
+        self.token_endpoint_auth_method = try c.decode(String.self, forKey: .token_endpoint_auth_method)
+        self.grant_types = try c.decodeIfPresent([String].self, forKey: .grant_types)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.client_name, forKey: .client_name)
+        try c.encode(self.redirect_uris, forKey: .redirect_uris)
+        try c.encode(self.token_endpoint_auth_method, forKey: .token_endpoint_auth_method)
+        try c.encodeIfPresent(self.grant_types, forKey: .grant_types)
+    }
 }
 
 // OAuth 2.0 Dynamic Client Registration response (RFC 7591, 7592)
@@ -131,11 +383,57 @@ public struct RegisterResponse: Codable {
     public let client_id: String
     public let client_id_issued_at: Int
     public let client_name: String?
-    public let redirect_uris: [String]
+    public let redirect_uris: [String]?
     public let token_endpoint_auth_method: String
     public let grant_types: [String]?
     public let registration_access_token: String?
     public let registration_client_uri: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case client_id
+        case client_id_issued_at
+        case client_name
+        case redirect_uris
+        case token_endpoint_auth_method
+        case grant_types
+        case registration_access_token
+        case registration_client_uri
+    }
+
+    public init(client_id: String, client_id_issued_at: Int, client_name: String? = nil, redirect_uris: [String]?, token_endpoint_auth_method: String, grant_types: [String]? = nil, registration_access_token: String? = nil, registration_client_uri: String? = nil) {
+        self.client_id = client_id
+        self.client_id_issued_at = client_id_issued_at
+        self.client_name = client_name
+        self.redirect_uris = redirect_uris
+        self.token_endpoint_auth_method = token_endpoint_auth_method
+        self.grant_types = grant_types
+        self.registration_access_token = registration_access_token
+        self.registration_client_uri = registration_client_uri
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.client_id = try c.decode(String.self, forKey: .client_id)
+        self.client_id_issued_at = try c.decode(Int.self, forKey: .client_id_issued_at)
+        self.client_name = try c.decodeIfPresent(String.self, forKey: .client_name)
+        self.redirect_uris = try c.decode([String]?.self, forKey: .redirect_uris)
+        self.token_endpoint_auth_method = try c.decode(String.self, forKey: .token_endpoint_auth_method)
+        self.grant_types = try c.decodeIfPresent([String].self, forKey: .grant_types)
+        self.registration_access_token = try c.decodeIfPresent(String.self, forKey: .registration_access_token)
+        self.registration_client_uri = try c.decodeIfPresent(String.self, forKey: .registration_client_uri)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.client_id, forKey: .client_id)
+        try c.encode(self.client_id_issued_at, forKey: .client_id_issued_at)
+        try c.encodeIfPresent(self.client_name, forKey: .client_name)
+        try c.encode(self.redirect_uris, forKey: .redirect_uris)
+        try c.encode(self.token_endpoint_auth_method, forKey: .token_endpoint_auth_method)
+        try c.encodeIfPresent(self.grant_types, forKey: .grant_types)
+        try c.encodeIfPresent(self.registration_access_token, forKey: .registration_access_token)
+        try c.encodeIfPresent(self.registration_client_uri, forKey: .registration_client_uri)
+    }
 }
 
 // OAuth 2.0 Dynamic Client Registration update (RFC 7592)
@@ -144,9 +442,39 @@ public struct RegisterResponse: Codable {
 /// Nil pointer fields leave the corresponding client field unchanged.
 public struct UpdateClientRequest: Codable {
     public let client_name: String?
-    public let redirect_uris: [String]?
+    public let redirect_uris: JSONPresence<[String]>
     public let token_endpoint_auth_method: String?
-    public let grant_types: [String]?
+    public let grant_types: JSONPresence<[String]>
+
+    private enum CodingKeys: String, CodingKey {
+        case client_name
+        case redirect_uris
+        case token_endpoint_auth_method
+        case grant_types
+    }
+
+    public init(client_name: String? = nil, redirect_uris: JSONPresence<[String]> = .missing, token_endpoint_auth_method: String? = nil, grant_types: JSONPresence<[String]> = .missing) {
+        self.client_name = client_name
+        self.redirect_uris = redirect_uris
+        self.token_endpoint_auth_method = token_endpoint_auth_method
+        self.grant_types = grant_types
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.client_name = try c.decodeIfPresent(String.self, forKey: .client_name)
+        if !c.contains(.redirect_uris) { self.redirect_uris = .missing } else if try c.decodeNil(forKey: .redirect_uris) { self.redirect_uris = .null } else { self.redirect_uris = .value(try c.decode([String].self, forKey: .redirect_uris)) }
+        self.token_endpoint_auth_method = try c.decodeIfPresent(String.self, forKey: .token_endpoint_auth_method)
+        if !c.contains(.grant_types) { self.grant_types = .missing } else if try c.decodeNil(forKey: .grant_types) { self.grant_types = .null } else { self.grant_types = .value(try c.decode([String].self, forKey: .grant_types)) }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encodeIfPresent(self.client_name, forKey: .client_name)
+        switch self.redirect_uris { case .missing: break; case .null: try c.encodeNil(forKey: .redirect_uris); case .value(let value): try c.encode(value, forKey: .redirect_uris) }
+        try c.encodeIfPresent(self.token_endpoint_auth_method, forKey: .token_endpoint_auth_method)
+        switch self.grant_types { case .missing: break; case .null: try c.encodeNil(forKey: .grant_types); case .value(let value): try c.encode(value, forKey: .grant_types) }
+    }
 }
 
 // OAuth 2.0 client-side access token (RFC 6749)
@@ -159,6 +487,13 @@ public struct Token: Codable {
     public let RefreshToken: String
     /// zero means no expiry
     public let Expiry: String
+
+    public init(AccessToken: String, TokenType: String, RefreshToken: String, Expiry: String) {
+        self.AccessToken = AccessToken
+        self.TokenType = TokenType
+        self.RefreshToken = RefreshToken
+        self.Expiry = Expiry
+    }
 }
 
 // OAuth 2.0 token endpoint response (RFC 6749)
@@ -170,6 +505,14 @@ public struct TokenResponse: Codable {
     public let expires_in: Int
     public let refresh_token: String?
     public let scope: String?
+
+    public init(access_token: String, token_type: String, expires_in: Int, refresh_token: String? = nil, scope: String? = nil) {
+        self.access_token = access_token
+        self.token_type = token_type
+        self.expires_in = expires_in
+        self.refresh_token = refresh_token
+        self.scope = scope
+    }
 }
 
 // OAuth 2.0 Token Introspection request (RFC 7662)
@@ -178,6 +521,11 @@ public struct TokenResponse: Codable {
 public struct IntrospectionRequest: Codable {
     public let token: String
     public let token_type_hint: String?
+
+    public init(token: String, token_type_hint: String? = nil) {
+        self.token = token
+        self.token_type_hint = token_type_hint
+    }
 }
 
 // DPoP Token Confirmation (RFC 9449 §6.1)
@@ -185,6 +533,10 @@ public struct IntrospectionRequest: Codable {
 /// TokenConfirmation holds key confirmation claims per RFC 9449 §6.1.
 public struct TokenConfirmation: Codable {
     public let jkt: String
+
+    public init(jkt: String) {
+        self.jkt = jkt
+    }
 }
 
 // OAuth 2.0 Token Introspection response (RFC 7662)
@@ -202,6 +554,20 @@ public struct IntrospectionResponse: Codable {
     public let aud: String?
     public let iat: Int?
     public let cnf: TokenConfirmation?
+
+    public init(active: Bool, scope: String? = nil, client_id: String? = nil, token_type: String? = nil, exp: Int? = nil, sub: String? = nil, username: String? = nil, iss: String? = nil, aud: String? = nil, iat: Int? = nil, cnf: TokenConfirmation? = nil) {
+        self.active = active
+        self.scope = scope
+        self.client_id = client_id
+        self.token_type = token_type
+        self.exp = exp
+        self.sub = sub
+        self.username = username
+        self.iss = iss
+        self.aud = aud
+        self.iat = iat
+        self.cnf = cnf
+    }
 }
 
 // OAuth 2.0 error response (RFC 6749 §5.2)
@@ -210,6 +576,11 @@ public struct IntrospectionResponse: Codable {
 public struct ErrorResponse: Codable {
     public let error: String
     public let error_description: String?
+
+    public init(error: String, error_description: String? = nil) {
+        self.error = error
+        self.error_description = error_description
+    }
 }
 
 // OAuth 2.0 Pushed Authorization Request response (RFC 9126)
@@ -218,6 +589,11 @@ public struct ErrorResponse: Codable {
 public struct PARResponse: Codable {
     public let request_uri: String
     public let expires_in: Int
+
+    public init(request_uri: String, expires_in: Int) {
+        self.request_uri = request_uri
+        self.expires_in = expires_in
+    }
 }
 
 // OAuth 2.0 Device Authorization request (RFC 8628)
@@ -226,6 +602,11 @@ public struct PARResponse: Codable {
 public struct DeviceAuthorizationRequest: Codable {
     public let client_id: String
     public let scope: String?
+
+    public init(client_id: String, scope: String? = nil) {
+        self.client_id = client_id
+        self.scope = scope
+    }
 }
 
 // OAuth 2.0 Device Authorization response (RFC 8628)
@@ -238,4 +619,13 @@ public struct DeviceAuthorizationResponse: Codable {
     public let verification_uri_complete: String?
     public let expires_in: Int
     public let interval: Int?
+
+    public init(device_code: String, user_code: String, verification_uri: String, verification_uri_complete: String? = nil, expires_in: Int, interval: Int? = nil) {
+        self.device_code = device_code
+        self.user_code = user_code
+        self.verification_uri = verification_uri
+        self.verification_uri_complete = verification_uri_complete
+        self.expires_in = expires_in
+        self.interval = interval
+    }
 }

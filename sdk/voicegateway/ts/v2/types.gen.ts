@@ -241,7 +241,7 @@ export interface SpeechConfig {
 export interface VoiceChoice {
   id: string;
   label: string;
-  transports: VoiceTransport[];
+  transports: VoiceTransport[] | null;
   /** Voices lists supported audio voice names. Omitted when the choice does not offer voice selection. */
   voices?: string[];
   /**
@@ -276,9 +276,9 @@ export interface SpeechModel {
  * offered family.
  */
 export interface VoiceChoicesResp {
-  choices: VoiceChoice[];
+  choices: VoiceChoice[] | null;
   /** Defaults holds one entry per offered transport, ordered by transport name. */
-  defaults: VoiceChoiceDefault[];
+  defaults: VoiceChoiceDefault[] | null;
   /** RecognitionModels lists gateway recognition stages in preference order. */
   recognitionModels?: SpeechModel[];
   /** SynthesisModels lists gateway synthesis stages in preference order. */
@@ -450,7 +450,7 @@ export interface ToolDeclaration {
    * Parameters is a JSON Schema object describing the tool arguments. When
    * present, it must declare "type": "object".
    */
-  parameters: any /* json.RawMessage */;
+  parameters: any /* json.RawMessage */ | null;
 }
 
 /** Context carries provider-neutral text or instruction context. */
@@ -468,7 +468,7 @@ export interface SessionSetup {
   /** Voice contains the requested voice and language. */
   voice: VoiceConfig;
   /** Tools declares the client-side tools the assistant may call. */
-  tools: ToolDeclaration[];
+  tools: ToolDeclaration[] | null;
   /** Context provides initial instructions or text context for the session. */
   context: Context;
   /**
@@ -522,7 +522,7 @@ export interface ToolResult {
   /** Name is the tool name that produced the result. */
   name: string;
   /** Result is the JSON result returned to the assistant. */
-  result: any /* json.RawMessage */;
+  result: any /* json.RawMessage */ | null;
 }
 
 /** TurnCancel is a client message that cancels the current turn. */
@@ -705,7 +705,7 @@ export interface ToolCall {
   /** Name is the requested tool name. */
   name: string;
   /** Args is the JSON argument object for the requested tool. */
-  args: any /* json.RawMessage */;
+  args: any /* json.RawMessage */ | null;
 }
 
 /**

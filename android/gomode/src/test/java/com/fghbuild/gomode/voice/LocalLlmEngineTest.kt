@@ -1337,7 +1337,8 @@ class LocalLlmEngineTest {
                                 dispatched = true
                                 assertEquals(
                                     literal,
-                                    call.args.jsonObject
+                                    requireNotNull(call.args)
+                                        .jsonObject
                                         .getValue("service")
                                         .jsonPrimitive.content,
                                 )

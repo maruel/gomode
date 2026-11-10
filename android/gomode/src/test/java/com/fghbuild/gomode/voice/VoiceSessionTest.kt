@@ -61,14 +61,16 @@ class VoiceSessionTest {
     fun voiceToolDeclarationsPreserveNativeAndServiceCommands() {
         val tools =
             voiceToolDeclarations(
-                nativeVoiceTools(SettingsState()) + ToolDescriptor(name = "tasks_list", description = "List tasks"),
+                nativeVoiceTools(SettingsState()) +
+                    ToolDescriptor(name = "tasks_list", description = "List tasks", inputSchema = null),
             )
 
         assertEquals(listOf("hang_up", "tasks_list"), tools.map { it.name })
         assertTrue(tools.first().description.contains("End the current voice conversation"))
         assertTrue(
             tools.all {
-                it.parameters.jsonObject["type"]
+                requireNotNull(it.parameters)
+                    .jsonObject["type"]
                     ?.jsonPrimitive
                     ?.content == "object"
             },

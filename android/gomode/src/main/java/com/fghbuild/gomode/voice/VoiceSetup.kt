@@ -90,7 +90,10 @@ internal suspend fun prepareVoiceSetup(
     // Single active skill today. SKILL.md frontmatter activation across the
     // toolGroups catalog (progressive disclosure) is future work; see
     // gomode/docs/ANDROID_SHELL.md.
-    val group = serviceSettings.webShell.toolGroups.firstOrNull()
+    val group =
+        serviceSettings.webShell.toolGroups
+            .orEmpty()
+            .firstOrNull()
     if (group == null && sharedCatalog == null) throw VoiceSetupException("Voice is not available for this service")
     val mcpEndpointURL = group?.let { resolveServiceURL(settings.activeServiceURL, it.endpoint) }
     val gatewayEndpointURL = resolveServiceURL(settings.activeServiceURL, voiceGatewayURL)

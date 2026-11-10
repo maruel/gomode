@@ -16,10 +16,10 @@ export interface AuthorizationServerMetadata {
   registration_endpoint: string;
   revocation_endpoint?: string;
   end_session_endpoint?: string;
-  response_types_supported: string[];
-  grant_types_supported: string[];
-  code_challenge_methods_supported: string[];
-  token_endpoint_auth_methods_supported: string[];
+  response_types_supported: string[] | null;
+  grant_types_supported: string[] | null;
+  code_challenge_methods_supported: string[] | null;
+  token_endpoint_auth_methods_supported: string[] | null;
   introspection_endpoint_auth_methods_supported?: string[];
   revocation_endpoint_auth_methods_supported?: string[];
   scopes_supported?: string[];
@@ -33,7 +33,7 @@ export interface AuthorizationServerMetadata {
 /** ProtectedResourceMetadata is OAuth 2.0 Protected Resource Metadata. */
 export interface ProtectedResourceMetadata {
   resource: string;
-  authorization_servers: string[];
+  authorization_servers: string[] | null;
   scopes_supported?: string[];
   resource_documentation?: string;
 }
@@ -57,14 +57,14 @@ export interface JWK {
 
 /** JWKSet is a JSON Web Key Set response. */
 export interface JWKSet {
-  keys: JWK[];
+  keys: JWK[] | null;
 }
 
 /** ClientIDMetadataDocument describes an OAuth client identified by its HTTPS metadata URL. */
 export interface ClientIDMetadataDocument {
   client_id: string;
   client_name: string;
-  redirect_uris: string[];
+  redirect_uris: string[] | null;
   token_endpoint_auth_method?: string;
   grant_types?: string[];
   response_types?: string[];
@@ -75,7 +75,7 @@ export interface ClientIDMetadataDocument {
 /** RegisterRequest is a dynamic client registration request. */
 export interface RegisterRequest {
   client_name: string;
-  redirect_uris: string[];
+  redirect_uris: string[] | null;
   token_endpoint_auth_method: string;
   grant_types?: string[];
 }
@@ -85,7 +85,7 @@ export interface RegisterResponse {
   client_id: string;
   client_id_issued_at: number /* int64 */;
   client_name?: string;
-  redirect_uris: string[];
+  redirect_uris: string[] | null;
   token_endpoint_auth_method: string;
   grant_types?: string[];
   registration_access_token?: string;
@@ -98,9 +98,9 @@ export interface RegisterResponse {
  */
 export interface UpdateClientRequest {
   client_name?: string;
-  redirect_uris?: string[];
+  redirect_uris?: string[] | null;
   token_endpoint_auth_method?: string;
-  grant_types?: string[];
+  grant_types?: string[] | null;
 }
 
 /** Token holds an OAuth 2.0 access token and associated metadata. */

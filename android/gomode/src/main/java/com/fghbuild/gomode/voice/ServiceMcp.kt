@@ -30,7 +30,9 @@ internal suspend fun prepareServiceMcp(
 ): ServiceMcp {
     // First-group activation is shared with voice setup; progressive skill activation is separate work.
     val group =
-        settings.webShell.toolGroups.firstOrNull()
+        settings.webShell.toolGroups
+            .orEmpty()
+            .firstOrNull()
             ?: throw VoiceSetupException("Service does not provide MCP tools")
     val endpoint = resolveServiceURL(serviceURL, group.endpoint)
     if (group.authRequired && cookieFor(endpoint).isNullOrBlank() && bearerTokenFor(endpoint).isNullOrBlank()) {

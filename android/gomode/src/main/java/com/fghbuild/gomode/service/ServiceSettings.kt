@@ -66,7 +66,7 @@ private fun Settings.validationError(): String? {
     if (service.isBlank()) return "Service settings field service is required."
     if (apiVersion <= 0) return "Service settings field apiVersion must be positive."
     if (webShell.bridgeVersion <= 0) return "Service settings field webShell.bridgeVersion must be positive."
-    for ((index, group) in webShell.toolGroups.withIndex()) {
+    for ((index, group) in webShell.toolGroups.orEmpty().withIndex()) {
         group.validationError(index)?.let { return it }
     }
     return webShell.voiceGateway.validationError()

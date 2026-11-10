@@ -4,6 +4,27 @@ import Foundation
 /// ISO 8601 timestamp string (e.g. "2026-04-13T12:00:00Z").
 public typealias ISOTimestamp = String
 
+/// A JSON field that may be omitted, null, or a value.
+public enum JSONPresence<Value: Codable>: Codable {
+    case missing
+    case null
+    case value(Value)
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self = container.decodeNil() ? .null : .value(try container.decode(Value.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .missing: throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "Missing fields must be omitted"))
+        case .null: try container.encodeNil()
+        case .value(let value): try container.encode(value)
+        }
+    }
+}
+
 /// A Codable representation of an arbitrary JSON value.
 public enum JSONValue: Codable, Equatable {
     case string(String)
@@ -181,7 +202,7 @@ public enum ErrorCodes {
 ///
 /// The draft schema constrains values to JSON objects. RawMessage keeps the DTO
 /// forward-compatible; validate extension values before depending on object shape.
-public typealias Extensions = [String: JSONValue]
+public typealias Extensions = [String: JSONValue?]
 
 /// MetaObject is metadata attached to MCP interactions.
 ///
@@ -192,9 +213,39 @@ public typealias MetaObject = [String: JSONValue]
 /// JSONRPCRequest is a JSON-RPC request that expects a response.
 public struct JSONRPCRequest: Codable {
     public let jsonrpc: String
-    public let id: JSONValue?
+    public let id: JSONPresence<JSONValue>
     public let method: Method
-    public let params: JSONValue?
+    public let params: JSONPresence<JSONValue>
+
+    private enum CodingKeys: String, CodingKey {
+        case jsonrpc
+        case id
+        case method
+        case params
+    }
+
+    public init(jsonrpc: String, id: JSONPresence<JSONValue> = .missing, method: Method, params: JSONPresence<JSONValue> = .missing) {
+        self.jsonrpc = jsonrpc
+        self.id = id
+        self.method = method
+        self.params = params
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.jsonrpc = try c.decode(String.self, forKey: .jsonrpc)
+        if !c.contains(.id) { self.id = .missing } else if try c.decodeNil(forKey: .id) { self.id = .null } else { self.id = .value(try c.decode(JSONValue.self, forKey: .id)) }
+        self.method = try c.decode(Method.self, forKey: .method)
+        if !c.contains(.params) { self.params = .missing } else if try c.decodeNil(forKey: .params) { self.params = .null } else { self.params = .value(try c.decode(JSONValue.self, forKey: .params)) }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.jsonrpc, forKey: .jsonrpc)
+        switch self.id { case .missing: break; case .null: try c.encodeNil(forKey: .id); case .value(let value): try c.encode(value, forKey: .id) }
+        try c.encode(self.method, forKey: .method)
+        switch self.params { case .missing: break; case .null: try c.encodeNil(forKey: .params); case .value(let value): try c.encode(value, forKey: .params) }
+    }
 }
 
 /// JSONRPCError is a JSON-RPC error object.
@@ -204,21 +255,81 @@ public struct JSONRPCError: Codable {
     /// Message is a concise single-sentence description of the error.
     public let message: String
     /// Data carries sender-defined additional error information.
-    public let data: JSONValue?
+    public let data: JSONPresence<JSONValue>
+
+    private enum CodingKeys: String, CodingKey {
+        case code
+        case message
+        case data
+    }
+
+    public init(code: Int, message: String, data: JSONPresence<JSONValue> = .missing) {
+        self.code = code
+        self.message = message
+        self.data = data
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.code = try c.decode(Int.self, forKey: .code)
+        self.message = try c.decode(String.self, forKey: .message)
+        if !c.contains(.data) { self.data = .missing } else if try c.decodeNil(forKey: .data) { self.data = .null } else { self.data = .value(try c.decode(JSONValue.self, forKey: .data)) }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.code, forKey: .code)
+        try c.encode(self.message, forKey: .message)
+        switch self.data { case .missing: break; case .null: try c.encodeNil(forKey: .data); case .value(let value): try c.encode(value, forKey: .data) }
+    }
 }
 
 /// JSONRPCResponse is a JSON-RPC response containing either a result or an error.
 public struct JSONRPCResponse: Codable {
     public let jsonrpc: String
-    public let id: JSONValue?
-    public let result: JSONValue?
+    public let id: JSONPresence<JSONValue>
+    public let result: JSONPresence<JSONValue>
     public let error: JSONRPCError?
+
+    private enum CodingKeys: String, CodingKey {
+        case jsonrpc
+        case id
+        case result
+        case error
+    }
+
+    public init(jsonrpc: String, id: JSONPresence<JSONValue> = .missing, result: JSONPresence<JSONValue> = .missing, error: JSONRPCError? = nil) {
+        self.jsonrpc = jsonrpc
+        self.id = id
+        self.result = result
+        self.error = error
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.jsonrpc = try c.decode(String.self, forKey: .jsonrpc)
+        if !c.contains(.id) { self.id = .missing } else if try c.decodeNil(forKey: .id) { self.id = .null } else { self.id = .value(try c.decode(JSONValue.self, forKey: .id)) }
+        if !c.contains(.result) { self.result = .missing } else if try c.decodeNil(forKey: .result) { self.result = .null } else { self.result = .value(try c.decode(JSONValue.self, forKey: .result)) }
+        self.error = try c.decodeIfPresent(JSONRPCError.self, forKey: .error)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.jsonrpc, forKey: .jsonrpc)
+        switch self.id { case .missing: break; case .null: try c.encodeNil(forKey: .id); case .value(let value): try c.encode(value, forKey: .id) }
+        switch self.result { case .missing: break; case .null: try c.encodeNil(forKey: .result); case .value(let value): try c.encode(value, forKey: .result) }
+        try c.encodeIfPresent(self.error, forKey: .error)
+    }
 }
 
 /// PromptsCapability describes prompt support advertised by the server.
 public struct PromptsCapability: Codable {
     /// ListChanged indicates support for prompt list change notifications.
     public let listChanged: Bool?
+
+    public init(listChanged: Bool? = nil) {
+        self.listChanged = listChanged
+    }
 }
 
 /// ResourcesCapability describes resource support advertised by the server.
@@ -227,12 +338,21 @@ public struct ResourcesCapability: Codable {
     public let subscribe: Bool?
     /// ListChanged indicates support for resource list change notifications.
     public let listChanged: Bool?
+
+    public init(subscribe: Bool? = nil, listChanged: Bool? = nil) {
+        self.subscribe = subscribe
+        self.listChanged = listChanged
+    }
 }
 
 /// ToolsCapability describes tool support advertised by the server.
 public struct ToolsCapability: Codable {
     /// ListChanged indicates support for tool list change notifications.
     public let listChanged: Bool?
+
+    public init(listChanged: Bool? = nil) {
+        self.listChanged = listChanged
+    }
 }
 
 /// Capabilities describes server-supported MCP features.
@@ -255,6 +375,16 @@ public struct Capabilities: Codable {
     public let tools: ToolsCapability
     /// Extensions contains optional MCP extensions supported by the server.
     public let extensions: Extensions?
+
+    public init(experimental: Extensions? = nil, logging: MetaObject? = nil, completions: MetaObject? = nil, prompts: PromptsCapability? = nil, resources: ResourcesCapability? = nil, tools: ToolsCapability, extensions: Extensions? = nil) {
+        self.experimental = experimental
+        self.logging = logging
+        self.completions = completions
+        self.prompts = prompts
+        self.resources = resources
+        self.tools = tools
+        self.extensions = extensions
+    }
 }
 
 /// Icon describes an optionally-sized icon for UI display.
@@ -267,6 +397,13 @@ public struct Icon: Codable {
     public let sizes: [String]?
     /// Theme indicates whether the icon targets a light or dark background.
     public let theme: String?
+
+    public init(src: String, mimeType: String? = nil, sizes: [String]? = nil, theme: String? = nil) {
+        self.src = src
+        self.mimeType = mimeType
+        self.sizes = sizes
+        self.theme = theme
+    }
 }
 
 /// Implementation describes an MCP client or server implementation.
@@ -283,13 +420,22 @@ public struct Implementation: Codable {
     public let description: String?
     /// WebsiteURL is an optional website for this implementation.
     public let websiteUrl: String?
+
+    public init(icons: [Icon]? = nil, name: String, title: String? = nil, version: String, description: String? = nil, websiteUrl: String? = nil) {
+        self.icons = icons
+        self.name = name
+        self.title = title
+        self.version = version
+        self.description = description
+        self.websiteUrl = websiteUrl
+    }
 }
 
 /// ServerDiscoverResult is the result returned for a server/discover request.
 public struct ServerDiscoverResult: Codable {
     public let resultType: ResultType
     /// SupportedVersions lists MCP protocol versions supported by this server.
-    public let supportedVersions: [String]
+    public let supportedVersions: [String]?
     /// Capabilities advertises server features.
     public let capabilities: Capabilities
     /// ServerInfo describes the server software implementation.
@@ -303,101 +449,47 @@ public struct ServerDiscoverResult: Codable {
     public let ttlMs: Int
     /// CacheScope indicates whether the response may be cached publicly or privately.
     public let cacheScope: CacheScope
-}
-
-/// SamplingCapability describes deprecated client sampling support.
-public struct SamplingCapability: Codable {
-    /// Context declares context inclusion support.
-    public let context: MetaObject?
-    /// Tools declares tool-use support.
-    public let tools: MetaObject?
-}
-
-/// ElicitationCapability describes client elicitation support.
-public struct ElicitationCapability: Codable {
-    /// Form declares support for form-mode elicitation.
-    public let form: MetaObject?
-    /// URL declares support for URL-mode elicitation.
-    public let url: MetaObject?
-}
-
-/// ClientCapabilities describes capabilities the client supports for a request.
-public struct ClientCapabilities: Codable {
-    /// Experimental contains non-standard capabilities supported by the client.
-    public let experimental: Extensions?
-    /// DeprecatedRoots is present if the client supports listing roots.
-    ///
-    /// Deprecated as of protocol version 2026-07-28, but still present in that
-    /// schema. This is native 2026-07-28 compatibility, not released-version
-    /// compat.go support; remove it only after the upstream 2026+ schema drops it.
-    public let roots: MetaObject?
-    /// DeprecatedSampling is present if the client supports server-initiated LLM sampling.
-    ///
-    /// Deprecated as of protocol version 2026-07-28, but still present in that
-    /// schema. This is native 2026-07-28 compatibility, not released-version
-    /// compat.go support; remove it only after the upstream 2026+ schema drops it.
-    public let sampling: SamplingCapability?
-    /// Elicitation is present if the client supports server-initiated user elicitation.
-    public let elicitation: ElicitationCapability?
-    /// Extensions contains optional MCP extensions supported by the client.
-    public let extensions: Extensions?
-}
-
-/// OpenAIUserLocation contains optional client location hints. Only the device's
-/// IANA timezone is used; these untrusted hints must not influence authorization.
-public struct OpenAIUserLocation: Codable {
-    /// Timezone is the caller device's IANA timezone, such as America/Toronto.
-    public let timezone: String?
-}
-
-/// RequestMeta is the metadata object required in MCP request params.
-public struct RequestMeta: Codable {
-    /// ProtocolVersion is the MCP protocol version used for this request.
-    ///
-    /// For HTTP, it must match the MCP-Protocol-Version header.
-    public let protocolVersion: String
-    /// ClientInfo identifies the client software making the request.
-    public let clientInfo: Implementation
-    /// ClientCapabilities declares client capabilities for this request.
-    public let clientCapabilities: ClientCapabilities
-    /// ProgressToken requests out-of-band progress notifications for this request.
-    public let progressToken: JSONValue?
-    /// DeprecatedLogLevel requests server log message notifications for this request.
-    ///
-    /// Deprecated as of protocol version 2026-07-28, but still present in that
-    /// schema. This is native 2026-07-28 compatibility, not released-version
-    /// compat.go support; remove it only after the upstream 2026+ schema drops it.
-    public let deprecatedLogLevel: String?
-    /// Locale requests a language and regional convention using a BCP 47 tag,
-    /// such as en-CA or fr-CA.
-    public let locale: String?
-    /// Organization carries an anonymized identifier for the caller's ChatGPT
-    /// organization, when the client provides one.
-    public let organization: String?
-    /// Session groups tool calls from the same ChatGPT conversation using an
-    /// anonymized conversation identifier.
-    public let session: String?
-    /// Subject carries an anonymized user identifier for call correlation or
-    /// rate-limit accounting; it is not an authentication credential.
-    public let subject: String?
-    /// UserAgent is a best-effort client hint for analytics or presentation;
-    /// it is not a reliable indication of client capabilities.
-    public let userAgent: String?
-    /// UserLocation is an optional formatting hint supplied by the client.
-    public let userLocation: OpenAIUserLocation?
 
     private enum CodingKeys: String, CodingKey {
-        case protocolVersion = "io.modelcontextprotocol/protocolVersion"
-        case clientInfo = "io.modelcontextprotocol/clientInfo"
-        case clientCapabilities = "io.modelcontextprotocol/clientCapabilities"
-        case progressToken
-        case deprecatedLogLevel = "io.modelcontextprotocol/logLevel"
-        case locale = "openai/locale"
-        case organization = "openai/organization"
-        case session = "openai/session"
-        case subject = "openai/subject"
-        case userAgent = "openai/userAgent"
-        case userLocation = "openai/userLocation"
+        case resultType
+        case supportedVersions
+        case capabilities
+        case serverInfo
+        case instructions
+        case ttlMs
+        case cacheScope
+    }
+
+    public init(resultType: ResultType, supportedVersions: [String]?, capabilities: Capabilities, serverInfo: Implementation, instructions: String? = nil, ttlMs: Int, cacheScope: CacheScope) {
+        self.resultType = resultType
+        self.supportedVersions = supportedVersions
+        self.capabilities = capabilities
+        self.serverInfo = serverInfo
+        self.instructions = instructions
+        self.ttlMs = ttlMs
+        self.cacheScope = cacheScope
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.resultType = try c.decode(ResultType.self, forKey: .resultType)
+        self.supportedVersions = try c.decode([String]?.self, forKey: .supportedVersions)
+        self.capabilities = try c.decode(Capabilities.self, forKey: .capabilities)
+        self.serverInfo = try c.decode(Implementation.self, forKey: .serverInfo)
+        self.instructions = try c.decodeIfPresent(String.self, forKey: .instructions)
+        self.ttlMs = try c.decode(Int.self, forKey: .ttlMs)
+        self.cacheScope = try c.decode(CacheScope.self, forKey: .cacheScope)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.resultType, forKey: .resultType)
+        try c.encode(self.supportedVersions, forKey: .supportedVersions)
+        try c.encode(self.capabilities, forKey: .capabilities)
+        try c.encode(self.serverInfo, forKey: .serverInfo)
+        try c.encodeIfPresent(self.instructions, forKey: .instructions)
+        try c.encode(self.ttlMs, forKey: .ttlMs)
+        try c.encode(self.cacheScope, forKey: .cacheScope)
     }
 }
 
@@ -406,6 +498,11 @@ public struct PaginatedRequestParams: Codable {
     public let _meta: RequestMeta
     /// Cursor is an opaque pagination token.
     public let cursor: String?
+
+    public init(_meta: RequestMeta, cursor: String? = nil) {
+        self._meta = _meta
+        self.cursor = cursor
+    }
 }
 
 /// ToolAnnotations describe MCP tool behavior hints.
@@ -420,6 +517,14 @@ public struct ToolAnnotations: Codable {
     public let idempotentHint: Bool?
     /// OpenWorldHint indicates the tool may interact with external entities.
     public let openWorldHint: Bool?
+
+    public init(title: String? = nil, readOnlyHint: Bool? = nil, destructiveHint: Bool? = nil, idempotentHint: Bool? = nil, openWorldHint: Bool? = nil) {
+        self.title = title
+        self.readOnlyHint = readOnlyHint
+        self.destructiveHint = destructiveHint
+        self.idempotentHint = idempotentHint
+        self.openWorldHint = openWorldHint
+    }
 }
 
 /// ToolDescriptor describes a tool the client can call.
@@ -435,9 +540,55 @@ public struct ToolDescriptor: Codable {
     /// InputSchema defines the expected JSON object arguments for the tool.
     public let inputSchema: JSONValue?
     /// OutputSchema defines the structuredContent shape for successful results.
-    public let outputSchema: JSONValue?
+    public let outputSchema: JSONPresence<JSONValue>
     /// Annotations contains optional tool behavior hints.
     public let annotations: ToolAnnotations?
+
+    private enum CodingKeys: String, CodingKey {
+        case _meta
+        case icons
+        case name
+        case title
+        case description
+        case inputSchema
+        case outputSchema
+        case annotations
+    }
+
+    public init(_meta: MetaObject? = nil, icons: [Icon]? = nil, name: String, title: String? = nil, description: String? = nil, inputSchema: JSONValue?, outputSchema: JSONPresence<JSONValue> = .missing, annotations: ToolAnnotations? = nil) {
+        self._meta = _meta
+        self.icons = icons
+        self.name = name
+        self.title = title
+        self.description = description
+        self.inputSchema = inputSchema
+        self.outputSchema = outputSchema
+        self.annotations = annotations
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self._meta = try c.decodeIfPresent(MetaObject.self, forKey: ._meta)
+        self.icons = try c.decodeIfPresent([Icon].self, forKey: .icons)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.title = try c.decodeIfPresent(String.self, forKey: .title)
+        self.description = try c.decodeIfPresent(String.self, forKey: .description)
+        self.inputSchema = try c.decode(JSONValue?.self, forKey: .inputSchema)
+        if !c.contains(.outputSchema) { self.outputSchema = .missing } else if try c.decodeNil(forKey: .outputSchema) { self.outputSchema = .null } else { self.outputSchema = .value(try c.decode(JSONValue.self, forKey: .outputSchema)) }
+        self.annotations = try c.decodeIfPresent(ToolAnnotations.self, forKey: .annotations)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encodeIfPresent(self._meta, forKey: ._meta)
+        try c.encodeIfPresent(self.icons, forKey: .icons)
+        try c.encode(self.name, forKey: .name)
+        try c.encodeIfPresent(self.title, forKey: .title)
+        try c.encodeIfPresent(self.description, forKey: .description)
+        try c.encode(self.inputSchema, forKey: .inputSchema)
+        switch self.outputSchema { case .missing: break; case .null: try c.encodeNil(forKey: .outputSchema); case .value(let value): try c.encode(value, forKey: .outputSchema) }
+        try c.encodeIfPresent(self.annotations, forKey: .annotations)
+    }
 }
 
 /// ToolsListResult is the response payload for tools/list.
@@ -445,22 +596,94 @@ public struct ToolsListResult: Codable {
     public let _meta: MetaObject?
     public let resultType: ResultType
     public let nextCursor: String?
-    public let tools: [ToolDescriptor]
+    public let tools: [ToolDescriptor]?
     public let ttlMs: Int
     public let cacheScope: CacheScope
+
+    private enum CodingKeys: String, CodingKey {
+        case _meta
+        case resultType
+        case nextCursor
+        case tools
+        case ttlMs
+        case cacheScope
+    }
+
+    public init(_meta: MetaObject? = nil, resultType: ResultType, nextCursor: String? = nil, tools: [ToolDescriptor]?, ttlMs: Int, cacheScope: CacheScope) {
+        self._meta = _meta
+        self.resultType = resultType
+        self.nextCursor = nextCursor
+        self.tools = tools
+        self.ttlMs = ttlMs
+        self.cacheScope = cacheScope
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self._meta = try c.decodeIfPresent(MetaObject.self, forKey: ._meta)
+        self.resultType = try c.decode(ResultType.self, forKey: .resultType)
+        self.nextCursor = try c.decodeIfPresent(String.self, forKey: .nextCursor)
+        self.tools = try c.decode([ToolDescriptor]?.self, forKey: .tools)
+        self.ttlMs = try c.decode(Int.self, forKey: .ttlMs)
+        self.cacheScope = try c.decode(CacheScope.self, forKey: .cacheScope)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encodeIfPresent(self._meta, forKey: ._meta)
+        try c.encode(self.resultType, forKey: .resultType)
+        try c.encodeIfPresent(self.nextCursor, forKey: .nextCursor)
+        try c.encode(self.tools, forKey: .tools)
+        try c.encode(self.ttlMs, forKey: .ttlMs)
+        try c.encode(self.cacheScope, forKey: .cacheScope)
+    }
 }
 
 /// ToolsCallParams is the request params payload for tools/call.
 public struct ToolsCallParams: Codable {
     public let _meta: RequestMeta
     /// InputResponses carries responses to server-initiated requests from a prior input_required result.
-    public let inputResponses: JSONValue?
+    public let inputResponses: JSONPresence<JSONValue>
     /// RequestState carries opaque state from a prior input_required result.
     public let requestState: String?
     /// Name identifies the tool to invoke.
     public let name: String
     /// Arguments contains tool arguments as a JSON object.
-    public let arguments: JSONValue?
+    public let arguments: JSONPresence<JSONValue>
+
+    private enum CodingKeys: String, CodingKey {
+        case _meta
+        case inputResponses
+        case requestState
+        case name
+        case arguments
+    }
+
+    public init(_meta: RequestMeta, inputResponses: JSONPresence<JSONValue> = .missing, requestState: String? = nil, name: String, arguments: JSONPresence<JSONValue> = .missing) {
+        self._meta = _meta
+        self.inputResponses = inputResponses
+        self.requestState = requestState
+        self.name = name
+        self.arguments = arguments
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self._meta = try c.decode(RequestMeta.self, forKey: ._meta)
+        if !c.contains(.inputResponses) { self.inputResponses = .missing } else if try c.decodeNil(forKey: .inputResponses) { self.inputResponses = .null } else { self.inputResponses = .value(try c.decode(JSONValue.self, forKey: .inputResponses)) }
+        self.requestState = try c.decodeIfPresent(String.self, forKey: .requestState)
+        self.name = try c.decode(String.self, forKey: .name)
+        if !c.contains(.arguments) { self.arguments = .missing } else if try c.decodeNil(forKey: .arguments) { self.arguments = .null } else { self.arguments = .value(try c.decode(JSONValue.self, forKey: .arguments)) }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self._meta, forKey: ._meta)
+        switch self.inputResponses { case .missing: break; case .null: try c.encodeNil(forKey: .inputResponses); case .value(let value): try c.encode(value, forKey: .inputResponses) }
+        try c.encodeIfPresent(self.requestState, forKey: .requestState)
+        try c.encode(self.name, forKey: .name)
+        switch self.arguments { case .missing: break; case .null: try c.encodeNil(forKey: .arguments); case .value(let value): try c.encode(value, forKey: .arguments) }
+    }
 }
 
 /// ResourceContent contains resource data returned by resources/read.
@@ -474,6 +697,14 @@ public struct ResourceContent: Codable {
     public let text: String?
     /// Blob contains base64-encoded binary resource contents.
     public let blob: String?
+
+    public init(_meta: MetaObject? = nil, uri: String, mimeType: String? = nil, text: String? = nil, blob: String? = nil) {
+        self._meta = _meta
+        self.uri = uri
+        self.mimeType = mimeType
+        self.text = text
+        self.blob = blob
+    }
 }
 
 /// Annotations provide optional metadata for MCP resources and content.
@@ -484,6 +715,12 @@ public struct Annotations: Codable {
     public let priority: Int?
     /// LastModified is an ISO 8601 timestamp for the last modification time.
     public let lastModified: String?
+
+    public init(audience: [Role]? = nil, priority: Int? = nil, lastModified: String? = nil) {
+        self.audience = audience
+        self.priority = priority
+        self.lastModified = lastModified
+    }
 }
 
 /// ContentBlock is an MCP content item.
@@ -515,6 +752,22 @@ public struct ContentBlock: Codable {
     public let resource: ResourceContent?
     /// Annotations provide optional client metadata.
     public let annotations: Annotations?
+
+    public init(_meta: MetaObject? = nil, icons: [Icon]? = nil, `type`: ContentType, name: String? = nil, title: String? = nil, text: String? = nil, data: String? = nil, uri: String? = nil, description: String? = nil, mimeType: String? = nil, size: Int? = nil, resource: ResourceContent? = nil, annotations: Annotations? = nil) {
+        self._meta = _meta
+        self.icons = icons
+        self.`type` = `type`
+        self.name = name
+        self.title = title
+        self.text = text
+        self.data = data
+        self.uri = uri
+        self.description = description
+        self.mimeType = mimeType
+        self.size = size
+        self.resource = resource
+        self.annotations = annotations
+    }
 }
 
 /// ToolCallResult is the response payload for a tool call.
@@ -522,11 +775,45 @@ public struct ToolCallResult: Codable {
     public let _meta: MetaObject?
     public let resultType: ResultType
     /// Content is the unstructured result of the tool call.
-    public let content: [ContentBlock]
+    public let content: [ContentBlock]?
     /// StructuredContent is optional JSON matching the tool output schema on success.
-    public let structuredContent: JSONValue?
+    public let structuredContent: JSONPresence<JSONValue>
     /// IsError indicates the tool call ended in an error visible to the model.
     public let isError: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case _meta
+        case resultType
+        case content
+        case structuredContent
+        case isError
+    }
+
+    public init(_meta: MetaObject? = nil, resultType: ResultType, content: [ContentBlock]?, structuredContent: JSONPresence<JSONValue> = .missing, isError: Bool? = nil) {
+        self._meta = _meta
+        self.resultType = resultType
+        self.content = content
+        self.structuredContent = structuredContent
+        self.isError = isError
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self._meta = try c.decodeIfPresent(MetaObject.self, forKey: ._meta)
+        self.resultType = try c.decode(ResultType.self, forKey: .resultType)
+        self.content = try c.decode([ContentBlock]?.self, forKey: .content)
+        if !c.contains(.structuredContent) { self.structuredContent = .missing } else if try c.decodeNil(forKey: .structuredContent) { self.structuredContent = .null } else { self.structuredContent = .value(try c.decode(JSONValue.self, forKey: .structuredContent)) }
+        self.isError = try c.decodeIfPresent(Bool.self, forKey: .isError)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encodeIfPresent(self._meta, forKey: ._meta)
+        try c.encode(self.resultType, forKey: .resultType)
+        try c.encode(self.content, forKey: .content)
+        switch self.structuredContent { case .missing: break; case .null: try c.encodeNil(forKey: .structuredContent); case .value(let value): try c.encode(value, forKey: .structuredContent) }
+        try c.encodeIfPresent(self.isError, forKey: .isError)
+    }
 }
 
 /// ResourceDescriptor describes a resource the server can read.
@@ -547,6 +834,18 @@ public struct ResourceDescriptor: Codable {
     public let annotations: Annotations?
     /// Size is the raw resource size in bytes, if known.
     public let size: Int?
+
+    public init(_meta: MetaObject? = nil, icons: [Icon]? = nil, uri: String, name: String, title: String? = nil, description: String? = nil, mimeType: String? = nil, annotations: Annotations? = nil, size: Int? = nil) {
+        self._meta = _meta
+        self.icons = icons
+        self.uri = uri
+        self.name = name
+        self.title = title
+        self.description = description
+        self.mimeType = mimeType
+        self.annotations = annotations
+        self.size = size
+    }
 }
 
 /// ResourcesListResult is the response payload for resources/list.
@@ -554,9 +853,47 @@ public struct ResourcesListResult: Codable {
     public let _meta: MetaObject?
     public let resultType: ResultType
     public let nextCursor: String?
-    public let resources: [ResourceDescriptor]
+    public let resources: [ResourceDescriptor]?
     public let ttlMs: Int
     public let cacheScope: CacheScope
+
+    private enum CodingKeys: String, CodingKey {
+        case _meta
+        case resultType
+        case nextCursor
+        case resources
+        case ttlMs
+        case cacheScope
+    }
+
+    public init(_meta: MetaObject? = nil, resultType: ResultType, nextCursor: String? = nil, resources: [ResourceDescriptor]?, ttlMs: Int, cacheScope: CacheScope) {
+        self._meta = _meta
+        self.resultType = resultType
+        self.nextCursor = nextCursor
+        self.resources = resources
+        self.ttlMs = ttlMs
+        self.cacheScope = cacheScope
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self._meta = try c.decodeIfPresent(MetaObject.self, forKey: ._meta)
+        self.resultType = try c.decode(ResultType.self, forKey: .resultType)
+        self.nextCursor = try c.decodeIfPresent(String.self, forKey: .nextCursor)
+        self.resources = try c.decode([ResourceDescriptor]?.self, forKey: .resources)
+        self.ttlMs = try c.decode(Int.self, forKey: .ttlMs)
+        self.cacheScope = try c.decode(CacheScope.self, forKey: .cacheScope)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encodeIfPresent(self._meta, forKey: ._meta)
+        try c.encode(self.resultType, forKey: .resultType)
+        try c.encodeIfPresent(self.nextCursor, forKey: .nextCursor)
+        try c.encode(self.resources, forKey: .resources)
+        try c.encode(self.ttlMs, forKey: .ttlMs)
+        try c.encode(self.cacheScope, forKey: .cacheScope)
+    }
 }
 
 /// ResourceTemplateDescriptor describes a parameterized MCP resource.
@@ -575,6 +912,17 @@ public struct ResourceTemplateDescriptor: Codable {
     public let mimeType: String?
     /// Annotations provide optional client metadata.
     public let annotations: Annotations?
+
+    public init(_meta: MetaObject? = nil, icons: [Icon]? = nil, name: String, title: String? = nil, uriTemplate: String, description: String? = nil, mimeType: String? = nil, annotations: Annotations? = nil) {
+        self._meta = _meta
+        self.icons = icons
+        self.name = name
+        self.title = title
+        self.uriTemplate = uriTemplate
+        self.description = description
+        self.mimeType = mimeType
+        self.annotations = annotations
+    }
 }
 
 /// ResourceTemplatesListResult is the response payload for resources/templates/list.
@@ -582,20 +930,88 @@ public struct ResourceTemplatesListResult: Codable {
     public let _meta: MetaObject?
     public let resultType: ResultType
     public let nextCursor: String?
-    public let resourceTemplates: [ResourceTemplateDescriptor]
+    public let resourceTemplates: [ResourceTemplateDescriptor]?
     public let ttlMs: Int
     public let cacheScope: CacheScope
+
+    private enum CodingKeys: String, CodingKey {
+        case _meta
+        case resultType
+        case nextCursor
+        case resourceTemplates
+        case ttlMs
+        case cacheScope
+    }
+
+    public init(_meta: MetaObject? = nil, resultType: ResultType, nextCursor: String? = nil, resourceTemplates: [ResourceTemplateDescriptor]?, ttlMs: Int, cacheScope: CacheScope) {
+        self._meta = _meta
+        self.resultType = resultType
+        self.nextCursor = nextCursor
+        self.resourceTemplates = resourceTemplates
+        self.ttlMs = ttlMs
+        self.cacheScope = cacheScope
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self._meta = try c.decodeIfPresent(MetaObject.self, forKey: ._meta)
+        self.resultType = try c.decode(ResultType.self, forKey: .resultType)
+        self.nextCursor = try c.decodeIfPresent(String.self, forKey: .nextCursor)
+        self.resourceTemplates = try c.decode([ResourceTemplateDescriptor]?.self, forKey: .resourceTemplates)
+        self.ttlMs = try c.decode(Int.self, forKey: .ttlMs)
+        self.cacheScope = try c.decode(CacheScope.self, forKey: .cacheScope)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encodeIfPresent(self._meta, forKey: ._meta)
+        try c.encode(self.resultType, forKey: .resultType)
+        try c.encodeIfPresent(self.nextCursor, forKey: .nextCursor)
+        try c.encode(self.resourceTemplates, forKey: .resourceTemplates)
+        try c.encode(self.ttlMs, forKey: .ttlMs)
+        try c.encode(self.cacheScope, forKey: .cacheScope)
+    }
 }
 
 /// ResourcesReadParams is the request params payload for resources/read.
 public struct ResourcesReadParams: Codable {
     public let _meta: RequestMeta
     /// InputResponses carries responses to server-initiated requests from a prior input_required result.
-    public let inputResponses: JSONValue?
+    public let inputResponses: JSONPresence<JSONValue>
     /// RequestState carries opaque state from a prior input_required result.
     public let requestState: String?
     /// URI identifies the resource to read.
     public let uri: String
+
+    private enum CodingKeys: String, CodingKey {
+        case _meta
+        case inputResponses
+        case requestState
+        case uri
+    }
+
+    public init(_meta: RequestMeta, inputResponses: JSONPresence<JSONValue> = .missing, requestState: String? = nil, uri: String) {
+        self._meta = _meta
+        self.inputResponses = inputResponses
+        self.requestState = requestState
+        self.uri = uri
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self._meta = try c.decode(RequestMeta.self, forKey: ._meta)
+        if !c.contains(.inputResponses) { self.inputResponses = .missing } else if try c.decodeNil(forKey: .inputResponses) { self.inputResponses = .null } else { self.inputResponses = .value(try c.decode(JSONValue.self, forKey: .inputResponses)) }
+        self.requestState = try c.decodeIfPresent(String.self, forKey: .requestState)
+        self.uri = try c.decode(String.self, forKey: .uri)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self._meta, forKey: ._meta)
+        switch self.inputResponses { case .missing: break; case .null: try c.encodeNil(forKey: .inputResponses); case .value(let value): try c.encode(value, forKey: .inputResponses) }
+        try c.encodeIfPresent(self.requestState, forKey: .requestState)
+        try c.encode(self.uri, forKey: .uri)
+    }
 }
 
 /// ResourcesReadResult is the response payload for resources/read.
@@ -603,11 +1019,45 @@ public struct ResourcesReadResult: Codable {
     public let _meta: MetaObject?
     public let resultType: ResultType
     /// Contents contains text or blob resource contents.
-    public let contents: [ResourceContent]
+    public let contents: [ResourceContent]?
     /// TTLMS hints how long clients may cache this response in milliseconds.
     public let ttlMs: Int
     /// CacheScope indicates whether the response may be cached publicly or privately.
     public let cacheScope: CacheScope
+
+    private enum CodingKeys: String, CodingKey {
+        case _meta
+        case resultType
+        case contents
+        case ttlMs
+        case cacheScope
+    }
+
+    public init(_meta: MetaObject? = nil, resultType: ResultType, contents: [ResourceContent]?, ttlMs: Int, cacheScope: CacheScope) {
+        self._meta = _meta
+        self.resultType = resultType
+        self.contents = contents
+        self.ttlMs = ttlMs
+        self.cacheScope = cacheScope
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self._meta = try c.decodeIfPresent(MetaObject.self, forKey: ._meta)
+        self.resultType = try c.decode(ResultType.self, forKey: .resultType)
+        self.contents = try c.decode([ResourceContent]?.self, forKey: .contents)
+        self.ttlMs = try c.decode(Int.self, forKey: .ttlMs)
+        self.cacheScope = try c.decode(CacheScope.self, forKey: .cacheScope)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encodeIfPresent(self._meta, forKey: ._meta)
+        try c.encode(self.resultType, forKey: .resultType)
+        try c.encode(self.contents, forKey: .contents)
+        try c.encode(self.ttlMs, forKey: .ttlMs)
+        try c.encode(self.cacheScope, forKey: .cacheScope)
+    }
 }
 
 /// SubscriptionFilter describes MCP subscription notifications requested by a client.
@@ -616,6 +1066,11 @@ public struct SubscriptionFilter: Codable {
     public let resourcesListChanged: Bool?
     /// ResourceSubscriptions requests updates for individual resource URIs.
     public let resourceSubscriptions: [String]?
+
+    public init(resourcesListChanged: Bool? = nil, resourceSubscriptions: [String]? = nil) {
+        self.resourcesListChanged = resourcesListChanged
+        self.resourceSubscriptions = resourceSubscriptions
+    }
 }
 
 /// SubscriptionsListenParams is the request params payload for subscriptions/listen.
@@ -623,13 +1078,44 @@ public struct SubscriptionsListenParams: Codable {
     public let _meta: RequestMeta
     /// Notifications declares notification types the client opts in to.
     public let notifications: SubscriptionFilter
+
+    public init(_meta: RequestMeta, notifications: SubscriptionFilter) {
+        self._meta = _meta
+        self.notifications = notifications
+    }
 }
 
 /// JSONRPCNotification is a JSON-RPC notification that does not expect a response.
 public struct JSONRPCNotification: Codable {
     public let jsonrpc: String
     public let method: NotificationMethod
-    public let params: JSONValue?
+    public let params: JSONPresence<JSONValue>
+
+    private enum CodingKeys: String, CodingKey {
+        case jsonrpc
+        case method
+        case params
+    }
+
+    public init(jsonrpc: String, method: NotificationMethod, params: JSONPresence<JSONValue> = .missing) {
+        self.jsonrpc = jsonrpc
+        self.method = method
+        self.params = params
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.jsonrpc = try c.decode(String.self, forKey: .jsonrpc)
+        self.method = try c.decode(NotificationMethod.self, forKey: .method)
+        if !c.contains(.params) { self.params = .missing } else if try c.decodeNil(forKey: .params) { self.params = .null } else { self.params = .value(try c.decode(JSONValue.self, forKey: .params)) }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.jsonrpc, forKey: .jsonrpc)
+        try c.encode(self.method, forKey: .method)
+        switch self.params { case .missing: break; case .null: try c.encodeNil(forKey: .params); case .value(let value): try c.encode(value, forKey: .params) }
+    }
 }
 
 /// SubscriptionNotificationParams is the payload for subscription notifications.
@@ -639,6 +1125,12 @@ public struct SubscriptionNotificationParams: Codable {
     public let notifications: SubscriptionFilter?
     /// URI identifies an updated resource.
     public let uri: String?
+
+    public init(_meta: MetaObject? = nil, notifications: SubscriptionFilter? = nil, uri: String? = nil) {
+        self._meta = _meta
+        self.notifications = notifications
+        self.uri = uri
+    }
 }
 
 /// SubscriptionsInitialStateParams is the payload for the
@@ -650,5 +1142,98 @@ public struct SubscriptionsInitialStateParams: Codable {
     /// Contents is the resources/read result for the same target, so a client
     /// that applies the payload holds the post-subscription state without a
     /// second read.
-    public let contents: [ResourceContent]
+    public let contents: [ResourceContent]?
+
+    private enum CodingKeys: String, CodingKey {
+        case _meta
+        case uri
+        case contents
+    }
+
+    public init(_meta: MetaObject? = nil, uri: String, contents: [ResourceContent]?) {
+        self._meta = _meta
+        self.uri = uri
+        self.contents = contents
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self._meta = try c.decodeIfPresent(MetaObject.self, forKey: ._meta)
+        self.uri = try c.decode(String.self, forKey: .uri)
+        self.contents = try c.decode([ResourceContent]?.self, forKey: .contents)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encodeIfPresent(self._meta, forKey: ._meta)
+        try c.encode(self.uri, forKey: .uri)
+        try c.encode(self.contents, forKey: .contents)
+    }
+}
+
+/// SamplingCapability describes deprecated client sampling support.
+public struct SamplingCapability: Codable {
+    /// Context declares context inclusion support.
+    public let context: MetaObject?
+    /// Tools declares tool-use support.
+    public let tools: MetaObject?
+
+    public init(context: MetaObject? = nil, tools: MetaObject? = nil) {
+        self.context = context
+        self.tools = tools
+    }
+}
+
+/// ElicitationCapability describes client elicitation support.
+public struct ElicitationCapability: Codable {
+    /// Form declares support for form-mode elicitation.
+    public let form: MetaObject?
+    /// URL declares support for URL-mode elicitation.
+    public let url: MetaObject?
+
+    public init(form: MetaObject? = nil, url: MetaObject? = nil) {
+        self.form = form
+        self.url = url
+    }
+}
+
+/// ClientCapabilities describes capabilities the client supports for a request.
+public struct ClientCapabilities: Codable {
+    /// Experimental contains non-standard capabilities supported by the client.
+    public let experimental: Extensions?
+    /// DeprecatedRoots is present if the client supports listing roots.
+    ///
+    /// Deprecated as of protocol version 2026-07-28, but still present in that
+    /// schema. This is native 2026-07-28 compatibility, not released-version
+    /// compat.go support; remove it only after the upstream 2026+ schema drops it.
+    public let roots: MetaObject?
+    /// DeprecatedSampling is present if the client supports server-initiated LLM sampling.
+    ///
+    /// Deprecated as of protocol version 2026-07-28, but still present in that
+    /// schema. This is native 2026-07-28 compatibility, not released-version
+    /// compat.go support; remove it only after the upstream 2026+ schema drops it.
+    public let sampling: SamplingCapability?
+    /// Elicitation is present if the client supports server-initiated user elicitation.
+    public let elicitation: ElicitationCapability?
+    /// Extensions contains optional MCP extensions supported by the client.
+    public let extensions: Extensions?
+
+    public init(experimental: Extensions? = nil, roots: MetaObject? = nil, sampling: SamplingCapability? = nil, elicitation: ElicitationCapability? = nil, extensions: Extensions? = nil) {
+        self.experimental = experimental
+        self.roots = roots
+        self.sampling = sampling
+        self.elicitation = elicitation
+        self.extensions = extensions
+    }
+}
+
+/// OpenAIUserLocation contains optional client location hints. Only the device's
+/// IANA timezone is used; these untrusted hints must not influence authorization.
+public struct OpenAIUserLocation: Codable {
+    /// Timezone is the caller device's IANA timezone, such as America/Toronto.
+    public let timezone: String?
+
+    public init(timezone: String? = nil) {
+        self.timezone = timezone
+    }
 }

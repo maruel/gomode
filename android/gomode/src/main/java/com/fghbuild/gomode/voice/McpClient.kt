@@ -7,6 +7,7 @@ import com.fghbuild.gomode.service.credentialedHTTPClient
 import com.fghbuild.mcp.sdk.v1.ApiClient
 import com.fghbuild.mcp.sdk.v1.ClientCapabilities
 import com.fghbuild.mcp.sdk.v1.Implementation
+import com.fghbuild.mcp.sdk.v1.JSONPresence
 import com.fghbuild.mcp.sdk.v1.JSONRPCNotification
 import com.fghbuild.mcp.sdk.v1.JSONRPCRequest
 import com.fghbuild.mcp.sdk.v1.MetaObject
@@ -28,6 +29,7 @@ import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import com.fghbuild.mcp.sdk.v1.ToolsCallParams
 import com.fghbuild.mcp.sdk.v1.ToolsListResult
 import kotlinx.coroutines.flow.Flow
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -97,15 +99,15 @@ class McpClient(
                 req =
                     JSONRPCRequest(
                         jsonrpc = "2.0",
-                        id = JsonPrimitive(idCounter.incrementAndGet()),
+                        id = JSONPresence.Value(JsonPrimitive(idCounter.incrementAndGet())),
                         method = method,
-                        params = params,
+                        params = JSONPresence.Value(params),
                     ),
                 headers = headers,
             )
         val rpcError = response.error
         if (rpcError != null) error(rpcError.message)
-        val result = response.result ?: error("Missing result in MCP response")
+        val result = (response.result as? JSONPresence.Value)?.value ?: error("Missing result in MCP response")
         return json.decodeFromJsonElement(result)
     }
 
@@ -132,7 +134,7 @@ class McpClient(
                             ),
                         ),
                 )
-            tools += result.tools
+            tools += result.tools.orEmpty()
             cursor = result.nextCursor
         } while (!cursor.isNullOrEmpty())
         toolsByName = tools.associateBy { it.name }
@@ -157,13 +159,14 @@ class McpClient(
                                     locale = locale,
                                 ),
                             name = name,
-                            arguments = args,
+                            arguments = JSONPresence.Value(args),
                         ),
                     ),
                 name = name,
                 paramHeaders = mcpParamHeaders(toolsByName[name], args),
             )
-        val structuredContent = result.structuredContent?.jsonObject ?: textContentAsStructuredError(result)
+        val structuredContent =
+            (result.structuredContent as? JSONPresence.Value)?.value?.jsonObject ?: textContentAsStructuredError(result)
         return McpToolResult(
             structuredContent = structuredContent,
             isError = result.isError ?: false,
@@ -186,7 +189,7 @@ class McpClient(
                             ),
                         ),
                 )
-            resources += result.resources
+            resources += result.resources.orEmpty()
             cursor = result.nextCursor
         } while (!cursor.isNullOrEmpty())
         return resources
@@ -207,7 +210,7 @@ class McpClient(
                             ),
                         ),
                 )
-            templates += result.resourceTemplates
+            templates += result.resourceTemplates.orEmpty()
             cursor = result.nextCursor
         } while (!cursor.isNullOrEmpty())
         return templates
@@ -233,20 +236,28 @@ class McpClient(
         notifications: SubscriptionFilter,
         sessionID: String?,
     ): Flow<JSONRPCNotification> =
-        subscriptionAPI.subscriptionsListen(
-            JSONRPCRequest(
-                jsonrpc = "2.0",
-                id = JsonPrimitive(idCounter.incrementAndGet()),
-                method = Method.SubscriptionsListen,
-                params =
-                    json.encodeToJsonElement(
-                        SubscriptionsListenParams(
-                            _meta = requestMeta(sessionID),
-                            notifications = notifications,
-                        ),
+        subscriptionAPI.stream(
+            path = "",
+            method = "POST",
+            body =
+                json.encodeToString(
+                    JSONRPCRequest(
+                        jsonrpc = "2.0",
+                        id = JSONPresence.Value(JsonPrimitive(idCounter.incrementAndGet())),
+                        method = Method.SubscriptionsListen,
+                        params =
+                            JSONPresence.Value(
+                                json.encodeToJsonElement(
+                                    SubscriptionsListenParams(
+                                        _meta = requestMeta(sessionID),
+                                        notifications = notifications,
+                                    ),
+                                ),
+                            ),
                     ),
-            ),
+                ),
             headers = mcpHeaders(Method.SubscriptionsListen),
+            decode = { json.decodeFromString<JSONRPCNotification>(it) },
         )
 
     private fun mcpHeaders(
@@ -272,7 +283,7 @@ internal fun newSubscriptionHTTPClient(): OkHttpClient =
 
 private fun textContentAsStructuredError(result: ToolCallResult): JsonObject {
     val text =
-        result.content.firstNotNullOfOrNull { block ->
+        result.content.orEmpty().firstNotNullOfOrNull { block ->
             block.takeIf { it.type.value == "text" }?.text
         } ?: return JsonObject(emptyMap())
     return buildJsonObject { put("error", text) }

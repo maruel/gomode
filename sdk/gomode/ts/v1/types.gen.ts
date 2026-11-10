@@ -48,7 +48,7 @@ export interface WebShellSettings {
    * version implemented by that shell.
    */
   bridgeVersion: number /* int */;
-  toolGroups: ToolGroup[];
+  toolGroups: ToolGroup[] | null;
   voiceGateway: VoiceGatewaySettings;
 }
 
@@ -123,13 +123,13 @@ export interface SkillMCPServer {
   protocolVersion: string;
   authRequired: boolean;
   /** Tools is the explicit allowlist of MCP tool names activated by the skill. */
-  tools: string[];
+  tools: string[] | null;
 }
 
 /** SkillGoMode contains Go Mode-specific SKILL.md frontmatter fields. */
 export interface SkillGoMode {
   activation?: SkillActivation;
-  mcpServers: SkillMCPServer[];
+  mcpServers: SkillMCPServer[] | null;
 }
 
 /**

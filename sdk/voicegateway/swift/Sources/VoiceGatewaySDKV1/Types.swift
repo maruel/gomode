@@ -4,6 +4,27 @@ import Foundation
 /// ISO 8601 timestamp string (e.g. "2026-04-13T12:00:00Z").
 public typealias ISOTimestamp = String
 
+/// A JSON field that may be omitted, null, or a value.
+public enum JSONPresence<Value: Codable>: Codable {
+    case missing
+    case null
+    case value(Value)
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self = container.decodeNil() ? .null : .value(try container.decode(Value.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .missing: throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath, debugDescription: "Missing fields must be omitted"))
+        case .null: try container.encodeNil()
+        case .value(let value): try container.encode(value)
+        }
+    }
+}
+
 /// A Codable representation of an arbitrary JSON value.
 public enum JSONValue: Codable, Equatable {
     case string(String)
@@ -357,17 +378,73 @@ public struct VoiceTransport: Codable, Equatable, Hashable {
 public struct VoiceChoice: Codable {
     public let id: String
     public let label: String
-    public let transports: [VoiceTransport]
+    public let transports: [VoiceTransport]?
     /// Voices lists supported audio voice names. Omitted when the choice does not offer voice selection.
     public let voices: [String]?
     /// DefaultVoice is the voice used when session.setup.voice.name is omitted.
     public let defaultVoice: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case label
+        case transports
+        case voices
+        case defaultVoice
+    }
+
+    public init(id: String, label: String, transports: [VoiceTransport]?, voices: [String]? = nil, defaultVoice: String? = nil) {
+        self.id = id
+        self.label = label
+        self.transports = transports
+        self.voices = voices
+        self.defaultVoice = defaultVoice
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.id = try c.decode(String.self, forKey: .id)
+        self.label = try c.decode(String.self, forKey: .label)
+        self.transports = try c.decode([VoiceTransport]?.self, forKey: .transports)
+        self.voices = try c.decodeIfPresent([String].self, forKey: .voices)
+        self.defaultVoice = try c.decodeIfPresent(String.self, forKey: .defaultVoice)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.id, forKey: .id)
+        try c.encode(self.label, forKey: .label)
+        try c.encode(self.transports, forKey: .transports)
+        try c.encodeIfPresent(self.voices, forKey: .voices)
+        try c.encodeIfPresent(self.defaultVoice, forKey: .defaultVoice)
+    }
 }
 
 /// VoiceChoicesResp advertises the available voice choices and default selection.
 public struct VoiceChoicesResp: Codable {
-    public let choices: [VoiceChoice]
+    public let choices: [VoiceChoice]?
     public let defaultChoiceID: String
+
+    private enum CodingKeys: String, CodingKey {
+        case choices
+        case defaultChoiceID
+    }
+
+    public init(choices: [VoiceChoice]?, defaultChoiceID: String) {
+        self.choices = choices
+        self.defaultChoiceID = defaultChoiceID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.choices = try c.decode([VoiceChoice]?.self, forKey: .choices)
+        self.defaultChoiceID = try c.decode(String.self, forKey: .defaultChoiceID)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.choices, forKey: .choices)
+        try c.encode(self.defaultChoiceID, forKey: .defaultChoiceID)
+    }
 }
 
 /// ServiceAuthorization identifies the host and carries its scoped gateway token.
@@ -376,6 +453,13 @@ public struct ServiceAuthorization: Codable {
     public let instanceID: String
     public let baseURL: String
     public let token: String
+
+    public init(kind: String, instanceID: String, baseURL: String, token: String) {
+        self.kind = kind
+        self.instanceID = instanceID
+        self.baseURL = baseURL
+        self.token = token
+    }
 }
 
 /// VoiceTextTicketReq authorizes a browser text-session WebSocket upgrade.
@@ -385,6 +469,11 @@ public struct VoiceTextTicketReq: Codable {
     public let choiceID: String?
     /// Service authorizes a session on a standalone gateway.
     public let service: ServiceAuthorization?
+
+    public init(choiceID: String? = nil, service: ServiceAuthorization? = nil) {
+        self.choiceID = choiceID
+        self.service = service
+    }
 }
 
 /// VoiceTextTicketResp carries a single-use ticket that expires after 30 seconds.
@@ -393,6 +482,10 @@ public struct VoiceTextTicketReq: Codable {
 /// Never put it in a URL or store it persistently.
 public struct VoiceTextTicketResp: Codable {
     public let ticket: String
+
+    public init(ticket: String) {
+        self.ticket = ticket
+    }
 }
 
 /// VoiceRTCOfferReq is the request body for POST /api/voicegateway/v1/voice/rtc/offer.
@@ -403,6 +496,12 @@ public struct VoiceRTCOfferReq: Codable {
     public let sdp: String
     /// Service authorizes a session on a standalone gateway. Embedded gateways use host authentication.
     public let service: ServiceAuthorization?
+
+    public init(choiceID: String? = nil, sdp: String, service: ServiceAuthorization? = nil) {
+        self.choiceID = choiceID
+        self.sdp = sdp
+        self.service = service
+    }
 }
 
 /// VoiceRTCAnswerResp is the response for POST /api/voicegateway/v1/voice/rtc/offer.
@@ -411,6 +510,11 @@ public struct VoiceRTCAnswerResp: Codable {
     public let sdp: String
     /// SessionID identifies the voice RTC session for diagnostics and close calls.
     public let sessionID: String
+
+    public init(sdp: String, sessionID: String) {
+        self.sdp = sdp
+        self.sessionID = sessionID
+    }
 }
 
 /// VoiceRTCClientDiagnostics reports client-observed WebRTC state for diagnosis.
@@ -425,12 +529,24 @@ public struct VoiceRTCClientDiagnostics: Codable {
     public let signalingState: VoiceRTCSignalingState?
     /// DataChannelState is the client's voice-gateway RTCDataChannel.readyState.
     public let dataChannelState: VoiceRTCDataChannelState?
+
+    public init(iceConnectionState: VoiceRTCICEConnectionState? = nil, iceGatheringState: VoiceRTCICEGatheringState? = nil, connectionState: VoiceRTCConnectionState? = nil, signalingState: VoiceRTCSignalingState? = nil, dataChannelState: VoiceRTCDataChannelState? = nil) {
+        self.iceConnectionState = iceConnectionState
+        self.iceGatheringState = iceGatheringState
+        self.connectionState = connectionState
+        self.signalingState = signalingState
+        self.dataChannelState = dataChannelState
+    }
 }
 
 /// VoiceRTCDiagnosticsReq is the request body for POST /api/voicegateway/v1/voice/rtc/{sessionID}/diagnostics.
 public struct VoiceRTCDiagnosticsReq: Codable {
     /// Client contains the browser/client WebRTC state observed by the caller.
     public let client: VoiceRTCClientDiagnostics?
+
+    public init(client: VoiceRTCClientDiagnostics? = nil) {
+        self.client = client
+    }
 }
 
 /// VoiceRTCUDPEndpoint reports one server UDP candidate for diagnosis.
@@ -439,6 +555,11 @@ public struct VoiceRTCUDPEndpoint: Codable {
     public let host: String
     /// Port is the UDP port paired with host in the gateway SDP answer.
     public let port: Int
+
+    public init(host: String, port: Int) {
+        self.host = host
+        self.port = port
+    }
 }
 
 /// VoiceRTCServerDiagnostics reports server-observed WebRTC state for diagnosis.
@@ -469,6 +590,22 @@ public struct VoiceRTCServerDiagnostics: Codable {
     public let sessionReadySent: Bool?
     /// LastError is the last gateway error sent to the client, if any.
     public let lastError: String?
+
+    public init(sessionFound: Bool, udpEndpoints: [VoiceRTCUDPEndpoint]? = nil, udpMappingError: String? = nil, iceConnectionState: VoiceRTCICEConnectionState? = nil, iceGatheringState: VoiceRTCICEGatheringState? = nil, connectionState: VoiceRTCConnectionState? = nil, signalingState: VoiceRTCSignalingState? = nil, dataChannelState: VoiceRTCDataChannelState? = nil, dataChannelOpened: Bool? = nil, audioTrackReceived: Bool? = nil, backendConnected: Bool? = nil, sessionReadySent: Bool? = nil, lastError: String? = nil) {
+        self.sessionFound = sessionFound
+        self.udpEndpoints = udpEndpoints
+        self.udpMappingError = udpMappingError
+        self.iceConnectionState = iceConnectionState
+        self.iceGatheringState = iceGatheringState
+        self.connectionState = connectionState
+        self.signalingState = signalingState
+        self.dataChannelState = dataChannelState
+        self.dataChannelOpened = dataChannelOpened
+        self.audioTrackReceived = audioTrackReceived
+        self.backendConnected = backendConnected
+        self.sessionReadySent = sessionReadySent
+        self.lastError = lastError
+    }
 }
 
 /// VoiceRTCDiagnosticsResp reports structured WebRTC connectivity diagnostics.
@@ -485,28 +622,55 @@ public struct VoiceRTCDiagnosticsResp: Codable {
     public let server: VoiceRTCServerDiagnostics
     /// Client echoes the client diagnostics included in the request.
     public let client: VoiceRTCClientDiagnostics?
+
+    public init(sessionID: String, issue: VoiceRTCConnectivityIssue, side: VoiceRTCConnectivitySide, message: String, server: VoiceRTCServerDiagnostics, client: VoiceRTCClientDiagnostics? = nil) {
+        self.sessionID = sessionID
+        self.issue = issue
+        self.side = side
+        self.message = message
+        self.server = server
+        self.client = client
+    }
 }
 
 /// StatusResp is a common response for mutation endpoints.
 public struct StatusResp: Codable {
     /// Status is a short human-readable result such as "closed".
     public let status: String
+
+    public init(status: String) {
+        self.status = status
+    }
 }
 
 public struct ErrorDetails: Codable {
     public let code: ErrorCode
     public let message: String
+
+    public init(code: ErrorCode, message: String) {
+        self.code = code
+        self.message = message
+    }
 }
 
 public struct ErrorResponse: Codable {
     public let error: ErrorDetails
     public let details: [String: JSONValue]?
+
+    public init(error: ErrorDetails, details: [String: JSONValue]? = nil) {
+        self.error = error
+        self.details = details
+    }
 }
 
 /// MessageEnvelope carries the kind used to dispatch data-channel messages.
 public struct MessageEnvelope: Codable {
     /// Kind is the message discriminator used to decode the concrete message type.
     public let kind: MessageKind
+
+    public init(kind: MessageKind) {
+        self.kind = kind
+    }
 }
 
 /// VoiceConfig describes provider-neutral voice preferences.
@@ -519,6 +683,11 @@ public struct VoiceConfig: Codable {
     /// where supported. Speech models determine available languages and accents;
     /// local server ASR/TTS adapters do not expose per-session language controls.
     public let language: String
+
+    public init(name: String, language: String) {
+        self.name = name
+        self.language = language
+    }
 }
 
 /// ToolDeclaration is a provider-neutral service tool declaration.
@@ -528,7 +697,33 @@ public struct ToolDeclaration: Codable {
     /// Description explains when and how the assistant should use the tool.
     public let description: String
     /// Parameters is a JSON Schema object describing the tool arguments.
-    public let parameters: JSONValue
+    public let parameters: JSONValue?
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case description
+        case parameters
+    }
+
+    public init(name: String, description: String, parameters: JSONValue?) {
+        self.name = name
+        self.description = description
+        self.parameters = parameters
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.description = try c.decode(String.self, forKey: .description)
+        self.parameters = try c.decode(JSONValue?.self, forKey: .parameters)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.name, forKey: .name)
+        try c.encode(self.description, forKey: .description)
+        try c.encode(self.parameters, forKey: .parameters)
+    }
 }
 
 /// Context carries provider-neutral text or instruction context.
@@ -537,6 +732,11 @@ public struct Context: Codable {
     public let systemInstruction: String?
     /// Text is additional conversational context for the session.
     public let text: String?
+
+    public init(systemInstruction: String? = nil, text: String? = nil) {
+        self.systemInstruction = systemInstruction
+        self.text = text
+    }
 }
 
 /// SessionSetup is the client message that initializes a voice session.
@@ -546,9 +746,39 @@ public struct SessionSetup: Codable {
     /// Voice contains the requested voice and language.
     public let voice: VoiceConfig
     /// Tools declares the client-side tools the assistant may call.
-    public let tools: [ToolDeclaration]
+    public let tools: [ToolDeclaration]?
     /// Context provides initial instructions or text context for the session.
     public let context: Context
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case voice
+        case tools
+        case context
+    }
+
+    public init(kind: MessageKind, voice: VoiceConfig, tools: [ToolDeclaration]?, context: Context) {
+        self.kind = kind
+        self.voice = voice
+        self.tools = tools
+        self.context = context
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.kind = try c.decode(MessageKind.self, forKey: .kind)
+        self.voice = try c.decode(VoiceConfig.self, forKey: .voice)
+        self.tools = try c.decode([ToolDeclaration]?.self, forKey: .tools)
+        self.context = try c.decode(Context.self, forKey: .context)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.kind, forKey: .kind)
+        try c.encode(self.voice, forKey: .voice)
+        try c.encode(self.tools, forKey: .tools)
+        try c.encode(self.context, forKey: .context)
+    }
 }
 
 /// ContextUpdate is a client message that appends session context.
@@ -557,6 +787,11 @@ public struct ContextUpdate: Codable {
     public let kind: MessageKind
     /// Context contains the instructions or text to append.
     public let context: Context
+
+    public init(kind: MessageKind, context: Context) {
+        self.kind = kind
+        self.context = context
+    }
 }
 
 /// UserMessage is a client message that appends completed user text and asks the assistant to respond.
@@ -565,6 +800,11 @@ public struct UserMessage: Codable {
     public let kind: MessageKind
     /// Text is the completed user utterance to send to the assistant.
     public let text: String
+
+    public init(kind: MessageKind, text: String) {
+        self.kind = kind
+        self.text = text
+    }
 }
 
 /// ToolResult is a client message that returns a tool execution result.
@@ -576,7 +816,37 @@ public struct ToolResult: Codable {
     /// Name is the tool name that produced the result.
     public let name: String
     /// Result is the JSON result returned to the assistant.
-    public let result: JSONValue
+    public let result: JSONValue?
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case id
+        case name
+        case result
+    }
+
+    public init(kind: MessageKind, id: String, name: String, result: JSONValue?) {
+        self.kind = kind
+        self.id = id
+        self.name = name
+        self.result = result
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.kind = try c.decode(MessageKind.self, forKey: .kind)
+        self.id = try c.decode(String.self, forKey: .id)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.result = try c.decode(JSONValue?.self, forKey: .result)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.kind, forKey: .kind)
+        try c.encode(self.id, forKey: .id)
+        try c.encode(self.name, forKey: .name)
+        try c.encode(self.result, forKey: .result)
+    }
 }
 
 /// TurnCancel is a client message that cancels the current turn.
@@ -585,6 +855,11 @@ public struct TurnCancel: Codable {
     public let kind: MessageKind
     /// Reason optionally explains why the current assistant turn was cancelled.
     public let reason: String?
+
+    public init(kind: MessageKind, reason: String? = nil) {
+        self.kind = kind
+        self.reason = reason
+    }
 }
 
 /// SessionClose is a client message that closes the voice session.
@@ -593,12 +868,21 @@ public struct SessionClose: Codable {
     public let kind: MessageKind
     /// Reason optionally explains why the client closed the session.
     public let reason: String?
+
+    public init(kind: MessageKind, reason: String? = nil) {
+        self.kind = kind
+        self.reason = reason
+    }
 }
 
 /// SessionReady is a gateway message that reports the session is ready.
 public struct SessionReady: Codable {
     /// Kind is "session.ready".
     public let kind: MessageKind
+
+    public init(kind: MessageKind) {
+        self.kind = kind
+    }
 }
 
 /// TranscriptDelta is a gateway message that streams transcript text.
@@ -609,6 +893,12 @@ public struct TranscriptDelta: Codable {
     public let speaker: Speaker
     /// Text is an incremental transcript fragment.
     public let text: String
+
+    public init(kind: MessageKind, speaker: Speaker, text: String) {
+        self.kind = kind
+        self.speaker = speaker
+        self.text = text
+    }
 }
 
 /// AssistantTextDelta is a gateway message that streams assistant text.
@@ -617,6 +907,11 @@ public struct AssistantTextDelta: Codable {
     public let kind: MessageKind
     /// Text is an incremental assistant text fragment.
     public let text: String
+
+    public init(kind: MessageKind, text: String) {
+        self.kind = kind
+        self.text = text
+    }
 }
 
 /// SpeechStarted is a gateway message that reports speech output started.
@@ -625,6 +920,11 @@ public struct SpeechStarted: Codable {
     public let kind: MessageKind
     /// Speaker identifies whose speech output started.
     public let speaker: Speaker
+
+    public init(kind: MessageKind, speaker: Speaker) {
+        self.kind = kind
+        self.speaker = speaker
+    }
 }
 
 /// SpeechEnded is a gateway message that reports speech output ended.
@@ -633,6 +933,11 @@ public struct SpeechEnded: Codable {
     public let kind: MessageKind
     /// Speaker identifies whose speech output ended.
     public let speaker: Speaker
+
+    public init(kind: MessageKind, speaker: Speaker) {
+        self.kind = kind
+        self.speaker = speaker
+    }
 }
 
 /// ToolCall is a gateway message that asks the client to execute a tool.
@@ -644,7 +949,37 @@ public struct ToolCall: Codable {
     /// Name is the requested tool name.
     public let name: String
     /// Args is the JSON argument object for the requested tool.
-    public let args: JSONValue
+    public let args: JSONValue?
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case id
+        case name
+        case args
+    }
+
+    public init(kind: MessageKind, id: String, name: String, args: JSONValue?) {
+        self.kind = kind
+        self.id = id
+        self.name = name
+        self.args = args
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.kind = try c.decode(MessageKind.self, forKey: .kind)
+        self.id = try c.decode(String.self, forKey: .id)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.args = try c.decode(JSONValue?.self, forKey: .args)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.kind, forKey: .kind)
+        try c.encode(self.id, forKey: .id)
+        try c.encode(self.name, forKey: .name)
+        try c.encode(self.args, forKey: .args)
+    }
 }
 
 /// TurnStatus is a gateway message that reports work on the current turn.
@@ -657,6 +992,11 @@ public struct TurnStatus: Codable {
     /// State is the gateway work in progress; idle ends the turn, including
     /// one that produced no speech.
     public let state: TurnState
+
+    public init(kind: MessageKind, state: TurnState) {
+        self.kind = kind
+        self.state = state
+    }
 }
 
 /// Interrupted is a gateway message that reports an interruption.
@@ -667,6 +1007,12 @@ public struct Interrupted: Codable {
     public let source: InterruptSource
     /// Message optionally provides more detail about the interruption.
     public let message: String?
+
+    public init(kind: MessageKind, source: InterruptSource, message: String? = nil) {
+        self.kind = kind
+        self.source = source
+        self.message = message
+    }
 }
 
 /// Error is a gateway message that reports an error.
@@ -677,4 +1023,10 @@ public struct Error: Codable {
     public let message: String
     /// Recoverable reports whether the client may continue using the session.
     public let recoverable: Bool
+
+    public init(kind: MessageKind, message: String, recoverable: Bool) {
+        self.kind = kind
+        self.message = message
+        self.recoverable = recoverable
+    }
 }
