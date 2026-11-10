@@ -1,26 +1,27 @@
 #!/usr/bin/env python3
-"""Run hosted Go Mode tests and share device-scoped instrumentation execution.
+"""Run all model-free Android tests with owned hosted and gateway fixtures.
 
-With --voice, serve internal/cmd/android-voice-fixture instead and select tests
-marked @VoiceFixture. With --class, run one class or method instead of the
-fixture suite.
+Real model inference/transfers and documentation captures are excluded. Use
+--module and --class for focused app or independent Telecom instrumentation.
 """
 
 import argparse
+import contextlib
+import dataclasses
 import http.server
 import json
 import os
 import pathlib
 import re
-import shutil
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
 import threading
+import time
+from collections.abc import Iterator
 
-from android_devices import adb_path, selected_device_serial
+from android_devices import adb_path, ready_device_serials, selected_device_serial
 from android_sdk import find_sdkmanager
 
 SETTINGS = {
@@ -62,12 +63,6 @@ VOICE_CHOICES = {
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PAGE = (ROOT / "e2e" / "hosted.html").read_bytes()
-
-HOSTED_FIXTURE_ANNOTATION = "com.fghbuild.gomode.StandaloneHostedFixture"
-VOICE_FIXTURE_ANNOTATION = "com.fghbuild.gomode.VoiceFixture"
-VOICE_FIXTURE_PACKAGE = "./internal/cmd/android-voice-fixture"
-# Matches PROBE_PIN in the car-dial keyguard scenarios.
-CAR_DIAL_PROBE_PIN = "1234"
 
 
 class FixtureHandler(http.server.BaseHTTPRequestHandler):
@@ -121,211 +116,380 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def free_port() -> int:
-    """Return a free TCP port on the loopback interface."""
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+APP_PACKAGE = "com.fghbuild.gomode"
+APP_RUNNER = APP_PACKAGE + ".test/androidx.test.runner.AndroidJUnitRunner"
+TELECOM_RUNNER = "com.fghbuild.gomode.cardialfixture.test/androidx.test.runner.AndroidJUnitRunner"
+EXCLUDED = [APP_PACKAGE + ".DocumentationCapture", APP_PACKAGE + ".ModelAcceptance"]
+DENIED_MICROPHONE = APP_PACKAGE + ".DeniedMicrophonePermission"
+RESULTS = ROOT / "android" / "gomode" / "build" / "outputs" / "model-free-tests"
 
 
-def build_fixture() -> tuple[pathlib.Path, pathlib.Path]:
-    """Build the voice fixture so the process that serves it owns that pid.
-
-    `go run` runs the compiled binary as a child and does not forward the
-    termination signal to it, which leaves an orphan holding the port after the
-    script stops. Building first means the pid this script starts is the server.
-    """
-    directory = pathlib.Path(tempfile.mkdtemp(prefix="gomode-voice-fixture-"))
-    binary = directory / "android-voice-fixture"
-    subprocess.run(["go", "build", "-o", str(binary), VOICE_FIXTURE_PACKAGE], cwd=ROOT, check=True)
-    return directory, binary
+@dataclasses.dataclass
+class TestResult:
+    name: str
+    seconds: float
+    status: int
 
 
-def clear_stale_probe_pin(adb: str, serial: str) -> None:
-    """Clear the keyguard PIN that an interrupted car-dial run leaves behind.
-
-    The instrumented keyguard scenarios install a known probe PIN and remove it
-    when they finish. An interrupted run leaves it set, and the device rule then
-    refuses every later run. Recovery belongs here because the rule itself is
-    read-only by contract: it must not change a device it refuses.
-    """
-    subprocess.run(
-        [adb, "-s", serial, "shell", "locksettings", "clear", "--old", CAR_DIAL_PROBE_PIN],
-        capture_output=True,
-        check=False,
-    )
+@dataclasses.dataclass
+class InstrumentationResult:
+    passed: bool
+    seconds: float
+    tests: list[TestResult]
 
 
-def stop_fixture(fixture: subprocess.Popen[bytes]) -> None:
-    """Stop the fixture and anything it started."""
-    if fixture.poll() is not None:
-        return
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(fixture.pid, sig)
-        except ProcessLookupError:
-            return
-        try:
-            fixture.wait(timeout=10)
-            return
-        except subprocess.TimeoutExpired:
-            continue
+def shell(adb: str, serial: str, *arguments: str) -> str:
+    return subprocess.run(
+        [adb, "-s", serial, "shell", *arguments], capture_output=True, text=True, check=True
+    ).stdout.strip()
 
 
-def exit_on_signal(signum: int, _frame: object) -> None:
-    """Turn SIGTERM into SystemExit so the fixture and adb forwarding are cleaned up."""
-    raise SystemExit(128 + signum)
+def require_emulator(adb: str, serial: str) -> None:
+    """Refuse unsupported devices before installs, forwarding, or permission changes."""
+    if shell(adb, serial, "getprop", "ro.kernel.qemu") != "1":
+        raise RuntimeError("Android tests require an emulator; device settings and APKs were not changed")
+    if shell(adb, serial, "getprop", "ro.build.version.sdk") != "35":
+        raise RuntimeError("Model-free speech fixtures require the stock API35 emulator; device was not changed")
+    if shell(adb, serial, "am", "get-current-user") != "0":
+        raise RuntimeError("Android fixtures require the emulator's primary user; device was not changed")
+    settings = shell(adb, serial, "dumpsys", "lock_settings")
+    primary = re.search(r"(?ms)^  User 0\n(.*?)(?=^  User |\Z)", settings)
+    credentials = re.findall(r"^\s+CredentialType: ([A-Z_]+)$", primary[1], re.MULTILINE) if primary else []
+    if credentials != ["NONE"]:
+        raise RuntimeError("Android tests require an emulator without a secure credential; device was not changed")
 
 
-def run_instrumented_tests(port: int, selection: list[str], serial: str, *, car_dial: bool = False) -> int:
-    """Run selected Android tests with a hosted fixture and clean up adb forwarding."""
-    adb = adb_path()
-    if car_dial:
-        # Refuse physical and unknown devices before forwarding, APK installation, or
-        # instrumentation. JUnit additionally refuses existing secure credentials.
-        emulator = subprocess.run(
-            [adb, "-s", serial, "shell", "getprop", "ro.kernel.qemu"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        if emulator.stdout.strip() != "1":
-            raise RuntimeError("Car-dial tests require an emulator; device settings and APKs were not changed")
+def prepare_apks(adb: str, serial: str, telecom: bool) -> None:
+    """Build before mutation; install each APK independently and retain completed installs on failure for retry."""
     sdk_script = pathlib.Path(__file__).with_name("android_sdk.py")
     subprocess.run([sys.executable, str(sdk_script), "check"], check=True)
     sdk = find_sdkmanager()
     if sdk is None:
         raise RuntimeError("Android SDK was not available after setup")
     gradle_env = {**os.environ, "ANDROID_HOME": sdk[1], "ANDROID_SDK_ROOT": sdk[1], "ANDROID_SERIAL": serial}
-    reverse = f"tcp:{port}"
-    try:
-        subprocess.run([adb, "-s", serial, "reverse", reverse, reverse], check=True)
-        print(
-            f"Testing Go Mode shell on {serial} with the fixture at localhost:{port}",
-            flush=True,
-        )
-        if car_dial:
-            return run_car_dial_tests(adb, serial, port, selection, gradle_env)
-        return subprocess.run(
-            [
-                "./gradlew",
-                ":gomode:connectedDebugAndroidTest",
-                f"-Pandroid.testInstrumentationRunnerArguments.baseUrl=http://localhost:{port}",
-                *selection,
-            ],
-            cwd=ROOT / "android",
-            env=gradle_env,
-            check=False,
-        ).returncode
-    finally:
-        subprocess.run([adb, "-s", serial, "reverse", "--remove", reverse], check=False)
-
-
-def run_car_dial_tests(adb: str, serial: str, port: int, selection: list[str], gradle_env: dict[str, str]) -> int:
-    """Release Gradle's heap before running the independent fixture on the emulator."""
-    clear_stale_probe_pin(adb, serial)
-    command = [adb, "-s", serial, "shell", "am", "instrument", "-w", "-r", "-e", "baseUrl", f"http://localhost:{port}"]
-    for option in selection:
-        prefix = "-Pandroid.testInstrumentationRunnerArguments."
-        name, separator, value = option.removeprefix(prefix).partition("=")
-        if not option.startswith(prefix) or not separator or not name:
-            raise ValueError(f"Unsupported car-dial instrumentation option: {option}")
-        command.extend(("-e", name, value))
-    command.append("com.fghbuild.gomode.cardialfixture.test/androidx.test.runner.AndroidJUnitRunner")
-    build = subprocess.run(
-        [
-            "./gradlew",
-            ":gomode:assembleDebug",
-            ":car-dial-fixture:assembleDebug",
-            ":car-dial-fixture:assembleDebugAndroidTest",
-        ],
-        cwd=ROOT / "android",
-        env=gradle_env,
-        check=False,
-    )
-    if build.returncode:
-        return build.returncode
-    # Keeping Gradle and its device-test worker alive alongside the emulator can
-    # exhaust the host's memory during repeated WebView and voice process launches.
+    modules = ["gomode", "car-dial-fixture"] if telecom else ["gomode"]
+    tasks = [f":{module}:{task}" for module in modules for task in ("assembleDebug", "assembleDebugAndroidTest")]
+    subprocess.run(["./gradlew", *tasks, "--quiet"], cwd=ROOT / "android", env=gradle_env, check=True)
+    # Release the build heap before WebView/voice/Telecom launch their processes.
     subprocess.run(["./gradlew", "--stop"], cwd=ROOT / "android", env=gradle_env, check=True)
-    for apk in (
-        "gomode/build/outputs/apk/debug/gomode-debug.apk",
-        "car-dial-fixture/build/outputs/apk/debug/car-dial-fixture-debug.apk",
-        "car-dial-fixture/build/outputs/apk/androidTest/debug/car-dial-fixture-debug-androidTest.apk",
-    ):
-        subprocess.run([adb, "-s", serial, "install", "-r", "-t", str(ROOT / "android" / apk)], check=True)
-    # Remove first-install bytecode verification from Telecom's fixed five-second
-    # redirection deadline. Tests still reclaim the app before cold dialing.
-    compile_app = subprocess.run(
-        [adb, "-s", serial, "shell", "cmd", "package", "compile", "-m", "speed", "-f", "com.fghbuild.gomode"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    if compile_app.stdout.strip() != "Success":
-        raise RuntimeError(f"Could not compile the car-call APK: {compile_app.stdout}{compile_app.stderr}")
-    passed = False
+    for module in modules:
+        for path in (
+            f"{module}/build/outputs/apk/debug/{module}-debug.apk",
+            f"{module}/build/outputs/apk/androidTest/debug/{module}-debug-androidTest.apk",
+        ):
+            subprocess.run([adb, "-s", serial, "install", "-r", "-t", str(ROOT / "android" / path)], check=True)
+    if telecom:
+        # Telecom's fixed five-second redirection deadline includes cold app startup.
+        output = shell(adb, serial, "cmd", "package", "compile", "-m", "speed", "-f", APP_PACKAGE)
+        if output != "Success":
+            raise RuntimeError(f"Could not compile the car-call APK: {output}")
+
+
+@contextlib.contextmanager
+def hosted_fixture() -> Iterator[int]:
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
+    worker = threading.Thread(target=server.serve_forever)
+    worker.start()
+    try:
+        yield server.server_port
+    finally:
+        server.shutdown()
+        worker.join()
+        server.server_close()
+
+
+def stop_fixture(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=10)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+    raise RuntimeError("Gateway fixture did not terminate")
+
+
+@contextlib.contextmanager
+def gateway_fixture() -> Iterator[int]:
+    # A private bound-port announcement identifies our process; never probe a
+    # guessed free port that another process could take before the server starts.
+    with tempfile.TemporaryDirectory(prefix="gomode-gateway-fixture-") as directory:
+        binary = pathlib.Path(directory) / "android-voice-fixture"
+        subprocess.run(["go", "build", "-o", str(binary), "./internal/cmd/android-voice-fixture"], cwd=ROOT, check=True)
+        log_path = RESULTS / f"{pathlib.Path(directory).name}.log"
+        with log_path.open("wb") as output:
+            process = subprocess.Popen(
+                [str(binary), "-addr", "127.0.0.1:0", "-rtc-ip", "10.0.2.2"],
+                cwd=ROOT,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            try:
+                deadline = time.monotonic() + 30
+                with log_path.open() as log:
+                    while time.monotonic() < deadline:
+                        line = log.readline()
+                        match = re.search(r"msg=listening addr=127\.0\.0\.1:([0-9]+)$", line)
+                        if match:
+                            yield int(match[1])
+                            return
+                        if process.poll() is not None:
+                            raise RuntimeError(f"Gateway fixture exited during startup; see {log_path}")
+                        time.sleep(0.05)
+                raise RuntimeError(f"Gateway fixture did not announce readiness; see {log_path}")
+            finally:
+                stop_fixture(process)
+
+
+@contextlib.contextmanager
+def forward_ports(adb: str, serial: str, ports: list[int]) -> Iterator[None]:
+    with contextlib.ExitStack() as cleanup:
+        for port in ports:
+            reverse = f"tcp:{port}"
+            subprocess.run([adb, "-s", serial, "reverse", reverse, reverse], stdout=subprocess.DEVNULL, check=True)
+            cleanup.callback(subprocess.run, [adb, "-s", serial, "reverse", "--remove", reverse], check=True)
+        yield
+
+
+@contextlib.contextmanager
+def denied_microphone(adb: str, serial: str) -> Iterator[None]:
+    """Reset permission prompts outside instrumentation, where revocation is safe."""
+    permissions = shell(adb, serial, "dumpsys", "package", APP_PACKAGE)
+    match = re.search(r"android.permission.RECORD_AUDIO: granted=(true|false), flags=\[([^]]*)\]", permissions)
+    if match is None:
+        raise RuntimeError("Could not read the app microphone permission")
+    granted = match[1] == "true"
+    original_flags = set(match[2].strip().split("|"))
+    flags = [flag for flag in ("user-set", "user-fixed") if flag.upper().replace("-", "_") in original_flags]
+    try:
+        shell(adb, serial, "pm", "revoke", APP_PACKAGE, "android.permission.RECORD_AUDIO")
+        shell(
+            adb,
+            serial,
+            "pm",
+            "clear-permission-flags",
+            APP_PACKAGE,
+            "android.permission.RECORD_AUDIO",
+            "user-set",
+            "user-fixed",
+        )
+        yield
+    finally:
+        shell(adb, serial, "am", "force-stop", APP_PACKAGE)
+        shell(adb, serial, "pm", "grant" if granted else "revoke", APP_PACKAGE, "android.permission.RECORD_AUDIO")
+        shell(
+            adb,
+            serial,
+            "pm",
+            "clear-permission-flags",
+            APP_PACKAGE,
+            "android.permission.RECORD_AUDIO",
+            "user-set",
+            "user-fixed",
+        )
+        if flags:
+            shell(adb, serial, "pm", "set-permission-flags", APP_PACKAGE, "android.permission.RECORD_AUDIO", *flags)
+
+
+def instrument(
+    adb: str, serial: str, name: str, runner: str, arguments: dict[str, str], discovery: bool
+) -> InstrumentationResult:
+    command = [adb, "-s", serial, "shell", "am", "instrument", "-w", "-r"]
+    for key, value in arguments.items():
+        command.extend(("-e", key, value))
+    if discovery:
+        command.extend(("-e", "log", "true"))
+    command.append(runner)
+    started = time.monotonic()
+    test_started = started
+    current: dict[str, str] = {}
+    tests: list[TestResult] = []
+    summary = False
     failed = False
     completed = False
-    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as instrumentation:
-        assert instrumentation.stdout is not None
-        for line in instrumentation.stdout:
-            print(line, end="", flush=True)
-            passed |= re.fullmatch(r"OK \([1-9][0-9]* tests?\)", line.strip()) is not None
-            failed |= line.startswith(("FAILURES!!!", "INSTRUMENTATION_FAILED:", "INSTRUMENTATION_ABORTED:"))
-            completed |= line.strip() == "INSTRUMENTATION_CODE: -1"
-        status = instrumentation.wait()
-    # am instrument can return zero even when JUnit fails or its app crashes.
-    return 0 if status == 0 and passed and completed and not failed else 1
+    with (RESULTS / f"{name}.log").open("w") as log:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        try:
+            assert process.stdout is not None
+            for line in process.stdout:
+                log.write(line)
+                log.flush()
+                if not discovery and (
+                    line.startswith("INSTRUMENTATION_STATUS: stack=")
+                    or not line.startswith(("INSTRUMENTATION_STATUS:", "INSTRUMENTATION_STATUS_CODE:"))
+                ):
+                    print(line, end="", flush=True)
+                match = re.match(r"INSTRUMENTATION_STATUS: (class|test)=(.*)", line)
+                if match:
+                    current[match[1]] = match[2].strip()
+                code = re.match(r"INSTRUMENTATION_STATUS_CODE: (-?[0-9]+)", line)
+                if code and "class" in current and "test" in current:
+                    status = int(code[1])
+                    if status == 1:
+                        test_started = time.monotonic()
+                    else:
+                        test = TestResult(
+                            current["class"] + "#" + current["test"], time.monotonic() - test_started, status
+                        )
+                        tests.append(test)
+                        current = {}
+                        if not discovery:
+                            print(f"TEST {test.seconds:.3f}s status={status} {test.name}", flush=True)
+                summary |= re.fullmatch(r"OK \([0-9]+ tests?\)", line.strip()) is not None
+                failed |= line.startswith(("FAILURES!!!", "INSTRUMENTATION_FAILED:", "INSTRUMENTATION_ABORTED:"))
+                completed |= line.strip() == "INSTRUMENTATION_CODE: -1"
+            status = process.wait()
+        finally:
+            if process.poll() is None:
+                # Cancelling adb alone leaves remote instrumentation running.
+                target = runner.partition("/")[0].removesuffix(".test")
+                try:
+                    shell(adb, serial, "am", "force-stop", target)
+                finally:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+            if process.stdout is not None:
+                process.stdout.close()
+            if not discovery:
+                with (RESULTS / f"{name}-logcat.log").open("w") as logcat:
+                    subprocess.run([adb, "-s", serial, "logcat", "-d", "-t", "3000"], stdout=logcat, check=True)
+    result = InstrumentationResult(
+        status == 0 and summary and completed and not failed, time.monotonic() - started, tests
+    )
+    return result
+
+
+def run_suite(
+    adb: str, serial: str, name: str, runner: str, arguments: dict[str, str], requires_denied_microphone: bool
+) -> InstrumentationResult:
+    discovered = instrument(adb, serial, name + "-discovery", runner, arguments, True)
+    (RESULTS / f"{name}-discovery.json").write_text(json.dumps(dataclasses.asdict(discovered), indent=2) + "\n")
+    if not discovered.passed:
+        raise RuntimeError(f"Instrumentation discovery failed for {name}; see {RESULTS}")
+    if not discovered.tests:
+        print(f"{name}: no matching tests", flush=True)
+        return discovered
+    permission = denied_microphone(adb, serial) if requires_denied_microphone else contextlib.nullcontext()
+    with permission:
+        result = instrument(adb, serial, name, runner, arguments, False)
+    expected = {test.name for test in discovered.tests}
+    actual = {test.name for test in result.tests}
+    complete = expected == actual and len(result.tests) == len(discovered.tests)
+    print(
+        f"{name}: {len(result.tests)}/{len(discovered.tests)} tests in {result.seconds:.2f}s; "
+        f"passed={result.passed and complete}",
+        flush=True,
+    )
+    if not complete:
+        print(
+            f"Missing tests: {sorted(expected - actual)}; unexpected tests: {sorted(actual - expected)}",
+            file=sys.stderr,
+        )
+    result.passed &= complete
+    (RESULTS / f"{name}.json").write_text(json.dumps(dataclasses.asdict(result), indent=2) + "\n")
+    return result
+
+
+def run_capture_tests(port: int, arguments: dict[str, str], serial: str) -> int:
+    """Build and run explicit documentation captures on their hosted fixture."""
+    adb = adb_path()
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    prepare_apks(adb, serial, False)
+    with forward_ports(adb, serial, [port]):
+        result = run_suite(
+            adb, serial, "captures", APP_RUNNER, {"baseUrl": f"http://localhost:{port}", **arguments}, False
+        )
+        return 0 if result.passed and result.tests else 1
+
+
+def exit_on_signal(signum: int, _frame: object) -> None:
+    raise SystemExit(128 + signum)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--voice", action="store_true", help="serve the voice gateway fixture")
-    parser.add_argument("--car-dial", action="store_true", help="exercise system dialing and both voice transports")
+    parser.add_argument("--module", choices=("app", "telecom"), help="run only one instrumentation APK")
     parser.add_argument(
         "--class",
         dest="test_class",
         metavar="CLASS[#METHOD]",
-        help="run one class or method instead of the fixture suite",
+        help="focus a class/method (app unless --module telecom)",
     )
     args = parser.parse_args()
-    server: http.server.ThreadingHTTPServer | None = None
-    fixture: subprocess.Popen[bytes] | None = None
-    fixture_dir: pathlib.Path | None = None
-    if args.voice or args.car_dial:
-        signal.signal(signal.SIGTERM, exit_on_signal)
-        port = free_port()
-        fixture_dir, binary = build_fixture()
-        command = [str(binary), "-addr", f"127.0.0.1:{port}"]
-        if args.car_dial:
-            command += ["-rtc-ip", "10.0.2.2"]
-        fixture = subprocess.Popen(command, cwd=ROOT, start_new_session=True)
-        annotation = VOICE_FIXTURE_ANNOTATION
+    module = args.module or ("app" if args.test_class else None)
+    adb = adb_path()
+    if os.environ.get("ANDROID_SERIAL"):
+        serial = selected_device_serial(adb)
     else:
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FixtureHandler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        port = server.server_port
-        annotation = HOSTED_FIXTURE_ANNOTATION
-
-    try:
-        serial = selected_device_serial(adb_path())
-        if args.test_class:
-            selection = [f"-Pandroid.testInstrumentationRunnerArguments.class={args.test_class}"]
-        elif args.car_dial:
-            selection = []
-        else:
-            selection = [f"-Pandroid.testInstrumentationRunnerArguments.annotation={annotation}"]
-        return run_instrumented_tests(port, selection, serial, car_dial=args.car_dial)
-    finally:
-        if fixture is not None:
-            stop_fixture(fixture)
-        if fixture_dir is not None:
-            shutil.rmtree(fixture_dir, ignore_errors=True)
-        if server is not None:
-            server.shutdown()
-            server.server_close()
+        emulators = [serial for serial in ready_device_serials(adb) if serial.startswith("emulator-")]
+        if len(emulators) != 1:
+            raise RuntimeError(f"Expected one ready emulator, found {len(emulators)}; set ANDROID_SERIAL")
+        serial = emulators[0]
+    require_emulator(adb, serial)
+    signal.signal(signal.SIGTERM, exit_on_signal)
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    prepare_apks(adb, serial, module != "app")
+    selection = {"class": args.test_class} if args.test_class else {}
+    results: list[InstrumentationResult] = []
+    with hosted_fixture() as hosted, gateway_fixture() as gateway, forward_ports(adb, serial, [hosted, gateway]):
+        if module != "telecom":
+            arguments = {
+                "baseUrl": f"http://localhost:{hosted}",
+                "gatewayBaseUrl": f"http://localhost:{gateway}",
+                **selection,
+            }
+            results.append(
+                run_suite(
+                    adb,
+                    serial,
+                    "app-microphone-denied",
+                    APP_RUNNER,
+                    {**arguments, "annotation": DENIED_MICROPHONE, "notAnnotation": ",".join(EXCLUDED)},
+                    True,
+                )
+            )
+            results.append(
+                run_suite(
+                    adb,
+                    serial,
+                    "app",
+                    APP_RUNNER,
+                    {**arguments, "notAnnotation": ",".join([*EXCLUDED, DENIED_MICROPHONE])},
+                    False,
+                )
+            )
+        if module != "app":
+            results.append(
+                run_suite(
+                    adb,
+                    serial,
+                    "telecom",
+                    TELECOM_RUNNER,
+                    {"baseUrl": f"http://localhost:{gateway}", **selection},
+                    False,
+                )
+            )
+    count = sum(len(result.tests) for result in results)
+    passed = all(result.passed for result in results) and count > 0
+    if not count:
+        print("No model-free tests matched the selection.", file=sys.stderr)
+    print(
+        f"Android model-free run: {count} tests in {time.monotonic() - started:.2f}s; "
+        f"passed={passed}; results: {RESULTS}",
+        flush=True,
+    )
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

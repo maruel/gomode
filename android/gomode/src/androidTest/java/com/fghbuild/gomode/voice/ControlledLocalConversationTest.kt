@@ -65,7 +65,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
-class LocalConversationTest {
+class ControlledLocalConversationTest {
     @get:Rule(order = 0)
     val permissions = GrantPermissionRule.grant(Manifest.permission.RECORD_AUDIO)
 

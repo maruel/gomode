@@ -33,7 +33,6 @@ class FrontendPreparationBridgeTest {
     val compose = createAndroidComposeRule<ComponentActivity>(effectContext = StandardTestDispatcher())
 
     @Test
-    @StandaloneHostedFixture
     fun documentStartOwnershipSurvivesLoadLinkAndReloadWithoutAcceptingOldSignals() {
         MockWebServer().use { server ->
             server.dispatcher = dispatcher()
@@ -128,7 +127,6 @@ class FrontendPreparationBridgeTest {
     }
 
     @Test
-    @StandaloneHostedFixture
     fun failedRendererReloadRevokesThePreparedDocumentWithoutAReplacementHandshake() {
         MockWebServer().use { server ->
             val failing = AtomicBoolean(false)
@@ -175,7 +173,6 @@ class FrontendPreparationBridgeTest {
     }
 
     @Test
-    @StandaloneHostedFixture
     fun subframesAndUntrustedOriginsCannotPrepareTheMainFrame() {
         MockWebServer().use { server ->
             MockWebServer().use { foreign ->

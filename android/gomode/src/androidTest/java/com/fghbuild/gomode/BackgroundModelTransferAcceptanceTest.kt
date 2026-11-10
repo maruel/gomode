@@ -32,7 +32,8 @@ import org.junit.Test
 import java.io.File
 import kotlin.time.Duration.Companion.minutes
 
-class BackgroundModelDownloadTest {
+@ModelAcceptance
+class BackgroundModelTransferAcceptanceTest {
     @get:Rule(order = 0)
     internal val systemUi = SystemUiRule()
 

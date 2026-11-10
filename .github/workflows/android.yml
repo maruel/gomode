@@ -1,21 +1,28 @@
-# Build the Android shell and exercise hosted scenarios and documentation captures on an emulator.
+# Build the Android shell and run model-free app, gateway, Telecom tests and documentation captures.
 name: Android
 on:
   push:
     branches: [main]
     paths: &android_paths
+      - "*.go"
       - .github/workflows/android.yml
       - Makefile
       - android/**
       - assets/**
       - e2e/**
+      - go.mod
+      - go.sum
+      - internal/cmd/android-voice-fixture/**
+      - mcp/**
       - pyproject.toml
       - scripts/android*
       - scripts/run-concurrently.sh
       - scripts/screenshot_publish.py
       - sdk/**
+      - sse/**
       - testdata/speech-text/**
       - uv.lock
+      - voicegateway/api/**
   pull_request:
     paths: *android_paths
   workflow_dispatch:
@@ -37,6 +44,12 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.mod
+            go.sum
       - name: Check Android
         run: make android-check
       - name: Enable KVM
@@ -46,7 +59,7 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Run Android E2E tests
+      - name: Run all model-free Android tests
         run: make android-e2e
       - name: Install capture encoders
         run: sudo apt-get update && sudo apt-get install --yes ffmpeg
@@ -62,10 +75,12 @@ jobs:
             android/gomode/build/reports/detekt/
             android/gomode/build/reports/tests/
             android/gomode/build/test-results/
+            android/car-dial-fixture/build/reports/
             sdk/halo/build/reports/tests/
             sdk/halo/build/test-results/
             android/gomode/build/reports/androidTests/connected/
             android/gomode/build/outputs/androidTest-results/connected/
+            android/gomode/build/outputs/model-free-tests/
             /tmp/gomode_test_stock-emulator.log
             android-screenshots-failures/
           if-no-files-found: ignore

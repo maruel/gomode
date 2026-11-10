@@ -17,7 +17,6 @@ import org.junit.runners.model.Statement
 @RunWith(AndroidJUnit4::class)
 class GoModeE2eSetupTest {
     @Test
-    @StandaloneHostedFixture
     fun refusedDeviceDoesNotChangeSettingsOrLaunchActivity() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val device = UiDevice.getInstance(instrumentation)

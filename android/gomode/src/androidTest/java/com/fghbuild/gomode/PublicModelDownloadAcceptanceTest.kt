@@ -40,7 +40,8 @@ import org.junit.Test
 import java.io.File
 import java.util.UUID
 
-class PublicModelDownloadTest {
+@ModelAcceptance
+class PublicModelDownloadAcceptanceTest {
     @get:Rule
     @OptIn(ExperimentalTestApi::class)
     val compose = createAndroidComposeRule<ComponentActivity>(effectContext = StandardTestDispatcher())

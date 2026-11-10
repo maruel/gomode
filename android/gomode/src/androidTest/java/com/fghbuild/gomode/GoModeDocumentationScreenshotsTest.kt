@@ -24,6 +24,7 @@ import java.io.File
 private const val SETTLE_CHECK_INTERVAL_MS = 100L
 
 @RunWith(AndroidJUnit4::class)
+@DocumentationCapture
 class GoModeDocumentationScreenshotsTest : GoModeE2eTestBase() {
     // Both capture passes must start with the same permission state before Activity launch.
     @get:Rule(order = 1)

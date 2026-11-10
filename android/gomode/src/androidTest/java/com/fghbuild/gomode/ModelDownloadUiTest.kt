@@ -1,4 +1,4 @@
-// Exercises model download recovery, storage, deletion, diagnostic disclosure and active-voice guards.
+// Exercises model download controls, recovery and active-voice guards with controlled installation state.
 package com.fghbuild.gomode
 
 import android.content.ContextWrapper
@@ -39,7 +39,7 @@ import org.junit.Test
 import java.io.File
 import java.util.UUID
 
-class ModelDownloadSettingsTest {
+class ModelDownloadUiTest {
     @get:Rule
     @OptIn(ExperimentalTestApi::class)
     val compose = createAndroidComposeRule<ComponentActivity>(effectContext = StandardTestDispatcher())

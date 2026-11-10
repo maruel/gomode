@@ -41,8 +41,8 @@ import java.util.regex.Pattern
 
 @RunWith(AndroidJUnit4::class)
 class WebShellSmokeTest : GoModeE2eTestBase() {
-    @StandaloneHostedFixture
     @Test
+    @DeniedMicrophonePermission
     fun microphoneDenialOffersPromptThenSettingsWithoutStartingVoiceOnReenable() {
         openWebShell()
         waitForHostedFrontend()
@@ -97,7 +97,6 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         waitForText("Saved to your field notes.")
     }
 
-    @StandaloneHostedFixture
     @Test
     fun webShellLoadsHostedFrontendAndHandlesSpaBack() {
         openWebShell()
@@ -138,7 +137,6 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         waitForDom("SPA back returned home") { "location.pathname === '/'" }
     }
 
-    @StandaloneHostedFixture
     @Test
     fun pinchGestureZoomsTheHostedFrontend() {
         openWebShell()
@@ -237,7 +235,6 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         event(MotionEvent.ACTION_UP, 1, toHalfSpan)
     }
 
-    @StandaloneHostedFixture
     @Test
     fun webShellSettingsButtonOpensNativeSettingsAndBackReturnsToWebShell() {
         openWebShell()
@@ -263,7 +260,6 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         composeRule.onNodeWithTag("gomode-voice-connect").assertExists()
     }
 
-    @StandaloneHostedFixture
     @Test
     fun settingsCanAddAndEditServicesWithoutSwitchingTheActiveService() {
         openWebShell()
@@ -285,7 +281,6 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         composeRule.onNodeWithText("Active").assertExists()
     }
 
-    @StandaloneHostedFixture
     @Test
     fun backFlushesAPendingServiceEditBeforeClosingSettings() {
         openWebShell()
@@ -356,7 +351,6 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         }
     }
 
-    @StandaloneHostedFixture
     @Test
     fun switchingServersRetainsEachWebViewAndItsSpaState() {
         openWebShell()
@@ -431,7 +425,6 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         waitForDom("Renderer recovery creates a new document") { "typeof window.retainedMarker === 'undefined'" }
     }
 
-    @StandaloneHostedFixture
     @Test
     fun targetBlankLinksOpenInDefaultBrowser() {
         openWebShell()
@@ -454,7 +447,6 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         }
     }
 
-    @StandaloneHostedFixture
     @Test
     fun gomodePackageNameIsAppSpecific() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

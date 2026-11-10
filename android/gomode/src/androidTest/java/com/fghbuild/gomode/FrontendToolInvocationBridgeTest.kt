@@ -42,7 +42,6 @@ class FrontendToolInvocationBridgeTest {
     val compose = createAndroidComposeRule<ComponentActivity>(effectContext = StandardTestDispatcher())
 
     @Test
-    @StandaloneHostedFixture
     fun delayedConcurrentResultsRejectForgedAndDuplicateCompletions() =
         fixture { entry, view, scope ->
             val first = invoke(entry, scope, """{"defer":true,"index":1}""")
@@ -112,7 +111,6 @@ class FrontendToolInvocationBridgeTest {
         }
 
     @Test
-    @StandaloneHostedFixture
     fun cancellationTimeoutIdentityReloadAndDisposalRetirePendingCalls() =
         fixture { entry, view, scope ->
             val canceled = invoke(entry, scope, """{"defer":true}""")
@@ -143,7 +141,6 @@ class FrontendToolInvocationBridgeTest {
         }
 
     @Test
-    @StandaloneHostedFixture
     fun rendererLossReleasesOutstandingFrontendInvocation() =
         fixture { entry, view, scope ->
             val pending = invoke(entry, scope, """{"defer":true}""")
@@ -154,7 +151,6 @@ class FrontendToolInvocationBridgeTest {
         }
 
     @Test
-    @StandaloneHostedFixture
     fun invocationSessionsStaySeparateOnOneAuthenticatedFrontend() =
         fixture { entry, view, scope ->
             val first = invoke(entry, scope, """{"defer":true}""", "first-conversation")
@@ -193,7 +189,6 @@ class FrontendToolInvocationBridgeTest {
         }
 
     @Test
-    @StandaloneHostedFixture
     fun sameDocumentRouteAndDelayedPreparedAckPreserveThePendingNativeInvocation() =
         fixture { entry, view, scope ->
             evaluate(view, "enableVoiceLifetime()")
@@ -224,7 +219,6 @@ class FrontendToolInvocationBridgeTest {
         }
 
     @Test
-    @StandaloneHostedFixture
     fun manualSelectionUsesAuthenticatedLifetimeAndRetirementClearsItWithoutToolCalls() =
         fixture { entry, view, scope ->
             evaluate(view, "enableVoiceLifetime()")

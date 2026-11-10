@@ -60,6 +60,7 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TestRule
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
@@ -67,21 +68,26 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 class ServerVoiceSwitchTest {
-    @get:Rule
+    @get:Rule(order = 0)
+    val speech: TestRule = ModelFreeSpeechRule()
+
+    @get:Rule(order = 1)
     val permissions: GrantPermissionRule =
         GrantPermissionRule.grant(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
 
-    @get:Rule
+    @get:Rule(order = 2)
     @OptIn(ExperimentalTestApi::class)
     val composeRule = createAndroidComposeRule<ComponentActivity>(effectContext = StandardTestDispatcher())
 
     @Test
+    @ModelFreeSpeech
     fun spokenTextSwitchKeepsOneConversationAcrossBothDirections() = exerciseSharedConversation(VoiceMode.DEVICE)
 
     @Test
     fun spokenWebRtcSwitchKeepsOneConversationAcrossBothDirections() = exerciseSharedConversation(VoiceMode.CLOUD)
 
     @Test
+    @ModelFreeSpeech
     fun textStartupProgressPrecedesReadiness() = exerciseStartupProgress(VoiceMode.DEVICE)
 
     @Test

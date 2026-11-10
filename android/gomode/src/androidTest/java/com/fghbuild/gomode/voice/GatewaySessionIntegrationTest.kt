@@ -1,4 +1,4 @@
-// Instrumented coverage for a device voice session against the local voice fixture.
+// Exercises real WebRTC and text gateway sessions, network recovery, and Telecom with controlled server responses.
 package com.fghbuild.gomode.voice
 
 import android.Manifest
@@ -7,18 +7,14 @@ import android.app.NotificationManager
 import android.app.Person
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.util.Log
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.GrantPermissionRule
-import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
-import androidx.test.uiautomator.Until
 import com.fghbuild.gomode.MainActivity
-import com.fghbuild.gomode.VoiceFixture
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.service.ServiceSettingsClient
@@ -42,25 +38,25 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TestRule
 import org.junit.runner.RunWith
 import java.io.File
 
-/**
- * Runs the real device voice session against the fixture: settings, MCP, the text
- * WebSocket, Telecom handover, and caller name across backgrounded setup. A broken URL,
- * header, or frame fails here.
- */
+// Uses production session clients against a controlled server for text and WebRTC
+// transports, background setup, caller identity, network recovery, and Telecom ownership.
 @RunWith(AndroidJUnit4::class)
-class DeviceVoiceSessionFixtureTest {
-    @get:Rule
+class GatewaySessionIntegrationTest {
+    @get:Rule(order = 0)
+    val speech: TestRule = ModelFreeSpeechRule()
+
+    @get:Rule(order = 1)
     val recordAudioPermissionRule: GrantPermissionRule =
         GrantPermissionRule.grant(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
 
     @Test
-    @VoiceFixture
     fun webRtcSessionRetainsItsConversationAndTelecomAcrossNetworkChanges(): Unit =
         runBlocking {
-            val baseUrl = requireNotNull(InstrumentationRegistry.getArguments().getString("baseUrl"))
+            val baseUrl = requireNotNull(InstrumentationRegistry.getArguments().getString("gatewayBaseUrl"))
             val context = InstrumentationRegistry.getInstrumentation().targetContext
             val dataStoreJob = SupervisorJob()
             try {
@@ -111,12 +107,12 @@ class DeviceVoiceSessionFixtureTest {
         }
 
     @Test
-    @VoiceFixture
+    @ModelFreeSpeech
     fun deviceSessionConnectsAfterBackgroundingDuringSetup(): Unit =
         runBlocking {
             val baseUrl =
-                requireNotNull(InstrumentationRegistry.getArguments().getString("baseUrl")) {
-                    "baseUrl instrumentation argument is required"
+                requireNotNull(InstrumentationRegistry.getArguments().getString("gatewayBaseUrl")) {
+                    "gatewayBaseUrl instrumentation argument is required"
                 }
             val context = InstrumentationRegistry.getInstrumentation().targetContext
             val dataStoreJob = SupervisorJob()
@@ -164,8 +160,13 @@ class DeviceVoiceSessionFixtureTest {
 
                     exerciseNetworkChanges(session, calls)
                 } finally {
-                    session.close()
-                    calls.close()
+                    withContext(Dispatchers.Main) {
+                        session.close()
+                        calls.close()
+                    }
+                    // Finish a resumed Activity; a stopped scenario otherwise waits
+                    // for the platform's background Activity destruction timeout.
+                    activity.moveToState(Lifecycle.State.RESUMED)
                     activity.close()
                 }
             } finally {
@@ -238,33 +239,13 @@ class DeviceVoiceSessionFixtureTest {
         }
     }
 
-    private suspend fun prepareSpeechLanguage(speech: AndroidDeviceSpeech) =
-        coroutineScope {
-            var language = speech.checkLanguage()
-            Log.i("GoModeSpeechFixture", "Language preflight: $language")
-            if (language == SpeechLanguageState.Missing || language == SpeechLanguageState.Pending) {
-                val download = async(start = CoroutineStart.UNDISPATCHED) { speech.downloadLanguage() }
-                // The stock provider requires consent before installing its offline pack.
-                val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
-                device.wait(Until.findObject(By.text("Download")), 10_000)?.click()
-                download.await()
-                Log.i("GoModeSpeechFixture", "Download outcome: ${speech.languageState.value}")
-                assertTrue(
-                    "Speech download failed: ${speech.languageState.value}",
-                    speech.languageState.value !is SpeechLanguageState.Failed,
-                )
-                withTimeout(180_000) {
-                    do {
-                        language = speech.checkLanguage()
-                        if (language != SpeechLanguageState.Ready) delay(1000)
-                    } while (language == SpeechLanguageState.Pending || language == SpeechLanguageState.Missing)
-                }
-            }
-            assertTrue(
-                "Speech language unavailable: $language",
-                language == SpeechLanguageState.Ready || language is SpeechLanguageState.Unverified,
-            )
-        }
+    private suspend fun prepareSpeechLanguage(speech: AndroidDeviceSpeech) {
+        val language = speech.checkLanguage()
+        assertTrue(
+            "Speech language unavailable: $language",
+            language == SpeechLanguageState.Ready || language is SpeechLanguageState.Unverified,
+        )
+    }
 
     private suspend fun awaitCallerName(
         notifications: NotificationManager,

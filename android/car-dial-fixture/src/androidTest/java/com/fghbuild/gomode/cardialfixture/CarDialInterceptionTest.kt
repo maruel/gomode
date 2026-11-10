@@ -98,7 +98,8 @@ class CarDialInterceptionTest {
             PackageManager.PERMISSION_GRANTED
         originalSettings = shell("run-as $APP sh -c 'test ! -f $SETTINGS || base64 $SETTINGS'").ifBlank { null }
         snapshotCaptured = true
-        killApp()
+        // Settings preparation owns the initial process reclamation as well.
+        writeSettings(includeServer = true)
         // Pure routing tests must not accidentally launch voice if an earlier test/run granted mic.
         shell("pm revoke $APP ${Manifest.permission.RECORD_AUDIO}")
         shell("pm grant ${context.packageName} ${Manifest.permission.CALL_PHONE}")
@@ -120,7 +121,6 @@ class CarDialInterceptionTest {
         shell("run-as $APP pm enable $REDIRECTION")
         shell("cmd role add-role-holder ${RoleManager.ROLE_CALL_REDIRECTION} $APP")
         assertEquals(APP, shell("cmd role get-role-holders ${RoleManager.ROLE_CALL_REDIRECTION}").trim())
-        writeSettings(includeServer = true)
     }
 
     @After
@@ -937,7 +937,7 @@ class CarDialInterceptionTest {
     private fun fixtureURL(): String =
         requireNotNull(
             InstrumentationRegistry.getArguments().getString("baseUrl"),
-        ) { "Run make android-car-dial-e2e to supply the real voice fixture" }
+        ) { "Run make android-e2e to supply the controlled gateway fixture" }
 
     private fun fixtureStats(): JSONObject = JSONObject(fixtureRequest("/fixture/stats"))
 

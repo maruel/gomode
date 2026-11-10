@@ -20,7 +20,7 @@ import threading
 import time
 
 from android_devices import adb_path, selected_device_serial
-from android_e2e import FixtureHandler, run_instrumented_tests
+from android_e2e import FixtureHandler, require_emulator, run_capture_tests
 from screenshot_publish import publication_lock, publish_images, recover_images, validate_images
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -90,13 +90,13 @@ def render(directory: pathlib.Path, serial: str, adb: str, hidden_icons: str) ->
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 41743), FixtureHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        status = run_instrumented_tests(
+        status = run_capture_tests(
             server.server_port,
-            [
-                "-Pandroid.testInstrumentationRunnerArguments.class=com.fghbuild.gomode.GoModeDocumentationScreenshotsTest",
-                "-Pandroid.testInstrumentationRunnerArguments.gomodeScreenshots=true",
-                f"-Pandroid.testInstrumentationRunnerArguments.gomodeIconBlacklist={hidden_icons}",
-            ],
+            {
+                "class": "com.fghbuild.gomode.GoModeDocumentationScreenshotsTest",
+                "gomodeScreenshots": "true",
+                "gomodeIconBlacklist": hidden_icons,
+            },
             serial,
         )
         if status != 0:
@@ -245,8 +245,7 @@ def _capture(mode: str) -> int:
     """Own selection, fixture/device mutations, publication and restoration under the run lock."""
     adb = adb_path()
     serial = selected_device_serial(adb)
-    if not serial.startswith("emulator-"):
-        raise RuntimeError("Documentation captures require an emulator; physical-device settings are not changed")
+    require_emulator(adb, serial)
     if mode == "check":
         validate_android_images(BASELINES, EXPECTED_FILES)
     elif mode == "update":

@@ -2,6 +2,7 @@
 package com.fghbuild.gomode.voice
 
 import androidx.test.platform.app.InstrumentationRegistry
+import com.fghbuild.gomode.ModelAcceptance
 import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import kotlinx.coroutines.Dispatchers
@@ -22,7 +23,8 @@ import org.junit.Test
 import java.io.File
 import kotlin.time.Duration.Companion.minutes
 
-class Lfm3ModelTest {
+@ModelAcceptance
+class Lfm3ModelAcceptanceTest {
     @Test
     fun realModelPreservesLiteralToolMarkersAndExactSchemaNumbers() =
         runTest(timeout = 5.minutes) {
