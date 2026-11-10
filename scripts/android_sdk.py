@@ -411,7 +411,7 @@ def _command_setup_emulator() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subcommands = parser.add_subparsers(dest="command", required=True)
-    subcommands.add_parser("check", help="install SDK packages required by android-check")
+    subcommands.add_parser("check", help="install SDK packages required by Android validation")
     subcommands.add_parser(
         "setup-emulator",
         help="install emulator packages and create the Go Mode test AVD",

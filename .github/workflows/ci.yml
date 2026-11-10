@@ -12,6 +12,9 @@ jobs:
   test:
     name: Verify and test
     runs-on: ubuntu-latest
+    env:
+      # The Android workflow owns the full platform validation.
+      ANDROID_CHECKS: "false"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

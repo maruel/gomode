@@ -63,10 +63,6 @@ fi
 
 # Repository-specific verification.
 make verify
-android_needed="$(./scripts/android-checks.sh --needed)"
-if [[ "$android_needed" == true ]]; then
-  make android-check
-fi
 
 if [[ -n "$(git status --porcelain)" ]]; then
   printf '%s\n' 'Verification modified the worktree; commit or remove those changes before pushing.' >&2

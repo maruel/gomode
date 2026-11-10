@@ -66,7 +66,7 @@ capabilities only when the WebView shell needs them.
 
 ## Instrumented Testing
 
-`make android-check` compiles the app and instrumented tests; compilation does not
+`make android-test` compiles the app and instrumented tests; compilation does not
 replace running them. Run the applicable instrumented tests on an emulator after
 Android changes. If none is installed or running, use `make android-start-emulator`
 to provision and start the stock AVD. Lack of an emulator is not a reason to skip
@@ -93,8 +93,8 @@ platform recognizer. No downloaded speech or language models are required.
 
 | Change | Required validation |
 | --- | --- |
-| Any Go Mode Android change | `make android-check` and applicable emulator instrumented tests |
-| Networking, SSE, service monitoring, WebView loading, settings, host-mode behavior, or native shell routing | Focused Robolectric tests, `make android-check`, and emulator instrumented coverage |
+| Any Go Mode Android change | `make android-lint android-test` and applicable emulator instrumented tests |
+| Networking, SSE, service monitoring, WebView loading, settings, host-mode behavior, or native shell routing | Focused Robolectric tests, `make android-lint android-test`, and emulator instrumented coverage |
 
 <!-- BEGIN FILE INDEX -->
 ## File Index

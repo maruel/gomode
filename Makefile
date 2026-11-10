@@ -1,9 +1,24 @@
 # Build and verification targets for the standalone Go Mode contracts and shell.
 .DEFAULT_GOAL := help
-.PHONY: android-check android-e2e android-export-lfm android-push android-sdk android-setup-emulator android-start-emulator android-stop-emulator benchmark build coverage fix frontend-build generate-sdks git-hooks help refresh-generated release screenshots-check screenshots-generate screenshots-update test test-race test-smoke upgrade verify
+.PHONY: android-e2e android-export-lfm android-lint android-push android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-test benchmark build coverage fix frontend-build generate-sdks git-hooks help refresh-generated release screenshots-check screenshots-generate screenshots-update test test-race test-smoke upgrade verify
 
 # Keep local and CI release tooling on the same version.
 GORELEASER ?= go run github.com/goreleaser/goreleaser/v2@v2.20.0
+
+ANDROID_LINT_TASKS := \
+	:car-dial-fixture:detekt :car-dial-fixture:ktlintCheck \
+	:gomode:detekt :gomode:ktlintCheck \
+	:halo-sdk:detekt :halo-sdk:ktlintCheck
+
+# Android lint needs compiled classes, so keep it with build-dependent checks.
+ANDROID_TEST_TASKS := \
+	:car-dial-fixture:lintDebug :gomode:lintDebug :halo-sdk:lintDebug \
+	:gomode:assembleDebug :halo-sdk:assembleDebug \
+	:gomode-sdk:assemble :mcp-sdk:assemble :oauth-sdk:assemble :voicegateway-sdk:assemble \
+	:gomode:assembleDebugAndroidTest :halo-sdk:assembleDebugAndroidTest \
+	:gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest \
+	:gomode:createDebugUnitTestCoverageReport :halo-sdk:createDebugUnitTestCoverageReport \
+	:car-dial-fixture:assembleDebug :car-dial-fixture:assembleDebugAndroidTest
 
 # Keep Java processes scoped to each build, including Gradle launched by Python helpers.
 # Compile Kotlin inside Gradle's single-use JVM so it cannot leave a compiler daemon.
@@ -18,17 +33,18 @@ help:
 	@echo ''
 	@echo 'Available targets:'
 	@printf '  %-27s - %s\n' 'make fix' 'Format Go and Android code'
-	@printf '  %-27s - %s\n' 'make verify' 'Check Go, browser, Python, and shell code (Android: make android-check)'
+	@printf '  %-27s - %s\n' 'make verify' 'Check Go, browser, Python, shell, and changed Android inputs'
 	@printf '  %-27s - %s\n' 'make frontend-build' 'Rebuild embedded standalone frontend assets'
 	@printf '  %-27s - %s\n' 'make git-hooks' 'Install versioned Git hooks'
-	@printf '  %-27s - %s\n' 'make test' 'Run Go and browser tests (Android: make android-check)'
+	@printf '  %-27s - %s\n' 'make test' 'Run Go, browser, and changed Android builds and tests'
 	@printf '  %-27s - %s\n' 'make test-race' 'Run race-safe voice gateway concurrency tests'
 	@printf '  %-27s - %s\n' 'make build' 'Build Go packages and Android app and SDKs'
 	@printf '  %-27s - %s\n' 'make release' 'Publish gateway archives from a version tag (requires GITHUB_TOKEN)'
 	@printf '  %-27s - %s\n' 'make benchmark' 'Run Go benchmarks'
 	@printf '  %-27s - %s\n' 'make coverage' 'Generate Go coverage report'
 	@printf '  %-27s - %s\n' 'make test-smoke' 'Run local model voice smoke tests (slow, downloads models)'
-	@printf '  %-27s - %s\n' 'make android-check' 'Run Android lint, builds, unit tests, and coverage'
+	@printf '  %-27s - %s\n' 'make android-lint' 'Run Android source static analysis and formatting checks'
+	@printf '  %-27s - %s\n' 'make android-test' 'Run Android builds, platform lint, unit tests, and coverage'
 	@printf '  %-27s - %s\n' 'make android-e2e' 'Run all model-free app, gateway, and Telecom emulator tests'
 	@printf '  %-27s - %s\n' 'make screenshots-update' 'Capture and publish repeatable native Android scenes'
 	@printf '  %-27s - %s\n' 'make screenshots-check' 'Compare native Android captures with committed baselines'
@@ -58,7 +74,7 @@ fix: node_modules/.modules.yaml
 	@uv run --locked python scripts/update_agents_file_index.py
 
 verify: node_modules/.modules.yaml
-	@./scripts/run-concurrently.sh sdk,workflows,go,format,lint,ts,frontend,python,shell,misc \
+	@./scripts/run-concurrently.sh sdk,workflows,go,format,lint,ts,frontend,python,shell,misc,android \
 		'go run ./internal/cmd/gen-sdk -check' \
 		'go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12' \
 		'go test -run=^$$ ./... && go test -race -run=^$$ ./voicegateway/voicertc && go tool golangci-lint run ./... && go mod tidy -diff && go build ./...' \
@@ -68,7 +84,8 @@ verify: node_modules/.modules.yaml
 		'pnpm exec node scripts/build_frontend.mjs' \
 		'uv run --locked ruff check --quiet scripts && uv run --locked ruff format --check --quiet scripts && uv run --locked python scripts/android_paths.py >/dev/null && uv run --locked python scripts/generate_thinking_score.py --check' \
 		'files=$$(git ls-files "*.sh" "scripts/hooks/*"); [ -z "$$files" ] || go tool shfmt -d $$files' \
-		'uv run --locked python scripts/lint_binaries.py && uv run --locked python scripts/update_agents_file_index.py --check && git diff --check'
+		'uv run --locked python scripts/lint_binaries.py && uv run --locked python scripts/update_agents_file_index.py --check && git diff --check' \
+		'./scripts/android-checks.sh $(ANDROID_LINT_TASKS) --quiet'
 
 git-hooks:
 	@./scripts/install-git-hooks.sh
@@ -82,6 +99,7 @@ test: node_modules/.modules.yaml
 		'go test ./...' \
 		'pnpm exec node --test --test-reporter=./scripts/quiet-test-reporter.mjs scripts/browser_integration.test.mjs scripts/build_frontend.test.mjs scripts/css_module_types.test.mjs scripts/voice_preview.test.mjs' \
 		'NODE_OPTIONS=--no-experimental-webstorage pnpm exec tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts "frontend/src/**/*.test.tsx" "web/src/**/*.test.ts" "web/src/**/*.test.tsx"'
+	@./scripts/android-checks.sh $(ANDROID_TEST_TASKS) --quiet
 
 test-race:
 	@go test -race ./voicegateway/voicertc
@@ -116,18 +134,11 @@ upgrade:
 	@pnpm update --latest
 	@cd ./android && ./gradlew --no-daemon dependencyUpdates -Drevision=release
 
-android-check: android-sdk
-	@cd ./android && ./gradlew \
-		:gomode:assembleDebug :halo-sdk:assembleDebug \
-		:gomode-sdk:assemble :mcp-sdk:assemble :oauth-sdk:assemble :voicegateway-sdk:assemble \
-		:gomode:assembleDebugAndroidTest :halo-sdk:assembleDebugAndroidTest \
-		:gomode:detekt :halo-sdk:detekt \
-		:gomode:ktlintCheck :halo-sdk:ktlintCheck \
-		:gomode:lintDebug :halo-sdk:lintDebug \
-		:gomode:testDebugUnitTest :halo-sdk:testDebugUnitTest \
-		:gomode:createDebugUnitTestCoverageReport :halo-sdk:createDebugUnitTestCoverageReport \
-		:car-dial-fixture:assembleDebug :car-dial-fixture:assembleDebugAndroidTest \
-		:car-dial-fixture:detekt :car-dial-fixture:ktlintCheck :car-dial-fixture:lintDebug --quiet
+android-lint: android-sdk
+	@cd ./android && ./gradlew $(ANDROID_LINT_TASKS) --quiet
+
+android-test: android-sdk
+	@cd ./android && ./gradlew $(ANDROID_TEST_TASKS) --quiet
 
 generate-sdks:
 	@go run ./internal/cmd/gen-sdk
@@ -150,7 +161,7 @@ android-start-emulator:
 android-stop-emulator:
 	@uv run --locked python scripts/android_stop_emulator.py
 
-# Builds, installs, and launches the app without running the android-check validation gate.
+# Builds, installs, and launches the app on a connected device.
 android-push: android-sdk
 	@cd ./android && ./gradlew :gomode:assembleDebug --quiet
 	@uv run --locked python scripts/android_push.py

@@ -13,7 +13,7 @@ plugins {
     alias(libs.plugins.versions)
 }
 
-// make android-check uses --quiet. Keep failing test names and full exceptions visible.
+// Android validation uses --quiet. Keep failing test names and full exceptions visible.
 subprojects {
     tasks.withType<Test>().configureEach {
         testLogging {

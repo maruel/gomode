@@ -10,21 +10,26 @@ Read the narrower guides before editing `mcp/`, `oauth/`, `android/gomode/`,
 current protocol draft before protocol changes.
 
 Use `make fix`, `make verify`, `make test`, and `make test-race` after changes. Regenerate SDKs
-with `make generate-sdks` after DTO or route changes. `make android-check`
-builds the Android app and SDKs, compiles instrumented tests, and runs lint,
-unit tests, and coverage.
+with `make generate-sdks` after DTO or route changes. `make android-test` builds
+the Android app and SDKs, compiles instrumented tests, and runs build-dependent
+lint, unit tests, and coverage.
 
-`verify` and `test` cover the non-Android stacks; run `make android-check` for Android,
-SDK, or build input changes. The pre-push hook also runs this target when those
-inputs changed. Android formatting in `fix` and pre-push detection compare against
-upstream locally or `ANDROID_CHECK_BASE` when supplied. Without a usable base they
-run unconditionally; explicit Android targets always run.
+`verify` runs static checks, including Android Detekt and ktlint for changed
+Android, SDK, or build inputs. `test` runs tests and includes Android builds,
+build-dependent Android lint, unit tests, and coverage for those inputs. Pre-push
+runs only `make verify`. `make android-lint` and `make android-test` run their
+Android checks unconditionally. CI runs `make android-lint android-test`.
+
+Automatic Android checks in `fix`, `verify`, and `test` compare against upstream
+locally or `ANDROID_CHECK_BASE` when supplied. Without a usable base they run
+unconditionally. The platform-neutral CI job sets `ANDROID_CHECKS=false` because
+the dedicated Android job runs the explicit checks.
 
 Mandatory: Run `make git-hooks` to install git hooks before making any change.
 
 Android changes MUST run applicable instrumented tests on an emulator, in addition
-to `make android-check`. If no emulator or AVD is present, provision and start one
-with `make android-start-emulator`, then run the tests. An absent emulator, system
+to `make android-lint android-test`. If no emulator or AVD is present, provision
+and start one with `make android-start-emulator`, then run the tests. An absent emulator, system
 image, or connected device is NOT a reason to skip Android tests. Use
 `make android-e2e` for all model-free app, gateway, and independent Telecom tests.
 Use `uv run --locked python scripts/android_e2e.py --class <Class[#method]>` for focused app coverage,

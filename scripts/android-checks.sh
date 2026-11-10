@@ -4,13 +4,21 @@
 set -euo pipefail
 
 if (($# == 0)); then
-  printf 'Usage: %s --needed | gradle-task [gradle-argument ...]\n' "$0" >&2
+  printf 'Usage: %s gradle-task [gradle-argument ...]\n' "$0" >&2
   exit 2
 fi
-if [[ "$1" == --needed && $# != 1 ]]; then
-  printf '%s\n' '--needed does not accept additional arguments.' >&2
+# The platform-neutral CI job delegates Android to its dedicated job.
+case "${ANDROID_CHECKS:-true}" in
+true) ;;
+false)
+  printf '%s\n' 'Skipping automatic Android checks.'
+  exit 0
+  ;;
+*)
+  printf '%s\n' 'ANDROID_CHECKS must be true or false.' >&2
   exit 2
-fi
+  ;;
+esac
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly script_dir
@@ -43,9 +51,7 @@ if [[ -n "$base" ]] && git rev-parse --verify "$base^{commit}" >/dev/null 2>&1; 
   fi
 fi
 
-if [[ "$1" == --needed ]]; then
-  printf '%s\n' "$needed"
-elif [[ "$needed" == false ]]; then
+if [[ "$needed" == false ]]; then
   printf '%s\n' 'Skipping Android checks: no Android, SDK, or build input changes.'
 else
   uv run --locked python scripts/android_sdk.py check
