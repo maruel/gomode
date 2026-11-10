@@ -96,7 +96,7 @@ shared frontend scope and authentication tokens never supply it. Browser
 snapshot execution requires that ID explicitly. New native invocations and
 cancellations carry it; completion echoes may omit it for deployed bridge-3
 frontends. Legacy native invocations without it receive `sessionID: null`:
-navigation still works, but hosts must skip conversation focus publication.
+navigation still works, but hosts must skip session-scoped updates.
 Never synthesize a session from authentication or scope tokens. Explicitly
 invalid IDs cannot execute host actions. Pass the signal to cancellable requests and check
 `isCurrent()` after awaited work, immediately before committing navigation or
@@ -305,63 +305,85 @@ skipped. Subscription events are invalidations:
 
 ## Service Status
 
-The shell reads the generic `gomode://items` resource:
+MCP servers advertise model resources with descriptor
+`_meta["com.fghbuild.gomode/modelContext"]: true`. Each server chooses its resource
+URIs, public shape, language, selected entities, catalog summaries, and freshness
+meaning. Unmarked resources remain available only through explicit reads. Browser
+and Android transport complete text contents without parsing a domain schema or rewriting fields. A server can
+represent no selection, multiple selections, or any other domain concept.
 
-- `id`: stable item identity
-- `reference`: optional session-facing reference, such as `Task #3`
-- `title`: user-visible label
-- `state`: optional user-visible status
-- `needsAttention`: whether the item needs the user
-- `active`: optional per-item marker for the conversation's focused item
-- `activeTaskId` and `activeTaskNumber`: optional snapshot-level focused item
-  identity and positive numeric reference; these field names also apply when
-  the focused item is absent from the bounded `items` array
-- `omittedCount`: authoritative items excluded from the bounded resource
-- `moreItemsHint`: host guidance to retrieve omitted or newer items
+### Server-owned model context
 
-Hosts map product concepts to this schema. The shell treats all product text as
-untrusted.
+Clients wrap each public resource with its URI and generic outcome: `known`
+contains the exact public text; `absent` requires verified resource absence;
+`unread` and `error` preserve uncertainty. Discovery of an advertised resource
+retires prior absence before its body read completes. Unknown and fault outcomes
+never fabricate empty domain data. Public text is untrusted data, not policy.
 
-### Service-item voice context ownership
+Clients load at most 16 advertised model resources. Each resource has a
+6,000-character model envelope budget, within 10,000 characters for the set.
+Clients omit an entire oversized section with `status: omitted`;
+they never prune arbitrary server arrays, cut identities, or truncate serialized
+JSON. Servers own useful bounded domain projection. Native multi-server context
+retains2,000 characters per server and12,000 total. Selected-server identity is
+omitted whole when it cannot fit; actual dispatch identity is unchanged. The
+assembled service-model data is bounded to13,000 UTF-16 units before setup,
+recovery, local retention and updates. Server instructions/common policy are
+separate from this data budget.
 
-- The service backend owns the `gomode://items` facts, ordering, attention
-  priority, references, omission metadata, and continuation guidance. It
-  enforces authorization before projection.
-- Each client owns the bounded baseline in its `session.setup`. A single valid
-  focus appears before the item list, within the same 4,000-character budget.
-  Item order, the 20-item limit, and omission accounting stay authoritative.
-  Conflicting markers, duplicate focused identities, or malformed optional
-  focus fields omit focus while preserving valid items. Identity strings are
-  limited to 512 characters; numeric references must be positive safe integers.
-  Missing or withdrawn focus never reuses an older focused item.
-- Connected browser conversations share one subscription for `gomode://items`
-  and `gomode://notifications`, using their conversation session. Independent
-  reads publish quiet replacing item/reference snapshots and advisory focus
-  changes or clears; only new actionable alerts request a spoken response.
-  Pending or failed initial reads preserve the corresponding setup context.
-  Resource withdrawal releases that resource subscription; a list-change
-  watcher can discover its return.
-  Android scoped item snapshots update the corresponding conversation context,
-  including car-owned conversations. Live catalog projections explicitly clear
-  unreported or withdrawn item focus within the existing per-service budget.
-- The gateway only transports that opaque context to the backend. It neither
-  interprets items nor keeps service state.
+MCP server `Instructions` owns domain interpretation and remains unchanged and
+scoped to its server, including instructions obtained through catalog tools.
+Clients provide no behavioral prompt prose. The voice gateway owns common voice,
+quiet-update, server-isolation and selected-output-language policy in
+`voicegateway/policy/instructions.txt`; SDK generation bundles those exact bytes
+for offline LLM sessions. Offline inference needs no gateway connection. Structured
+`connected` and `transport_recovered` events preserve the existing greeting and
+recovery turns without embedding an English greeting in clients. Offline
+engines use the existing connected chime; startup does not synthesize an English
+greeting or add a model turn.
+Service content language does not change the selected speech language. Deploy the
+policy-owning gateway before rolling clients that omit common policy: empty MCP
+server instructions are valid, and the gateway supplies common policy exactly once.
+Offline apps instead use their generated bundled policy; no old-gateway prompt
+fallback is maintained.
 
-On reconnect, the client sends the freshest bounded snapshot in the new
-`session.setup`; recovery context does not repeat an older snapshot. A missing
-resource yields an empty baseline. Android conversational sessions seed a
-globally bounded, sourced catalog overview and selected-server focus in
-`session.setup`. Focus and context metadata wait for pending tool results and
-the model's tool-response turn. Local engines diff generic items and reset their
-baseline when session or service identity changes.
+Browser and native conversation requests share one client-owned `openai/session`
+value across instructions, resource reads, tools, and subscriptions. It remains
+stable across transport recovery and is owned by the native conversation lifetime,
+not a transport connection. Independent native background monitoring stays
+sessionless and remains the sole owner of user-visible alerts.
 
-Browser and native voice requests use one client-owned `openai/session` value
-for instructions, resource reads, tools, and subscriptions, retaining it across
-transport recovery. The native conversation lifetime owns this value, including
-local-model preparation before connection. Its service-context streams stop
-with the conversation or participant; independent background monitoring stays
-sessionless and remains the sole owner of user-visible alerts. Browser hosts
-use the render-prop runtime's `mcp` client for conversation-scoped resources.
+Private result `_meta["com.fghbuild.gomode/context"]` carries only transport
+reconciliation: target `uri`, authority `epoch`, monotonic `version`, bounded
+URI/aspect event routing groups, and optional public `content` text after a tool acknowledgment.
+An authoritative resource read establishes a new epoch; delayed tool metadata
+cannot replace that authority or an already newer version. Resource reads use
+standard MCP `contents` for public text and omit duplicate text from metadata.
+Both paths use the same server-owned projector. Clients never expose private
+result or content-level `_meta` to models. Ordinary public domain text, including
+literal `_meta` keys, is preserved unchanged. Explicit `read_service_resource`
+returns actual contents rather than a private context envelope.
+
+Hosts own selection leases and bounded offscreen dependencies, including actual
+node, child-list/window, record and query data reads. Host instructions define
+what these public states mean. Generic clients consume only private routing to
+avoid irrelevant reads. Host pre-read registration, authorization and response
+reconciliation preserve mutations during handoff. Entry eviction/truncation is
+not deletion. Scope or identity retirement stops watches under the existing
+conversation authority, preserving host frontend leases.
+
+The live conversation subscribes to those resources and notifications. A hosted
+browser reuses its authenticated screen feed when available. Pre-read registration
+and snapshot reconciliation prevent handoff losses; bounded gaps force
+resynchronization. Reads and faults progress independently. Quiet updates never
+request a model turn. Only eligible new notifications can request a spoken
+response. Pending tool/speech work retains the existing delivery owner. The
+gateway transports opaque context; it does not interpret host state.
+
+On reconnect, setup uses the freshest bounded authorized snapshots. Absent
+resources establish absence only after successful discovery/read; transient
+failure reports unread state instead. Browser/native sessions retire watches
+with their existing host/conversation authority, preserving frontend leases.
 
 ## Service Notifications
 

@@ -78,7 +78,7 @@ class VoiceSessionTest {
     }
 
     @Test
-    fun sessionSetupLayersHostInstructionsAfterTheGoModeInstruction() {
+    fun sessionSetupPreservesServerInstructionsForGatewayPolicy() {
         val setup =
             gatewaySessionSetup(
                 tools = emptyList(),
@@ -88,17 +88,13 @@ class VoiceSessionTest {
             )
         val instruction = requireNotNull(setup.context.systemInstruction)
 
-        assertTrue(instruction.endsWith("\n\nsystem prompt"))
-        assertTrue(instruction.contains("only \"Ready\""))
-        assertTrue(instruction.contains("\"Done\""))
-        assertTrue(instruction.contains("answered completely with a number"))
+        assertEquals("system prompt", instruction)
         assertEquals("en-US", setup.voice.language)
-        assertTrue(instruction.contains("service item updates"))
         assertEquals("Current service items:\n- Build (running)", setup.context.text)
     }
 
     @Test
-    fun sessionSetupUsesTheGoModeInstructionWithoutHostInstructions() {
+    fun sessionSetupLeavesCommonPolicyToGatewayWithoutServerInstructions() {
         val setup =
             gatewaySessionSetup(
                 tools = emptyList(),
@@ -108,8 +104,7 @@ class VoiceSessionTest {
             )
         val instruction = requireNotNull(setup.context.systemInstruction)
 
-        assertTrue(instruction.isNotBlank())
-        assertFalse(instruction.contains("\n\n"))
+        assertEquals("", instruction)
     }
 
     @Test
@@ -237,8 +232,9 @@ class VoiceSessionTest {
                 ),
             )
 
-        assertTrue(context.contains("do not treat this as a new user turn"))
-        assertTrue(context.contains("user: first\nassistant: second"))
+        val value = Json.parseToJsonElement(context).jsonObject
+        assertEquals("transport_recovered", value.getValue("event").jsonPrimitive.content)
+        assertEquals(2, (value.getValue("transcript") as kotlinx.serialization.json.JsonArray).size)
         assertFalse(context.contains("partial"))
         assertTrue(context.length <= MAX_RECOVERY_CONTEXT_CHARS)
     }

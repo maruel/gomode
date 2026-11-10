@@ -84,7 +84,10 @@ it("replaces host resource subscriptions when a new voice conversation starts", 
     mount(() => scope, {
       children: (runtime) => {
         createEffect(() => {
-          const subscription = runtime.mcp.subscribeResources({ resourceSubscriptions: ["gomode://items"] }, () => {});
+          const subscription = runtime.mcp.subscribeResources(
+            { resourceSubscriptions: ["fixture://catalog"] },
+            () => {},
+          );
           onCleanup(() => subscription.close());
         });
         return <div data-testid="voice-runtime">Runtime mounted</div>;
@@ -108,7 +111,7 @@ it("captures the host preparation callback and aborts it when its runtime retire
   const gate = deferred<void>();
   const prepare = vi.fn(async (_sessionID: string, _signal: AbortSignal) => gate.promise);
   const audio = vi.spyOn(voiceSession, "prepareAudio").mockImplementation(() => {});
-  const reads = vi.spyOn(mcpClient, "readAdvertisedTextResource");
+  const reads = vi.spyOn(mcpClient, "listModelResources");
   try {
     scope.setTools([]);
     scope.setDataReady(true);
@@ -142,11 +145,14 @@ it("captures the host preparation callback and aborts it when its runtime retire
 
 it("owns service context reads with the connected runtime and rejects retired results", async () => {
   const capabilities = vi.spyOn(mcpClient, "resourceCapabilities").mockResolvedValue({ subscribe: true });
-  const read = vi.spyOn(mcpClient, "readAdvertisedTextResource");
+  const read = vi.spyOn(mcpClient, "readTextResource");
+  const discovery = vi
+    .spyOn(mcpClient, "listModelResources")
+    .mockResolvedValue({ resources: [{ uri: "fixture://catalog", name: "catalog" }], notifications: true });
   const subscribe = vi.spyOn(mcpClient, "subscribeResources");
   const inject = vi.spyOn(voiceSession, "injectText").mockImplementation(() => {});
   const close = vi.fn();
-  const pending = deferred<string | null>();
+  const pending = deferred<string>();
   read.mockImplementation(() => pending.promise);
   subscribe.mockReturnValue({ close });
   try {
@@ -162,7 +168,7 @@ it("owns service context reads with the connected runtime and rejects retired re
       }),
     );
     await waitFor(() =>
-      expect(read).toHaveBeenCalledWith("gomode://items", expect.any(AbortSignal), {
+      expect(read).toHaveBeenCalledWith("fixture://catalog", expect.any(AbortSignal), {
         sessionID: voiceSession.conversationID,
       }),
     );
@@ -172,8 +178,9 @@ it("owns service context reads with the connected runtime and rejects retired re
     pending.resolve(JSON.stringify([{ id: "old", title: "Retired alert", body: "Other account" }]));
     await pending.promise;
     expect(inject).not.toHaveBeenCalled();
-    expect(subscribe).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
   } finally {
+    discovery.mockRestore();
     capabilities.mockRestore();
     read.mockRestore();
     subscribe.mockRestore();

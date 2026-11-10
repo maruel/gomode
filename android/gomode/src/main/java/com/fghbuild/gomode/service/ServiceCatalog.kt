@@ -6,11 +6,13 @@ import com.fghbuild.gomode.ui.web.FrontendVoiceTools
 import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellSession
 import com.fghbuild.gomode.ui.web.WebShellLoadState
+import com.fghbuild.gomode.voice.InvalidMcpResponse
 import com.fghbuild.gomode.voice.McpToolResult
 import com.fghbuild.gomode.voice.ServiceMcp
 import com.fghbuild.gomode.voice.ServiceMcpAuthorization
 import com.fghbuild.gomode.voice.ToolCallValidator
 import com.fghbuild.gomode.voice.prepareServiceMcp
+import com.fghbuild.mcp.sdk.v1.ResourceContent
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -41,8 +43,6 @@ import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
-
-private const val NO_ACTIVE_SERVICE_ITEM_CONTEXT = "No active service item is reported."
 
 internal enum class ServiceReadiness(
     val text: String,
@@ -164,15 +164,9 @@ internal class ServiceCatalog(
     }
 
     // Globally bounded, explicitly sourced overview. Tool schemas/instructions/details are discovered on demand.
-    fun contextText(snapshots: Map<ServiceShellKey, ServiceMonitoringSnapshot>): String =
+    fun contextText(snapshots: Map<ServiceShellKey, ServiceMonitorState>): String =
         formatContextText(
-            snapshots.mapValues { (_, snapshot) ->
-                if (snapshot.activeItem == null) {
-                    "$NO_ACTIVE_SERVICE_ITEM_CONTEXT\n${snapshot.voiceContext}"
-                } else {
-                    snapshot.voiceContext
-                }
-            },
+            snapshots.mapValues { (_, snapshot) -> snapshot.voiceContext },
         )
 
     // The conversation owns one item-only stream per prepared authority. Keep
@@ -181,8 +175,8 @@ internal class ServiceCatalog(
     fun monitorVoiceContext(
         scope: CoroutineScope,
         sessionID: String,
-    ): StateFlow<Map<ServiceShellKey, ServiceMonitoringSnapshot>> {
-        val snapshots = MutableStateFlow<Map<ServiceShellKey, ServiceMonitoringSnapshot>>(emptyMap())
+    ): StateFlow<Map<ServiceShellKey, ServiceMonitorState>> {
+        val snapshots = MutableStateFlow<Map<ServiceShellKey, ServiceMonitorState>>(emptyMap())
         scope.launch {
             val workers = mutableMapOf<ServiceShellKey, Pair<ServiceMcp, Job>>()
             try {
@@ -218,7 +212,7 @@ internal class ServiceCatalog(
                                         ServiceMonitor(
                                             this,
                                             sessionID,
-                                            ServiceMonitorPurpose.CONVERSATION_ITEMS,
+                                            ServiceMonitorPurpose.CONVERSATION_CONTEXT,
                                         ) { _, _ -> mcp.client }
                                     try {
                                         monitor.start(key.url, ready.settings)
@@ -233,21 +227,7 @@ internal class ServiceCatalog(
                                             ) {
                                                 return@collect
                                             }
-                                            val snapshot = value.snapshot
-                                            if (snapshot != null) {
-                                                snapshots.update { it + (key to snapshot) }
-                                            } else if (value.activeNotifications != null) {
-                                                // No items resource is verified absence, unlike an
-                                                // unread snapshot or a transient transport failure.
-                                                snapshots.update {
-                                                    it + (
-                                                        key to
-                                                            ServiceMonitoringSnapshot(
-                                                                emptyList(),
-                                                            )
-                                                    )
-                                                }
-                                            }
+                                            snapshots.update { it + (key to value) }
                                         }
                                     } finally {
                                         monitor.stop()
@@ -263,38 +243,81 @@ internal class ServiceCatalog(
         return snapshots.asStateFlow()
     }
 
-    private fun formatContextText(contexts: Map<ServiceShellKey, String>): String =
-        buildString {
-            append(
-                "This replaces the previous service overview; absent items are no longer visible.\n" +
-                    "Use discover_service and dispatch_service_tool. Instructions apply only to their server.\n",
-            )
-            for (entry in state.value.values) {
-                val participant = members[entry.key]
-                val current = participant?.prepared?.let(participant::current) == true
-                val readiness =
-                    if (!current && entry.readiness == ServiceReadiness.READY) {
-                        ServiceReadiness.UNAVAILABLE
-                    } else {
-                        entry.readiness
-                    }
-                val context =
-                    if (!current || !hasContextResources(entry.key)) {
-                        NO_ACTIVE_SERVICE_ITEM_CONTEXT
-                    } else {
-                        contexts[entry.key]
-                            ?: "Service items have not been read; retain the previous context for this server."
-                    }
-                val source = Json.encodeToString(listOf(entry.key.serviceID, entry.label, entry.key.url))
-                val body = "Server $source: ${readiness.text}\n$context\n"
-                if (length + body.take(2_000).length > 11_900) {
-                    append("More servers omitted; use discover_service.\n")
-                    break
+    private fun formatContextText(contexts: Map<ServiceShellKey, String>): String {
+        val servers = mutableListOf<kotlinx.serialization.json.JsonElement>()
+        val entries = state.value.values
+
+        fun snapshot() =
+            buildJsonObject {
+                put("servers", JsonArray(servers.toList()))
+                put("omittedServerCount", entries.size - servers.size)
+            }
+        for (entry in entries) {
+            val participant = members[entry.key]
+            val current = participant?.prepared?.let(participant::current) == true
+            val readiness =
+                if (!current && entry.readiness == ServiceReadiness.READY) {
+                    ServiceReadiness.UNAVAILABLE
+                } else {
+                    entry.readiness
                 }
-                append(body.take(2_000))
-                append('\n')
+            val context =
+                when {
+                    !current -> {
+                        unreadServiceContext(null)
+                    }
+
+                    participant.prepared
+                        ?.mcp
+                        ?.capabilities
+                        ?.resources == null -> {
+                        unreadServiceContext(emptySet())
+                    }
+
+                    else -> {
+                        contexts[entry.key] ?: (
+                            unreadServiceContext(null)
+                        )
+                    }
+                }
+            val sections =
+                context
+                    .lineSequence()
+                    .filter { it.isNotBlank() }
+                    .map { Json.parseToJsonElement(it).jsonObject }
+                    .toList()
+            val identity =
+                buildJsonObject {
+                    put("id", entry.key.serviceID)
+                    put("url", entry.key.url)
+                    put("label", entry.label.boundedModelText(256))
+                    put("labelTruncated", entry.label.length > 256)
+                    put("status", readiness.name.lowercase())
+                    put("context", JsonArray(emptyList()))
+                    put("omittedSectionCount", sections.size)
+                }
+            // Reserve the actual escaped identity and wrapper before bounding complete sections.
+            // A source whose identity cannot fit must not hide later independent servers.
+            val identityLength = identity.toString().length
+            if (identityLength > 2000) continue
+            val bounded = boundModelSections(sections, 2000 - identityLength + 2)
+            val source =
+                JsonObject(
+                    identity +
+                        mapOf(
+                            "context" to bounded,
+                            "omittedSectionCount" to
+                                kotlinx.serialization.json.JsonPrimitive(sections.size - bounded.size),
+                        ),
+                )
+            servers += source
+            if (snapshot().toString().length > 12000) {
+                servers.removeAt(servers.lastIndex)
+                break
             }
         }
+        return snapshot().toString()
+    }
 
     @Suppress("TooGenericExceptionCaught") // Tool failures are returned to the caller without affecting other services.
     suspend fun execute(
@@ -316,7 +339,8 @@ internal class ServiceCatalog(
                             state.value.values.map { entry ->
                                 buildJsonObject {
                                     put("server_id", entry.key.serviceID)
-                                    put("label", entry.label)
+                                    put("label", entry.label.boundedModelText(256))
+                                    put("labelTruncated", entry.label.length > 256)
                                     put("url", entry.key.url)
                                     put("status", entry.readiness.text)
                                     entry.error?.let { put("error", it) }
@@ -348,16 +372,21 @@ internal class ServiceCatalog(
                     }
 
                     "read_service_resource" -> {
+                        val uri = args.getValue("uri").jsonPrimitive.content
+                        val resource = checkNotNull(prepared.mcp).client.readResource(uri, sessionID).result
+                        val contents =
+                            resource.contents.orEmpty().map { it.copy(_meta = null) }
+
+                        val body = buildJsonObject { put("resource", Json.encodeToJsonElement(contents)) }
+                        val limit = MODEL_CONTEXT_BUDGET
                         McpToolResult(
-                            buildJsonObject {
-                                put(
-                                    "resource",
-                                    Json.encodeToJsonElement(
-                                        checkNotNull(
-                                            prepared.mcp,
-                                        ).client.readResource(args.getValue("uri").jsonPrimitive.content, sessionID),
-                                    ),
-                                )
+                            if (body.toString().length <= limit) {
+                                body
+                            } else {
+                                buildJsonObject {
+                                    put("resource", uri)
+                                    put("status", "omitted")
+                                }
                             },
                         )
                     }
@@ -621,7 +650,6 @@ internal class ServiceCatalog(
             return McpToolResult(
                 buildJsonObject {
                     put("instructions", instructions)
-                    put("instruction_scope", "Apply these instructions only when using this server.")
                     put("context", context)
                     put("mcp_tools", Json.encodeToJsonElement(value.mcp?.tools.orEmpty()))
                     put(

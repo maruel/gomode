@@ -124,7 +124,8 @@ func TestGeminiBridgeBackend(t *testing.T) {
 		done := make(chan error, 1)
 		var workers sync.WaitGroup
 		workers.Go(func() {
-			done <- s.acceptClientMessage(t.Context(), []byte(`{"kind":"session.setup","voice":{"name":"orus","language":"fr-CA"},"context":{"systemInstruction":"System","text":"Baseline"},"tools":[{"name":"lookup","parameters":{"type":"object"}}]}`))
+			//nolint:gosmopolitan // Non-Latin fixture verifies provider instructions and data remain unchanged.
+			done <- s.acceptClientMessage(t.Context(), []byte(`{"kind":"session.setup","voice":{"name":"orus","language":"fr-CA"},"context":{"systemInstruction":"この書庫の資料だけを説明してください。","text":"Bonjour 東京"},"tools":[{"name":"lookup","parameters":{"type":"object"}}]}`))
 		})
 		t.Cleanup(func() { s.cancel(); workers.Wait() })
 		setup := (<-setupSeen)["setup"].(map[string]any)
@@ -146,7 +147,8 @@ func TestGeminiBridgeBackend(t *testing.T) {
 			t.Fatalf("selected voice: %v", voice)
 		}
 		instruction := setup["systemInstruction"].(map[string]any)["parts"].([]any)[0].(map[string]any)["text"].(string)
-		if !strings.Contains(instruction, "Speak in the selected language: fr-CA.") || !strings.Contains(instruction, "Baseline") {
+		//nolint:gosmopolitan // Assert the actual provider received the non-Latin fixture unchanged.
+		if !strings.Contains(instruction, "Speak in the selected language: fr-CA.") || !strings.Contains(instruction, "Bonjour 東京") || !strings.HasPrefix(instruction, "この書庫の資料だけを説明してください。\n") {
 			t.Fatalf("instruction: %s", instruction)
 		}
 		hints := setup["inputAudioTranscription"].(map[string]any)["languageCodes"].([]any)
@@ -377,6 +379,23 @@ func TestGeminiBridgeSession(t *testing.T) {
 			t.Fatalf("gateway ordering: %v", sink.kinds())
 		}
 	})
+	t.Run("empty server instructions", func(t *testing.T) {
+		s, sink := newGeminiGateway(t, func(ctx context.Context, ws *websocket.Conn) {
+			setup := readGeminiFixture(t, ctx, ws)["setup"].(map[string]any)
+			instruction := setup["systemInstruction"].(map[string]any)["parts"].([]any)[0].(map[string]any)["text"].(string)
+			if strings.Count(instruction, "Speak in the selected language: en-US.") != 1 {
+				t.Errorf("empty server instructions must receive common policy exactly once: %q", instruction)
+			}
+			writeGeminiFixture(t, ctx, ws, `{"setupComplete":{}}`)
+			_, _, _ = ws.Read(ctx)
+		})
+		if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"session.setup","context":{}}`)); err != nil {
+			t.Fatal(err)
+		}
+		if !sink.isReady() {
+			t.Fatal("empty server instructions prevented readiness")
+		}
+	})
 	t.Run("close during setup", func(t *testing.T) {
 		seen := make(chan struct{})
 		s, sink := newGeminiGateway(t, func(ctx context.Context, ws *websocket.Conn) {
@@ -418,7 +437,7 @@ func TestGeminiBridgeSession(t *testing.T) {
 	})
 	t.Run("validation", func(t *testing.T) {
 		s, _ := newGeminiGateway(t, func(context.Context, *websocket.Conn) { t.Error("invalid setup reached provider") })
-		for _, data := range []string{`{"kind":"session.setup","context":{}}`, `{"kind":"session.setup","voice":{"language":"en_US"},"context":{"systemInstruction":"test"}}`, `{"kind":"session.setup","tools":[{"name":"bad","parameters":[]}],"context":{"systemInstruction":"test"}}`, `{"provider":"wire"}`} {
+		for _, data := range []string{`{"kind":"session.setup","voice":{"language":"en_US"},"context":{"systemInstruction":"test"}}`, `{"kind":"session.setup","tools":[{"name":"bad","parameters":[]}],"context":{"systemInstruction":"test"}}`, `{"provider":"wire"}`} {
 			if err := s.acceptClientMessage(t.Context(), []byte(data)); err == nil {
 				t.Fatalf("accepted %s", data)
 			}

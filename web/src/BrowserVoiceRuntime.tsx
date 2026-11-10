@@ -1,12 +1,12 @@
 // Owns lazy browser voice setup preparation, scoped context watchers, and the localized overlay.
 
-import { createEffect, createSignal, onCleanup, Show, untrack } from "solid-js";
+import { createEffect, createRoot, createSignal, on, onCleanup, Show, untrack } from "solid-js";
 import { configureMcpClient, mcpClient } from "./McpClient";
 import { configureVoiceGateway, voiceSession } from "./VoiceSession";
 import VoiceOverlay from "./VoiceOverlay";
 import { defaultVoiceMessages } from "./VoiceMessages";
 import { notifications } from "./notifications";
-import { monitorServiceNotifications } from "./ServiceNotifications";
+import { monitorServiceNotifications, type ServiceResourceSource } from "./ServiceNotifications";
 import type { BrowserVoiceRuntimeProps } from "./BrowserVoiceShell";
 
 export interface BrowserVoiceRuntime {
@@ -21,11 +21,14 @@ export default function BrowserVoiceRuntime(props: BrowserVoiceRuntimeProps) {
   // Hosts subscribe through the runtime so their resource streams use the same
   // conversation as voice setup and tools. Reconnect retains that identity.
   const conversationMcp: typeof mcpClient = {
+    ...mcpClient,
     serverInstructions: (options) =>
       mcpClient.serverInstructions({ ...options, sessionID: voiceSession.conversationID }),
     resourceCapabilities: (signal, options) =>
       mcpClient.resourceCapabilities(signal, { ...options, sessionID: voiceSession.conversationID }),
     listTools: (options) => mcpClient.listTools({ ...options, sessionID: voiceSession.conversationID }),
+    readTextResource: (uri, signal, options) =>
+      mcpClient.readTextResource(uri, signal, { ...options, sessionID: voiceSession.conversationID }),
     readAdvertisedTextResource: (uri, signal, options) =>
       mcpClient.readAdvertisedTextResource(uri, signal, { ...options, sessionID: voiceSession.conversationID }),
     callTool: (name, args, options) =>
@@ -67,10 +70,39 @@ export default function BrowserVoiceRuntime(props: BrowserVoiceRuntimeProps) {
   });
   createEffect(() => {
     if (!active() || !voiceSession.state.connected) return;
+    const events = props.resourceEvents;
+    const source: ServiceResourceSource | undefined = events
+      ? (options, receive) =>
+          createRoot((dispose) => {
+            createEffect(
+              on(
+                events,
+                (event) => {
+                  for (const notification of event ?? []) receive(notification);
+                },
+                { defer: true },
+              ),
+            );
+            // Registration precedes the authoritative recovery read, just as it does
+            // for the MCP source. No host event can fall between read and subscribe.
+            queueMicrotask(() => options.onReady?.());
+            return { close: dispose };
+          })
+      : undefined;
     const monitor = monitorServiceNotifications(
       (text, generate) => (generate ? voiceSession.injectText(text, true) : voiceSession.setServiceContext(text)),
       props.onError,
       { sessionID: voiceSession.conversationID },
+      source,
+    );
+    createEffect(
+      on(
+        () => props.preparation.contextPublication(),
+        (publication) => {
+          if (!publication.pending) monitor.refreshContext();
+        },
+        { defer: true },
+      ),
     );
     onCleanup(() => monitor.close());
   });

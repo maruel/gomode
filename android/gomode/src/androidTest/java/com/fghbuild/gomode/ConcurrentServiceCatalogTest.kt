@@ -36,7 +36,9 @@ import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.ui.web.WebShellScreen
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -74,6 +76,70 @@ class ConcurrentServiceCatalogTest {
     @get:Rule
     val notificationPermissionRule: GrantPermissionRule =
         GrantPermissionRule.grant(Manifest.permission.POST_NOTIFICATIONS)
+
+    @Test
+    fun boundedCatalogKeepsLaterServersAndUnicodeIdentity() {
+        composeRule.setContent {}
+        composeRule.runOnIdle {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+            val entries =
+                listOf(
+                    ServiceShellSession(ServiceShellKey("\"𠮷".repeat(800), "https://oversized.example")) {},
+                    ServiceShellSession(ServiceShellKey("middle", "https://middle.example")) {},
+                    ServiceShellSession(ServiceShellKey("last", "https://last.example")) {},
+                )
+            val catalog = ServiceCatalog(scope)
+            try {
+                catalog.reconcile(
+                    entries.associateBy { it.key },
+                    mapOf(
+                        "middle" to "\"".repeat(255) + "😀",
+                        "last" to "字".repeat(255) + "𠮷",
+                    ),
+                )
+                val text = catalog.contextText(emptyMap())
+                val context = Json.parseToJsonElement(text).jsonObject
+                val servers = context.getValue("servers") as JsonArray
+                assertEquals(2, servers.size)
+                assertEquals("1", context.getValue("omittedServerCount").jsonPrimitive.content)
+                assertEquals(
+                    "\"".repeat(255),
+                    servers[0]
+                        .jsonObject
+                        .getValue("label")
+                        .jsonPrimitive.content,
+                )
+                assertEquals(
+                    "字".repeat(255),
+                    servers[1]
+                        .jsonObject
+                        .getValue("label")
+                        .jsonPrimitive.content,
+                )
+                servers.forEach { server ->
+                    assertTrue(server.toString().length <= 2000)
+                    assertEquals(
+                        server.toString(),
+                        server.toString().toByteArray(Charsets.UTF_8).toString(Charsets.UTF_8),
+                    )
+                    val sections = server.jsonObject.getValue("context") as JsonArray
+                    assertEquals(1, sections.size)
+                    assertTrue(
+                        sections.all {
+                            it.jsonObject
+                                .getValue("status")
+                                .jsonPrimitive.content == "unread"
+                        },
+                    )
+                }
+                assertTrue(text.length <= 12000)
+            } finally {
+                catalog.close()
+                entries.forEach { it.close() }
+                scope.cancel()
+            }
+        }
+    }
 
     @Test
     fun visibleServiceAlertsAreSuppressedButOtherServicesAndBackgroundAlertsAreDelivered() {
@@ -284,7 +350,7 @@ class ConcurrentServiceCatalogTest {
                                         put("tool", "duplicate")
                                         put("arguments", buildJsonObject { put("value", source) })
                                     },
-                                    sessionID = "retained-conversation",
+                                    sessionID = "retained-pages",
                                 ) { true }
                             }
                         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { pending.isCompleted }
@@ -433,6 +499,73 @@ class ConcurrentServiceCatalogTest {
     }
 
     @Test
+    fun watchedResourceToolProjectsOnlyDomainContents() {
+        ParticipantFixture("Private resource").use { fixture ->
+            val entry = fixture.entry("a")
+            lateinit var catalog: ServiceCatalog
+            composeRule.setContent {
+                val scope = rememberCoroutineScope()
+                catalog = remember { ServiceCatalog(scope) }
+                catalog.reconcile(mapOf(entry.key to entry), emptyMap())
+                DisposableEffect(catalog) {
+                    onDispose {
+                        entry.close()
+                    }
+                }
+                WebShellScreen(voiceConnected = false, reloadToken = 0, serviceSession = entry, onAuthInvalidated = {})
+            }
+            composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+                catalog.state.value[entry.key]?.readiness ==
+                    ServiceReadiness.READY
+            }
+            runBlocking {
+                withContext(Dispatchers.Main) {
+                    val result =
+                        requireNotNull(
+                            catalog.execute(
+                                "read_service_resource",
+                                buildJsonObject {
+                                    put("server_id", "a")
+                                    put("uri", "demo://documents/offscreen")
+                                },
+                                "watched-native",
+                            ) { true },
+                        )
+                    assertFalse(result.isError)
+                    val contents =
+                        result.structuredContent
+                            .getValue("result")
+                            .jsonObject
+                            .getValue("resource")
+                    assertTrue(contents is JsonArray)
+                    assertTrue(contents.toString().contains("Notes"))
+                    assertTrue("Domain _meta body was redacted", contents.toString().contains("domain"))
+                    assertFalse(contents.toString().contains("private-epoch"))
+                    assertFalse(contents.toString().contains("private-content-metadata"))
+                    assertFalse(contents.toString().contains("cacheScope"))
+                    assertTrue(fixture.resourceSessions.contains("watched-native"))
+                    val context =
+                        requireNotNull(
+                            catalog.execute(
+                                "read_service_resource",
+                                buildJsonObject {
+                                    put("server_id", "a")
+                                    put("uri", "fixture://context")
+                                },
+                                "watched-native",
+                            ) { true },
+                        )
+                    assertFalse(context.isError)
+                    assertTrue(context.structuredContent.toString().contains("demo://watched"))
+                    assertFalse(context.structuredContent.toString().contains("private-route"))
+                    assertFalse(context.structuredContent.toString().contains("private-epoch"))
+                    assertFalse(context.structuredContent.toString().contains("dependencies"))
+                }
+            }
+        }
+    }
+
+    @Test
     fun toolsOnlyParticipantDiscoversSchemasWithoutResourceRequests() {
         ParticipantFixture("Tools only", supportsResources = false).use { fixture ->
             val entry = fixture.entry("a")
@@ -479,7 +612,7 @@ class ConcurrentServiceCatalogTest {
                                 "read_service_resource",
                                 buildJsonObject {
                                     put("server_id", "a")
-                                    put("uri", "gomode://items")
+                                    put("uri", "fixture://catalog")
                                 },
                             ) { true },
                         )
@@ -505,6 +638,7 @@ class ConcurrentServiceCatalogTest {
         private val server = MockWebServer()
         val streams = AtomicInteger()
         val resourceRequests = AtomicInteger()
+        val resourceSessions = CopyOnWriteArrayList<String?>()
         private val notificationReads = AtomicInteger()
         val notificationVersion = AtomicInteger()
         val notificationTitle = AtomicReference("Ready")
@@ -538,7 +672,7 @@ class ConcurrentServiceCatalogTest {
                         if (method == "subscriptions/listen") {
                             streams.incrementAndGet()
                             val events =
-                                listOf("gomode://items", "gomode://notifications")
+                                listOf("fixture://catalog", "gomode://notifications")
                                     .joinToString("") { uri ->
                                         "data: " +
                                             buildJsonObject {
@@ -614,7 +748,8 @@ class ConcurrentServiceCatalogTest {
                                     {
                                       "resources": [
                                         {
-                                          "uri": "gomode://items",
+                                          "uri": "fixture://catalog",
+                                          "_meta": {"com.fghbuild.gomode/modelContext": true},
                                           "name": "items",
                                           "mimeType": "application/json"
                                         },
@@ -636,8 +771,14 @@ class ConcurrentServiceCatalogTest {
                                             .getValue("uri")
                                             .jsonPrimitive.content
                                     val text =
-                                        if (uri == "gomode://items") {
+                                        if (uri == "fixture://catalog") {
                                             """{"items":[{"id":"same","title":"Same item","state":"$source"}]}"""
+                                        } else if (uri == "fixture://context") {
+                                            """
+                                            {"consultés":["demo://watched"],"sélection":{"documents":[]},"titre":"資料😀"}
+                                            """.trimIndent()
+                                        } else if (uri == "demo://documents/offscreen") {
+                                            """{"title":"Notes","_meta":{"domain":"keep"}}"""
                                         } else if (liveNotifications) {
                                             val version = notificationVersion.get()
                                             if (version == 0) {
@@ -650,6 +791,15 @@ class ConcurrentServiceCatalogTest {
                                         } else {
                                             """[{"id":"same-event","title":"Ready","body":"$source updated"}]"""
                                         }
+                                    resourceSessions +=
+                                        body
+                                            .getValue(
+                                                "params",
+                                            ).jsonObject["_meta"]
+                                            ?.jsonObject
+                                            ?.get("openai/session")
+                                            ?.jsonPrimitive
+                                            ?.content
                                     buildJsonObject {
                                         put(
                                             "contents",
@@ -658,6 +808,10 @@ class ConcurrentServiceCatalogTest {
                                                     buildJsonObject {
                                                         put("uri", uri)
                                                         put("text", text)
+                                                        put(
+                                                            "_meta",
+                                                            buildJsonObject { put("private-content-metadata", true) },
+                                                        )
                                                     },
                                                 ),
                                             ),
@@ -676,8 +830,25 @@ class ConcurrentServiceCatalogTest {
                             } else {
                                 decoded
                             }
+                        val privateResult =
+                            if (method ==
+                                "resources/read"
+                            ) {
+                                advertised +
+                                    (
+                                        "_meta" to
+                                            Json.parseToJsonElement(
+                                                """
+                                                {"com.fghbuild.gomode/context":{
+                                                 "uri":"fixture://context","epoch":"private-epoch","version":7,"dependencies":[]}}
+                                                """.trimIndent(),
+                                            )
+                                    )
+                            } else {
+                                advertised
+                            }
                         val fields =
-                            advertised +
+                            privateResult +
                                 mapOf(
                                     "resultType" to JsonPrimitive("complete"),
                                     "ttlMs" to JsonPrimitive(0),

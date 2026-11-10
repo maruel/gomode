@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/invopop/jsonschema"
+	schemavalidator "github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 type noSubscriptionRegistry struct{ Registry }
@@ -1224,6 +1226,62 @@ func TestRequestMeta(t *testing.T) {
 
 func TestNewToolSpec(t *testing.T) {
 	t.Parallel()
+	t.Run("RecursiveOutput", func(t *testing.T) {
+		type input struct {
+			TaskNumber string `json:"task_number"`
+		}
+		type tree struct {
+			Title    string `json:"title"`
+			Children []tree `json:"children"`
+		}
+		spec := NewToolSpec("tree", "Tree", "Read a recursive tree", func(context.Context, *ToolRequest[input]) ToolResult[tree] {
+			return TypedToolResult(tree{Title: "root", Children: []tree{{Title: "child", Children: []tree{}}}})
+		})
+		if spec.OutputSchema.Type != "object" {
+			t.Fatal("MCP output must expose an object root")
+		}
+		if err := ValidateToolSchema(spec.OutputSchema); err != nil {
+			t.Fatal(err)
+		}
+		headers, err := HeaderParams(spec.InputSchema)
+		if err != nil || len(headers) != 1 || headers[0].Header != "Task-Number" || !slices.Equal(headers[0].Path, []string{"task_number"}) {
+			t.Fatalf("input header mirroring changed: %+v, %v", headers, err)
+		}
+		wire, err := json.Marshal(spec.OutputSchema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var document any
+		if err := json.Unmarshal(wire, &document); err != nil {
+			t.Fatal(err)
+		}
+		compiler := schemavalidator.NewCompiler()
+		if err := compiler.AddResource("https://example.test/tree", document); err != nil {
+			t.Fatal(err)
+		}
+		schema, err := compiler.Compile("https://example.test/tree")
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := spec.Handler(t.Context(), &ToolsCallParams{Arguments: json.RawMessage(`{"task_number":"1"}`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire, err = json.Marshal(result.Structured)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var value any
+		if err := json.Unmarshal(wire, &value); err != nil {
+			t.Fatal(err)
+		}
+		if err := schema.Validate(value); err != nil {
+			t.Fatal(err)
+		}
+		if err := schema.Validate(map[string]any{"title": 10, "children": []any{}}); err == nil {
+			t.Fatal("output schema accepted a non-string title")
+		}
+	})
 	type arguments struct {
 		Message string `json:"message"`
 	}

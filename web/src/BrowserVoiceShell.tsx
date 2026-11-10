@@ -20,6 +20,7 @@ import VoiceIcon from "./VoiceIcon";
 import styles from "./BrowserVoiceShell.module.css";
 import type { ServiceAuthorization } from "../../sdk/voicegateway/ts/v2/types.gen";
 import type { BrowserVoiceRuntime } from "./BrowserVoiceRuntime";
+import type { McpResourceNotification } from "./McpClient";
 
 export interface BrowserVoiceShellProps {
   service: string;
@@ -31,6 +32,8 @@ export interface BrowserVoiceShellProps {
   /** Decorate the validated MCP endpoint with captured host session authority if needed. */
   mcpEndpoint?: (endpoint: string) => string;
   gatewayHeaders?: HeadersInit;
+  /** Reuse a host-owned screen event feed instead of opening an MCP stream. */
+  resourceEvents?: Accessor<readonly McpResourceNotification[] | null>;
   /** Read the host’s current localized voice catalog. */
   messages?: Accessor<VoiceMessages>;
   setupFailed: string;
@@ -45,6 +48,7 @@ export interface BrowserVoiceRuntimeProps {
   clientName: string;
   authorize?: BrowserVoiceShellProps["authorize"];
   gatewayHeaders?: HeadersInit;
+  resourceEvents?: BrowserVoiceShellProps["resourceEvents"];
   preparation: FrontendPreparationScope;
   messages?: BrowserVoiceShellProps["messages"];
   onError: BrowserVoiceShellProps["onError"];
@@ -163,7 +167,7 @@ export default function BrowserVoiceShell(props: BrowserVoiceShellProps) {
       </Show>
       <Show when={runtime()} keyed>
         {({ component: Runtime, configuration }) => (
-          <Runtime {...configuration} messages={props.messages}>
+          <Runtime {...configuration} resourceEvents={props.resourceEvents} messages={props.messages}>
             {props.children}
           </Runtime>
         )}

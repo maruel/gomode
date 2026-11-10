@@ -447,7 +447,6 @@ internal class DeviceVoiceSession(
         if (!ownsAttempt(attempt)) return
         if (!announcing) {
             turnIdle = true
-            speak("Ready")
         }
         maybeStartListening()
     }
@@ -683,7 +682,7 @@ internal class DeviceVoiceSession(
                     val announcing = pendingNotifications.hasAlerts()
                     flushPendingNotifications()
                     if (!ownsAttempt(attempt) || webSocket !== origin) return
-                    if (!announcing) sendUserMessage("Say exactly one word: Ready")
+                    if (!announcing) sendUserMessage("{\"event\":\"connected\"}")
                     maybeStartListening()
                 }
 

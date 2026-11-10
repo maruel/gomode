@@ -67,7 +67,7 @@ import {
   type FrontendVoiceToolsSnapshot,
   type FrontendSessionPreparation,
 } from "./FrontendVoiceTools";
-import { GO_MODE_ITEMS_RESOURCE_URI, initialServiceContext } from "./ServiceItems";
+import { readInitialModelContext } from "./ModelContext";
 import { WebAudioVoiceChime, type VoiceChimePlayer } from "./VoiceChime";
 import { WebAudioThinkingEarcon, type ThinkingEarcon } from "./ThinkingEarcon";
 import {
@@ -88,25 +88,6 @@ const ICE_DISCONNECTED_GRACE_MS = 5000;
 const MAX_RECONNECT_ATTEMPTS = 3;
 const HANG_UP_TOOL_NAME = "hang_up";
 const MUTE_TOOL_NAME = "mute";
-const GO_MODE_SYSTEM_INSTRUCTION =
-  'You are a terse voice assistant. After the voice session connects, greet the user once with only "Ready". ' +
-  "Reply only to the current request in one or two short sentences unless the user explicitly asks for more detail. " +
-  "Speak quickly and omit background, explanations, and summaries that were not requested. " +
-  'For simple confirmations and acknowledgements, prefer only "Okay", "Yes", "No", or "Done". ' +
-  "When the user's question can be answered completely with a number, reply with only the number. " +
-  "When the user asks for specific information, reply directly without forcing it into a complete sentence. " +
-  "Do not ask a follow-up or confirmation unless missing information makes the request impossible or " +
-  "safety-critical. " +
-  "Ask only for information required to proceed. Once enough information is available, perform the request without " +
-  "asking for confirmation. " +
-  "Do not volunteer ideas, next steps, related actions, or offers. " +
-  "Use the service MCP tools whenever they are useful after the user asks. " +
-  "Host instructions define which service item updates require a spoken notification and how to respond. " +
-  "Follow those instructions even when an update arrives only as context and the user has not asked for a response. " +
-  "Host-required notifications and any tools needed to prepare them take priority over instructions to stay silent, " +
-  "wait for a user request, or reply only to the current request. " +
-  "Otherwise, apart from the initial greeting, do not speak or invoke tools until the user asks, and do not " +
-  "verbally acknowledge or confirm receipt of service item updates.";
 /** Conservative data-channel/model-safe bound for a recovery context update. */
 export const MAX_RECOVERY_CONTEXT_CHARS = 8000;
 
@@ -1775,19 +1756,16 @@ export class VoiceSession {
       if (!(await this._prepareHostSession(attempt))) return;
       const choiceID = await this._resolveSessionChoice(attempt);
       if (choiceID === null || this._connection !== attempt) return;
-      const [systemInstruction, mcpTools, serviceItemsText] = await Promise.all([
+      const [systemInstruction, mcpTools, serviceContext] = await Promise.all([
         mcpClient.serverInstructions({ sessionID: this.conversationID }),
         mcpClient.listTools({ sessionID: this.conversationID }),
         // Initial service context is advisory. A resource failure must not make
         // the independent voice transport unavailable.
-        mcpClient
-          .readAdvertisedTextResource(GO_MODE_ITEMS_RESOURCE_URI, undefined, { sessionID: this.conversationID })
-          .catch(() => null),
+        readInitialModelContext({ sessionID: this.conversationID }),
       ]);
       if (!this._ownsConnection(attempt)) return;
       // This client owns the bounded session baseline and refreshes it on every
       // reconnect; see gomode/docs/ANDROID_SHELL.md#service-item-voice-context-ownership.
-      const serviceContext = initialServiceContext(serviceItemsText);
 
       // Create PeerConnection.
       const pc = new RTCPeerConnection({
@@ -1964,12 +1942,10 @@ export class VoiceSession {
       if (!(await this._prepareHostSession(attempt))) return;
       const choiceID = await this._resolveSessionChoice(attempt);
       if (choiceID === null || this._connection !== attempt) return;
-      const [systemInstruction, tools, serviceItems, service] = await Promise.all([
+      const [systemInstruction, tools, serviceContext, service] = await Promise.all([
         mcpClient.serverInstructions({ sessionID: this.conversationID }),
         mcpClient.listTools({ sessionID: this.conversationID }),
-        mcpClient
-          .readAdvertisedTextResource(GO_MODE_ITEMS_RESOURCE_URI, undefined, { sessionID: this.conversationID })
-          .catch(() => null),
+        readInitialModelContext({ sessionID: this.conversationID }),
         snapshot.serviceProvider?.() ?? Promise.resolve(null),
       ]);
       if (!this._ownsConnection(attempt)) return;
@@ -1996,7 +1972,7 @@ export class VoiceSession {
       socket.onopen = () => {
         if (!this._ownsChannel(attempt, socket)) return;
         this._setStatus("waiting", "Waiting for server…");
-        this._sendSetup(tools, systemInstruction, initialServiceContext(serviceItems));
+        this._sendSetup(tools, systemInstruction, serviceContext);
       };
       socket.onmessage = (event: MessageEvent<unknown>) => {
         if (typeof event.data !== "string") return;
@@ -2638,7 +2614,7 @@ export class VoiceSession {
       }
       this._flushPendingNotifications(true);
       this._speakerActive = true;
-      this._send(JSON.stringify(gatewayUserMessage("Say exactly one word: Ready")));
+      this._send(JSON.stringify(gatewayUserMessage(JSON.stringify({ event: "connected" }))));
       // Audio capture is handled via WebRTC RTP tracks; no separate audio setup needed.
       return;
     }
@@ -3029,19 +3005,21 @@ export function formatVoiceRTCDiagnostics(diagnostics: VoiceRTCDiagnosticsResp):
 
 /** Build a bounded recovery-only context without replaying unfinished transcript deltas. */
 export function buildRecoveryContext(transcript: TranscriptEntry[]): string {
-  const prefix = "Network recovery context. Continue the existing conversation; do not treat this as a new user turn.";
-  const availableTranscriptChars = MAX_RECOVERY_CONTEXT_CHARS - prefix.length - 24;
-  const lines: string[] = [];
-  let lineChars = 0;
-  for (const entry of [...transcript].reverse()) {
-    if (entry.kind !== "transcript" || !entry.final || entry.text.trim() === "") continue;
-    const line = `${entry.speaker}: ${entry.text.trim()}`;
-    if (lineChars + line.length + (lines.length === 0 ? 0 : 1) > availableTranscriptChars) break;
-    lines.unshift(line);
-    lineChars += line.length + (lines.length === 1 ? 0 : 1);
+  const finalized = transcript.filter(
+    (entry) => entry.kind === "transcript" && entry.final && entry.text.trim() !== "",
+  );
+  const entries: Array<{ speaker: string; text: string }> = [];
+  const value = { event: "transport_recovered", transcript: entries, omittedCount: finalized.length };
+  for (const entry of [...finalized].reverse()) {
+    entries.unshift({ speaker: entry.speaker, text: entry.text.trim() });
+    value.omittedCount--;
+    if (JSON.stringify(value).length > MAX_RECOVERY_CONTEXT_CHARS) {
+      entries.shift();
+      value.omittedCount++;
+      break;
+    }
   }
-  const transcriptSection = lines.length === 0 ? "" : `\nFinalized transcript:\n${lines.join("\n")}`;
-  return `${prefix}${transcriptSection}`;
+  return JSON.stringify(value);
 }
 
 function gatewayContextUpdate(text: string, generate?: boolean): ContextUpdate {
@@ -3076,15 +3054,10 @@ function gatewaySessionSetup(
     },
     tools,
     context: {
-      systemInstruction: combineSystemInstructions(systemInstruction),
+      systemInstruction,
       text: serviceContext,
     },
   };
-}
-
-function combineSystemInstructions(hostInstruction: string): string {
-  const host = hostInstruction.trim();
-  return host === "" ? GO_MODE_SYSTEM_INSTRUCTION : `${GO_MODE_SYSTEM_INSTRUCTION}\n\n${host}`;
 }
 
 function gatewayToolResult(id: string, name: string, result: Record<string, unknown>): ToolResult {

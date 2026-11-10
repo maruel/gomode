@@ -1,4 +1,4 @@
-// Exercises active-item contracts and item-only conversation ownership through native MCP reads on an emulator.
+// Exercises opaque server model context and native resource ownership through actual MCP reads.
 package com.fghbuild.gomode.service
 
 import androidx.test.platform.app.InstrumentationRegistry
@@ -41,11 +41,11 @@ class ServiceResourcesContextTest {
                             val result =
                                 when (method) {
                                     "resources/list" -> {
-                                        """{"resources":[{"uri":"gomode://items","name":"items"},{"uri":"gomode://notifications","name":"alerts"}]}"""
+                                        """{"resources":[{"_meta":{"com.fghbuild.gomode/modelContext":true},"uri":"fixture://catalog","name":"items"},{"_meta":{"com.fghbuild.gomode/modelContext":true},"uri":"fixture://context","name":"context"},{"uri":"gomode://notifications","name":"alerts"}]}"""
                                     }
 
                                     "server/discover" -> {
-                                        """{"supportedVersions":["2026-07-28"],"capabilities":{"resources":{}},"serverInfo":{"name":"fixture","version":"1"}}"""
+                                        """{"supportedVersions":["2026-07-28"],"capabilities":{"resources":{},"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}"""
                                     }
 
                                     "resources/read" -> {
@@ -59,7 +59,27 @@ class ServiceResourcesContextTest {
                                             alertReads.incrementAndGet()
                                             return MockResponse().setResponseCode(503)
                                         }
-                                        """{"contents":[{"uri":"gomode://items","text":"{\"items\":[{\"id\":\"selected\",\"title\":\"Selected document\",\"active\":true}]}"}]}"""
+                                        val text =
+                                            if (uri ==
+                                                FIXTURE_CONTEXT_URI
+                                            ) {
+                                                """{"sélection":"selected"}"""
+                                            } else {
+                                                """{"items":[{"id":"selected","title":"Selected document"}]}"""
+                                            }
+                                        buildJsonObject {
+                                            put(
+                                                "contents",
+                                                buildJsonArray {
+                                                    add(
+                                                        buildJsonObject {
+                                                            put("uri", uri)
+                                                            put("text", text)
+                                                        },
+                                                    )
+                                                },
+                                            )
+                                        }.toString()
                                     }
 
                                     else -> {
@@ -87,7 +107,7 @@ class ServiceResourcesContextTest {
                     ServiceMonitor(
                         backgroundScope,
                         "native-conversation",
-                        ServiceMonitorPurpose.CONVERSATION_ITEMS,
+                        ServiceMonitorPurpose.CONVERSATION_CONTEXT,
                     ) { endpoint, protocol ->
                         McpClient(endpoint, protocol, { null })
                     }
@@ -116,9 +136,38 @@ class ServiceResourcesContextTest {
                     monitor.start(server.url("/").toString(), settings)
                     val snapshot =
                         withContext(Dispatchers.Default) {
-                            withTimeout(5000) { monitor.state.first { it.snapshot != null }.snapshot }
+                            withTimeout(5000) {
+                                monitor.state
+                                    .first {
+                                        it.snapshot
+                                            ?.context
+                                            ?.getOrNull()
+                                            ?.let {
+                                                Json
+                                                    .parseToJsonElement(
+                                                        it,
+                                                    ).jsonObject["sélection"]
+                                                    ?.jsonPrimitive
+                                                    ?.content
+                                            } ==
+                                            "selected"
+                                    }.snapshot
+                            }
                         }
-                    assertEquals("selected", checkNotNull(snapshot).activeItem?.id)
+                    assertEquals(
+                        "selected",
+                        checkNotNull(snapshot)
+                            .context
+                            ?.getOrNull()
+                            ?.let {
+                                Json
+                                    .parseToJsonElement(
+                                        it,
+                                    ).jsonObject["sélection"]
+                                    ?.jsonPrimitive
+                                    ?.content
+                            },
+                    )
                     assertEquals(0, alertReads.get())
                 } finally {
                     monitor.stop()
@@ -130,20 +179,28 @@ class ServiceResourcesContextTest {
     @Test
     fun activeContextSurvivesNativeResourceReads() =
         runTest {
-            val vectors =
-                InstrumentationRegistry
-                    .getInstrumentation()
-                    .context.assets
-                    .open("active-context.json")
-                    .bufferedReader()
-                    .use { Json.parseToJsonElement(it.readText()).jsonArray }
             val source = AtomicReference<String?>(null)
+            val items = AtomicReference("""{"items":[{"id":"one","title":"Build"}]}""")
+            val contextStatus = AtomicInteger()
             MockWebServer().use { server ->
                 server.dispatcher =
                     object : Dispatcher() {
                         override fun dispatch(request: RecordedRequest): MockResponse {
                             val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
                             val text = source.get()
+                            if (body.getValue("method").jsonPrimitive.content == "resources/read" &&
+                                body
+                                    .getValue("params")
+                                    .jsonObject
+                                    .getValue("uri")
+                                    .jsonPrimitive.content ==
+                                FIXTURE_CONTEXT_URI &&
+                                contextStatus.get() != 0
+                            ) {
+                                return MockResponse().setResponseCode(contextStatus.get()).setBody(
+                                    """{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Context temporarily unavailable"}}""",
+                                )
+                            }
                             val result =
                                 buildJsonObject {
                                     put("resultType", "complete")
@@ -154,13 +211,27 @@ class ServiceResourcesContextTest {
                                             "resources",
                                             buildJsonArray {
                                                 if (text != null) {
-                                                    add(
-                                                        buildJsonObject {
-                                                            put("uri", "gomode://items")
-                                                            put("name", "items")
-                                                            put("mimeType", "application/json")
-                                                        },
-                                                    )
+                                                    for (uri in listOf(
+                                                        FIXTURE_CATALOG_URI,
+                                                        FIXTURE_CONTEXT_URI,
+                                                    )) {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("uri", uri)
+                                                                put("name", uri)
+                                                                put(
+                                                                    "_meta",
+                                                                    buildJsonObject {
+                                                                        put(
+                                                                            "com.fghbuild.gomode/modelContext",
+                                                                            true,
+                                                                        )
+                                                                    },
+                                                                )
+                                                                put("mimeType", "application/json")
+                                                            },
+                                                        )
+                                                    }
                                                 }
                                             },
                                         )
@@ -170,9 +241,25 @@ class ServiceResourcesContextTest {
                                             buildJsonArray {
                                                 add(
                                                     buildJsonObject {
-                                                        put("uri", "gomode://items")
+                                                        val uri =
+                                                            body
+                                                                .getValue(
+                                                                    "params",
+                                                                ).jsonObject
+                                                                .getValue("uri")
+                                                                .jsonPrimitive.content
+                                                        put("uri", uri)
                                                         put("mimeType", "application/json")
-                                                        put("text", checkNotNull(text))
+                                                        put(
+                                                            "text",
+                                                            if (uri ==
+                                                                FIXTURE_CONTEXT_URI
+                                                            ) {
+                                                                checkNotNull(text)
+                                                            } else {
+                                                                items.get()
+                                                            },
+                                                        )
                                                     },
                                                 )
                                             },
@@ -190,10 +277,8 @@ class ServiceResourcesContextTest {
                     }
                 server.start()
                 val client = McpClient(server.url("/mcp").toString(), "2026-07-28", { null })
-                for (vector in vectors) {
-                    val fields = vector.jsonObject
-                    val name = fields.getValue("name").jsonPrimitive.content
-                    source.set(fields.getValue("resource").toString())
+                for (content in listOf("""{"選択":null,"_meta":"public body"}""", "Aucune sélection.", "[42, false]")) {
+                    source.set(content)
                     val setup =
                         gatewaySessionSetup(
                             tools = emptyList(),
@@ -201,14 +286,66 @@ class ServiceResourcesContextTest {
                             serviceContextText = readInitialServiceContext(client, "focus-session"),
                             languageTag = "en-US",
                         )
-                    val context = checkNotNull(setup.context.text)
-                    val focus = fields.getValue("focus").jsonPrimitive.contentOrNull
-                    assertEquals(name, focus != null, context.startsWith("Active service item:"))
-                    if (focus != null) assertTrue(name, context.startsWith(focus))
-                    assertTrue(name, context.length <= 4000)
+                    val received =
+                        Json
+                            .parseToJsonElement(
+                                checkNotNull(setup.context.text).lineSequence().first {
+                                    Json
+                                        .parseToJsonElement(it)
+                                        .jsonObject["resource"]
+                                        ?.jsonPrimitive
+                                        ?.content ==
+                                        FIXTURE_CONTEXT_URI
+                                },
+                            ).jsonObject
+                    assertEquals(content, received.getValue("content").jsonPrimitive.content)
                 }
+                items.set("""{"items":[{"id":"one","title":"Build"}]}""")
+                for (status in listOf(200, 429, 503)) {
+                    contextStatus.set(status)
+                    val context = readInitialServiceContext(client, "focus-session")
+                    assertTrue(context.contains("Build"))
+                    assertTrue(context.contains("\"status\":\"error\""))
+                    val failure =
+                        runCatching {
+                            client.readResource(
+                                FIXTURE_CONTEXT_URI,
+                                "focus-session",
+                            )
+                        }.exceptionOrNull()
+                    assertTrue(failure is com.fghbuild.mcp.sdk.v1.ApiException)
+                    assertEquals(status, (failure as com.fghbuild.mcp.sdk.v1.ApiException).statusCode)
+                }
+                contextStatus.set(0)
                 source.set(null)
-                assertEquals("No visible service items.", readInitialServiceContext(client, "focus-session"))
+                assertEquals("", readInitialServiceContext(client, "focus-session"))
+                source.set("""{"sélection":null}""")
+                items.set("""{"items":[]}""")
+                val empty =
+                    readInitialServiceContext(client, "focus-session")
+                        .lineSequence()
+                        .map { Json.parseToJsonElement(it).jsonObject }
+                        .toList()
+                empty.forEach { assertEquals("known", it.getValue("status").jsonPrimitive.content) }
+                assertEquals(
+                    """{"sélection":null}""",
+                    empty
+                        .single { it.getValue("resource").jsonPrimitive.content == FIXTURE_CONTEXT_URI }
+                        .getValue("content")
+                        .jsonPrimitive.content,
+                )
+                assertEquals(
+                    """{"items":[]}""",
+                    empty
+                        .single { it.getValue("resource").jsonPrimitive.content == FIXTURE_CATALOG_URI }
+                        .getValue("content")
+                        .jsonPrimitive.content,
+                )
             }
         }
 }
+
+private const val FIXTURE_CONTEXT_URI = "fixture://context"
+private const val FIXTURE_CATALOG_URI = "fixture://catalog"
+private val ServiceMonitoringSnapshot.context: Result<String?>?
+    get() = resources[FIXTURE_CONTEXT_URI]?.map { it?.let { read -> resourceText(read.result, FIXTURE_CONTEXT_URI) } }

@@ -1,14 +1,36 @@
 // MCP JSON-RPC client for server guidance, tools, and resources used by browser Go Mode.
 
-import type { MetaObject, RequestMeta, ResourcesCapability, ServerDiscoverResult } from "../../sdk/mcp/ts/v1/types.gen";
+import type {
+  MetaObject,
+  RequestMeta,
+  ResourcesCapability,
+  ResourceDescriptor,
+  ServerDiscoverResult,
+} from "../../sdk/mcp/ts/v1/types.gen";
 import { readMcpNotificationStream } from "./McpEvents";
 import { NetworkRequestError, observeNetworkChanges } from "./NetworkChanges";
+import {
+  MODEL_CONTEXT_META_KEY,
+  MAX_MODEL_RESOURCES,
+  parseContextUpdate,
+  type ContextSnapshot,
+} from "./ConversationContext";
 
 const MCP_PROTOCOL_VERSION = "2026-07-28";
 const CLIENT_VERSION = "1.0.0";
 let mcpEndpoint: string | null = null;
 let clientName = "gomode-web";
 let bearerTokenProvider: (() => string | null | Promise<string | null>) | null = null;
+let configuration = 0;
+const contextObservers = new Set<{
+  sessionID: string;
+  receive: (
+    uri: string,
+    context: ContextSnapshot | Error | undefined,
+    authoritative: boolean,
+    publicText: string | undefined,
+  ) => void;
+}>();
 
 /** Configure the MCP endpoint advertised by the current Go Mode host. */
 export function configureMcpClient(
@@ -31,6 +53,8 @@ export function configureMcpClient(
   mcpEndpoint = `${url.pathname}${url.search}`;
   clientName = name;
   bearerTokenProvider = tokenProvider ?? null;
+  configuration++;
+  contextObservers.clear();
   for (const subscription of _subscriptions) subscription.close();
   _subscriptions.clear();
   _toolCache.clear();
@@ -80,6 +104,7 @@ async function mcpRequest(
   params: JsonObject,
   opts: McpToolCallOptions & { name?: string; paramHeaders?: Record<string, string>; signal?: AbortSignal },
 ): Promise<unknown> {
+  const captured = configuration;
   const id = ++_idCounter;
   const headers: Record<string, string> = {
     Accept: "application/json, text/event-stream",
@@ -104,11 +129,72 @@ async function mcpRequest(
     signal: opts.signal,
   });
   if (!resp.ok) throw new Error(`MCP ${method} returned HTTP ${resp.status}`);
-  const rpc = (await resp.json()) as {
-    result?: unknown;
-    error?: { code: number; message: string };
-  };
-  if (rpc.error) throw new Error(rpc.error.message);
+  let rpc: { result?: unknown; error?: { code: number; message: string } };
+  try {
+    const decoded: unknown = await resp.json();
+    if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded)) {
+      throw new TypeError("Invalid MCP envelope");
+    }
+    const error: unknown = "error" in decoded ? decoded.error : undefined;
+    if (error !== undefined) {
+      if (
+        typeof error !== "object" ||
+        error === null ||
+        !("code" in error) ||
+        typeof error.code !== "number" ||
+        !("message" in error) ||
+        typeof error.message !== "string"
+      ) {
+        throw new TypeError("Invalid MCP error");
+      }
+    } else if (!("result" in decoded)) {
+      throw new TypeError("Missing MCP result");
+    }
+    rpc = decoded;
+  } catch (cause) {
+    if (opts.signal?.aborted || (cause instanceof Error && cause.name === "AbortError")) throw cause;
+    console.warn("Invalid MCP response", cause);
+    throw new Error("Service returned an invalid MCP response. The request outcome is unknown.", { cause });
+  }
+  if (opts.signal?.aborted) throw new DOMException("Resource request retired", "AbortError");
+  if (rpc.error) throw Object.assign(new Error(rpc.error.message), { code: rpc.error.code });
+  if (typeof rpc.result === "object" && rpc.result !== null) {
+    const result = rpc.result as { _meta?: Record<string, unknown>; contents?: Array<{ uri?: string; text?: string }> };
+    const rawContext = result._meta?.["com.fghbuild.gomode/context"];
+    const requestedURI = method === "resources/read" ? (params as { uri?: string }).uri : undefined;
+    const authoritative =
+      requestedURI !== undefined &&
+      (rawContext === undefined ||
+        (typeof rawContext === "object" &&
+          rawContext !== null &&
+          (rawContext as { uri?: unknown }).uri === requestedURI));
+    const uri = authoritative
+      ? requestedURI
+      : typeof rawContext === "object" && rawContext !== null
+        ? (rawContext as { uri?: unknown }).uri
+        : undefined;
+    const text = authoritative ? result.contents?.find((part) => part.uri === requestedURI)?.text : undefined;
+    let context: ContextSnapshot | Error | undefined;
+    if (rawContext !== undefined) {
+      try {
+        if (authoritative && text === undefined) throw new Error("Context resource is missing text content");
+        const value = authoritative ? { ...(rawContext as Record<string, unknown>), content: text } : rawContext;
+        context = parseContextUpdate(value);
+      } catch (cause) {
+        const error = cause instanceof Error ? cause : new Error("Invalid context metadata", { cause });
+        // Only this resource's own authoritative reconciliation can fail its
+        // read. A tool may already have committed; its acknowledgment is advisory.
+        if (authoritative) throw error;
+        context = error;
+      }
+    }
+    if (captured === configuration && opts.sessionID !== undefined && (context !== undefined || text !== undefined)) {
+      for (const observer of contextObservers) {
+        if (observer.sessionID === opts.sessionID)
+          if (typeof uri === "string") observer.receive(uri, context, authoritative, text);
+      }
+    }
+  }
   return rpc.result;
 }
 
@@ -158,11 +244,49 @@ async function mcpListTools(options?: McpToolCallOptions): Promise<McpToolDescri
   return tools;
 }
 
+/** Discover only explicitly advertised model context; unrelated resources remain on demand. */
+async function mcpListModelResources(
+  signal?: AbortSignal,
+  options?: McpToolCallOptions,
+): Promise<{ resources: ResourceDescriptor[]; notifications: boolean }> {
+  const resources: ResourceDescriptor[] = [];
+  let notifications = false;
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  do {
+    const page = (await mcpRequest("resources/list", cursor === undefined ? {} : { cursor }, {
+      ...options,
+      signal,
+    })) as { resources: ResourceDescriptor[]; nextCursor?: string };
+    for (const resource of page.resources) {
+      notifications ||= resource.uri === "gomode://notifications";
+      if (resource._meta?.[MODEL_CONTEXT_META_KEY] !== true) continue;
+      if (
+        typeof resource.uri !== "string" ||
+        !resource.uri ||
+        resource.uri.length > 1024 ||
+        resources.some((existing) => existing.uri === resource.uri)
+      )
+        throw new Error("Invalid model resource identity");
+      if (resources.length === MAX_MODEL_RESOURCES) throw new Error("Too many model context resources");
+      resources.push(resource);
+    }
+    cursor = page.nextCursor;
+    if (cursor) {
+      if (cursors.has(cursor)) throw new Error("Repeated resource cursor");
+      cursors.add(cursor);
+    }
+  } while (cursor);
+
+  return { resources, notifications };
+}
+
 /** Read a text resource when its URI is advertised to this scoped client. */
 async function mcpReadAdvertisedTextResource(
   uri: string,
   signal?: AbortSignal,
   options?: McpToolCallOptions,
+  onAdvertised?: () => void,
 ): Promise<string | null> {
   let cursor: string | undefined;
   let advertised = false;
@@ -179,6 +303,12 @@ async function mcpReadAdvertisedTextResource(
   } while (!advertised && cursor !== undefined && cursor !== "");
   if (!advertised) return null;
 
+  onAdvertised?.();
+  return mcpReadTextResource(uri, signal, options);
+}
+
+/** Read an already advertised identity without enumerating unrelated descriptors. */
+async function mcpReadTextResource(uri: string, signal?: AbortSignal, options?: McpToolCallOptions): Promise<string> {
   const result = (await mcpRequest("resources/read", { uri }, { ...options, name: uri, signal })) as {
     contents: Array<{ uri: string; text?: string }>;
   };
@@ -266,6 +396,8 @@ function isJsonObject(value: unknown): value is JsonObject {
 
 /** A change reported by an MCP resource subscription. */
 export interface McpResourceNotification {
+  /** Optional typed host-feed effects; standard MCP URI invalidations omit this. */
+  aspects?: readonly string[];
   /** Resource URI whose contents may have changed; unset for a list change. */
   uri?: string;
   /** True when the resource list itself may have changed. */
@@ -410,7 +542,22 @@ export const mcpClient = {
   serverInstructions: mcpServerInstructions,
   resourceCapabilities: mcpResourceCapabilities,
   listTools: mcpListTools,
+  listModelResources: mcpListModelResources,
   readAdvertisedTextResource: mcpReadAdvertisedTextResource,
+  readTextResource: mcpReadTextResource,
   callTool: mcpCallTool,
   subscribeResources: subscribeMcpResources,
+  observeContext(
+    sessionID: string,
+    receive: (
+      uri: string,
+      context: ContextSnapshot | Error | undefined,
+      authoritative: boolean,
+      publicText: string | undefined,
+    ) => void,
+  ): McpResourceSubscription {
+    const observer = { sessionID, receive };
+    contextObservers.add(observer);
+    return { close: () => contextObservers.delete(observer) };
+  },
 };

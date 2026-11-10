@@ -849,10 +849,13 @@ class ServerVoiceSwitchTest {
         val messages = CopyOnWriteArrayList<JSONObject>()
 
         @Volatile var serviceItems: String? = null
+
+        @Volatile var serviceContext: String? = null
         private val withdrawItems = CountDownLatch(1)
 
-        fun withdrawServiceItems() {
+        fun withdrawServiceResources() {
             serviceItems = null
+            serviceContext = null
             withdrawItems.countDown()
         }
 
@@ -918,7 +921,7 @@ class ServerVoiceSwitchTest {
                     val result =
                         when (rpc.getString("method")) {
                             "server/discover" -> {
-                                """{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}${if (serviceItems != null) ",\"resources\":{\"subscribe\":true,\"listChanged\":true}" else ""}},"serverInfo":{"name":"fixture","version":"1"},"instructions":"Be brief.","ttlMs":60000,"cacheScope":"private"}"""
+                                """{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}${if (serviceItems != null || serviceContext != null) ",\"resources\":{\"subscribe\":true,\"listChanged\":true}" else ""}},"serverInfo":{"name":"fixture","version":"1"},"instructions":"Be brief.","ttlMs":60000,"cacheScope":"private"}"""
                             }
 
                             "resources/list" -> {
@@ -926,7 +929,23 @@ class ServerVoiceSwitchTest {
                                 if (serviceItems !=
                                     null
                                 ) {
-                                    resources.put(JSONObject().put("uri", "gomode://items").put("name", "items"))
+                                    resources.put(
+                                        JSONObject()
+                                            .put("uri", "fixture://catalog")
+                                            .put(
+                                                "_meta",
+                                                JSONObject().put("com.fghbuild.gomode/modelContext", true),
+                                            ).put("name", "items"),
+                                    )
+                                }
+                                if (serviceContext != null) {
+                                    resources.put(
+                                        JSONObject()
+                                            .put("uri", "fixture://context")
+                                            .put("_meta", JSONObject().put("com.fghbuild.gomode/modelContext", true))
+                                            .put("name", "context")
+                                            .put("mimeType", "application/json"),
+                                    )
                                 }
                                 JSONObject()
                                     .put("resultType", "complete")
@@ -937,13 +956,19 @@ class ServerVoiceSwitchTest {
                             }
 
                             "resources/read" -> {
-                                val text = serviceItems ?: return MockResponse().setResponseCode(404)
+                                val uri = rpc.getJSONObject("params").getString("uri")
+                                val text =
+                                    when (uri) {
+                                        "fixture://catalog" -> serviceItems
+                                        "fixture://context" -> serviceContext
+                                        else -> null
+                                    } ?: return MockResponse().setResponseCode(404)
                                 val contents =
                                     JSONArray().put(
                                         JSONObject()
                                             .put(
                                                 "uri",
-                                                "gomode://items",
+                                                uri,
                                             ).put("text", text),
                                     )
                                 JSONObject()

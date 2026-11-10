@@ -1874,7 +1874,7 @@ class DeviceVoiceSessionTest {
             assertTrue(staleToolRequested)
             assertTrue(session.state.value.connected)
             assertTrue(session.state.value.listening)
-            assertEquals(listOf("Ready", "First reply.", "Replacement."), speech.spoken)
+            assertEquals(listOf("First reply.", "Replacement."), speech.spoken)
             assertTrue(
                 session.state.value.transcript
                     .none { it.text.contains("Stale") },
@@ -2252,7 +2252,7 @@ class DeviceVoiceSessionTest {
             session.connect()
             assertTrue("session connects", session.state.value.connected)
             assertFalse("must not open network websocket in local engine mode", webSocketOpened)
-            assertEquals("speaks initial greeting", listOf("Ready"), speech.spoken)
+            assertTrue("action engine connects without fabricated English speech", speech.spoken.isEmpty())
             assertTrue("starts listening after greeting", speech.listening)
 
             val onResult = requireNotNull(speech.resultCallback)
@@ -2910,9 +2910,19 @@ class DeviceVoiceSessionTest {
             repo.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.DEVICE)
             selectEngine(repo, OnDeviceEngine.NEEDLE_WHISTLE)
 
+            var connectedChimes = 0
+            val chime =
+                object : VoiceChimePlayer {
+                    override fun playConnected() {
+                        connectedChimes++
+                    }
+
+                    override fun playDisconnected(onComplete: () -> Unit) = onComplete()
+                }
             val session =
                 createSession(
                     speech = speech,
+                    chime = chime,
                     settingsRepo = repo,
                     setupProvider = {
                         throw VoiceSetupException("Gateway unreachable / offline")
@@ -2922,7 +2932,8 @@ class DeviceVoiceSessionTest {
             session.connect()
             assertTrue("connects using standalone offline setup", session.state.value.connected)
             assertNull("no error reported", session.state.value.error)
-            assertEquals(listOf("Ready"), speech.spoken)
+            assertTrue(speech.spoken.isEmpty())
+            assertEquals(1, connectedChimes)
 
             session.disconnect()
             session.close()
@@ -2971,6 +2982,7 @@ class DeviceVoiceSessionTest {
         localModelOwner: LocalModelOwner = (RuntimeEnvironment.getApplication() as GoModeApplication).localModelOwner,
         voiceConversation: VoiceConversation? = null,
         thinkingEarcon: ThinkingEarcon = RecordingThinkingEarcon(),
+        chime: VoiceChimePlayer = NoopChime(),
         startupTiming: () -> VoiceStartupTiming? = { null },
         frontendTools: FrontendVoiceTools = FrontendVoiceTools(),
         factory: (Request, WebSocketListener) -> WebSocket = { _, _ -> FakeWebSocket() },
@@ -2997,7 +3009,7 @@ class DeviceVoiceSessionTest {
             frontendTools = frontendTools,
             languageTag = languageTag,
             localModelOwner = localModelOwner,
-            voiceChimePlayer = NoopChime(),
+            voiceChimePlayer = chime,
             thinkingEarcon = thinkingEarcon,
             startupTiming = startupTiming,
             callController = calls,

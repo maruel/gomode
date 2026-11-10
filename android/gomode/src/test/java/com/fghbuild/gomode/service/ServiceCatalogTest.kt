@@ -20,6 +20,7 @@ import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.ui.web.completeFrontendPreparation
 import com.fghbuild.gomode.voice.McpToolResult
 import com.fghbuild.gomode.voice.VoiceConversation
+import com.fghbuild.mcp.sdk.v1.ApiException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,9 +42,11 @@ import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -54,6 +57,7 @@ import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -105,6 +109,64 @@ class ServiceCatalogTest {
         }
 
     @Test
+    fun `advisory context RPC and HTTP failures keep catalog ready without restarting streams`() =
+        runTest {
+            for (status in listOf(200, 429, 503)) {
+                Fixture("Advisory").use { fixture ->
+                    fixture.includeContext = true
+                    fixture.contextFailureStatus = status
+                    fixture.supportsSubscriptions = true
+                    fixture.holdSubscriptions = true
+                    val entry = fixture.entry("advisory")
+                    val catalog = ServiceCatalog(backgroundScope)
+                    try {
+                        catalog.reconcile(mapOf(entry.key to entry), emptyMap())
+                        catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.READY }
+                        val contexts = catalog.monitorVoiceContext(backgroundScope, "advisory-conversation")
+                        val snapshot =
+                            withContext(Dispatchers.Default) {
+                                withTimeout(5000) {
+                                    contexts
+                                        .first {
+                                            it[entry.key]?.snapshot?.context?.exceptionOrNull() is ApiException &&
+                                                it[entry.key]?.snapshot?.resources?.values?.all { result ->
+                                                    result !=
+                                                        null
+                                                } ==
+                                                true
+                                        }.getValue(entry.key)
+                                }
+                            }
+                        assertEquals("Same item", checkNotNull(snapshot.snapshot).items.let(::fixtureItemTitle))
+                        val failure = checkNotNull(snapshot.snapshot).context?.exceptionOrNull() as ApiException
+                        assertEquals(status, failure.statusCode)
+                        assertEquals("-32000", failure.code)
+                        withContext(Dispatchers.Default) {
+                            withTimeout(5000) {
+                                fixture.subscriptionSessions.first { "advisory-conversation" in it }
+                            }
+                        }
+                        assertEquals(1, fixture.subscriptionSessions.value.count { it == "advisory-conversation" })
+                        assertEquals(
+                            ServiceReadiness.READY,
+                            catalog.state.value
+                                .getValue(entry.key)
+                                .readiness,
+                        )
+                        assertNull(
+                            catalog.state.value
+                                .getValue(entry.key)
+                                .error,
+                        )
+                    } finally {
+                        catalog.close()
+                        entry.close()
+                    }
+                }
+            }
+        }
+
+    @Test
     fun `conversation items progress without reading a blocked alert resource`() =
         runTest {
             Fixture("Independent").use { fixture ->
@@ -118,15 +180,13 @@ class ServiceCatalogTest {
                     val contexts = catalog.monitorVoiceContext(backgroundScope, "independent")
                     val snapshot =
                         withContext(Dispatchers.Default) {
-                            withTimeout(2000) { contexts.first { entry.key in it } }
+                            withTimeout(2000) { contexts.first { it[entry.key]?.snapshot?.fixtureReady == true } }
                         }
                     assertEquals(
                         "Same item",
-                        snapshot
-                            .getValue(entry.key)
+                        checkNotNull(snapshot.getValue(entry.key).snapshot)
                             .items
-                            .single()
-                            .title,
+                            .let(::fixtureItemTitle),
                     )
                     assertFalse(fixture.resourceReads.any { it == GOMODE_NOTIFICATIONS_RESOURCE_URI to "independent" })
                 } finally {
@@ -149,14 +209,14 @@ class ServiceCatalogTest {
                         catalog.reconcile(mapOf(a.key to a), emptyMap())
                         catalog.state.first { it[a.key]?.readiness == ServiceReadiness.READY }
                         val contexts = catalog.monitorVoiceContext(backgroundScope, "retained")
-                        val before = contexts.first { a.key in it }
+                        val before = contexts.first { it[a.key]?.snapshot?.fixtureReady == true }
                         first.blockContextItems = true
                         second.blockContextItems = true
                         catalog.reconcile(mapOf(a.key to a, b.key to b), emptyMap())
                         catalog.state.first { it[b.key]?.readiness == ServiceReadiness.READY }
                         runCurrent()
                         assertEquals(before.getValue(a.key), contexts.value[a.key])
-                        assertEquals(1, first.resourceReads.count { it == GOMODE_ITEMS_RESOURCE_URI to "retained" })
+                        assertEquals(1, first.resourceReads.count { it == FIXTURE_CATALOG_URI to "retained" })
                     } finally {
                         first.releaseContext.countDown()
                         second.releaseContext.countDown()
@@ -181,7 +241,7 @@ class ServiceCatalogTest {
                     catalog.reconcile(mapOf(entry.key to entry), emptyMap())
                     catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.READY }
                     val contexts = catalog.monitorVoiceContext(backgroundScope, "schemas")
-                    val before = contexts.first { entry.key in it }
+                    val before = contexts.first { it[entry.key]?.snapshot?.fixtureReady == true }
                     withContext(Dispatchers.IO) {
                         assertTrue(fixture.contextSubscriptionEntered.await(5, TimeUnit.SECONDS))
                     }
@@ -191,10 +251,18 @@ class ServiceCatalogTest {
                     catalog.reconcile(mapOf(entry.key to entry), mapOf("a" to "Refreshed label"))
                     runCurrent()
                     assertEquals(before[entry.key], contexts.value[entry.key])
-                    assertEquals(1, fixture.resourceReads.count { it == GOMODE_ITEMS_RESOURCE_URI to "schemas" })
+                    assertEquals(1, fixture.resourceReads.count { it == FIXTURE_CATALOG_URI to "schemas" })
                     fixture.releaseContextSubscription.countDown()
                     withContext(Dispatchers.Default) {
-                        withTimeout(2000) { contexts.first { it[entry.key]?.items?.isEmpty() == true } }
+                        withTimeout(2000) {
+                            contexts.first {
+                                it[entry.key]?.resources?.none { resource ->
+                                    resource ==
+                                        FIXTURE_CATALOG_URI
+                                } ==
+                                    true
+                            }
+                        }
                     }
                 } finally {
                     fixture.releaseContextSubscription.countDown()
@@ -214,7 +282,7 @@ class ServiceCatalogTest {
                     catalog.reconcile(mapOf(entry.key to entry), emptyMap())
                     catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.READY }
                     val contexts = catalog.monitorVoiceContext(backgroundScope, "authority")
-                    val verified = contexts.first { entry.key in it }
+                    val verified = contexts.first { it[entry.key]?.snapshot?.fixtureReady == true }
                     assertTrue(catalog.contextText(verified).contains("Same item"))
                     entry.bearerStore.invalidateIdentity()
                     assertFalse(catalog.contextText(verified).contains("Same item"))
@@ -224,7 +292,7 @@ class ServiceCatalogTest {
                     catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.READY }
                     runCurrent()
                     assertFalse(catalog.contextText(contexts.value).contains("Same item"))
-                    assertTrue(catalog.contextText(contexts.value).contains("have not been read"))
+                    assertTrue(catalog.contextText(contexts.value).contains("\"status\":\"unread\""))
                 } finally {
                     fixture.releaseContext.countDown()
                     catalog.close()
@@ -268,7 +336,7 @@ class ServiceCatalogTest {
                         assertTrue(checkNotNull(context).serviceContext.orEmpty().contains("Same item"))
                         assertEquals(
                             1,
-                            first.resourceReads.count { it == GOMODE_ITEMS_RESOURCE_URI to owner.sessionID },
+                            first.resourceReads.count { it == FIXTURE_CATALOG_URI to owner.sessionID },
                         )
                         println(
                             "Native context startup: healthy item reads=1, unrelated response pending, elapsedMS=$elapsedMS",
@@ -316,7 +384,7 @@ class ServiceCatalogTest {
                         preparing
                             .await()
                             .setup.serviceContextText
-                            .contains("have not been read"),
+                            .contains("\"status\":\"unread\""),
                     )
                 } finally {
                     fixture.releaseContext.countDown()
@@ -356,14 +424,14 @@ class ServiceCatalogTest {
                         owner.prepareLocal()
                         owner.state.first { value ->
                             val context = value?.serviceContext.orEmpty()
-                            context.split("Current service items:").size == 3 &&
-                                context.contains("No active service item is reported.")
+                            context.split("\"resource\":\"fixture://catalog\"").size == 3 &&
+                                !context.contains("\"status\":\"unread\"")
                         }
                         val counts =
                             listOf(first, second).map { fixture ->
                                 fixture.resourceReads.count {
                                     it ==
-                                        GOMODE_ITEMS_RESOURCE_URI to owner.sessionID
+                                        FIXTURE_CATALOG_URI to owner.sessionID
                                 }
                             }
                         val elapsedMS = (System.nanoTime() - started) / 1_000_000
@@ -391,7 +459,7 @@ class ServiceCatalogTest {
                 val previousIdle = dispatcher.idleCallback
                 try {
                     catalog.reconcile(mapOf(entry.key to entry), emptyMap())
-                    catalog.state.first { it[entry.key]?.monitoring?.snapshot != null }
+                    catalog.state.first { it[entry.key]?.monitoring?.resources != null }
                     fixture.blockContextItems = true
                     dispatcher.idleCallback = Runnable { idle.complete(Unit) }
                     catalog.monitorVoiceContext(
@@ -424,27 +492,32 @@ class ServiceCatalogTest {
                 val voiceScope = CoroutineScope(backgroundScope.coroutineContext + lifetime)
                 try {
                     catalog.reconcile(mapOf(entry.key to entry), emptyMap())
-                    val background = catalog.state.first { it[entry.key]?.monitoring?.snapshot != null }
+                    val background = catalog.state.first { it[entry.key]?.monitoring?.resources != null }
                     val contexts = catalog.monitorVoiceContext(voiceScope, "conversation-one")
-                    val snapshot = contexts.first { it[entry.key]?.items?.singleOrNull()?.title == "conversation-one" }
+                    val snapshot =
+                        contexts.first {
+                            it[entry.key]
+                                ?.snapshot
+                                ?.items
+                                ?.let(::fixtureItemTitle) ==
+                                "conversation-one"
+                        }
                     assertEquals(
                         "conversation-one",
-                        snapshot
-                            .getValue(entry.key)
+                        checkNotNull(snapshot.getValue(entry.key).snapshot)
                             .items
-                            .single()
-                            .title,
+                            .let(::fixtureItemTitle),
                     )
                     fixture.subscriptionSessions.first { "conversation-one" in it }
-                    assertEquals(
-                        "sessionless",
+                    assertTrue(
                         background[entry.key]
                             ?.monitoring
                             ?.snapshot
-                            ?.items
-                            ?.single()
-                            ?.title,
+                            ?.resources
+                            .orEmpty()
+                            .isEmpty(),
                     )
+                    assertTrue(fixture.resourceReads.none { it.second == null })
                     assertTrue(fixture.requestSessions.contains("resources/read" to "conversation-one"))
                     catalog.reconcile(emptyMap(), emptyMap())
                     contexts.first { it.isEmpty() }
@@ -473,25 +546,85 @@ class ServiceCatalogTest {
                 val lifetime = SupervisorJob()
                 try {
                     catalog.reconcile(mapOf(entry.key to entry), emptyMap())
-                    catalog.state.first { it[entry.key]?.monitoring?.snapshot != null }
+                    catalog.state.first { it[entry.key]?.monitoring?.resources != null }
                     val contexts =
                         catalog.monitorVoiceContext(
                             CoroutineScope(backgroundScope.coroutineContext + lifetime),
                             "conversation-one",
                         )
-                    val initial = contexts.first { it[entry.key]?.items?.singleOrNull()?.title == "conversation-one" }
-                    val focused =
-                        initial.mapValues { (_, snapshot) ->
-                            snapshot.copy(activeItem = ActiveServiceItem("same", "Item #1"))
+                    val initial =
+                        contexts.first {
+                            it[entry.key]
+                                ?.snapshot
+                                ?.items
+                                ?.let(::fixtureItemTitle) ==
+                                "conversation-one"
                         }
-                    assertTrue(catalog.contextText(focused).contains("Active service item: Item #1 (same)."))
-                    val withdrawn = contexts.first { it[entry.key]?.items?.isEmpty() == true }
+                    val focused =
+                        initial.mapValues { (_, state) ->
+                            state.copy(
+                                snapshot =
+                                    ServiceMonitoringSnapshot(
+                                        checkNotNull(state.snapshot).resources +
+                                            (
+                                                FIXTURE_CONTEXT_URI to
+                                                    Result.success(
+                                                        ServiceResourceRead(
+                                                            FIXTURE_CONTEXT_URI,
+                                                            com.fghbuild.mcp.sdk.v1.ResourcesReadResult(
+                                                                resultType =
+                                                                    com.fghbuild.mcp.sdk.v1.ResultType.Complete,
+                                                                contents =
+                                                                    listOf(
+                                                                        com.fghbuild.mcp.sdk.v1.ResourceContent(
+                                                                            uri = FIXTURE_CONTEXT_URI,
+                                                                            text = "same",
+                                                                        ),
+                                                                    ),
+                                                                ttlMs = 0,
+                                                                cacheScope = com.fghbuild.mcp.sdk.v1.CacheScope.Private,
+                                                            ),
+                                                        ),
+                                                    )
+                                            ),
+                                    ),
+                            )
+                        }
+                    assertTrue(catalog.contextText(focused).contains("same"))
+                    val withdrawn =
+                        contexts.first {
+                            it[entry.key]?.resources?.none { resource ->
+                                resource ==
+                                    FIXTURE_CATALOG_URI
+                            } ==
+                                true
+                        }
                     val cleared = catalog.contextText(withdrawn)
-                    assertTrue(cleared.contains("No active service item is reported."))
-                    assertFalse(cleared.contains("Active service item:"))
+                    assertTrue(cleared.contains("\"status\":\"absent\""))
+                    val sections =
+                        Json
+                            .parseToJsonElement(cleared)
+                            .jsonObject
+                            .getValue("servers")
+                            .jsonArray
+                            .single()
+                            .jsonObject
+                            .getValue("context")
+                            .jsonArray
+                    assertEquals(
+                        "absent",
+                        sections
+                            .single {
+                                it.jsonObject["resource"]?.jsonPrimitive?.content ==
+                                    FIXTURE_CATALOG_URI
+                            }.jsonObject
+                            .getValue("status")
+                            .jsonPrimitive.content,
+                    )
+                    assertFalse(cleared.contains("\"focus\":{"))
                     assertTrue(cleared.length <= 12000)
                     val unreported = catalog.contextText(initial)
-                    assertTrue(unreported.contains("No active service item is reported."))
+                    assertFalse(unreported.contains(FIXTURE_CONTEXT_URI))
                     assertTrue(fixture.requestSessions.count { it == "resources/list" to "conversation-one" } >= 2)
                 } finally {
                     lifetime.cancelAndJoin()
@@ -566,17 +699,19 @@ class ServiceCatalogTest {
         runTest {
             Fixture("A").use { first ->
                 Fixture("B").use { second ->
+                    first.instructions = "Décris cette bibliothèque. Réponds en français. 보관소 A"
+                    second.instructions = "Consulta solo este archivo. Archivo B"
                     val a = first.entry("a")
                     val b = second.entry("b", authenticated = false)
                     val entries = mapOf(a.key to a, b.key to b)
                     val catalog = ServiceCatalog(backgroundScope)
                     try {
                         catalog.reconcile(entries, mapOf("a" to "Alpha", "b" to "Beta"))
-                        catalog.state.first { it[a.key]?.monitoring?.snapshot != null }
+                        catalog.state.first { it[a.key]?.monitoring?.resources != null }
                         assertEquals(ServiceReadiness.WAITING_FOR_SIGN_IN, catalog.state.value[b.key]?.readiness)
                         assertTrue(second.requests.isEmpty())
                         signIn(b, "token-b")
-                        catalog.state.first { it[b.key]?.monitoring?.snapshot != null }
+                        catalog.state.first { it[b.key]?.monitoring?.resources != null }
                         assertEquals("A", dispatch(catalog, "a").resultString("source"))
                         assertEquals("B", dispatch(catalog, "b").resultString("source"))
                         assertEquals("Bearer token-a", first.requests.last().getHeader("Authorization"))
@@ -585,13 +720,113 @@ class ServiceCatalogTest {
                             requireNotNull(catalog.execute("discover_service", objectOf("server_id" to "b")) { true })
                         val detail = discover.structuredContent.getValue("result").jsonObject
                         assertTrue(detail.getValue("mcp_tools").toString().contains("additionalProperties"))
-                        assertEquals("B instructions", detail.getValue("instructions").jsonPrimitive.content)
+                        assertEquals(second.instructions, detail.getValue("instructions").jsonPrimitive.content)
+                        assertFalse(detail.toString().contains("보관소 A"))
+                        val firstDetail =
+                            checkNotNull(catalog.execute("discover_service", objectOf("server_id" to "a")) { true })
+                                .structuredContent
+                                .getValue("result")
+                                .jsonObject
+                        assertEquals(first.instructions, firstDetail.getValue("instructions").jsonPrimitive.content)
+                        assertFalse(firstDetail.toString().contains("Archivo B"))
                         val contexts = catalog.monitorVoiceContext(backgroundScope, "conversation-one")
-                        val snapshot = contexts.first { it.keys.containsAll(listOf(a.key, b.key)) }
+                        val snapshot =
+                            contexts.first {
+                                it[a.key]?.snapshot?.fixtureReady == true &&
+                                    it[b.key]?.snapshot?.fixtureReady == true
+                            }
                         val context = catalog.contextText(snapshot)
                         assertTrue(context.contains("Alpha"))
                         assertTrue(context.contains("Beta"))
                         assertTrue(context.contains("Same item"))
+                        val large =
+                            snapshot.mapValues { (_, value) ->
+                                value.copy(
+                                    snapshot =
+                                        checkNotNull(value.snapshot).withFixtureItems(
+                                            text = "資料\"\n".repeat(4000),
+                                        ),
+                                )
+                            }
+                        val bounded = catalog.contextText(large)
+                        val sources = Json.parseToJsonElement(bounded).jsonObject.getValue("servers") as JsonArray
+                        assertEquals(2, sources.size)
+                        sources.forEach { server ->
+                            assertTrue(server.toString().length <= 2000)
+                            val sections = server.jsonObject.getValue("context") as JsonArray
+                            val items =
+                                sections
+                                    .single {
+                                        it.jsonObject["resource"]?.jsonPrimitive?.content ==
+                                            FIXTURE_CATALOG_URI
+                                    }.jsonObject
+                            assertEquals("omitted", items.getValue("status").jsonPrimitive.content)
+                        }
+                        assertTrue(bounded.length <= 12000)
+                        catalog.reconcile(entries, mapOf("a" to "\"".repeat(255) + "😀", "b" to "Beta"))
+                        val identityInputs =
+                            snapshot.mapValues { (_, value) ->
+                                value.copy(
+                                    snapshot =
+                                        checkNotNull(value.snapshot).withFixtureItems(
+                                            text = "資料".repeat(4000),
+                                        ),
+                                )
+                            }
+                        val identityHeavy = catalog.contextText(identityInputs)
+                        val retained =
+                            Json
+                                .parseToJsonElement(
+                                    identityHeavy,
+                                ).jsonObject
+                                .getValue("servers") as JsonArray
+                        assertEquals(2, retained.size)
+                        retained.forEach { assertTrue(it.toString().length <= 2000) }
+                        assertEquals(
+                            "\"".repeat(255),
+                            retained[0]
+                                .jsonObject
+                                .getValue("label")
+                                .jsonPrimitive.content,
+                        )
+                        assertEquals(
+                            "true",
+                            retained[0]
+                                .jsonObject
+                                .getValue("labelTruncated")
+                                .jsonPrimitive.content,
+                        )
+                        val discovered =
+                            checkNotNull(
+                                catalog.execute(
+                                    "discover_service",
+                                    kotlinx.serialization.json.buildJsonObject {},
+                                ) { true },
+                            )
+                        val listed = discovered.structuredContent.getValue("servers") as JsonArray
+                        assertEquals(
+                            "\"".repeat(255),
+                            listed[0]
+                                .jsonObject
+                                .getValue("label")
+                                .jsonPrimitive.content,
+                        )
+                        val unreadSources =
+                            Json
+                                .parseToJsonElement(catalog.contextText(emptyMap()))
+                                .jsonObject
+                                .getValue("servers") as JsonArray
+                        unreadSources.forEach { source ->
+                            val unread = source.jsonObject.getValue("context") as JsonArray
+                            assertTrue(unread.none { it.jsonObject.containsKey("resource") })
+                            assertTrue(
+                                unread.all {
+                                    it.jsonObject
+                                        .getValue("status")
+                                        .jsonPrimitive.content == "unread"
+                                },
+                            )
+                        }
                         first.minimum = 5
                         assertTrue(dispatch(catalog, "a").isError)
                         first.minimum = 1
@@ -664,7 +899,7 @@ class ServiceCatalogTest {
                     val catalog = ServiceCatalog(backgroundScope)
                     try {
                         catalog.reconcile(mapOf(a.key to a, b.key to b), emptyMap())
-                        catalog.state.first { it[a.key]?.monitoring?.snapshot != null && it[b.key]?.error != null }
+                        catalog.state.first { it[a.key]?.monitoring?.resources != null && it[b.key]?.error != null }
                         assertEquals("A", dispatch(catalog, "a").resultString("source"))
                         second.failDiscovery = false
                         advanceTimeBy(1_000)
@@ -843,6 +1078,160 @@ class ServiceCatalogTest {
         }
 
     @Test
+    fun `invalid authoritative context faults explicit reads and monitoring without failing applied tools`() =
+        runTest {
+            Fixture("Private boundary").use { fixture ->
+                fixture.includeContext = true
+                fixture.contextMetadata =
+                    Json.parseToJsonElement(
+                        """{"com.fghbuild.gomode/context":{
+                    "uri":"fixture://context","epoch":"private-epoch","version":"private-authority-sentinel","dependencies":[]}}""",
+                    )
+                val entry = fixture.entry("a")
+                val catalog = ServiceCatalog(backgroundScope)
+                try {
+                    catalog.reconcile(mapOf(entry.key to entry), emptyMap())
+                    catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.READY }
+                    val contexts = catalog.monitorVoiceContext(backgroundScope, "boundary")
+                    val state =
+                        contexts.first {
+                            it[entry.key]?.snapshot?.context?.isFailure == true &&
+                                it[entry.key]?.snapshot?.fixtureReady == true
+                        }
+                    val snapshot = checkNotNull(state.getValue(entry.key).snapshot)
+                    assertEquals("Same item", fixtureItemTitle(snapshot.items))
+                    assertNull(state.getValue(entry.key).retryReason)
+                    assertTrue(catalog.isReady(entry.key))
+                    assertTrue(snapshot.voiceContext.contains("\"status\":\"error\""))
+                    assertFalse(snapshot.voiceContext.contains("private-authority-sentinel"))
+                    val failure =
+                        checkNotNull(
+                            catalog.execute(
+                                "read_service_resource",
+                                objectOf("server_id" to "a", "uri" to FIXTURE_CONTEXT_URI),
+                                "boundary",
+                            ) { true },
+                        )
+                    assertTrue(failure.isError)
+                    assertFalse(failure.structuredContent.toString().contains("private-authority-sentinel"))
+                    val ordinary =
+                        checkNotNull(
+                            catalog.execute(
+                                "read_service_resource",
+                                objectOf("server_id" to "a", "uri" to FIXTURE_CATALOG_URI),
+                                "boundary",
+                            ) { true },
+                        )
+                    assertFalse(ordinary.isError)
+                    val applied =
+                        checkNotNull(
+                            catalog.execute(
+                                "dispatch_service_tool",
+                                dispatchArgs("a"),
+                                "boundary",
+                            ) { true },
+                        )
+                    assertFalse(applied.isError)
+                    assertEquals(1, fixture.calls)
+                    assertFalse(applied.structuredContent.toString().contains("private-authority-sentinel"))
+                } finally {
+                    catalog.close()
+                    entry.close()
+                }
+            }
+        }
+
+    @Test
+    fun `resource contents exclude transport metadata for a watched conversation`() =
+        runTest {
+            Fixture("Private metadata").use { fixture ->
+                val entry = fixture.entry("a")
+                val catalog = ServiceCatalog(backgroundScope)
+                try {
+                    catalog.reconcile(mapOf(entry.key to entry), emptyMap())
+                    catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.READY }
+                    val result =
+                        requireNotNull(
+                            catalog.execute(
+                                "read_service_resource",
+                                objectOf(
+                                    "server_id" to "a",
+                                    "uri" to FIXTURE_CATALOG_URI,
+                                ),
+                                "watched-conversation",
+                            ) { true },
+                        )
+                    assertFalse(result.isError)
+                    assertTrue(fixture.resourceReads.contains(FIXTURE_CATALOG_URI to "watched-conversation"))
+                    assertFalse(
+                        "Private projection reached model result",
+                        result.structuredContent.toString().contains("private-epoch"),
+                    )
+                    val contents =
+                        result.structuredContent
+                            .getValue("result")
+                            .jsonObject
+                            .getValue("resource")
+                    assertTrue(contents is JsonArray)
+                    assertTrue(contents.toString().contains("Same item"))
+                    assertFalse(contents.toString().contains("resultType"))
+                    assertFalse(contents.toString().contains("cacheScope"))
+                    assertTrue(contents.toString().contains("domain"))
+                    assertFalse(contents.toString().contains("private-content-metadata"))
+                    val context =
+                        requireNotNull(
+                            catalog.execute(
+                                "read_service_resource",
+                                objectOf(
+                                    "server_id" to "a",
+                                    "uri" to FIXTURE_CONTEXT_URI,
+                                ),
+                                "watched-conversation",
+                            ) { true },
+                        )
+                    val modelContext = context.structuredContent.toString()
+                    assertTrue(modelContext.contains("demo://watched"))
+                    assertTrue(modelContext.contains("ordinary content"))
+                    assertFalse(modelContext.contains("private-epoch"))
+                    assertFalse(modelContext.contains("private-route"))
+                    assertFalse(modelContext.contains("dependencies"))
+                    fixture.contextText = "Texte public arbitraire — 日本語😀"
+                    val publicText =
+                        checkNotNull(
+                            catalog.execute(
+                                "read_service_resource",
+                                objectOf("server_id" to "a", "uri" to FIXTURE_CONTEXT_URI),
+                                "watched-conversation",
+                            ) { true },
+                        )
+                    assertFalse(publicText.isError)
+                    assertTrue(publicText.structuredContent.toString().contains("日本語😀"))
+                    fixture.contextText = "資料😀\"".repeat(6000)
+                    val omitted =
+                        checkNotNull(
+                            catalog.execute(
+                                "read_service_resource",
+                                objectOf("server_id" to "a", "uri" to FIXTURE_CONTEXT_URI),
+                                "watched-conversation",
+                            ) { true },
+                        )
+                    assertFalse(omitted.isError)
+                    assertEquals(
+                        "omitted",
+                        omitted.structuredContent
+                            .getValue("result")
+                            .jsonObject
+                            .getValue("status")
+                            .jsonPrimitive.content,
+                    )
+                    assertTrue(omitted.structuredContent.toString().length <= 6000)
+                } finally {
+                    catalog.close()
+                }
+            }
+        }
+
+    @Test
     fun `tools only participant exposes schemas and rejects resource reads without resource RPCs`() =
         runTest {
             Fixture("Tools only").use { fixture ->
@@ -865,15 +1254,15 @@ class ServiceCatalogTest {
                                 "read_service_resource",
                                 objectOf(
                                     "server_id" to "a",
-                                    "uri" to "gomode://items",
+                                    "uri" to "fixture://catalog",
                                 ),
                             ) { true },
                         )
                     assertTrue(read.isError)
                     assertEquals("Tools only", dispatch(catalog, "a").resultString("source"))
                     assertFalse(catalog.hasContextResources(entry.key))
-                    assertTrue(catalog.contextText(emptyMap()).contains("No active service item is reported."))
-                    assertFalse(catalog.contextText(emptyMap()).contains("have not been read"))
+                    assertTrue(catalog.contextText(emptyMap()).contains("\"context\":[]"))
+                    assertFalse(catalog.contextText(emptyMap()).contains("\"status\":\"unread\""))
                     assertTrue(fixture.requests.none { it.getHeader("Mcp-Method")?.startsWith("resources/") == true })
                 } finally {
                     catalog.close()
@@ -943,13 +1332,114 @@ class ServiceCatalogTest {
                     },
                 )
                 val context = catalog.contextText(emptyMap())
-                assertTrue(context.contains("replaces the previous service overview"))
+                assertTrue(Json.parseToJsonElement(context).jsonObject.containsKey("servers"))
                 assertTrue(context.length <= 12_000)
-                assertTrue(context.contains("More servers omitted"))
+                assertTrue(
+                    Json
+                        .parseToJsonElement(
+                            context,
+                        ).jsonObject
+                        .getValue("omittedServerCount")
+                        .jsonPrimitive.content
+                        .toInt() >
+                        0,
+                )
                 assertTrue(context.contains("id-1"))
             } finally {
                 catalog.close()
             }
+        }
+
+    @Test
+    fun `oversized identity does not hide a later source`() =
+        runTest {
+            val entries =
+                listOf(
+                    ServiceShellSession(ServiceShellKey("\"𠮷".repeat(800), "https://large.example")) {},
+                    ServiceShellSession(ServiceShellKey("small", "https://small.example")) {},
+                )
+            val catalog = ServiceCatalog(backgroundScope)
+            try {
+                catalog.reconcile(entries.associateBy { it.key }, emptyMap())
+                val projection = Json.parseToJsonElement(catalog.contextText(emptyMap())).jsonObject
+                val sources = projection.getValue("servers") as JsonArray
+                assertEquals(1, sources.size)
+                assertEquals(
+                    "small",
+                    sources[0]
+                        .jsonObject
+                        .getValue("id")
+                        .jsonPrimitive.content,
+                )
+                assertEquals("1", projection.getValue("omittedServerCount").jsonPrimitive.content)
+            } finally {
+                catalog.close()
+                entries.forEach { it.close() }
+            }
+        }
+
+    @Test
+    fun `near full escaped identity retains truthful section omissions and later servers`() =
+        runTest {
+            var retainedWithOmissions = false
+            var skippedOversized = false
+            for (padding in (1600..2100 step 10)) {
+                val entries =
+                    listOf(
+                        ServiceShellSession(ServiceShellKey("a".repeat(padding), "https://budget.example?q=\\\"𠮷")) {},
+                        ServiceShellSession(ServiceShellKey("later", "https://later.example")) {},
+                    )
+                val catalog = ServiceCatalog(backgroundScope)
+                try {
+                    catalog.reconcile(
+                        entries.associateBy { it.key },
+                        mapOf(entries[0].key.serviceID to "\"".repeat(32) + "😀"),
+                    )
+                    val text = catalog.contextText(emptyMap())
+                    val projection = Json.parseToJsonElement(text).jsonObject
+                    val servers = projection.getValue("servers") as JsonArray
+                    assertTrue(
+                        servers.any {
+                            it.jsonObject
+                                .getValue("id")
+                                .jsonPrimitive.content == "later"
+                        },
+                    )
+                    assertEquals(
+                        (2 - servers.size).toString(),
+                        projection.getValue("omittedServerCount").jsonPrimitive.content,
+                    )
+                    servers.forEach { assertTrue(it.toString().length <= 2000) }
+                    assertTrue(text.length <= 12000)
+                    val first =
+                        servers.firstOrNull {
+                            it.jsonObject
+                                .getValue("id")
+                                .jsonPrimitive.content ==
+                                entries[0].key.serviceID
+                        }
+                    if (padding == 1600) assertTrue(first != null)
+                    if (padding == 2100) assertEquals(null, first)
+                    if (first != null) {
+                        val source = first.jsonObject
+                        val omitted =
+                            source
+                                .getValue("omittedSectionCount")
+                                .jsonPrimitive.content
+                                .toInt()
+                        assertEquals(1, (source.getValue("context") as JsonArray).size + omitted)
+                        assertEquals("\"".repeat(32) + "😀", source.getValue("label").jsonPrimitive.content)
+                        if (omitted > 0) retainedWithOmissions = true
+                    } else {
+                        skippedOversized = true
+                    }
+                } finally {
+                    catalog.close()
+                    entries.forEach { it.close() }
+                }
+            }
+            assertTrue(retainedWithOmissions)
+            assertTrue(skippedOversized)
         }
 
     private class ContextPreferences : DataStore<Preferences> {
@@ -993,6 +1483,7 @@ class ServiceCatalogTest {
     private class Fixture(
         val source: String,
     ) : AutoCloseable {
+        var instructions = "$source instructions"
         val server = MockWebServer()
         val requests = CopyOnWriteArrayList<RecordedRequest>()
 
@@ -1008,6 +1499,11 @@ class ServiceCatalogTest {
         val releaseContext = CountDownLatch(1)
         val contextReadEntered = CountDownLatch(1)
         val resourceReads = CopyOnWriteArrayList<Pair<String, String?>>()
+
+        @Volatile var includeContext = false
+
+        @Volatile var contextFailureStatus: Int? = null
+        var holdSubscriptions = false
         var supportsResources = true
         var supportsSubscriptions = false
         var scopedItems = false
@@ -1015,6 +1511,12 @@ class ServiceCatalogTest {
         var itemsVisible = true
         val subscriptionSessions = MutableStateFlow<List<String?>>(emptyList())
         val requestSessions = CopyOnWriteArrayList<Pair<String, String?>>()
+        var contextMetadata =
+            Json.parseToJsonElement(
+                """{"com.fghbuild.gomode/context":{"uri":"fixture://context","epoch":"private-epoch","version":7,
+            "dependencies":[{"uris":["fixture://catalog"]}]}}""",
+            )
+        var contextText = """{"consultés":["demo://watched"],"_meta":"ordinary content"}"""
         var minimum = 1
         var failDiscovery = false
         var blockCall = false
@@ -1055,10 +1557,17 @@ class ServiceCatalogTest {
                                     ""
                                 }
                             subscriptionSessions.update { it + session }
-                            return MockResponse().setHeader("Content-Type", "text/event-stream").setBody(
+                            val acknowledged =
                                 "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\"," +
-                                    "\"params\":{}}\n\n$withdrawal",
-                            )
+                                    "\"params\":{}}\n\n$withdrawal"
+                            val response = MockResponse().setHeader("Content-Type", "text/event-stream")
+                            return if (holdSubscriptions) {
+                                response
+                                    .setChunkedBody(acknowledged + ": ping\n\n".repeat(10000), 512)
+                                    .throttleBody(512, 100, TimeUnit.MILLISECONDS)
+                            } else {
+                                response.setBody(acknowledged)
+                            }
                         }
                         if (method == "server/discover" && failDiscovery) return MockResponse().setResponseCode(503)
                         if (!supportsResources && method.startsWith("resources/")) {
@@ -1083,7 +1592,7 @@ class ServiceCatalogTest {
                                     "capabilities":$capabilities,
                                     "serverInfo":{"name":"fixture",
                                     "version":"1"},
-                                    "instructions":"$source instructions"}
+                                    "instructions":"$instructions"}
                                     """.trimIndent()
                                 }
 
@@ -1123,9 +1632,19 @@ class ServiceCatalogTest {
                                         val resources =
                                             mutableListOf(
                                                 Json.parseToJsonElement(
-                                                    """{"name":"items","uri":"gomode://items","mimeType":"application/json"}""",
+                                                    """{"name":"items","uri":"fixture://catalog",
+                                                        "_meta":{"com.fghbuild.gomode/modelContext":true},
+                                                        "mimeType":"application/json"}""",
                                                 ),
                                             )
+                                        if (includeContext) {
+                                            resources +=
+                                                Json.parseToJsonElement(
+                                                    """{"name":"context","uri":"fixture://context",
+                                                        "_meta":{"com.fghbuild.gomode/modelContext":true},
+                                                        "mimeType":"application/json"}""",
+                                                )
+                                        }
                                         if (includeAlerts) {
                                             resources +=
                                                 Json.parseToJsonElement(
@@ -1153,9 +1672,20 @@ class ServiceCatalogTest {
                                             .getValue("uri")
                                             .jsonPrimitive.content
                                     resourceReads += uri to session
+                                    if (uri == FIXTURE_CONTEXT_URI && contextFailureStatus != null) {
+                                        return MockResponse()
+                                            .setResponseCode(
+                                                checkNotNull(contextFailureStatus),
+                                            ).setBody(
+                                                """
+                                                {"jsonrpc":"2.0","id":1,"error":{
+                                                  "code":-32000,"message":"Context temporarily unavailable"}}
+                                                """.trimIndent(),
+                                            )
+                                    }
                                     if (session != null &&
                                         (
-                                            (uri == GOMODE_ITEMS_RESOURCE_URI && blockContextItems) ||
+                                            (uri == FIXTURE_CATALOG_URI && blockContextItems) ||
                                                 (uri == GOMODE_NOTIFICATIONS_RESOURCE_URI && blockContextAlerts)
                                         )
                                     ) {
@@ -1180,18 +1710,29 @@ class ServiceCatalogTest {
                                         )
                                     }
                                     val title = if (scopedItems) session ?: "sessionless" else "Same item"
+                                    val text =
+                                        if (uri == FIXTURE_CONTEXT_URI) {
+                                            contextText
+                                        } else {
+                                            """
+                                            {"items":[{"id":"same","title":"$title","state":"ready"}],
+                                             "_meta":{"domain":"keep"}}
+                                            """.trimIndent()
+                                        }
                                     buildJsonObject {
                                         put(
                                             "contents",
-                                            Json.parseToJsonElement(
-                                                """
-                                                [
-                                                  {
-                                                    "uri": "gomode://items",
-                                                    "text": "{\"items\":[{\"id\":\"same\",\"title\":\"$title\",\"state\":\"ready\"}]}"
-                                                  }
-                                                ]
-                                                """.trimIndent(),
+                                            JsonArray(
+                                                listOf(
+                                                    buildJsonObject {
+                                                        put("uri", uri)
+                                                        put("text", text)
+                                                        put(
+                                                            "_meta",
+                                                            buildJsonObject { put("private-content-metadata", true) },
+                                                        )
+                                                    },
+                                                ),
                                             ),
                                         )
                                     }.toString()
@@ -1217,11 +1758,20 @@ class ServiceCatalogTest {
                                     "ttlMs" to JsonPrimitive(0),
                                     "cacheScope" to JsonPrimitive("private"),
                                 )
+                        val outputFields =
+                            if ((method == "resources/read" || method == "tools/call") && session != null) {
+                                fields +
+                                    mapOf(
+                                        "_meta" to contextMetadata,
+                                    )
+                            } else {
+                                fields
+                            }
                         return MockResponse().setHeader("Content-Type", "application/json").setBody(
                             buildJsonObject {
                                 put("jsonrpc", "2.0")
                                 put("id", body.getValue("id"))
-                                put("result", JsonObject(fields))
+                                put("result", JsonObject(outputFields))
                             }.toString(),
                         )
                     }

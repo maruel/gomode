@@ -50,7 +50,7 @@ internal fun standaloneVoiceSetup(): VoiceSetup =
         gatewayHeaders = emptyMap(),
         mcpClient = McpClient("", "2024-11-05", { null }),
         tools = emptyList(),
-        systemInstruction = "You are Go Mode running locally on Pixel 8 Pro.",
+        systemInstruction = "",
         serviceContextText = "",
     )
 
@@ -148,8 +148,7 @@ internal suspend fun prepareVoiceSetup(
         }
     val client = participant?.client
     val systemInstruction =
-        participant?.instructions ?: "You are Go Mode, one conversation across the user's saved servers. " +
-            "Use the catalog to discover scoped instructions and tools. Server selection changes focus only."
+        participant?.instructions.orEmpty()
     val tools = (participant?.tools ?: serviceCatalogTools) + nativeVoiceTools(settings)
     val serviceContextText =
         if (sharedCatalog != null) {

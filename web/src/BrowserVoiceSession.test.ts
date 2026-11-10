@@ -83,7 +83,11 @@ beforeEach(() => {
   };
   vi.spyOn(mcpClient, "serverInstructions").mockResolvedValue("Host instructions");
   vi.spyOn(mcpClient, "listTools").mockResolvedValue([]);
-  vi.spyOn(mcpClient, "readAdvertisedTextResource").mockResolvedValue(null);
+  vi.spyOn(mcpClient, "listModelResources").mockResolvedValue({
+    resources: [{ uri: "fixture://catalog", name: "catalog" }],
+    notifications: false,
+  });
+  vi.spyOn(mcpClient, "readTextResource").mockResolvedValue("[]");
   configureVoiceGateway("https://gateway.example", null);
   session = new VoiceSession(chime, earcon);
   session.selectSpeechInput("client");
@@ -183,10 +187,10 @@ it("awaits host focus publication before browser-speech setup reads", async () =
   await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
   expect(mcpClient.serverInstructions).not.toHaveBeenCalled();
   expect(mcpClient.listTools).not.toHaveBeenCalled();
-  expect(mcpClient.readAdvertisedTextResource).not.toHaveBeenCalled();
+  expect(mcpClient.readTextResource).not.toHaveBeenCalled();
   gate.resolve();
   await pending;
-  expect(mcpClient.readAdvertisedTextResource).toHaveBeenCalledWith("gomode://items", undefined, {
+  expect(mcpClient.readTextResource).toHaveBeenCalledWith("fixture://catalog", undefined, {
     sessionID: session.conversationID,
   });
 });
@@ -1182,7 +1186,7 @@ describe("browser voice sessions", () => {
     expect(callTool.mock.calls[0]?.[2]?.sessionID).toMatch(/^[0-9a-f]{32}$/);
     const options = { sessionID: callTool.mock.calls[0]?.[2]?.sessionID };
     expect(mcpClient.serverInstructions).toHaveBeenCalledWith(options);
-    expect(mcpClient.readAdvertisedTextResource).toHaveBeenCalledWith("gomode://items", undefined, options);
+    expect(mcpClient.readTextResource).toHaveBeenCalledWith("fixture://catalog", undefined, options);
     expect(callTool.mock.calls[0]?.[2]?.locale).toBe("fr-CA");
     socket.message({ kind: "error", message: "OutOfOrder support is unavailable", recoverable: true });
     expect(session.state.connected).toBe(true);

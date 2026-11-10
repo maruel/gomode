@@ -5,9 +5,10 @@ import android.util.Log
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.service.ServiceCatalog
-import com.fghbuild.gomode.service.ServiceMonitoringSnapshot
+import com.fghbuild.gomode.service.ServiceMonitorState
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.service.VoiceTokenClient
+import com.fghbuild.gomode.service.boundModelContext
 import com.fghbuild.gomode.service.serviceCatalogTools
 import com.fghbuild.gomode.service.serviceOrigin
 import com.fghbuild.gomode.ui.web.ServiceShellKey
@@ -248,8 +249,7 @@ internal class VoiceConversation(
                     mcpClient = null,
                     tools = nativeVoiceTools(settings) + serviceCatalogTools,
                     systemInstruction =
-                        "You are Go Mode. Use the service catalog to discover and call tools on explicit servers. " +
-                            "Each server's instructions apply only to that server. Selecting a server changes focus only.",
+                        "",
                     serviceContextText = initialContextText(current),
                 )
             prepared = true
@@ -262,10 +262,10 @@ internal class VoiceConversation(
     private suspend fun initialContextText(current: Conversation): String {
         val snapshots = checkNotNull(current.contextSnapshots)
         val selected = ServiceShellKey(current.settings.activeServiceId, current.settings.activeServiceURL)
-        if (catalog.hasContextResources(selected) && selected !in snapshots.value) {
+        if (catalog.hasContextResources(selected) && !snapshots.value[selected].contextReady()) {
             // Other services continue independently. Reconnect reuses this same
             // baseline and stream rather than starting another discovery pass.
-            withTimeoutOrNull(INITIAL_CONTEXT_BUDGET_MS) { snapshots.first { selected in it } }
+            withTimeoutOrNull(INITIAL_CONTEXT_BUDGET_MS) { snapshots.first { it[selected].contextReady() } }
         }
         if (conversation !== current) throw VoiceSetupException("Voice conversation was replaced")
         requireCurrent()
@@ -277,9 +277,16 @@ internal class VoiceConversation(
         admitParticipants()
         requireCurrent()
         val settings = settingsRepository.settings.value
-        val focus = Json.encodeToString(listOf(settings.activeServiceId.take(128), settings.activeServiceURL.take(512)))
+        val focus = Json.encodeToString(mapOf("id" to settings.activeServiceId, "url" to settings.activeServiceURL))
         val context = catalog.contextText(conversation?.contextSnapshots?.value.orEmpty())
-        return "Selected server (focus only): $focus\n$context"
+        val selected = "{\"selectedServer\":$focus}"
+        val boundedSelected =
+            if (selected.length <= 999) {
+                selected
+            } else {
+                """{"selectedServer":{"status":"omitted"}}"""
+            }
+        return boundModelContext("$boundedSelected\n$context")
     }
 
     suspend fun execute(
@@ -355,8 +362,11 @@ private class Conversation(
     val bearer: String?,
     val lifetime: VoiceConversationLifetime,
 ) {
-    var contextSnapshots: StateFlow<Map<ServiceShellKey, ServiceMonitoringSnapshot>>? = null
+    var contextSnapshots: StateFlow<Map<ServiceShellKey, ServiceMonitorState>>? = null
     val admitted = mutableMapOf<ServiceShellKey, AdmittedIdentity>()
     val credentials = mutableMapOf<String, String?>()
     var setup: VoiceSetup? = null
 }
+
+private fun com.fghbuild.gomode.service.ServiceMonitorState?.contextReady(): Boolean =
+    this?.resources != null && snapshot?.resources?.values?.all { it != null } == true

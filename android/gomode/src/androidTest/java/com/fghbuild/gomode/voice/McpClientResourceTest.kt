@@ -12,10 +12,40 @@ import kotlinx.serialization.json.jsonObject
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.TimeZone
 
 class McpClientResourceTest {
+    @Test
+    fun authoritativeReadRejectsPrivateMetadataWithoutFailingAppliedTool() =
+        runTest {
+            MockWebServer().use { server ->
+                server.start()
+                val client = McpClient(server.url("/mcp").toString(), "2026-07-28", { null })
+                val metadata = """{"com.fghbuild.gomode/context":{
+                    "uri":"fixture://context","epoch":"owner","version":"private-authority-sentinel","dependencies":[]}}"""
+                val body = """{"resultType":"complete","ttlMs":0,"cacheScope":"private",
+                    "contents":[{"_meta":{"com.fghbuild.gomode/modelContext":true},"uri":"fixture://context","text":"資料 _meta public intact"}],"_meta":$metadata}"""
+                server.enqueue(MockResponse().setBody("""{"jsonrpc":"2.0","result":$body}"""))
+                val error = runCatching { client.readResource("fixture://context", "conversation") }.exceptionOrNull()
+                assertTrue(error is IllegalArgumentException)
+                assertFalse(error?.message.orEmpty().contains("private-authority-sentinel"))
+                server.enqueue(
+                    MockResponse().setBody(
+                        """{"jsonrpc":"2.0","result":{"resultType":"complete","content":[],
+                    "structuredContent":{"saved":true},"_meta":$metadata}}""",
+                    ),
+                )
+                val result = client.callTool("save", Json.parseToJsonElement("{}").jsonObject, "conversation")
+                assertFalse(result.isError)
+                assertTrue(result.structuredContent.toString().contains("true"))
+                assertFalse(result.structuredContent.toString().contains("private-authority-sentinel"))
+                assertEquals(2, server.requestCount)
+            }
+        }
+
     @Test
     fun toolResultsPreserveOpaqueMetadata() =
         runTest {

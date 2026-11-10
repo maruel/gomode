@@ -76,6 +76,72 @@ class ControlledLocalConversationTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
 
     @Test
+    fun oversizedInitialAndResetContextNeverReachNativePrefill() =
+        runBlocking {
+            val configs = CopyOnWriteArrayList<ConversationConfig>()
+            val engine =
+                LocalLlmEngine(context, { _, config ->
+                    configs += config
+                    ControlledRunner(configs)
+                })
+            try {
+                val instructions = "Décris les documents. ".repeat(1000)
+                val setup =
+                    EngineSessionContext(
+                        "fr-CA",
+                        instructions,
+                        """{"selectedServer":{"url":"${"資料😀".repeat(4000)}"}}""",
+                        emptyList(),
+                        null,
+                    )
+                engine.initialize(setup)
+                assertTrue(
+                    configs
+                        .single()
+                        .systemInstruction
+                        .toString()
+                        .contains(instructions),
+                )
+                assertTrue(
+                    configs
+                        .single()
+                        .systemInstruction
+                        .toString()
+                        .contains("context_omitted"),
+                )
+                assertFalse(
+                    configs
+                        .single()
+                        .systemInstruction
+                        .toString()
+                        .contains("資料😀".repeat(4000)),
+                )
+                engine.resetConversation(
+                    setup.copy(
+                        serviceContextText =
+                            "{\"data\":\"${"x".repeat(7000)}\"}\n{\"data\":\"${"y".repeat(7000)}\"}",
+                    ),
+                )
+                assertTrue(
+                    configs
+                        .last()
+                        .systemInstruction
+                        .toString()
+                        .contains("context_omitted"),
+                )
+                assertFalse(
+                    configs
+                        .last()
+                        .systemInstruction
+                        .toString()
+                        .contains("x".repeat(7000)),
+                )
+            } finally {
+                engine.closeAndJoin()
+            }
+        }
+
+    @Test
     fun nativePickerDuringPrefillDoesNotReplacePreparationOrNativeConversation() {
         LocalHost("A").use { a ->
             LocalHost("B").use { b ->

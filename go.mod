@@ -22,6 +22,7 @@ require (
 	github.com/pion/rtcp v1.2.20
 	github.com/pion/transport/v5 v5.1.4
 	github.com/pion/webrtc/v4 v4.2.26
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/tphakala/go-opus v1.3.0
 	golang.org/x/mod v0.42.0
 	golang.org/x/sync v0.24.0
@@ -200,7 +201,6 @@ require (
 	github.com/ryanrolds/sqlclosecheck v0.6.0 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/sanposhiho/wastedassign/v2 v2.1.0 // indirect
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/sashamelentyev/interfacebloat v1.1.0 // indirect
 	github.com/sashamelentyev/usestdlibvars v1.29.0 // indirect
 	github.com/securego/gosec/v2 v2.30.0 // indirect

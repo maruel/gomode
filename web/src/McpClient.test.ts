@@ -1,6 +1,6 @@
 // Tests browser MCP requests, opaque result metadata, and subscription ownership.
 import { afterEach, describe, it } from "node:test";
-import { ok } from "node:assert/strict";
+import { ok, rejects } from "node:assert/strict";
 import { expect } from "../tests/expect";
 
 import type { ResourcesReadParams, SubscriptionsListenParams } from "../../sdk/mcp/ts/v1/types.gen";
@@ -13,6 +13,33 @@ afterEach(() => {
 });
 
 describe("configureMcpClient", () => {
+  it("keeps malformed transport diagnostics out of tool failures", async () => {
+    configureMcpClient("/mcp", "host");
+    let invocations = 0;
+    globalThis.fetch = async () => {
+      invocations++;
+      return new Response('{"_meta":{"private":"private-envelope-sentinel"},"result":BROKEN}');
+    };
+    await rejects(mcpClient.callTool("read_item", {}), (failure: unknown) => {
+      ok(failure instanceof Error);
+      ok(!failure.message.includes("private-envelope-sentinel"));
+      ok(failure.cause instanceof Error);
+      return true;
+    });
+    expect(invocations).toBe(1);
+  });
+
+  it("preserves intentional public RPC error messages and codes", async () => {
+    configureMcpClient("/mcp", "host");
+    globalThis.fetch = async () => Response.json({ error: { code: -32602, message: "Choose a valid item" } });
+    await rejects(mcpClient.callTool("read_item", {}), (failure: unknown) => {
+      ok(failure instanceof Error);
+      expect(failure.message).toBe("Choose a valid item");
+      expect((failure as Error & { code: number }).code).toBe(-32602);
+      return true;
+    });
+  });
+
   it("preserves opaque tool metadata separately from native and released result content", async (t) => {
     for (const protocol of ["native", "released"]) {
       for (const format of ["structured", "text"]) {
@@ -282,7 +309,7 @@ describe("subscribeResources", () => {
     const subscription = mcpClient.subscribeResources(
       {
         sessionID: "conversation-one",
-        resourceSubscriptions: ["gomode://items"],
+        resourceSubscriptions: ["fixture://catalog"],
         onError: ended,
         onReady: () => {
           if (sessions.length === 2) ready();

@@ -40,7 +40,7 @@ type compatStreamRegistry struct {
 func (r *compatStreamRegistry) ListResources(context.Context, string) (mcp.ResourcesListResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return mcp.ResourcesListResult{Resources: []mcp.ResourceDescriptor{{URI: "gomode://items", Name: fmt.Sprintf("tasks-%d", r.version)}}}, nil
+	return mcp.ResourcesListResult{Resources: []mcp.ResourceDescriptor{{URI: "fixture://catalog", Name: fmt.Sprintf("tasks-%d", r.version)}}}, nil
 }
 
 func (r *compatStreamRegistry) Resources(ctx context.Context) iter.Seq2[mcp.ResourceDescriptor, error] {
@@ -67,7 +67,7 @@ func (r *compatStreamRegistry) change() {
 }
 
 func (r *compatStreamRegistry) ReadResource(ctx context.Context, p *mcp.ResourcesReadParams) (mcp.ResourcesReadResult, error) {
-	if p.URI != "gomode://items" {
+	if p.URI != "fixture://catalog" {
 		return mcp.ResourcesReadResult{}, mcp.ErrInvalidParams("resource not allowed")
 	}
 	r.mu.Lock()
@@ -78,7 +78,7 @@ func (r *compatStreamRegistry) ReadResource(ctx context.Context, p *mcp.Resource
 func (r *compatStreamRegistry) SubscribeResourceUpdates(ctx context.Context, p *mcp.SubscriptionsListenParams) (iter.Seq2[mcp.ResourceUpdate, error], error) {
 	f := p.Notifications
 	for _, uri := range f.ResourceSubscriptions {
-		if uri != "gomode://items" {
+		if uri != "fixture://catalog" {
 			return nil, mcp.ErrInvalidParams("resource not allowed")
 		}
 	}
@@ -96,7 +96,7 @@ func (r *compatStreamRegistry) SubscribeResourceUpdates(ctx context.Context, p *
 				r.mu.Lock()
 				changed = r.changed
 				r.mu.Unlock()
-				if !yield(mcp.ResourceUpdate{ResourceURIs: []string{"gomode://items"}, ResourcesListChanged: f.ResourcesListChanged}, nil) {
+				if !yield(mcp.ResourceUpdate{ResourceURIs: []string{"fixture://catalog"}, ResourcesListChanged: f.ResourcesListChanged}, nil) {
 					return
 				}
 			}
@@ -159,7 +159,7 @@ func TestReleasedResourceNotifications(t *testing.T) {
 				t.Fatalf("resources capability = %#v", resources)
 			}
 			resp, out = post("alice", session, "resources/subscribe", map[string]any{
-				"uri":   "gomode://items",
+				"uri":   "fixture://catalog",
 				"_meta": map[string]string{"openai/session": "conversation"},
 			})
 			if resp.status != http.StatusOK || out.Error != nil {
@@ -234,7 +234,7 @@ func TestReleasedResourceNotifications(t *testing.T) {
 			}
 			registry.change()
 			notification := read()
-			if notification["method"] != "notifications/resources/updated" || notification["params"].(map[string]any)["uri"] != "gomode://items" {
+			if notification["method"] != "notifications/resources/updated" || notification["params"].(map[string]any)["uri"] != "fixture://catalog" {
 				t.Fatalf("resource change = %#v", notification)
 			}
 			cancel()
@@ -250,7 +250,7 @@ func TestReleasedResourceNotifications(t *testing.T) {
 			if notification["method"] != "notifications/resources/updated" {
 				t.Fatalf("reconnect invalidation = %#v", notification)
 			}
-			resp, out = post("alice", session, "resources/unsubscribe", map[string]string{"uri": "gomode://items"})
+			resp, out = post("alice", session, "resources/unsubscribe", map[string]string{"uri": "fixture://catalog"})
 			if resp.status != http.StatusOK || out.Error != nil {
 				t.Fatalf("unsubscribe: %d %#v", resp.status, out.Error)
 			}

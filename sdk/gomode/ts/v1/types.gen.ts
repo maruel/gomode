@@ -64,6 +64,36 @@ export interface Settings {
   webShell: WebShellSettings;
 }
 
+/**
+ * ResourceDependency routes host change-feed events without interpreting domain
+ * content. Each group contains at most 50 URIs. Empty aspects match any change.
+ */
+export interface ResourceDependency {
+  uris: string[] | null;
+  aspects?: string[];
+}
+
+/**
+ * ConversationContext orders one advertised model-context resource for one
+ * authenticated conversation. URI identifies the resource this update replaces.
+ * Only a read of that URI can establish
+ * a new epoch. Dependencies are private event routing, never model content.
+ * Content is the server-defined public resource text after a tool; resource reads
+ * omit it because their standard contents already carry the same text.
+ */
+export interface ConversationContext {
+  uri: string;
+  epoch: string;
+  version: number /* int64 */;
+  dependencies: ResourceDependency[] | null;
+  content?: string;
+}
+
+/** ConversationResultMeta carries an authorized resource update after a tool. */
+export interface ConversationResultMeta {
+  "com.fghbuild.gomode/context"?: ConversationContext;
+}
+
 /** ErrorBody describes a Go Mode API error. */
 export interface ErrorBody {
   code: string;

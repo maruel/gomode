@@ -123,6 +123,36 @@ data class Settings(
     val webShell: WebShellSettings,
 )
 
+/**
+ * ResourceDependency routes host change-feed events without interpreting domain
+ * content. Each group contains at most 50 URIs. Empty aspects match any change.
+ */
+@Serializable
+data class ResourceDependency(val uris: List<String>?, @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val aspects: List<String>? = null)
+
+/**
+ * ConversationContext orders one advertised model-context resource for one
+ * authenticated conversation. URI identifies the resource this update replaces.
+ * Only a read of that URI can establish
+ * a new epoch. Dependencies are private event routing, never model content.
+ * Content is the server-defined public resource text after a tool; resource reads
+ * omit it because their standard contents already carry the same text.
+ */
+@Serializable
+data class ConversationContext(
+    val uri: String,
+    val epoch: String,
+    val version: Long,
+    val dependencies: List<ResourceDependency>?,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val content: String? = null,
+)
+
+/** ConversationResultMeta carries an authorized resource update after a tool. */
+@Serializable
+data class ConversationResultMeta(
+    @SerialName("com.fghbuild.gomode/context") @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val context: ConversationContext? = null,
+)
+
 /** ErrorBody describes a Go Mode API error. */
 @Serializable
 data class ErrorBody(val code: String, val message: String)

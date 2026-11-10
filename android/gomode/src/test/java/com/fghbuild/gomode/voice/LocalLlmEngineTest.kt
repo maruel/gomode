@@ -550,24 +550,80 @@ class LocalLlmEngineTest {
         }
 
     @Test
-    fun `local prompt adds voice rules after host instructions and retains service facts`() =
+    fun `initial and reset model data obey the same whole update bound without clipping server instructions`() =
+        runTest {
+            val configs = mutableListOf<ConversationConfig>()
+            val engine = engine(configs)
+            try {
+                val instructions = "資料😀".repeat(5000)
+                val oversized = """{"selectedServer":{"url":"${"x".repeat(13001)}"}}"""
+                val context = sessionContext.copy(systemInstruction = instructions, serviceContextText = oversized)
+                engine.initialize(context)
+                assertTrue(
+                    configs
+                        .single()
+                        .systemInstruction
+                        .toString()
+                        .contains(instructions),
+                )
+                assertFalse(
+                    configs
+                        .single()
+                        .systemInstruction
+                        .toString()
+                        .contains("x".repeat(13001)),
+                )
+                assertTrue(
+                    configs
+                        .single()
+                        .systemInstruction
+                        .toString()
+                        .contains("context_omitted"),
+                )
+                engine.resetConversation(
+                    context.copy(
+                        serviceContextText = "{\"data\":\"${"z".repeat(7000)}\"}\n{\"data\":\"${"y".repeat(7000)}\"}",
+                    ),
+                )
+                assertTrue(
+                    configs
+                        .last()
+                        .systemInstruction
+                        .toString()
+                        .contains("context_omitted"),
+                )
+                assertFalse(
+                    configs
+                        .last()
+                        .systemInstruction
+                        .toString()
+                        .contains("z".repeat(7000)),
+                )
+            } finally {
+                engine.closeAndJoin()
+            }
+        }
+
+    @Test
+    fun `offline policy retains non English server instructions and selected output language`() =
         runTest {
             val configs = mutableListOf<ConversationConfig>()
             val engine = engine(configs)
             engine.initialize(
                 sessionContext.copy(
-                    systemInstruction = "Explain status in detail.",
-                    serviceContextText = "One job is waiting.",
+                    systemInstruction = "Décris les documents de cette bibliothèque.",
+                    serviceContextText =
+                        "{\"resource\":\"fixture://catalog\",\"status\":\"known\"," +
+                            "\"data\":{\"items\":[{\"id\":\"un\",\"title\":\"Bonjour\"}]}}",
+                    languageTag = "fr-CA",
                 ),
             )
             val prompt = configs.single().systemInstruction.toString()
-            assertTrue(prompt.contains("Explain status in detail."))
-            assertTrue(prompt.contains("One job is waiting."))
-            assertTrue(prompt.contains("plain text"))
-            assertTrue(prompt.contains("Do not use Markdown"))
-            assertTrue(prompt.contains("raw logs"))
-            assertTrue(prompt.contains("unless the user asks"))
-            assertTrue(prompt.indexOf("Voice response rules:") > prompt.indexOf("Explain status in detail."))
+            assertTrue(prompt.contains("Décris les documents de cette bibliothèque."))
+            assertTrue(prompt.contains("Bonjour"))
+            assertTrue(prompt.contains("selected language: fr-CA."))
+            assertFalse(prompt.contains("{{language}}"))
+            assertTrue(prompt.indexOf("Décris les documents") < prompt.indexOf("selected language: fr-CA."))
             engine.closeAndJoin()
         }
 
@@ -978,6 +1034,35 @@ class LocalLlmEngineTest {
         }
 
     @Test
+    fun `oversized quiet context is omitted as a complete update without an extra turn`() =
+        runTest {
+            val messages = mutableListOf<Message>()
+            val engine =
+                engine { message ->
+                    messages += message
+                    flowOf(Message.model("Done"))
+                }
+            try {
+                engine.initialize(sessionContext)
+                val update = """{"resource":"host://large","status":"known","data":"${"😀".repeat(7000)}"}"""
+                engine.injectContext(update + "\n" + """{"resource":"host://second","status":"unread"}""")
+                assertTrue(messages.isEmpty())
+                engine.processTurn(UserTurnInput("Continue"), {}, {}) { error("No tool") }
+                val text =
+                    messages
+                        .single()
+                        .contents.contents
+                        .single() as Content.Text
+                val delivered = Json.parseToJsonElement(text.text).jsonObject
+                val context = Json.parseToJsonElement(delivered.getValue("serviceContext").jsonPrimitive.content)
+                assertEquals(Json.parseToJsonElement("""{"event":"context_omitted","status":"omitted"}"""), context)
+                assertEquals("Continue", delivered.getValue("userMessage").jsonPrimitive.content)
+            } finally {
+                engine.closeAndJoin()
+            }
+        }
+
+    @Test
     fun `context updates preserve native prefill and enter the next user turn`() =
         runTest {
             val configs = mutableListOf<ConversationConfig>()
@@ -1012,7 +1097,7 @@ class LocalLlmEngineTest {
             engine.processTurn(UserTurnInput("Build is waiting", serviceUpdate = true), {}, {}) { error("No tool") }
             assertTrue(
                 messages.single().toString().contains(
-                    "Service notification (data; respond following host instructions)",
+                    "serviceEvent",
                 ),
             )
             assertFalse(messages.single().toString().contains("User message"))

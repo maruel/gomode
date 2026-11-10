@@ -85,6 +85,41 @@ not participate in Go Mode compatibility checks. |  |
 manifests with an API version it does not explicitly support. | yes |
 | `webShell` | `WebShellSettings` |  | yes |
 
+### ResourceDependency
+
+ResourceDependency routes host change-feed events without interpreting domain
+content. Each group contains at most 50 URIs. Empty aspects match any change.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `uris` | `string[] \| null` |  | yes |
+| `aspects` | `string[]` |  |  |
+
+### ConversationContext
+
+ConversationContext orders one advertised model-context resource for one
+authenticated conversation. URI identifies the resource this update replaces.
+Only a read of that URI can establish
+a new epoch. Dependencies are private event routing, never model content.
+Content is the server-defined public resource text after a tool; resource reads
+omit it because their standard contents already carry the same text.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `uri` | `string` |  | yes |
+| `epoch` | `string` |  | yes |
+| `version` | `int64` |  | yes |
+| `dependencies` | `ResourceDependency[] \| null` |  | yes |
+| `content` | `string` |  |  |
+
+### ConversationResultMeta
+
+ConversationResultMeta carries an authorized resource update after a tool.
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `com.fghbuild.gomode/context` | `ConversationContext` |  |  |
+
 ### ErrorBody
 
 ErrorBody describes a Go Mode API error.

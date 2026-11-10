@@ -24,6 +24,7 @@ import com.fghbuild.gomode.data.OnDeviceEngine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockWebServer
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -35,6 +36,25 @@ import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class CarDialServerSwitchTest {
+    private fun modelSections(
+        text: String,
+        serverID: String,
+    ): List<JSONObject> {
+        val catalog =
+            text
+                .lineSequence()
+                .filter(String::isNotBlank)
+                .map(::JSONObject)
+                .firstOrNull { it.has("servers") } ?: return emptyList()
+        val servers = catalog.getJSONArray("servers")
+        val source =
+            (0 until servers.length())
+                .map { servers.getJSONObject(it) }
+                .singleOrNull { it.getString("id") == serverID } ?: return emptyList()
+        val sections = source.getJSONArray("context")
+        return (0 until sections.length()).map { sections.getJSONObject(it) }
+    }
+
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
     private val application get() = context.applicationContext as GoModeApplication
@@ -85,7 +105,9 @@ class CarDialServerSwitchTest {
         MockWebServer().use { cookieServer ->
             MockWebServer().use { bearerServer ->
                 val cookie = ServerVoiceSwitchTest.HostedVoiceFixture(false)
-                cookie.serviceItems = """{"items":[{"id":"focused-item","title":"Focused work","active":true}]}"""
+                cookie.serviceItems = """{"items":[{"id":"focused-item","title":"Focused work"}]}"""
+                cookie.serviceContext =
+                    """{"uri":"fixture://context","epoch":"fixture","version":1,"focus":{"id":"focused-item"},"resources":[]}"""
                 // This journey keeps identity stable. The manual handoff fixture separately
                 // exercises page reload/auth clearing; explicit clearing must end a car call.
                 val bearer = ServerVoiceSwitchTest.HostedVoiceFixture(true, reloadBearer = false)
@@ -144,21 +166,31 @@ class CarDialServerSwitchTest {
                         cookie.sessions.size == 1 &&
                             application.carDialVoiceOwner.state.value.status == CarDialStatus.CONNECTED
                     }
-                    assertTrue(
-                        cookie.setupMessages
-                            .single()
-                            .getJSONObject("context")
-                            .getString("text")
-                            .contains("Active service item: focused-item."),
-                    )
+                    // Context reads are advisory and may complete after the startup item baseline.
+                    awaitCondition {
+                        (cookie.setupMessages + cookie.messages).any { message ->
+                            val text = message.optJSONObject("context")?.optString("text").orEmpty()
+                            modelSections(text, requireNotNull(cookieID)).any { section ->
+                                section.optString("resource") == "fixture://context" &&
+                                    org.json
+                                        .JSONObject(
+                                            section.optString("content", "{}"),
+                                        ).optJSONObject("focus")
+                                        ?.optString("id") ==
+                                    "focused-item"
+                            }
+                        }
+                    }
                     val beforeFocusWithdrawal = cookie.messages.size
-                    cookie.withdrawServiceItems()
+                    cookie.withdrawServiceResources()
                     awaitCondition {
                         cookie.messages.drop(beforeFocusWithdrawal).any {
                             it.optString("kind") == "context.update" &&
                                 it.getJSONObject("context").getString("text").let { text ->
-                                    text.contains("No active service item is reported.") &&
-                                        !text.contains("Active service item: focused-item.")
+                                    modelSections(text, requireNotNull(cookieID)).any { section ->
+                                        section.optString("resource") == "fixture://context" &&
+                                            section.optString("status") == "absent"
+                                    }
                                 }
                         }
                     }
@@ -221,7 +253,7 @@ class CarDialServerSwitchTest {
                     assertEquals(1, cookie.sessions.size)
                     assertEquals(0, bearer.sessions.size)
                 } finally {
-                    cookie.withdrawServiceItems()
+                    cookie.withdrawServiceResources()
                     instrumentation.runOnMainSync { application.carDialVoiceOwner.cancel() }
                     instrumentation.waitForIdleSync()
                     instrumentation.runOnMainSync {

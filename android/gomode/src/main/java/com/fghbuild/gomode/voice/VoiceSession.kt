@@ -74,7 +74,9 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import org.webrtc.DataChannel
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
@@ -1263,7 +1265,7 @@ internal class VoiceSession(
                     }
                     val announcing = pendingNotifications.hasAlerts()
                     flushPendingNotifications()
-                    if (!announcing) sendUserMessage("Say exactly one word: Ready")
+                    if (!announcing) sendUserMessage("{\"event\":\"connected\"}")
                 }
 
                 MessageKind.SessionUsage -> {
@@ -1784,25 +1786,29 @@ internal fun VoiceState.withCommittedTranscript(message: TranscriptDelta): Voice
 
 /** Build a bounded recovery-only context without replaying unfinished transcript deltas. */
 internal fun buildNetworkRecoveryContext(transcript: List<TranscriptEntry>): String {
-    val prefix = "Network recovery context. Continue the existing conversation; do not treat this as a new user turn."
-    val availableTranscriptChars = MAX_RECOVERY_CONTEXT_CHARS - prefix.length - 24
-    val lines = mutableListOf<String>()
-    var lineChars = 0
-    transcript.asReversed().forEach { entry ->
-        if (!entry.final || entry.text.isBlank()) return@forEach
-        val line = "${entry.speaker.name.lowercase()}: ${entry.text.trim()}"
-        if (lineChars + line.length + (if (lines.isEmpty()) 0 else 1) > availableTranscriptChars) {
-            return@forEach
+    val finalized = transcript.filter { it.final && it.text.isNotBlank() }
+    val entries = mutableListOf<kotlinx.serialization.json.JsonElement>()
+
+    fun snapshot() =
+        buildJsonObject {
+            put("event", "transport_recovered")
+            put("transcript", kotlinx.serialization.json.JsonArray(entries.toList()))
+            put("omittedCount", finalized.size - entries.size)
         }
-        lines.add(0, line)
-        lineChars += line.length + (if (lines.size == 1) 0 else 1)
+    for (entry in finalized.asReversed()) {
+        entries.add(
+            0,
+            buildJsonObject {
+                put("speaker", entry.speaker.name.lowercase())
+                put("text", entry.text.trim())
+            },
+        )
+        if (snapshot().toString().length > MAX_RECOVERY_CONTEXT_CHARS) {
+            entries.removeAt(0)
+            break
+        }
     }
-    val transcriptSection =
-        lines
-            .takeIf { it.isNotEmpty() }
-            ?.joinToString(prefix = "\nFinalized transcript:\n", separator = "\n")
-            .orEmpty()
-    return "$prefix$transcriptSection"
+    return snapshot().toString()
 }
 
 internal fun gatewaySessionSetup(
@@ -1823,28 +1829,10 @@ internal fun gatewaySessionSetup(
     tools = tools,
     context =
         com.fghbuild.voicegateway.sdk.v2.Context(
-            systemInstruction = combineSystemInstructions(systemInstruction),
+            systemInstruction = systemInstruction,
             text = serviceContextText,
         ),
 )
-
-private const val GO_MODE_SYSTEM_INSTRUCTION =
-    "You are a terse voice assistant. After the voice session connects, greet the user once with only \"Ready\". " +
-        "Reply only to the current request in one or two short sentences unless the user explicitly asks for more " +
-        "detail. Speak quickly and omit background, explanations, and summaries that were not requested. " +
-        "For simple confirmations and acknowledgements, prefer only \"Okay\", \"Yes\", \"No\", or \"Done\". " +
-        "When the user's question can be answered completely with a number, reply with only the number. " +
-        "When the user asks for specific information, reply directly without forcing it into a complete sentence. " +
-        "Do not ask a follow-up or confirmation unless missing information makes the request impossible or " +
-        "safety-critical. Ask only for information required to proceed. Once enough information is available, " +
-        "perform the request without asking for confirmation. Do not volunteer ideas, next steps, related actions, " +
-        "or offers. Use the service MCP tools whenever they are useful after the user asks. " +
-        "Host instructions define which service item updates require a spoken notification and how to respond. " +
-        "Follow those instructions even when an update arrives only as context and the user has not asked for a " +
-        "response. Host-required notifications and any tools needed to prepare them take priority over instructions " +
-        "to stay silent, wait for a user request, or reply only to the current request. " +
-        "Otherwise, apart from the initial greeting, do not speak or invoke tools until the user asks, and do not " +
-        "verbally acknowledge or confirm receipt of service item updates."
 
 internal fun gatewayContextUpdate(
     text: String,
@@ -1873,11 +1861,6 @@ internal fun gatewayToolResult(
     name = name,
     result = result,
 )
-
-private fun combineSystemInstructions(hostInstruction: String): String {
-    val host = hostInstruction.trim()
-    return if (host.isEmpty()) GO_MODE_SYSTEM_INSTRUCTION else "$GO_MODE_SYSTEM_INSTRUCTION\n\n$host"
-}
 
 /**
  * Append a transcription chunk to the log.

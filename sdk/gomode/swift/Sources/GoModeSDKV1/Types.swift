@@ -160,6 +160,96 @@ public struct Settings: Codable {
     }
 }
 
+/// ResourceDependency routes host change-feed events without interpreting domain
+/// content. Each group contains at most 50 URIs. Empty aspects match any change.
+public struct ResourceDependency: Codable {
+    public let uris: [String]?
+    public let aspects: [String]?
+
+    private enum CodingKeys: String, CodingKey {
+        case uris
+        case aspects
+    }
+
+    public init(uris: [String]?, aspects: [String]? = nil) {
+        self.uris = uris
+        self.aspects = aspects
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.uris = try c.decode([String]?.self, forKey: .uris)
+        self.aspects = try c.decodeIfPresent([String].self, forKey: .aspects)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.uris, forKey: .uris)
+        try c.encodeIfPresent(self.aspects, forKey: .aspects)
+    }
+}
+
+/// ConversationContext orders one advertised model-context resource for one
+/// authenticated conversation. URI identifies the resource this update replaces.
+/// Only a read of that URI can establish
+/// a new epoch. Dependencies are private event routing, never model content.
+/// Content is the server-defined public resource text after a tool; resource reads
+/// omit it because their standard contents already carry the same text.
+public struct ConversationContext: Codable {
+    public let uri: String
+    public let epoch: String
+    public let version: Int
+    public let dependencies: [ResourceDependency]?
+    public let content: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case uri
+        case epoch
+        case version
+        case dependencies
+        case content
+    }
+
+    public init(uri: String, epoch: String, version: Int, dependencies: [ResourceDependency]?, content: String? = nil) {
+        self.uri = uri
+        self.epoch = epoch
+        self.version = version
+        self.dependencies = dependencies
+        self.content = content
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.uri = try c.decode(String.self, forKey: .uri)
+        self.epoch = try c.decode(String.self, forKey: .epoch)
+        self.version = try c.decode(Int.self, forKey: .version)
+        self.dependencies = try c.decode([ResourceDependency]?.self, forKey: .dependencies)
+        self.content = try c.decodeIfPresent(String.self, forKey: .content)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Self.CodingKeys.self)
+        try c.encode(self.uri, forKey: .uri)
+        try c.encode(self.epoch, forKey: .epoch)
+        try c.encode(self.version, forKey: .version)
+        try c.encode(self.dependencies, forKey: .dependencies)
+        try c.encodeIfPresent(self.content, forKey: .content)
+    }
+}
+
+/// ConversationResultMeta carries an authorized resource update after a tool.
+public struct ConversationResultMeta: Codable {
+    public let context: ConversationContext?
+
+    private enum CodingKeys: String, CodingKey {
+        case context = "com.fghbuild.gomode/context"
+    }
+
+    public init(context: ConversationContext? = nil) {
+        self.context = context
+    }
+}
+
 /// ErrorBody describes a Go Mode API error.
 public struct ErrorBody: Codable {
     public let code: String

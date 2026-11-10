@@ -61,6 +61,41 @@ class VoiceConversationTest {
     }
 
     @Test
+    fun oversizedSelectedIdentityIsOmittedOnlyFromModelData() =
+        runTest {
+            val repository = SettingsRepository(MemoryPreferences())
+            val url = "https://example.test/" + "資料😀\\\"".repeat(3000)
+            val id = repository.addService("Server", url)
+            repository.settings.first { it.activeServiceId == id }
+            val entry = ServiceShellSession(ServiceShellKey(id, url)) {}.also { authenticate(it, "identity") }
+            val catalog = ServiceCatalog(backgroundScope)
+            val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { mapOf(entry.key to entry) }
+            try {
+                owner.begin(false)
+                val text = owner.contextText()
+                assertTrue(text.length <= 13000)
+                val selected =
+                    Json
+                        .parseToJsonElement(
+                            text.lineSequence().first(),
+                        ).jsonObject
+                        .getValue("selectedServer")
+                assertEquals(
+                    "omitted",
+                    selected.jsonObject
+                        .getValue("status")
+                        .jsonPrimitive.content,
+                )
+                assertEquals(url, repository.settings.value.activeServiceURL)
+                assertTrue(text.lineSequence().all { Json.parseToJsonElement(it) is JsonObject })
+            } finally {
+                owner.finish()
+                catalog.close()
+                entry.close()
+            }
+        }
+
+    @Test
     fun frontendPreparationGatesNewStartsWhileRecoveryKeepsAnExistingConversation() =
         runTest {
             val repository = SettingsRepository(MemoryPreferences())

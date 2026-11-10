@@ -291,7 +291,7 @@ func (s *localStackSession) acceptClientMessage(ctx context.Context, data []byte
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("decode session.setup: %w", err)
 		}
-		if err := applySessionLanguage(&msg); err != nil {
+		if err := applySessionPolicy(&msg); err != nil {
 			return err
 		}
 		if s.directAudio {

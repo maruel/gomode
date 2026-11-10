@@ -260,11 +260,11 @@ func (s *negotiatedStackSession) acceptClientMessage(_ context.Context, data []b
 	if selected == nil {
 		return errors.New("selected speech combination is unavailable for this choice")
 	}
-	if err := applySessionLanguage(&setup); err != nil {
+	if err := applySessionPolicy(&setup); err != nil {
 		selected.releaseReference()
 		return err
 	}
-	// The backend applies language once when it accepts the original setup.
+	// Validation used a copy. The backend applies session policy once to the original setup.
 	active, err := selected.connect(s.ctx, s.id, s.sink, s.text)
 	if err != nil {
 		selected.releaseReference()

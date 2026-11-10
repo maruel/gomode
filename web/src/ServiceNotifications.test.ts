@@ -35,10 +35,19 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
   snapshot = JSON.stringify([alert("opening")]);
+  vi.spyOn(mcpClient, "listModelResources").mockImplementation(async () => ({
+    resources: [],
+    notifications: snapshot !== null,
+  }));
+  vi.spyOn(mcpClient, "readTextResource").mockImplementation(async (uri, signal, options) => {
+    const value = await read(uri, signal, options);
+    if (value === null) throw new Error("fixture absent");
+    return value;
+  });
   vi.spyOn(mcpClient, "resourceCapabilities").mockResolvedValue({ subscribe: true, listChanged: true });
   read = vi
     .spyOn(mcpClient, "readAdvertisedTextResource")
-    .mockImplementation(async (uri) => (uri === "gomode://items" ? null : snapshot));
+    .mockImplementation(async (uri) => (uri === "gomode://notifications" ? snapshot : null));
   vi.spyOn(mcpClient, "subscribeResources").mockImplementation((configuration, callback) => {
     options = configuration;
     changed = callback;
@@ -52,6 +61,120 @@ afterEach(() => {
 });
 
 // This workload deliberately uses the real resource discovery/read client.
+it("retires each discovered absence before gated MCP reads while independent quiet context progresses", async (t) => {
+  vi.restoreAllMocks();
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  for (const target of ["fixture://catalog", "fixture://context", "gomode://notifications"]) {
+    monitor?.close();
+    configureMcpClient("/mcp", "presence-boundary");
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let present = false;
+    let independent = false;
+    let unreadable = false;
+    let targetReads = 0;
+    const published: Array<{ text: string; generate: boolean }> = [];
+    const failures: unknown[] = [];
+    globalThis.fetch = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        method: string;
+        params: { uri?: string; _meta: { "openai/session": string } };
+      };
+      expect(body.params._meta["openai/session"]).toBe("presence-conversation");
+      let result: unknown;
+      if (body.method === "server/discover")
+        result = { capabilities: { resources: { subscribe: true, listChanged: true } } };
+      else if (body.method === "resources/list")
+        result = {
+          resources: ["fixture://catalog", "fixture://context", "gomode://notifications"]
+            .filter((uri) => uri !== target || present)
+            .map((uri) => ({ uri, _meta: { "com.fghbuild.gomode/modelContext": uri !== "gomode://notifications" } })),
+        };
+      else if (body.method === "resources/read") {
+        const uri = body.params.uri;
+        if (typeof uri !== "string") throw new Error("Resource read omitted its URI");
+        if (uri === target) {
+          targetReads++;
+          entered.resolve();
+          await release.promise;
+        }
+        const text =
+          uri === "fixture://catalog"
+            ? JSON.stringify({ items: [{ id: "one", title: independent ? "Independent update" : "Opening" }] })
+            : uri === "fixture://context"
+              ? JSON.stringify({
+                  epoch: "owner",
+                  version: independent ? 2 : 1,
+                  focus: { id: "one", reference: independent ? "Independent update" : "Opening" },
+                  resources: [],
+                })
+              : JSON.stringify(present && target === uri ? [alert("reappeared")] : []);
+        result = { contents: unreadable && uri === target ? [] : [{ uri, text }] };
+      } else throw new Error(`Unexpected MCP method: ${String(body.method)}`);
+      return new Response(JSON.stringify({ jsonrpc: "2.0", result }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    const source = (_configuration: McpSubscribeOptions, callback: (event: McpResourceNotification) => void) => {
+      changed = callback;
+      return { close: () => {} };
+    };
+    monitor = monitorServiceNotifications(
+      (text, generate) => published.push({ text, generate }),
+      (failure) => failures.push(failure),
+      { sessionID: "presence-conversation" },
+      source,
+    );
+    const status = () =>
+      published
+        .filter((entry) => !entry.generate)
+        .at(-1)!
+        .text.split("\n")
+        .map((line) => JSON.parse(line))
+        .find((section) => section.resource === target)?.status;
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(status()).toBe(target === "gomode://notifications" ? "absent" : undefined);
+      present = true;
+      changed({ listChanged: true });
+      await entered.promise;
+      independent = true;
+      changed({ uri: target === "fixture://context" ? "fixture://catalog" : "fixture://context" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(published.filter((entry) => !entry.generate).at(-1)!.text).toContain("Independent update");
+      expect(status()).toBe("unread");
+      expect(targetReads).toBe(1);
+      expect(published.every((entry) => !entry.generate)).toBe(true);
+      release.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(status()).toBe("known");
+      expect(published.filter((entry) => entry.generate)).toHaveLength(target === "gomode://notifications" ? 1 : 0);
+      // An item invalidation already dirties all readers; context coalesces one existing follow-up.
+      expect(targetReads).toBe(1);
+      t.diagnostic(
+        JSON.stringify({ resource: target, targetReads, wakeups: published.filter((entry) => entry.generate).length }),
+      );
+      expect(failures).toEqual([]);
+      unreadable = true;
+      changed({ uri: target });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(status()).toBe("error");
+      expect(failures).toHaveLength(1);
+      unreadable = false;
+      changed({ uri: target });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(status()).toBe("known");
+      expect(published.filter((entry) => entry.generate)).toHaveLength(target === "gomode://notifications" ? 1 : 0);
+    } finally {
+      monitor.close();
+      release.resolve();
+    }
+  }
+});
+
 // Only notification delivery is driven directly, so it reports RPC work rather
 // than timing an in-memory formatter. Diagnostics are a before/after baseline,
 // not assertions preserving today's redundant requests. Optimization budgets:
@@ -69,7 +192,9 @@ it("measures 2,000-node focus changes, missing resources, bursts, idle, and reco
     configureMcpClient("/mcp", "update-workload");
     let itemTitle = "Opening page";
     let alerts: ReturnType<typeof alert>[] = [];
-    const nodes = Array.from({ length: 2000 }, (_, i) => ({ uri: `mddb://workspaces/workspace/nodes/${i}` }));
+    const nodes: Array<{ uri: string; _meta?: Record<string, boolean> }> = Array.from({ length: 2000 }, (_, i) => ({
+      uri: `mddb://workspaces/workspace/nodes/${i}`,
+    }));
     let calls: Record<string, number> = {};
     let requestBytes = 0;
     let responseBytes = 0;
@@ -95,7 +220,7 @@ it("measures 2,000-node focus changes, missing resources, bursts, idle, and reco
           const resources = nodes.slice(start, start + 50);
           descriptors += resources.length;
           if (start === 0) {
-            resources.unshift({ uri: "gomode://items" });
+            resources.unshift({ uri: "fixture://catalog", _meta: { "com.fghbuild.gomode/modelContext": true } });
             if (advertisedAlerts) resources.unshift({ uri: "gomode://notifications" });
           }
           result = { resources, ...(start + 50 < nodes.length ? { nextCursor: String(start + 50) } : {}) };
@@ -103,9 +228,9 @@ it("measures 2,000-node focus changes, missing resources, bursts, idle, and reco
         }
         case "resources/read": {
           const uri = body.params.uri;
-          expect(["gomode://items", "gomode://notifications"]).toContain(uri);
+          expect(["fixture://catalog", "gomode://notifications"]).toContain(uri);
           const text =
-            uri === "gomode://items"
+            uri === "fixture://catalog"
               ? JSON.stringify({ items: [{ id: "selected", title: itemTitle }] })
               : JSON.stringify(alerts);
           result = { contents: [{ uri, text }] };
@@ -161,7 +286,7 @@ it("measures 2,000-node focus changes, missing resources, bursts, idle, and reco
     measure("idle-minute");
 
     itemTitle = "New selected page";
-    changed({ uri: "gomode://items" });
+    changed({ uri: "fixture://catalog" });
     await vi.advanceTimersByTimeAsync(0);
     expect(published.at(-1)?.text).toContain(itemTitle);
     expect(published.every((entry) => !entry.generate)).toBe(true);
@@ -189,7 +314,7 @@ it("provides a quiet baseline, announces new occurrences once, and replaces with
   await settle();
   expect(inject).toHaveBeenCalledOnce();
   expect(inject.mock.calls[0]![1]).toBe(false);
-  expect(inject.mock.calls[0]![0]).toContain("quiet context");
+  expect(inject.mock.calls[0]![0]).toContain('"new":false');
   expect(inject.mock.calls[0]![0]).toContain('"title":"Alert opening"');
   expect(options.resourceSubscriptions).toEqual(["gomode://notifications"]);
   options.onReady?.();
@@ -209,13 +334,43 @@ it("provides a quiet baseline, announces new occurrences once, and replaces with
   snapshot = "[]";
   changed({ listChanged: true });
   await settle();
-  expect(inject.mock.calls[3]![0]).toContain("No actionable notifications");
+  expect(inject.mock.calls[3]![0]).toContain('"notifications":[]');
   snapshot = JSON.stringify([alert("new", { body: "Updated text" })]);
   changed({ uri: "gomode://notifications" });
   await settle();
   expect(inject.mock.calls[4]![0]).toContain('"new":false');
   expect(inject.mock.calls[4]![0]).toContain("Updated text");
   expect(error).not.toHaveBeenCalled();
+});
+
+it("distinguishes verified alert withdrawal from a successful empty read and advisory faults", async () => {
+  const statuses = () =>
+    inject.mock.calls
+      .filter((call) => !call[1])
+      .map((call) =>
+        call[0]
+          .split("\n")
+          .map((line) => JSON.parse(line))
+          .find((section) => section.resource === "gomode://notifications"),
+      );
+  monitor = monitorServiceNotifications(inject, error);
+  await settle();
+  snapshot = null;
+  changed({ listChanged: true });
+  await settle();
+  expect(statuses().at(-1)).toEqual({ resource: "gomode://notifications", status: "absent" });
+  snapshot = "[]";
+  changed({ listChanged: true });
+  await settle();
+  expect(statuses().at(-1)).toMatchObject({ status: "known", data: { notifications: [] } });
+  read.mockImplementation(async (uri) => {
+    if (uri === "gomode://notifications") throw new Error("transport failed");
+    return null;
+  });
+  changed({ uri: "gomode://notifications" });
+  await settle();
+  expect(statuses().at(-1)).toMatchObject({ status: "error" });
+  expect(inject.mock.calls.every((call) => !call[1])).toBe(true);
 });
 
 it("rejects an entire malformed snapshot without consuming its occurrence IDs, then recovers", async () => {
@@ -234,10 +389,11 @@ it("rejects an entire malformed snapshot without consuming its occurrence IDs, t
     await settle();
   }
   expect(error).toHaveBeenCalledTimes(5);
-  expect(inject).toHaveBeenCalledOnce();
+  expect(inject.mock.calls.every(([, generate]) => !generate)).toBe(true);
+  expect(inject.mock.calls.at(-1)?.[0]).toContain('"status":"error"');
   snapshot = JSON.stringify([alert("one")]);
   await vi.advanceTimersByTimeAsync(2000);
-  expect(inject.mock.calls[2]![0]).toContain('"new":true');
+  expect(inject.mock.calls.at(-1)![0]).toContain('"new":true');
 });
 
 it("filters expired alerts and removes context when a live alert expires", async () => {
@@ -250,26 +406,26 @@ it("filters expired alerts and removes context when a live alert expires", async
   expect(inject.mock.calls[0]![0]).toContain("Alert live");
   expect(inject.mock.calls[0]![0]).not.toContain("Alert expired");
   await vi.advanceTimersByTimeAsync(1000);
-  expect(inject.mock.calls[1]![0]).toContain("No actionable notifications");
+  expect(inject.mock.calls[1]![0]).toContain('"notifications":[]');
 });
 
 it("coalesces concurrent invalidations and discards pending reads after close", async () => {
   monitor = monitorServiceNotifications(inject, error);
   await settle();
   const pending = deferred<string | null>();
-  read.mockResolvedValueOnce(null).mockReturnValueOnce(pending.promise);
+  read.mockReturnValueOnce(pending.promise);
   changed({ uri: "gomode://notifications" });
   changed({ uri: "gomode://notifications" });
   changed({ uri: "gomode://notifications" });
-  expect(read).toHaveBeenCalledTimes(4);
+  expect(read).toHaveBeenCalledTimes(2);
   snapshot = JSON.stringify([alert("latest")]);
   pending.resolve("[]");
   await settle();
-  expect(read).toHaveBeenCalledTimes(6);
+  expect(read).toHaveBeenCalledTimes(3);
   expect(inject.mock.calls.at(-1)![0]).toContain("Alert latest");
 
   const retired = deferred<string | null>();
-  read.mockResolvedValueOnce(null).mockReturnValueOnce(retired.promise);
+  read.mockReturnValueOnce(retired.promise);
   changed({ uri: "gomode://notifications" });
   monitor.close();
   inject.mockClear();
@@ -301,7 +457,10 @@ it("skips unsupported resources and reads static resources without subscribing",
   await settle();
   expect(read).not.toHaveBeenCalled();
   expect(mcpClient.subscribeResources).not.toHaveBeenCalled();
-  expect(inject.mock.calls).toEqual([["No active service item.", false]]);
+  expect(inject.mock.calls).toHaveLength(1);
+  expect(inject.mock.calls[0]![0].split("\n").map((line) => JSON.parse(line))).toEqual([
+    { resource: "gomode://notifications", status: "absent" },
+  ]);
   monitor.close();
   inject.mockClear();
   vi.mocked(mcpClient.resourceCapabilities).mockResolvedValueOnce({});
@@ -312,21 +471,28 @@ it("skips unsupported resources and reads static resources without subscribing",
 });
 
 it("delivers reference-only changes quietly before waking for a new alert", async () => {
+  vi.mocked(mcpClient.listModelResources).mockResolvedValue({
+    resources: [{ uri: "fixture://catalog", name: "catalog" }],
+    notifications: true,
+  });
   let items = JSON.stringify({ items: [{ id: "two", title: "Build", reference: "Task #2", state: "running" }] });
-  read.mockImplementation(async (uri) => (uri === "gomode://items" ? items : snapshot));
+  read.mockImplementation(async (uri) =>
+    uri === "fixture://catalog" ? items : uri === "gomode://notifications" ? snapshot : null,
+  );
   monitor = monitorServiceNotifications(inject, error);
   await settle();
-  expect(options.resourceSubscriptions).toEqual(["gomode://items", "gomode://notifications"]);
+  expect(options.resourceSubscriptions).toEqual(["fixture://catalog", "gomode://notifications"]);
   inject.mockClear();
   items = JSON.stringify({ items: [{ id: "two", title: "Build", reference: "Task #1", state: "running" }] });
   snapshot = JSON.stringify([alert("new", { itemId: "two" })]);
-  changed({ uri: "gomode://items" });
+  changed({ uri: "fixture://catalog" });
+  changed({ uri: "gomode://notifications" });
   await settle();
   expect(inject.mock.calls).toEqual([
-    [expect.stringContaining("- Task #1: Build [two] (running)"), false],
+    [expect.stringContaining("Task #1"), false],
     [expect.stringContaining('"new":true,"title":"Alert new"'), true],
   ]);
-  expect(inject.mock.calls[0]![0]).toContain("quiet context");
+  expect(inject.mock.calls[0]![0]).toContain('"new":false');
   expect(inject.mock.calls[1]![0]).not.toContain("replaces the previous");
   expect(inject.mock.calls[1]![0]).toContain('"id":"new","itemId":"two"');
   options.onReady?.();
@@ -335,18 +501,44 @@ it("delivers reference-only changes quietly before waking for a new alert", asyn
 });
 
 it("publishes an explicitly replacing overview after removing an item", async () => {
+  vi.mocked(mcpClient.listModelResources).mockResolvedValue({
+    resources: [{ uri: "fixture://catalog", name: "catalog" }],
+    notifications: true,
+  });
   let items = JSON.stringify({
     items: [
       { id: "one", title: "Alpha" },
       { id: "two", title: "Beta" },
     ],
   });
-  read.mockImplementation(async (uri) => (uri === "gomode://items" ? items : snapshot));
+  read.mockImplementation(async (uri) =>
+    uri === "fixture://catalog" ? items : uri === "gomode://notifications" ? snapshot : null,
+  );
   monitor = monitorServiceNotifications(inject, error);
   await settle();
   items = JSON.stringify({ items: [{ id: "two", title: "Beta" }] });
-  changed({ uri: "gomode://items" });
+  changed({ uri: "fixture://catalog" });
   await settle();
-  expect(inject.mock.calls.at(-1)![0]).toContain("replaces the previous visible item snapshot");
+  expect(inject.mock.calls.at(-1)![0]).toContain('"status":"known"');
   expect(inject.mock.calls.at(-1)![0]).not.toContain("Alpha");
+});
+
+it("preserves supplementary notification title/body text at code-unit bounds", async () => {
+  monitor = monitorServiceNotifications(inject, error, {});
+  await settle();
+  snapshot = JSON.stringify([
+    alert("unicode", { title: "t".repeat(255) + "😀suffix", body: "b".repeat(1999) + "𠮷suffix" }),
+  ]);
+  changed({ uri: "gomode://notifications" });
+  await settle();
+  const update = inject.mock.calls.find(([, generate]) => generate);
+  if (!update) throw new Error("new notification did not wake the conversation");
+  const value = JSON.parse(update[0]);
+  expect(value.data.notifications[0]).toMatchObject({
+    title: "t".repeat(255),
+    body: "b".repeat(1999),
+    truncated: true,
+    new: true,
+  });
+  expect(new TextDecoder().decode(new TextEncoder().encode(update[0]))).toBe(update[0]);
 });

@@ -1,4 +1,4 @@
-// Provider-neutral voice gateway message validation, language policy and tool schemas.
+// Provider-neutral voice message validation, shared session policy, language and tool schemas.
 
 package voicertc
 
@@ -11,6 +11,7 @@ import (
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/base"
 	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
+	"github.com/maruel/gomode/voicegateway/policy"
 	"golang.org/x/text/language"
 )
 
@@ -70,7 +71,7 @@ func validateNativeSpeech(msg *voicev2.SessionSetup) error {
 	return nil
 }
 
-func applySessionLanguage(msg *voicev2.SessionSetup) error {
+func applySessionPolicy(msg *voicev2.SessionSetup) error {
 	tag := msg.Voice.Language
 	if tag == "" {
 		tag = "en-US"
@@ -89,7 +90,7 @@ func applySessionLanguage(msg *voicev2.SessionSetup) error {
 	// instruction selects its output language; transcription has a separate hint.
 	// Checked against https://ai.google.dev/gemini-api/docs/live-api/capabilities
 	// and googleapis/go-genai 5fed9374ce1a (types.go, live.go, live_converters.go).
-	msg.Context.SystemInstruction += "\nSpeak in the selected language: " + msg.Voice.Language + "."
+	msg.Context.SystemInstruction = msg.Context.SystemInstruction + "\n" + strings.ReplaceAll(policy.Instructions, "{{language}}", msg.Voice.Language)
 	return nil
 }
 

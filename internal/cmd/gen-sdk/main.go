@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/maruel/gomode/oauth"
 	voicev1 "github.com/maruel/gomode/voicegateway/api/v1"
 	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
+	"github.com/maruel/gomode/voicegateway/policy"
 )
 
 func main() {
@@ -45,5 +47,19 @@ func run() error {
 			return err
 		}
 	}
-	return nil
+	const destination = "android/gomode/src/main/assets/voice-policy.txt"
+	if *check {
+		data, err := os.ReadFile(destination)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(data, []byte(policy.Instructions)) {
+			return fmt.Errorf("%s is stale; run make generate-sdks", destination)
+		}
+		return nil
+	}
+	if err := os.MkdirAll("android/gomode/src/main/assets", 0o750); err != nil {
+		return err
+	}
+	return os.WriteFile(destination, []byte(policy.Instructions), 0o600)
 }

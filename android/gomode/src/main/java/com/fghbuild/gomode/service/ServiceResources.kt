@@ -1,230 +1,124 @@
-// Service resources provide bounded native item context and advisory conversation focus.
+// Discovers server-advertised model resources and bounds their independent opaque outcomes.
 package com.fghbuild.gomode.service
 
 import com.fghbuild.mcp.sdk.v1.ResourceDescriptor
 import com.fghbuild.mcp.sdk.v1.ResourcesReadResult
 import kotlinx.coroutines.CancellationException
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.doubleOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 
 data class ServiceMonitoringPlan(
-    val itemsResourceURI: String,
+    val modelResources: List<ResourceDescriptor>,
     val notificationResourceURI: String? = null,
-    val resourceSubscriptions: List<String> = listOfNotNull(itemsResourceURI, notificationResourceURI),
-    val resourcesListChanged: Boolean = true,
 ) {
     val resourceURIs: List<String>
-        get() = listOfNotNull(itemsResourceURI, notificationResourceURI)
+        get() = modelResources.map { it.uri } + listOfNotNull(notificationResourceURI)
 }
 
 data class ServiceMonitoringSnapshot(
-    val items: List<ServiceItemSummary>,
-    val moreItemsHint: String? = null,
-    val omittedItemCount: Int = 0,
-    val activeItem: ActiveServiceItem? = null,
+    // Null is unread; failure is a fault. Discovery owns absence and retirement.
+    val resources: Map<String, Result<ServiceResourceRead?>?>,
 ) {
     val voiceContext: String
         get() {
-            // Android owns this bounded session baseline; see the canonical contract in
-            // gomode/docs/ANDROID_SHELL.md#service-item-voice-context-ownership.
-            if (items.isEmpty() && omittedItemCount == 0) return formatVoiceContext(0)
-            // Keep these setup-context limits and formatting aligned with the browser's ServiceItems.ts.
-            val limit = minOf(items.size, MAX_INITIAL_SERVICE_ITEMS)
-            var included = 0
-            for (count in 1..limit) {
-                if (formatVoiceContext(count).length > MAX_INITIAL_SERVICE_CONTEXT_CHARS) break
-                included = count
+            var remaining = MODEL_CONTEXT_BUDGET - 64
+            var omitted = 0
+            val sections = mutableListOf<String>()
+            for ((uri, read) in resources) {
+                val value = read?.getOrNull()
+                val text =
+                    when {
+                        read == null -> modelResourceStatus(uri, "unread")
+                        read.isFailure -> modelResourceStatus(uri, "error")
+                        value == null -> modelResourceStatus(uri, "absent")
+                        else -> modelResourceContext(uri, resourceText(value.result, uri), MODEL_RESOURCE_BUDGET)
+                    }
+                val section = if (text.length + 1 <= remaining) text else modelResourceStatus(uri, "omitted")
+                if (section.length + 1 <= remaining) {
+                    sections += section
+                    remaining -= section.length + 1
+                } else {
+                    omitted++
+                }
             }
-            return formatVoiceContext(included)
-        }
-
-    private fun formatVoiceContext(count: Int): String {
-        val focus = activeItem?.let { "${it.voiceContext}\n" }.orEmpty()
-        if (items.isEmpty() && omittedItemCount == 0) return "${focus}No visible service items."
-        val lines =
-            items
-                .take(count)
-                .map { item ->
-                    val reference =
-                        item.reference
-                            ?.takeIf { it.isNotEmpty() }
-                            ?.let { "$it: " }
-                            .orEmpty()
-                    val state =
-                        item.state
-                            .takeIf { it.isNotEmpty() }
-                            ?.let {
-                                " ($it${if (item.needsAttention) ", needs attention" else ""})"
-                            }.orEmpty()
-                    "- $reference${item.title}$state"
-                }.toMutableList()
-        val omitted = omittedItemCount + items.size - count
-        if (omitted > 0) {
-            val hint = moreItemsHint?.takeIf { it.isNotEmpty() }?.let { " $it" }.orEmpty()
-            lines += "- … $omitted more items omitted.$hint"
-        }
-        return "${focus}Current service items:\n${lines.joinToString("\n")}"
-    }
-}
-
-data class ActiveServiceItem(
-    val id: String,
-    val reference: String?,
-) {
-    val voiceContext: String
-        get() {
-            val label = reference?.takeIf { it.isNotEmpty() }?.let { "${it.take(512)} ($id)" } ?: id
-            return "Active service item: $label."
+            if (omitted > 0) {
+                sections +=
+                    kotlinx.serialization.json
+                        .buildJsonObject { put("omittedResourceCount", omitted) }
+                        .toString()
+            }
+            return sections.joinToString("\n")
         }
 }
 
-data class ServiceItemSummary(
-    val id: String,
-    val reference: String? = null,
-    val title: String,
-    val state: String,
-    val needsAttention: Boolean,
-)
-
-fun serviceMonitoringPlan(resources: List<ResourceDescriptor>): ServiceMonitoringPlan? {
-    val itemsResource = resources.firstOrNull { it.uri == GOMODE_ITEMS_RESOURCE_URI } ?: return null
-    if (!isJSONResource(itemsResource)) return null
-    val notificationResource = resources.firstOrNull { it.uri == GOMODE_NOTIFICATIONS_RESOURCE_URI }
-    if (notificationResource != null && !isJSONResource(notificationResource)) return null
-    return ServiceMonitoringPlan(
-        itemsResourceURI = itemsResource.uri,
-        notificationResourceURI = notificationResource?.uri,
-    )
-}
-
-fun serviceMonitoringSnapshot(
-    readResults: Map<String, ResourcesReadResult>,
-    plan: ServiceMonitoringPlan,
-): ServiceMonitoringSnapshot {
-    val root = Json.parseToJsonElement(resourceText(readResults, plan.itemsResourceURI))
-    require(root is JsonObject) { "resource ${plan.itemsResourceURI} must be a JSON object" }
-    val items =
-        root["items"] as? JsonArray
-            ?: throw IllegalArgumentException("resource ${plan.itemsResourceURI} is missing items array")
-    val omittedItemCount =
-        root["omittedCount"]?.let { value ->
-            value.jsonPrimitive.intOrNull
-                ?: throw IllegalArgumentException("resource ${plan.itemsResourceURI} has a non-integer omittedCount")
-        } ?: 0
-    require(omittedItemCount >= 0) { "resource ${plan.itemsResourceURI} has a negative omittedCount" }
-    val summaries =
-        items.mapIndexed { index, element ->
-            val item =
-                element as? JsonObject
-                    ?: throw IllegalArgumentException(
-                        "resource ${plan.itemsResourceURI} item $index must be an object",
-                    )
-            ServiceItemSummary(
-                id = item.requiredString("id", plan.itemsResourceURI, index),
-                reference = item.optionalString("reference"),
-                title = item.requiredString("title", plan.itemsResourceURI, index),
-                state = item.optionalString("state").orEmpty(),
-                needsAttention = item["needsAttention"]?.jsonPrimitive?.booleanOrNull ?: false,
-            )
+fun serviceMonitoringPlan(resources: List<ResourceDescriptor>): ServiceMonitoringPlan {
+    val models =
+        resources.filter { resource ->
+            val mark = resource._meta?.get(MODEL_CONTEXT_META_KEY) as? JsonPrimitive
+            mark != null && !mark.isString && mark.booleanOrNull == true
         }
-    return ServiceMonitoringSnapshot(
-        items = summaries,
-        activeItem = activeServiceItem(root, items, summaries),
-        moreItemsHint = root["moreItemsHint"]?.jsonPrimitive?.contentOrNull?.take(MAX_MORE_ITEMS_HINT_CHARS),
-        omittedItemCount = omittedItemCount,
-    )
+    require(models.size <= MAX_MODEL_RESOURCES) { "Too many model context resources" }
+    require(
+        models.all { it.uri.isNotEmpty() && it.uri.length <= 1024 } &&
+            models.map { it.uri }.distinct().size == models.size,
+    ) { "Invalid model resource identities" }
+    val alerts = resources.firstOrNull { it.uri == GOMODE_NOTIFICATIONS_RESOURCE_URI }
+    require(alerts?.mimeType == null || alerts.mimeType == "application/json") { "Invalid notifications resource type" }
+    return ServiceMonitoringPlan(modelResources = models, notificationResourceURI = alerts?.uri)
 }
 
-private fun activeServiceItem(
-    root: JsonObject,
-    source: JsonArray,
-    items: List<ServiceItemSummary>,
-): ActiveServiceItem? {
-    val flags = source.map { (it as JsonObject)["active"] }
-    if (flags.any { it != null && (it !is JsonPrimitive || it.isString || it.booleanOrNull == null) }) return null
-    val identities =
-        source.map {
-            ((it as JsonObject)["id"] as? JsonPrimitive)?.takeIf { value -> value.isString }?.contentOrNull
-        }
-    val marked = identities.filterIndexed { index, _ -> (flags[index] as? JsonPrimitive)?.booleanOrNull == true }
-    if (marked.size > 1) return null
-    val rawNumber = root["activeTaskNumber"]
-    val number = (rawNumber as? JsonPrimitive)?.takeIf { !it.isString }?.doubleOrNull
-    if (rawNumber != null && (number == null || number <= 0 || number > 9007199254740991 || number % 1 != 0.0)) {
-        return null
-    }
-    val rawID = root["activeTaskId"]
-    if (rawID == null && rawNumber != null) return null
-    val id =
-        if (rawID == null) {
-            marked.firstOrNull()
-        } else {
-            (rawID as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
-        } ?: return null
-    if (id.isBlank() || id.length > 512 || marked.any { it != id }) return null
-    val matches = items.filterIndexed { index, _ -> identities[index] == id }
-    if (matches.size > 1) return null
-    val reference = matches.firstOrNull()?.reference?.takeIf { it.isNotEmpty() } ?: number?.let { "#${it.toLong()}" }
-    return ActiveServiceItem(id, reference)
-}
-
-suspend fun readInitialServiceContext(
-    client: ServiceResourceClient,
-    sessionID: String? = null,
-): String =
+@Suppress("TooGenericExceptionCaught") // Model context is advisory; cancellation still propagates.
+suspend fun readInitialServiceContext(client: ServiceResourceClient, sessionID: String? = null): String =
     try {
         val plan = serviceMonitoringPlan(client.listResources(sessionID))
-        if (plan == null) {
-            "No visible service items."
-        } else {
-            val items = client.readResource(plan.itemsResourceURI, sessionID)
-            serviceMonitoringSnapshot(mapOf(plan.itemsResourceURI to items), plan).voiceContext
+        coroutineScope {
+            ServiceMonitoringSnapshot(
+                plan.modelResources
+                    .map { resource ->
+                        async {
+                            val read =
+                                try {
+                                    Result.success(
+                                        client
+                                            .readResource(
+                                                resource.uri,
+                                                sessionID,
+                                            ).also { resourceText(it.result, resource.uri) },
+                                    )
+                                } catch (
+                                    error: CancellationException,
+                                ) {
+                                    throw error
+                                } catch (error: Exception) {
+                                    Result.failure(error)
+                                }
+                            resource.uri to read
+                        }
+                    }.awaitAll()
+                    .toMap(),
+            ).voiceContext
         }
-    } catch (e: CancellationException) {
-        throw e
+    } catch (error: CancellationException) {
+        throw error
     } catch (_: Exception) {
-        // Service context is advisory: resource failures and version skew must
-        // not prevent the otherwise independent voice transport from starting.
-        "No visible service items."
+        "{\"status\":\"error\"}"
     }
 
-private fun isJSONResource(resource: ResourceDescriptor): Boolean =
-    resource.mimeType == null || resource.mimeType == JSON_MIME_TYPE
-
-private fun resourceText(
-    readResults: Map<String, ResourcesReadResult>,
+internal fun resourceText(
+    readResult: ResourcesReadResult,
     uri: String,
 ): String {
-    val readResult = readResults[uri] ?: throw IllegalArgumentException("resource read result is missing $uri")
     val content =
         readResult.contents.orEmpty().firstOrNull { it.uri == uri }
             ?: throw IllegalArgumentException("resource read result is missing $uri")
-    require(content.mimeType == null || content.mimeType == JSON_MIME_TYPE) {
-        "resource $uri must be JSON, got ${content.mimeType.orEmpty()}"
-    }
     return content.text ?: throw IllegalArgumentException("resource $uri is missing text content")
 }
 
-private fun JsonObject.requiredString(
-    field: String,
-    uri: String,
-    index: Int,
-): String =
-    optionalString(field)?.takeIf { it.isNotBlank() }
-        ?: throw IllegalArgumentException("resource $uri item $index is missing $field")
-
-private fun JsonObject.optionalString(field: String): String? = this[field]?.jsonPrimitive?.contentOrNull
-
-internal const val GOMODE_ITEMS_RESOURCE_URI = "gomode://items"
 internal const val GOMODE_NOTIFICATIONS_RESOURCE_URI = "gomode://notifications"
-private const val JSON_MIME_TYPE = "application/json"
-private const val MAX_INITIAL_SERVICE_CONTEXT_CHARS = 4000
-private const val MAX_INITIAL_SERVICE_ITEMS = 20
-private const val MAX_MORE_ITEMS_HINT_CHARS = 512
+
+internal fun unreadServiceContext(resources: Set<String>?): String =
+    resources?.joinToString("\n") { uri -> modelResourceStatus(uri, "unread") } ?: "{\"status\":\"unread\"}"

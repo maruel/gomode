@@ -26,9 +26,10 @@ import { FakeRecognition, fakeSynthesis, installBrowserSpeech } from "../tests/b
 
 // MCP calls are spied on; gateway signaling is exercised through fetch.
 const mcpMocks = {
+  mcpListModelResources: vi.spyOn(mcpClient, "listModelResources"),
   mcpCallTool: vi.spyOn(mcpClient, "callTool"),
   mcpListTools: vi.spyOn(mcpClient, "listTools"),
-  mcpReadAdvertisedTextResource: vi.spyOn(mcpClient, "readAdvertisedTextResource"),
+  mcpReadTextResource: vi.spyOn(mcpClient, "readTextResource"),
   mcpServerInstructions: vi.spyOn(mcpClient, "serverInstructions"),
 };
 import {
@@ -273,8 +274,15 @@ beforeEach(() => {
   mcpMocks.mcpCallTool.mockReset();
   mcpMocks.mcpListTools.mockReset();
   mcpMocks.mcpListTools.mockResolvedValue([]);
-  mcpMocks.mcpReadAdvertisedTextResource.mockReset();
-  mcpMocks.mcpReadAdvertisedTextResource.mockResolvedValue('{"items":[]}');
+  mcpMocks.mcpListModelResources.mockResolvedValue({
+    resources: [
+      { uri: "fixture://context", name: "context" },
+      { uri: "fixture://catalog", name: "catalog" },
+    ],
+    notifications: false,
+  });
+  mcpMocks.mcpReadTextResource.mockReset();
+  mcpMocks.mcpReadTextResource.mockResolvedValue('{"items":[]}');
   mcpMocks.mcpServerInstructions.mockReset();
   mcpMocks.mcpServerInstructions.mockResolvedValue("instructions");
   vi.stubGlobal("RTCPeerConnection", FakePeerConnection as unknown as typeof RTCPeerConnection);
@@ -2552,7 +2560,14 @@ describe("VoiceSession", () => {
   it("sends an MCP result through its originating voice connection", async () => {
     mcpMocks.mcpCallTool.mockResolvedValue({
       structuredContent: { answer: 42 },
-      _meta: { "example.org/private": { dependency: "host://one" } },
+      _meta: {
+        "com.fghbuild.gomode/context": {
+          epoch: "server",
+          version: 4,
+          focus: null,
+          resources: [{ uri: "host://secret", state: "changed", dependencies: [{ uri: "host://secret" }] }],
+        },
+      },
     });
     const session = new VoiceSession();
     await session.connect();
@@ -2600,7 +2615,7 @@ describe("VoiceSession", () => {
     dispatchToolCall(FakePeerConnection.dataChannels[0], "frontend-first", "select_item");
     await vi.waitFor(() => expect(frontend).toHaveBeenCalledOnce());
     expect(frontend.mock.calls[0]?.[1].sessionID).toBe(firstID);
-    expect(mcpMocks.mcpReadAdvertisedTextResource.mock.calls[0]?.[2]?.sessionID).toBe(firstID);
+    expect(mcpMocks.mcpReadTextResource.mock.calls[0]?.[2]?.sessionID).toBe(firstID);
     expect(firstID).toMatch(/^[0-9a-f]{32}$/);
     expect(mcpMocks.mcpCallTool.mock.calls[0]?.[2]?.locale).toBe("fr-CA");
     expect(scope.contextPublication()).toEqual({ failure: "request", pending: false });
@@ -2611,7 +2626,7 @@ describe("VoiceSession", () => {
       triggerIceState("failed");
       await vi.advanceTimersByTimeAsync(0);
       expect(scope.contextPublication()).toEqual({ failure: "request", pending: true });
-      expect(mcpMocks.mcpReadAdvertisedTextResource).toHaveBeenCalledOnce();
+      expect(mcpMocks.mcpReadTextResource).toHaveBeenCalledTimes(2);
       reconnect.resolve();
       await vi.advanceTimersByTimeAsync(0);
       await vi.waitFor(() => expect(offerRequests).toHaveLength(2));
@@ -2622,7 +2637,7 @@ describe("VoiceSession", () => {
       dispatchToolCall(FakePeerConnection.dataChannels[1], "frontend-recovered", "select_item");
       await vi.waitFor(() => expect(frontend).toHaveBeenCalledTimes(2));
       expect(frontend.mock.calls[1]?.[1].sessionID).toBe(firstID);
-      expect(mcpMocks.mcpReadAdvertisedTextResource.mock.calls[1]?.[2]?.sessionID).toBe(firstID);
+      expect(mcpMocks.mcpReadTextResource.mock.calls[1]?.[2]?.sessionID).toBe(firstID);
       session.disconnect();
       expect(retireSession).toHaveBeenCalledWith(firstID);
       expect(scope.contextPublication()).toEqual({ failure: null, pending: false });
@@ -3316,10 +3331,10 @@ describe("VoiceSession", () => {
       expect(prepare.mock.calls[0]?.[0]).toBe(session.conversationID);
       expect(mcpMocks.mcpServerInstructions).not.toHaveBeenCalled();
       expect(mcpMocks.mcpListTools).not.toHaveBeenCalled();
-      expect(mcpMocks.mcpReadAdvertisedTextResource).not.toHaveBeenCalled();
+      expect(mcpMocks.mcpReadTextResource).not.toHaveBeenCalled();
       gate.resolve();
       await connecting;
-      expect(mcpMocks.mcpReadAdvertisedTextResource).toHaveBeenCalledWith("gomode://items", undefined, {
+      expect(mcpMocks.mcpReadTextResource).toHaveBeenCalledWith("fixture://catalog", undefined, {
         sessionID: session.conversationID,
       });
     } finally {
@@ -3344,10 +3359,10 @@ describe("VoiceSession", () => {
       await session.connect();
       expect(replacement).toHaveBeenCalledOnce();
       expect(session.conversationID).not.toBe(firstID);
-      const reads = mcpMocks.mcpReadAdvertisedTextResource.mock.calls.length;
+      const reads = mcpMocks.mcpReadTextResource.mock.calls.length;
       gate.resolve();
       await old;
-      expect(mcpMocks.mcpReadAdvertisedTextResource).toHaveBeenCalledTimes(reads);
+      expect(mcpMocks.mcpReadTextResource).toHaveBeenCalledTimes(reads);
       expect(replacement).toHaveBeenCalledOnce();
     } finally {
       gate.resolve();
@@ -3366,10 +3381,10 @@ describe("VoiceSession", () => {
         retireSession: vi.fn(),
       });
       await session.connect();
-      expect(mcpMocks.mcpReadAdvertisedTextResource).toHaveBeenCalledOnce();
+      expect(mcpMocks.mcpReadTextResource).toHaveBeenCalledTimes(2);
       expect(warn).not.toHaveBeenCalled();
       session.disconnect();
-      const reads = mcpMocks.mcpReadAdvertisedTextResource.mock.calls.length;
+      const reads = mcpMocks.mcpReadTextResource.mock.calls.length;
       configureVoiceGateway("/", null, undefined, undefined, {
         prepareSession: async () => {
           throw new DOMException("Owner retired", "AbortError");
@@ -3377,7 +3392,7 @@ describe("VoiceSession", () => {
         retireSession: vi.fn(),
       });
       await session.connect();
-      expect(mcpMocks.mcpReadAdvertisedTextResource).toHaveBeenCalledTimes(reads);
+      expect(mcpMocks.mcpReadTextResource).toHaveBeenCalledTimes(reads);
       expect(session.state.connectStatus).toBeNull();
     } finally {
       session.disconnect();
@@ -3386,7 +3401,7 @@ describe("VoiceSession", () => {
   });
 
   it("includes the current bounded service items in session setup", async () => {
-    mcpMocks.mcpReadAdvertisedTextResource.mockResolvedValue(
+    mcpMocks.mcpReadTextResource.mockResolvedValue(
       '{"items":[{"id":"1","reference":"Item #1","title":"Build feature","state":"running","needsAttention":false,"active":true}]}',
     );
     const session = new VoiceSession();
@@ -3397,19 +3412,12 @@ describe("VoiceSession", () => {
 
     const sent = FakePeerConnection.dataChannels[0]?.send.mock.calls[0]?.[0];
     const setup = JSON.parse(sent as string);
-    expect(setup).toMatchObject({
-      kind: "session.setup",
-      includeReasoning: true,
-      context: {
-        text: "Active service item: Item #1 (1).\nCurrent service items:\n- Item #1: Build feature (running)",
-      },
-    });
-    expect(setup.context.systemInstruction).toContain('only "Ready"');
-    expect(setup.context.systemInstruction).toContain('"Done"');
-    expect(setup.context.systemInstruction).toContain("answered completely with a number");
+    expect(setup).toMatchObject({ kind: "session.setup", includeReasoning: true });
+    const sections = setup.context.text.split("\n").map((line: string) => JSON.parse(line));
+    expect(sections[0]).toMatchObject({ resource: "fixture://context", status: "known" });
+    expect(JSON.parse(sections[1].content).items[0]).toMatchObject({ title: "Build feature", state: "running" });
+    expect(setup.context.systemInstruction).toBe("instructions");
     expect(setup.voice.language).toBe("en-US");
-    expect(setup.context.systemInstruction).toContain("service item updates");
-    expect(setup.context.systemInstruction).toMatch(/\n\ninstructions$/);
   });
 
   it("leaves voice selection to the provider unless a named preference is saved", async () => {
@@ -3556,7 +3564,35 @@ describe("VoiceSession", () => {
     expect(session.state.languageTag).toBe("en-US");
   });
 
-  it("uses the Go Mode instruction when the host has no instructions", async () => {
+  it("passes non-English server instructions and content without introducing client policy", async () => {
+    const instructions = "Décris uniquement cette bibliothèque. 回答は資料に基づく。";
+    mcpMocks.mcpServerInstructions.mockResolvedValueOnce(instructions);
+    mcpMocks.mcpReadTextResource.mockImplementation(async (uri: string) =>
+      uri === "fixture://catalog"
+        ? JSON.stringify({ items: [{ id: "livre", title: "L’été à 東京", reference: "Livre 2" }] })
+        : "Aucune sélection.",
+    );
+    const chime = { prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() };
+    const session = new VoiceSession(chime);
+    session.selectLanguage("es-MX");
+    await session.connect();
+    const channel = FakePeerConnection.dataChannels[0];
+    channel?.onopen?.();
+    const setup = JSON.parse(channel?.send.mock.calls[0]?.[0] as string);
+    expect(setup.context.systemInstruction).toBe(instructions);
+    expect(setup.voice.language).toBe("es-MX");
+    const sections = setup.context.text.split("\n").map((line: string) => JSON.parse(line));
+    expect(JSON.parse(sections[1].content).items[0]).toMatchObject({ id: "livre", title: "L’été à 東京" });
+    channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindSessionReady }) }));
+    const connected = channel?.send.mock.calls
+      .map(([text]) => JSON.parse(text as string))
+      .find((value) => value.kind === "user.message");
+    expect(JSON.parse(connected.text)).toEqual({ event: "connected" });
+    expect(chime.playConnected).toHaveBeenCalledOnce();
+    session.disconnect();
+  });
+
+  it("leaves common policy to the gateway when the host has no instructions", async () => {
     mcpMocks.mcpServerInstructions.mockResolvedValueOnce("");
     const session = new VoiceSession();
 
@@ -3565,12 +3601,11 @@ describe("VoiceSession", () => {
 
     const sent = FakePeerConnection.dataChannels[0]?.send.mock.calls[0]?.[0];
     const instruction = JSON.parse(sent as string).context.systemInstruction;
-    expect(instruction).not.toBe("");
-    expect(instruction).not.toContain("\n\n");
+    expect(instruction).toBe("");
   });
 
-  it("starts with an empty baseline when service-item loading fails", async () => {
-    mcpMocks.mcpReadAdvertisedTextResource.mockRejectedValue(new Error("resource unavailable"));
+  it("starts with unknown sections when service-item loading fails", async () => {
+    mcpMocks.mcpReadTextResource.mockRejectedValue(new Error("resource unavailable"));
     const session = new VoiceSession();
 
     await session.connect();
@@ -3578,7 +3613,11 @@ describe("VoiceSession", () => {
 
     expect(offerRequests).toHaveLength(1);
     const sent = FakePeerConnection.dataChannels[0]?.send.mock.calls[0]?.[0];
-    expect(JSON.parse(sent as string).context.text).toBe("No visible service items.");
+    const sections = JSON.parse(sent as string)
+      .context.text.split("\n")
+      .map((line: string) => JSON.parse(line));
+    expect(sections.map((section: { status: string }) => section.status)).toEqual(["error", "error"]);
+    expect(sections.every((section: object) => !("data" in section))).toBe(true);
   });
 
   it("waits briefly for a reflexive candidate without waiting for ICE completion", async () => {
@@ -3798,8 +3837,9 @@ describe("voice network recovery", () => {
 
   it("fetches a fresh service-item snapshot for reconnect setup", async () => {
     vi.useFakeTimers();
-    mcpMocks.mcpReadAdvertisedTextResource
+    mcpMocks.mcpReadTextResource
       .mockResolvedValueOnce('{"items":[{"id":"1","title":"Old state","state":"running","needsAttention":false}]}')
+      .mockResolvedValueOnce("Aucune sélection.")
       .mockResolvedValueOnce('{"items":[{"id":"1","title":"Fresh state","state":"waiting","needsAttention":true}]}');
     const session = new VoiceSession();
     try {
@@ -4008,8 +4048,13 @@ describe("buildRecoveryContext", () => {
       { kind: "transcript", speaker: "user", text: "partial", final: false },
     ]);
 
-    expect(context).toContain("do not treat this as a new user turn");
-    expect(context).toContain("user: first\nassistant: second");
+    expect(JSON.parse(context)).toMatchObject({
+      event: "transport_recovered",
+      transcript: [
+        { speaker: "user", text: "first" },
+        { speaker: "assistant", text: "second" },
+      ],
+    });
     expect(context).not.toContain("partial");
     expect(context).not.toContain("weigh both dates");
   });
@@ -4025,7 +4070,7 @@ describe("buildRecoveryContext", () => {
     );
 
     expect(context.length).toBeLessThanOrEqual(MAX_RECOVERY_CONTEXT_CHARS);
-    expect(context.indexOf("user: 19:")).toBeGreaterThan(context.indexOf("user: 18:"));
+    expect(context.indexOf('"text":"19:')).toBeGreaterThan(context.indexOf('"text":"18:'));
   });
 });
 

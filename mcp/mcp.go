@@ -2088,12 +2088,24 @@ func toolResultText(v any) string {
 func NewToolSpec[In, Out any](name, title, description string, handler func(context.Context, *ToolRequest[In]) ToolResult[Out]) ToolSpec {
 	inputSchema := SchemaFor[In]()
 	AddHeaderToProperty(inputSchema, "task_number", "Task-Number")
+	// Output values can contain recursive structures such as compound table
+	// filters. Keep their definitions instead of infinitely inlining them.
+	r := jsonschema.Reflector{Anonymous: true}
+	outputSchema := r.ReflectFromType(reflect.TypeFor[Out]())
+	// MCP exposes an object at the schema root. Keep its definition as well:
+	// recursive properties may still reference that root through $defs.
+	if root := outputSchema.Definitions[strings.TrimPrefix(outputSchema.Ref, "#/$defs/")]; root != nil {
+		expanded := *root
+		expanded.Version = outputSchema.Version
+		expanded.Definitions = outputSchema.Definitions
+		outputSchema = &expanded
+	}
 	return ToolSpec{
 		Name:         name,
 		Title:        title,
 		Description:  description,
 		InputSchema:  inputSchema,
-		OutputSchema: SchemaFor[Out](),
+		OutputSchema: outputSchema,
 		Handler: func(ctx context.Context, params *ToolsCallParams) (RawToolResult, error) {
 			args, err := DecodeToolArgument[In](params.Arguments)
 			if err != nil {

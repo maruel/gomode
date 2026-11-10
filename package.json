@@ -30,7 +30,6 @@
     "./web/HostMode": "./web/src/HostMode.tsx",
     "./web/McpClient": "./web/src/McpClient.ts",
     "./web/NetworkChanges": "./web/src/NetworkChanges.ts",
-    "./web/ServiceItems": "./web/src/ServiceItems.ts",
     "./web/VoiceMessages": "./web/src/VoiceMessages.ts",
     "./web/VoiceMessages/*": "./web/src/voiceMessages/*.ts",
     "./web/VoiceOverlay": "./web/src/VoiceOverlay.tsx",

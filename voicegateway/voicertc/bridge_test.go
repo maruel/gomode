@@ -116,7 +116,7 @@ func TestApplySessionLanguage(t *testing.T) {
 			t.Run(tc.input, func(t *testing.T) {
 				t.Parallel()
 				msg := voicev2.SessionSetup{Voice: voicev2.VoiceConfig{Language: tc.input}}
-				if err := applySessionLanguage(&msg); err != nil {
+				if err := applySessionPolicy(&msg); err != nil {
 					t.Fatal(err)
 				}
 				if msg.Voice.Language != tc.want || !strings.Contains(msg.Context.SystemInstruction, "selected language: "+tc.want) {
@@ -131,7 +131,7 @@ func TestApplySessionLanguage(t *testing.T) {
 			t.Run(tag, func(t *testing.T) {
 				t.Parallel()
 				msg := voicev2.SessionSetup{Voice: voicev2.VoiceConfig{Language: tag}}
-				if err := applySessionLanguage(&msg); err == nil {
+				if err := applySessionPolicy(&msg); err == nil {
 					t.Fatal("expected invalid language error")
 				}
 			})

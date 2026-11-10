@@ -1,6 +1,7 @@
 // Tests native MCP requests, opaque result metadata, and SSE configuration.
 package com.fghbuild.gomode.voice
 
+import com.fghbuild.gomode.service.readInitialServiceContext
 import com.fghbuild.mcp.sdk.v1.NotificationMethod
 import com.fghbuild.mcp.sdk.v1.RequestMeta
 import com.fghbuild.mcp.sdk.v1.SubscriptionFilter
@@ -12,20 +13,149 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
+@RunWith(RobolectricTestRunner::class)
 class McpClientTest {
+    @Test
+    fun `authoritative context reads validate private authority while other results stay advisory`() =
+        runTest {
+            MockWebServer().use { server ->
+                server.start()
+                val client = McpClient(server.url("/mcp").toString(), "2026-07-28", { null })
+                val malformed =
+                    listOf(
+                        """{"uri":"fixture://context","epoch":"owner","version":"private-version-sentinel","dependencies":[]}""",
+                        """{"uri":"fixture://context","epoch":"","version":1,"dependencies":[]}""",
+                        """{"uri":"fixture://context","epoch":"owner","version":1,"dependencies":null}""",
+                        """{"uri":"fixture://context","epoch":"owner","version":"1","dependencies":[]}""",
+                        """{"uri":"fixture://context","epoch":"owner","version":-1,"dependencies":[]}""",
+                        """{"uri":"fixture://context","epoch":"owner","version":9007199254740992,"dependencies":[]}""",
+                        """{"uri":"fixture://context","epoch":"${"e".repeat(129)}","version":1,"dependencies":[]}""",
+                        """{"uri":"fixture://context","epoch":"owner","version":1,"dependencies":[{"uris":${JsonArray(
+                            List(51) { JsonPrimitive("x") },
+                        )}}]}""",
+                        """{"uri":"fixture://context","epoch":"owner","version":1,"dependencies":[{"uris":["${"u".repeat(
+                            1025,
+                        )}"]}]}""",
+                        """{"uri":"fixture://context","epoch":"owner","version":1,"dependencies":[{"uris":["x"],"aspects":${JsonArray(
+                            List(17) { JsonPrimitive("x") },
+                        )}}]}""",
+                        """{"uri":"fixture://context","epoch":"owner","version":1,"dependencies":[{"uris":["x"],"aspects":["${"a".repeat(
+                            65,
+                        )}"]}]}""",
+                        """{"uri":"fixture://context","epoch":"owner","version":1,"dependencies":${JsonArray(
+                            List(129) {
+                                Json.parseToJsonElement("""{"uris":["host://one"]}""")
+                            },
+                        )}}""",
+                        """{"uri":"fixture://context","epoch":"owner","version":1,"dependencies":[{"uris":null}]}""",
+                        """{"uri":"fixture://context","epoch":"owner","version":1,"dependencies":[{"uris":[]}]}""",
+                        """{"uri":"fixture://context","epoch":"owner","version":1,
+                            "dependencies":[{"uris":["host://one"],"aspects":null}]}""",
+                    )
+
+                fun response(
+                    uri: String,
+                    metadata: String,
+                ): MockResponse {
+                    val body =
+                        buildJsonObject {
+                            put("jsonrpc", "2.0")
+                            put(
+                                "result",
+                                buildJsonObject {
+                                    put("resultType", "complete")
+                                    put("ttlMs", 0)
+                                    put("cacheScope", "private")
+                                    put(
+                                        "_meta",
+                                        buildJsonObject {
+                                            put("com.fghbuild.gomode/context", Json.parseToJsonElement(metadata))
+                                        },
+                                    )
+                                    put(
+                                        "contents",
+                                        JsonArray(
+                                            listOf(
+                                                buildJsonObject {
+                                                    put("uri", uri)
+                                                    put("text", "資料 public _meta intact 日本語")
+                                                },
+                                            ),
+                                        ),
+                                    )
+                                },
+                            )
+                        }
+                    return MockResponse().setBody(body.toString())
+                }
+                for (metadata in malformed) {
+                    server.enqueue(response("fixture://context", metadata))
+                    val error =
+                        runCatching {
+                            client.readResource(
+                                "fixture://context",
+                                "conversation",
+                            )
+                        }.exceptionOrNull()
+                    assertNotNull("Accepted invalid authority: $metadata", error)
+                    assertTrue(error?.message?.contains("private-version-sentinel") == false)
+                    server.enqueue(response("fixture://catalog", metadata))
+                    val ordinary = client.readResource("fixture://catalog", "conversation")
+                    assertTrue(ordinary.context == null)
+                    assertTrue(
+                        ordinary.result.contents
+                            .orEmpty()
+                            .single()
+                            .text
+                            ?.contains("日本語") == true,
+                    )
+                }
+                server.enqueue(
+                    response(
+                        "fixture://context",
+                        """{"uri":"fixture://context","epoch":"owner","version":1e0,"dependencies":[]}""",
+                    ),
+                )
+                val verified = client.readResource("fixture://context", "conversation")
+                assertEquals(1L, checkNotNull(verified.context).version)
+                assertTrue(checkNotNull(verified.context?.content).contains("資料 public _meta intact 日本語"))
+                for (uri in listOf("host://ordinary", "fixture://catalog", "gomode://notifications")) {
+                    server.enqueue(response(uri, malformed.first()))
+                    client.readResource(uri, "conversation")
+                }
+                server.enqueue(
+                    MockResponse().setBody(
+                        """{"jsonrpc":"2.0","result":{"resultType":"complete","content":[],
+                    "structuredContent":{"saved":true},"_meta":{"com.fghbuild.gomode/context":${malformed.first()}}}}""",
+                    ),
+                )
+                val applied = client.callTool("save", Json.parseToJsonElement("{}").jsonObject, "conversation")
+                assertTrue(!applied.isError)
+                assertEquals(JsonPrimitive(true), applied.structuredContent["saved"])
+                assertTrue(!applied.structuredContent.toString().contains("private-version-sentinel"))
+                assertEquals(malformed.size * 2 + 5, server.requestCount)
+            }
+        }
+
     @Test
     fun `request metadata preserves extensions and validates known fields`() {
         val input =
@@ -48,6 +178,36 @@ class McpClientTest {
             }
         }
     }
+
+    @Test
+    fun `malformed MCP envelopes never expose private transport diagnostics`() =
+        runTest {
+            MockWebServer().use { server ->
+                server.start()
+                val client = McpClient(server.url("/mcp").toString(), "2026-07-28", { null })
+                for (status in listOf(200, 401)) {
+                    server.enqueue(
+                        MockResponse().setResponseCode(status).setBody(
+                            """{"_meta":{"private":"private-envelope-sentinel"},"result":BROKEN}""",
+                        ),
+                    )
+                    val failure =
+                        runCatching {
+                            client.callTool(
+                                "read_item",
+                                Json.parseToJsonElement("{}").jsonObject,
+                            )
+                        }.exceptionOrNull()
+                    assertNotNull(failure)
+                    assertTrue(failure?.message?.contains("private-envelope-sentinel") == false)
+                    assertNotNull(failure?.cause)
+                    assertEquals(if (status == 200) 1 else 2, server.requestCount)
+                    if (status == 401) {
+                        assertEquals(401, (failure as com.fghbuild.mcp.sdk.v1.ApiException).statusCode)
+                    }
+                }
+            }
+        }
 
     @Test
     fun `tool results retain opaque metadata outside normalized content`() =
@@ -135,7 +295,8 @@ class McpClientTest {
                             locale = "en-GB",
                         )
                     }.exceptionOrNull()
-                assertTrue(failure is IllegalStateException)
+                assertTrue(failure is com.fghbuild.mcp.sdk.v1.ApiException)
+                assertEquals("-32602", (failure as com.fghbuild.mcp.sdk.v1.ApiException).code)
                 assertEquals(errorMessage, failure?.message)
                 for ((args, timezone) in listOf(validArgs to "America/Toronto", generatedArgs to "Asia/Kolkata")) {
                     val request = requireNotNull(server.takeRequest(5, TimeUnit.SECONDS))
@@ -331,7 +492,7 @@ class McpClientTest {
 
                 val result = client.readResource("service://items")
 
-                assertEquals("[]", requireNotNull(result.contents).single().text)
+                assertEquals("[]", requireNotNull(result.result.contents).single().text)
                 val request = server.takeRequest()
                 val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
                 assertEquals("resources/read", request.getHeader("Mcp-Method"))

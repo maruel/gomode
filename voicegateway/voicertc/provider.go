@@ -224,13 +224,10 @@ func (s *realtimeBridgeSession) acceptClientMessage(ctx context.Context, data []
 }
 
 func (s *realtimeBridgeSession) setup(msg *voicev2.SessionSetup) error {
-	if msg.Context.SystemInstruction == "" {
-		return errors.New("session.setup context.systemInstruction is required")
-	}
 	if err := validateNativeSpeech(msg); err != nil {
 		return err
 	}
-	if err := applySessionLanguage(msg); err != nil {
+	if err := applySessionPolicy(msg); err != nil {
 		return err
 	}
 	tools, err := genaiToolDefs(msg.Tools)

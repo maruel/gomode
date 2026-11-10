@@ -185,16 +185,13 @@ func (s *llamaRealtimeSession) close() error {
 }
 
 func (s *llamaRealtimeSession) setup(msg *voicev2.SessionSetup) error {
-	if msg.Context.SystemInstruction == "" {
-		return errors.New("session.setup context.systemInstruction is required")
-	}
 	if msg.Voice.Name != "" {
 		return errors.New("llamacpp-realtime does not support voice selection")
 	}
 	if err := validateNativeSpeech(msg); err != nil {
 		return err
 	}
-	if err := applySessionLanguage(msg); err != nil {
+	if err := applySessionPolicy(msg); err != nil {
 		return err
 	}
 	if msg.Voice.Language != "en" && !strings.HasPrefix(msg.Voice.Language, "en-") {

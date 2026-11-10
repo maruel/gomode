@@ -1,10 +1,13 @@
-// MCP client for Go Mode service tools and resources exposed to the native shell.
+// MCP transport preserves private metadata and keeps decoder diagnostics out of model-visible errors.
 package com.fghbuild.gomode.voice
 
 import android.util.Base64
+import android.util.Log
 import com.fghbuild.gomode.service.ServiceResourceClient
+import com.fghbuild.gomode.service.ServiceResourceRead
 import com.fghbuild.gomode.service.credentialedHTTPClient
 import com.fghbuild.mcp.sdk.v1.ApiClient
+import com.fghbuild.mcp.sdk.v1.ApiException
 import com.fghbuild.mcp.sdk.v1.ClientCapabilities
 import com.fghbuild.mcp.sdk.v1.Implementation
 import com.fghbuild.mcp.sdk.v1.JSONPresence
@@ -29,6 +32,7 @@ import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import com.fghbuild.mcp.sdk.v1.ToolsCallParams
 import com.fghbuild.mcp.sdk.v1.ToolsListResult
 import kotlinx.coroutines.flow.Flow
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -49,6 +53,14 @@ import java.util.concurrent.atomic.AtomicInteger
 private const val SUBSCRIPTION_READ_TIMEOUT_MILLIS = 45_000L
 
 private val idCounter = AtomicInteger(0)
+
+internal class InvalidMcpResponse(
+    cause: IllegalArgumentException,
+) : IllegalStateException("Service returned an invalid MCP response. The request outcome is unknown.", cause) {
+    init {
+        Log.w("GoModeMcp", "Invalid MCP response", cause)
+    }
+}
 
 data class McpToolResult(
     val structuredContent: JsonObject,
@@ -95,20 +107,36 @@ class McpClient(
     ): T {
         val headers = mcpHeaders(method, name, paramHeaders)
         val response =
-            api.mcp(
-                req =
-                    JSONRPCRequest(
-                        jsonrpc = "2.0",
-                        id = JSONPresence.Value(JsonPrimitive(idCounter.incrementAndGet())),
-                        method = method,
-                        params = JSONPresence.Value(params),
-                    ),
-                headers = headers,
-            )
+            try {
+                api.mcp(
+                    req =
+                        JSONRPCRequest(
+                            jsonrpc = "2.0",
+                            id = JSONPresence.Value(JsonPrimitive(idCounter.incrementAndGet())),
+                            method = method,
+                            params = JSONPresence.Value(params),
+                        ),
+                    headers = headers,
+                )
+            } catch (e: SerializationException) {
+                throw InvalidMcpResponse(e)
+            } catch (e: ApiException) {
+                // The generated transport uses UNKNOWN for undecodable HTTP errors.
+                // Preserve authentication status without forwarding its raw body.
+                if (e.code != "UNKNOWN") throw e
+                Log.w("GoModeMcp", "Unreadable MCP HTTP error", e)
+                throw ApiException(e.statusCode, e.code, "MCP request failed (HTTP ${e.statusCode}).").apply {
+                    initCause(e)
+                }
+            }
         val rpcError = response.error
-        if (rpcError != null) error(rpcError.message)
+        if (rpcError != null) throw ApiException(200, rpcError.code.toString(), rpcError.message)
         val result = (response.result as? JSONPresence.Value)?.value ?: error("Missing result in MCP response")
-        return json.decodeFromJsonElement(result)
+        return try {
+            json.decodeFromJsonElement(result)
+        } catch (e: SerializationException) {
+            throw InvalidMcpResponse(e)
+        }
     }
 
     override suspend fun serverDiscover(sessionID: String?): ServerDiscoverResult =
@@ -219,17 +247,20 @@ class McpClient(
     override suspend fun readResource(
         uri: String,
         sessionID: String?,
-    ): ResourcesReadResult =
-        request(
-            method = Method.ResourcesRead,
-            params =
-                json.encodeToJsonElement(
-                    ResourcesReadParams(
-                        _meta = requestMeta(sessionID),
-                        uri = uri,
+    ): ServiceResourceRead =
+        ServiceResourceRead(
+            uri,
+            request<ResourcesReadResult>(
+                method = Method.ResourcesRead,
+                params =
+                    json.encodeToJsonElement(
+                        ResourcesReadParams(
+                            _meta = requestMeta(sessionID),
+                            uri = uri,
+                        ),
                     ),
-                ),
-            name = uri,
+                name = uri,
+            ),
         )
 
     override fun listenSubscriptions(

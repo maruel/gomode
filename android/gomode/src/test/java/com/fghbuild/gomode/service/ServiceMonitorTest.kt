@@ -1,11 +1,9 @@
-// Unit tests for Go Mode service monitoring resource orchestration.
+// Tests advertised resource isolation, ordered reconciliation, stream recovery, and native alert ownership.
 package com.fghbuild.gomode.service
 
 import com.fghbuild.gomode.sdk.v1.Settings
 import com.fghbuild.gomode.sdk.v1.ToolGroup
-import com.fghbuild.gomode.sdk.v1.VoiceGatewaySettings
 import com.fghbuild.gomode.sdk.v1.WebShellSettings
-import com.fghbuild.gomode.voice.McpClient
 import com.fghbuild.mcp.sdk.v1.CacheScope
 import com.fghbuild.mcp.sdk.v1.Capabilities
 import com.fghbuild.mcp.sdk.v1.Implementation
@@ -19,39 +17,24 @@ import com.fghbuild.mcp.sdk.v1.ResourcesReadResult
 import com.fghbuild.mcp.sdk.v1.ResultType
 import com.fghbuild.mcp.sdk.v1.ServerDiscoverResult
 import com.fghbuild.mcp.sdk.v1.SubscriptionFilter
-import com.fghbuild.mcp.sdk.v1.SubscriptionsInitialStateParams
-import com.fghbuild.mcp.sdk.v1.ToolsCapability
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.test.advanceTimeBy
-import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
-import okhttp3.mockwebserver.Dispatcher
-import okhttp3.mockwebserver.MockResponse
-import okhttp3.mockwebserver.MockWebServer
-import okhttp3.mockwebserver.RecordedRequest
-import okhttp3.mockwebserver.SocketPolicy
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
@@ -59,904 +42,668 @@ import java.io.IOException
 @OptIn(ExperimentalCoroutinesApi::class)
 class ServiceMonitorTest {
     @Test
-    fun `conversation monitoring retains its session through reconnect`() =
+    fun `marked resources refresh independently and unmarked resources stay on demand`() =
         runTest {
-            val client =
-                FakeServiceResourceClient().apply {
-                    closeSubscriptionsImmediately = true
-                    enqueueReadResult("""{"items":[]}""")
-                    enqueueReadResult("""{"items":[]}""")
-                }
-            val monitor = ServiceMonitor(this, "conversation-one") { _, _ -> client }
-            monitor.start("https://service.test", serviceSettings())
-            runCurrent()
-            advanceTimeBy(1000)
-            runCurrent()
-            assertEquals(2, client.subscriptionFilters.size)
-            assertEquals(
-                listOf(
-                    "list",
-                    "read",
-                    "discover",
-                    "subscribe",
-                    "list",
-                    "read",
-                    "discover",
-                    "subscribe",
-                ),
-                client.requestSessions.map {
-                    it.first
-                },
-            )
-            assertTrue(client.requestSessions.all { it.second == "conversation-one" })
-            monitor.stop()
-        }
-
-    @Test
-    fun `resources-only service retains its initial items without a subscription retry loop`() =
-        runTest {
-            val client =
-                FakeServiceResourceClient().apply {
-                    supportsSubscriptions = false
-                    enqueueReadResult("""{"items":[{"id":"i1","title":"Static item","state":"ready"}]}""")
-                }
-            val monitor = ServiceMonitor(this) { _, _ -> client }
-
-            monitor.start("https://service.test", serviceSettings())
-            advanceUntilIdle()
-
-            assertEquals(
-                "Static item",
-                monitor.state.value.snapshot
-                    ?.items
-                    ?.single()
-                    ?.title,
-            )
-            assertNull(monitor.state.value.retryReason)
-            assertEquals(1, client.listCalls)
-            assertEquals(listOf(GOMODE_ITEMS_RESOURCE_URI), client.readURIs)
-            assertTrue(client.subscriptionFilters.isEmpty())
-            monitor.stop()
-        }
-
-    @Test
-    fun `initial voice context rereads authoritative items for reconnect`() =
-        runTest {
-            val client =
-                FakeServiceResourceClient().apply {
-                    enqueueReadResult("""{"items":[{"id":"i1","title":"Old state","state":"active"}]}""")
-                    enqueueReadResult("""{"items":[{"id":"i1","title":"Fresh state","state":"waiting"}]}""")
-                }
-
-            assertTrue(readInitialServiceContext(client).contains("Old state"))
-            assertTrue(readInitialServiceContext(client).contains("Fresh state"))
-            assertEquals(2, client.listCalls)
-            assertEquals(listOf(GOMODE_ITEMS_RESOURCE_URI, GOMODE_ITEMS_RESOURCE_URI), client.readURIs)
-        }
-
-    @Test
-    fun `malformed initial items use an empty voice baseline`() =
-        runTest {
-            val client =
-                FakeServiceResourceClient().apply {
-                    enqueueReadResult("""{"items":[{"id":"new","title":""}]}""")
-                }
-
-            assertEquals("No visible service items.", readInitialServiceContext(client))
-        }
-
-    @Test
-    fun `generic items update native attention notification and voice context state`() =
-        runTest {
-            val client =
-                FakeServiceResourceClient().apply {
-                    enqueueReadResult(
-                        """
-                        {"items": [
-                          {"id":"i1","title":"Build feature","state":"active","needsAttention":false},
-                          {"id":"i2","title":"Review plan","state":"awaiting input","needsAttention":true}
-                        ]}
-                        """.trimIndent(),
-                    )
-                }
-            var endpointURL: String? = null
-            var protocolVersion: String? = null
+            val client = Fixture()
             val monitor =
-                ServiceMonitor(this) { endpoint, protocol ->
-                    endpointURL = endpoint
-                    protocolVersion = protocol
-                    client
-                }
-
-            monitor.start("https://service.test/mobile", serviceSettings())
-            advanceUntilIdle()
-
-            val state = monitor.state.value
-            assertEquals("https://service.test/api/service/v1/mcp", endpointURL)
-            assertEquals("2026-07-28", protocolVersion)
-            assertEquals(
-                "Review plan",
-                state.snapshot
-                    ?.items
-                    ?.last()
-                    ?.title,
-            )
-            monitor.stop()
-        }
-
-    @Test
-    fun `resource update notifications expose newly created items to voice`() =
-        runTest {
-            val client =
-                FakeServiceResourceClient().apply {
-                    enqueueReadResult(
-                        """{"items":[{"id":"i1","title":"Build feature","state":"active","needsAttention":false}]}""",
-                    )
-                    enqueueReadResult(
-                        """{"items":[{"id":"i2","title":"Fix tests","state":"active","needsAttention":false},""" +
-                            """{"id":"i1","title":"Build feature","state":"active","needsAttention":false}]}""",
-                    )
-                }
-            val monitor = ServiceMonitor(this) { _, _ -> client }
-            monitor.start("https://service.test", serviceSettings())
-            advanceUntilIdle()
-
-            client.emit(resourceUpdated(GOMODE_ITEMS_RESOURCE_URI))
-            advanceUntilIdle()
-
-            assertEquals(listOf(GOMODE_ITEMS_RESOURCE_URI, GOMODE_ITEMS_RESOURCE_URI), client.readURIs)
-            assertEquals(listOf(GOMODE_ITEMS_RESOURCE_URI), client.subscriptionFilters.single().resourceSubscriptions)
-            assertEquals(true, client.subscriptionFilters.single().resourcesListChanged)
-            monitor.stop()
-            advanceUntilIdle()
-            assertTrue(client.subscriptionCancelled)
-        }
-
-    @Test
-    fun `invalid snapshots do not partially mark alerts observed`() =
-        runTest {
-            val client =
-                FakeServiceResourceClient().apply {
-                    resources =
-                        listOf(
-                            ResourceDescriptor(
-                                uri = GOMODE_ITEMS_RESOURCE_URI,
-                                name = "items",
-                                mimeType = "application/json",
-                            ),
-                            ResourceDescriptor(
-                                uri = GOMODE_NOTIFICATIONS_RESOURCE_URI,
-                                name = "alerts",
-                                mimeType = "application/json",
-                            ),
-                        )
-                    enqueueReadResult("""{"items":[]}""")
-                    enqueueNotificationReadResult("[]")
-                    enqueueReadResult("""{"items":[]}""")
-                    enqueueNotificationReadResult(
-                        """[{"id":"valid","title":"Ready","body":"Work"},{"id":"invalid","title":"Broken"}]""",
-                    )
-                }
-            val monitor = ServiceMonitor(this) { _, _ -> client }
-            monitor.start("https://service.test", serviceSettings())
-            advanceUntilIdle()
-            client.emit(resourceUpdated(GOMODE_NOTIFICATIONS_RESOURCE_URI))
+                ServiceMonitor(
+                    backgroundScope,
+                    "conversation",
+                    ServiceMonitorPurpose.CONVERSATION_CONTEXT,
+                ) { _, _ -> client }
+            monitor.start("https://service.test", settings())
             runCurrent()
-            assertTrue(monitor.observedNotificationIDs.isEmpty())
-            assertNotNull(monitor.state.value.retryReason)
-            assertNull(monitor.state.value.activeNotifications)
+            assertEquals(listOf(FIXTURE_CONTEXT_URI, FIXTURE_CATALOG_URI), client.reads)
+            assertTrue(
+                monitor.state.value.voiceContext
+                    .contains("東京"),
+            )
+            assertFalse(
+                monitor.state.value.voiceContext
+                    .contains("private-epoch"),
+            )
+            client.reads.clear()
+            client.text[FIXTURE_CATALOG_URI] = "Dossier modifié"
+            client.changed(FIXTURE_CATALOG_URI)
+            runCurrent()
+            assertEquals(listOf(FIXTURE_CATALOG_URI), client.reads)
+            assertTrue(
+                monitor.state.value.voiceContext
+                    .contains("Dossier modifié"),
+            )
+            client.failures += FIXTURE_CONTEXT_URI
+            client.changed(FIXTURE_CONTEXT_URI)
+            runCurrent()
+            assertEquals("error", status(monitor, FIXTURE_CONTEXT_URI))
+            assertEquals("known", status(monitor, FIXTURE_CATALOG_URI))
+            client.failures.clear()
+            client.changed(FIXTURE_CONTEXT_URI)
+            runCurrent()
+            assertEquals("known", status(monitor, FIXTURE_CONTEXT_URI))
+            monitor.stop()
+            runCurrent()
+            assertEquals(client.filters.size, client.completedStreams)
+        }
+
+    @Test
+    fun `withdrawal retires subscriptions and reappearance is unread before its read completes`() =
+        runTest {
+            val client = Fixture()
+            val monitor =
+                ServiceMonitor(
+                    backgroundScope,
+                    "conversation",
+                    ServiceMonitorPurpose.CONVERSATION_CONTEXT,
+                ) { _, _ -> client }
+            monitor.start("https://service.test", settings())
+            runCurrent()
+            client.resources = client.resources.filter { it.uri != FIXTURE_CONTEXT_URI }
+            client.listChanged()
+            runCurrent()
+            assertEquals("absent", status(monitor, FIXTURE_CONTEXT_URI))
+            assertFalse(
+                client.filters
+                    .last()
+                    .resourceSubscriptions
+                    .orEmpty()
+                    .contains(FIXTURE_CONTEXT_URI),
+            )
+            val gate = CompletableDeferred<Unit>()
+            client.gates[FIXTURE_CONTEXT_URI] = gate
+            client.resources += model(FIXTURE_CONTEXT_URI)
+            client.listChanged()
+            runCurrent()
+            assertEquals("unread", status(monitor, FIXTURE_CONTEXT_URI))
+            assertEquals("known", status(monitor, FIXTURE_CATALOG_URI))
+            gate.complete(Unit)
+            runCurrent()
+            assertEquals("known", status(monitor, FIXTURE_CONTEXT_URI))
+            assertTrue(
+                client.filters
+                    .last()
+                    .resourceSubscriptions
+                    .orEmpty()
+                    .contains(FIXTURE_CONTEXT_URI),
+            )
             monitor.stop()
         }
 
     @Test
-    fun `generic service notifications are delivered once`() =
+    fun `authority rejects obsolete reads and accepts a new epoch without exposing metadata`() =
         runTest {
-            val client =
-                FakeServiceResourceClient().apply {
-                    resources =
-                        listOf(
-                            ResourceDescriptor(
-                                uri = GOMODE_ITEMS_RESOURCE_URI,
-                                name = "items",
-                                mimeType = "application/json",
-                            ),
-                            ResourceDescriptor(
-                                uri = GOMODE_NOTIFICATIONS_RESOURCE_URI,
-                                name = "notifications",
-                                mimeType = "application/json",
-                            ),
-                        )
-                    enqueueReadResult(
-                        """{"items":[{"id":"i1","title":"Build feature","state":"awaiting input","needsAttention":true}]}""",
-                    )
-                    enqueueNotificationReadResult(
-                        """[{"id":"event-0","title":"Older item","body":"Already present."}]""",
-                    )
-                    enqueueReadResult(
-                        """{"items":[{"id":"i1","title":"Build feature","state":"awaiting input","needsAttention":true}]}""",
-                    )
-                    enqueueNotificationReadResult(
-                        """[{"id":"event-0","title":"Older item","body":"Already present."},""" +
-                            """{"id":"event-1","title":"Item ready","body":"Build feature needs your input.",""" +
-                            """"url":"/work/stable","itemId":"stable"}]""",
-                    )
-                    enqueueReadResult(
-                        """{"items":[{"id":"i1","title":"Build feature","state":"awaiting input","needsAttention":true}]}""",
-                    )
-                    enqueueNotificationReadResult(
-                        """[{"id":"event-0","title":"Older item","body":"Already present."},""" +
-                            """{"id":"event-1","title":"Item ready","body":"Build feature needs your input.",""" +
-                            """"url":"/work/stable","itemId":"stable"}]""",
-                    )
-                }
-            client.enqueueReadResult("""{"items":[]}""")
-            client.enqueueNotificationReadResult(
-                """[{"id":"expired","title":"Expired","body":"Old","expiresAt":"2000-01-01T00:00:00Z"}]""",
+            val client = Fixture()
+            val monitor =
+                ServiceMonitor(
+                    backgroundScope,
+                    "conversation",
+                    ServiceMonitorPurpose.CONVERSATION_CONTEXT,
+                ) { _, _ -> client }
+            monitor.start("https://service.test", settings())
+            runCurrent()
+            client.version = 3
+            client.text[FIXTURE_CONTEXT_URI] = "nouveau"
+            client.changed(FIXTURE_CONTEXT_URI)
+            runCurrent()
+            client.version = 2
+            client.text[FIXTURE_CONTEXT_URI] = "obsolete"
+            client.changed(FIXTURE_CONTEXT_URI)
+            runCurrent()
+            assertTrue(
+                monitor.state.value.voiceContext
+                    .contains("nouveau"),
             )
-            val monitor = ServiceMonitor(this) { _, _ -> client }
+            assertFalse(
+                monitor.state.value.voiceContext
+                    .contains("obsolete"),
+            )
+            client.epoch = "replacement"
+            client.version = 1
+            client.text[FIXTURE_CONTEXT_URI] = "recréé"
+            client.changed(FIXTURE_CONTEXT_URI)
+            runCurrent()
+            assertTrue(
+                monitor.state.value.voiceContext
+                    .contains("recréé"),
+            )
+            assertFalse(
+                monitor.state.value.voiceContext
+                    .contains("replacement"),
+            )
+            monitor.stop()
+        }
 
-            monitor.start("https://service.test", serviceSettings())
-            advanceUntilIdle()
+    @Test
+    fun `stop cancels a pending resource read before fixture cleanup and cannot publish its result`() =
+        runTest {
+            val client = Fixture()
+            val gate = CompletableDeferred<Unit>()
+            client.gates[FIXTURE_CONTEXT_URI] = gate
+            val monitor =
+                ServiceMonitor(backgroundScope, "old", ServiceMonitorPurpose.CONVERSATION_CONTEXT) { _, _ -> client }
+            monitor.start("https://service.test", settings())
+            runCurrent()
+            assertEquals("known", status(monitor, FIXTURE_CATALOG_URI))
+            monitor.stop()
+            runCurrent()
+            assertTrue(client.cancelledReads.contains(FIXTURE_CONTEXT_URI))
+            assertFalse(gate.isCompleted)
+            gate.complete(Unit)
+            runCurrent()
+            assertEquals(ServiceMonitorState(), monitor.state.value)
+        }
+
+    @Test
+    fun `alert invalidation during initial read retains publication for its followup`() =
+        runTest {
+            val client = Fixture()
+            val uri = GOMODE_NOTIFICATIONS_RESOURCE_URI
+            client.resources += ResourceDescriptor(uri = uri, name = "alerts")
+            client.text[uri] = "[]"
+            client.responses[uri] = ArrayDeque(listOf("[]", """[{"id":"new","title":"Review","body":"Ready"}]"""))
+            val gate = CompletableDeferred<Unit>()
+            client.gates[uri] = gate
+            val monitor = ServiceMonitor(backgroundScope) { _, _ -> client }
+            monitor.start("https://service.test", settings())
+            runCurrent()
+            client.changed(uri)
+            runCurrent()
+            gate.complete(Unit)
+            runCurrent()
+            assertEquals(listOf(uri, uri), client.reads)
+            assertEquals(
+                listOf("new"),
+                monitor.state.value.notifications
+                    .map { it.id },
+            )
+            monitor.stop()
+        }
+
+    @Test
+    fun `background owner reads only alerts and reconciles occurrences without duplicate delivery`() =
+        runTest {
+            val client = Fixture()
+            client.resources += ResourceDescriptor(uri = GOMODE_NOTIFICATIONS_RESOURCE_URI, name = "alerts")
+            client.text[GOMODE_NOTIFICATIONS_RESOURCE_URI] =
+                """[{"id":"a","title":"Review","body":"Pending","url":"/first"}]"""
+            val monitor = ServiceMonitor(backgroundScope) { _, _ -> client }
+            monitor.start("https://service.test", settings())
+            runCurrent()
+            assertEquals(listOf(GOMODE_NOTIFICATIONS_RESOURCE_URI), client.reads)
             assertTrue(
                 monitor.state.value.notifications
                     .isEmpty(),
             )
-            client.emit(resourceUpdated(GOMODE_NOTIFICATIONS_RESOURCE_URI))
-            advanceUntilIdle()
             assertEquals(
-                listOf("Item ready"),
-                monitor.state.value.notifications
-                    .map { it.title },
-            )
-
-            client.emit(resourceUpdated(GOMODE_NOTIFICATIONS_RESOURCE_URI))
-            advanceUntilIdle()
-            assertTrue(
-                monitor.state.value.notifications
-                    .isEmpty(),
-            )
-            assertEquals(
-                "/work/stable",
+                "/first",
                 monitor.state.value.activeNotifications
-                    ?.last()
+                    ?.single()
                     ?.url,
             )
-            client.emit(resourceUpdated(GOMODE_NOTIFICATIONS_RESOURCE_URI))
-            advanceUntilIdle()
-            assertTrue(requireNotNull(monitor.state.value.activeNotifications).isEmpty())
-            monitor.stop()
-        }
-
-    @Test
-    fun `delivered initial state is exposed without a re-read`() =
-        runTest {
-            val client =
-                FakeServiceResourceClient().apply {
-                    enqueueReadResult("""{"items":[{"id":"i1","title":"Pre-subscribe state","state":"active"}]}""")
-                }
-            val monitor = ServiceMonitor(this) { _, _ -> client }
-            monitor.start("https://service.test", serviceSettings())
-            advanceUntilIdle()
-            assertEquals(listOf(GOMODE_ITEMS_RESOURCE_URI), client.readURIs)
-
-            // The server's leading list_changed re-checks the plan without a re-read.
-            client.emit(resourceListChanged())
-            advanceUntilIdle()
-            assertEquals(2, client.listCalls)
-            assertEquals(listOf(GOMODE_ITEMS_RESOURCE_URI), client.readURIs)
-
-            client.emit(
-                initialState(
-                    GOMODE_ITEMS_RESOURCE_URI,
-                    """{"items":[{"id":"i1","title":"Delivered state","state":"waiting"}]}""",
-                ),
-            )
-            advanceUntilIdle()
-
-            assertEquals(listOf(GOMODE_ITEMS_RESOURCE_URI), client.readURIs)
+            client.text[GOMODE_NOTIFICATIONS_RESOURCE_URI] =
+                """[{"id":"a","title":"Review","body":"Changed","url":"/second"},{"id":"b","title":"Review","body":"New"}]"""
+            client.changed(GOMODE_NOTIFICATIONS_RESOURCE_URI)
+            runCurrent()
             assertEquals(
-                "Delivered state",
-                monitor.state.value.snapshot
-                    ?.items
-                    ?.single()
-                    ?.title,
-            )
-            assertEquals(
-                "waiting",
-                monitor.state.value.snapshot
-                    ?.items
-                    ?.single()
-                    ?.state,
-            )
-
-            // The legacy re-read burst that follows a delivered payload costs no round trip.
-            client.emit(resourceUpdated(GOMODE_ITEMS_RESOURCE_URI))
-            advanceUntilIdle()
-            assertEquals(listOf(GOMODE_ITEMS_RESOURCE_URI), client.readURIs)
-            assertEquals(
-                "Delivered state",
-                monitor.state.value.snapshot
-                    ?.items
-                    ?.single()
-                    ?.title,
-            )
-
-            // A genuine post-subscribe change still re-reads.
-            client.enqueueReadResult("""{"items":[{"id":"i1","title":"Changed state","state":"failed"}]}""")
-            client.emit(resourceUpdated(GOMODE_ITEMS_RESOURCE_URI))
-            advanceUntilIdle()
-            assertEquals(2, client.readURIs.size)
-            assertEquals(
-                "Changed state",
-                monitor.state.value.snapshot
-                    ?.items
-                    ?.single()
-                    ?.title,
-            )
-            monitor.stop()
-        }
-
-    @Test
-    fun `streams without initial state keep the re-read fallback`() =
-        runTest {
-            val client =
-                FakeServiceResourceClient().apply {
-                    enqueueReadResult("""{"items":[{"id":"i1","title":"Pre-subscribe state","state":"active"}]}""")
-                    enqueueReadResult("""{"items":[{"id":"i1","title":"Fresh state","state":"waiting"}]}""")
-                }
-            val monitor = ServiceMonitor(this) { _, _ -> client }
-            monitor.start("https://service.test", serviceSettings())
-            advanceUntilIdle()
-
-            // The leading list_changed re-checks the plan without re-reading state.
-            client.emit(resourceListChanged())
-            advanceUntilIdle()
-            assertEquals(2, client.listCalls)
-            assertEquals(listOf(GOMODE_ITEMS_RESOURCE_URI), client.readURIs)
-
-            client.emit(resourceUpdated(GOMODE_ITEMS_RESOURCE_URI))
-            advanceUntilIdle()
-
-            assertEquals(listOf(GOMODE_ITEMS_RESOURCE_URI, GOMODE_ITEMS_RESOURCE_URI), client.readURIs)
-            assertEquals(
-                "Fresh state",
-                monitor.state.value.snapshot
-                    ?.items
-                    ?.single()
-                    ?.title,
-            )
-            monitor.stop()
-        }
-
-    @Test
-    fun `initial list changed burst is consumed and real list changes re-plan`() =
-        runTest {
-            val client =
-                FakeServiceResourceClient().apply {
-                    enqueueReadResult("""{"items":[{"id":"i1","title":"Build feature","state":"active"}]}""")
-                    enqueueReadResult("""{"items":[{"id":"i1","title":"Build feature","state":"active"}]}""")
-                    enqueueNotificationReadResult("[]")
-                }
-            val monitor = ServiceMonitor(this) { _, _ -> client }
-            monitor.start("https://service.test", serviceSettings())
-            advanceUntilIdle()
-            assertEquals(1, client.listCalls)
-            assertEquals(listOf(GOMODE_ITEMS_RESOURCE_URI), client.readURIs)
-
-            // The server's leading list_changed re-checks the plan without a re-read.
-            client.emit(resourceListChanged())
-            advanceUntilIdle()
-            assertEquals(2, client.listCalls)
-            assertEquals(listOf(GOMODE_ITEMS_RESOURCE_URI), client.readURIs)
-
-            client.emit(
-                initialState(
-                    GOMODE_ITEMS_RESOURCE_URI,
-                    """{"items":[{"id":"i1","title":"Build feature","state":"active"}]}""",
-                ),
-            )
-            client.emit(resourceUpdated(GOMODE_ITEMS_RESOURCE_URI))
-            advanceUntilIdle()
-            assertEquals(2, client.listCalls)
-            assertEquals(listOf(GOMODE_ITEMS_RESOURCE_URI), client.readURIs)
-
-            client.resources =
-                listOf(
-                    ResourceDescriptor(uri = GOMODE_ITEMS_RESOURCE_URI, name = "items", mimeType = "application/json"),
-                    ResourceDescriptor(
-                        uri = GOMODE_NOTIFICATIONS_RESOURCE_URI,
-                        name = "notifications",
-                        mimeType = "application/json",
-                    ),
-                )
-            client.emit(resourceListChanged())
-            advanceUntilIdle()
-            assertEquals(3, client.listCalls)
-            assertEquals(
-                listOf(GOMODE_ITEMS_RESOURCE_URI, GOMODE_NOTIFICATIONS_RESOURCE_URI),
-                client.readURIs.takeLast(2),
-            )
-            monitor.stop()
-        }
-
-    @Test
-    fun `partially delivered initial state falls back to a single re-read`() =
-        runTest {
-            val client =
-                FakeServiceResourceClient().apply {
-                    resources =
-                        listOf(
-                            ResourceDescriptor(
-                                uri = GOMODE_ITEMS_RESOURCE_URI,
-                                name = "items",
-                                mimeType = "application/json",
-                            ),
-                            ResourceDescriptor(
-                                uri = GOMODE_NOTIFICATIONS_RESOURCE_URI,
-                                name = "notifications",
-                                mimeType = "application/json",
-                            ),
-                        )
-                    enqueueReadResult("""{"items":[{"id":"i1","title":"Pre-subscribe state","state":"active"}]}""")
-                    enqueueNotificationReadResult("[]")
-                    enqueueReadResult("""{"items":[{"id":"i1","title":"Server state","state":"active"}]}""")
-                    enqueueNotificationReadResult(
-                        """[{"id":"event-1","title":"Item ready","body":"Build feature needs your input."}]""",
-                    )
-                }
-            val monitor = ServiceMonitor(this) { _, _ -> client }
-            monitor.start("https://service.test", serviceSettings())
-            advanceUntilIdle()
-            assertEquals(listOf(GOMODE_ITEMS_RESOURCE_URI, GOMODE_NOTIFICATIONS_RESOURCE_URI), client.readURIs)
-
-            // The server's leading list_changed re-checks the plan without a re-read.
-            client.emit(resourceListChanged())
-            advanceUntilIdle()
-            assertEquals(2, client.listCalls)
-            assertEquals(2, client.readURIs.size)
-
-            // Only items is delivered; its legacy update is consumed without a re-read.
-            client.emit(
-                initialState(
-                    GOMODE_ITEMS_RESOURCE_URI,
-                    """{"items":[{"id":"i1","title":"Delivered state","state":"waiting"}]}""",
-                ),
-            )
-            advanceUntilIdle()
-            assertEquals(2, client.readURIs.size)
-
-            client.emit(resourceUpdated(GOMODE_ITEMS_RESOURCE_URI))
-            advanceUntilIdle()
-            assertEquals(2, client.readURIs.size)
-
-            // The undelivered URI's update falls back to one re-read that refreshes both.
-            client.emit(resourceUpdated(GOMODE_NOTIFICATIONS_RESOURCE_URI))
-            advanceUntilIdle()
-            assertEquals(4, client.readURIs.size)
-            assertEquals(
-                "Server state",
-                monitor.state.value.snapshot
-                    ?.items
-                    ?.single()
-                    ?.title,
-            )
-            assertEquals(
-                listOf("Item ready"),
+                listOf("b"),
                 monitor.state.value.notifications
-                    .map { it.title },
+                    .map { it.id },
             )
-            monitor.stop()
-        }
-
-    @Test
-    fun `unsupported resources disable monitoring without subscribing`() =
-        runTest {
-            val client =
-                FakeServiceResourceClient().apply {
-                    resources =
-                        listOf(
-                            ResourceDescriptor(uri = "service://other", name = "other", mimeType = "application/json"),
-                        )
-                }
-            val monitor = ServiceMonitor(this) { _, _ -> client }
-
-            monitor.start("https://service.test", serviceSettings())
-            advanceUntilIdle()
-
-            assertNull(monitor.state.value.snapshot)
-            assertTrue(client.subscriptionFilters.isEmpty())
-            monitor.stop()
-        }
-
-    @Test
-    fun `startup failures retry and recover`() =
-        runTest {
-            val client =
-                FakeServiceResourceClient().apply {
-                    listFailuresRemaining = 1
-                    enqueueReadResult(
-                        """{"items":[{"id":"t1","title":"Build feature","state":"active","needsAttention":false}]}""",
-                    )
-                }
-            val monitor = ServiceMonitor(this) { _, _ -> client }
-
-            monitor.start("https://service.test", serviceSettings())
-            runCurrent()
-            assertEquals("HTTP 401", monitor.state.value.retryReason)
-            assertNull(monitor.state.value.snapshot)
-
-            advanceTimeBy(1000)
-            runCurrent()
-
-            assertEquals(2, client.listCalls)
-            assertNull(monitor.state.value.retryReason)
             assertEquals(
-                "Build feature",
-                monitor.state.value.snapshot
-                    ?.items
-                    ?.single()
-                    ?.title,
+                "/second",
+                monitor.state.value.activeNotifications
+                    ?.first()
+                    ?.url,
             )
+            client.changed(GOMODE_NOTIFICATIONS_RESOURCE_URI)
+            runCurrent()
+            assertTrue(
+                monitor.state.value.notifications
+                    .isEmpty(),
+            )
+            client.text[GOMODE_NOTIFICATIONS_RESOURCE_URI] = "[]"
+            client.changed(GOMODE_NOTIFICATIONS_RESOURCE_URI)
+            runCurrent()
+            assertTrue(checkNotNull(monitor.state.value.activeNotifications).isEmpty())
             monitor.stop()
         }
 
     @Test
-    fun `closed subscription streams clear stale state and retry`() =
+    fun `discovery failures retry with bounded backoff and stop retires the retry owner`() =
         runTest {
-            val client =
-                FakeServiceResourceClient().apply {
-                    closeSubscriptionsImmediately = true
-                    enqueueReadResult(
-                        """{"items":[{"id":"t1","title":"Build feature","state":"active","needsAttention":false}]}""",
-                    )
-                    enqueueReadResult(
-                        """{"items":[{"id":"t2","title":"Fix tests","state":"failed","needsAttention":true}]}""",
-                    )
-                }
-            val monitor = ServiceMonitor(this) { _, _ -> client }
-
-            monitor.start("https://service.test", serviceSettings())
+            val client = Fixture()
+            client.listFailure = true
+            val monitor =
+                ServiceMonitor(
+                    backgroundScope,
+                    "conversation",
+                    ServiceMonitorPurpose.CONVERSATION_CONTEXT,
+                ) { _, _ -> client }
+            monitor.start("https://service.test", settings())
             runCurrent()
-
-            assertEquals("MCP subscription stream ended", monitor.state.value.retryReason)
-            assertNull(monitor.state.value.snapshot)
-            assertEquals(1, client.readURIs.size)
-
+            assertEquals(1, client.lists)
+            assertTrue(monitor.state.value.retryReason != null)
             advanceTimeBy(1000)
             runCurrent()
-
-            assertEquals(2, client.readURIs.size)
-            assertEquals("MCP subscription stream ended", monitor.state.value.retryReason)
-            assertNull(monitor.state.value.snapshot)
-            monitor.stop()
-        }
-
-    @Test
-    fun `a delivered subscription restarts the retry backoff`() =
-        runTest {
-            val client =
-                FakeServiceResourceClient().apply {
-                    listFailuresRemaining = 2
-                    enqueueReadResult("""{"items":[]}""")
-                    enqueueReadResult("""{"items":[]}""")
-                }
-            val monitor = ServiceMonitor(this) { _, _ -> client }
-
-            monitor.start("https://service.test", serviceSettings())
+            assertEquals(2, client.lists)
+            advanceTimeBy(1999)
             runCurrent()
-            advanceTimeBy(1000)
-            runCurrent()
-            assertEquals(2, client.listCalls)
-
-            client.deliverThenClose = listOf(initialState("gomode://items", """{"items":[]}"""))
-            advanceTimeBy(2000)
-            runCurrent()
-            assertEquals(3, client.listCalls)
-            assertEquals("MCP subscription stream ended", monitor.state.value.retryReason)
-
-            // Two failures escalated the delay to 4000 ms; the delivered stream resets it to 1000.
-            advanceTimeBy(999)
-            runCurrent()
-            assertEquals(3, client.listCalls)
+            assertEquals(2, client.lists)
+            client.listFailure = false
             advanceTimeBy(1)
             runCurrent()
-            assertEquals(4, client.listCalls)
+            assertEquals("known", status(monitor, FIXTURE_CATALOG_URI))
+            monitor.stop()
+            val calls = client.lists
+            advanceTimeBy(60000)
+            runCurrent()
+            assertEquals(calls, client.lists)
+        }
+
+    @Test
+    fun `successful alert withdrawal revokes active occurrences`() =
+        runTest {
+            val client = Fixture()
+            val uri = GOMODE_NOTIFICATIONS_RESOURCE_URI
+            client.resources += ResourceDescriptor(uri = uri, name = "alerts")
+            client.text[uri] = """[{"id":"a","title":"Review","body":"Ready"}]"""
+            val monitor = ServiceMonitor(backgroundScope) { _, _ -> client }
+            monitor.start("https://service.test", settings())
+            runCurrent()
+            assertEquals(
+                listOf("a"),
+                monitor.state.value.activeNotifications
+                    ?.map { it.id },
+            )
+            client.resources = client.resources.filter { it.uri != uri }
+            client.listChanged()
+            runCurrent()
+            assertEquals(emptyList<ServiceNotification>(), monitor.state.value.activeNotifications)
+            assertTrue(
+                monitor.state.value.notifications
+                    .isEmpty(),
+            )
             monitor.stop()
         }
 
     @Test
-    fun `real mcp client monitoring sends resource name header`() =
-        runBlocking {
-            val server = MockWebServer()
-            server.dispatcher =
-                object : Dispatcher() {
-                    override fun dispatch(request: RecordedRequest): MockResponse =
-                        when (request.getHeader("Mcp-Method")) {
-                            "resources/list" -> {
-                                jsonResponse(RESOURCES_LIST_JSON)
-                            }
-
-                            "resources/read" -> {
-                                if (request.getHeader("Mcp-Name") != "gomode://items") {
-                                    mcpErrorResponse("Header mismatch: Mcp-Name header is required")
-                                } else {
-                                    jsonResponse(RESOURCE_READ_JSON)
-                                }
-                            }
-
-                            "subscriptions/listen" -> {
-                                MockResponse()
-                                    .setHeader("Content-Type", "text/event-stream")
-                                    .setBody(SUBSCRIPTION_ACK_SSE)
-                                    .setSocketPolicy(SocketPolicy.KEEP_OPEN)
-                            }
-
-                            else -> {
-                                mcpErrorResponse("unexpected MCP method ${request.getHeader("Mcp-Method")}")
-                            }
-                        }
-                }
-            server.start()
-            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-            val monitor =
-                ServiceMonitor(scope) { endpointURL, protocolVersion ->
-                    McpClient(
-                        endpointURL = endpointURL,
-                        protocolVersion = protocolVersion,
-                        cookieProvider = { null },
-                    )
-                }
-            try {
-                monitor.start(server.url("/").toString(), serviceSettings(endpoint = "/mcp"))
-                val state =
-                    withTimeout(3000) {
-                        monitor.state.filter { it.snapshot != null || it.retryReason != null }.first()
-                    }
-
-                assertNull(state.retryReason)
-                assertNotNull(state.snapshot)
-                assertEquals(
-                    "Build feature",
-                    state.snapshot
-                        ?.items
-                        ?.single()
-                        ?.title,
-                )
-            } finally {
-                monitor.stop()
-                scope.cancel()
-                server.shutdown()
-            }
+    fun `delivered alert baseline supersedes old read and preserves queued announcements`() =
+        runTest {
+            val client = Fixture()
+            val uri = GOMODE_NOTIFICATIONS_RESOURCE_URI
+            client.resources += ResourceDescriptor(uri = uri, name = "alerts")
+            val old = alerts("old")
+            val baseline = alerts("base")
+            val current = alerts("base", "new")
+            client.responses[uri] = ArrayDeque(listOf(old, current))
+            client.text[uri] = current
+            val gate = CompletableDeferred<Unit>()
+            client.gates[uri] = gate
+            client.uncancellable += uri
+            val monitor = ServiceMonitor(backgroundScope) { _, _ -> client }
+            monitor.start("https://service.test", settings())
+            runCurrent()
+            client.changed(uri)
+            runCurrent()
+            client.initial(uri, baseline)
+            runCurrent()
+            assertEquals(
+                listOf("base"),
+                monitor.state.value.activeNotifications
+                    ?.map { it.id },
+            )
+            client.changed(uri) // Legacy update paired with the initial payload.
+            runCurrent()
+            gate.complete(Unit)
+            runCurrent()
+            assertEquals(
+                listOf("base", "new"),
+                monitor.state.value.activeNotifications
+                    ?.map { it.id },
+            )
+            assertEquals(
+                listOf("new"),
+                monitor.state.value.notifications
+                    .map { it.id },
+            )
+            client.initial(uri, old) // A duplicate payload must not replace newer state.
+            runCurrent()
+            assertEquals(
+                listOf("base", "new"),
+                monitor.state.value.activeNotifications
+                    ?.map { it.id },
+            )
+            assertEquals(2, client.reads.size)
+            monitor.stop()
         }
 
-    private class FakeServiceResourceClient : ServiceResourceClient {
-        val requestSessions = mutableListOf<Pair<String, String?>>()
-        var supportsSubscriptions = true
+    @Test
+    fun `late pre-subscription read cannot overwrite delivered alert baseline`() =
+        runTest {
+            val client = Fixture()
+            val uri = GOMODE_NOTIFICATIONS_RESOURCE_URI
+            client.resources += ResourceDescriptor(uri = uri, name = "alerts")
+            client.text[uri] = alerts("old")
+            val gate = CompletableDeferred<Unit>()
+            client.gates[uri] = gate
+            client.uncancellable += uri
+            val monitor = ServiceMonitor(backgroundScope) { _, _ -> client }
+            monitor.start("https://service.test", settings())
+            runCurrent()
+            client.initial(uri, alerts("base"))
+            runCurrent()
+            client.changed(uri)
+            runCurrent()
+            gate.complete(Unit)
+            runCurrent()
+            assertEquals(
+                listOf("base"),
+                monitor.state.value.activeNotifications
+                    ?.map { it.id },
+            )
+            assertTrue(
+                monitor.state.value.notifications
+                    .isEmpty(),
+            )
+            assertEquals(1, client.reads.size)
+            monitor.stop()
+        }
+
+    @Test
+    fun `model initial payload preserves paired invalidation behind a pending authoritative read`() =
+        runTest {
+            val client = Fixture()
+            val uri = FIXTURE_CONTEXT_URI
+            client.responses[uri] = ArrayDeque(listOf("old", "post-subscription"))
+            val gate = CompletableDeferred<Unit>()
+            client.gates[uri] = gate
+            val monitor =
+                ServiceMonitor(
+                    backgroundScope,
+                    "conversation",
+                    ServiceMonitorPurpose.CONVERSATION_CONTEXT,
+                ) { _, _ -> client }
+            monitor.start("https://service.test", settings())
+            runCurrent()
+            client.initial(uri, "unverified payload")
+            runCurrent()
+            assertEquals("unread", status(monitor, uri))
+            client.changed(uri)
+            runCurrent()
+            gate.complete(Unit)
+            runCurrent()
+            assertEquals(2, client.reads.count { it == uri })
+            assertTrue(
+                monitor.state.value.voiceContext
+                    .contains("post-subscription"),
+            )
+            assertFalse(
+                monitor.state.value.voiceContext
+                    .contains("unverified payload"),
+            )
+            monitor.stop()
+        }
+
+    @Test
+    fun `failed model reads retry independently with backoff and retirement cancels retries`() =
+        runTest {
+            val client = Fixture()
+            client.failures += FIXTURE_CONTEXT_URI
+            val monitor =
+                ServiceMonitor(
+                    backgroundScope,
+                    "conversation",
+                    ServiceMonitorPurpose.CONVERSATION_CONTEXT,
+                ) { _, _ -> client }
+            monitor.start("https://service.test", settings())
+            runCurrent()
+            assertEquals("error", status(monitor, FIXTURE_CONTEXT_URI))
+            assertEquals("known", status(monitor, FIXTURE_CATALOG_URI))
+            advanceTimeBy(1000)
+            runCurrent()
+            assertEquals(2, client.reads.count { it == FIXTURE_CONTEXT_URI })
+            assertEquals(1, client.reads.count { it == FIXTURE_CATALOG_URI })
+            advanceTimeBy(1999)
+            runCurrent()
+            assertEquals(2, client.reads.count { it == FIXTURE_CONTEXT_URI })
+            client.failures.clear()
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals("known", status(monitor, FIXTURE_CONTEXT_URI))
+            client.failures += FIXTURE_CONTEXT_URI
+            client.changed(FIXTURE_CONTEXT_URI)
+            runCurrent()
+            client.resources = client.resources.filter { it.uri != FIXTURE_CONTEXT_URI }
+            client.listChanged()
+            runCurrent()
+            val reads = client.reads.size
+            advanceTimeBy(60000)
+            runCurrent()
+            assertEquals(reads, client.reads.size)
+            assertEquals("absent", status(monitor, FIXTURE_CONTEXT_URI))
+            client.resources += model(FIXTURE_CONTEXT_URI)
+            client.listChanged()
+            runCurrent()
+            assertEquals("error", status(monitor, FIXTURE_CONTEXT_URI))
+            monitor.stop()
+            runCurrent()
+            val stoppedReads = client.reads.size
+            advanceTimeBy(60000)
+            runCurrent()
+            assertEquals(stoppedReads, client.reads.size)
+        }
+
+    private class Fixture : ServiceResourceClient {
         var resources =
-            listOf(ResourceDescriptor(uri = "gomode://items", name = "service", mimeType = "application/json"))
-        val readURIs = mutableListOf<String>()
-        val subscriptionFilters = mutableListOf<SubscriptionFilter>()
-        var closeSubscriptionsImmediately = false
+            listOf(
+                model(FIXTURE_CONTEXT_URI),
+                model(FIXTURE_CATALOG_URI),
+                ResourceDescriptor(uri = "fixture://on-demand", name = "unmarked"),
+            )
+        val text = mutableMapOf(FIXTURE_CONTEXT_URI to "資料 東京", FIXTURE_CATALOG_URI to "Catalogue")
+        val reads = mutableListOf<String>()
+        val filters = mutableListOf<SubscriptionFilter>()
+        val failures = mutableSetOf<String>()
+        val gates = mutableMapOf<String, CompletableDeferred<Unit>>()
+        val cancelledReads = mutableSetOf<String>()
+        val uncancellable = mutableSetOf<String>()
+        val events = MutableSharedFlow<JSONRPCNotification>(extraBufferCapacity = 16)
+        var completedStreams = 0
+        var lists = 0
+        var listFailure = false
+        var epoch = "private-epoch"
+        var version = 1L
 
-        // Notifications the next subscription delivers before it closes, then cleared.
-        var deliverThenClose: List<JSONRPCNotification> = emptyList()
-        var listCalls = 0
-        var listFailuresRemaining = 0
-        var subscriptionCancelled = false
-
-        private val readResults = ArrayDeque<ResourcesReadResult>()
-        private val subscriptionEvents = MutableSharedFlow<JSONRPCNotification>(extraBufferCapacity = 8)
-
-        override suspend fun serverDiscover(sessionID: String?): ServerDiscoverResult =
+        override suspend fun serverDiscover(sessionID: String?) =
             ServerDiscoverResult(
                 resultType = ResultType.Complete,
+                ttlMs = 0,
+                cacheScope = CacheScope.Private,
                 supportedVersions = listOf("2026-07-28"),
                 capabilities =
                     Capabilities(
-                        resources =
-                            ResourcesCapability(
-                                subscribe = supportsSubscriptions,
-                                listChanged = supportsSubscriptions,
-                            ),
-                        tools = ToolsCapability(),
+                        resources = ResourcesCapability(subscribe = true, listChanged = true),
+                        tools =
+                            com.fghbuild.mcp.sdk.v1
+                                .ToolsCapability(),
                     ),
-                serverInfo = Implementation(name = "test", version = "1"),
-                ttlMs = 1000,
-                cacheScope = CacheScope.Private,
-            ).also { requestSessions += "discover" to sessionID }
-
-        fun enqueueReadResult(text: String) {
-            readResults.addLast(itemsReadResult(text))
-        }
-
-        fun enqueueNotificationReadResult(text: String) {
-            readResults.addLast(goModeNotificationsReadResult(text))
-        }
-
-        fun emit(notification: JSONRPCNotification) {
-            check(subscriptionEvents.tryEmit(notification))
-        }
+                serverInfo = Implementation(name = "fixture", version = "1"),
+            )
 
         override suspend fun listResources(sessionID: String?): List<ResourceDescriptor> {
-            requestSessions += "list" to sessionID
-            listCalls++
-            if (listFailuresRemaining > 0) {
-                listFailuresRemaining--
-                throw IOException("HTTP 401")
-            }
+            lists++
+            if (listFailure) throw IOException("offline")
             return resources
         }
+
+        val responses = mutableMapOf<String, ArrayDeque<String>>()
 
         override suspend fun readResource(
             uri: String,
             sessionID: String?,
-        ): ResourcesReadResult {
-            requestSessions += "read" to sessionID
-            readURIs += uri
-            return readResults.removeFirst()
+        ): ServiceResourceRead {
+            reads += uri
+            val response = responses[uri]?.removeFirstOrNull()
+            try {
+                gates[uri]?.await()
+            } catch (
+                error: kotlinx.coroutines.CancellationException,
+            ) {
+                cancelledReads += uri
+                if (uri !in uncancellable) throw error
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { gates[uri]?.await() }
+            }
+            if (uri in failures) throw IOException("advisory")
+            return ServiceResourceRead(
+                uri,
+                ResourcesReadResult(
+                    resultType = ResultType.Complete,
+                    contents =
+                        listOf(
+                            ResourceContent(
+                                uri = uri,
+                                text =
+                                    response ?: checkNotNull(text[uri]),
+                            ),
+                        ),
+                    ttlMs = 0,
+                    cacheScope = CacheScope.Private,
+                    _meta =
+                        if (uri == FIXTURE_CONTEXT_URI) {
+                            mapOf(
+                                "com.fghbuild.gomode/context" to
+                                    buildJsonObject {
+                                        put("uri", uri)
+                                        put("epoch", epoch)
+                                        put("version", version)
+                                        put("dependencies", kotlinx.serialization.json.JsonArray(emptyList()))
+                                    },
+                            )
+                        } else {
+                            null
+                        },
+                ),
+            )
         }
 
         override fun listenSubscriptions(
             notifications: SubscriptionFilter,
             sessionID: String?,
         ): Flow<JSONRPCNotification> {
-            requestSessions += "subscribe" to sessionID
-            subscriptionFilters += notifications
-            if (deliverThenClose.isNotEmpty()) {
-                val delivered = deliverThenClose
-                deliverThenClose = emptyList()
-                return flow { delivered.forEach { emit(it) } }
-            }
-            if (closeSubscriptionsImmediately) return flow {}
-            return callbackFlow {
-                val eventsJob =
-                    launch {
-                        subscriptionEvents.collect { send(it) }
-                    }
-                awaitClose {
-                    subscriptionCancelled = true
-                    eventsJob.cancel()
-                }
-            }
+            filters += notifications
+            return events.onCompletion { completedStreams++ }
         }
-    }
 
-    private companion object {
-        fun serviceSettings(endpoint: String = "/api/service/v1/mcp"): Settings =
-            Settings(
-                service = "example",
-                apiVersion = 1,
-                webShell =
-                    WebShellSettings(
-                        bridgeVersion = 3,
-                        toolGroups =
-                            listOf(
-                                ToolGroup(
-                                    name = "service",
-                                    endpoint = endpoint,
-                                    protocolVersion = "2026-07-28",
-                                    authRequired = false,
-                                ),
-                            ),
-                        voiceGateway = VoiceGatewaySettings(required = false),
-                    ),
-            )
-
-        fun itemsReadResult(text: String): ResourcesReadResult =
-            ResourcesReadResult(
-                resultType = ResultType.Complete,
-                contents =
-                    listOf(
-                        ResourceContent(
-                            uri = "gomode://items",
-                            mimeType = "application/json",
-                            text = text,
+        fun changed(uri: String) {
+            check(
+                events
+                    .tryEmit(
+                        JSONRPCNotification(
+                            jsonrpc = "2.0",
+                            method = NotificationMethod.ResourcesUpdated,
+                            params =
+                                JSONPresence
+                                    .Value(
+                                        buildJsonObject {
+                                            put("uri", uri)
+                                        },
+                                    ),
                         ),
                     ),
-                ttlMs = 1000,
-                cacheScope = CacheScope.Private,
             )
+        }
 
-        fun goModeNotificationsReadResult(text: String): ResourcesReadResult =
-            ResourcesReadResult(
-                resultType = ResultType.Complete,
-                contents =
-                    listOf(
-                        ResourceContent(
-                            uri = GOMODE_NOTIFICATIONS_RESOURCE_URI,
-                            mimeType = "application/json",
-                            text = text,
-                        ),
-                    ),
-                ttlMs = 1000,
-                cacheScope = CacheScope.Private,
-            )
-
-        fun resourceUpdated(uri: String): JSONRPCNotification =
-            JSONRPCNotification(
-                jsonrpc = "2.0",
-                method = NotificationMethod.ResourcesUpdated,
-                params = JSONPresence.Value(buildJsonObject { put("uri", uri) }),
-            )
-
-        fun resourceListChanged(): JSONRPCNotification =
-            JSONRPCNotification(
-                jsonrpc = "2.0",
-                method = NotificationMethod.ResourcesListChanged,
-            )
-
-        fun initialState(
+        fun initial(
             uri: String,
             text: String,
-        ): JSONRPCNotification =
-            JSONRPCNotification(
-                jsonrpc = "2.0",
-                method = NotificationMethod.SubscriptionsInitialState,
-                params =
-                    JSONPresence.Value(
-                        Json.encodeToJsonElement(
-                            SubscriptionsInitialStateParams(
-                                uri = uri,
-                                contents =
-                                    listOf(
-                                        ResourceContent(uri = uri, mimeType = "application/json", text = text),
-                                    ),
+        ) {
+            check(
+                events.tryEmit(
+                    JSONRPCNotification(
+                        jsonrpc = "2.0",
+                        method = NotificationMethod.SubscriptionsInitialState,
+                        params =
+                            JSONPresence.Value(
+                                buildJsonObject {
+                                    put("uri", uri)
+                                    put(
+                                        "contents",
+                                        kotlinx.serialization.json.buildJsonArray {
+                                            add(
+                                                buildJsonObject {
+                                                    put("uri", uri)
+                                                    put("text", text)
+                                                },
+                                            )
+                                        },
+                                    )
+                                },
                             ),
-                        ),
                     ),
+                ),
             )
+        }
 
-        fun jsonResponse(body: String): MockResponse =
-            MockResponse()
-                .setHeader("Content-Type", "application/json")
-                .setBody(body)
-
-        fun mcpErrorResponse(message: String): MockResponse =
-            MockResponse()
-                .setResponseCode(400)
-                .setHeader("Content-Type", "application/json")
-                .setBody(
-                    """
-                    {"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"$message"}}
-                    """.trimIndent(),
-                )
-
-        const val RESOURCES_LIST_JSON = """
-            {
-              "jsonrpc": "2.0",
-              "id": 1,
-              "result": {
-                "resultType": "complete",
-                "resources": [
-                  {"uri": "gomode://items", "name": "items", "mimeType": "application/json"}
-                ],
-                "ttlMs": 1000,
-                "cacheScope": "private"
-              }
-            }
-        """
-
-        const val RESOURCE_READ_JSON = """
-            {
-              "jsonrpc": "2.0",
-              "id": 2,
-              "result": {
-                "resultType": "complete",
-                "contents": [
-                  {
-                    "uri": "gomode://items",
-                    "mimeType": "application/json",
-                    "text": "{\"items\":[{\"id\":\"t1\",\"title\":\"Build feature\",\"state\":\"running\"}]}"
-                  }
-                ],
-                "ttlMs": 1000,
-                "cacheScope": "private"
-              }
-            }
-        """
-
-        const val SUBSCRIPTION_ACK_SSE =
-            "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\"," +
-                "\"params\":{\"notifications\":{\"resourceSubscriptions\":[\"gomode://items\"]}}}\n\n"
+        fun listChanged() {
+            check(
+                events.tryEmit(JSONRPCNotification(jsonrpc = "2.0", method = NotificationMethod.ResourcesListChanged)),
+            )
+        }
     }
 }
+
+private fun model(uri: String) =
+    ResourceDescriptor(
+        uri = uri,
+        name = uri,
+        _meta =
+            mapOf(MODEL_CONTEXT_META_KEY to JsonPrimitive(true)),
+    )
+
+private fun settings() =
+    Settings(
+        apiVersion = 1,
+        service = "fixture",
+        webShell =
+            WebShellSettings(
+                bridgeVersion = 3,
+                voiceGateway =
+                    com.fghbuild.gomode.sdk.v1
+                        .VoiceGatewaySettings(required = false),
+                toolGroups =
+                    listOf(
+                        ToolGroup(
+                            name = "fixture",
+                            endpoint = "/mcp",
+                            protocolVersion = "2026-07-28",
+                            authRequired = false,
+                        ),
+                    ),
+            ),
+    )
+
+private fun status(
+    monitor: ServiceMonitor,
+    uri: String,
+): String =
+    monitor.state.value.voiceContext
+        .lineSequence()
+        .map { Json.parseToJsonElement(it).jsonObject }
+        .single {
+            it["resource"]?.jsonPrimitive?.content ==
+                uri
+        }.getValue("status")
+        .jsonPrimitive.content
+
+private fun alerts(vararg ids: String): String =
+    kotlinx.serialization.json
+        .buildJsonArray {
+            ids.forEach { id ->
+                add(
+                    buildJsonObject {
+                        put("id", id)
+                        put("title", id)
+                        put("body", id)
+                    },
+                )
+            }
+        }.toString()
