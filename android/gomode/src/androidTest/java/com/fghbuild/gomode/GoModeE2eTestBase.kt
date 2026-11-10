@@ -3,6 +3,7 @@ package com.fghbuild.gomode
 
 import android.Manifest
 import android.webkit.WebView
+import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -14,6 +15,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.GrantPermissionRule
 import androidx.test.uiautomator.UiDevice
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
 import org.junit.Rule
 import org.junit.rules.TestRule
 import org.junit.runners.model.Statement
@@ -44,8 +46,10 @@ abstract class GoModeE2eTestBase {
     val notificationPermissionRule: GrantPermissionRule =
         GrantPermissionRule.grant(Manifest.permission.POST_NOTIFICATIONS)
 
+    // Queue recomposition for the test clock; DataStore completions can resume unconfined work on IO threads.
     @get:Rule(order = 2)
-    val composeRule = createAndroidComposeRule<MainActivity>()
+    @OptIn(ExperimentalTestApi::class)
+    val composeRule = createAndroidComposeRule<MainActivity>(effectContext = StandardTestDispatcher())
 
     protected val baseUrl: String by lazy {
         InstrumentationRegistry.getArguments().getString("baseUrl", DEFAULT_BASE_URL)

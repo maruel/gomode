@@ -48,6 +48,12 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         waitForHostedFrontend()
         val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
 
+        fun waitForAppFocus() {
+            composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+                composeRule.runOnUiThread { composeRule.activity.hasWindowFocus() }
+            }
+        }
+
         fun denyPermission() {
             val deny =
                 device.wait(
@@ -55,10 +61,12 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
                     GOMODE_DEFAULT_TIMEOUT_MS,
                 )
             requireNotNull(deny) { "Microphone permission prompt did not appear" }.click()
+            waitForAppFocus()
         }
         composeRule.onNodeWithTag("gomode-voice-connect").performClick()
         requireNotNull(device.wait(Until.findObject(By.textContains("record audio")), GOMODE_DEFAULT_TIMEOUT_MS))
         device.pressBack()
+        waitForAppFocus()
         composeRule.onNodeWithText("Enable microphone").performClick()
         denyPermission()
         composeRule.onNodeWithText("Enable microphone").performClick()
@@ -79,6 +87,7 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         clickSystemText("Microphone")
         clickSystemText("Allow only while using the app")
         repeat(3) { device.pressBack() }
+        waitForAppFocus()
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
             composeRule.onAllNodesWithTag("gomode-microphone-recovery").fetchSemanticsNodes().isEmpty()
         }
