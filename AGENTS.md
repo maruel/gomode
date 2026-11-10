@@ -14,9 +14,11 @@ with `make generate-sdks` after DTO or route changes. `make android-check`
 builds the Android app and SDKs, compiles instrumented tests, and runs lint,
 unit tests, and coverage.
 
-The Android lanes in `fix`, `verify`, and `test` run only for Android, SDK, or build
-input changes, comparing against upstream locally or `ANDROID_CHECK_BASE` in CI.
-Without a usable base they run unconditionally; explicit Android targets always run.
+`verify` and `test` cover the non-Android stacks; run `make android-check` for Android,
+SDK, or build input changes. The pre-push hook also runs this target when those
+inputs changed. Android formatting in `fix` and pre-push detection compare against
+upstream locally or `ANDROID_CHECK_BASE` when supplied. Without a usable base they
+run unconditionally; explicit Android targets always run.
 
 Mandatory: Run `make git-hooks` to install git hooks before making any change.
 

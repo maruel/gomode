@@ -12,18 +12,8 @@ jobs:
   test:
     name: Verify and test
     runs-on: ubuntu-latest
-    env:
-      ANDROID_CHECK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - name: Detect Android changes
-        id: android
-        shell: bash
-        run: |
-          needed="$(./scripts/android-checks.sh --needed)"
-          echo "needed=$needed" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -36,13 +26,6 @@ jobs:
           runtime: node@26
           cache: true
           require-lockfile: true
-      - uses: actions/setup-java@v6
-        if: steps.android.outputs.needed == 'true'
-        with:
-          distribution: temurin
-          java-version: "21"
-      - uses: gradle/actions/setup-gradle@v6
-        if: steps.android.outputs.needed == 'true'
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: Verify
         run: make verify
@@ -61,16 +44,6 @@ jobs:
         run: make test
       - name: Race tests
         run: make test-race
-      - name: Upload Android test results on failure
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: android-unit-test-results
-          path: |
-            android/gomode/build/reports/tests/
-            sdk/halo/build/reports/tests/
-          if-no-files-found: ignore
-          retention-days: 7
 
   windows:
     name: Voice gateway (Windows)

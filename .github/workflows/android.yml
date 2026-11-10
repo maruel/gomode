@@ -46,8 +46,6 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v6
-      - name: Install Android SDK packages
-        run: make android-sdk
       - name: Check Android
         run: make android-check
       - name: Upload check results on failure
