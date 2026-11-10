@@ -79,7 +79,7 @@ export interface FrontendPreparationScope extends FrontendSessionPreparation {
   nativeVoiceSessionID: Accessor<string | null>;
   /** Atomically register every intended tool; [] explicitly completes zero-tool registration. */
   setTools(tools: readonly FrontendVoiceTool[]): void;
-  /** Report authoritative initial-data completion, including a successful empty result. */
+  // Report authoritative initial-data completion; repeated equal values have no effect.
   setDataReady(ready: boolean): void;
   dispose(): void;
 }
@@ -391,7 +391,7 @@ export function createFrontendPreparationClient(): {
               update();
             },
             setDataReady(value) {
-              if (released) return;
+              if (released || dataReady === value) return;
               if (dataReady && !value) invalidate(registration.tools);
               dataReady = value;
               update();

@@ -81,6 +81,39 @@ it("requires explicit tool registration and initial-data completion in either or
   }
 });
 
+it("ignores equal data readiness while publishing real changes and replacement registrations", async () => {
+  const scope = authenticate().createScope();
+  scope.setTools([tool]);
+  await Promise.resolve();
+  acknowledge(requests.at(-1)!, "identity");
+  const initial = [...readiness];
+  scope.setDataReady(false);
+  expect(readiness).toEqual(initial);
+
+  scope.setDataReady(true);
+  const prepared = [...readiness];
+  const snapshot = captureFrontendVoiceTools();
+  scope.setDataReady(true);
+  expect(readiness).toEqual(prepared);
+  expect(await snapshot.execute("select_item", {}, "conversation")).toEqual({ selected: true });
+
+  scope.setTools([tool]);
+  expect(readiness).toHaveLength(prepared.length + 1);
+  expect(readiness.at(-1)).toMatchObject({ ready: true });
+  expect(await snapshot.execute("select_item", {}, "conversation")).toHaveProperty("error");
+
+  const replacement = captureFrontendVoiceTools();
+  scope.setDataReady(false);
+  expect(readiness.at(-1)).toMatchObject({ ready: false, tools: [] });
+  expect(await replacement.execute("select_item", {}, "conversation")).toHaveProperty("error");
+  const retired = [...readiness];
+  scope.setDataReady(false);
+  expect(readiness).toEqual(retired);
+  scope.setDataReady(true);
+  expect(readiness).toHaveLength(retired.length + 1);
+  expect(readiness.at(-1)).toMatchObject({ ready: true });
+});
+
 it("makes browser readiness local while native publication waits for matching auth acknowledgement", async () => {
   const scope = authenticate().createScope();
   scope.setTools([]);
