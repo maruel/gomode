@@ -37,7 +37,7 @@ help:
 	@printf '  %-27s - %s\n' 'make frontend-build' 'Rebuild embedded standalone frontend assets'
 	@printf '  %-27s - %s\n' 'make git-hooks' 'Install versioned Git hooks'
 	@printf '  %-27s - %s\n' 'make test' 'Run Go, browser, and changed Android builds and tests'
-	@printf '  %-27s - %s\n' 'make test-race' 'Run race-safe voice gateway concurrency tests'
+	@printf '  %-27s - %s\n' 'make test-race' 'Run all Go tests with race detection'
 	@printf '  %-27s - %s\n' 'make build' 'Build Go packages and Android app and SDKs'
 	@printf '  %-27s - %s\n' 'make release' 'Publish gateway archives from a version tag (requires GITHUB_TOKEN)'
 	@printf '  %-27s - %s\n' 'make benchmark' 'Run Go benchmarks'
@@ -77,7 +77,7 @@ verify: node_modules/.modules.yaml
 	@./scripts/run-concurrently.sh sdk,workflows,go,format,lint,ts,frontend,python,shell,misc,android \
 		'go run ./internal/cmd/gen-sdk -check' \
 		'go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12' \
-		'go test -run=^$$ ./... && go test -race -run=^$$ ./voicegateway/voicertc && go tool golangci-lint run ./... && go mod tidy -diff && go build ./...' \
+		'go test -run=^$$ ./... && go test -race -run=^$$ ./... && go tool golangci-lint run ./... && go mod tidy -diff && go build ./...' \
 		'pnpm exec prettier --check --log-level warn .github/workflows e2e/voice-preview eslint.config.js frontend/index.html frontend/src frontend/tsconfig.json package.json scripts/*.mjs web/src web/tests' \
 		'pnpm exec eslint --max-warnings 0 e2e/voice-preview/*.js e2e/voice-preview/*.tsx frontend/src scripts/*.mjs web/src web/tests' \
 		'pnpm exec node scripts/css_module_types.mjs --source-path web/src && pnpm exec node scripts/css_module_types.mjs --source-path frontend/src && pnpm exec tsc --noEmit -p frontend/tsconfig.json' \
@@ -102,7 +102,7 @@ test: node_modules/.modules.yaml
 	@./scripts/android-checks.sh $(ANDROID_TEST_TASKS) --quiet
 
 test-race:
-	@go test -race ./voicegateway/voicertc
+	@go test -race ./...
 
 frontend-build: node_modules/.modules.yaml
 	@pnpm exec node scripts/css_module_types.mjs --source-path web/src --write

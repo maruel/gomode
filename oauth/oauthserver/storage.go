@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -130,16 +131,21 @@ func newEmptyStore(path string) *Store {
 
 // LoadStore loads durable OAuth state from path. Existing files must use version 5;
 // missing files start an empty store.
-func LoadStore(path string) (*Store, error) {
-	store := newEmptyStore(path)
+func LoadStore(path string) (store *Store, err error) {
+	store = newEmptyStore(path)
 	if path == "" {
 		return store, nil
 	}
-	data, err := os.ReadFile(path) //nolint:gosec // path is app-controlled persistent state.
+	f, err := os.Open(path) //nolint:gosec // App-controlled persistent state.
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return store, nil
 		}
+		return nil, fmt.Errorf("open oauth state: %w", err)
+	}
+	defer func() { err = errors.Join(err, f.Close()) }()
+	data, err := io.ReadAll(f)
+	if err != nil {
 		return nil, fmt.Errorf("read oauth state: %w", err)
 	}
 	var file v5.Store
@@ -150,12 +156,8 @@ func LoadStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("parse oauth state: unsupported version %d", file.Version)
 	}
 	if len(file.AccessTokenSigningKeys) > 0 {
-		info, statErr := os.Stat(path)
-		if statErr != nil {
-			return nil, fmt.Errorf("stat oauth state: %w", statErr)
-		}
-		if info.Mode().Perm()&0o077 != 0 {
-			return nil, errors.New("oauth state containing signing keys must not be accessible by group or others")
+		if err := checkStorePrivacy(f); err != nil {
+			return nil, fmt.Errorf("private oauth signing state: %w", err)
 		}
 	}
 	store.Clients = loadClients(file.Clients)
@@ -182,7 +184,7 @@ func (s *Store) Save() error {
 	return err
 }
 
-func persistStore(s *Store, file *storeState) (bool, error) {
+func persistStore(s *Store, file *storeState) (committed bool, err error) {
 	if s.path == "" {
 		return true, nil
 	}
@@ -193,48 +195,33 @@ func persistStore(s *Store, file *storeState) (bool, error) {
 	}
 	data = append(data, '\n')
 	dir := filepath.Dir(s.path)
-	tmp, err := s.io.CreateTemp(dir, ".oauth-state-*")
+	tmp, err := s.io.CreateTemp(dir)
 	if err != nil {
 		return false, fmt.Errorf("create oauth state temporary file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	committed := false
 	defer func() {
 		if !committed {
-			_ = os.Remove(tmpPath)
+			if removeErr := os.Remove(tmpPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				err = errors.Join(err, removeErr)
+			}
 		}
 	}()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return false, fmt.Errorf("chmod oauth state temporary file: %w", err)
-	}
+
 	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return false, fmt.Errorf("write oauth state: %w", err)
+		return false, errors.Join(fmt.Errorf("write oauth state: %w", err), tmp.Close())
 	}
 	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return false, fmt.Errorf("sync oauth state: %w", err)
+		return false, errors.Join(fmt.Errorf("sync oauth state: %w", err), tmp.Close())
 	}
 	if err := tmp.Close(); err != nil {
 		return false, fmt.Errorf("close oauth state: %w", err)
 	}
-	if err := s.io.Rename(tmpPath, s.path); err != nil {
-		return false, fmt.Errorf("rename oauth state: %w", err)
-	}
-	committed = true
-	dirFile, err := s.io.Open(dir)
+	committed, err = s.io.Commit(tmpPath, s.path)
 	if err != nil {
-		return true, fmt.Errorf("open oauth state directory: %w", err)
+		return committed, fmt.Errorf("commit oauth state: %w", err)
 	}
-	if err := dirFile.Sync(); err != nil {
-		_ = dirFile.Close()
-		return true, fmt.Errorf("sync oauth state directory: %w", err)
-	}
-	if err := dirFile.Close(); err != nil {
-		return true, fmt.Errorf("close oauth state directory: %w", err)
-	}
-	return true, nil
+	return committed, nil
 }
 
 // Path returns the durable OAuth state path.
@@ -489,30 +476,13 @@ func (s *Store) pruneExpired(now time.Time) bool {
 	return pruneExpiredStore(&file, now)
 }
 
+// Commit reports namespace publication separately from durability errors so a
+// consumed credential cannot be restored in memory after its new state is visible.
 type storeIO interface {
-	CreateTemp(dir, pattern string) (*os.File, error)
-	Open(name string) (storeSyncCloser, error)
-	Rename(oldPath, newPath string) error
+	CreateTemp(dir string) (*os.File, error)
+	Commit(oldPath, newPath string) (committed bool, err error)
 }
-
-type storeSyncCloser interface {
-	Sync() error
-	Close() error
-}
-
 type osStoreIO struct{}
-
-func (osStoreIO) CreateTemp(dir, pattern string) (*os.File, error) {
-	return os.CreateTemp(dir, pattern)
-}
-
-func (osStoreIO) Open(name string) (storeSyncCloser, error) {
-	return os.Open(name) //nolint:gosec // name is the app-controlled OAuth state directory.
-}
-
-func (osStoreIO) Rename(oldPath, newPath string) error {
-	return os.Rename(oldPath, newPath)
-}
 
 type storeState struct {
 	Clients                map[string]Client

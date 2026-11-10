@@ -86,7 +86,7 @@ try {
     [IO.File]::Copy($source, $binaryTemp)
     try {
         if ($null -ne $task) {
-            # Prevent the one-minute trigger from starting the gateway during replacement.
+            # Prevent queued launches and crash recovery during replacement.
             Disable-ScheduledTask -TaskName $TaskName -TaskPath '\' | Out-Null
             $gateway = Get-Process -Name 'voice-gateway' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | Select-Object -First 1
             # Retain the process handle so PID reuse cannot change which process we wait on.
@@ -110,15 +110,14 @@ try {
         }
         $binaryTemp = $null
         $user = [Environment]::UserDomainName + '\' + [Environment]::UserName
-        $arguments = '-config "' + $ConfigPath + '" -log-file "' + $logFile + '" -env-file "' + $EnvFile + '"'
+        $arguments = '-task-name "' + $TaskName + '" -config "' + $ConfigPath + '" -log-file "' + $logFile + '" -env-file "' + $EnvFile + '"'
         $action = New-ScheduledTaskAction -Execute $exe -Argument $arguments -WorkingDirectory $InstallDir
         # Interactive tasks use the persistent user environment and need no elevation.
         $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
         $triggers = @(
             New-ScheduledTaskTrigger -AtLogOn -User $user
-            New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
         )
-        $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        $settings = New-ScheduledTaskSettingsSet -MultipleInstances Queue -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
         $task = Register-ScheduledTask -TaskName $TaskName -TaskPath '\' -Action $action -Principal $principal -Trigger $triggers -Settings $settings -Description 'Go Mode voice gateway' -Force
     } finally {
         # Restart an existing task even when replacement or registration fails.

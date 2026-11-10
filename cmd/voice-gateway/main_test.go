@@ -64,8 +64,8 @@ func TestStartRestartWatch(t *testing.T) {
 			}
 			select {
 			case <-ctx.Done():
-				if !errors.Is(context.Cause(ctx), context.Canceled) {
-					t.Fatalf("shutdown cause = %v, want normal cancellation", context.Cause(ctx))
+				if !errors.Is(context.Cause(ctx), errRestartRequested) {
+					t.Fatalf("shutdown cause = %v, want a restart request", context.Cause(ctx))
 				}
 			case <-time.After(5 * time.Second):
 				t.Fatal("config change did not trigger shutdown")
@@ -93,7 +93,7 @@ func TestStartRestartWatch(t *testing.T) {
 		select {
 		case <-ctx.Done():
 			if !isNormalShutdown(context.Cause(ctx)) {
-				t.Fatalf("shutdown cause = %v, want normal cancellation", context.Cause(ctx))
+				t.Fatalf("shutdown cause = %v, want a restart request", context.Cause(ctx))
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatal("config directory creation did not trigger shutdown")
@@ -121,16 +121,17 @@ func TestStartRestartWatch(t *testing.T) {
 	})
 	t.Run("executable replacement", func(t *testing.T) {
 		t.Parallel()
-		if runtime.GOOS == "windows" {
-			t.Skip("Windows locks running executables; stop the gateway before replacing its binary")
-		}
 		dir := t.TempDir()
+		ext := ""
+		if runtime.GOOS == "windows" {
+			ext = ".exe"
+		}
 		exe, err := os.Executable()
 		if err != nil {
 			t.Fatal(err)
 		}
 		// Run a private copy so replacement cannot affect the parent test process.
-		for _, name := range []string{"gateway", "gateway.new"} {
+		for _, name := range []string{"gateway" + ext, "gateway.new" + ext} {
 			src, err := os.Open(exe) // #nosec G304 -- exe comes from os.Executable, not user input.
 			if err != nil {
 				t.Fatal(err)
@@ -149,7 +150,7 @@ func TestStartRestartWatch(t *testing.T) {
 			}
 		}
 		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-		cmd := exec.CommandContext(ctx, filepath.Join(dir, "gateway"), "-test.run=^TestRestartWatchProcess$") // #nosec G204 -- Runs a private copy of this test executable.
+		cmd := exec.CommandContext(ctx, filepath.Join(dir, "gateway"+ext), "-test.run=^TestRestartWatchProcess$") // #nosec G204 -- Runs a private copy of this test executable.
 		cmd.Env = append(os.Environ(), "GOMODE_RESTART_WATCH_DIR="+dir)
 		var out bytes.Buffer
 		cmd.Stdout = &out
@@ -166,7 +167,7 @@ func TestStartRestartWatch(t *testing.T) {
 			wg.Wait()
 		})
 		tick := time.NewTicker(10 * time.Millisecond)
-		defer tick.Stop()
+		t.Cleanup(tick.Stop)
 		for {
 			if _, err := os.Stat(filepath.Join(dir, "ready")); err == nil {
 				break
@@ -181,7 +182,12 @@ func TestStartRestartWatch(t *testing.T) {
 			case <-tick.C:
 			}
 		}
-		if err := os.Rename(filepath.Join(dir, "gateway.new"), filepath.Join(dir, "gateway")); err != nil {
+		if runtime.GOOS == "windows" {
+			if err := os.Rename(filepath.Join(dir, "gateway"+ext), filepath.Join(dir, "gateway.old"+ext)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Rename(filepath.Join(dir, "gateway.new"+ext), filepath.Join(dir, "gateway"+ext)); err != nil {
 			t.Fatal(err)
 		}
 		<-done
@@ -214,8 +220,8 @@ func TestRestartWatchProcess(t *testing.T) { //nolint:paralleltest // Subprocess
 	}
 	select {
 	case <-ctx.Done():
-		if !errors.Is(context.Cause(ctx), context.Canceled) {
-			t.Fatalf("shutdown cause = %v, want normal cancellation", context.Cause(ctx))
+		if !errors.Is(context.Cause(ctx), errRestartRequested) {
+			t.Fatalf("shutdown cause = %v, want a restart request", context.Cause(ctx))
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("executable replacement did not trigger shutdown")
@@ -230,6 +236,8 @@ func TestIsNormalShutdown(t *testing.T) {
 		want bool
 	}{
 		{"cancellation", errors.Join(context.Canceled, context.Canceled), true},
+		{"restart", errRestartRequested, true},
+		{"restart cleanup failure", errors.Join(errRestartRequested, errors.New("cleanup failed")), false},
 		{"cleanup failure", errors.Join(context.Canceled, errors.New("watcher close failed")), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -242,6 +250,11 @@ func TestIsNormalShutdown(t *testing.T) {
 }
 
 func TestMainImpl(t *testing.T) {
+	t.Run("version without configuration", func(t *testing.T) {
+		if err := mainImpl([]string{"-version", "-config", filepath.Join(t.TempDir(), "missing.toml")}); err != nil {
+			t.Fatal(err)
+		}
+	})
 	if path := os.Getenv("GOMODE_GATEWAY_HTTP_TEST_CONFIG"); path != "" {
 		if err := mainImpl([]string{"-config", path}); !isNormalShutdown(err) {
 			t.Fatal(err)

@@ -20,6 +20,8 @@ import (
 
 func TestStore(t *testing.T) {
 	t.Parallel()
+	t.Run("private signing state", testStorePrivacy)
+	t.Run("native publication failure", testStorePublicationFailure)
 	t.Run("RevokeAllUserGrants persistence failures preserve one coherent state", func(t *testing.T) {
 		for _, fault := range []string{"rename", "sync"} {
 			t.Run(fault, func(t *testing.T) {
@@ -38,9 +40,9 @@ func TestStore(t *testing.T) {
 					t.Fatal(err)
 				}
 				if fault == "rename" {
-					store.io = failingRenameStoreIO{storeIO: osStoreIO{}}
+					store.io = failingCommitStoreIO{storeIO: osStoreIO{}}
 				} else {
-					store.io = postRenameStoreIO{storeIO: osStoreIO{}, fault: "sync"}
+					store.io = postCommitStoreIO{storeIO: osStoreIO{}}
 				}
 				server := &Server{state: store, session: &testSessionManager{users: map[string]oauth.User{"user": {ID: "user"}}}}
 				if err := server.RevokeAllUserGrants("user"); err == nil {
@@ -286,7 +288,7 @@ func TestStore(t *testing.T) {
 			if err := store.Save(); err != nil {
 				t.Fatalf("Save: %v", err)
 			}
-			store.io = failingRenameStoreIO{storeIO: osStoreIO{}}
+			store.io = failingCommitStoreIO{storeIO: osStoreIO{}}
 			err = store.transact(func(next *storeState) bool {
 				delete(next.Codes, "code-digest")
 				delete(next.Clients, "client")
@@ -320,35 +322,30 @@ func TestStore(t *testing.T) {
 			}
 		})
 
-		t.Run("post-rename failures install committed state", func(t *testing.T) {
+		t.Run("post-publication failure installs committed state", func(t *testing.T) {
 			t.Parallel()
-			for _, fault := range []string{"open", "sync", "close"} {
-				t.Run(fault, func(t *testing.T) {
-					t.Parallel()
-					path := filepath.Join(t.TempDir(), "oauth.json")
-					store, err := LoadStore(path)
-					if err != nil {
-						t.Fatalf("LoadStore: %v", err)
-					}
-					store.io = postRenameStoreIO{storeIO: osStoreIO{}, fault: fault}
-					err = store.transact(func(next *storeState) bool {
-						next.Clients["committed"] = Client{ID: "committed"}
-						return true
-					})
-					if err == nil {
-						t.Fatal("transact succeeded, want post-rename durability error")
-					}
-					if _, ok := store.Clients["committed"]; !ok {
-						t.Fatal("committed state was not installed in memory")
-					}
-					reloaded, err := LoadStore(path)
-					if err != nil {
-						t.Fatalf("reload: %v", err)
-					}
-					if _, ok := reloaded.Clients["committed"]; !ok {
-						t.Fatal("committed state was not visible after restart")
-					}
-				})
+			path := filepath.Join(t.TempDir(), "oauth.json")
+			store, err := LoadStore(path)
+			if err != nil {
+				t.Fatalf("LoadStore: %v", err)
+			}
+			store.io = postCommitStoreIO{storeIO: osStoreIO{}}
+			err = store.transact(func(next *storeState) bool {
+				next.Clients["committed"] = Client{ID: "committed"}
+				return true
+			})
+			if err == nil {
+				t.Fatal("transact succeeded, want post-publication durability error")
+			}
+			if _, ok := store.Clients["committed"]; !ok {
+				t.Fatal("committed state was not installed in memory")
+			}
+			reloaded, err := LoadStore(path)
+			if err != nil {
+				t.Fatalf("reload: %v", err)
+			}
+			if _, ok := reloaded.Clients["committed"]; !ok {
+				t.Fatal("committed state was not visible after restart")
 			}
 		})
 
@@ -410,50 +407,22 @@ func TestStore(t *testing.T) {
 	})
 }
 
-type failingRenameStoreIO struct {
+type failingCommitStoreIO struct {
 	storeIO
 }
 
-func (failingRenameStoreIO) Rename(string, string) error {
-	return errors.New("injected rename failure")
+func (failingCommitStoreIO) Commit(string, string) (bool, error) {
+	return false, errors.New("injected commit failure")
 }
 
-type postRenameStoreIO struct {
-	storeIO
+type postCommitStoreIO struct{ storeIO }
 
-	fault string
-}
-
-func (i postRenameStoreIO) Open(name string) (storeSyncCloser, error) {
-	if i.fault == "open" {
-		return nil, errors.New("injected open failure")
-	}
-	dir, err := i.storeIO.Open(name)
+func (i postCommitStoreIO) Commit(oldPath, newPath string) (bool, error) {
+	committed, err := i.storeIO.Commit(oldPath, newPath)
 	if err != nil {
-		return nil, err
+		return committed, err
 	}
-	return &faultStoreDir{storeSyncCloser: dir, fault: i.fault}, nil
-}
-
-type faultStoreDir struct {
-	storeSyncCloser
-
-	fault string
-}
-
-func (d *faultStoreDir) Sync() error {
-	if d.fault == "sync" {
-		return errors.New("injected sync failure")
-	}
-	return d.storeSyncCloser.Sync()
-}
-
-func (d *faultStoreDir) Close() error {
-	if d.fault == "close" {
-		_ = d.storeSyncCloser.Close()
-		return errors.New("injected close failure")
-	}
-	return d.storeSyncCloser.Close()
+	return committed, errors.New("injected post-publication durability failure")
 }
 
 func BenchmarkBearerGrantCheck(b *testing.B) {
@@ -494,4 +463,12 @@ func BenchmarkBearerGrantCheck(b *testing.B) {
 			}
 		}
 	})
+}
+
+func newTestPrivateStore(t *testing.T) *Store {
+	store := newEmptyStore(filepath.Join(t.TempDir(), "oauth.json"))
+	if _, err := configureAccessTokenService(store, generateTestSigningKeyPEM(t), "private-key", time.Hour, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	return store
 }

@@ -49,12 +49,12 @@ jobs:
         run: make test-race
 
   windows:
-    name: Voice gateway (Windows)
+    name: Go packages (Windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Test Go voice gateway
-        run: go test ./cmd/voice-gateway ./voicegateway/...
+      - name: Test Go packages
+        run: go test ./...

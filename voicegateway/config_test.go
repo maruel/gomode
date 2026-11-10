@@ -180,6 +180,36 @@ tts = "speech"
 }
 
 func TestLoadConfig(t *testing.T) {
+	t.Run("auto update", func(t *testing.T) {
+		for _, tc := range []struct{ name, data, want string }{
+			{"default", "", "50 4 * * *"},
+			{"disabled", `auto_update = ""`, ""},
+			{"custom", `auto_update = "0 3 * * *"`, "0 3 * * *"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "config.toml")
+				if err := os.WriteFile(path, []byte(tc.data), 0600); err != nil {
+					t.Fatal(err)
+				}
+				cfg, err := LoadConfig(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if cfg.AutoUpdate != tc.want {
+					t.Fatalf("auto_update = %q", cfg.AutoUpdate)
+				}
+			})
+		}
+		t.Run("error", func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(`auto_update = "not a schedule"`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(path); err == nil || !strings.HasPrefix(err.Error(), "auto_update:") {
+				t.Fatalf("got %v", err)
+			}
+		})
+	})
 	t.Run("unbundled speech stages", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config.toml")
 		data := `[[llm]]

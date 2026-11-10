@@ -84,7 +84,7 @@ func TestServer(t *testing.T) {
 			}
 			current := authorizeOAuthTestClient(t, h, host.user, &client, []string{"read"})
 			host.retire()
-			s.state.io = failingRenameStoreIO{storeIO: osStoreIO{}}
+			s.state.io = failingCommitStoreIO{storeIO: osStoreIO{}}
 			if err := s.RevokeAllUserGrants(host.user.ID); err == nil {
 				t.Fatal("cleanup unexpectedly succeeded")
 			}
@@ -1851,7 +1851,7 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 			next.Codes[oauth.RefreshTokenKey(code)] = v5.Code{UserID: user.ID, ClientID: clientID, RedirectURI: "https://client.example/callback", CodeChallenge: testCodeChallenge(), Resource: testResourceURL, Scope: "read", ExpiresAt: time.Now().Add(time.Hour)}
 			return true
 		})
-		s.state.io = failingRenameStoreIO{storeIO: osStoreIO{}}
+		s.state.io = failingCommitStoreIO{storeIO: osStoreIO{}}
 		s.mu.Unlock()
 		if err != nil {
 			t.Fatalf("seed state: %v", err)
@@ -1905,7 +1905,7 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 		if err := store.Save(); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
-		store.io = failingRenameStoreIO{storeIO: osStoreIO{}}
+		store.io = failingCommitStoreIO{storeIO: osStoreIO{}}
 		server := &Server{state: store, refreshTokenTTL: time.Hour, session: &testSessionManager{users: map[string]oauth.User{"user": {ID: "user"}}}}
 		if result, _, err := server.exchangeRefreshToken("refresh", Client{ID: "client"}, "user", "next-refresh", dpopBinding{}); err == nil || result != refreshExchangeRotated {
 			t.Fatalf("exchangeRefreshToken = %d, %v; want rotation persistence failure", result, err)
@@ -1932,7 +1932,7 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 		if err := store.Save(); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
-		store.io = failingRenameStoreIO{storeIO: osStoreIO{}}
+		store.io = failingCommitStoreIO{storeIO: osStoreIO{}}
 		server := &Server{state: store, session: &testSessionManager{users: map[string]oauth.User{"user": {ID: "user"}}}}
 		if revoked, err := server.RevokeUserGrant("user", "grant"); err == nil || !revoked {
 			t.Fatalf("RevokeUserGrant = %t, %v; want matched grant and persistence failure", revoked, err)
@@ -1967,7 +1967,7 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 			next.Grants["grant"] = v5.Grant{ID: "grant", ClientID: registered.ClientID, ExpiresAt: time.Now().Add(time.Hour)}
 			return true
 		})
-		s.state.io = failingRenameStoreIO{storeIO: osStoreIO{}}
+		s.state.io = failingCommitStoreIO{storeIO: osStoreIO{}}
 		s.mu.Unlock()
 		if err != nil {
 			t.Fatalf("seed grant: %v", err)

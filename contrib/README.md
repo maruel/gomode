@@ -33,7 +33,10 @@ when set. Windows uses the persistent user or machine value. See
 
 To rebuild from a Windows checkout and restart the installed scheduled task, run
 `./contrib/rebuild-windows.ps1` from PowerShell. Go must be installed and
-the task must first be set up using the Windows installer above.
+the task must first be set up using the Windows installer above. The task queues
+relaunch after updates or configuration changes, starts at logon, and retries
+failures after one minute. An intentional stop leaves it stopped until requested
+again or the next logon.
 
 For other installation workflows, build from source:
 

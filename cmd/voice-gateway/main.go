@@ -18,6 +18,7 @@ import (
 	"runtime/trace"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -27,24 +28,48 @@ import (
 	"github.com/mattn/go-colorable"
 	"github.com/mattn/go-isatty"
 
+	"github.com/maruel/gomode/autoupdate"
 	"github.com/maruel/gomode/httpserver"
 	"github.com/maruel/gomode/internal/gatewayfrontend"
 	"github.com/maruel/gomode/voicegateway"
 	"github.com/maruel/gomode/voicegateway/voicertc"
 )
 
+var errRestartRequested = errors.New("restart requested")
+
 func mainImpl(args []string) (err error) {
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithCancelCause(signalCtx)
 	defer cancel(nil)
+	var updater *autoupdate.Updater
+	var updaterTaskName string
+	var updateWorkers sync.WaitGroup
+	var updated bool // Read only after updateWorkers joins.
+	var intentionalStop atomic.Bool
+	defer func() {
+		cancel(nil)
+		updateWorkers.Wait()
+		if updater == nil || !errors.Is(context.Cause(ctx), errRestartRequested) || !isNormalShutdown(err) || intentionalStop.Load() || signalCtx.Err() != nil {
+			return
+		}
+		if updated || runtime.GOOS == "windows" && updaterTaskName != "" {
+			err = errors.Join(err, updater.Restart())
+		}
+	}()
 
 	flags := flag.NewFlagSet("voice-gateway", flag.ContinueOnError)
 	configPath := flags.String("config", voicegateway.DefaultConfigPath(), "voice gateway config.toml path")
 	logFile := flags.String("log-file", "", "append stdout and stderr to this file instead of the console")
 	envFile := flags.String("env-file", "", "load process environment from this dotenv file; file values override inherited values")
+	flags.StringVar(&updaterTaskName, "task-name", "", "Windows task launch context; task must use queued instances")
+	version := flags.Bool("version", false, "print the running build version and exit")
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	if *version {
+		fmt.Println(autoupdate.Version())
+		return nil
 	}
 	var logLevel slog.LevelVar
 	log, err := initLogging(*logFile, &logLevel)
@@ -56,7 +81,26 @@ func mainImpl(args []string) (err error) {
 			return err
 		}
 	}
-	closeShutdown, err := startPlatformShutdown(cancel)
+	binary := "voice-gateway"
+	ext := ".tar.gz"
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+		ext = ".zip"
+	}
+	updater, err = autoupdate.New(autoupdate.Config{
+		Repository: "maruel/gomode", CurrentVersion: autoupdate.Version(), Binary: binary,
+		ArchiveName: func(string) string { return "voice-gateway_" + runtime.GOOS + "_" + runtime.GOARCH + ext },
+		Log:         log, TaskName: updaterTaskName,
+	})
+	if err != nil {
+		return err
+	}
+	closeShutdown, err := startPlatformShutdown(func(cause error) {
+		if cause == nil {
+			intentionalStop.Store(true)
+		}
+		cancel(cause)
+	})
 	if err != nil {
 		return err
 	}
@@ -173,6 +217,23 @@ func mainImpl(args []string) (err error) {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+
+	if cfg.AutoUpdate != "" {
+		schedule, parseErr := autoupdate.ParseSchedule(cfg.AutoUpdate)
+		if parseErr != nil {
+			return parseErr
+		}
+		updateWorkers.Go(func() {
+			installed, updateErr := updater.Run(ctx, schedule)
+			if installed != "" {
+				updated = true
+				if updateErr != nil {
+					log.ErrorContext(ctx, "update committed with cleanup error", "err", updateErr)
+				}
+				cancel(errRestartRequested)
+			}
+		})
+	}
 	log.InfoContext(ctx, "voice-gateway", "http", cfg.Server.HTTP, "udp", cfg.Server.WebRTCUDPPort, "config", *configPath)
 	// Serve takes ownership of the listener, including error paths.
 	listener := apiListener
@@ -258,7 +319,7 @@ func loadEnvFile(path string) error {
 }
 
 // startRestartWatch triggers graceful shutdown after a rebuild or config change.
-// systemd's Restart=always or launchd's KeepAlive restarts the service.
+// Unix service managers own watcher relaunch; Windows queues its named task.
 type restartWatcher struct {
 	watcher *fsnotify.Watcher
 	wg      sync.WaitGroup
@@ -319,13 +380,20 @@ func startRestartWatch(ctx context.Context, path string, cancel context.CancelCa
 				var reason string
 				switch filepath.Clean(event.Name) {
 				case exe:
-					if runtime.GOOS == "darwin" {
+					switch runtime.GOOS {
+					case "darwin":
 						// macOS reports rename-into-place binary replacement as Create.
 						if !event.Has(fsnotify.Create) {
 							continue
 						}
-					} else if !event.Has(fsnotify.Write) && !event.Has(fsnotify.Chmod) {
-						continue
+					case "windows":
+						if !event.Has(fsnotify.Write | fsnotify.Chmod | fsnotify.Rename | fsnotify.Remove) {
+							continue
+						}
+					default:
+						if !event.Has(fsnotify.Write) && !event.Has(fsnotify.Chmod) {
+							continue
+						}
 					}
 					reason = "executable modified"
 				case configTarget:
@@ -337,8 +405,8 @@ func startRestartWatch(ctx context.Context, path string, cancel context.CancelCa
 					continue
 				}
 				slog.InfoContext(ctx, "shutdown", "reason", reason, "ev", event)
-				// File changes request a successful exit; watcher failures below do not.
-				cancel(nil)
+				// File changes request a restart after cleanup; watcher failures do not.
+				cancel(errRestartRequested)
 				return
 			case err, ok := <-w.Errors:
 				if !ok {
@@ -355,8 +423,8 @@ func startRestartWatch(ctx context.Context, path string, cancel context.CancelCa
 	return watcher, nil
 }
 
-// isNormalShutdown accepts cancellation only when every error in the tree is
-// cancellation. A joined watcher or cleanup failure must still exit 1.
+// isNormalShutdown accepts intentional cancellation and restart requests only
+// when no independent watcher, relaunch or cleanup failure is joined.
 func isNormalShutdown(err error) bool {
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
 		for _, e := range joined.Unwrap() {
@@ -369,7 +437,7 @@ func isNormalShutdown(err error) bool {
 	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
 		return isNormalShutdown(wrapped.Unwrap())
 	}
-	return errors.Is(err, context.Canceled)
+	return errors.Is(err, context.Canceled) || errors.Is(err, errRestartRequested)
 }
 
 func main() {

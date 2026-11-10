@@ -92,11 +92,15 @@ func startPlatformShutdown(cancel context.CancelCauseFunc) (func() error, error)
 		return nil, fmt.Errorf("create shutdown event: %w", err)
 	}
 	cleaned := make(chan struct{})
+	wake, err := windows.CreateEvent(nil, 0, 0, nil)
+	if err != nil {
+		return nil, errors.Join(err, windows.CloseHandle(stop))
+	}
 	s := &shutdownWindowState{cancel: cancel, cleaned: cleaned}
 	ready := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		err := s.run(stop, ready)
+		err := s.run(stop, wake, ready)
 		if err != nil {
 			cancel(err)
 		}
@@ -104,19 +108,19 @@ func startPlatformShutdown(cancel context.CancelCauseFunc) (func() error, error)
 	}()
 	select {
 	case err := <-done:
-		return nil, errors.Join(err, windows.CloseHandle(stop))
+		return nil, errors.Join(err, windows.CloseHandle(stop), windows.CloseHandle(wake))
 	case <-ready:
 		return func() error {
 			// This runs after gateway cleanup. Release WM_ENDSESSION before waiting
 			// for the window thread, since that callback may be waiting for cleanup.
 			close(cleaned)
-			err := windows.SetEvent(stop)
-			return errors.Join(err, <-done, windows.CloseHandle(stop))
+			err := windows.SetEvent(wake)
+			return errors.Join(err, <-done, windows.CloseHandle(stop), windows.CloseHandle(wake))
 		}, nil
 	}
 }
 
-func (s *shutdownWindowState) run(stop windows.Handle, ready chan<- struct{}) (err error) {
+func (s *shutdownWindowState) run(stop, wake windows.Handle, ready chan<- struct{}) (err error) {
 	// Window creation, dispatch and destruction must all run on the same OS thread.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -154,20 +158,15 @@ func (s *shutdownWindowState) run(stop windows.Handle, ready chan<- struct{}) (e
 		}
 	}()
 	close(ready)
+	handles := [2]windows.Handle{stop, wake}
 	for {
 		// Wait for gateway cleanup, installer stop requests or window messages.
-		r, _, e := msgWaitForMultipleObjects.Call(1, uintptr(unsafe.Pointer(&stop)), 0, windows.INFINITE, 0x04ff) // #nosec G103 -- QS_ALLINPUT; stop is one live HANDLE, matching the count argument.
+		r, _, e := msgWaitForMultipleObjects.Call(2, uintptr(unsafe.Pointer(&handles[0])), 0, windows.INFINITE, 0x04ff) // #nosec G103 -- QS_ALLINPUT; handles contains two live HANDLEs, matching the count argument.
 		switch r {
 		case windows.WAIT_OBJECT_0:
-			// Cleanup signals the same event to release the window thread.
-			select {
-			case <-s.cleaned:
-				return nil
-			default:
-			}
 			slog.Info("Windows shutdown event signaled")
 			s.cancel(nil)
-		case windows.WAIT_OBJECT_0 + 1:
+		case windows.WAIT_OBJECT_0 + 1, windows.WAIT_OBJECT_0 + 2:
 			var msg windowMessage
 			for {
 				ok, _, _ := peekMessage.Call(uintptr(unsafe.Pointer(&msg)), 0, 0, 0, 1) // #nosec G103 -- PM_REMOVE; msg is a live MSG output buffer with the Win32 ABI layout.
@@ -182,6 +181,19 @@ func (s *shutdownWindowState) run(stop windows.Handle, ready chan<- struct{}) (e
 			}
 		default:
 			return fmt.Errorf("wait for shutdown window message: %w", e)
+		}
+		if r == windows.WAIT_OBJECT_0+1 {
+			// The final message drain above and this external-event poll are the
+			// handoff boundary. Requests arriving after their respective checks
+			// cannot cancel a relaunch.
+			pending, err := windows.WaitForSingleObject(stop, 0)
+			if err != nil {
+				return fmt.Errorf("poll shutdown event: %w", err)
+			}
+			if pending == windows.WAIT_OBJECT_0 {
+				s.cancel(nil)
+			}
+			return nil
 		}
 	}
 }

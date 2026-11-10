@@ -17,6 +17,10 @@
 #
 # Prices checked 2026-11-05: USD, uncached input and output.
 
+# Released binaries check daily at 04:50 local time. Empty disables automatic updates.
+# Updates restart after draining; Windows tasks queue the next instance immediately.
+auto_update = "50 4 * * *"
+
 [server]
 # Use an HTTPS reverse proxy for secure signaling.
 http = "127.0.0.1:3479"

@@ -26,6 +26,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/maruel/gomode"
+	"github.com/maruel/gomode/autoupdate"
 	"github.com/maruel/gomode/httpserver"
 	"github.com/maruel/gomode/httpserver/geoip"
 )
@@ -447,6 +448,7 @@ func choiceID(pipeline string, cfg any) (string, error) {
 // configFile adds standalone listeners and issuer policy to reusable declarations.
 type configFile struct {
 	Config
+	AutoUpdate     string                `toml:"auto_update"`
 	Server         ServerConfig          `toml:"server"`
 	TrustedIssuers []TrustedIssuerConfig `toml:"trusted_issuers"`
 	Debug          DebugConfig           `toml:"debug"`
@@ -568,7 +570,7 @@ func LoadConfig(path string) (configFile, error) {
 	if err != nil {
 		return configFile{}, fmt.Errorf("read config: %w", err)
 	}
-	cfg := configFile{Server: ServerConfig{HTTP: ":3479"}}
+	cfg := configFile{AutoUpdate: autoupdate.DefaultSchedule, Server: ServerConfig{HTTP: ":3479"}}
 	dec := toml.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
@@ -599,6 +601,11 @@ func LoadConfig(path string) (configFile, error) {
 		cfg.Server.DB, err = filepath.Abs(db)
 		if err != nil {
 			return configFile{}, fmt.Errorf("server.geo_db: resolve path: %w", err)
+		}
+	}
+	if cfg.AutoUpdate != "" {
+		if _, err := autoupdate.ParseSchedule(cfg.AutoUpdate); err != nil {
+			return configFile{}, fmt.Errorf("auto_update: %w", err)
 		}
 	}
 	return cfg, nil
