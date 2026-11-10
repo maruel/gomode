@@ -4,25 +4,20 @@ on:
   push:
     branches: [main]
     paths: &android_paths
-      - "*.go"
       - .github/workflows/android.yml
       - Makefile
       - android/**
       - assets/**
       - e2e/**
-      - go.mod
-      - go.sum
-      - internal/cmd/android-voice-fixture/**
-      - mcp/**
       - pyproject.toml
       - scripts/android*
       - scripts/run-concurrently.sh
       - scripts/screenshot_publish.py
       - sdk/**
-      - sse/**
+      - testdata/service-items/**
       - testdata/speech-text/**
+      - testdata/voice-choices/**
       - uv.lock
-      - voicegateway/api/**
   pull_request:
     paths: *android_paths
   workflow_dispatch:
