@@ -14,8 +14,11 @@ export class APIError extends Error {
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 
 function makeRequester(fetchFn: FetchFn) {
-  return async function request<T>(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
-    const init: RequestInit = { method, headers: { "Content-Type": "application/json", ...headers }, signal: AbortSignal.timeout(60_000) };
+  return async function request<T>(method: string, path: string, body: unknown, headers: Record<string, string> | undefined, callerSignal?: AbortSignal): Promise<T> {
+    const deadline = AbortSignal.timeout(60_000);
+    const signal = callerSignal ? AbortSignal.any([callerSignal, deadline]) : deadline;
+    signal.throwIfAborted();
+    const init: RequestInit = { method, headers: { "Content-Type": "application/json", ...headers }, signal };
     if (body !== undefined) init.body = JSON.stringify(body);
     const res = await fetchFn(path, init);
     if (!res.ok) {
@@ -35,15 +38,15 @@ export function createApiClient(fetchFn: FetchFn = (globalThis as any).fetch.bin
   const request = makeRequester(fetchFn);
   return {
     /** Lists available voice choices and their supported transports. */
-    voiceChoices: (headers: Record<string, string> = {}): Promise<VoiceChoicesResp> => request<VoiceChoicesResp>("GET", "/api/voicegateway/v2/voice/choices", undefined, headers),
+    voiceChoices: (headers: Record<string, string> = {}, signal?: AbortSignal): Promise<VoiceChoicesResp> => request<VoiceChoicesResp>("GET", "/api/voicegateway/v2/voice/choices", undefined, headers, signal),
     /** Authorizes a browser text-session upgrade with a short-lived, single-use ticket. */
-    voiceTextTicket: (req: VoiceTextTicketReq, headers: Record<string, string> = {}): Promise<VoiceTextTicketResp> => request<VoiceTextTicketResp>("POST", "/api/voicegateway/v2/voice/text/ticket", req, headers),
+    voiceTextTicket: (req: VoiceTextTicketReq, headers: Record<string, string> = {}, signal?: AbortSignal): Promise<VoiceTextTicketResp> => request<VoiceTextTicketResp>("POST", "/api/voicegateway/v2/voice/text/ticket", req, headers, signal),
     /** Exchanges a WebRTC SDP offer for an answer, opening a voice gateway session. */
-    voiceRTCOffer: (req: VoiceRTCOfferReq, headers: Record<string, string> = {}): Promise<VoiceRTCAnswerResp> => request<VoiceRTCAnswerResp>("POST", "/api/voicegateway/v2/voice/rtc/offer", req, headers),
+    voiceRTCOffer: (req: VoiceRTCOfferReq, headers: Record<string, string> = {}, signal?: AbortSignal): Promise<VoiceRTCAnswerResp> => request<VoiceRTCAnswerResp>("POST", "/api/voicegateway/v2/voice/rtc/offer", req, headers, signal),
     /** Returns structured WebRTC connectivity diagnostics for a voice bridge session. */
-    diagnoseVoiceRTC: (sessionID: string, req: VoiceRTCDiagnosticsReq, headers: Record<string, string> = {}): Promise<VoiceRTCDiagnosticsResp> => request<VoiceRTCDiagnosticsResp>("POST", `/api/voicegateway/v2/voice/rtc/${encodeURIComponent(sessionID)}/diagnostics`, req, headers),
+    diagnoseVoiceRTC: (sessionID: string, req: VoiceRTCDiagnosticsReq, headers: Record<string, string> = {}, signal?: AbortSignal): Promise<VoiceRTCDiagnosticsResp> => request<VoiceRTCDiagnosticsResp>("POST", `/api/voicegateway/v2/voice/rtc/${encodeURIComponent(sessionID)}/diagnostics`, req, headers, signal),
     /** Closes a WebRTC voice bridge session. */
-    closeVoiceRTC: (sessionID: string, headers: Record<string, string> = {}): Promise<StatusResp> => request<StatusResp>("POST", `/api/voicegateway/v2/voice/rtc/${encodeURIComponent(sessionID)}`, undefined, headers),
+    closeVoiceRTC: (sessionID: string, headers: Record<string, string> = {}, signal?: AbortSignal): Promise<StatusResp> => request<StatusResp>("POST", `/api/voicegateway/v2/voice/rtc/${encodeURIComponent(sessionID)}`, undefined, headers, signal),
   };
 }
 

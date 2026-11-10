@@ -14,8 +14,11 @@ export class APIError extends Error {
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 
 function makeRequester(fetchFn: FetchFn) {
-  return async function request<T>(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
-    const init: RequestInit = { method, headers: { "Content-Type": "application/json", ...headers }, signal: AbortSignal.timeout(60_000) };
+  return async function request<T>(method: string, path: string, body: unknown, headers: Record<string, string> | undefined, callerSignal?: AbortSignal): Promise<T> {
+    const deadline = AbortSignal.timeout(60_000);
+    const signal = callerSignal ? AbortSignal.any([callerSignal, deadline]) : deadline;
+    signal.throwIfAborted();
+    const init: RequestInit = { method, headers: { "Content-Type": "application/json", ...headers }, signal };
     if (body !== undefined) init.body = JSON.stringify(body);
     const res = await fetchFn(path, init);
     if (!res.ok) {
@@ -35,7 +38,7 @@ export function createApiClient(fetchFn: FetchFn = (globalThis as any).fetch.bin
   const request = makeRequester(fetchFn);
   return {
     /** Sends a raw MCP JSON-RPC request to the client base URL. The caller supplies required MCP transport headers. */
-    mcp: (req: JSONRPCRequest, headers: Record<string, string> = {}): Promise<JSONRPCResponse> => request<JSONRPCResponse>("POST", "", req, headers),
+    mcp: (req: JSONRPCRequest, headers: Record<string, string> = {}, signal?: AbortSignal): Promise<JSONRPCResponse> => request<JSONRPCResponse>("POST", "", req, headers, signal),
   };
 }
 
