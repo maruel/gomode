@@ -1,6 +1,8 @@
 // Observes browser reachability and route hints for owned connection recovery.
 export class NetworkRequestError extends Error {}
 
+// observeNetworkChanges reports reachability and exposed transport changes until disposal.
+// No initial notification is sent, and quality estimates alone do not trigger callbacks.
 export function observeNetworkChanges(changed: () => void): () => void {
   const connection = (navigator as Navigator & { connection?: EventTarget & { type?: string } }).connection;
   let online = navigator.onLine;

@@ -113,3 +113,23 @@ test("shared voice catalogs have no runtime or UI dependency", async () => {
     "web/src/voiceMessages/fr.ts",
   ]);
 });
+
+test("the public network observer has no voice or UI runtime dependency", async () => {
+  const result = await build({
+    absWorkingDir: root,
+    stdin: {
+      contents: 'export { observeNetworkChanges } from "@maruel/gomode/web/NetworkChanges";',
+      sourcefile: "host-network-observer.ts",
+      resolveDir: root,
+      loader: "ts",
+    },
+    bundle: true,
+    format: "esm",
+    write: false,
+    metafile: true,
+  });
+  assert.deepEqual(Object.keys(result.metafile.inputs).sort(), [
+    "host-network-observer.ts",
+    "web/src/NetworkChanges.ts",
+  ]);
+});
