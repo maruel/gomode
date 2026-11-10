@@ -87,6 +87,7 @@ const ICE_HOST_CANDIDATE_GRACE_MS = 1000;
 const ICE_DISCONNECTED_GRACE_MS = 5000;
 const MAX_RECONNECT_ATTEMPTS = 3;
 const HANG_UP_TOOL_NAME = "hang_up";
+const MUTE_TOOL_NAME = "mute";
 const GO_MODE_SYSTEM_INSTRUCTION =
   'You are a terse voice assistant. After the voice session connects, greet the user once with only "Ready". ' +
   "Reply only to the current request in one or two short sentences unless the user explicitly asks for more detail. " +
@@ -328,8 +329,15 @@ export function voiceToolDeclarations(
   mcpTools: McpToolDescriptor[],
   frontendTools: SessionSetup["tools"],
 ): NonNullable<SessionSetup["tools"]> {
-  if (mcpTools.some((tool) => tool.name === HANG_UP_TOOL_NAME)) {
-    throw new Error(`MCP tool "${HANG_UP_TOOL_NAME}" conflicts with the reserved voice command.`);
+  for (const [source, tools] of [
+    ["MCP", mcpTools],
+    ["Frontend", frontendTools ?? []],
+  ] as const) {
+    for (const tool of tools) {
+      if (tool.name === HANG_UP_TOOL_NAME || tool.name === MUTE_TOOL_NAME) {
+        throw new Error(`${source} tool "${tool.name}" conflicts with the reserved voice command.`);
+      }
+    }
   }
   for (const tool of frontendTools ?? []) {
     if (mcpTools.some((mcp) => mcp.name === tool.name)) {
@@ -343,6 +351,11 @@ export function voiceToolDeclarations(
       description:
         "End the current voice conversation immediately when the user asks to hang up, end the call, or stop voice mode.",
       parameters: { type: "object", properties: {} },
+    },
+    {
+      name: MUTE_TOOL_NAME,
+      description: "Call when the user requests to mute themselves.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
     },
     ...mcpTools.map((tool) => ({
       name: tool.name,
@@ -396,8 +409,8 @@ export function previousErrors(state: VoiceState): VoiceErrorEntry[] {
   return state.error !== null && newest.message === state.error ? rest : state.errorHistory;
 }
 
-export function microphoneMuted(state: Pick<VoiceState, "microphoneMode" | "speaking">): boolean {
-  return state.microphoneMode === "muted" || (state.microphoneMode === "muteOnce" && state.speaking);
+export function microphoneMuted(state: Pick<VoiceState, "microphoneMode">): boolean {
+  return state.microphoneMode !== "listening";
 }
 
 /** One admitted tool invocation; sequence distinguishes repeated names in a conversation. */
@@ -2742,7 +2755,12 @@ export class VoiceSession {
           if (!this.state.speaking) attempt.speech?.stopListening();
         }
       } else if (msg.state === TurnStateIdle) {
-        if (!this.state.speaking) this._speakerActive = false;
+        if (!this.state.speaking) {
+          this._speakerActive = false;
+          this._update((s) => {
+            if (s.microphoneMode === "muteOnce") s.microphoneMode = "listening";
+          });
+        }
         this._flushPendingNotifications(true);
       }
       return;
@@ -2812,6 +2830,16 @@ export class VoiceSession {
       if (rawArgs != null && (typeof rawArgs !== "object" || Array.isArray(rawArgs)))
         throw new Error("Voice tool arguments must be an object");
       const toolArgs = (rawArgs ?? {}) as Record<string, unknown>;
+      if (msg.name === MUTE_TOOL_NAME) {
+        if (Object.keys(toolArgs).length !== 0) throw new Error("mute takes no arguments");
+        this.setMicrophoneMode("muteOnce");
+        if (!this._ownsChannel(attempt, channel)) return;
+        this._update((s) => {
+          s.activeTool = null;
+        });
+        if (this._ownsChannel(attempt, channel)) this._sendToolResult(channel, msg.id, msg.name, {});
+        return;
+      }
       const result = frontend
         ? {
             structuredContent: await frontend.execute(msg.name, toolArgs, sessionID, attempt.lifetime.signal),

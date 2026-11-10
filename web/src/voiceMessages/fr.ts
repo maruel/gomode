@@ -67,7 +67,6 @@ export const voiceMessages: VoiceMessages = {
   microphoneMuteOnce: "Couper une fois",
   microphoneFullyMuted: "Microphone coupé",
   microphoneMuteOnceHelp: "Microphone coupé jusqu’à la fin de cette réponse.",
-  microphoneMuteNextReplyHelp: "Coupe le microphone pendant la prochaine réponse, puis reprend l’écoute.",
   microphoneMutedHelp: "Reste coupé jusqu’à ce que vous le réactiviez.",
   muted: "Micro coupé",
   previousErrors: "Erreurs précédentes",

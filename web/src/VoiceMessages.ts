@@ -77,7 +77,6 @@ export const defaultVoiceMessages = {
   microphoneMuteOnce: "Mute once",
   microphoneFullyMuted: "Muted",
   microphoneMuteOnceHelp: "Muted until this reply ends.",
-  microphoneMuteNextReplyHelp: "Mutes during the next reply, then returns to Listening.",
   microphoneMutedHelp: "Stays muted until you unmute.",
   muted: "Muted",
   previousErrors: "Previous errors",

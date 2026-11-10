@@ -9,6 +9,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.captureToImage
@@ -554,6 +556,41 @@ class ServerVoiceSwitchTest {
                         waitForConnected()
                         conversation.send("""{"kind":"tool.call","id":"alive","name":"list_servers","args":{}}""")
                         composeRule.waitUntil(30_000) { cookie.toolResults.any { it.optString("id") == "alive" } }
+                        cookie.completeToolTurns = false
+                        repeat(2) { index ->
+                            val muteID = "mute-$index"
+                            conversation.send("""{"kind":"tool.call","id":"$muteID","name":"mute","args":{}}""")
+                            composeRule.waitUntil(30_000) { cookie.toolResults.any { it.optString("id") == muteID } }
+                            composeRule
+                                .onNodeWithTag("gomode-microphone-mode")
+                                .assert(
+                                    SemanticsMatcher.expectValue(
+                                        SemanticsProperties.StateDescription,
+                                        "Mute once. Muted until this reply ends.",
+                                    ),
+                                )
+                            waitForConnected()
+                            if (index == 0) {
+                                val file = File(context.getExternalFilesDir(null), "mute-until-reply-${mode.name}.png")
+                                val bitmap = composeRule.onRoot().captureToImage().asAndroidBitmap()
+                                file.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+                            }
+                        }
+                        if (mode == VoiceMode.DEVICE) {
+                            conversation.send("""{"kind":"assistant.text.delta","text":"Okay."}""")
+                            conversation.send("""{"kind":"turn.status","state":"idle"}""")
+                        } else {
+                            conversation.send("""{"kind":"speech.started"}""")
+                            conversation.send("""{"kind":"turn.status","state":"idle"}""")
+                            conversation.send("""{"kind":"speech.ended"}""")
+                        }
+                        composeRule.waitUntil(30_000) {
+                            composeRule
+                                .onAllNodesWithContentDescription("Microphone mode. Next: Mute once")
+                                .fetchSemanticsNodes()
+                                .isNotEmpty()
+                        }
+                        cookie.completeToolTurns = true
                         if (mode == VoiceMode.DEVICE) {
                             repeat(2) { cycle ->
                                 composeRule.onNodeWithContentDescription("End voice").performClick()
@@ -1087,6 +1124,9 @@ class ServerVoiceSwitchTest {
             }
         }
 
+        @Volatile
+        var completeToolTurns = true
+
         private fun receive(
             text: String,
             send: (String) -> Boolean,
@@ -1112,8 +1152,8 @@ class ServerVoiceSwitchTest {
 
                 "tool.result" -> {
                     toolResults += message
-                    // Local-stack turns can finish without producing speech fragments.
-                    send("""{"kind":"turn.status","state":"idle"}""")
+                    // Tests can hold a reply open to inspect controls before completing playback.
+                    if (completeToolTurns) send("""{"kind":"turn.status","state":"idle"}""")
                 }
             }
         }

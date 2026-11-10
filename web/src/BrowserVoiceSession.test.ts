@@ -1092,6 +1092,7 @@ describe("browser voice sessions", () => {
   it("returns mute once to listening after playback and speaks even while fully muted", async () => {
     const socket = await readySocket();
     session.setMicrophoneMode("muteOnce");
+    expect(session.state.listening).toBe(false);
     finishTurn(socket, "First reply");
     expect(session.state.listening).toBe(false);
     expect(session.state.speaking).toBe(true);
@@ -1119,10 +1120,22 @@ describe("browser voice sessions", () => {
     expect(session.state.listening).toBe(true);
   });
 
-  it("mutes recognition and resumes during playback when unmuted", async () => {
+  it("mutes recognition until the reply finishes and automatically resumes", async () => {
     const socket = await readySocket();
     finishTurn(socket, "Ready");
-    session.setMicrophoneMode("muted");
+    for (const id of ["mute-1", "mute-2"]) {
+      socket.message({ kind: "tool.call", id, name: "mute", args: {} });
+      await vi.waitFor(() =>
+        expect(socket.sent.map((text) => JSON.parse(text))).toContainEqual({
+          kind: "tool.result",
+          id,
+          name: "mute",
+          result: {},
+        }),
+      );
+    }
+    expect(session.state.microphoneMode).toBe("muteOnce");
+    expect(session.state.connected).toBe(true);
     const recognition = FakeRecognition.instances.at(-1);
     ok(recognition);
     expect(recognition.aborted).toBe(true);
@@ -1130,9 +1143,10 @@ describe("browser voice sessions", () => {
     recognition.end();
     expect(session.state.listening).toBe(false);
     expect(socket.sent.some((text) => JSON.parse(text).kind === "turn.cancel")).toBe(false);
-    session.setMicrophoneMode("listening");
-    expect(session.state.listening).toBe(true);
     expect(session.state.speaking).toBe(true);
+    fakeSynthesis.complete();
+    expect(session.state.listening).toBe(true);
+    expect(session.state.microphoneMode).toBe("listening");
     expect(FakeRecognition.instances).toHaveLength(2);
     FakeRecognition.instances.at(-1)?.result([["Stop", false]]);
     expect(session.state.speaking).toBe(false);

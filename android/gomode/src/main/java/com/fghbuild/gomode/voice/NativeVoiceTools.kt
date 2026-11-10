@@ -14,6 +14,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 internal const val HANG_UP_TOOL_NAME = "hang_up"
+internal const val MUTE_TOOL_NAME = "mute"
 
 private val nativeTools =
     listOf(
@@ -27,6 +28,15 @@ private val nativeTools =
         ToolDescriptor(
             name = "list_servers",
             description = "List saved Go Mode servers with their IDs, names, and which server is active.",
+            inputSchema =
+                buildJsonObject {
+                    put("type", "object")
+                    put("additionalProperties", false)
+                },
+        ),
+        ToolDescriptor(
+            name = MUTE_TOOL_NAME,
+            description = "Call when the user requests to mute themselves.",
             inputSchema =
                 buildJsonObject {
                     put("type", "object")
@@ -64,7 +74,9 @@ internal fun nativeVoiceTools(settings: SettingsState): List<ToolDescriptor> {
     ) {
         return emptyList()
     }
-    return nativeTools.filter { it.name == HANG_UP_TOOL_NAME || settings.services.size > 1 }
+    return nativeTools.filter {
+        it.name == HANG_UP_TOOL_NAME || it.name == MUTE_TOOL_NAME || settings.services.size > 1
+    }
 }
 
 internal suspend fun executeNativeVoiceTool(
@@ -72,6 +84,7 @@ internal suspend fun executeNativeVoiceTool(
     args: JsonElement?,
     settingsRepository: SettingsRepository,
     switchServer: suspend (String) -> Unit,
+    onMute: () -> Unit,
     onDisconnect: () -> Unit,
 ): JsonObject? {
     if (name !in nativeVoiceToolNames) return null
@@ -80,6 +93,11 @@ internal suspend fun executeNativeVoiceTool(
         return JsonObject(emptyMap())
     }
     require(args is JsonObject) { "Native voice tool arguments must be a JSON object" }
+    if (name == MUTE_TOOL_NAME) {
+        require(args.isEmpty()) { "mute takes no arguments" }
+        onMute()
+        return JsonObject(emptyMap())
+    }
     requireLoadedVoiceSettings(settingsRepository.settings.value)
     return when (name) {
         "list_servers" -> {

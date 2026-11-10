@@ -1324,6 +1324,16 @@ internal class VoiceSession(
                     _state.update { it.copy(turnState = msg.state) }
                     if (msg.state == TurnState.Idle && !pendingGatewayTools.containsKey(attempt)) {
                         awaitingGatewayTurn = false
+                        if (!speakerActive) {
+                            _state.update {
+                                if (it.microphoneMode == MicrophoneMode.MUTE_ONCE) {
+                                    it.copy(microphoneMode = MicrophoneMode.LISTENING)
+                                } else {
+                                    it
+                                }
+                            }
+                            applyMicrophoneMode()
+                        }
                         flushPendingNotifications()
                     }
                 }
@@ -1434,6 +1444,7 @@ internal class VoiceSession(
                     msg.args,
                     settingsRepository,
                     switchServer = switchServer,
+                    onMute = { setMicrophoneMode(MicrophoneMode.MUTE_ONCE) },
                     onDisconnect = ::disconnect,
                 )
             if (serverResult != null) {
@@ -1745,9 +1756,7 @@ data class VoiceState(
     val audioSwitching: Boolean = false,
 ) {
     val muted: Boolean
-        get() =
-            microphoneMode == MicrophoneMode.MUTED ||
-                (microphoneMode == MicrophoneMode.MUTE_ONCE && speaking)
+        get() = microphoneMode != MicrophoneMode.LISTENING
 }
 
 /** Replace only the current ephemeral hypothesis; stale clears cannot erase newer input. */

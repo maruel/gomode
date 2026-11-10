@@ -644,7 +644,7 @@ describe("VoiceOverlay status", () => {
     expect(microphone).toHaveAccessibleName("Microphone mode: Mute once. Next: Muted");
     expect(microphone.querySelector('[data-icon="micOff"]')).not.toBeNull();
     expect(microphone.querySelector('[data-icon="schedule"]')).not.toBeNull();
-    expect(microphone).toHaveAccessibleDescription("Mutes during the next reply, then returns to Listening.");
+    expect(microphone).toHaveAccessibleDescription("Muted until this reply ends.");
     voiceSession.setState((s) => ({ ...s, speaking: true }));
     expect(microphone).toHaveAccessibleDescription("Muted until this reply ends.");
     await user.click(microphone);

@@ -655,11 +655,11 @@ class VoicePanelTest {
         composeRule.onNodeWithTag("gomode-microphone-clock", useUnmergedTree = true).assertDoesNotExist()
         capture("listening")
         microphone.performClick()
-        assertState("Mute once. Mutes during the next reply, then returns to Listening.")
+        assertState("Mute once. Muted until this reply ends.")
         microphone.assertContentDescriptionEquals("Microphone mode. Next: Muted")
         composeRule.onNodeWithTag("gomode-microphone-clock", useUnmergedTree = true).assertIsDisplayed()
         composeRule.onNodeWithText("Mute once").assertDoesNotExist()
-        capture("armed")
+        capture("mute-once-idle")
         microphone.performClick()
         assertState("Muted. Stays muted until you unmute.")
         microphone.assertContentDescriptionEquals("Microphone mode. Next: Listening")
@@ -678,7 +678,7 @@ class VoicePanelTest {
         assertState("Listening")
         composeRule.onNodeWithTag("gomode-microphone-clock", useUnmergedTree = true).assertDoesNotExist()
         microphone.performClick()
-        assertState("Mute once. Mutes during the next reply, then returns to Listening.")
+        assertState("Mute once. Muted until this reply ends.")
     }
 
     @Test

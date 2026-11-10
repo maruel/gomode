@@ -579,7 +579,7 @@ class VoiceSessionLifecycleTest {
                     assertEquals(engine == OnDeviceEngine.LOCAL_LLM, "list_servers" in names)
                     assertEquals(engine == OnDeviceEngine.LOCAL_LLM, "switch_server" in names)
                 }
-                for (name in listOf("hang_up", "list_servers", "switch_server")) {
+                for (name in listOf("hang_up", "list_servers", "mute", "switch_server")) {
                     hostTool = name
                     val error =
                         runCatching {
@@ -971,6 +971,17 @@ class VoiceSessionLifecycleTest {
                 invokeHandleServerMessage(session, """{"kind":"interrupted","source":"user"}""", channel)
                 assertTrue(track.microphoneEnabled)
                 assertEquals(MicrophoneMode.LISTENING, session.state.value.microphoneMode)
+                for (end in listOf(
+                    """{"kind":"speech.ended"}""",
+                    """{"kind":"interrupted","source":"user"}""",
+                    """{"kind":"turn.status","state":"idle"}""",
+                )) {
+                    session.setMicrophoneMode(MicrophoneMode.MUTE_ONCE)
+                    assertFalse(track.microphoneEnabled)
+                    invokeHandleServerMessage(session, end, channel)
+                    assertTrue(track.microphoneEnabled)
+                    assertEquals(MicrophoneMode.LISTENING, session.state.value.microphoneMode)
+                }
                 session.setMicrophoneMode(MicrophoneMode.MUTED)
                 assertFalse(track.microphoneEnabled)
                 invokeHandleServerMessage(session, """{"kind":"speech.started"}""", channel)

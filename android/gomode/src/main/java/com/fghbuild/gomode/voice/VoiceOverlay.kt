@@ -441,7 +441,7 @@ private fun VoiceToolbar(
                 )
             }
             if (voiceState.connected) {
-                MicrophoneModeButton(voiceState.microphoneMode, voiceState.speaking, onSelectMicrophoneMode)
+                MicrophoneModeButton(voiceState.microphoneMode, onSelectMicrophoneMode)
             }
         }
         if (voiceState.connected) MicLevelIndicator(micLevel = voiceState.micLevel)
@@ -512,17 +512,14 @@ private fun microphoneModeLabel(mode: MicrophoneMode): String =
         MicrophoneMode.MUTED -> "Muted"
     }
 
-private fun microphoneModeHelp(
-    mode: MicrophoneMode,
-    speaking: Boolean,
-): String? =
+private fun microphoneModeHelp(mode: MicrophoneMode): String? =
     when (mode) {
         MicrophoneMode.LISTENING -> {
             null
         }
 
         MicrophoneMode.MUTE_ONCE -> {
-            if (speaking) "Muted until this reply ends." else "Mutes during the next reply, then returns to Listening."
+            "Muted until this reply ends."
         }
 
         MicrophoneMode.MUTED -> {
@@ -533,7 +530,6 @@ private fun microphoneModeHelp(
 @Composable
 private fun MicrophoneModeButton(
     mode: MicrophoneMode,
-    speaking: Boolean,
     onSelect: (MicrophoneMode) -> Unit,
 ) {
     IconButton(
@@ -542,7 +538,7 @@ private fun MicrophoneModeButton(
             Modifier.testTag("gomode-microphone-mode").semantics {
                 contentDescription = "Microphone mode. Next: ${microphoneModeLabel(nextMicrophoneMode(mode))}"
                 stateDescription =
-                    listOfNotNull(microphoneModeLabel(mode), microphoneModeHelp(mode, speaking)).joinToString(". ")
+                    listOfNotNull(microphoneModeLabel(mode), microphoneModeHelp(mode)).joinToString(". ")
             },
     ) {
         Box(Modifier.size(32.dp)) {

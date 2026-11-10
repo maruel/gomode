@@ -384,7 +384,8 @@ export function createFrontendPreparationClient(): {
               const next = new Map<string, FrontendVoiceTool>();
               for (const tool of values) {
                 const name = tool.declaration.name;
-                if (name === "hang_up" || next.has(name)) throw new Error(`Voice tool "${name}" is already reserved.`);
+                if (name === "hang_up" || name === "mute" || next.has(name))
+                  throw new Error(`Voice tool "${name}" is already reserved.`);
                 next.set(name, tool);
               }
               invalidate(next);

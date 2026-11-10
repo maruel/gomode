@@ -2002,7 +2002,7 @@ class DeviceVoiceSessionTest {
             speech.microphoneRms.value = 0.01f
             assertTrue(session.state.value.micLevel > 0.3f)
             session.setMicrophoneMode(MicrophoneMode.MUTE_ONCE)
-            assertTrue(speech.listening)
+            assertFalse(speech.listening)
             connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"First fragment."}""")
             assertFalse(speech.listening)
             speech.microphoneRms.value = 0.02f

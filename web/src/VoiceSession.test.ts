@@ -774,7 +774,7 @@ describe("VoiceSession", () => {
       message({ kind: "tool.call", id: "continuation", name: "lookup", args: {} });
       expect(session.state.activeTool).toBe("lookup");
       session.setMicrophoneMode("muteOnce");
-      expect(recognition.aborted).toBe(false);
+      expect(recognition.aborted).toBe(true);
       tool.resolve({ structuredContent: {} });
       await vi.waitFor(() =>
         expect(channel.send.mock.calls.some(([text]) => JSON.parse(text as string).kind === "tool.result")).toBe(true),
@@ -1824,9 +1824,9 @@ describe("VoiceSession", () => {
       const channel = FakePeerConnection.dataChannels.at(-1);
       const event = (kind: string) =>
         channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind }) }));
-      event("speech.started");
-      expect(track.enabled).toBe(true);
       session.setMicrophoneMode("muteOnce");
+      expect(track.enabled).toBe(false);
+      event("speech.started");
       expect(track.enabled).toBe(false);
       event("speech.ended");
       expect(track.enabled).toBe(true);
@@ -2165,6 +2165,50 @@ describe("VoiceSession", () => {
     expect(session.state.error).toBeNull();
   });
 
+  it("mutes through a local tool without disconnecting or calling MCP", async () => {
+    const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
+    try {
+      await session.connect();
+      const channel = FakePeerConnection.dataChannels[0];
+      channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindSessionReady }) }));
+      for (const id of ["mute-1", "mute-2"]) {
+        dispatchToolCall(channel, id, "mute");
+        await vi.waitFor(() =>
+          expect(channel?.send).toHaveBeenCalledWith(
+            JSON.stringify({ kind: "tool.result", id, name: "mute", result: {} }),
+          ),
+        );
+      }
+      expect(session.state.microphoneMode).toBe("muteOnce");
+      expect(outgoingMicrophoneTrack()?.enabled).toBe(false);
+      expect(session.state.connected).toBe(true);
+      expect(mcpMocks.mcpCallTool).not.toHaveBeenCalled();
+      channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: "speech.started" }) }));
+      channel?.onmessage?.(
+        new MessageEvent("message", { data: JSON.stringify({ kind: "turn.status", state: "idle" }) }),
+      );
+      expect(outgoingMicrophoneTrack()?.enabled).toBe(false);
+      channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: "speech.ended" }) }));
+      expect(session.state.microphoneMode).toBe("listening");
+      expect(outgoingMicrophoneTrack()?.enabled).toBe(true);
+      for (const end of [
+        { kind: "interrupted", source: "user" },
+        { kind: "turn.status", state: "idle" },
+      ]) {
+        dispatchToolCall(channel, "mute-again", "mute");
+        expect(outgoingMicrophoneTrack()?.enabled).toBe(false);
+        channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify(end) }));
+        expect(session.state.microphoneMode).toBe("listening");
+        expect(outgoingMicrophoneTrack()?.enabled).toBe(true);
+      }
+    } finally {
+      session.disconnect();
+    }
+    expect(() =>
+      voiceToolDeclarations([{ name: "mute", description: "Conflicting tool", inputSchema: {} }], []),
+    ).toThrow('MCP tool "mute" conflicts with the reserved voice command.');
+  });
+
   it("keeps hang_up local to voice and rejects MCP name conflicts", async () => {
     const tools = voiceToolDeclarations(
       [
@@ -2176,7 +2220,7 @@ describe("VoiceSession", () => {
       ],
       [],
     );
-    expect(tools.map((tool) => tool.name)).toEqual(["hang_up", "items_list"]);
+    expect(tools.map((tool) => tool.name)).toEqual(["hang_up", "mute", "items_list"]);
     expect(tools[0]?.parameters).toEqual({ type: "object", properties: {} });
 
     expect(() =>

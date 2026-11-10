@@ -35,14 +35,20 @@ class NativeVoiceToolsTest {
     @Test
     fun `conversational tools offer hang up and require multiple servers for switching`() {
         val oneServer = SettingsState(services = listOf(ServiceInstance("one")))
-        assertEquals(listOf("hang_up"), nativeVoiceTools(SettingsState()).map { it.name })
-        assertEquals(listOf("hang_up"), nativeVoiceTools(oneServer).map { it.name })
+        assertEquals(listOf("hang_up", "mute"), nativeVoiceTools(SettingsState()).map { it.name })
+        assertEquals(listOf("hang_up", "mute"), nativeVoiceTools(oneServer).map { it.name })
         val multiple = oneServer.copy(services = oneServer.services + ServiceInstance("two"))
         for (engine in listOf(OnDeviceEngine.LOCAL_LLM, OnDeviceEngine.REMOTE_GATEWAY)) {
             val device = multiple.copy(voiceMode = VoiceMode.DEVICE, onDeviceEngine = engine)
-            assertEquals(listOf("hang_up", "list_servers", "switch_server"), nativeVoiceTools(device).map { it.name })
+            assertEquals(
+                listOf("hang_up", "list_servers", "mute", "switch_server"),
+                nativeVoiceTools(device).map { it.name },
+            )
         }
-        assertEquals(listOf("hang_up", "list_servers", "switch_server"), nativeVoiceTools(multiple).map { it.name })
+        assertEquals(
+            listOf("hang_up", "list_servers", "mute", "switch_server"),
+            nativeVoiceTools(multiple).map { it.name },
+        )
         assertTrue(
             nativeVoiceTools(
                 multiple.copy(voiceMode = VoiceMode.DEVICE, onDeviceEngine = OnDeviceEngine.NEEDLE_WHISTLE),
@@ -64,6 +70,7 @@ class NativeVoiceToolsTest {
                         JsonObject(emptyMap()),
                         repository,
                         repository::switchService,
+                        {},
                     ) {},
                 )
             val servers = result.getValue("servers").jsonArray.map { it.jsonObject }
@@ -80,6 +87,7 @@ class NativeVoiceToolsTest {
                     args("""{"server_id":"$first"}"""),
                     repository,
                     repository::switchService,
+                    {},
                 ) {
                     ended = true
                 }
@@ -93,6 +101,7 @@ class NativeVoiceToolsTest {
                 args("""{"server_id":"$first"}"""),
                 repository,
                 repository::switchService,
+                {},
             ) {
                 error("Selecting the active server must keep voice connected")
             }
@@ -115,7 +124,13 @@ class NativeVoiceToolsTest {
             ).forEach { payload ->
                 assertTrue(
                     runCatching {
-                        executeNativeVoiceTool("switch_server", args(payload), repository, repository::switchService) {}
+                        executeNativeVoiceTool(
+                            "switch_server",
+                            args(payload),
+                            repository,
+                            repository::switchService,
+                            {},
+                        ) {}
                     }.exceptionOrNull() is IllegalArgumentException,
                 )
                 assertEquals(id, repository.settings.value.activeServiceId)
@@ -127,10 +142,11 @@ class NativeVoiceToolsTest {
                         args("""{"extra":true}"""),
                         repository,
                         repository::switchService,
+                        {},
                     ) {}
                 }.isFailure,
             )
-            assertNull(executeNativeVoiceTool("host_tool", args("{}"), repository, repository::switchService) {})
+            assertNull(executeNativeVoiceTool("host_tool", args("{}"), repository, repository::switchService, {}) {})
         }
 
     @Test
@@ -138,7 +154,8 @@ class NativeVoiceToolsTest {
         runTest {
             val repository = SettingsRepository(MemoryStore())
             repository.awaitSettings { it.loadState == SettingsLoadState.Ready }
-            val result = executeNativeVoiceTool("list_servers", args("{}"), repository, repository::switchService) {}
+            val result =
+                executeNativeVoiceTool("list_servers", args("{}"), repository, repository::switchService, {}) {}
             assertTrue(requireNotNull(result).getValue("servers").jsonArray.isEmpty())
             val validator =
                 ToolCallValidator(
@@ -147,6 +164,40 @@ class NativeVoiceToolsTest {
             assertNull(validator.validate("list_servers", args("{}")))
             assertNull(validator.validate("switch_server", args("""{"server_id":"saved-id"}""")))
             assertTrue(validator.validate("switch_server", args("{}")) != null)
+        }
+
+    @Test
+    fun `mute needs no loaded settings and repeated calls keep the microphone muted`() =
+        runTest {
+            val repository = SettingsRepository(MemoryStore())
+            var mode = MicrophoneMode.LISTENING
+            repeat(2) {
+                val result =
+                    executeNativeVoiceTool(
+                        "mute",
+                        args("{}"),
+                        repository,
+                        repository::switchService,
+                        onMute = { mode = MicrophoneMode.MUTE_ONCE },
+                        onDisconnect = { error("Mute must keep the conversation connected") },
+                    )
+                assertEquals(JsonObject(emptyMap()), result)
+                assertEquals(MicrophoneMode.MUTE_ONCE, mode)
+            }
+            mode = MicrophoneMode.LISTENING
+            assertTrue(
+                runCatching {
+                    executeNativeVoiceTool(
+                        "mute",
+                        args("""{"extra":true}"""),
+                        repository,
+                        repository::switchService,
+                        onMute = { mode = MicrophoneMode.MUTE_ONCE },
+                        onDisconnect = {},
+                    )
+                }.isFailure,
+            )
+            assertEquals(MicrophoneMode.LISTENING, mode)
         }
 
     private suspend fun SettingsRepository.awaitSettings(predicate: (SettingsState) -> Boolean): SettingsState =

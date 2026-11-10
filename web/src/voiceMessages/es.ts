@@ -66,7 +66,6 @@ export const voiceMessages: VoiceMessages = {
   microphoneMuteOnce: "Silenciar una vez",
   microphoneFullyMuted: "Silenciado",
   microphoneMuteOnceHelp: "Silenciado hasta que termine esta respuesta.",
-  microphoneMuteNextReplyHelp: "Se silencia durante la próxima respuesta y luego vuelve a escuchar.",
   microphoneMutedHelp: "Permanece silenciado hasta que lo actives.",
   muted: "Silenciado",
   previousErrors: "Errores anteriores",

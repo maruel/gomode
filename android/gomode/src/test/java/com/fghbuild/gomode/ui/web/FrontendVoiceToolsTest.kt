@@ -376,7 +376,7 @@ class FrontendVoiceToolsTest {
 
     @Test
     fun frontendCannotOverrideNativeVoiceTools() {
-        for (name in listOf("hang_up", "list_servers", "switch_server")) {
+        for (name in listOf("hang_up", "list_servers", "mute", "switch_server")) {
             val error =
                 runCatching {
                     tools.register(

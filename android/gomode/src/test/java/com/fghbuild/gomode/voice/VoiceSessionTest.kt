@@ -65,7 +65,7 @@ class VoiceSessionTest {
                     ToolDescriptor(name = "tasks_list", description = "List tasks", inputSchema = null),
             )
 
-        assertEquals(listOf("hang_up", "tasks_list"), tools.map { it.name })
+        assertEquals(listOf("hang_up", "mute", "tasks_list"), tools.map { it.name })
         assertTrue(tools.first().description.contains("End the current voice conversation"))
         assertTrue(
             tools.all {

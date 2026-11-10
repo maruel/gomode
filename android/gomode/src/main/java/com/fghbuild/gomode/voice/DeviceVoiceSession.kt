@@ -217,8 +217,7 @@ internal class DeviceVoiceSession(
     private var frontendToolNames: Set<String> = emptySet()
     private var conversationID = UUID.randomUUID().toString()
 
-    // Keep one-shot capture muted across gaps between streamed speech fragments.
-    private var muteOnceActive = false
+    // Track reply completion across gaps between streamed speech fragments.
     private var speakerActive = false
     private var turnIdle = false
     private var pendingSpeech = 0
@@ -247,7 +246,7 @@ internal class DeviceVoiceSession(
             speech.microphoneRms.collect { rms ->
                 _state.update {
                     val level =
-                        if (it.connected && !it.muted && !muteOnceActive) microphoneLevelFromRms(rms) else 0f
+                        if (it.connected && !it.muted) microphoneLevelFromRms(rms) else 0f
                     it.copy(micLevel = level)
                 }
             }
@@ -276,7 +275,6 @@ internal class DeviceVoiceSession(
         releaseEngine()
         speech.stopListening()
         speech.stopSpeaking()
-        muteOnceActive = false
         speakerActive = false
         turnIdle = false
         pendingSpeech = 0
@@ -863,7 +861,6 @@ internal class DeviceVoiceSession(
     // A playback gap between streamed fragments does not finish the reply.
     private fun finishReply() {
         if (!turnIdle || pendingSpeech > 0 || speakerActive || remoteTurnActive || pendingUserUtterance != null) return
-        muteOnceActive = false
         _state.update { it.copy(microphoneMode = it.microphoneMode.afterReply()) }
         maybeStartListening()
     }
@@ -877,7 +874,7 @@ internal class DeviceVoiceSession(
     }
 
     private fun maybeStartListening() {
-        if (!_state.value.connected || _state.value.muted || muteOnceActive) return
+        if (!_state.value.connected || _state.value.muted) return
         if (_state.value.listening) return
         val attempt = attemptGeneration.get()
         val recognition = ++listeningGeneration
@@ -1142,6 +1139,7 @@ internal class DeviceVoiceSession(
                     msg.args,
                     settingsRepository,
                     switchServer = switchServer,
+                    onMute = { setMicrophoneMode(MicrophoneMode.MUTE_ONCE) },
                     onDisconnect = ::disconnect,
                 )
             if (serverResult != null) {
@@ -1253,6 +1251,7 @@ internal class DeviceVoiceSession(
                     msg.args,
                     settingsRepository,
                     switchServer = switchServer,
+                    onMute = { setMicrophoneMode(MicrophoneMode.MUTE_ONCE) },
                     onDisconnect = ::disconnect,
                 )
             if (serverResult != null) {
@@ -1339,7 +1338,6 @@ internal class DeviceVoiceSession(
         speech.stopListening()
         speech.stopSpeaking()
         pendingNotifications.clear()
-        muteOnceActive = false
         speakerActive = false
         turnIdle = false
         pendingSpeech = 0
@@ -1423,14 +1421,12 @@ internal class DeviceVoiceSession(
     }
 
     override fun setMicrophoneMode(mode: MicrophoneMode) {
-        if (mode != MicrophoneMode.MUTE_ONCE) muteOnceActive = false
         _state.update { it.copy(microphoneMode = mode) }
         applyMicrophoneMode()
     }
 
     private fun applyMicrophoneMode() {
-        if (_state.value.microphoneMode == MicrophoneMode.MUTE_ONCE && speakerActive) muteOnceActive = true
-        if (_state.value.muted || muteOnceActive) {
+        if (_state.value.muted) {
             speech.stopListening()
             _state.update { it.copy(listening = false, micLevel = 0f) }
         } else {

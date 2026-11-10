@@ -439,9 +439,9 @@ it("keeps all dispatch blocked while incomplete, handles tool errors, and reject
   scope.setDataReady(true);
   expect(await executeFrontendVoiceTool("select_item", {}, "conversation")).toEqual({ error: "Missing item" });
   expect(() => scope.setTools([tool, tool])).toThrow(/reserved/);
-  expect(() => scope.setTools([{ ...tool, declaration: { ...tool.declaration, name: "hang_up" } }])).toThrow(
-    /reserved/,
-  );
+  for (const name of ["hang_up", "mute"]) {
+    expect(() => scope.setTools([{ ...tool, declaration: { ...tool.declaration, name } }])).toThrow(/reserved/);
+  }
   scope.dispose();
   expect(window.dispatchGoModeVoiceTool).toBeUndefined();
 });

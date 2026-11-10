@@ -587,9 +587,7 @@ function MicrophoneControls(props: {
         <span id={microphoneHelpId} class={styles.microphoneHelp}>
           {props.state.microphoneMode === "muted"
             ? props.messages().microphoneMutedHelp
-            : props.state.speaking
-              ? props.messages().microphoneMuteOnceHelp
-              : props.messages().microphoneMuteNextReplyHelp}
+            : props.messages().microphoneMuteOnceHelp}
         </span>
       </Show>
     </>
