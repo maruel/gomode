@@ -37,7 +37,7 @@ if ($null -ne $gateway) {
     }
     if (-not $gateway.WaitForExit(30000)) { throw "Timed out stopping '$exe' (PID $($gateway.Id))." }
 }
-& go -C (Join-Path $PSScriptRoot '..') install ./cmd/voice-gateway
+& go -C (Join-Path $PSScriptRoot '..') install -ldflags='-H=windowsgui' ./cmd/voice-gateway
 if ($LASTEXITCODE -ne 0) { throw "Go install failed with exit code $LASTEXITCODE." }
 if ($installedExe -ne $exe) { Copy-Item -LiteralPath $installedExe -Destination $exe -Force }
 Enable-ScheduledTask -TaskName $taskName -TaskPath '\' | Out-Null
