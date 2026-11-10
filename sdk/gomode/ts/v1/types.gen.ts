@@ -2,10 +2,6 @@
 /** ISO 8601 timestamp string (e.g. "2026-04-13T12:00:00Z"). */
 export type ISOTimestamp = string & { readonly __brand: "ISOTimestamp" };
 
-
-//////////
-// source: types.go
-
 /**
  * ToolGroup describes a bootstrap MCP tool group advertised by the manifest.
  *
