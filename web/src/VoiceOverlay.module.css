@@ -356,13 +356,6 @@
 
 /* ---- Transcript ---- */
 
-.transcriptToggle[aria-expanded="true"] {
-  float: inline-end;
-  align-items: flex-start;
-  padding-top: 0.35rem;
-  font-size: 0.75rem;
-}
-
 .transcriptToggle {
   margin-inline-start: auto;
 }
@@ -532,11 +525,6 @@
 
   .transcriptEntryAssistant {
     padding-inline: 0.1875rem;
-  }
-
-  .transcriptToggle[aria-expanded="true"] {
-    width: 2rem;
-    height: 2rem;
   }
 
   .usage {

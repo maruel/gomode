@@ -292,8 +292,8 @@ describe("VoiceOverlay status", () => {
     render(() => <VoiceOverlay />);
     const user = userEvent.setup();
     const hide = screen.getByRole("button", { name: "Hide transcript" });
-    expect(screen.getByRole("status", { name: "Voice activity" })).not.toContainElement(hide);
-    expect(hide.parentElement).toContainElement(screen.getByText("Review the launch brief."));
+    expect(screen.getByRole("status", { name: "Voice activity" })).toContainElement(hide);
+    expect(screen.getByRole("region", { name: "Transcript" })).not.toContainElement(hide);
     expect(hide.querySelector('[data-icon="close"]')).not.toBeNull();
     await user.click(hide);
     expect(screen.queryByText("Review the launch brief.")).toBeNull();
@@ -315,6 +315,33 @@ describe("VoiceOverlay status", () => {
     expect(screen.getByText("Review the launch brief.")).toBeInTheDocument();
     expect(screen.getByText("Find the latest revision")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Transcript" })).toHaveFocus();
+  });
+
+  it("collapses ended sessions, retains their history, and expands the next session", async () => {
+    voiceSession.setState((state) => ({
+      ...state,
+      connected: true,
+      transcript: [{ kind: "transcript", speaker: "assistant", text: "Session reply", final: true }],
+    }));
+    render(() => <VoiceOverlay />);
+    const user = userEvent.setup();
+    expect(screen.getByRole("region", { name: "Transcript" })).toBeVisible();
+    // Automatic transport recovery remains part of the same session.
+    voiceSession.setState((state) => ({ ...state, connected: false, connectStatus: "Reconnecting" }));
+    expect(screen.getByRole("region", { name: "Transcript" })).toBeVisible();
+    voiceSession.setState((state) => ({ ...state, connected: true, connectStatus: null }));
+    await user.click(screen.getByRole("button", { name: "End voice session" }));
+    expect(screen.queryByRole("region", { name: "Transcript" })).toBeNull();
+    expect(voiceSession.state.transcript).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Show transcript" }));
+    expect(screen.getByText("Session reply")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Hide transcript" }));
+    voiceSession.setState((state) => ({ ...state, connectStatus: "Connecting" }));
+    expect(screen.getByRole("region", { name: "Transcript" })).toBeVisible();
+    screen.getByRole("region", { name: "Transcript" }).focus();
+    voiceSession.setState((state) => ({ ...state, connectStatus: null, error: "Connection lost" }));
+    expect(screen.queryByRole("region", { name: "Transcript" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Show transcript" })).toHaveFocus();
   });
 
   it("labels reasoning separately from assistant statements", () => {
@@ -1096,6 +1123,7 @@ it("discloses reported usage after disconnect with zero distinct from unavailabl
   expect(
     within(table).getByRole("img", { name: "Context tokens: 2,048 / 8,192" }).querySelector('[data-icon="dataUsage"]'),
   ).not.toBeNull();
+  await user.click(screen.getByRole("button", { name: "Show transcript" }));
   const inputMetric = screen.getByRole("img", { name: "Input tokens: 234" });
   expect(inputMetric).toBeVisible();
   expect(
@@ -1191,12 +1219,13 @@ it("follows old-row usage layout updates while preserving manual transcript scro
   await waitFor(() => expect(transcript.scrollTop).toBe(1000));
 });
 
-it("keeps the floating close control when interim rows are recreated", async () => {
+it("keeps the close control outside the scrolling transcript when interim rows are recreated", async () => {
   const entry = { kind: "transcript" as const, speaker: "user" as const, text: "Interim", final: false };
   voiceSession.setState((state) => ({ ...state, connected: true, transcript: [entry, entry] }));
   render(() => <VoiceOverlay />);
   const log = screen.getByRole("region", { name: "Transcript" });
-  const close = within(log).getByRole("button", { name: "Hide transcript" });
+  const close = screen.getByRole("button", { name: "Hide transcript" });
+  expect(log).not.toContainElement(close);
   close.focus();
   const old = log.querySelectorAll("[class*='transcriptEntry']")[1];
   voiceSession.setState((state) => ({ ...state, transcript: [entry] }));

@@ -43,7 +43,7 @@ import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
-import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -203,6 +203,7 @@ class VoicePanelTest {
             assertEquals(viewport.left + inset, transcript.left, 1f)
             assertEquals(viewport.right - inset, transcript.right, 1f)
         }
+        composeRule.onNodeWithContentDescription("Show transcript").performClick()
         assertFullWidth()
         capture("usage-collapsed")
         composeRule.runOnIdle { showStats.value = true }
@@ -1275,28 +1276,10 @@ class VoicePanelTest {
         val toggle = composeRule.onNodeWithTag("gomode-voice-transcript-toggle")
         toggle.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
         toggle.assertIsFocused()
-        val content = composeRule.onNodeWithTag("gomode-voice-transcript-content").fetchSemanticsNode().boundsInRoot
         val close = toggle.fetchSemanticsNode().boundsInRoot
-        assertEquals(content.top, close.top, 1f)
-        assertEquals(content.right, close.right, 1f)
         val transcript = composeRule.onNodeWithTag("gomode-voice-transcript").assertIsDisplayed()
-        assertEquals(content.right, transcript.fetchSemanticsNode().boundsInRoot.right, 1f)
-        val message =
-            composeRule
-                .onNode(
-                    hasTestTag("gomode-voice-text-part") and hasText("Assistant: Four tasks are running."),
-                    useUnmergedTree = true,
-                ).fetchSemanticsNode()
-                .boundsInRoot
-        assertTrue(message.right <= close.left)
-        val lowerMessage =
-            composeRule
-                .onNodeWithText(
-                    "Assistant: Review the launch brief and prototype feedback, then prepare the notes for tomorrow's design review.",
-                ).fetchSemanticsNode()
-                .boundsInRoot
-        assertTrue(lowerMessage.top >= close.bottom)
-        assertTrue(lowerMessage.right > close.left)
+        val log = transcript.fetchSemanticsNode().boundsInRoot
+        assertTrue("Close must remain above the scrolling transcript", close.bottom <= log.top)
         val touch = toggle.fetchSemanticsNode().touchBoundsInRoot
         with(composeRule.density) {
             assertEquals(32.dp.toPx(), touch.width, 1f)
@@ -1320,6 +1303,51 @@ class VoicePanelTest {
     }
 
     @Test
+    fun endedSessionsCollapseTranscriptAndKeepHistoryAvailable() {
+        val state =
+            mutableStateOf(
+                VoiceState(
+                    connected = true,
+                    transcript = listOf(TranscriptEntry(TranscriptSpeaker.ASSISTANT, "Session reply")),
+                ),
+            )
+        composeRule.setContent {
+            MaterialTheme {
+                VoicePanel(
+                    state.value,
+                    true,
+                    {},
+                    { state.value = state.value.copy(connected = false) },
+                    {},
+                    {},
+                    {},
+                    serviceReconnect = null,
+                    onCycleApp = {},
+                    canCycleApps = false,
+                )
+            }
+        }
+        val log = composeRule.onNodeWithTag("gomode-voice-transcript")
+        log.assertIsDisplayed()
+        composeRule.runOnIdle { state.value = state.value.copy(connected = false, connectStatus = "Reconnecting") }
+        log.assertIsDisplayed()
+        composeRule.runOnIdle { state.value = state.value.copy(connected = true, connectStatus = null) }
+        composeRule.onNodeWithContentDescription("End voice").performClick()
+        log.assertDoesNotExist()
+        assertEquals(1, state.value.transcript.size)
+        composeRule.onNodeWithContentDescription("Show transcript").assertIsDisplayed().performClick()
+        composeRule.onNodeWithText("Assistant: Session reply").assertIsDisplayed()
+        capture("ended-session-review")
+        composeRule.onNodeWithContentDescription("Hide transcript").performClick()
+        composeRule.runOnIdle { state.value = state.value.copy(connectStatus = "Connecting") }
+        log.assertIsDisplayed()
+        composeRule.runOnIdle { state.value = state.value.copy(connectStatus = null, error = "Connection lost") }
+        log.assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("Show transcript").assertIsDisplayed()
+        capture("ended-session-hidden")
+    }
+
+    @Test
     fun hiddenTranscriptKeepsRevisionsWithoutShowingDrafts() {
         val state =
             mutableStateOf(
@@ -1329,7 +1357,8 @@ class VoicePanelTest {
                     transcript = listOf(TranscriptEntry(TranscriptSpeaker.USER, "Send a")),
                 ),
             )
-        composeRule.setContent {
+        val restoration = StateRestorationTester(composeRule)
+        restoration.setContent {
             MaterialTheme {
                 VoicePanel(
                     state.value,
@@ -1347,6 +1376,8 @@ class VoicePanelTest {
         }
         composeRule.onNodeWithContentDescription("Hide transcript").performClick()
         composeRule.onNodeWithText("You: Send a").assertDoesNotExist()
+        restoration.emulateSavedInstanceStateRestore()
+        composeRule.onNodeWithContentDescription("Show transcript").assertIsDisplayed()
         composeRule.runOnIdle {
             state.value =
                 state.value.copy(transcript = listOf(TranscriptEntry(TranscriptSpeaker.USER, "Send the message")))
@@ -1491,7 +1522,7 @@ class VoicePanelTest {
     }
 
     @Test
-    fun wrappedTranscriptRowsKeepFollowingAfterCloseReservationChanges() {
+    fun wrappedTranscriptRowsKeepFollowingWhileCloseRemainsVisible() {
         val entries =
             mutableStateOf(
                 (1..30).map {
@@ -1527,20 +1558,26 @@ class VoicePanelTest {
                     TranscriptEntry(TranscriptSpeaker.ASSISTANT, "Response ${31 + index} should be reviewed soon.")
             }
             end.assertIsDisplayed()
+            composeRule.onNodeWithContentDescription("Hide transcript").assertIsDisplayed()
         }
+        val transcript = composeRule.onNodeWithTag("gomode-voice-transcript")
+        transcript.performTouchInput { swipeDown() }
+        composeRule.onNodeWithContentDescription("Hide transcript").assertIsDisplayed().performClick()
+        transcript.assertDoesNotExist()
     }
 
     @Test
-    fun floatingTextKeepsInlineMetricsOnTheTextBaseline() {
+    fun textKeepsInlineMetricsOnTheTextBaseline() {
         val value = mutableStateOf("Assistant: Done.")
         composeRule.setContent {
             MaterialTheme {
                 VoiceTextFlow(
                     androidx.compose.ui.text
                         .AnnotatedString(value.value),
-                    MaterialTheme.typography.bodySmall,
+                    MaterialTheme.typography.bodySmall.copy(
+                        textDirection = androidx.compose.ui.text.style.TextDirection.Content,
+                    ),
                     MaterialTheme.colorScheme.onSurface,
-                    with(LocalDensity.current) { TextExclusion(48.dp.roundToPx(), 52.dp.roundToPx()) },
                     Modifier.width(320.dp).testTag("floating-text"),
                     metrics = {
                         androidx.compose.material3.Text(
@@ -1586,22 +1623,11 @@ class VoicePanelTest {
         composeRule.runOnIdle {
             value.value = "Assistant: " + "Compare the launch brief and the prototype feedback carefully. ".repeat(8)
         }
-        composeRule.onNodeWithText(value.value).assert(
-            SemanticsMatcher.keyNotDefined(SemanticsActions.GetTextLayoutResult),
-        )
-        val parts = layouts("floating-text")
-        assertTrue(
-            parts
-                .first()
-                .layoutInput.constraints.maxWidth <
-                parts
-                    .last()
-                    .layoutInput.constraints.maxWidth,
-        )
         checkBaseline()
-        composeRule.runOnIdle { value.value = "Assistant: " + "مرحبا بالعالم ".repeat(24) }
+        composeRule.runOnIdle { value.value = "المساعد: مرحبا بالعالم" }
         val arabic = layouts("floating-text")
-        assertEquals(arabic.first().getParagraphDirection(0), arabic.last().getParagraphDirection(0))
+        assertEquals(androidx.compose.ui.text.style.ResolvedTextDirection.Rtl, arabic.single().getParagraphDirection(0))
+        checkBaseline()
     }
 
     @Test

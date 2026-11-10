@@ -11,7 +11,6 @@ import {
   onCleanup,
   onMount,
   type Accessor,
-  type JSX,
 } from "solid-js";
 
 import { Portal } from "solid-js/web";
@@ -428,7 +427,7 @@ export default function VoiceOverlay(props: {
               session.state.toolHistory.length > 0
             }
           >
-            <ConversationPanel state={session.state} messages={messages} />
+            <ConversationPanel state={session.state} active={isActive()} messages={messages} />
           </Show>
           <Show when={session.transport === "webrtc"}>
             <AudioErrors state={session.state} />
@@ -597,10 +596,20 @@ function MicrophoneControls(props: {
   );
 }
 
-function ConversationPanel(props: { state: VoiceState; messages: Accessor<VoiceMessages> }) {
-  const [transcriptExpanded, setTranscriptExpanded] = createSignal(true);
+function ConversationPanel(props: { state: VoiceState; active: boolean; messages: Accessor<VoiceMessages> }) {
+  const [transcriptExpanded, setTranscriptExpanded] = createSignal(false);
   const transcriptId = createUniqueId();
   let transcriptToggleRef: HTMLButtonElement | undefined;
+  createEffect(
+    on(
+      () => props.active,
+      (active) => {
+        const restoreFocus = !active && document.getElementById(transcriptId)?.contains(document.activeElement);
+        setTranscriptExpanded(active);
+        if (restoreFocus) transcriptToggleRef?.focus();
+      },
+    ),
+  );
   const TranscriptToggle = () => {
     const label = () => (transcriptExpanded() ? props.messages().hideTranscript : props.messages().showTranscript);
     return (
@@ -673,9 +682,7 @@ function ConversationPanel(props: { state: VoiceState; messages: Accessor<VoiceM
             label={props.messages().toolHistory}
           />
         </Show>
-        <Show
-          when={(props.state.transcript.length > 0 || props.state.transcriptDraft !== null) && !transcriptExpanded()}
-        >
+        <Show when={props.state.transcript.length > 0 || props.state.transcriptDraft !== null}>
           <TranscriptToggle />
         </Show>
       </div>
@@ -686,7 +693,6 @@ function ConversationPanel(props: { state: VoiceState; messages: Accessor<VoiceM
         draft={props.state.transcriptDraft}
         showUsageStats={props.state.showUsageStats}
         messages={props.messages}
-        closeControl={TranscriptToggle}
       />
     </>
   );
@@ -918,7 +924,6 @@ interface TranscriptContentProps {
   transcript: TranscriptEntry[];
   showUsageStats: boolean;
   messages: Accessor<VoiceMessages>;
-  closeControl: () => JSX.Element;
   draft: VoiceState["transcriptDraft"];
 }
 
@@ -935,7 +940,6 @@ function TranscriptLog(props: TranscriptContentProps & { id: string; expanded: b
             draft={props.draft}
             showUsageStats={props.showUsageStats}
             messages={props.messages}
-            closeControl={props.closeControl}
           />
         </Show>
       </Show>
@@ -977,7 +981,6 @@ function TranscriptContent(props: TranscriptContentProps) {
       tabIndex={0}
     >
       <div class={styles.transcriptEntries} ref={contentRef}>
-        {props.closeControl()}
         <Index each={props.transcript}>
           {(entry) => (
             <div

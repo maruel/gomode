@@ -103,7 +103,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalViewConfiguration
@@ -119,7 +118,6 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
@@ -294,7 +292,6 @@ private fun UsagePanel(usage: VoiceUsage?) {
                     ),
             style = style,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            exclusion = null,
             modifier = Modifier.fillMaxWidth(),
             metrics = {
                 if (reported && totals != null) TokenMetrics(totals)
@@ -627,12 +624,21 @@ private fun ConversationPanel(
     showUsageStats: Boolean,
     contentInset: Dp,
 ) {
-    var transcriptExpanded by rememberSaveable { mutableStateOf(true) }
+    val active = voiceState.connected || voiceState.listening || voiceState.speaking || voiceState.connectStatus != null
+    var transcriptExpanded by rememberSaveable { mutableStateOf(active) }
+    var wasActive by rememberSaveable { mutableStateOf(active) }
     val transcriptFocus = remember { FocusRequester() }
     val logFocus = remember { FocusRequester() }
     var logFocused by remember { mutableStateOf(false) }
     val focusColor = MaterialTheme.colorScheme.primary
     var focusAfterToggle by remember { mutableStateOf(false) }
+    LaunchedEffect(active) {
+        if (wasActive != active) {
+            if (!active && logFocused) focusAfterToggle = true
+            transcriptExpanded = active
+            wasActive = active
+        }
+    }
     val transcriptToggle: @Composable () -> Unit = {
         TranscriptToggle(transcriptExpanded, transcriptFocus) {
             focusAfterToggle = true
@@ -648,6 +654,9 @@ private fun ConversationPanel(
         }
     }
 
+    val showStatus =
+        voiceState.connected && voiceState.error == null && voiceState.connectStatus == null &&
+            voiceState.activeTool == null
     Column(
         modifier = Modifier.padding(bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -657,9 +666,7 @@ private fun ConversationPanel(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (voiceState.connected && voiceState.error == null && voiceState.connectStatus == null &&
-                voiceState.activeTool == null
-            ) {
+            if (showStatus) {
                 Text(
                     text = voiceStatusText(voiceState),
                     style = MaterialTheme.typography.bodyMedium,
@@ -682,9 +689,8 @@ private fun ConversationPanel(
             if (voiceState.toolHistory.isNotEmpty()) {
                 ToolHistory(voiceState.toolHistory, voiceState.activeTool, Modifier.weight(1f))
             }
-            if ((voiceState.transcript.isNotEmpty() || voiceState.transcriptDraft != null) &&
-                !transcriptExpanded
-            ) {
+            if (voiceState.transcript.isNotEmpty() || voiceState.transcriptDraft != null) {
+                if (!showStatus && voiceState.toolHistory.isEmpty()) Spacer(Modifier.weight(1f))
                 transcriptToggle()
             }
         }
@@ -720,7 +726,6 @@ private fun ConversationPanel(
                             .focusRequester(logFocus)
                             .focusable()
                             .testTag("gomode-voice-transcript"),
-                    close = transcriptToggle,
                     draft = voiceState.transcriptDraft,
                 )
             }
@@ -824,12 +829,10 @@ internal fun TranscriptLog(
     entries: List<TranscriptEntry>,
     modifier: Modifier = Modifier,
     showUsageStats: Boolean = false,
-    close: (@Composable () -> Unit)? = null,
     draft: com.fghbuild.voicegateway.sdk.v2.TranscriptDraft? = null,
 ) {
     val listState = rememberLazyListState()
-    val leading = if (close != null) minOf(4, entries.size) else 0
-    val endIndex = entries.size - leading + (if (leading > 0) 1 else 0) + (if (draft != null) 1 else 0)
+    val endIndex = entries.size + (if (draft != null) 1 else 0)
     var followingTail by remember { mutableStateOf(true) }
     val manualScroll =
         remember(listState) {
@@ -866,61 +869,18 @@ internal fun TranscriptLog(
             modifier = modifier.heightIn(max = TranscriptHeight).nestedScroll(manualScroll),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            if (leading > 0 && close != null) {
-                item { FloatingTranscriptStart(entries.take(leading), showUsageStats, close) }
-            }
-            itemsIndexed(entries.drop(leading)) { _, entry -> TranscriptRow(entry, showUsageStats, null) }
+            itemsIndexed(entries) { _, entry -> TranscriptRow(entry, showUsageStats) }
             if (draft != null) {
                 item {
-                    Row(verticalAlignment = Alignment.Top) {
-                        Text(
-                            text = "You: ${draft.text}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f).testTag("gomode-voice-transcript-draft"),
-                        )
-                        if (entries.isEmpty() && close != null) close()
-                    }
+                    Text(
+                        text = "You: ${draft.text}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.fillMaxWidth().testTag("gomode-voice-transcript-draft"),
+                    )
                 }
             }
             item { Spacer(Modifier.fillMaxWidth().height(1.dp).testTag("gomode-voice-transcript-end")) }
-        }
-    }
-}
-
-// The initial entries share the float; the rest of the conversation remains lazy.
-@Composable
-private fun FloatingTranscriptStart(
-    entries: List<TranscriptEntry>,
-    showUsageStats: Boolean,
-    close: @Composable () -> Unit,
-) {
-    SubcomposeLayout { constraints ->
-        val button = subcompose("close", close).single().measure(constraints.copy(minWidth = 0, minHeight = 0))
-        val gap = 4.dp.roundToPx()
-        var top = 0
-        val positions = mutableListOf<Int>()
-        val rows =
-            entries.mapIndexed { index, entry ->
-                val exclusion =
-                    if (top <
-                        button.height
-                    ) {
-                        TextExclusion(button.height - top, button.width + gap)
-                    } else {
-                        null
-                    }
-                val row =
-                    subcompose(index) { TranscriptRow(entry, showUsageStats, exclusion) }
-                        .single()
-                        .measure(Constraints.fixedWidth(constraints.maxWidth))
-                positions.add(top)
-                top += row.height + gap
-                row
-            }
-        layout(constraints.maxWidth, maxOf(button.height, top - gap)) {
-            rows.forEachIndexed { index, row -> row.placeRelative(0, positions[index]) }
-            button.placeRelative(constraints.maxWidth - button.width, 0)
         }
     }
 }
@@ -1015,7 +975,6 @@ private fun ToolHistory(
 private fun TranscriptRow(
     entry: TranscriptEntry,
     showUsageStats: Boolean,
-    exclusion: TextExclusion?,
 ) {
     val reasoning = entry.kind == TranscriptKind.REASONING
     val labelColor =
@@ -1036,8 +995,6 @@ private fun TranscriptRow(
             showUsageStats && !reasoning && entry.speaker == TranscriptSpeaker.ASSISTANT
         }
     val assistant = !reasoning && entry.speaker == TranscriptSpeaker.ASSISTANT
-    val inset = with(LocalDensity.current) { if (assistant) 1.dp.roundToPx() else 0 }
-    val space = exclusion?.copy(height = exclusion.height - inset)
     val rowModifier =
         if (assistant) {
             Modifier
@@ -1050,7 +1007,6 @@ private fun TranscriptRow(
         text = text,
         style = MaterialTheme.typography.bodySmall,
         color = if (reasoning) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-        exclusion = space,
         modifier = rowModifier.fillMaxWidth(),
         metrics =
             if (counts != null) {

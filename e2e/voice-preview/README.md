@@ -10,8 +10,9 @@ calls and horizontally for complete long identifiers; scrollbars stay hidden.
 The latest 32 invocation names remain reviewable after disconnect and reset for a
 new conversation. Browsing older calls preserves the current scroll position.
 Connection errors keep the same toolbar and normal start action, with no separate
-retry or dismiss buttons. The transcript reopen button stays at the right of the activity row when
-hidden. The X sits at the top right of the expanded transcript content.
+retry or dismiss buttons. The transcript toggle stays at the right of the
+activity row so the X remains visible while the transcript scrolls. The transcript
+collapses when a session ends and can be reopened to review retained history.
 On Android, the settings glyph and text share an 8 dp inset in portrait and
 24 dp in landscape; the settings touch target remains fully inside the panel.
 Mobile web uses a matching 0.5 rem text inset and compact side margins. The
@@ -63,11 +64,11 @@ engine and session phase, in voice settings.
 
 X hides the transcript without clearing it. A Material subtitles icon shows it
 again. Hidden transcripts keep receiving text but show no drafts. Keyboard focus
-follows the toggle between these locations. Accessible names are “Hide transcript”
+moves into the expanded log when opened and returns to the toggle when hidden.
+Accessible names are “Hide transcript”
 and “Show transcript”.
-There is no separate transcript header or collapse chevron. The X glyph follows
-the platform's small label typography. Its touch target stays 32 dp on Android,
-2 rem on mobile web, and 44 CSS px on desktop web.
+There is no separate transcript header or collapse chevron. The toggle's touch
+target stays 32 dp on Android and 44 CSS px on web.
 
 When the operator enables Show assistant reasoning, the transcript lists
 provider reasoning as its own muted entry labelled Reasoning, ahead of the
