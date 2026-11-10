@@ -2,6 +2,7 @@
 
 import {
   createEffect,
+  createMemo,
   createSignal,
   createUniqueId,
   For,
@@ -11,6 +12,7 @@ import {
   onCleanup,
   onMount,
   type Accessor,
+  type JSX,
 } from "solid-js";
 
 import { Portal } from "solid-js/web";
@@ -186,6 +188,51 @@ export default function VoiceOverlay(props: {
   const isConnected = () => session.state.connected || session.state.listening || session.state.speaking;
   const isActive = () => isConnected() || session.state.connectStatus !== null;
 
+  const [transcriptExpanded, setTranscriptExpanded] = createSignal(false);
+  const transcriptId = createUniqueId();
+  let transcriptToggleRef: HTMLButtonElement | undefined;
+  createEffect(
+    on(isActive, (active) => {
+      const restoreFocus = !active && document.getElementById(transcriptId)?.contains(document.activeElement);
+      setTranscriptExpanded(active);
+      if (restoreFocus) queueMicrotask(() => transcriptToggleRef?.focus());
+    }),
+  );
+  const TranscriptToggle = () => {
+    const label = () => (transcriptExpanded() ? messages().hideTranscript : messages().showTranscript);
+    return (
+      <button
+        ref={transcriptToggleRef}
+        type="button"
+        class={controls.control}
+        onClick={() => {
+          setTranscriptExpanded(!transcriptExpanded());
+          queueMicrotask(() => {
+            if (transcriptExpanded()) {
+              const transcript = document.getElementById(transcriptId)?.querySelector<HTMLElement>('[role="region"]');
+              (transcript ?? transcriptToggleRef)?.focus({ preventScroll: true });
+            } else {
+              transcriptToggleRef?.focus();
+            }
+          });
+        }}
+        title={label()}
+        aria-label={label()}
+        aria-expanded={transcriptExpanded()}
+        aria-controls={transcriptId}
+      >
+        <VoiceIcon name={transcriptExpanded() ? "close" : "subtitles"} />
+      </button>
+    );
+  };
+  const hasDiscussion = createMemo(
+    () =>
+      session.state.transcript.length > 0 ||
+      session.state.transcriptDraft !== null ||
+      session.state.toolHistory.length > 0 ||
+      session.state.usage !== null,
+  );
+
   const microphoneUnavailable = !navigator.mediaDevices?.getUserMedia;
   const microphoneWarning = () => !isActive() && (microphoneUnavailable || session.state.microphoneAccess === "denied");
   const [microphoneHelpOpen, setMicrophoneHelpOpen] = createSignal(false);
@@ -336,6 +383,9 @@ export default function VoiceOverlay(props: {
               <Show when={isConnected()}>
                 <MicLevelBars micLevel={session.state.micLevel} />
               </Show>
+              <Show when={hasDiscussion() && !transcriptExpanded()}>
+                <TranscriptToggle />
+              </Show>
               <button
                 ref={connectButtonRef}
                 type="button"
@@ -418,17 +468,14 @@ export default function VoiceOverlay(props: {
               />
             )}
           </Show>
-          <Show
-            when={
-              session.state.connected ||
-              session.state.listening ||
-              session.state.speaking ||
-              session.state.transcript.length > 0 ||
-              session.state.toolHistory.length > 0
-            }
-          >
-            <ConversationPanel state={session.state} active={isActive()} messages={messages} />
-          </Show>
+          <ConversationPanel
+            state={session.state}
+            active={isActive()}
+            expanded={transcriptExpanded()}
+            transcriptId={transcriptId}
+            closeControl={hasDiscussion() && transcriptExpanded() ? TranscriptToggle : null}
+            messages={messages}
+          />
           <Show when={session.transport === "webrtc"}>
             <AudioErrors state={session.state} />
           </Show>
@@ -454,7 +501,7 @@ export default function VoiceOverlay(props: {
               </p>
             )}
           </Show>
-          <Show when={hasUsage() && session.state.showUsageStats}>
+          <Show when={hasUsage() && session.state.showUsageStats && (isActive() || transcriptExpanded())}>
             <section class={styles.usage} aria-label={messages().usage}>
               <UsagePanel usage={session.state.usage} messages={messages} />
             </section>
@@ -594,49 +641,18 @@ function MicrophoneControls(props: {
   );
 }
 
-function ConversationPanel(props: { state: VoiceState; active: boolean; messages: Accessor<VoiceMessages> }) {
-  const [transcriptExpanded, setTranscriptExpanded] = createSignal(false);
-  const transcriptId = createUniqueId();
-  let transcriptToggleRef: HTMLButtonElement | undefined;
-  createEffect(
-    on(
-      () => props.active,
-      (active) => {
-        const restoreFocus = !active && document.getElementById(transcriptId)?.contains(document.activeElement);
-        setTranscriptExpanded(active);
-        if (restoreFocus) transcriptToggleRef?.focus();
-      },
-    ),
-  );
-  const TranscriptToggle = () => {
-    const label = () => (transcriptExpanded() ? props.messages().hideTranscript : props.messages().showTranscript);
-    return (
-      <button
-        ref={transcriptToggleRef}
-        type="button"
-        class={`${controls.control} ${styles.transcriptToggle}`}
-        onClick={() => {
-          setTranscriptExpanded(!transcriptExpanded());
-          queueMicrotask(() => {
-            if (transcriptExpanded()) {
-              document
-                .getElementById(transcriptId)
-                ?.querySelector<HTMLElement>('[role="region"]')
-                ?.focus({ preventScroll: true });
-            } else {
-              transcriptToggleRef?.focus();
-            }
-          });
-        }}
-        title={label()}
-        aria-label={label()}
-        aria-expanded={transcriptExpanded()}
-        aria-controls={transcriptId}
-      >
-        <VoiceIcon name={transcriptExpanded() ? "close" : "subtitles"} />
-      </button>
-    );
-  };
+function ConversationPanel(props: {
+  state: VoiceState;
+  active: boolean;
+  expanded: boolean;
+  transcriptId: string;
+  closeControl: (() => JSX.Element) | null;
+  messages: Accessor<VoiceMessages>;
+}) {
+  const showStatus = () =>
+    props.state.error === null &&
+    props.state.connectStatus === null &&
+    (props.state.connected || props.state.listening || props.state.speaking);
   // Gateway work outranks muting: a muted user still waits for the reply.
   const busyText = () => {
     if (props.state.turnState === TurnStateTranscribing) return props.messages().transcribing;
@@ -661,32 +677,36 @@ function ConversationPanel(props: { state: VoiceState; active: boolean; messages
 
   return (
     <>
-      <div class={styles.callStatus} role="status" aria-label={props.messages().voiceActivity}>
-        <Show
-          when={
-            props.state.error === null &&
-            props.state.connectStatus === null &&
-            (props.state.connected || props.state.listening || props.state.speaking)
-          }
-        >
-          <span class={`${statusClass()} ${props.state.activeTool !== null ? styles.activityAnnouncement : ""}`}>
-            {statusText()}
-          </span>
-        </Show>
-        <Show when={props.state.toolHistory.length > 0}>
-          <ToolHistory
-            entries={props.state.toolHistory}
-            active={props.state.activeTool !== null}
-            label={props.messages().toolHistory}
-          />
-        </Show>
-        <Show when={props.state.transcript.length > 0 || props.state.transcriptDraft !== null}>
-          <TranscriptToggle />
-        </Show>
-      </div>
+      <Show
+        when={
+          props.closeControl !== null ||
+          showStatus() ||
+          ((props.active || props.expanded) && props.state.toolHistory.length > 0)
+        }
+      >
+        <div class={styles.callStatus} role="status" aria-label={props.messages().voiceActivity}>
+          <Show when={showStatus()}>
+            <span class={`${statusClass()} ${props.state.activeTool !== null ? styles.activityAnnouncement : ""}`}>
+              {statusText()}
+            </span>
+          </Show>
+          <Show when={props.state.toolHistory.length > 0}>
+            <ToolHistory
+              entries={props.state.toolHistory}
+              active={props.state.activeTool !== null}
+              label={props.messages().toolHistory}
+            />
+          </Show>
+          <Show when={props.closeControl !== null}>
+            <div class={styles.transcriptClose}>{props.closeControl?.()}</div>
+          </Show>
+        </div>
+      </Show>
       <TranscriptLog
-        id={transcriptId}
-        expanded={transcriptExpanded()}
+        id={props.transcriptId}
+        expanded={
+          props.expanded && (props.active || props.state.transcript.length > 0 || props.state.transcriptDraft !== null)
+        }
         transcript={props.state.transcript}
         draft={props.state.transcriptDraft}
         showUsageStats={props.state.showUsageStats}

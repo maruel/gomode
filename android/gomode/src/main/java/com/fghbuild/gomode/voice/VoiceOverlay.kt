@@ -75,7 +75,6 @@ import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -105,8 +104,6 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalViewConfiguration
-import androidx.compose.ui.platform.ViewConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -119,7 +116,6 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import com.fghbuild.voicegateway.sdk.v2.TokenUsage
 import com.fghbuild.voicegateway.sdk.v2.TurnState
@@ -129,7 +125,6 @@ private const val PULSE_MIN_ALPHA = 0.5f
 private const val PULSE_MAX_ALPHA = 1.0f
 private const val PULSE_DURATION_MS = 1000
 private const val SERVICE_RECONNECT_REASON_LIMIT = 200
-private val CloseTargetSize = 32.dp
 private val WHITESPACE = Regex("\\s+")
 private const val BAR_COUNT = 3
 private const val BAR_MIN_HEIGHT = 4f
@@ -170,6 +165,44 @@ fun VoicePanel(
 ) {
     val contentInset =
         if (LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT) 8.dp else 24.dp
+    val hasDiscussion =
+        voiceState.transcript.isNotEmpty() || voiceState.transcriptDraft != null ||
+            voiceState.toolHistory.isNotEmpty() || voiceState.usage != null
+    val active = voiceState.connected || voiceState.listening || voiceState.speaking || voiceState.connectStatus != null
+    var transcriptExpanded by rememberSaveable { mutableStateOf(active) }
+    var wasActive by rememberSaveable { mutableStateOf(active) }
+    val transcriptFocus = remember { FocusRequester() }
+    val logFocus = remember { FocusRequester() }
+    var logFocused by remember { mutableStateOf(false) }
+    var focusAfterToggle by remember { mutableStateOf(false) }
+    LaunchedEffect(active) {
+        if (wasActive != active) {
+            if (!active && logFocused) focusAfterToggle = true
+            transcriptExpanded = active
+            wasActive = active
+        }
+    }
+    val transcriptToggle: @Composable () -> Unit = {
+        if (hasDiscussion) {
+            TranscriptToggle(transcriptExpanded, transcriptFocus) {
+                focusAfterToggle = true
+                transcriptExpanded = !transcriptExpanded
+            }
+        }
+    }
+    LaunchedEffect(transcriptExpanded) {
+        if (focusAfterToggle) {
+            if (hasDiscussion) {
+                if (transcriptExpanded && (voiceState.transcript.isNotEmpty() || voiceState.transcriptDraft != null)) {
+                    logFocus.requestFocus()
+                } else {
+                    transcriptFocus.requestFocus()
+                }
+            }
+            focusAfterToggle = false
+        }
+    }
+
     val showUsage =
         voiceState.connected || voiceState.usage != null ||
             (voiceState.transcript.isNotEmpty() || voiceState.transcriptDraft != null)
@@ -192,6 +225,7 @@ fun VoicePanel(
                 appControls,
                 serviceReconnect,
                 contentInset,
+                { if (!transcriptExpanded) transcriptToggle() },
             )
             microphoneRecovery?.let { recovery ->
                 Column(
@@ -240,12 +274,19 @@ fun VoicePanel(
                     ConnectingStatus(voiceState.connectStatus, contentInset)
                 }
             }
-            if (voiceState.connected || (voiceState.transcript.isNotEmpty() || voiceState.transcriptDraft != null) ||
-                voiceState.toolHistory.isNotEmpty()
-            ) {
-                ConversationPanel(voiceState, showUsageStats, contentInset)
+            if (active || transcriptExpanded) {
+                ConversationPanel(
+                    voiceState,
+                    showUsageStats,
+                    contentInset,
+                    transcriptExpanded,
+                    logFocus,
+                    logFocused,
+                    { logFocused = it },
+                    if (hasDiscussion && transcriptExpanded) transcriptToggle else null,
+                )
             }
-            if (showUsage && showUsageStats) {
+            if (showUsage && showUsageStats && (active || transcriptExpanded)) {
                 UsagePanel(voiceState.usage)
             }
         }
@@ -414,6 +455,7 @@ private fun VoiceToolbar(
     appControls: @Composable () -> Unit,
     serviceReconnect: ServiceReconnectDetail?,
     contentInset: Dp,
+    transcriptControl: @Composable () -> Unit,
 ) {
     val active = voiceState.connected || voiceState.connectStatus != null
     Row(
@@ -446,6 +488,7 @@ private fun VoiceToolbar(
         }
         if (voiceState.connected) MicLevelIndicator(micLevel = voiceState.micLevel)
         if (serviceReconnect != null) ServiceReconnectIndicator(serviceReconnect)
+        transcriptControl()
         IconButton(
             onClick = if (active) onDisconnect else onConnect,
             enabled = active || voiceEnabled,
@@ -564,53 +607,20 @@ private fun MicrophoneModeButton(
 }
 
 @Composable
-private fun VoiceCloseButton(
-    onClick: () -> Unit,
-    contentDescription: String,
-    modifier: Modifier = Modifier,
-) {
-    val viewConfiguration = LocalViewConfiguration.current
-    val compactConfiguration =
-        remember(viewConfiguration) {
-            // Keep implicit touch expansion within the compact close target.
-            object : ViewConfiguration by viewConfiguration {
-                override val minimumTouchTargetSize = DpSize(CloseTargetSize, CloseTargetSize)
-            }
-        }
-    val closeIconSize =
-        with(LocalDensity.current) {
-            MaterialTheme.typography.labelSmall.fontSize
-                .toDp() * 1.25f
-        }
-    CompositionLocalProvider(LocalViewConfiguration provides compactConfiguration) {
-        IconButton(
-            onClick = onClick,
-            modifier = modifier.size(CloseTargetSize),
-        ) {
-            Box(Modifier.fillMaxSize().padding(top = 2.dp), contentAlignment = Alignment.TopCenter) {
-                Icon(
-                    imageVector = Icons.Default.Close,
-                    contentDescription = contentDescription,
-                    modifier = Modifier.size(closeIconSize),
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun TranscriptToggle(
     expanded: Boolean,
     focusRequester: FocusRequester,
     onToggle: () -> Unit,
 ) {
-    val modifier = Modifier.focusRequester(focusRequester).testTag("gomode-voice-transcript-toggle")
-    if (expanded) {
-        VoiceCloseButton(onToggle, "Hide transcript", modifier)
-    } else {
-        IconButton(onClick = onToggle, modifier = modifier.size(48.dp)) {
-            Icon(Icons.Default.Subtitles, contentDescription = "Show transcript", modifier = Modifier.size(24.dp))
-        }
+    IconButton(
+        onClick = onToggle,
+        modifier = Modifier.size(48.dp).focusRequester(focusRequester).testTag("gomode-voice-transcript-toggle"),
+    ) {
+        Icon(
+            if (expanded) Icons.Default.Close else Icons.Default.Subtitles,
+            contentDescription = if (expanded) "Hide transcript" else "Show transcript",
+            modifier = Modifier.size(24.dp),
+        )
     }
 }
 
@@ -619,79 +629,60 @@ private fun ConversationPanel(
     voiceState: VoiceState,
     showUsageStats: Boolean,
     contentInset: Dp,
+    transcriptExpanded: Boolean,
+    logFocus: FocusRequester,
+    logFocused: Boolean,
+    onLogFocusChanged: (Boolean) -> Unit,
+    closeControl: (@Composable () -> Unit)?,
 ) {
-    val active = voiceState.connected || voiceState.listening || voiceState.speaking || voiceState.connectStatus != null
-    var transcriptExpanded by rememberSaveable { mutableStateOf(active) }
-    var wasActive by rememberSaveable { mutableStateOf(active) }
-    val transcriptFocus = remember { FocusRequester() }
-    val logFocus = remember { FocusRequester() }
-    var logFocused by remember { mutableStateOf(false) }
     val focusColor = MaterialTheme.colorScheme.primary
-    var focusAfterToggle by remember { mutableStateOf(false) }
-    LaunchedEffect(active) {
-        if (wasActive != active) {
-            if (!active && logFocused) focusAfterToggle = true
-            transcriptExpanded = active
-            wasActive = active
-        }
-    }
-    val transcriptToggle: @Composable () -> Unit = {
-        TranscriptToggle(transcriptExpanded, transcriptFocus) {
-            focusAfterToggle = true
-            transcriptExpanded = !transcriptExpanded
-        }
-    }
-    LaunchedEffect(transcriptExpanded) {
-        if (focusAfterToggle) {
-            if ((voiceState.transcript.isNotEmpty() || voiceState.transcriptDraft != null)) {
-                if (transcriptExpanded) logFocus.requestFocus() else transcriptFocus.requestFocus()
-            }
-            focusAfterToggle = false
-        }
-    }
-
     val showStatus =
         voiceState.connected && voiceState.error == null && voiceState.connectStatus == null &&
             voiceState.activeTool == null
+    val showTranscript =
+        transcriptExpanded && (voiceState.transcript.isNotEmpty() || voiceState.transcriptDraft != null)
+    if (!showStatus && voiceState.toolHistory.isEmpty() && !showTranscript && closeControl == null) return
     Column(
         modifier = Modifier.padding(bottom = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = contentInset).testTag("gomode-voice-activity"),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            if (showStatus) {
-                Text(
-                    text = voiceStatusText(voiceState),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color =
-                        if (voiceState.activeTool != null) {
-                            MaterialTheme.colorScheme.tertiary
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
-                    modifier =
-                        Modifier
-                            .then(
-                                if (voiceState.toolHistory.isEmpty()) Modifier.weight(1f) else Modifier,
-                            ).semantics {
-                                liveRegion =
-                                    LiveRegionMode.Polite
+        if (showStatus || voiceState.toolHistory.isNotEmpty() || closeControl != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = contentInset).testTag("gomode-voice-activity"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (showStatus) {
+                    Text(
+                        text = voiceStatusText(voiceState),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color =
+                            if (voiceState.activeTool != null) {
+                                MaterialTheme.colorScheme.tertiary
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
                             },
-                )
-            }
-            if (voiceState.toolHistory.isNotEmpty()) {
-                ToolHistory(voiceState.toolHistory, voiceState.activeTool, Modifier.weight(1f))
-            }
-            if (voiceState.transcript.isNotEmpty() || voiceState.transcriptDraft != null) {
-                if (!showStatus && voiceState.toolHistory.isEmpty()) Spacer(Modifier.weight(1f))
-                transcriptToggle()
+                        modifier =
+                            Modifier
+                                .then(
+                                    if (voiceState.toolHistory.isEmpty()) Modifier.weight(1f) else Modifier,
+                                ).semantics {
+                                    liveRegion =
+                                        LiveRegionMode.Polite
+                                },
+                    )
+                }
+                if (voiceState.toolHistory.isNotEmpty()) {
+                    ToolHistory(voiceState.toolHistory, voiceState.activeTool, Modifier.weight(1f))
+                }
+                if (closeControl != null) {
+                    if (!showStatus && voiceState.toolHistory.isEmpty()) Spacer(Modifier.weight(1f))
+                    closeControl()
+                }
             }
         }
 
-        if (transcriptExpanded && (voiceState.transcript.isNotEmpty() || voiceState.transcriptDraft != null)) {
+        if (showTranscript) {
             Box(
                 modifier =
                     Modifier
@@ -717,7 +708,7 @@ private fun ConversationPanel(
                                         style = Stroke(stroke),
                                     )
                                 }
-                            }.onFocusChanged { logFocused = it.isFocused }
+                            }.onFocusChanged { onLogFocusChanged(it.isFocused) }
                             .semantics { contentDescription = "Transcript" }
                             .focusRequester(logFocus)
                             .focusable()

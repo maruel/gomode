@@ -45,6 +45,7 @@ declare const classes: {
   readonly "toolHistoryItems": string;
   readonly "toolHistoryViewport": string;
   readonly "toolbarActions": string;
+  readonly "transcriptClose": string;
   readonly "transcriptEntries": string;
   readonly "transcriptEntry": string;
   readonly "transcriptEntryAssistant": string;
@@ -55,7 +56,6 @@ declare const classes: {
   readonly "transcriptList": string;
   readonly "transcriptPlaceholder": string;
   readonly "transcriptText": string;
-  readonly "transcriptToggle": string;
   readonly "usage": string;
   readonly "usageBody": string;
   readonly "usageEmpty": string;

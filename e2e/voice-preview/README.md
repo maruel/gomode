@@ -7,12 +7,16 @@ stays after the audio selectors and the level meter sits immediately left of
 hang-up. Activity occupies the second row. Recent tool calls occupy a one-line
 scrollable history, initially showing the newest invocation. Scroll vertically for earlier
 calls and horizontally for complete long identifiers; scrollbars stay hidden.
-The latest 32 invocation names remain reviewable after disconnect and reset for a
-new conversation. Browsing older calls preserves the current scroll position.
+The latest 32 invocation names remain reviewable by reopening the discussion after
+disconnect and reset for a new conversation. Browsing older calls preserves the current scroll position.
 Connection errors keep the same toolbar and normal start action, with no separate
-retry or dismiss buttons. The transcript toggle stays at the right of the
-activity row so the X remains visible while the transcript scrolls. The transcript
-collapses when a session ends and can be reopened to review retained history.
+retry or dismiss buttons. The subtitles icon beside the
+microphone/hang-up button reopens the discussion. When expanded, the X sits at the
+right of the activity row below the toolbar and remains visible while the
+transcript scrolls.
+When a session ends, the transcript, tool history, and usage details collapse,
+leaving one toolbar row. Reopen the discussion from its subtitles icon to review
+retained history and any enabled usage details.
 On Android, the settings glyph and text share an 8 dp inset in portrait and
 24 dp in landscape; the settings touch target remains fully inside the panel.
 Mobile web uses a matching 0.5 rem text inset and compact side margins. The
@@ -68,7 +72,7 @@ moves into the expanded log when opened and returns to the toggle when hidden.
 Accessible names are “Hide transcript”
 and “Show transcript”.
 There is no separate transcript header or collapse chevron. The toggle's touch
-target stays 32 dp on Android and 44 CSS px on web.
+target stays 48 dp on Android and 44 CSS px on web.
 
 When the operator enables Show assistant reasoning, the transcript lists
 provider reasoning as its own muted entry labelled Reasoning, ahead of the

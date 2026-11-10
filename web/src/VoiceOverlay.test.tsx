@@ -293,11 +293,12 @@ describe("VoiceOverlay status", () => {
     const user = userEvent.setup();
     const hide = screen.getByRole("button", { name: "Hide transcript" });
     expect(screen.getByRole("status", { name: "Voice activity" })).toContainElement(hide);
+    expect(screen.getByRole("group", { name: "Voice controls" })).not.toContainElement(hide);
     expect(screen.getByRole("region", { name: "Transcript" })).not.toContainElement(hide);
     expect(hide.querySelector('[data-icon="close"]')).not.toBeNull();
     await user.click(hide);
     expect(screen.queryByText("Review the launch brief.")).toBeNull();
-    const show = within(screen.getByRole("status", { name: "Voice activity" })).getByRole("button", {
+    const show = within(screen.getByRole("group", { name: "Voice controls" })).getByRole("button", {
       name: "Show transcript",
     });
     expect(show).toHaveFocus();
@@ -322,6 +323,8 @@ describe("VoiceOverlay status", () => {
       ...state,
       connected: true,
       transcript: [{ kind: "transcript", speaker: "assistant", text: "Session reply", final: true }],
+      toolHistory: [{ sequence: 1, name: "review_brief" }],
+      showUsageStats: true,
     }));
     render(() => <VoiceOverlay />);
     const user = userEvent.setup();
@@ -333,15 +336,21 @@ describe("VoiceOverlay status", () => {
     await user.click(screen.getByRole("button", { name: "End voice session" }));
     expect(screen.queryByRole("region", { name: "Transcript" })).toBeNull();
     expect(voiceSession.state.transcript).toHaveLength(1);
+    expect(screen.queryByRole("status", { name: "Voice activity" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Usage" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Recent tool calls" })).toBeNull();
+    const show = screen.getByRole("button", { name: "Show transcript" });
+    expect(show.nextElementSibling).toBe(screen.getByRole("button", { name: "Connect voice assistant" }));
     await user.click(screen.getByRole("button", { name: "Show transcript" }));
     expect(screen.getByText("Session reply")).toBeVisible();
+    expect(screen.getByRole("region", { name: "Recent tool calls" })).toHaveTextContent("review_brief");
     await user.click(screen.getByRole("button", { name: "Hide transcript" }));
     voiceSession.setState((state) => ({ ...state, connectStatus: "Connecting" }));
     expect(screen.getByRole("region", { name: "Transcript" })).toBeVisible();
     screen.getByRole("region", { name: "Transcript" }).focus();
     voiceSession.setState((state) => ({ ...state, connectStatus: null, error: "Connection lost" }));
     expect(screen.queryByRole("region", { name: "Transcript" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Show transcript" })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Show transcript" })).toHaveFocus());
   });
 
   it("labels reasoning separately from assistant statements", () => {
@@ -360,7 +369,7 @@ describe("VoiceOverlay status", () => {
     expect(statement.textContent).toBe("Assistant: The first date is earlier.");
   });
 
-  it("restores the transcript from the activity row when no audio picker is available", async () => {
+  it("restores the transcript from the toolbar when no audio picker is available", async () => {
     voiceSession.setState((state) => ({
       ...state,
       connected: true,
@@ -371,7 +380,7 @@ describe("VoiceOverlay status", () => {
     render(() => <VoiceOverlay />);
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Hide transcript" }));
-    const show = within(screen.getByRole("status", { name: "Voice activity" })).getByRole("button", {
+    const show = within(screen.getByRole("group", { name: "Voice controls" })).getByRole("button", {
       name: "Show transcript",
     });
     expect(show).toHaveFocus();
@@ -664,7 +673,7 @@ describe("VoiceOverlay status", () => {
     expect(voiceSession.state.selectedOutputId).toBe("");
   });
 
-  it("keeps controls separate from the complete tool activity and subsequent status", () => {
+  it("keeps controls separate from the complete tool activity and subsequent status", async () => {
     const tool = "workspace_search_project_documents_by_author_and_revision_with_extended_filters_and_full_metadata";
     voiceSession.setState((s) => ({
       ...s,
@@ -696,7 +705,14 @@ describe("VoiceOverlay status", () => {
     expect(activity).toHaveTextContent("Listening…");
     expect(history).toHaveTextContent(tool);
     voiceSession.setState((s) => ({ ...s, connected: false }));
-    expect(screen.getByRole("region", { name: "Recent tool calls" })).toBe(history);
+    expect(screen.queryByRole("region", { name: "Recent tool calls" })).toBeNull();
+    const show = screen.getByRole("button", { name: "Show transcript" });
+    expect(show).toBeVisible();
+    expect(document.getElementById(show.getAttribute("aria-controls") ?? "")).not.toBeNull();
+    await userEvent.click(show);
+    expect(screen.getByRole("button", { name: "Hide transcript" })).toHaveFocus();
+    expect(screen.getByRole("region", { name: "Recent tool calls" })).toHaveTextContent(tool);
+    expect(screen.queryByRole("region", { name: "Transcript" })).toBeNull();
   });
 
   it("shows gateway work behind speech and ahead of muting", () => {
@@ -1102,6 +1118,7 @@ it("discloses reported usage after disconnect with zero distinct from unavailabl
   }));
   render(() => <VoiceOverlay />);
   const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Show transcript" }));
   const settings = screen.getByRole("button", { name: "Voice settings" });
   await user.click(settings);
   const toggle = screen.getByRole("checkbox", { name: "Show usage stats" });
@@ -1123,7 +1140,6 @@ it("discloses reported usage after disconnect with zero distinct from unavailabl
   expect(
     within(table).getByRole("img", { name: "Context tokens: 2,048 / 8,192" }).querySelector('[data-icon="dataUsage"]'),
   ).not.toBeNull();
-  await user.click(screen.getByRole("button", { name: "Show transcript" }));
   const inputMetric = screen.getByRole("img", { name: "Input tokens: 234" });
   expect(inputMetric).toBeVisible();
   expect(

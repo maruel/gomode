@@ -912,14 +912,16 @@ class VoicePanelTest {
                 ).fetchSemanticsNode()
                 .boundsInRoot
         val restoreBounds = restore.fetchSemanticsNode().boundsInRoot
-        assertTrue(restoreBounds.left >= activity.right)
-        assertEquals(activity.center.y, restoreBounds.center.y, 1f)
+        assertTrue(restoreBounds.bottom <= activity.top)
+        assertTrue(restoreBounds.right <= hangup.left)
+        assertEquals(hangup.center.y, restoreBounds.center.y, 1f)
         capture("documentation-hidden")
         composeRule.onNodeWithContentDescription("Show transcript").performClick()
         composeRule.onNodeWithTag("gomode-voice-transcript").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("End voice").performClick()
         composeRule.onNodeWithContentDescription("Connect voice assistant").assertIsDisplayed()
         speaker.assertIsDisplayed().assertIsOn()
+        capture("documentation-ended")
     }
 
     @Test
@@ -1277,20 +1279,22 @@ class VoicePanelTest {
         toggle.performSemanticsAction(SemanticsActions.RequestFocus) { it() }
         toggle.assertIsFocused()
         val close = toggle.fetchSemanticsNode().boundsInRoot
+        val toolbar = composeRule.onNodeWithTag("gomode-voice-actions").fetchSemanticsNode().boundsInRoot
+        assertTrue("Expanded close must sit below the toolbar", close.top >= toolbar.bottom)
         val transcript = composeRule.onNodeWithTag("gomode-voice-transcript").assertIsDisplayed()
         val log = transcript.fetchSemanticsNode().boundsInRoot
         assertTrue("Close must remain above the scrolling transcript", close.bottom <= log.top)
         val touch = toggle.fetchSemanticsNode().touchBoundsInRoot
         with(composeRule.density) {
-            assertEquals(32.dp.toPx(), touch.width, 1f)
-            assertEquals(32.dp.toPx(), touch.height, 1f)
+            assertEquals(48.dp.toPx(), touch.width, 1f)
+            assertEquals(48.dp.toPx(), touch.height, 1f)
         }
         toggle.performKeyInput { pressKey(Key.Enter) }
         composeRule.onNodeWithTag("gomode-voice-transcript").assertDoesNotExist()
         composeRule.onNodeWithContentDescription("Show transcript").assertIsDisplayed()
-        val activity = composeRule.onNodeWithText("Listening…").fetchSemanticsNode().boundsInRoot
+        val connect = composeRule.onNodeWithContentDescription("End voice").fetchSemanticsNode().boundsInRoot
         assertEquals(
-            activity.center.y,
+            connect.center.y,
             toggle
                 .fetchSemanticsNode()
                 .boundsInRoot.center.y,
@@ -1304,13 +1308,7 @@ class VoicePanelTest {
 
     @Test
     fun endedSessionsCollapseTranscriptAndKeepHistoryAvailable() {
-        val state =
-            mutableStateOf(
-                VoiceState(
-                    connected = true,
-                    transcript = listOf(TranscriptEntry(TranscriptSpeaker.ASSISTANT, "Session reply")),
-                ),
-            )
+        val state = mutableStateOf(VoiceState())
         composeRule.setContent {
             MaterialTheme {
                 VoicePanel(
@@ -1324,8 +1322,20 @@ class VoicePanelTest {
                     serviceReconnect = null,
                     onCycleApp = {},
                     canCycleApps = false,
+                    modifier = Modifier.testTag("voice-panel"),
+                    showUsageStats = true,
                 )
             }
+        }
+        val panel = composeRule.onNodeWithTag("voice-panel")
+        val idleHeight = panel.fetchSemanticsNode().boundsInRoot.height
+        composeRule.runOnIdle {
+            state.value =
+                VoiceState(
+                    connected = true,
+                    transcript = listOf(TranscriptEntry(TranscriptSpeaker.ASSISTANT, "Session reply")),
+                    toolHistory = listOf(ToolInvocation(1, "review_brief")),
+                )
         }
         val log = composeRule.onNodeWithTag("gomode-voice-transcript")
         log.assertIsDisplayed()
@@ -1335,8 +1345,24 @@ class VoicePanelTest {
         composeRule.onNodeWithContentDescription("End voice").performClick()
         log.assertDoesNotExist()
         assertEquals(1, state.value.transcript.size)
+        composeRule.onNodeWithTag("gomode-voice-activity").assertDoesNotExist()
+        composeRule.onNodeWithTag("gomode-voice-tool-history").assertDoesNotExist()
+        composeRule.onNodeWithTag("gomode-voice-usage").assertDoesNotExist()
+        assertEquals(idleHeight, panel.fetchSemanticsNode().boundsInRoot.height, 1f)
+        capture("ended-session-toolbar")
+        val restore = composeRule.onNodeWithContentDescription("Show transcript").fetchSemanticsNode().boundsInRoot
+        val connect =
+            composeRule
+                .onNodeWithContentDescription(
+                    "Connect voice assistant",
+                ).fetchSemanticsNode()
+                .boundsInRoot
+        assertTrue(restore.right <= connect.left)
+        assertEquals(connect.center.y, restore.center.y, 1f)
         composeRule.onNodeWithContentDescription("Show transcript").assertIsDisplayed().performClick()
         composeRule.onNodeWithText("Assistant: Session reply").assertIsDisplayed()
+        composeRule.onNodeWithTag("gomode-voice-tool-history").assertIsDisplayed()
+        composeRule.onNodeWithTag("gomode-voice-usage").assertIsDisplayed()
         capture("ended-session-review")
         composeRule.onNodeWithContentDescription("Hide transcript").performClick()
         composeRule.runOnIdle { state.value = state.value.copy(connectStatus = "Connecting") }
@@ -1631,7 +1657,9 @@ class VoicePanelTest {
     }
 
     @Test
+    @OptIn(ExperimentalTestApi::class)
     fun unknownUsageTotalsKeepTheModelAndReportingStatusVisible() {
+        lateinit var inputModes: InputModeManager
         val counts =
             com.fghbuild.voicegateway.sdk.v2
                 .TokenUsage()
@@ -1644,6 +1672,7 @@ class VoicePanelTest {
                 counts,
             )
         composeRule.setContent {
+            inputModes = LocalInputModeManager.current
             GoModeTheme {
                 VoicePanel(
                     VoiceState(usage = VoiceUsage(counts, report)),
@@ -1660,7 +1689,17 @@ class VoicePanelTest {
                 )
             }
         }
+        composeRule.onNodeWithTag("gomode-voice-usage").assertDoesNotExist()
+        composeRule.runOnIdle { inputModes.requestInputMode(InputMode.Keyboard) }
+        composeRule
+            .onNodeWithContentDescription("Show transcript")
+            .performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+        composeRule.onNodeWithContentDescription("Show transcript").performKeyInput { pressKey(Key.Enter) }
+        composeRule.onNodeWithContentDescription("Hide transcript").assertIsFocused()
         composeRule.onNodeWithText("llamacpp · LFM3-audio · Not reported").assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Hide transcript").performKeyInput { pressKey(Key.Enter) }
+        composeRule.onNodeWithContentDescription("Show transcript").assertIsFocused()
+        composeRule.onNodeWithTag("gomode-voice-usage").assertDoesNotExist()
     }
 
     @Test

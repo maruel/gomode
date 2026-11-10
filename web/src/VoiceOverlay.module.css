@@ -356,7 +356,8 @@
 
 /* ---- Transcript ---- */
 
-.transcriptToggle {
+.transcriptClose {
+  flex-shrink: 0;
   margin-inline-start: auto;
 }
 
