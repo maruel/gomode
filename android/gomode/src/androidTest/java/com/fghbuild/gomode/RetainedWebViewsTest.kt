@@ -15,6 +15,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.GrantPermissionRule
@@ -25,6 +26,7 @@ import com.fghbuild.gomode.ui.web.ServiceShellRegistry
 import com.fghbuild.gomode.ui.web.ServiceShellSession
 import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.ui.web.WebShellScreen
+import kotlinx.coroutines.test.StandardTestDispatcher
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -46,7 +48,8 @@ class RetainedWebViewsTest {
     val mediaPermissions: GrantPermissionRule = GrantPermissionRule.grant(Manifest.permission.RECORD_AUDIO)
 
     @get:Rule(order = 1)
-    val composeRule = createAndroidComposeRule<ComponentActivity>()
+    @OptIn(ExperimentalTestApi::class)
+    val composeRule = createAndroidComposeRule<ComponentActivity>(effectContext = StandardTestDispatcher())
 
     @Test
     fun hiddenPagePublishesAuthAndToolsWithoutTakingFocusOrOpeningDialogs() {

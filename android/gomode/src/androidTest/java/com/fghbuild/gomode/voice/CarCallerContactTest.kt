@@ -10,6 +10,7 @@ import android.provider.ContactsContract.Data
 import android.telephony.PhoneNumberUtils
 import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -23,6 +24,7 @@ import com.fghbuild.gomode.data.ServiceInstance
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.ui.settings.CarCallerIDSetting
+import kotlinx.coroutines.test.StandardTestDispatcher
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -30,7 +32,8 @@ import java.util.UUID
 
 class CarCallerContactTest {
     @get:Rule
-    val composeRule = createComposeRule()
+    @OptIn(ExperimentalTestApi::class)
+    val composeRule = createComposeRule(effectContext = StandardTestDispatcher())
 
     @Test
     fun oneButtonImportsGenericAndEverySavedServerContact() {
@@ -75,8 +78,10 @@ class CarCallerContactTest {
         try {
             composeRule.onNodeWithTag("gomode-car-create-contacts").performClick()
             // Some Contacts apps confirm the destination account before importing.
+            // Keep queued launch work moving while polling the external Contacts app.
             val deadline = System.currentTimeMillis() + 20_000
             while (saved.size < expected.size && System.currentTimeMillis() < deadline) {
+                composeRule.mainClock.advanceTimeByFrame()
                 device.findObject(By.text("Import"))?.click()
                 device.findObject(By.text("Device"))?.click()
                 device.findObject(By.res("com.android.permissioncontroller", "permission_allow_button"))?.click()

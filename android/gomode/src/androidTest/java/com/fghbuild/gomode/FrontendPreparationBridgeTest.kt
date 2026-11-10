@@ -3,11 +3,13 @@ package com.fghbuild.gomode
 
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellSession
 import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.ui.web.WebShellScreen
+import kotlinx.coroutines.test.StandardTestDispatcher
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -27,7 +29,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class FrontendPreparationBridgeTest {
     @get:Rule
-    val compose = createAndroidComposeRule<ComponentActivity>()
+    @OptIn(ExperimentalTestApi::class)
+    val compose = createAndroidComposeRule<ComponentActivity>(effectContext = StandardTestDispatcher())
 
     @Test
     @StandaloneHostedFixture

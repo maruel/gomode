@@ -18,9 +18,8 @@ repository_dir="$(CDPATH='' cd -- "$script_dir/.." && pwd)"
 readonly repository_dir
 cd -- "$repository_dir"
 
-# CI supplies the PR base or previous push SHA. Without a usable base, run all
-# checks, including manual workflows and new branches. Locally, include branch
-# commits, staged/unstaged edits, deletions, renames, and untracked files.
+# Without a usable base, run all checks. Include branch commits, staged/unstaged
+# edits, deletions, renames, and untracked files when comparing locally.
 base="${ANDROID_CHECK_BASE:-}"
 if [[ -z "$base" && "${CI:-false}" != true ]]; then
   if upstream="$(git rev-parse --verify '@{upstream}' 2>/dev/null)" && ancestor="$(git merge-base HEAD "$upstream")"; then
@@ -29,21 +28,8 @@ if [[ -z "$base" && "${CI:-false}" != true ]]; then
 fi
 needed=true
 if [[ -n "$base" ]] && git rev-parse --verify "$base^{commit}" >/dev/null 2>&1; then
-  paths=(
-    .github/workflows/android.yml
-    .github/workflows/ci.yml
-    Makefile
-    android/
-    assets/
-    e2e/
-    pyproject.toml
-    scripts/android\*
-    scripts/run-concurrently.sh
-    scripts/screenshot_publish.py
-    sdk/
-    testdata/speech-text/
-    uv.lock
-  )
+  pathspecs="$(uv run --locked python scripts/android_paths.py)"
+  mapfile -t paths <<<"$pathspecs"
   if git diff --quiet "$base" -- "${paths[@]}"; then
     untracked="$(git ls-files --others --exclude-standard -- "${paths[@]}")"
     if [[ -z "$untracked" ]]; then

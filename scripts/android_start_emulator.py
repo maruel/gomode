@@ -308,24 +308,21 @@ def _start(args: argparse.Namespace) -> int:
             )
             return 1
     if args.auto_reuse:
-        sdk = _sdk_root()
-        if sdk is None:
-            return 1
         try:
             adb = adb_path()
-        except RuntimeError as error:
-            print(error, file=sys.stderr)
-            return 1
-        serial = _running_avd_serial(adb)
-        if serial is not None:
-            print(f"Reusing emulator '{AVD_NAME}' ({serial})...", file=sys.stderr)
-            return _wait_for_existing_boot(adb, serial)
-        starting = _wait_for_starting_avd(adb)
-        if starting is not None:
-            return starting
-        if any(serial.startswith("emulator-") for serial in ready_device_serials(adb)):
-            print(f"Stop other emulators before starting owned AVD '{AVD_NAME}'.", file=sys.stderr)
-            return 1
+        except RuntimeError:
+            adb = None
+        if adb is not None:
+            serial = _running_avd_serial(adb)
+            if serial is not None:
+                print(f"Reusing emulator '{AVD_NAME}' ({serial})...", file=sys.stderr)
+                return _wait_for_existing_boot(adb, serial)
+            starting = _wait_for_starting_avd(adb)
+            if starting is not None:
+                return starting
+            if any(serial.startswith("emulator-") for serial in ready_device_serials(adb)):
+                print(f"Stop other emulators before starting owned AVD '{AVD_NAME}'.", file=sys.stderr)
+                return 1
 
     if args.reuse_connected_device and connected_adb:
         starting = _wait_for_starting_avd(connected_adb)

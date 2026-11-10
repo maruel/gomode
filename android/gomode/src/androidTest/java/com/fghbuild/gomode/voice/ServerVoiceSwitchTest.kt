@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.captureToImage
@@ -41,6 +42,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -70,7 +72,8 @@ class ServerVoiceSwitchTest {
         GrantPermissionRule.grant(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
 
     @get:Rule
-    val composeRule = createAndroidComposeRule<ComponentActivity>()
+    @OptIn(ExperimentalTestApi::class)
+    val composeRule = createAndroidComposeRule<ComponentActivity>(effectContext = StandardTestDispatcher())
 
     @Test
     fun spokenTextSwitchKeepsOneConversationAcrossBothDirections() = exerciseSharedConversation(VoiceMode.DEVICE)

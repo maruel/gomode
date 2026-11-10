@@ -11,6 +11,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextContains
@@ -30,6 +31,7 @@ import com.fghbuild.gomode.voice.ModelTransferProgress
 import com.fghbuild.gomode.voice.ModelTransferStage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -39,7 +41,8 @@ import java.util.UUID
 
 class ModelDownloadSettingsTest {
     @get:Rule
-    val compose = createAndroidComposeRule<ComponentActivity>()
+    @OptIn(ExperimentalTestApi::class)
+    val compose = createAndroidComposeRule<ComponentActivity>(effectContext = StandardTestDispatcher())
 
     @Test
     fun downloadStatesOfferRecoveryAndRespectActiveVoice() {

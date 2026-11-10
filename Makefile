@@ -67,7 +67,7 @@ verify: node_modules/.modules.yaml
 		'pnpm exec eslint --max-warnings 0 e2e/voice-preview/*.js e2e/voice-preview/*.tsx frontend/src scripts/*.mjs web/src web/tests' \
 		'pnpm exec node scripts/css_module_types.mjs --source-path web/src && pnpm exec node scripts/css_module_types.mjs --source-path frontend/src && pnpm exec tsc --noEmit -p frontend/tsconfig.json' \
 		'pnpm exec node scripts/build_frontend.mjs' \
-		'uv run --locked ruff check --quiet scripts && uv run --locked ruff format --check --quiet scripts && uv run --locked python scripts/generate_thinking_score.py --check' \
+		'uv run --locked ruff check --quiet scripts && uv run --locked ruff format --check --quiet scripts && uv run --locked python scripts/android_paths.py >/dev/null && uv run --locked python scripts/generate_thinking_score.py --check' \
 		'files=$$(git ls-files "*.sh" "scripts/hooks/*"); [ -z "$$files" ] || go tool shfmt -d $$files' \
 		'uv run --locked python scripts/lint_binaries.py && uv run --locked python scripts/update_agents_file_index.py --check && git diff --check'
 
@@ -151,7 +151,7 @@ android-setup-emulator:
 	@uv run --locked python scripts/android_sdk.py setup-emulator
 
 # Slow: starts or reuses the headless Go Mode test emulator.
-android-start-emulator: android-setup-emulator
+android-start-emulator:
 	@uv run --locked python scripts/android_start_emulator.py --auto-reuse
 
 android-stop-emulator:

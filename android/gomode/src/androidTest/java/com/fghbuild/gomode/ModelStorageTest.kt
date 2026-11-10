@@ -3,8 +3,10 @@ package com.fghbuild.gomode
 
 import android.content.Intent
 import android.os.Build
+import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -17,6 +19,7 @@ import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.voice.ModelDownloadState
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -30,7 +33,8 @@ class ModelStorageTest {
     internal val systemUi = SystemUiRule()
 
     @get:Rule(order = 1)
-    val compose = createEmptyComposeRule()
+    @OptIn(ExperimentalTestApi::class)
+    val compose = createEmptyComposeRule(effectContext = StandardTestDispatcher())
 
     @Test
     fun installedModelCanBeDeletedFromSettings() {
@@ -68,7 +72,10 @@ class ModelStorageTest {
                         .performScrollTo()
                         .assertTextContains("Installed · 128 byte")
                     capture("installed")
-                    compose.onNodeWithTag("gomode-model-delete").performClick()
+                    compose.onNodeWithTag("gomode-model-delete").performScrollTo().performClick()
+                    compose.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+                        compose.onAllNodesWithTag("gomode-model-delete-confirm").fetchSemanticsNodes().isNotEmpty()
+                    }
                     capture("confirm")
                     compose.onNodeWithTag("gomode-model-delete-confirm").performClick()
                     compose.waitUntil(30_000) { downloads.states.value[model] is ModelDownloadState.Missing }

@@ -67,6 +67,7 @@ import androidx.test.uiautomator.UiDevice
 import com.fghbuild.gomode.LockedCarCall
 import com.fghbuild.gomode.ui.theme.GoModeTheme
 import com.fghbuild.voicegateway.sdk.v2.TurnState
+import kotlinx.coroutines.test.StandardTestDispatcher
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -79,7 +80,8 @@ import kotlin.math.abs
 
 class VoicePanelTest {
     @get:Rule
-    val composeRule = createAndroidComposeRule<ComponentActivity>()
+    @OptIn(ExperimentalTestApi::class)
+    val composeRule = createAndroidComposeRule<ComponentActivity>(effectContext = StandardTestDispatcher())
 
     @Test
     @OptIn(ExperimentalTestApi::class)

@@ -14,6 +14,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.lifecycle.Lifecycle
 import androidx.test.platform.app.InstrumentationRegistry
@@ -33,9 +34,12 @@ import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellSession
 import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.ui.web.WebShellScreen
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -64,7 +68,8 @@ import java.util.concurrent.atomic.AtomicReference
 
 class ConcurrentServiceCatalogTest {
     @get:Rule
-    val composeRule = createAndroidComposeRule<ComponentActivity>()
+    @OptIn(ExperimentalTestApi::class)
+    val composeRule = createAndroidComposeRule<ComponentActivity>(effectContext = StandardTestDispatcher())
 
     @get:Rule
     val notificationPermissionRule: GrantPermissionRule =
@@ -161,6 +166,7 @@ class ConcurrentServiceCatalogTest {
                 // Compose's idling API waits for a resumed Activity; poll the platform while stopped.
                 val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
                 while (manager.serviceAlerts.size != 2 && System.nanoTime() < deadline) {
+                    composeRule.mainClock.advanceTimeByFrame()
                     Thread.sleep(50)
                 }
                 assertEquals(2, manager.serviceAlerts.size)
@@ -222,8 +228,9 @@ class ConcurrentServiceCatalogTest {
                 var selected by mutableStateOf(entries.first())
                 lateinit var catalog: ServiceCatalog
                 val notifications = CopyOnWriteArrayList<CatalogNotification>()
+                lateinit var scope: CoroutineScope
                 composeRule.setContent {
-                    val scope = rememberCoroutineScope()
+                    scope = rememberCoroutineScope()
                     catalog = remember { ServiceCatalog(scope) }
                     catalog.reconcile(entries.associateBy { it.key }, mapOf("a" to "Alpha", "b" to "Beta"))
                     DisposableEffect(catalog) {
@@ -267,21 +274,22 @@ class ConcurrentServiceCatalogTest {
                 assertTrue(notifications.any { it.notification.title.startsWith("Beta:") })
                 for ((id, source) in listOf("a" to "A", "b" to "B")) {
                     for (kind in listOf("mcp", "frontend")) {
-                        val result =
-                            runBlocking {
-                                withContext(Dispatchers.Main) {
-                                    catalog.execute(
-                                        "dispatch_service_tool",
-                                        buildJsonObject {
-                                            put("server_id", id)
-                                            put("kind", kind)
-                                            put("tool", "duplicate")
-                                            put("arguments", buildJsonObject { put("value", source) })
-                                        },
-                                    ) { true }
-                                }
+                        val pending =
+                            scope.async {
+                                catalog.execute(
+                                    "dispatch_service_tool",
+                                    buildJsonObject {
+                                        put("server_id", id)
+                                        put("kind", kind)
+                                        put("tool", "duplicate")
+                                        put("arguments", buildJsonObject { put("value", source) })
+                                    },
+                                    sessionID = "retained-conversation",
+                                ) { true }
                             }
-                        assertFalse(requireNotNull(result).isError)
+                        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) { pending.isCompleted }
+                        val result = runBlocking { pending.await() }
+                        assertFalse("$id/$kind: ${requireNotNull(result)}", result.isError)
                         val structured = result.structuredContent
                         assertEquals(id, structured.getValue("server_id").jsonPrimitive.content)
                         assertEquals(
