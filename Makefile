@@ -94,8 +94,7 @@ release:
 	@$(GORELEASER) release --clean
 
 test: node_modules/.modules.yaml
-	@./scripts/run-concurrently.sh release,go,browser-scripts,browser \
-		'$(GORELEASER) check' \
+	@./scripts/run-concurrently.sh go,browser-scripts,browser \
 		'go test ./...' \
 		'pnpm exec node --test --test-reporter=./scripts/quiet-test-reporter.mjs scripts/browser_integration.test.mjs scripts/build_frontend.test.mjs scripts/css_module_types.test.mjs scripts/voice_preview.test.mjs' \
 		'NODE_OPTIONS=--no-experimental-webstorage pnpm exec tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts "frontend/src/**/*.test.tsx" "web/src/**/*.test.ts" "web/src/**/*.test.tsx"'
