@@ -1,4 +1,4 @@
-// Loads advertised opaque model resources and bounds whole sections and Unicode text.
+// Loads advertised server-owned model resources and joins their texts within the model budget.
 
 import { mcpClient, type McpToolCallOptions } from "./McpClient";
 import { MODEL_RESOURCE_BUDGET, MODEL_CONTEXT_BUDGET } from "./ConversationContext";
@@ -10,50 +10,28 @@ export function boundedModelText(text: string, limit: number): string {
   return text.slice(0, end);
 }
 
-/** Preserve the whole public resource or report omission; never rewrite server fields. */
-export function modelResourceContext(uri: string, text: string | null | undefined | Error, limit: number): string {
-  const value =
-    typeof text === "string"
-      ? { resource: uri, status: "known", content: text }
-      : { resource: uri, status: text === null ? "absent" : text === undefined ? "unread" : "error" };
-  const encoded = JSON.stringify(value);
-  return encoded.length <= limit ? encoded : JSON.stringify({ resource: uri, status: "omitted" });
-}
-
-/** Bound the complete set without truncating opaque server payloads. */
-export function modelContextText(resources: Array<readonly [string, string | null | undefined | Error]>): string {
+/** Join server-owned resource texts within the budget; a text that does not fit is dropped whole. */
+export function modelContextText(texts: Iterable<string>): string {
   const sections: string[] = [];
-  let remaining = MODEL_CONTEXT_BUDGET - 64;
-  let omitted = 0;
-  for (const [uri, text] of resources) {
-    const section = modelResourceContext(uri, text, Math.min(MODEL_RESOURCE_BUDGET, remaining));
-    if (section.length + 1 > remaining) {
-      omitted++;
-      continue;
-    }
-    sections.push(section);
-    remaining -= section.length + 1;
+  let remaining = MODEL_CONTEXT_BUDGET;
+  for (const raw of texts) {
+    const text = raw.trim();
+    if (!text || text.length > MODEL_RESOURCE_BUDGET || text.length + 2 > remaining) continue;
+    sections.push(text);
+    remaining -= text.length + 2;
   }
-  if (omitted) sections.push(JSON.stringify({ omittedResourceCount: omitted }));
-  return sections.join("\n");
+  return sections.join("\n\n");
 }
 
 /** Initial reads are advisory and fail independently of voice transport setup. */
 export async function readInitialModelContext(options: McpToolCallOptions): Promise<string> {
   try {
     const { resources } = await mcpClient.listModelResources(undefined, options);
-    return modelContextText(
-      await Promise.all(
-        resources.map(async ({ uri }) => {
-          try {
-            return [uri, await mcpClient.readTextResource(uri, undefined, options)] as const;
-          } catch {
-            return [uri, new Error("Model resource read failed")] as const;
-          }
-        }),
-      ),
+    const texts = await Promise.all(
+      resources.map(({ uri }) => mcpClient.readTextResource(uri, undefined, options).catch(() => null)),
     );
+    return modelContextText(texts.filter((text): text is string => typeof text === "string"));
   } catch {
-    return JSON.stringify({ status: "error" });
+    return "";
   }
 }

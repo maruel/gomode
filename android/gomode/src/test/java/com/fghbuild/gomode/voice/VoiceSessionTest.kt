@@ -232,11 +232,7 @@ class VoiceSessionTest {
                 ),
             )
 
-        val value = Json.parseToJsonElement(context).jsonObject
-        assertEquals("transport_recovered", value.getValue("event").jsonPrimitive.content)
-        assertEquals(2, (value.getValue("transcript") as kotlinx.serialization.json.JsonArray).size)
-        assertFalse(context.contains("partial"))
-        assertTrue(context.length <= MAX_RECOVERY_CONTEXT_CHARS)
+        assertEquals("user: first\nassistant: second", context)
     }
 
     @Test

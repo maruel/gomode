@@ -8,7 +8,8 @@ import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceMonitorState
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.service.VoiceTokenClient
-import com.fghbuild.gomode.service.boundModelContext
+import com.fghbuild.gomode.service.boundedModelText
+import com.fghbuild.gomode.service.modelContextText
 import com.fghbuild.gomode.service.serviceCatalogTools
 import com.fghbuild.gomode.service.serviceOrigin
 import com.fghbuild.gomode.ui.web.ServiceShellKey
@@ -36,6 +37,8 @@ internal const val FRONTEND_NOT_READY = "Frontend not ready."
 // Give the selected host half a second to supply advisory context; other hosts
 // update independently and never extend connection startup behind a slow peer.
 private const val INITIAL_CONTEXT_BUDGET_MS = 500L
+private const val CATALOG_CONTEXT_BUDGET = 12_000
+private val SELECTED_SECTION = Any()
 
 internal data class VoiceConversationState(
     val sponsor: String,
@@ -130,7 +133,11 @@ internal class VoiceConversation(
         current.lifetime.scope.launch {
             snapshots.collect { snapshots ->
                 if (conversation === current && isCurrent()) {
-                    mutableState.value = mutableState.value?.copy(serviceContext = catalog.contextText(snapshots))
+                    // Changing this value is the trigger for hosts to call contextUpdate().
+                    mutableState.value =
+                        mutableState.value?.copy(
+                            serviceContext = catalog.contextSections(snapshots).values.joinToString("\n\n"),
+                        )
                 }
             }
         }
@@ -272,21 +279,34 @@ internal class VoiceConversation(
         return contextText()
     }
 
-    fun contextText(): String {
+    // Sections the current model session already received, keyed by owner.
+    private var sentContext: Map<Any, String> = emptyMap()
+
+    private fun contextSections(): Map<Any, String> {
         requireCurrent()
         admitParticipants()
         requireCurrent()
         val settings = settingsRepository.settings.value
-        val focus = Json.encodeToString(mapOf("id" to settings.activeServiceId, "url" to settings.activeServiceURL))
-        val context = catalog.contextText(conversation?.contextSnapshots?.value.orEmpty())
-        val selected = "{\"selectedServer\":$focus}"
-        val boundedSelected =
-            if (selected.length <= 999) {
-                selected
-            } else {
-                """{"selectedServer":{"status":"omitted"}}"""
-            }
-        return boundModelContext("$boundedSelected\n$context")
+        val label =
+            settings.services.firstOrNull { it.id == settings.activeServiceId }?.label ?: settings.activeServiceURL
+        val selected = "Selected server: ${label.boundedModelText(256)} [${settings.activeServiceId}]"
+        return mapOf<Any, String>(SELECTED_SECTION to selected) +
+            catalog.contextSections(conversation?.contextSnapshots?.value.orEmpty())
+    }
+
+    /** Full context for a new model session; later calls to contextUpdate() send only changes. */
+    fun contextText(): String {
+        val sections = contextSections()
+        sentContext = sections
+        return modelContextText(sections.values, CATALOG_CONTEXT_BUDGET, CATALOG_CONTEXT_BUDGET)
+    }
+
+    /** Sections changed since the last send, or empty. Removed sections are not model content. */
+    fun contextUpdate(): String {
+        val sections = contextSections()
+        val changed = sections.filter { (key, text) -> sentContext[key] != text }
+        sentContext = sections
+        return modelContextText(changed.values, CATALOG_CONTEXT_BUDGET, CATALOG_CONTEXT_BUDGET)
     }
 
     suspend fun execute(

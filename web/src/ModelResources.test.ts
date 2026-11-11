@@ -85,11 +85,13 @@ it("retiring an advertised identity aborts its read and rejects late authority a
   block = true;
   changed?.({ uri: "library://active" });
   await settle();
+  const sent = inject.mock.calls.length;
   marked = false;
   changed?.({ listChanged: true });
   await settle();
   expect(signals[0]?.aborted).toBe(true);
-  expect(inject.mock.calls.at(-1)?.[0]).toContain('"status":"absent"');
+  // Withdrawal is not model content.
+  expect(inject).toHaveBeenCalledTimes(sent);
   marked = true;
   block = false;
   epoch = "replacement";

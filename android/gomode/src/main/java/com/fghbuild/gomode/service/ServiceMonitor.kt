@@ -75,12 +75,7 @@ data class ServiceMonitorState(
     val retryReason: String? = null,
 ) {
     val voiceContext: String
-        get() =
-            if (retryReason != null) {
-                resources?.joinToString("\n") { modelResourceStatus(it, "error") } ?: "{\"status\":\"error\"}"
-            } else {
-                snapshot?.voiceContext ?: unreadServiceContext(resources)
-            }
+        get() = if (retryReason != null) "" else snapshot?.voiceContext.orEmpty()
 }
 
 enum class ServiceMonitorPurpose {

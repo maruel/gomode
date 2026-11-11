@@ -28,55 +28,22 @@ class ServiceResourcesTest {
                         FIXTURE_CONTEXT_URI to Result.success(read(FIXTURE_CONTEXT_URI, content)),
                     ),
                 )
-            for (section in snapshot.voiceContext.lineSequence()) {
-                assertEquals(
-                    content,
-                    Json
-                        .parseToJsonElement(section)
-                        .jsonObject
-                        .getValue("content")
-                        .jsonPrimitive.content,
-                )
-            }
+            assertEquals("$content\n\n$content", snapshot.voiceContext)
         }
     }
 
     @Test
-    fun `whole resource budgets preserve valid envelopes and unknown outcomes`() {
-        val large = "資料😀\"".repeat(4000)
-        assertEquals(
-            "omitted",
-            Json
-                .parseToJsonElement(
-                    modelResourceContext(FIXTURE_CONTEXT_URI, large, 6000),
-                ).jsonObject
-                .getValue("status")
-                .jsonPrimitive.content,
-        )
-        val absent = modelResourceStatus(FIXTURE_CONTEXT_URI, "absent")
-        assertEquals(
-            "absent",
-            Json
-                .parseToJsonElement(absent)
-                .jsonObject
-                .getValue("status")
-                .jsonPrimitive.content,
-        )
+    fun `voice context sends known texts verbatim and drops failures and oversized texts`() {
         val snapshot =
             ServiceMonitoringSnapshot(
                 mapOf(
                     FIXTURE_CONTEXT_URI to Result.failure(IllegalStateException("private sentinel")),
                     FIXTURE_CATALOG_URI to Result.success(read(FIXTURE_CATALOG_URI, "[]")),
+                    "fixture://large" to Result.success(read("fixture://large", "資料😀\"".repeat(4000))),
+                    "fixture://unread" to null,
                 ),
             )
-        val context =
-            snapshot.voiceContext
-                .lineSequence()
-                .map { Json.parseToJsonElement(it).jsonObject }
-                .toList()
-        assertEquals("error", context[0].getValue("status").jsonPrimitive.content)
-        assertEquals("known", context[1].getValue("status").jsonPrimitive.content)
-        assertTrue(snapshot.voiceContext.length <= 10000)
+        assertEquals("[]", snapshot.voiceContext)
     }
 
     @Test

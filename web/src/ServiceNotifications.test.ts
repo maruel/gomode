@@ -128,16 +128,15 @@ it("retires each discovered absence before gated MCP reads while independent qui
       { sessionID: "presence-conversation" },
       source,
     );
-    const status = () =>
+    const marker = target === "fixture://catalog" ? '"items"' : '"focus"';
+    const quiet = () =>
       published
         .filter((entry) => !entry.generate)
-        .at(-1)!
-        .text.split("\n")
-        .map((line) => JSON.parse(line))
-        .find((section) => section.resource === target)?.status;
+        .map((entry) => entry.text)
+        .join("\n\n");
     try {
       await vi.advanceTimersByTimeAsync(0);
-      expect(status()).toBe(target === "gomode://notifications" ? "absent" : undefined);
+      if (target !== "gomode://notifications") expect(quiet()).not.toContain(marker);
       present = true;
       changed({ listChanged: true });
       await entered.promise;
@@ -145,12 +144,13 @@ it("retires each discovered absence before gated MCP reads while independent qui
       changed({ uri: target === "fixture://context" ? "fixture://catalog" : "fixture://context" });
       await vi.advanceTimersByTimeAsync(0);
       expect(published.filter((entry) => !entry.generate).at(-1)!.text).toContain("Independent update");
-      expect(status()).toBe("unread");
       expect(targetReads).toBe(1);
       expect(published.every((entry) => !entry.generate)).toBe(true);
       release.resolve();
       await vi.advanceTimersByTimeAsync(0);
-      expect(status()).toBe("known");
+      if (target === "gomode://notifications")
+        expect(published.find((entry) => entry.generate)?.text).toBe("Alert reappeared: Body reappeared");
+      else expect(quiet()).toContain(marker);
       expect(published.filter((entry) => entry.generate)).toHaveLength(target === "gomode://notifications" ? 1 : 0);
       // An item invalidation already dirties all readers; context coalesces one existing follow-up.
       expect(targetReads).toBe(1);
@@ -158,16 +158,16 @@ it("retires each discovered absence before gated MCP reads while independent qui
         JSON.stringify({ resource: target, targetReads, wakeups: published.filter((entry) => entry.generate).length }),
       );
       expect(failures).toEqual([]);
+      // A failed read sends nothing; recovering the same text or alert repeats nothing.
+      const sent = published.length;
       unreadable = true;
       changed({ uri: target });
       await vi.advanceTimersByTimeAsync(0);
-      expect(status()).toBe("error");
       expect(failures).toHaveLength(1);
       unreadable = false;
       changed({ uri: target });
       await vi.advanceTimersByTimeAsync(0);
-      expect(status()).toBe("known");
-      expect(published.filter((entry) => entry.generate)).toHaveLength(target === "gomode://notifications" ? 1 : 0);
+      expect(published).toHaveLength(sent);
     } finally {
       monitor.close();
       release.resolve();
@@ -309,68 +309,48 @@ it("measures 2,000-node focus changes, missing resources, bursts, idle, and reco
   }
 });
 
-it("provides a quiet baseline, announces new occurrences once, and replaces withdrawn alert context", async () => {
+it("sends no baseline, announces each new alert once, and stays quiet on withdrawal", async () => {
   monitor = monitorServiceNotifications(inject, error);
   await settle();
-  expect(inject).toHaveBeenCalledOnce();
-  expect(inject.mock.calls[0]![1]).toBe(false);
-  expect(inject.mock.calls[0]![0]).toContain('"new":false');
-  expect(inject.mock.calls[0]![0]).toContain('"title":"Alert opening"');
+  expect(inject).not.toHaveBeenCalled();
   expect(options.resourceSubscriptions).toEqual(["gomode://notifications"]);
   options.onReady?.();
   await settle();
-  expect(inject).toHaveBeenCalledOnce();
+  expect(inject).not.toHaveBeenCalled();
 
   snapshot = JSON.stringify([alert("opening"), alert("new")]);
   changed({ uri: "gomode://notifications" });
   await settle();
-  expect(inject.mock.calls[1]![1]).toBe(false);
-  expect(inject.mock.calls[2]![0]).toContain('"new":true,"title":"Alert new"');
-  expect(inject.mock.calls[2]![1]).toBe(true);
+  expect(inject.mock.calls).toEqual([["Alert new: Body new", true]]);
   changed({ uri: "gomode://notifications" });
   await settle();
-  expect(inject).toHaveBeenCalledTimes(3);
-
   snapshot = "[]";
   changed({ listChanged: true });
   await settle();
-  expect(inject.mock.calls[3]![0]).toContain('"notifications":[]');
   snapshot = JSON.stringify([alert("new", { body: "Updated text" })]);
   changed({ uri: "gomode://notifications" });
   await settle();
-  expect(inject.mock.calls[4]![0]).toContain('"new":false');
-  expect(inject.mock.calls[4]![0]).toContain("Updated text");
+  expect(inject).toHaveBeenCalledOnce();
   expect(error).not.toHaveBeenCalled();
 });
 
-it("distinguishes verified alert withdrawal from a successful empty read and advisory faults", async () => {
-  const statuses = () =>
-    inject.mock.calls
-      .filter((call) => !call[1])
-      .map((call) =>
-        call[0]
-          .split("\n")
-          .map((line) => JSON.parse(line))
-          .find((section) => section.resource === "gomode://notifications"),
-      );
+it("stays silent on alert withdrawal, empty reads, and read faults", async () => {
   monitor = monitorServiceNotifications(inject, error);
   await settle();
   snapshot = null;
   changed({ listChanged: true });
   await settle();
-  expect(statuses().at(-1)).toEqual({ resource: "gomode://notifications", status: "absent" });
   snapshot = "[]";
   changed({ listChanged: true });
   await settle();
-  expect(statuses().at(-1)).toMatchObject({ status: "known", data: { notifications: [] } });
   read.mockImplementation(async (uri) => {
     if (uri === "gomode://notifications") throw new Error("transport failed");
     return null;
   });
   changed({ uri: "gomode://notifications" });
   await settle();
-  expect(statuses().at(-1)).toMatchObject({ status: "error" });
-  expect(inject.mock.calls.every((call) => !call[1])).toBe(true);
+  expect(inject).not.toHaveBeenCalled();
+  expect(error).toHaveBeenCalledOnce();
 });
 
 it("rejects an entire malformed snapshot without consuming its occurrence IDs, then recovers", async () => {
@@ -389,24 +369,25 @@ it("rejects an entire malformed snapshot without consuming its occurrence IDs, t
     await settle();
   }
   expect(error).toHaveBeenCalledTimes(5);
-  expect(inject.mock.calls.every(([, generate]) => !generate)).toBe(true);
-  expect(inject.mock.calls.at(-1)?.[0]).toContain('"status":"error"');
+  expect(inject).not.toHaveBeenCalled();
   snapshot = JSON.stringify([alert("one")]);
   await vi.advanceTimersByTimeAsync(2000);
-  expect(inject.mock.calls.at(-1)![0]).toContain('"new":true');
+  expect(inject.mock.calls).toEqual([["Alert one: Body one", true]]);
 });
 
-it("filters expired alerts and removes context when a live alert expires", async () => {
+it("announces only live alerts and stays quiet when one expires", async () => {
+  snapshot = "[]";
+  monitor = monitorServiceNotifications(inject, error);
+  await settle();
   snapshot = JSON.stringify([
     alert("expired", { expiresAt: new Date(Date.now() - 1000).toISOString() }),
     alert("live", { expiresAt: new Date(Date.now() + 1000).toISOString() }),
   ]);
-  monitor = monitorServiceNotifications(inject, error);
+  changed({ uri: "gomode://notifications" });
   await settle();
-  expect(inject.mock.calls[0]![0]).toContain("Alert live");
-  expect(inject.mock.calls[0]![0]).not.toContain("Alert expired");
+  expect(inject.mock.calls).toEqual([["Alert live: Body live", true]]);
   await vi.advanceTimersByTimeAsync(1000);
-  expect(inject.mock.calls[1]![0]).toContain('"notifications":[]');
+  expect(inject).toHaveBeenCalledOnce();
 });
 
 it("coalesces concurrent invalidations and discards pending reads after close", async () => {
@@ -436,19 +417,23 @@ it("coalesces concurrent invalidations and discards pending reads after close", 
   expect(close).toHaveBeenCalledOnce();
 });
 
-it("watches catalog changes without unadvertised resource subscriptions and bounds large alert context", async () => {
+it("watches catalog changes without unadvertised resource subscriptions and bounds large alert text", async () => {
   snapshot = null;
   monitor = monitorServiceNotifications(inject, error);
   await settle();
   expect(options.resourceSubscriptions).toBeUndefined();
   expect(options.resourcesListChanged).toBe(true);
   monitor.close();
-  inject.mockClear();
-  snapshot = JSON.stringify(Array.from({ length: 100 }, (_, i) => alert(String(i), { body: "x".repeat(10000) })));
+  snapshot = "[]";
   monitor = monitorServiceNotifications(inject, error);
   await settle();
-  expect(inject.mock.calls[0]![0].length).toBeLessThanOrEqual(4000);
-  expect(inject.mock.calls[0]![0]).toContain("omitted");
+  snapshot = JSON.stringify(Array.from({ length: 100 }, (_, i) => alert(String(i), { body: "x".repeat(10000) })));
+  changed({ uri: "gomode://notifications" });
+  await settle();
+  const [text, generate] = inject.mock.calls[0]!;
+  expect(generate).toBe(true);
+  expect(text.length).toBeLessThanOrEqual(4000);
+  expect(text.startsWith("Alert 0: ")).toBe(true);
 });
 
 it("skips unsupported resources and reads static resources without subscribing", async () => {
@@ -457,17 +442,13 @@ it("skips unsupported resources and reads static resources without subscribing",
   await settle();
   expect(read).not.toHaveBeenCalled();
   expect(mcpClient.subscribeResources).not.toHaveBeenCalled();
-  expect(inject.mock.calls).toHaveLength(1);
-  expect(inject.mock.calls[0]![0].split("\n").map((line) => JSON.parse(line))).toEqual([
-    { resource: "gomode://notifications", status: "absent" },
-  ]);
   monitor.close();
-  inject.mockClear();
   vi.mocked(mcpClient.resourceCapabilities).mockResolvedValueOnce({});
   monitor = monitorServiceNotifications(inject, error);
   await settle();
-  expect(inject).toHaveBeenCalledOnce();
+  expect(read).toHaveBeenCalled();
   expect(mcpClient.subscribeResources).not.toHaveBeenCalled();
+  expect(inject).not.toHaveBeenCalled();
 });
 
 it("delivers reference-only changes quietly before waking for a new alert", async () => {
@@ -489,18 +470,15 @@ it("delivers reference-only changes quietly before waking for a new alert", asyn
   changed({ uri: "gomode://notifications" });
   await settle();
   expect(inject.mock.calls).toEqual([
-    [expect.stringContaining("Task #1"), false],
-    [expect.stringContaining('"new":true,"title":"Alert new"'), true],
+    [items, false],
+    ["Alert new: Body new [two]", true],
   ]);
-  expect(inject.mock.calls[0]![0]).toContain('"new":false');
-  expect(inject.mock.calls[1]![0]).not.toContain("replaces the previous");
-  expect(inject.mock.calls[1]![0]).toContain('"id":"new","itemId":"two"');
   options.onReady?.();
   await settle();
   expect(inject).toHaveBeenCalledTimes(2);
 });
 
-it("publishes an explicitly replacing overview after removing an item", async () => {
+it("publishes the whole replacing resource text after removing an item", async () => {
   vi.mocked(mcpClient.listModelResources).mockResolvedValue({
     resources: [{ uri: "fixture://catalog", name: "catalog" }],
     notifications: true,
@@ -519,8 +497,7 @@ it("publishes an explicitly replacing overview after removing an item", async ()
   items = JSON.stringify({ items: [{ id: "two", title: "Beta" }] });
   changed({ uri: "fixture://catalog" });
   await settle();
-  expect(inject.mock.calls.at(-1)![0]).toContain('"status":"known"');
-  expect(inject.mock.calls.at(-1)![0]).not.toContain("Alpha");
+  expect(inject.mock.calls.at(-1)).toEqual([items, false]);
 });
 
 it("preserves supplementary notification title/body text at code-unit bounds", async () => {
@@ -533,12 +510,6 @@ it("preserves supplementary notification title/body text at code-unit bounds", a
   await settle();
   const update = inject.mock.calls.find(([, generate]) => generate);
   if (!update) throw new Error("new notification did not wake the conversation");
-  const value = JSON.parse(update[0]);
-  expect(value.data.notifications[0]).toMatchObject({
-    title: "t".repeat(255),
-    body: "b".repeat(1999),
-    truncated: true,
-    new: true,
-  });
+  expect(update[0]).toBe(`${"t".repeat(255)}: ${"b".repeat(1999)}`);
   expect(new TextDecoder().decode(new TextEncoder().encode(update[0]))).toBe(update[0]);
 });

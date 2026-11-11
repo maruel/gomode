@@ -90,7 +90,7 @@ func applySessionPolicy(msg *voicev2.SessionSetup) error {
 	// instruction selects its output language; transcription has a separate hint.
 	// Checked against https://ai.google.dev/gemini-api/docs/live-api/capabilities
 	// and googleapis/go-genai 5fed9374ce1a (types.go, live.go, live_converters.go).
-	msg.Context.SystemInstruction = msg.Context.SystemInstruction + "\n" + strings.ReplaceAll(policy.Instructions, "{{language}}", msg.Voice.Language)
+	msg.Context.SystemInstruction = policy.Render(msg.Context.SystemInstruction, msg.Voice.Language)
 	return nil
 }
 

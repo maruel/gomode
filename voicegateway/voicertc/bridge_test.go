@@ -119,7 +119,7 @@ func TestApplySessionLanguage(t *testing.T) {
 				if err := applySessionPolicy(&msg); err != nil {
 					t.Fatal(err)
 				}
-				if msg.Voice.Language != tc.want || !strings.Contains(msg.Context.SystemInstruction, "selected language: "+tc.want) {
+				if msg.Voice.Language != tc.want || !strings.Contains(msg.Context.SystemInstruction, "Speak in "+tc.want+".") {
 					t.Fatalf("setup = %+v, want language %s", msg, tc.want)
 				}
 			})

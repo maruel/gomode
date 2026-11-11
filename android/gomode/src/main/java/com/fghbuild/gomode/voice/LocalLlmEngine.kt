@@ -391,7 +391,6 @@ internal class LocalLlmEngine(
     // Successful native messages only. Retry replays these without repeating tool dispatch.
     private val conversationHistory = mutableListOf<Message>()
     private var pendingContext: String? = null
-    private var latestContext = ""
 
     override suspend fun initialize(context: EngineSessionContext) {
         val boundedContext = context.copy(serviceContextText = boundModelContext(context.serviceContextText))
@@ -419,7 +418,6 @@ internal class LocalLlmEngine(
                 check(!closed.get()) { "Local model engine was closed during initialization" }
                 runner = preparedRunner
                 sessionContext = boundedContext
-                latestContext = boundedContext.serviceContextText
                 pendingContext = null
                 toolValidator = preparedValidator
                 Log.i(TAG, "Initialized LocalLlmEngine on Google Pixel 8 Pro with ${context.tools.size} tools")
@@ -449,7 +447,6 @@ internal class LocalLlmEngine(
             NonCancellable + ioDispatcher,
         ) { activeRunner.replaceConversation(conversationConfig(boundedContext)) }
         sessionContext = boundedContext
-        latestContext = boundedContext.serviceContextText
         pendingContext = null
         toolValidator = preparedValidator
         conversationHistory.clear()
@@ -495,17 +492,8 @@ internal class LocalLlmEngine(
                     }
                     val contextUpdate = pendingContext
                     pendingContext = null
-                    var message =
-                        Message.user(
-                            if (contextUpdate == null && !input.serviceUpdate) {
-                                query
-                            } else {
-                                buildJsonObject {
-                                    contextUpdate?.let { put("serviceContext", it) }
-                                    put(if (input.serviceUpdate) "serviceEvent" else "userMessage", query)
-                                }.toString()
-                            },
-                        )
+                    // Context changes precede the request; the request is always last.
+                    var message = Message.user(listOfNotNull(contextUpdate, query).joinToString("\n\n"))
                     while (true) {
                         if (!validateTurn()) {
                             return@withContext EngineTurnResult(
@@ -739,11 +727,11 @@ internal class LocalLlmEngine(
     override suspend fun injectContext(text: String) {
         val generation = turnGeneration.get()
         nativeOperation.withLock {
-            // Bound both retained authority and queued model data; never keep a partial update.
+            // Updates are changes only, so queued ones accumulate; an over-budget total keeps the newest whole.
             val context = boundModelContext(text)
-            if (closed.get() || generation != turnGeneration.get() || latestContext == context) return
-            latestContext = context
-            pendingContext = context
+            if (closed.get() || generation != turnGeneration.get() || context.isEmpty()) return
+            pendingContext =
+                boundModelContext(listOfNotNull(pendingContext, context).joinToString("\n\n")).ifEmpty { context }
         }
     }
 
@@ -763,12 +751,15 @@ internal class LocalLlmEngine(
 
     private fun formatSystemPrompt(session: EngineSessionContext): String =
         buildString {
-            append(session.systemInstruction).append("\n")
+            // Mirrors policy.Render in voicegateway/policy/policy.go.
+            val instructions = session.systemInstruction.trim()
             append(
                 context.assets
                     .open("voice-policy.txt")
                     .bufferedReader()
                     .use { it.readText() }
+                    .trim()
+                    .replace("\n\n{{instructions}}", if (instructions.isEmpty()) "" else "\n\n$instructions")
                     .replace("{{language}}", session.languageTag),
             )
             if (session.serviceContextText.isNotBlank()) {

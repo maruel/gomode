@@ -178,12 +178,18 @@ class CarDialInterceptionTest {
                 awaitMicrophoneForeground()
                 val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
                 var after = fixtureStats()
-                while (after.getInt("textTurns") == before.getInt("textTurns") && System.nanoTime() < deadline) {
+                // Connecting sends no model turn; an active text session is the evidence.
+                while (after.getInt("textActive") != 1 && System.nanoTime() < deadline) {
                     Thread.sleep(100)
                     after = fixtureStats()
                 }
                 assertEquals(before.getInt("textSetups") + 1, after.getInt("textSetups"))
-                assertTrue("No real text exchange: $after", after.getInt("textTurns") > before.getInt("textTurns"))
+                assertEquals("No real text session: $after", 1, after.getInt("textActive"))
+                assertEquals(
+                    "Connecting sent a model turn: $after",
+                    before.getInt("textTurns"),
+                    after.getInt("textTurns"),
+                )
                 endNativeVoice()
                 val policy = shell("dumpsys window policy")
                 assertTrue(policy, policy.contains("showing=true") && policy.contains("secure=true"))
@@ -1056,8 +1062,8 @@ class CarDialInterceptionTest {
             stats = fixtureStats()
             val complete =
                 if (mode == "DEVICE") {
-                    stats.getInt("textSetups") == before.getInt("textSetups") + 1 &&
-                        stats.getInt("textTurns") > before.getInt("textTurns") && stats.getInt("textActive") == 1
+                    // Connecting sends no model turn; an active text session is the evidence.
+                    stats.getInt("textSetups") == before.getInt("textSetups") + 1 && stats.getInt("textActive") == 1
                 } else {
                     stats.getInt("rtcSetups") == before.getInt("rtcSetups") + 1 &&
                         stats.getInt("micFrames") >= before.getInt("micFrames") + 5 &&

@@ -163,11 +163,20 @@ internal class ServiceCatalog(
         publish()
     }
 
-    // Globally bounded, explicitly sourced overview. Tool schemas/instructions/details are discovered on demand.
-    fun contextText(snapshots: Map<ServiceShellKey, ServiceMonitorState>): String =
-        formatContextText(
-            snapshots.mapValues { (_, snapshot) -> snapshot.voiceContext },
-        )
+    // One section per current server with known context, keyed by server. Tool schemas,
+    // instructions, and details are discovered on demand.
+    fun contextSections(snapshots: Map<ServiceShellKey, ServiceMonitorState>): Map<ServiceShellKey, String> =
+        state.value.values
+            .mapNotNull { entry ->
+                val participant = members[entry.key] ?: return@mapNotNull null
+                if (participant.prepared?.let(participant::current) != true) return@mapNotNull null
+                val body = snapshots[entry.key]?.voiceContext.orEmpty()
+                serverSection(
+                    entry.label,
+                    entry.key.serviceID,
+                    body,
+                ).takeIf { it.isNotEmpty() }?.let { entry.key to it }
+            }.toMap()
 
     // The conversation owns one item-only stream per prepared authority. Keep
     // unchanged sources alive when another participant joins or leaves; alerts
@@ -241,82 +250,6 @@ internal class ServiceCatalog(
             }
         }
         return snapshots.asStateFlow()
-    }
-
-    private fun formatContextText(contexts: Map<ServiceShellKey, String>): String {
-        val servers = mutableListOf<kotlinx.serialization.json.JsonElement>()
-        val entries = state.value.values
-
-        fun snapshot() =
-            buildJsonObject {
-                put("servers", JsonArray(servers.toList()))
-                put("omittedServerCount", entries.size - servers.size)
-            }
-        for (entry in entries) {
-            val participant = members[entry.key]
-            val current = participant?.prepared?.let(participant::current) == true
-            val readiness =
-                if (!current && entry.readiness == ServiceReadiness.READY) {
-                    ServiceReadiness.UNAVAILABLE
-                } else {
-                    entry.readiness
-                }
-            val context =
-                when {
-                    !current -> {
-                        unreadServiceContext(null)
-                    }
-
-                    participant.prepared
-                        ?.mcp
-                        ?.capabilities
-                        ?.resources == null -> {
-                        unreadServiceContext(emptySet())
-                    }
-
-                    else -> {
-                        contexts[entry.key] ?: (
-                            unreadServiceContext(null)
-                        )
-                    }
-                }
-            val sections =
-                context
-                    .lineSequence()
-                    .filter { it.isNotBlank() }
-                    .map { Json.parseToJsonElement(it).jsonObject }
-                    .toList()
-            val identity =
-                buildJsonObject {
-                    put("id", entry.key.serviceID)
-                    put("url", entry.key.url)
-                    put("label", entry.label.boundedModelText(256))
-                    put("labelTruncated", entry.label.length > 256)
-                    put("status", readiness.name.lowercase())
-                    put("context", JsonArray(emptyList()))
-                    put("omittedSectionCount", sections.size)
-                }
-            // Reserve the actual escaped identity and wrapper before bounding complete sections.
-            // A source whose identity cannot fit must not hide later independent servers.
-            val identityLength = identity.toString().length
-            if (identityLength > 2000) continue
-            val bounded = boundModelSections(sections, 2000 - identityLength + 2)
-            val source =
-                JsonObject(
-                    identity +
-                        mapOf(
-                            "context" to bounded,
-                            "omittedSectionCount" to
-                                kotlinx.serialization.json.JsonPrimitive(sections.size - bounded.size),
-                        ),
-                )
-            servers += source
-            if (snapshot().toString().length > 12000) {
-                servers.removeAt(servers.lastIndex)
-                break
-            }
-        }
-        return snapshot().toString()
     }
 
     @Suppress("TooGenericExceptionCaught") // Tool failures are returned to the caller without affecting other services.

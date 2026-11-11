@@ -548,11 +548,9 @@ describe("browser voice sessions", () => {
     expect(session.state.listening).toBe(true);
   });
 
-  it("queues an alert behind the submitted greeting before the gateway reports thinking", async () => {
+  it("delivers an alert right after ready because no greeting turn is in flight", async () => {
     const socket = await readySocket();
     session.injectText("Build is waiting", true);
-    expect(socket.sent.some((text) => text.includes("Build is waiting"))).toBe(false);
-    socket.message({ kind: "turn.status", state: "idle" });
     expect(JSON.parse(socket.sent.at(-1) ?? "{}")).toEqual({
       kind: "context.update",
       context: { text: "Build is waiting" },

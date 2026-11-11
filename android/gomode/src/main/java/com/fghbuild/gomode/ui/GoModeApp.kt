@@ -80,8 +80,9 @@ import com.fghbuild.gomode.service.ServiceNotificationPublisher
 import com.fghbuild.gomode.service.ServiceReadiness
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.service.ServiceSettingsException
-import com.fghbuild.gomode.service.boundedModelText
+import com.fghbuild.gomode.service.alertLine
 import com.fghbuild.gomode.service.compatibilityError
+import com.fghbuild.gomode.service.serverSection
 import com.fghbuild.gomode.ui.halo.HaloScreen
 import com.fghbuild.gomode.ui.settings.SettingsEdits
 import com.fghbuild.gomode.ui.settings.SettingsScreen
@@ -530,7 +531,7 @@ internal fun GoModeApp(
                 voiceSession.disconnect()
                 if (localSelection != null) localModelOwner.restartConversation()
             } else if (voiceSessionActive) {
-                voiceSession.injectText(voiceConversation.contextText())
+                voiceConversation.contextUpdate().takeIf { it.isNotEmpty() }?.let { voiceSession.injectText(it) }
             }
         }
     }
@@ -547,44 +548,9 @@ internal fun GoModeApp(
         sharedConversation = sharedConversation,
         onVoiceNotification = { event ->
             val notification = event.notification
-            val context =
-                kotlinx.serialization.json.buildJsonObject {
-                    put(
-                        "server",
-                        kotlinx.serialization.json.buildJsonObject {
-                            put("id", event.source.serviceID)
-                            if (event.source.url.length <= 512) put("url", event.source.url)
-                            put("urlOmitted", event.source.url.length > 512)
-                        },
-                    )
-                    put("resource", "gomode://notifications")
-                    put("status", "known")
-                    put(
-                        "data",
-                        kotlinx.serialization.json.buildJsonObject {
-                            put(
-                                "notifications",
-                                kotlinx.serialization.json.JsonArray(
-                                    listOf(
-                                        kotlinx.serialization.json.buildJsonObject {
-                                            notification.id.takeIf { it.length <= 512 }?.let { put("id", it) }
-                                            notification.itemId?.takeIf { it.length <= 512 }?.let { put("itemId", it) }
-                                            put("new", true)
-                                            put(
-                                                "truncated",
-                                                notification.title.length > 256 || notification.text.length > 2000,
-                                            )
-                                            put("title", notification.title.boundedModelText(256))
-                                            put("body", notification.text.boundedModelText(2000))
-                                        },
-                                    ),
-                                ),
-                            )
-                            put("omittedCount", 0)
-                        },
-                    )
-                }
-            voiceSession.injectText(context.toString(), generate = true)
+            val label = serviceCatalog.state.value[event.source]?.label ?: event.source.url
+            val line = alertLine(notification.title, notification.text, notification.itemId)
+            voiceSession.injectText(serverSection(label, event.source.serviceID, line), generate = true)
         },
     )
     val configuredVoiceAvailable =

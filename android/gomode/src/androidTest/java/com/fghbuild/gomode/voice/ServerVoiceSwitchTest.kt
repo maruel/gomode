@@ -300,8 +300,8 @@ class ServerVoiceSwitchTest {
                                         .getJSONObject(
                                             "context",
                                         ).getString("text")
-                                        .substringBefore('\n')
-                                        .contains(cookieID)
+                                        .let { selectedServer(it) }
+                                        ?.contains(cookieID) == true
                             }
                         }
                         conversation.send(switchCommand(bearerID))
@@ -320,8 +320,8 @@ class ServerVoiceSwitchTest {
                                             .getJSONObject(
                                                 "context",
                                             ).getString("text")
-                                            .substringBefore('\n')
-                                            .contains(bearerID)
+                                            .let { selectedServer(it) }
+                                            ?.contains(bearerID) == true
                                 }
                         }
                         conversation.send(switchCommand(cookieID, "switch-back"))
@@ -1170,7 +1170,7 @@ class ServerVoiceSwitchTest {
                 }
 
                 "user.message" -> {
-                    // This controlled fixture produces no greeting audio, but
+                    // This controlled fixture produces no reply audio, but
                     // still completes the gateway turn before passive updates.
                     send("""{"kind":"turn.status","state":"idle"}""")
                 }
@@ -1207,3 +1207,6 @@ internal class ControlledTransport(
 ) {
     fun send(text: String): Boolean = sendMessage(text)
 }
+
+// Queued changes accumulate oldest first, so the newest focus is the last selected-server line.
+private fun selectedServer(text: String): String? = text.lines().lastOrNull { it.startsWith("Selected server: ") }

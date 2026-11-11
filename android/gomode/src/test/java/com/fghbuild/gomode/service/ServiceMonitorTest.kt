@@ -681,18 +681,22 @@ private fun settings() =
             ),
     )
 
+// Read outcome the monitor tracks for one resource; model text carries no status.
 private fun status(
     monitor: ServiceMonitor,
     uri: String,
-): String =
-    monitor.state.value.voiceContext
-        .lineSequence()
-        .map { Json.parseToJsonElement(it).jsonObject }
-        .single {
-            it["resource"]?.jsonPrimitive?.content ==
-                uri
-        }.getValue("status")
-        .jsonPrimitive.content
+): String {
+    val state = monitor.state.value
+    if (state.retryReason != null) return "error"
+    val resources = state.snapshot?.resources ?: return "unread"
+    check(uri in resources) { "$uri is not monitored" }
+    val read = resources[uri] ?: return "unread"
+    return when {
+        read.isFailure -> "error"
+        read.getOrNull() == null -> "absent"
+        else -> "known"
+    }
+}
 
 private fun alerts(vararg ids: String): String =
     kotlinx.serialization.json

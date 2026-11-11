@@ -170,7 +170,6 @@ class GatewayAuthorizationTest {
                     owner.begin(false)
                     if (delayedFrontend) {
                         assertFalse(participant.isFrontendReady)
-                        assertTrue(owner.contextText().contains(participantID))
                         val discovery =
                             checkNotNull(
                                 owner.execute(

@@ -1,6 +1,7 @@
 // Shared voice controller and ordered quiet-context/actionable-alert buffering.
 package com.fghbuild.gomode.voice
 
+import com.fghbuild.gomode.service.boundModelContext
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -43,7 +44,8 @@ internal data class VoiceContextUpdate(
     val generate: Boolean,
 )
 
-// Keep the latest overview while retaining each actionable occurrence until the active turn ends.
+// Retain every context change and actionable occurrence until the active turn ends. Context updates
+// carry changes only, so they accumulate; an over-budget total keeps the newest whole.
 internal class PendingVoiceContext {
     private var context: String? = null
     private val alerts = mutableListOf<String>()
@@ -56,7 +58,8 @@ internal class PendingVoiceContext {
             if (alerts.size >= 64) return false
             alerts.add(text)
         } else {
-            context = text
+            context =
+                boundModelContext(listOfNotNull(context, text).joinToString("\n\n")).ifEmpty { text }
         }
         return true
     }
@@ -72,7 +75,7 @@ internal class PendingVoiceContext {
 
     fun drain(): VoiceContextUpdate? {
         if (!isNotEmpty()) return null
-        val update = VoiceContextUpdate((listOfNotNull(context) + alerts).joinToString("\n"), alerts.isNotEmpty())
+        val update = VoiceContextUpdate((listOfNotNull(context) + alerts).joinToString("\n\n"), alerts.isNotEmpty())
         clear()
         return update
     }

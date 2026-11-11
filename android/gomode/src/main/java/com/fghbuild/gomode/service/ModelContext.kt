@@ -1,27 +1,38 @@
-// Bounds model-facing JSON sections and Unicode text without exposing private transport metadata.
+// Joins server-owned model texts within budgets and bounds Unicode text; no envelopes reach the model.
 package com.fghbuild.gomode.service
 
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonPrimitive
-
-internal fun boundModelSections(
-    sections: List<JsonObject>,
-    limit: Int,
-): JsonArray {
-    val bounded = sections.toMutableList()
-    while (JsonArray(bounded).toString().length > limit) {
-        val candidate = bounded.indices.maxByOrNull { bounded[it].toString().length } ?: break
-        val section = bounded[candidate]
-        if (section["content"] != null || section["data"] != null) {
-            bounded[candidate] = JsonObject(section - "content" - "data" + ("status" to JsonPrimitive("omitted")))
-        } else {
-            bounded.removeAt(candidate)
-        }
+/** Join texts with blank lines; a text that does not fit the remaining budget is dropped whole. */
+internal fun modelContextText(
+    texts: Iterable<String>,
+    budget: Int = MODEL_CONTEXT_BUDGET,
+    textLimit: Int = MODEL_RESOURCE_BUDGET,
+): String {
+    var remaining = budget
+    val sections = mutableListOf<String>()
+    for (raw in texts) {
+        val text = raw.trim()
+        if (text.isEmpty() || text.length > textLimit || text.length + 2 > remaining) continue
+        sections += text
+        remaining -= text.length + 2
     }
-    return JsonArray(bounded)
+    return sections.joinToString("\n\n")
+}
+
+/** One server's section: a header naming it for catalog tools, then its texts. */
+internal fun serverSection(
+    label: String,
+    serverID: String,
+    body: String,
+): String = if (body.isBlank()) "" else "${label.boundedModelText(256)} [$serverID]:\n$body"
+
+/** One line per alert; itemId lets the model address the item with server tools. */
+internal fun alertLine(
+    title: String,
+    body: String,
+    itemId: String?,
+): String {
+    val item = itemId?.takeIf { it.length <= 512 }?.let { " [$it]" }.orEmpty()
+    return "${title.boundedModelText(256)}: ${body.boundedModelText(2000)}$item"
 }
 
 // Keep the code-unit budget without leaving half of a supplementary character.
@@ -31,7 +42,5 @@ internal fun String.boundedModelText(limit: Int): String {
     return substring(0, end)
 }
 
-// Bound assembled model data at every initial, recovery, retained, and update boundary.
-// Server instructions and dispatch identities are separate and are never clipped.
-internal fun boundModelContext(text: String): String =
-    if (text.length <= 13_000) text else """{"event":"context_omitted","status":"omitted"}"""
+// Final bound on assembled model data; components already bound themselves.
+internal fun boundModelContext(text: String): String = if (text.length <= 13_000) text else ""

@@ -338,24 +338,10 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 		Context: voicev2.Context{SystemInstruction: "You are a terse voice assistant. Call set_timer whenever the user asks for a timer. After the tool result, confirm in one short sentence."},
 	})
 
-	// web/src/VoiceSession.ts greets on session.ready, so the spoken request
-	// is the second user turn, as in browser-hosted sessions.
-	s.send(ctx, t, &voicev2.UserMessage{Kind: voicev2.MessageKindUserMessage, Text: "Say exactly one word: Ready"})
-	data := s.waitMessage(ctx, t, voicev2.MessageKindAssistantTextDelta)
-	var greeting voicev2.AssistantTextDelta
-	if err := json.Unmarshal(data, &greeting); err != nil {
-		t.Fatal(err)
-	}
-	if smokeWords(greeting.Text) != "ready" {
-		t.Fatalf("greeting = %q, want Ready", greeting.Text)
-	}
-	s.waitMessage(ctx, t, voicev2.MessageKindSpeechEnded)
-	waitForSmokeTurnState(ctx, t, s, voicev2.TurnStateIdle)
-
 	turn := time.Now()
 	writePCM24MicAudio(ctx, t, s.micTrack, speech)
 	waitForSmokeTurnState(ctx, t, s, voicev2.TurnStateTranscribing)
-	data = s.waitMessage(ctx, t, voicev2.MessageKindTranscriptDelta)
+	data := s.waitMessage(ctx, t, voicev2.MessageKindTranscriptDelta)
 	var transcript voicev2.TranscriptDelta
 	if err := json.Unmarshal(data, &transcript); err != nil {
 		t.Fatal(err)

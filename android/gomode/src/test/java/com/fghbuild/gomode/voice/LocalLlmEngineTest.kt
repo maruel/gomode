@@ -556,7 +556,7 @@ class LocalLlmEngineTest {
             val engine = engine(configs)
             try {
                 val instructions = "資料😀".repeat(5000)
-                val oversized = """{"selectedServer":{"url":"${"x".repeat(13001)}"}}"""
+                val oversized = "x".repeat(13001)
                 val context = sessionContext.copy(systemInstruction = instructions, serviceContextText = oversized)
                 engine.initialize(context)
                 assertTrue(
@@ -573,24 +573,10 @@ class LocalLlmEngineTest {
                         .toString()
                         .contains("x".repeat(13001)),
                 )
-                assertTrue(
-                    configs
-                        .single()
-                        .systemInstruction
-                        .toString()
-                        .contains("context_omitted"),
-                )
                 engine.resetConversation(
                     context.copy(
                         serviceContextText = "{\"data\":\"${"z".repeat(7000)}\"}\n{\"data\":\"${"y".repeat(7000)}\"}",
                     ),
-                )
-                assertTrue(
-                    configs
-                        .last()
-                        .systemInstruction
-                        .toString()
-                        .contains("context_omitted"),
                 )
                 assertFalse(
                     configs
@@ -621,9 +607,9 @@ class LocalLlmEngineTest {
             val prompt = configs.single().systemInstruction.toString()
             assertTrue(prompt.contains("Décris les documents de cette bibliothèque."))
             assertTrue(prompt.contains("Bonjour"))
-            assertTrue(prompt.contains("selected language: fr-CA."))
+            assertTrue(prompt.contains("Speak in fr-CA."))
             assertFalse(prompt.contains("{{language}}"))
-            assertTrue(prompt.indexOf("Décris les documents") < prompt.indexOf("selected language: fr-CA."))
+            assertTrue(prompt.indexOf("Décris les documents") < prompt.indexOf("Speak in fr-CA."))
             engine.closeAndJoin()
         }
 
@@ -1044,8 +1030,7 @@ class LocalLlmEngineTest {
                 }
             try {
                 engine.initialize(sessionContext)
-                val update = """{"resource":"host://large","status":"known","data":"${"😀".repeat(7000)}"}"""
-                engine.injectContext(update + "\n" + """{"resource":"host://second","status":"unread"}""")
+                engine.injectContext("😀".repeat(7000))
                 assertTrue(messages.isEmpty())
                 engine.processTurn(UserTurnInput("Continue"), {}, {}) { error("No tool") }
                 val text =
@@ -1053,10 +1038,8 @@ class LocalLlmEngineTest {
                         .single()
                         .contents.contents
                         .single() as Content.Text
-                val delivered = Json.parseToJsonElement(text.text).jsonObject
-                val context = Json.parseToJsonElement(delivered.getValue("serviceContext").jsonPrimitive.content)
-                assertEquals(Json.parseToJsonElement("""{"event":"context_omitted","status":"omitted"}"""), context)
-                assertEquals("Continue", delivered.getValue("userMessage").jsonPrimitive.content)
+                // An over-budget update is dropped whole; the request reaches the model alone.
+                assertEquals("Continue", text.text)
             } finally {
                 engine.closeAndJoin()
             }
@@ -1085,7 +1068,7 @@ class LocalLlmEngineTest {
         }
 
     @Test
-    fun `service alerts generate a distinct context turn without claiming user speech`() =
+    fun `service alerts generate a plain turn without wrapping`() =
         runTest {
             val messages = mutableListOf<Message>()
             val engine =
@@ -1095,12 +1078,8 @@ class LocalLlmEngineTest {
                 }
             engine.initialize(sessionContext)
             engine.processTurn(UserTurnInput("Build is waiting", serviceUpdate = true), {}, {}) { error("No tool") }
-            assertTrue(
-                messages.single().toString().contains(
-                    "serviceEvent",
-                ),
-            )
-            assertFalse(messages.single().toString().contains("User message"))
+            assertTrue(messages.single().toString().contains("Build is waiting"))
+            assertFalse(messages.single().toString().contains("serviceEvent"))
             engine.closeAndJoin()
         }
 

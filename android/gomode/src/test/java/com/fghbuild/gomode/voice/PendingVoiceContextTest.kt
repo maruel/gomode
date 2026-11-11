@@ -1,4 +1,4 @@
-// Tests quiet context replacement, alert retention, and explicit native model wake-up.
+// Tests accumulated context changes, alert retention, and explicit native model wake-up.
 package com.fghbuild.gomode.voice
 
 import kotlinx.serialization.encodeToString
@@ -11,14 +11,14 @@ import org.junit.Test
 
 class PendingVoiceContextTest {
     @Test
-    fun quietUpdatesReplaceTheirOverviewWithoutLosingAlerts() {
+    fun contextChangesAccumulateAheadOfAlerts() {
         val pending = PendingVoiceContext()
         pending.add("Old references", false)
         pending.add("First alert", true)
         pending.add("Current references", false)
         pending.add("Second alert", true)
         assertEquals(
-            VoiceContextUpdate("Current references\nFirst alert\nSecond alert", true),
+            VoiceContextUpdate("Old references\n\nCurrent references\n\nFirst alert\n\nSecond alert", true),
             pending.drain(),
         )
         assertNull(pending.drain())
@@ -48,9 +48,17 @@ class PendingVoiceContextTest {
             pending
                 .drain()
                 ?.text
-                ?.lines()
+                ?.split("\n\n")
                 ?.size,
         )
+    }
+
+    @Test
+    fun overBudgetContextKeepsTheNewestChangeWhole() {
+        val pending = PendingVoiceContext()
+        pending.add("a".repeat(10_000), false)
+        pending.add("b".repeat(5_000), false)
+        assertEquals(VoiceContextUpdate("b".repeat(5_000), false), pending.drain())
     }
 
     @Test

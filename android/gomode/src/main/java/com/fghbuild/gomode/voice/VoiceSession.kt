@@ -1183,11 +1183,6 @@ internal class VoiceSession(
         send(json.encodeToString(ContextUpdate.serializer(), gatewayContextUpdate(text, generate)))
     }
 
-    private fun sendUserMessage(text: String) {
-        awaitingGatewayTurn = true
-        send(json.encodeToString(UserMessage.serializer(), gatewayUserMessage(text)))
-    }
-
     private fun flushPendingNotifications() {
         if (!voiceConversation.isCurrent()) {
             disconnect()
@@ -1263,9 +1258,7 @@ internal class VoiceSession(
                         send(json.encodeToString(ContextUpdate.serializer(), gatewayContextUpdate(recoveryContext)))
                         recoveryContext = ""
                     }
-                    val announcing = pendingNotifications.hasAlerts()
                     flushPendingNotifications()
-                    if (!announcing) sendUserMessage("{\"event\":\"connected\"}")
                 }
 
                 MessageKind.SessionUsage -> {
@@ -1784,31 +1777,18 @@ internal fun VoiceState.withCommittedTranscript(message: TranscriptDelta): Voice
     )
 }
 
-/** Build a bounded recovery-only context without replaying unfinished transcript deltas. */
+/** Replay the newest finalized transcript lines that fit, oldest first, as `speaker: text`. */
 internal fun buildNetworkRecoveryContext(transcript: List<TranscriptEntry>): String {
-    val finalized = transcript.filter { it.final && it.text.isNotBlank() }
-    val entries = mutableListOf<kotlinx.serialization.json.JsonElement>()
-
-    fun snapshot() =
-        buildJsonObject {
-            put("event", "transport_recovered")
-            put("transcript", kotlinx.serialization.json.JsonArray(entries.toList()))
-            put("omittedCount", finalized.size - entries.size)
-        }
-    for (entry in finalized.asReversed()) {
-        entries.add(
-            0,
-            buildJsonObject {
-                put("speaker", entry.speaker.name.lowercase())
-                put("text", entry.text.trim())
-            },
-        )
-        if (snapshot().toString().length > MAX_RECOVERY_CONTEXT_CHARS) {
-            entries.removeAt(0)
-            break
-        }
+    val lines = ArrayDeque<String>()
+    var remaining = MAX_RECOVERY_CONTEXT_CHARS
+    for (entry in transcript.asReversed()) {
+        if (!entry.final || entry.text.isBlank()) continue
+        val line = "${entry.speaker.name.lowercase()}: ${entry.text.trim()}"
+        if (line.length + 1 > remaining) break
+        lines.addFirst(line)
+        remaining -= line.length + 1
     }
-    return snapshot().toString()
+    return lines.joinToString("\n")
 }
 
 internal fun gatewaySessionSetup(

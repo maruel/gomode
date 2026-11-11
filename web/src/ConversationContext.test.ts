@@ -1,32 +1,9 @@
 // Tests opaque server context, private ordering, and actual MCP event routing.
 import { afterEach, it } from "node:test";
 import { expect, vi } from "../tests/expect";
-import { modelResourceContext } from "./ModelContext";
-const conversationContext = (value: string | null | undefined | Error) =>
-  modelResourceContext("fixture://context", value, 6000);
 import { configureMcpClient, mcpClient, type McpResourceNotification } from "./McpClient";
 import { monitorServiceNotifications } from "./ServiceNotifications";
 afterEach(() => vi.restoreAllMocks());
-
-it("preserves server-defined multilingual contents and omits whole oversized resources", () => {
-  for (const content of ['{"選択文書":null,"観察":["更新"]}', '{"currentTask":{"number":2}}', "Aucune sélection."]) {
-    expect(JSON.parse(conversationContext(content))).toEqual({
-      resource: "fixture://context",
-      status: "known",
-      content,
-    });
-  }
-  expect(JSON.parse(conversationContext('"'.repeat(4000)))).toEqual({
-    resource: "fixture://context",
-    status: "omitted",
-  });
-  for (const [value, status] of [
-    [null, "absent"],
-    [undefined, "unread"],
-    [new Error("private"), "error"],
-  ] as const)
-    expect(JSON.parse(conversationContext(value))).toEqual({ resource: "fixture://context", status });
-});
 
 it("does not deliver a tool response from a retired login configuration to its replacement", async () => {
   configureMcpClient("/old", "old");
@@ -128,7 +105,7 @@ it("routes one warm dependency read, rejects stale tools, and never exposes priv
   t.after(() => monitor.close());
   const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
   await settle();
-  expect(JSON.parse(inject.mock.calls.at(-1)![0].split("\n")[0]!).content).toBe(content);
+  expect(inject.mock.calls.at(-1)![0]).toBe(content);
   reads.length = 0;
   listCalls = 0;
   requestBytes = 0;
@@ -144,7 +121,7 @@ it("routes one warm dependency read, rejects stale tools, and never exposes priv
   expect(reads).toEqual(["fixture://context"]);
   expect(listCalls).toBe(0);
   expect(inject).toHaveBeenCalledOnce();
-  expect(JSON.parse(inject.mock.calls[0]![0].split("\n")[0]!).content).toBe(content);
+  expect(inject.mock.calls[0]![0]).toBe(content);
   t.diagnostic(
     JSON.stringify({
       boundary: "warm opaque context update",
@@ -178,7 +155,7 @@ it("routes one warm dependency read, rejects stale tools, and never exposes priv
   await mcpClient.callTool("read", {}, { sessionID: "same-conversation" });
   await settle();
   expect(inject).toHaveBeenCalledTimes(recreated);
-  expect(JSON.parse(inject.mock.calls.at(-1)![0].split("\n")[0]!).content).toBe(content);
+  expect(inject.mock.calls.at(-1)![0]).toBe(content);
   expect(inject.mock.calls.every((call) => !call[1])).toBe(true);
   expect(errors).not.toHaveBeenCalled();
   for (const [text] of inject.mock.calls) {
@@ -232,13 +209,8 @@ it("faults malformed private authority on context reads while tool and other res
   t.after(() => monitor.close());
   const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
   await settle();
-  const sections = inject.mock.calls
-    .at(-1)![0]
-    .split("\n")
-    .map((line) => JSON.parse(line));
-  expect(sections[0]).toEqual({ resource: "fixture://context", status: "error" });
-  expect(sections[1]).toEqual({ resource: "fixture://catalog", status: "known", content: publicText });
-  expect(sections[2].status).toBe("known");
+  // The malformed context read fails and sends nothing; the catalog arrives verbatim.
+  expect(inject.mock.calls.map(([text]) => text)).toEqual([publicText]);
   const result = await mcpClient.callTool("save", {}, { sessionID: "same-session" });
   expect(result.structuredContent).toEqual({ saved: true });
   expect(writes).toBe(1);
@@ -250,8 +222,8 @@ it("faults malformed private authority on context reads while tool and other res
   malformed = false;
   receive?.({ uri: "fixture://context" });
   await settle();
-  const restored = JSON.parse(inject.mock.calls.at(-1)![0].split("\n")[0]!);
-  expect(restored).toEqual({ resource: "fixture://context", status: "known", content: publicText });
+  // Same text as the catalog, but a different resource: the recovered context is sent once.
+  expect(inject.mock.calls.map(([text]) => text)).toEqual([publicText, publicText]);
   expect(errors.mock.calls.length).toBeGreaterThan(0);
   expect(inject.mock.calls.every(([text, generate]) => !generate && !text.includes("private-sensitive"))).toBe(true);
 });

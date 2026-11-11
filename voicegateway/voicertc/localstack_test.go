@@ -655,7 +655,7 @@ func TestLocalStackSession(t *testing.T) {
 		if !ok {
 			t.Fatalf("conversation = %T, want *genaiConversation", sess.conv)
 		}
-		if strings.Count(conv.systemInstruction, "Speak in the selected language: fr-CA.") != 1 {
+		if strings.Count(conv.systemInstruction, "Speak in fr-CA.") != 1 {
 			t.Fatalf("instruction = %q, want selected language", conv.systemInstruction)
 		}
 		invalid := mustJSON(t, voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup, Voice: voicev2.VoiceConfig{Language: "en_US"}})

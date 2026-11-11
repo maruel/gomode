@@ -286,26 +286,15 @@ class ServiceResourcesContextTest {
                             serviceContextText = readInitialServiceContext(client, "focus-session"),
                             languageTag = "en-US",
                         )
-                    val received =
-                        Json
-                            .parseToJsonElement(
-                                checkNotNull(setup.context.text).lineSequence().first {
-                                    Json
-                                        .parseToJsonElement(it)
-                                        .jsonObject["resource"]
-                                        ?.jsonPrimitive
-                                        ?.content ==
-                                        FIXTURE_CONTEXT_URI
-                                },
-                            ).jsonObject
-                    assertEquals(content, received.getValue("content").jsonPrimitive.content)
+                    // Server text arrives verbatim, without a resource envelope.
+                    assertTrue(checkNotNull(setup.context.text).split("\n\n").contains(content))
                 }
                 items.set("""{"items":[{"id":"one","title":"Build"}]}""")
                 for (status in listOf(200, 429, 503)) {
                     contextStatus.set(status)
                     val context = readInitialServiceContext(client, "focus-session")
-                    assertTrue(context.contains("Build"))
-                    assertTrue(context.contains("\"status\":\"error\""))
+                    // The failed context read contributes nothing; the catalog still arrives.
+                    assertEquals("""{"items":[{"id":"one","title":"Build"}]}""", context)
                     val failure =
                         runCatching {
                             client.readResource(
@@ -321,26 +310,8 @@ class ServiceResourcesContextTest {
                 assertEquals("", readInitialServiceContext(client, "focus-session"))
                 source.set("""{"sélection":null}""")
                 items.set("""{"items":[]}""")
-                val empty =
-                    readInitialServiceContext(client, "focus-session")
-                        .lineSequence()
-                        .map { Json.parseToJsonElement(it).jsonObject }
-                        .toList()
-                empty.forEach { assertEquals("known", it.getValue("status").jsonPrimitive.content) }
-                assertEquals(
-                    """{"sélection":null}""",
-                    empty
-                        .single { it.getValue("resource").jsonPrimitive.content == FIXTURE_CONTEXT_URI }
-                        .getValue("content")
-                        .jsonPrimitive.content,
-                )
-                assertEquals(
-                    """{"items":[]}""",
-                    empty
-                        .single { it.getValue("resource").jsonPrimitive.content == FIXTURE_CATALOG_URI }
-                        .getValue("content")
-                        .jsonPrimitive.content,
-                )
+                val empty = readInitialServiceContext(client, "focus-session")
+                assertEquals(setOf("""{"sélection":null}""", """{"items":[]}"""), empty.split("\n\n").toSet())
             }
         }
 }

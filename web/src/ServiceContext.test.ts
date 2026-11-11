@@ -19,13 +19,10 @@ function focused(id: string, version: number) {
   return JSON.stringify({ documentCourant: { id }, révision: version });
 }
 function latestContext() {
-  const text = inject.mock.calls.at(-1)?.[0];
-  return (
-    text
-      ?.split("\n")
-      .map((line) => JSON.parse(line) as { resource: string; content?: string })
-      .find((part) => part.resource === "fixture://context")?.content ?? text
-  );
+  return inject.mock.calls
+    .map(([text]) => text)
+    .filter((text) => text.includes("documentCourant"))
+    .at(-1);
 }
 async function settle() {
   for (let i = 0; i < 16; i++) await Promise.resolve();
@@ -77,8 +74,8 @@ it("keeps explicit offscreen focus independent of bounded items on one stream", 
   expect(vi.mocked(mcpClient.readAdvertisedTextResource).mock.calls.map((call) => call[0])).toEqual([
     "fixture://context",
   ]);
-  expect(latestContext()).toContain('"id":"second"');
-  expect(inject.mock.calls.at(-1)?.[0]).toContain("Build");
+  // Only the changed resource is sent.
+  expect(inject.mock.calls.at(-1)).toEqual([focused("second", 2), false]);
   items = JSON.stringify({ items: [] });
   changed({ uri: "fixture://catalog" });
   await settle();
@@ -98,10 +95,12 @@ it("reconciles focus publication and reconnect through authoritative context rea
   configuration.onReady?.();
   await settle();
   expect(latestContext()).toContain('"id":"reconnected"');
+  const sent = inject.mock.calls.length;
   context = null;
   changed({ listChanged: true });
   await settle();
-  expect(inject.mock.calls.at(-1)?.[0]).toContain('"resource":"fixture://context","status":"absent"');
+  // Withdrawal is not model content.
+  expect(inject).toHaveBeenCalledTimes(sent);
   expect(configuration.resourceSubscriptions).toEqual(["fixture://catalog"]);
 });
 
@@ -143,16 +142,8 @@ it("preserves verified context through malformed reads and retries without block
   changed({ uri: "gomode://notifications" });
   await settle();
   expect(error).toHaveBeenCalledOnce();
-  const faultSections = inject.mock.calls
-    .filter(([, generate]) => !generate)
-    .flatMap(([text]) => text.split("\n").map((line) => JSON.parse(line) as { resource: string; status: string }));
-  expect(
-    faultSections.find((section) => section.resource === "fixture://context" && section.status === "error"),
-  ).toEqual({ resource: "fixture://context", status: "error" });
-  expect(faultSections.some((section) => section.resource === "fixture://context" && section.status === "absent")).toBe(
-    false,
-  );
-  expect(inject.mock.calls.filter(([, generate]) => generate)).toHaveLength(1);
+  expect(inject.mock.calls.filter(([, generate]) => generate)).toEqual([["Review: Required", true]]);
+  expect(latestContext()).toContain('"id":"offscreen"');
   context = focused("recovered", 2);
   vi.mocked(mcpClient.readAdvertisedTextResource).mockImplementation(async (uri) =>
     uri === "fixture://context" ? context : uri === "fixture://catalog" ? items : alerts,

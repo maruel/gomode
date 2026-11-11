@@ -403,7 +403,6 @@ internal class CarDialVoiceOwner(
         if (voiceConversation != null) {
             contextUpdates =
                 scope.launch {
-                    var previous: String? = null
                     combine(voice.state, settingsRepository.settings, pages.catalog.state, voiceConversation.state) {
                         voiceState,
                         _,
@@ -413,13 +412,12 @@ internal class CarDialVoiceOwner(
                         if (voiceState.connected &&
                             voiceConversation.isCurrent()
                         ) {
-                            voiceConversation.contextText()
+                            voiceConversation.contextUpdate()
                         } else {
                             null
                         }
                     }.collect { text ->
-                        if (text != null && text != previous) voice.injectText(text)
-                        previous = text
+                        if (!text.isNullOrEmpty()) voice.injectText(text)
                     }
                 }
         }

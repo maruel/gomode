@@ -1170,8 +1170,8 @@ class DeviceVoiceSessionTest {
 
         connected.onMessage(socket, """{"kind":"session.ready"}""")
         assertTrue(session.state.value.connected)
-        assertTrue(socket.sent.any { it.contains("\"kind\":\"user.message\"") })
-        assertTrue("listens during the greeting turn", speech.listening)
+        assertFalse("ready sends no model content", socket.sent.any { it.contains("\"kind\":\"user.message\"") })
+        assertTrue("listens once ready", speech.listening)
 
         connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Hello."}""")
         assertEquals(listOf("Hello."), speech.spoken)
@@ -1181,7 +1181,7 @@ class DeviceVoiceSessionTest {
                 .single()
                 .text,
         )
-        assertTrue("still listening during the greeting turn", speech.listening)
+        assertTrue("still listening during the assistant turn", speech.listening)
 
         connected.onMessage(socket, """{"kind":"turn.status","state":"idle"}""")
         assertTrue("starts listening after the turn and speech end", speech.listening)
@@ -1775,16 +1775,15 @@ class DeviceVoiceSessionTest {
         requireNotNull(speech.partialCallback)("A")
         requireNotNull(speech.resultCallback)("A")
         requireNotNull(speech.partialCallback)("B")
-        assertEquals("Cancel greeting and pending A", 2, socket.sent.count { it.contains("turn.cancel") })
+        assertEquals("Cancel pending A", 1, socket.sent.count { it.contains("turn.cancel") })
         requireNotNull(speech.resultCallback)("B")
-        connected.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
         connected.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
         connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Discard A."}""")
         assertTrue(speech.spoken.isEmpty())
         connected.onMessage(socket, """{"kind":"interrupted","source":"user"}""")
         connected.onMessage(socket, """{"kind":"turn.status","state":"thinking"}""")
         requireNotNull(speech.partialCallback)("C")
-        assertEquals("Cancel replacement B before its first delta", 3, socket.sent.count { it.contains("turn.cancel") })
+        assertEquals("Cancel replacement B before its first delta", 2, socket.sent.count { it.contains("turn.cancel") })
         connected.onMessage(socket, """{"kind":"assistant.text.delta","text":"Discard B."}""")
         assertTrue(speech.spoken.isEmpty())
         requireNotNull(speech.resultCallback)("C")

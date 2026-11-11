@@ -90,7 +90,7 @@ class ControlledLocalConversationTest {
                     EngineSessionContext(
                         "fr-CA",
                         instructions,
-                        """{"selectedServer":{"url":"${"資料😀".repeat(4000)}"}}""",
+                        "資料😀".repeat(4000),
                         emptyList(),
                         null,
                     )
@@ -100,14 +100,7 @@ class ControlledLocalConversationTest {
                         .single()
                         .systemInstruction
                         .toString()
-                        .contains(instructions),
-                )
-                assertTrue(
-                    configs
-                        .single()
-                        .systemInstruction
-                        .toString()
-                        .contains("context_omitted"),
+                        .contains(instructions.trim()),
                 )
                 assertFalse(
                     configs
@@ -121,13 +114,6 @@ class ControlledLocalConversationTest {
                         serviceContextText =
                             "{\"data\":\"${"x".repeat(7000)}\"}\n{\"data\":\"${"y".repeat(7000)}\"}",
                     ),
-                )
-                assertTrue(
-                    configs
-                        .last()
-                        .systemInstruction
-                        .toString()
-                        .contains("context_omitted"),
                 )
                 assertFalse(
                     configs

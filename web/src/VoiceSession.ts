@@ -68,6 +68,7 @@ import {
   type FrontendSessionPreparation,
 } from "./FrontendVoiceTools";
 import { readInitialModelContext } from "./ModelContext";
+import { MODEL_CONTEXT_BUDGET } from "./ConversationContext";
 import { WebAudioVoiceChime, type VoiceChimePlayer } from "./VoiceChime";
 import { WebAudioThinkingEarcon, type ThinkingEarcon } from "./ThinkingEarcon";
 import {
@@ -2163,10 +2164,12 @@ export class VoiceSession {
     }
   }
 
-  /** Replace the authoritative service overview without replaying obsolete snapshots. */
+  /** Send changed service context; changes queued during a turn accumulate, newest last. */
   setServiceContext(text: string): void {
     if (this._contextUpdateBlocked()) {
-      this._pendingServiceContext = text;
+      const pending = this._pendingServiceContext === null ? text : `${this._pendingServiceContext}\n\n${text}`;
+      // An over-budget total keeps the newest change whole.
+      this._pendingServiceContext = pending.length <= MODEL_CONTEXT_BUDGET ? pending : text;
       return;
     }
     this._sendContextUpdate(text, false);
@@ -2208,7 +2211,7 @@ export class VoiceSession {
     if (this._pendingNotifications.length === 0 && this._pendingServiceContext === null) return;
     const text = [this._pendingServiceContext, ...this._pendingNotifications.map((update) => update.text)]
       .filter((value): value is string => value !== null)
-      .join("\n");
+      .join("\n\n");
     const generate = allowResponse && this._pendingNotifications.some((update) => update.generate);
     this._pendingNotifications = [];
     this._pendingServiceContext = null;
@@ -2613,8 +2616,6 @@ export class VoiceSession {
         this._recoveryContext = "";
       }
       this._flushPendingNotifications(true);
-      this._speakerActive = true;
-      this._send(JSON.stringify(gatewayUserMessage(JSON.stringify({ event: "connected" }))));
       // Audio capture is handled via WebRTC RTP tracks; no separate audio setup needed.
       return;
     }
@@ -3003,23 +3004,19 @@ export function formatVoiceRTCDiagnostics(diagnostics: VoiceRTCDiagnosticsResp):
   return `${side}: ${diagnostics.issue} — ${diagnostics.message}${mappingError}`;
 }
 
-/** Build a bounded recovery-only context without replaying unfinished transcript deltas. */
+/** Replay the newest finalized transcript lines that fit, oldest first, as `speaker: text`. */
 export function buildRecoveryContext(transcript: TranscriptEntry[]): string {
-  const finalized = transcript.filter(
-    (entry) => entry.kind === "transcript" && entry.final && entry.text.trim() !== "",
-  );
-  const entries: Array<{ speaker: string; text: string }> = [];
-  const value = { event: "transport_recovered", transcript: entries, omittedCount: finalized.length };
-  for (const entry of [...finalized].reverse()) {
-    entries.unshift({ speaker: entry.speaker, text: entry.text.trim() });
-    value.omittedCount--;
-    if (JSON.stringify(value).length > MAX_RECOVERY_CONTEXT_CHARS) {
-      entries.shift();
-      value.omittedCount++;
-      break;
-    }
+  const lines: string[] = [];
+  let remaining = MAX_RECOVERY_CONTEXT_CHARS;
+  for (const entry of [...transcript].reverse()) {
+    const text = entry.kind === "transcript" && entry.final ? entry.text.trim() : "";
+    if (!text) continue;
+    const line = `${entry.speaker}: ${text}`;
+    if (line.length + 1 > remaining) break;
+    lines.unshift(line);
+    remaining -= line.length + 1;
   }
-  return JSON.stringify(value);
+  return lines.join("\n");
 }
 
 function gatewayContextUpdate(text: string, generate?: boolean): ContextUpdate {

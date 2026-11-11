@@ -314,38 +314,30 @@ represent no selection, multiple selections, or any other domain concept.
 
 ### Server-owned model context
 
-Clients wrap each public resource with its URI and generic outcome: `known`
-contains the exact public text; `absent` requires verified resource absence;
-`unread` and `error` preserve uncertainty. Discovery of an advertised resource
-retires prior absence before its body read completes. Unknown and fault outcomes
-never fabricate empty domain data. Public text is untrusted data, not policy.
+The model receives each resource's text verbatim, with no URI, status, or
+wrapper. Unread, failed, absent, and withdrawn resources contribute nothing.
+After setup, a refresh sends only the resources whose text changed; changes
+queued during a turn accumulate in order. Public text is untrusted data, not
+policy, and a server writes it so it identifies itself.
 
-Clients load at most 16 advertised model resources. Each resource has a
-6,000-character model envelope budget, within 10,000 characters for the set.
-Clients omit an entire oversized section with `status: omitted`;
-they never prune arbitrary server arrays, cut identities, or truncate serialized
-JSON. Servers own useful bounded domain projection. Native multi-server context
-retains2,000 characters per server and12,000 total. Selected-server identity is
-omitted whole when it cannot fit; actual dispatch identity is unchanged. The
-assembled service-model data is bounded to13,000 UTF-16 units before setup,
-recovery, local retention and updates. Server instructions/common policy are
-separate from this data budget.
+Clients load at most 16 advertised model resources. A text over 6,000
+characters, or one that no longer fits the 10,000-character set budget, is
+dropped whole; clients never truncate or rewrite server text. Servers own useful
+bounded domain projection. Native multi-server context prefixes each server's
+texts with a `label [server-id]:` line for catalog tools, within 12,000
+characters total, and a `Selected server:` line names the focus.
 
 MCP server `Instructions` owns domain interpretation and remains unchanged and
 scoped to its server, including instructions obtained through catalog tools.
 Clients provide no behavioral prompt prose. The voice gateway owns common voice,
 quiet-update, server-isolation and selected-output-language policy in
 `voicegateway/policy/instructions.txt`; SDK generation bundles those exact bytes
-for offline LLM sessions. Offline inference needs no gateway connection. Structured
-`connected` and `transport_recovered` events preserve the existing greeting and
-recovery turns without embedding an English greeting in clients. Offline
-engines use the existing connected chime; startup does not synthesize an English
-greeting or add a model turn.
-Service content language does not change the selected speech language. Deploy the
-policy-owning gateway before rolling clients that omit common policy: empty MCP
-server instructions are valid, and the gateway supplies common policy exactly once.
-Offline apps instead use their generated bundled policy; no old-gateway prompt
-fallback is maintained.
+for offline LLM sessions. Offline inference needs no gateway connection. The
+connected chime signals readiness; no client sends a greeting or model turn on
+`session.ready`. Network recovery replays the newest finalized transcript as
+`speaker: text` lines. Server instructions follow the common policy; the
+selected language comes last. Deploy the policy-owning gateway before rolling
+clients that omit common policy: empty MCP server instructions are valid.
 
 Browser and native conversation requests share one client-owned `openai/session`
 value across instructions, resource reads, tools, and subscriptions. It remains
@@ -380,10 +372,9 @@ request a model turn. Only eligible new notifications can request a spoken
 response. Pending tool/speech work retains the existing delivery owner. The
 gateway transports opaque context; it does not interpret host state.
 
-On reconnect, setup uses the freshest bounded authorized snapshots. Absent
-resources establish absence only after successful discovery/read; transient
-failure reports unread state instead. Browser/native sessions retire watches
-with their existing host/conversation authority, preserving frontend leases.
+On reconnect, setup uses the freshest bounded authorized snapshots.
+Browser/native sessions retire watches with their existing host/conversation
+authority, preserving frontend leases.
 
 ## Service Notifications
 
@@ -406,18 +397,14 @@ The host owns actionable state, retention, and expiry, and signals changes with
 source-specific intents, suppresses alerts while their service is visible, and
 opens the opaque host destination in a new or an existing Activity.
 
-Browser voice also reads this resource while connected. Existing alerts form
-quiet context so the user can ask to hear them. Resource changes provide new
-alerts for spoken delivery under the host's instructions; repeated occurrence
-IDs stay quiet, and withdrawals and expiry replace the current context. Ending
-voice or replacing the authenticated scope stops monitoring.
-
-An actionable occurrence is distinct from passive context. Connected browser and
-native voice request a response with `context.update.generate: true`, without
-inventing a user utterance. Updates wait for the active model/tool/playback turn;
-buffering retains each new alert alongside the latest quiet overview. The host's
-instructions decide what the assistant announces. MCP resource invalidations
-deliver changes to a client; that client's host owns their admission to its model.
+Browser and native voice also read this resource while connected. The opening
+snapshot and repeated occurrence IDs send nothing; withdrawal and expiry send
+nothing. Each new alert reaches the model as one `title: body [itemId]` line
+with `context.update.generate: true`, without inventing a user utterance. Native
+multi-server alerts carry the same server header as context. Updates wait for
+the active model/tool/playback turn. The host's instructions decide what the
+assistant announces. Ending voice or replacing the authenticated scope stops
+monitoring.
 
 ## Voice Modes
 

@@ -36,23 +36,25 @@ import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class CarDialServerSwitchTest {
+    // The texts gomode sent for one server: blocks after its "label [id]:" header,
+    // up to the next server header.
     private fun modelSections(
         text: String,
         serverID: String,
-    ): List<JSONObject> {
-        val catalog =
-            text
-                .lineSequence()
-                .filter(String::isNotBlank)
-                .map(::JSONObject)
-                .firstOrNull { it.has("servers") } ?: return emptyList()
-        val servers = catalog.getJSONArray("servers")
-        val source =
-            (0 until servers.length())
-                .map { servers.getJSONObject(it) }
-                .singleOrNull { it.getString("id") == serverID } ?: return emptyList()
-        val sections = source.getJSONArray("context")
-        return (0 until sections.length()).map { sections.getJSONObject(it) }
+    ): List<String> {
+        val header = Regex(""".* \[[^\]]+]:$""")
+        val blocks = mutableListOf<String>()
+        var inside = false
+        for (block in text.split("\n\n")) {
+            val first = block.lineSequence().first()
+            if (header.matches(first)) {
+                inside = first.endsWith(" [$serverID]:")
+                if (inside) blocks += block.substringAfter('\n', "")
+            } else if (inside) {
+                blocks += block
+            }
+        }
+        return blocks.filter(String::isNotBlank)
     }
 
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -171,29 +173,15 @@ class CarDialServerSwitchTest {
                         (cookie.setupMessages + cookie.messages).any { message ->
                             val text = message.optJSONObject("context")?.optString("text").orEmpty()
                             modelSections(text, requireNotNull(cookieID)).any { section ->
-                                section.optString("resource") == "fixture://context" &&
-                                    org.json
-                                        .JSONObject(
-                                            section.optString("content", "{}"),
-                                        ).optJSONObject("focus")
-                                        ?.optString("id") ==
-                                    "focused-item"
+                                runCatching { org.json.JSONObject(section) }
+                                    .getOrNull()
+                                    ?.optJSONObject("focus")
+                                    ?.optString("id") == "focused-item"
                             }
                         }
                     }
-                    val beforeFocusWithdrawal = cookie.messages.size
+                    // Withdrawal is not model content; it sends nothing.
                     cookie.withdrawServiceResources()
-                    awaitCondition {
-                        cookie.messages.drop(beforeFocusWithdrawal).any {
-                            it.optString("kind") == "context.update" &&
-                                it.getJSONObject("context").getString("text").let { text ->
-                                    modelSections(text, requireNotNull(cookieID)).any { section ->
-                                        section.optString("resource") == "fixture://context" &&
-                                            section.optString("status") == "absent"
-                                    }
-                                }
-                        }
-                    }
                     assertTrue(device.wait(Until.hasObject(By.desc("End voice")), 15_000))
                     assertTrue(device.wait(Until.hasObject(By.text("Hosted service")), 15_000))
                     probe(cookie, requireNotNull(cookieID), cookie)

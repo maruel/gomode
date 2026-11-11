@@ -148,7 +148,7 @@ func TestGeminiBridgeBackend(t *testing.T) {
 		}
 		instruction := setup["systemInstruction"].(map[string]any)["parts"].([]any)[0].(map[string]any)["text"].(string)
 		//nolint:gosmopolitan // Assert the actual provider received the non-Latin fixture unchanged.
-		if !strings.Contains(instruction, "Speak in the selected language: fr-CA.") || !strings.Contains(instruction, "Bonjour 東京") || !strings.HasPrefix(instruction, "この書庫の資料だけを説明してください。\n") {
+		if !strings.Contains(instruction, "この書庫の資料だけを説明してください。\n\nSpeak in fr-CA.") || !strings.Contains(instruction, "Bonjour 東京") {
 			t.Fatalf("instruction: %s", instruction)
 		}
 		hints := setup["inputAudioTranscription"].(map[string]any)["languageCodes"].([]any)
@@ -383,7 +383,7 @@ func TestGeminiBridgeSession(t *testing.T) {
 		s, sink := newGeminiGateway(t, func(ctx context.Context, ws *websocket.Conn) {
 			setup := readGeminiFixture(t, ctx, ws)["setup"].(map[string]any)
 			instruction := setup["systemInstruction"].(map[string]any)["parts"].([]any)[0].(map[string]any)["text"].(string)
-			if strings.Count(instruction, "Speak in the selected language: en-US.") != 1 {
+			if strings.Count(instruction, "Speak in en-US.") != 1 {
 				t.Errorf("empty server instructions must receive common policy exactly once: %q", instruction)
 			}
 			writeGeminiFixture(t, ctx, ws, `{"setupComplete":{}}`)

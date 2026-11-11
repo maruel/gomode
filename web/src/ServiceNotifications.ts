@@ -1,6 +1,6 @@
 // Monitors advertised opaque model resources and separate actionable alerts for one conversation.
 
-import { boundedModelText, modelResourceContext, modelContextText } from "./ModelContext";
+import { boundedModelText, modelContextText } from "./ModelContext";
 import {
   mcpClient,
   type McpResourceSubscription,
@@ -12,7 +12,7 @@ import type { ContextSnapshot } from "./ConversationContext";
 import type { ResourcesCapability } from "../../sdk/mcp/ts/v1/types.gen";
 
 const RESOURCE_URI = "gomode://notifications";
-const MAX_CONTEXT_CHARS = 4000;
+const MAX_ALERT_CHARS = 4000;
 const MAX_OBSERVED_IDS = 4096;
 
 interface ServiceNotification {
@@ -55,16 +55,15 @@ export function monitorServiceNotifications(
   let discoveryDirty = false;
   let discoveryRetry: ReturnType<typeof setTimeout> | null = null;
   let queued = false;
-  let previousContext: string | null = null;
   let alerts: ServiceNotification[] | undefined;
   let alertsAvailable: boolean | undefined;
-  let alertError = false;
   let alertBaseline = true;
   let alertRunning = false;
   let alertDirty = false;
   let alertTimer: ReturnType<typeof setTimeout> | null = null;
   const resources = new Map<string, WatchedResource>();
-  const retired = new Set<string>();
+  // Last text sent per resource; the model only receives changes.
+  const sent = new Map<string, string>();
   const observed = new Set<string>();
   const unseen = new Set<string>();
   const controller = new AbortController();
@@ -117,31 +116,20 @@ export function monitorServiceNotifications(
             },
           );
         }
-        if (resources.size === 0 && alerts === undefined && capabilities !== null) return;
-        const liveAlerts = (alerts ?? []).filter((alert) => alert.expiresAt === null || alert.expiresAt > Date.now());
-        const alertContext = alertError
-          ? modelResourceContext(RESOURCE_URI, new Error(), MAX_CONTEXT_CHARS)
-          : alertsAvailable === false
-            ? modelResourceContext(RESOURCE_URI, null, MAX_CONTEXT_CHARS)
-            : alerts === undefined
-              ? modelResourceContext(RESOURCE_URI, undefined, MAX_CONTEXT_CHARS)
-              : notificationContext(liveAlerts, new Set());
-        const context = [
-          modelContextText([
-            ...[...retired].map((uri) => [uri, null] as const),
-            ...[...resources].map(([uri, record]) => [uri, record.value] as const),
-          ]),
-          alertContext,
-        ]
-          .filter(Boolean)
-          .join("\n");
-        if (context !== previousContext) {
-          injectText(context, false);
-          previousContext = context;
+        const changed: string[] = [];
+        for (const [uri, record] of resources) {
+          if (typeof record.value !== "string" || sent.get(uri) === record.value) continue;
+          sent.set(uri, record.value);
+          changed.push(record.value);
         }
+        const context = modelContextText(changed);
+        if (context) injectText(context, false);
         if (closed) return;
-        const fresh = liveAlerts.filter((alert) => unseen.has(alert.id));
-        if (fresh.length) injectText(notificationContext(fresh, unseen), true);
+        const now = Date.now();
+        const fresh = (alerts ?? []).filter(
+          (alert) => unseen.has(alert.id) && (alert.expiresAt === null || alert.expiresAt > now),
+        );
+        if (fresh.length) injectText(alertText(fresh), true);
         unseen.clear();
       } catch (error) {
         if (!closed) onError(error);
@@ -226,7 +214,6 @@ export function monitorServiceNotifications(
           for (const alert of fresh) unseen.add(alert.id);
           alerts = next;
           alertBaseline = false;
-          alertError = false;
           for (const alert of next) {
             observed.delete(alert.id);
             observed.add(alert.id);
@@ -246,7 +233,6 @@ export function monitorServiceNotifications(
             );
         } catch (error) {
           if (closed) return;
-          alertError = true;
           onError(error);
           alertTimer = setTimeout(() => void refreshAlerts(), 2000);
           break;
@@ -274,13 +260,12 @@ export function monitorServiceNotifications(
             : await mcpClient.listModelResources(controller.signal, options);
         if (closed) return;
         const uris = new Set(advertised.resources.map((resource) => resource.uri));
-        retired.clear();
         for (const [uri, record] of resources) {
           if (uris.has(uri)) continue;
           if (record.retry !== null) clearTimeout(record.retry);
           record.controller.abort();
           resources.delete(uri);
-          retired.add(uri);
+          sent.delete(uri);
         }
         for (const uri of uris) {
           if (resources.has(uri)) continue;
@@ -329,7 +314,7 @@ export function monitorServiceNotifications(
       observation?.close();
       subscription?.close();
       resources.clear();
-      retired.clear();
+      sent.clear();
       observed.clear();
       unseen.clear();
     },
@@ -374,26 +359,16 @@ function parseNotifications(text: string): ServiceNotification[] {
   return alerts.filter((alert) => alert.expiresAt === null || alert.expiresAt > now);
 }
 
-function notificationContext(alerts: ServiceNotification[], unseen: Set<string>): string {
-  const notifications: object[] = [];
-  const context = { resource: RESOURCE_URI, status: "known", data: { notifications, omittedCount: alerts.length } };
-  // Selection and wake ownership stay in the monitor; new occurrences have budget priority.
-  const ordered = [...alerts].sort((a, b) => Number(unseen.has(b.id)) - Number(unseen.has(a.id)));
-  for (const alert of ordered) {
-    notifications.push({
-      new: unseen.has(alert.id),
-      title: boundedModelText(alert.title, 256),
-      body: boundedModelText(alert.body, 2000),
-      truncated: alert.title.length > 256 || alert.body.length > 2000,
-      id: alert.id.length <= 512 ? alert.id : undefined,
-      itemId: alert.itemId !== undefined && alert.itemId.length <= 512 ? alert.itemId : undefined,
-    });
-    context.data.omittedCount--;
-    if (JSON.stringify(context).length > MAX_CONTEXT_CHARS) {
-      notifications.pop();
-      context.data.omittedCount++;
-      break;
-    }
+/** One line per new alert; itemId lets the model address the item with server tools. */
+function alertText(alerts: ServiceNotification[]): string {
+  const lines: string[] = [];
+  let remaining = MAX_ALERT_CHARS;
+  for (const alert of alerts) {
+    const item = alert.itemId !== undefined && alert.itemId.length <= 512 ? ` [${alert.itemId}]` : "";
+    const line = `${boundedModelText(alert.title, 256)}: ${boundedModelText(alert.body, 2000)}${item}`;
+    if (line.length + 1 > remaining) break;
+    lines.push(line);
+    remaining -= line.length + 1;
   }
-  return JSON.stringify(context);
+  return lines.join("\n");
 }

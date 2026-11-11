@@ -435,7 +435,7 @@ internal class DeviceVoiceSession(
             withContext(ioDispatcher) { localEngine.initialize(context) }
         }
         if (!ownsAttempt(attempt)) return
-        voiceConversation?.let { localEngine.injectContext(it.contextText()) }
+        voiceConversation?.contextUpdate()?.takeIf { it.isNotEmpty() }?.let { localEngine.injectContext(it) }
         frontendToolNames = frontendTools.declarations.map { it.name }.toSet()
         _state.update {
             it.copy(connectStatus = null, connected = true, error = null)
@@ -682,7 +682,7 @@ internal class DeviceVoiceSession(
                     val announcing = pendingNotifications.hasAlerts()
                     flushPendingNotifications()
                     if (!ownsAttempt(attempt) || webSocket !== origin) return
-                    if (!announcing) sendUserMessage("{\"event\":\"connected\"}")
+                    if (!announcing) turnIdle = true
                     maybeStartListening()
                 }
 
@@ -1450,13 +1450,8 @@ internal class DeviceVoiceSession(
             disconnect()
             return
         }
-        if (userSpeechActive || speakerActive || awaitingModelTurn || (
-                voiceConversation != null &&
-                    (
-                        !_state.value.connected || awaitingModelTurn ||
-                            pendingGatewayTools.containsKey(attemptGeneration.get())
-                    )
-            )
+        if (userSpeechActive || speakerActive || awaitingModelTurn || !_state.value.connected ||
+            (voiceConversation != null && pendingGatewayTools.containsKey(attemptGeneration.get()))
         ) {
             if (!pendingNotifications.add(text, generate)) {
                 setError("Too many pending service alerts. Reconnect voice.")
@@ -1505,10 +1500,8 @@ internal class DeviceVoiceSession(
             disconnect()
             return
         }
-        if (voiceConversation != null && (
-                speakerActive || awaitingModelTurn || !_state.value.connected ||
-                    pendingGatewayTools.containsKey(attemptGeneration.get())
-            )
+        if (!_state.value.connected ||
+            (voiceConversation != null && pendingGatewayTools.containsKey(attemptGeneration.get()))
         ) {
             return
         }

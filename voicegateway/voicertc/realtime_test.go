@@ -1031,7 +1031,7 @@ func TestLlamaRealtimeSession(t *testing.T) {
 				if mode, ok := session["output_modalities"]; !ok || mode != nil {
 					t.Errorf("output mode must let the model choose tool calls or speech: %v", session)
 				}
-				if instruction, ok := session["instructions"].(string); !ok || !strings.HasPrefix(instruction, "Respond with function calls, and interleaved text and audio.\n\nSpeak concisely\n") || !strings.Contains(instruction, "Speak in the selected language: en-AU.") || !strings.HasSuffix(instruction, "List of tools:") {
+				if instruction, ok := session["instructions"].(string); !ok || !strings.HasPrefix(instruction, "Respond with function calls, and interleaved text and audio.\n\n") || !strings.Contains(instruction, "Speak concisely\n\nSpeak in en-AU.\n") || !strings.HasSuffix(instruction, "List of tools:") {
 					t.Errorf("tool-enabled instructions: %v", session["instructions"])
 				}
 				session["id"] = "local"

@@ -77,30 +77,6 @@ private fun JsonElement.contextString(limit: Int): String {
     return value.content
 }
 
-internal fun modelResourceContext(
-    resource: String,
-    text: String?,
-    limit: Int,
-): String {
-    if (text == null) return modelResourceStatus(resource, "absent")
-    val value =
-        buildJsonObject {
-            put("resource", resource)
-            put("status", "known")
-            put("content", text)
-        }.toString()
-    return if (value.length <= limit) value else modelResourceStatus(resource, "omitted")
-}
-
-internal fun modelResourceStatus(
-    resource: String,
-    status: String,
-): String =
-    buildJsonObject {
-        put("resource", resource)
-        put("status", status)
-    }.toString()
-
 internal const val MODEL_CONTEXT_META_KEY = "com.fghbuild.gomode/modelContext"
 internal const val MAX_MODEL_RESOURCES = 16
 internal const val MODEL_RESOURCE_BUDGET = 6000

@@ -2705,12 +2705,17 @@ describe("VoiceSession", () => {
       const event = (state: string) =>
         channel.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: "turn.status", state }) }));
       event("thinking");
-      for (let index = 0; index <= 100; index++) session.setServiceContext(`Overview ${index}`);
+      // Queued context changes accumulate in order, then the alert follows.
+      for (let index = 0; index < 3; index++) session.setServiceContext(`Change ${index}`);
       session.injectText("Build is waiting", true);
       expect(channel.send.mock.calls.some(([text]) => text.includes("Build is waiting"))).toBe(false);
       event("idle");
       expect(channel.send).toHaveBeenLastCalledWith(
-        JSON.stringify({ kind: "context.update", context: { text: "Overview 100\nBuild is waiting" }, generate: true }),
+        JSON.stringify({
+          kind: "context.update",
+          context: { text: "Change 0\n\nChange 1\n\nChange 2\n\nBuild is waiting" },
+          generate: true,
+        }),
       );
       session.injectText("Review has a question", true);
       expect(channel.send.mock.calls.some(([text]) => text.includes("Review has a question"))).toBe(false);
@@ -3413,9 +3418,9 @@ describe("VoiceSession", () => {
     const sent = FakePeerConnection.dataChannels[0]?.send.mock.calls[0]?.[0];
     const setup = JSON.parse(sent as string);
     expect(setup).toMatchObject({ kind: "session.setup", includeReasoning: true });
-    const sections = setup.context.text.split("\n").map((line: string) => JSON.parse(line));
-    expect(sections[0]).toMatchObject({ resource: "fixture://context", status: "known" });
-    expect(JSON.parse(sections[1].content).items[0]).toMatchObject({ title: "Build feature", state: "running" });
+    // Each advertised resource contributes its server text verbatim.
+    const items = await mcpMocks.mcpReadTextResource.mock.results[0]!.value;
+    expect(setup.context.text).toBe(`${items}\n\n${items}`);
     expect(setup.context.systemInstruction).toBe("instructions");
     expect(setup.voice.language).toBe("en-US");
   });
@@ -3581,13 +3586,11 @@ describe("VoiceSession", () => {
     const setup = JSON.parse(channel?.send.mock.calls[0]?.[0] as string);
     expect(setup.context.systemInstruction).toBe(instructions);
     expect(setup.voice.language).toBe("es-MX");
-    const sections = setup.context.text.split("\n").map((line: string) => JSON.parse(line));
-    expect(JSON.parse(sections[1].content).items[0]).toMatchObject({ id: "livre", title: "L’été à 東京" });
+    expect(setup.context.text).toContain("L’été à 東京");
+    expect(setup.context.text).toContain("Aucune sélection.");
     channel?.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: MessageKindSessionReady }) }));
-    const connected = channel?.send.mock.calls
-      .map(([text]) => JSON.parse(text as string))
-      .find((value) => value.kind === "user.message");
-    expect(JSON.parse(connected.text)).toEqual({ event: "connected" });
+    // Readiness is the chime; the model receives no content until the user speaks.
+    expect(channel?.send.mock.calls.map(([text]) => JSON.parse(text as string).kind)).toEqual(["session.setup"]);
     expect(chime.playConnected).toHaveBeenCalledOnce();
     session.disconnect();
   });
@@ -3604,7 +3607,7 @@ describe("VoiceSession", () => {
     expect(instruction).toBe("");
   });
 
-  it("starts with unknown sections when service-item loading fails", async () => {
+  it("starts without service context when service-item loading fails", async () => {
     mcpMocks.mcpReadTextResource.mockRejectedValue(new Error("resource unavailable"));
     const session = new VoiceSession();
 
@@ -3613,11 +3616,7 @@ describe("VoiceSession", () => {
 
     expect(offerRequests).toHaveLength(1);
     const sent = FakePeerConnection.dataChannels[0]?.send.mock.calls[0]?.[0];
-    const sections = JSON.parse(sent as string)
-      .context.text.split("\n")
-      .map((line: string) => JSON.parse(line));
-    expect(sections.map((section: { status: string }) => section.status)).toEqual(["error", "error"]);
-    expect(sections.every((section: object) => !("data" in section))).toBe(true);
+    expect(JSON.parse(sent as string).context.text ?? "").toBe("");
   });
 
   it("waits briefly for a reflexive candidate without waiting for ICE completion", async () => {
@@ -4040,7 +4039,7 @@ describe("usage display preference", () => {
 });
 
 describe("buildRecoveryContext", () => {
-  it("preserves finalized chronological transcript and bounded service context", () => {
+  it("replays finalized transcript lines in order", () => {
     const context = buildRecoveryContext([
       { kind: "transcript", speaker: "user", text: "first", final: true },
       { kind: "reasoning", speaker: "assistant", text: "weigh both dates", final: true },
@@ -4048,15 +4047,7 @@ describe("buildRecoveryContext", () => {
       { kind: "transcript", speaker: "user", text: "partial", final: false },
     ]);
 
-    expect(JSON.parse(context)).toMatchObject({
-      event: "transport_recovered",
-      transcript: [
-        { speaker: "user", text: "first" },
-        { speaker: "assistant", text: "second" },
-      ],
-    });
-    expect(context).not.toContain("partial");
-    expect(context).not.toContain("weigh both dates");
+    expect(context).toBe("user: first\nassistant: second");
   });
 
   it("bounds recovery messages without splitting finalized history order", () => {
@@ -4070,7 +4061,8 @@ describe("buildRecoveryContext", () => {
     );
 
     expect(context.length).toBeLessThanOrEqual(MAX_RECOVERY_CONTEXT_CHARS);
-    expect(context.indexOf('"text":"19:')).toBeGreaterThan(context.indexOf('"text":"18:'));
+    expect(context.endsWith(`user: 19: ${"x".repeat(600)}`)).toBe(true);
+    expect(context.indexOf("user: 19:")).toBeGreaterThan(context.indexOf("user: 18:"));
   });
 });
 

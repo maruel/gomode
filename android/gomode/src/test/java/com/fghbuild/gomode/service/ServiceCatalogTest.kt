@@ -292,7 +292,6 @@ class ServiceCatalogTest {
                     catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.READY }
                     runCurrent()
                     assertFalse(catalog.contextText(contexts.value).contains("Same item"))
-                    assertTrue(catalog.contextText(contexts.value).contains("\"status\":\"unread\""))
                 } finally {
                     fixture.releaseContext.countDown()
                     catalog.close()
@@ -380,11 +379,10 @@ class ServiceCatalogTest {
                     advanceTimeBy(1)
                     runCurrent()
                     assertTrue(preparing.isCompleted)
-                    assertTrue(
-                        preparing
-                            .await()
-                            .setup.serviceContextText
-                            .contains("\"status\":\"unread\""),
+                    // Unread context contributes nothing; only the selected server line remains.
+                    assertEquals(
+                        "Selected server: Selected [$id]",
+                        preparing.await().setup.serviceContextText,
                     )
                 } finally {
                     fixture.releaseContext.countDown()
@@ -424,8 +422,8 @@ class ServiceCatalogTest {
                         owner.prepareLocal()
                         owner.state.first { value ->
                             val context = value?.serviceContext.orEmpty()
-                            context.split("\"resource\":\"fixture://catalog\"").size == 3 &&
-                                !context.contains("\"status\":\"unread\"")
+                            // Both servers contributed their catalog text.
+                            context.split("\"items\"").size == 3
                         }
                         val counts =
                             listOf(first, second).map { fixture ->
@@ -600,27 +598,9 @@ class ServiceCatalogTest {
                                 true
                         }
                     val cleared = catalog.contextText(withdrawn)
-                    assertTrue(cleared.contains("\"status\":\"absent\""))
-                    val sections =
-                        Json
-                            .parseToJsonElement(cleared)
-                            .jsonObject
-                            .getValue("servers")
-                            .jsonArray
-                            .single()
-                            .jsonObject
-                            .getValue("context")
-                            .jsonArray
-                    assertEquals(
-                        "absent",
-                        sections
-                            .single {
-                                it.jsonObject["resource"]?.jsonPrimitive?.content ==
-                                    FIXTURE_CATALOG_URI
-                            }.jsonObject
-                            .getValue("status")
-                            .jsonPrimitive.content,
-                    )
+                    // A withdrawn resource contributes nothing; no status marker reaches the model.
+                    assertFalse(cleared.contains("\"items\""))
+                    assertFalse(cleared.contains("same"))
                     assertFalse(cleared.contains("\"focus\":{"))
                     assertTrue(cleared.length <= 12000)
                     val unreported = catalog.contextText(initial)
@@ -748,54 +728,12 @@ class ServiceCatalogTest {
                                         ),
                                 )
                             }
-                        val bounded = catalog.contextText(large)
-                        val sources = Json.parseToJsonElement(bounded).jsonObject.getValue("servers") as JsonArray
-                        assertEquals(2, sources.size)
-                        sources.forEach { server ->
-                            assertTrue(server.toString().length <= 2000)
-                            val sections = server.jsonObject.getValue("context") as JsonArray
-                            val items =
-                                sections
-                                    .single {
-                                        it.jsonObject["resource"]?.jsonPrimitive?.content ==
-                                            FIXTURE_CATALOG_URI
-                                    }.jsonObject
-                            assertEquals("omitted", items.getValue("status").jsonPrimitive.content)
-                        }
-                        assertTrue(bounded.length <= 12000)
+                        // A resource over its budget is dropped whole, leaving no section.
+                        assertTrue(catalog.contextSections(large).isEmpty())
                         catalog.reconcile(entries, mapOf("a" to "\"".repeat(255) + "😀", "b" to "Beta"))
-                        val identityInputs =
-                            snapshot.mapValues { (_, value) ->
-                                value.copy(
-                                    snapshot =
-                                        checkNotNull(value.snapshot).withFixtureItems(
-                                            text = "資料".repeat(4000),
-                                        ),
-                                )
-                            }
-                        val identityHeavy = catalog.contextText(identityInputs)
-                        val retained =
-                            Json
-                                .parseToJsonElement(
-                                    identityHeavy,
-                                ).jsonObject
-                                .getValue("servers") as JsonArray
-                        assertEquals(2, retained.size)
-                        retained.forEach { assertTrue(it.toString().length <= 2000) }
-                        assertEquals(
-                            "\"".repeat(255),
-                            retained[0]
-                                .jsonObject
-                                .getValue("label")
-                                .jsonPrimitive.content,
-                        )
-                        assertEquals(
-                            "true",
-                            retained[0]
-                                .jsonObject
-                                .getValue("labelTruncated")
-                                .jsonPrimitive.content,
-                        )
+                        val sections = catalog.contextSections(snapshot)
+                        assertEquals(2, sections.size)
+                        assertTrue(sections.values.first().startsWith("\"".repeat(255) + " [a]:\n"))
                         val discovered =
                             checkNotNull(
                                 catalog.execute(
@@ -811,22 +749,7 @@ class ServiceCatalogTest {
                                 .getValue("label")
                                 .jsonPrimitive.content,
                         )
-                        val unreadSources =
-                            Json
-                                .parseToJsonElement(catalog.contextText(emptyMap()))
-                                .jsonObject
-                                .getValue("servers") as JsonArray
-                        unreadSources.forEach { source ->
-                            val unread = source.jsonObject.getValue("context") as JsonArray
-                            assertTrue(unread.none { it.jsonObject.containsKey("resource") })
-                            assertTrue(
-                                unread.all {
-                                    it.jsonObject
-                                        .getValue("status")
-                                        .jsonPrimitive.content == "unread"
-                                },
-                            )
-                        }
+                        assertTrue(catalog.contextSections(emptyMap()).isEmpty())
                         first.minimum = 5
                         assertTrue(dispatch(catalog, "a").isError)
                         first.minimum = 1
@@ -1102,7 +1025,6 @@ class ServiceCatalogTest {
                     assertEquals("Same item", fixtureItemTitle(snapshot.items))
                     assertNull(state.getValue(entry.key).retryReason)
                     assertTrue(catalog.isReady(entry.key))
-                    assertTrue(snapshot.voiceContext.contains("\"status\":\"error\""))
                     assertFalse(snapshot.voiceContext.contains("private-authority-sentinel"))
                     val failure =
                         checkNotNull(
@@ -1261,8 +1183,7 @@ class ServiceCatalogTest {
                     assertTrue(read.isError)
                     assertEquals("Tools only", dispatch(catalog, "a").resultString("source"))
                     assertFalse(catalog.hasContextResources(entry.key))
-                    assertTrue(catalog.contextText(emptyMap()).contains("\"context\":[]"))
-                    assertFalse(catalog.contextText(emptyMap()).contains("\"status\":\"unread\""))
+                    assertTrue(catalog.contextSections(emptyMap()).isEmpty())
                     assertTrue(fixture.requests.none { it.getHeader("Mcp-Method")?.startsWith("resources/") == true })
                 } finally {
                     catalog.close()
@@ -1311,135 +1232,6 @@ class ServiceCatalogTest {
                     view.destroy()
                 }
             }
-        }
-
-    @Test
-    fun `catalog context has one aggregate budget even with many large sources`() =
-        runTest {
-            val catalog = ServiceCatalog(backgroundScope)
-            try {
-                val entries =
-                    (1..30).map {
-                        ServiceShellSession(
-                            ServiceShellKey("id-$it", "https://service-$it.example"),
-                        ) {}
-                    }
-                catalog.reconcile(
-                    entries.associateBy { it.key },
-                    entries.associate {
-                        it.key.serviceID to
-                            "label".repeat(1000)
-                    },
-                )
-                val context = catalog.contextText(emptyMap())
-                assertTrue(Json.parseToJsonElement(context).jsonObject.containsKey("servers"))
-                assertTrue(context.length <= 12_000)
-                assertTrue(
-                    Json
-                        .parseToJsonElement(
-                            context,
-                        ).jsonObject
-                        .getValue("omittedServerCount")
-                        .jsonPrimitive.content
-                        .toInt() >
-                        0,
-                )
-                assertTrue(context.contains("id-1"))
-            } finally {
-                catalog.close()
-            }
-        }
-
-    @Test
-    fun `oversized identity does not hide a later source`() =
-        runTest {
-            val entries =
-                listOf(
-                    ServiceShellSession(ServiceShellKey("\"𠮷".repeat(800), "https://large.example")) {},
-                    ServiceShellSession(ServiceShellKey("small", "https://small.example")) {},
-                )
-            val catalog = ServiceCatalog(backgroundScope)
-            try {
-                catalog.reconcile(entries.associateBy { it.key }, emptyMap())
-                val projection = Json.parseToJsonElement(catalog.contextText(emptyMap())).jsonObject
-                val sources = projection.getValue("servers") as JsonArray
-                assertEquals(1, sources.size)
-                assertEquals(
-                    "small",
-                    sources[0]
-                        .jsonObject
-                        .getValue("id")
-                        .jsonPrimitive.content,
-                )
-                assertEquals("1", projection.getValue("omittedServerCount").jsonPrimitive.content)
-            } finally {
-                catalog.close()
-                entries.forEach { it.close() }
-            }
-        }
-
-    @Test
-    fun `near full escaped identity retains truthful section omissions and later servers`() =
-        runTest {
-            var retainedWithOmissions = false
-            var skippedOversized = false
-            for (padding in (1600..2100 step 10)) {
-                val entries =
-                    listOf(
-                        ServiceShellSession(ServiceShellKey("a".repeat(padding), "https://budget.example?q=\\\"𠮷")) {},
-                        ServiceShellSession(ServiceShellKey("later", "https://later.example")) {},
-                    )
-                val catalog = ServiceCatalog(backgroundScope)
-                try {
-                    catalog.reconcile(
-                        entries.associateBy { it.key },
-                        mapOf(entries[0].key.serviceID to "\"".repeat(32) + "😀"),
-                    )
-                    val text = catalog.contextText(emptyMap())
-                    val projection = Json.parseToJsonElement(text).jsonObject
-                    val servers = projection.getValue("servers") as JsonArray
-                    assertTrue(
-                        servers.any {
-                            it.jsonObject
-                                .getValue("id")
-                                .jsonPrimitive.content == "later"
-                        },
-                    )
-                    assertEquals(
-                        (2 - servers.size).toString(),
-                        projection.getValue("omittedServerCount").jsonPrimitive.content,
-                    )
-                    servers.forEach { assertTrue(it.toString().length <= 2000) }
-                    assertTrue(text.length <= 12000)
-                    val first =
-                        servers.firstOrNull {
-                            it.jsonObject
-                                .getValue("id")
-                                .jsonPrimitive.content ==
-                                entries[0].key.serviceID
-                        }
-                    if (padding == 1600) assertTrue(first != null)
-                    if (padding == 2100) assertEquals(null, first)
-                    if (first != null) {
-                        val source = first.jsonObject
-                        val omitted =
-                            source
-                                .getValue("omittedSectionCount")
-                                .jsonPrimitive.content
-                                .toInt()
-                        assertEquals(1, (source.getValue("context") as JsonArray).size + omitted)
-                        assertEquals("\"".repeat(32) + "😀", source.getValue("label").jsonPrimitive.content)
-                        if (omitted > 0) retainedWithOmissions = true
-                    } else {
-                        skippedOversized = true
-                    }
-                } finally {
-                    catalog.close()
-                    entries.forEach { it.close() }
-                }
-            }
-            assertTrue(retainedWithOmissions)
-            assertTrue(skippedOversized)
         }
 
     private class ContextPreferences : DataStore<Preferences> {
@@ -1866,3 +1658,6 @@ class ServiceCatalogTest {
                 .jsonPrimitive.content
     }
 }
+
+private fun ServiceCatalog.contextText(snapshots: Map<ServiceShellKey, ServiceMonitorState>) =
+    contextSections(snapshots).values.joinToString("\n\n")

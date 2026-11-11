@@ -1,4 +1,4 @@
-// Discovers server-advertised model resources and bounds their independent opaque outcomes.
+// Discovers server-advertised model resources and joins their known texts for the model.
 package com.fghbuild.gomode.service
 
 import com.fghbuild.mcp.sdk.v1.ResourceDescriptor
@@ -9,7 +9,6 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.put
 
 data class ServiceMonitoringPlan(
     val modelResources: List<ResourceDescriptor>,
@@ -23,36 +22,14 @@ data class ServiceMonitoringSnapshot(
     // Null is unread; failure is a fault. Discovery owns absence and retirement.
     val resources: Map<String, Result<ServiceResourceRead?>?>,
 ) {
+    // Known resource texts only; unread, failed, and absent resources contribute nothing.
     val voiceContext: String
-        get() {
-            var remaining = MODEL_CONTEXT_BUDGET - 64
-            var omitted = 0
-            val sections = mutableListOf<String>()
-            for ((uri, read) in resources) {
-                val value = read?.getOrNull()
-                val text =
-                    when {
-                        read == null -> modelResourceStatus(uri, "unread")
-                        read.isFailure -> modelResourceStatus(uri, "error")
-                        value == null -> modelResourceStatus(uri, "absent")
-                        else -> modelResourceContext(uri, resourceText(value.result, uri), MODEL_RESOURCE_BUDGET)
-                    }
-                val section = if (text.length + 1 <= remaining) text else modelResourceStatus(uri, "omitted")
-                if (section.length + 1 <= remaining) {
-                    sections += section
-                    remaining -= section.length + 1
-                } else {
-                    omitted++
-                }
-            }
-            if (omitted > 0) {
-                sections +=
-                    kotlinx.serialization.json
-                        .buildJsonObject { put("omittedResourceCount", omitted) }
-                        .toString()
-            }
-            return sections.joinToString("\n")
-        }
+        get() =
+            modelContextText(
+                resources.mapNotNull { (uri, read) ->
+                    read?.getOrNull()?.let { runCatching { resourceText(it.result, uri) }.getOrNull() }
+                },
+            )
 }
 
 fun serviceMonitoringPlan(resources: List<ResourceDescriptor>): ServiceMonitoringPlan {
@@ -105,7 +82,7 @@ suspend fun readInitialServiceContext(client: ServiceResourceClient, sessionID: 
     } catch (error: CancellationException) {
         throw error
     } catch (_: Exception) {
-        "{\"status\":\"error\"}"
+        ""
     }
 
 internal fun resourceText(
@@ -119,6 +96,3 @@ internal fun resourceText(
 }
 
 internal const val GOMODE_NOTIFICATIONS_RESOURCE_URI = "gomode://notifications"
-
-internal fun unreadServiceContext(resources: Set<String>?): String =
-    resources?.joinToString("\n") { uri -> modelResourceStatus(uri, "unread") } ?: "{\"status\":\"unread\"}"
