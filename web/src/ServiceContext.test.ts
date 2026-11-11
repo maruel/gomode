@@ -142,7 +142,7 @@ it("preserves verified context through malformed reads and retries without block
   changed({ uri: "gomode://notifications" });
   await settle();
   expect(error).toHaveBeenCalledOnce();
-  expect(inject.mock.calls.filter(([, generate]) => generate)).toEqual([["Review: Required", true]]);
+  expect(inject.mock.calls.filter(([, generate]) => generate)).toEqual([["New notification: Review: Required", true]]);
   expect(latestContext()).toContain('"id":"offscreen"');
   context = focused("recovered", 2);
   vi.mocked(mcpClient.readAdvertisedTextResource).mockImplementation(async (uri) =>

@@ -149,7 +149,9 @@ it("retires each discovered absence before gated MCP reads while independent qui
       release.resolve();
       await vi.advanceTimersByTimeAsync(0);
       if (target === "gomode://notifications")
-        expect(published.find((entry) => entry.generate)?.text).toBe("Alert reappeared: Body reappeared");
+        expect(published.find((entry) => entry.generate)?.text).toBe(
+          "New notification: Alert reappeared: Body reappeared",
+        );
       else expect(quiet()).toContain(marker);
       expect(published.filter((entry) => entry.generate)).toHaveLength(target === "gomode://notifications" ? 1 : 0);
       // An item invalidation already dirties all readers; context coalesces one existing follow-up.
@@ -321,7 +323,7 @@ it("sends no baseline, announces each new alert once, and stays quiet on withdra
   snapshot = JSON.stringify([alert("opening"), alert("new")]);
   changed({ uri: "gomode://notifications" });
   await settle();
-  expect(inject.mock.calls).toEqual([["Alert new: Body new", true]]);
+  expect(inject.mock.calls).toEqual([["New notification: Alert new: Body new", true]]);
   changed({ uri: "gomode://notifications" });
   await settle();
   snapshot = "[]";
@@ -372,7 +374,7 @@ it("rejects an entire malformed snapshot without consuming its occurrence IDs, t
   expect(inject).not.toHaveBeenCalled();
   snapshot = JSON.stringify([alert("one")]);
   await vi.advanceTimersByTimeAsync(2000);
-  expect(inject.mock.calls).toEqual([["Alert one: Body one", true]]);
+  expect(inject.mock.calls).toEqual([["New notification: Alert one: Body one", true]]);
 });
 
 it("announces only live alerts and stays quiet when one expires", async () => {
@@ -385,7 +387,7 @@ it("announces only live alerts and stays quiet when one expires", async () => {
   ]);
   changed({ uri: "gomode://notifications" });
   await settle();
-  expect(inject.mock.calls).toEqual([["Alert live: Body live", true]]);
+  expect(inject.mock.calls).toEqual([["New notification: Alert live: Body live", true]]);
   await vi.advanceTimersByTimeAsync(1000);
   expect(inject).toHaveBeenCalledOnce();
 });
@@ -433,7 +435,7 @@ it("watches catalog changes without unadvertised resource subscriptions and boun
   const [text, generate] = inject.mock.calls[0]!;
   expect(generate).toBe(true);
   expect(text.length).toBeLessThanOrEqual(4000);
-  expect(text.startsWith("Alert 0: ")).toBe(true);
+  expect(text.startsWith("New notification: Alert 0: ")).toBe(true);
 });
 
 it("skips unsupported resources and reads static resources without subscribing", async () => {
@@ -471,7 +473,7 @@ it("delivers reference-only changes quietly before waking for a new alert", asyn
   await settle();
   expect(inject.mock.calls).toEqual([
     [items, false],
-    ["Alert new: Body new [two]", true],
+    ["New notification: Alert new: Body new [two]", true],
   ]);
   options.onReady?.();
   await settle();
@@ -510,6 +512,6 @@ it("preserves supplementary notification title/body text at code-unit bounds", a
   await settle();
   const update = inject.mock.calls.find(([, generate]) => generate);
   if (!update) throw new Error("new notification did not wake the conversation");
-  expect(update[0]).toBe(`${"t".repeat(255)}: ${"b".repeat(1999)}`);
+  expect(update[0]).toBe(`New notification: ${"t".repeat(255)}: ${"b".repeat(1999)}`);
   expect(new TextDecoder().decode(new TextEncoder().encode(update[0]))).toBe(update[0]);
 });

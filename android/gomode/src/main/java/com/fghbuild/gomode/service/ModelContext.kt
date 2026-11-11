@@ -25,14 +25,17 @@ internal fun serverSection(
     body: String,
 ): String = if (body.isBlank()) "" else "${label.boundedModelText(256)} [$serverID]:\n$body"
 
-/** One line per alert; itemId lets the model address the item with server tools. */
+/**
+ * One line per alert. The prefix uses the policy's word so the model announces it instead of acknowledging it;
+ * itemId lets the model address the item with server tools.
+ */
 internal fun alertLine(
     title: String,
     body: String,
     itemId: String?,
 ): String {
     val item = itemId?.takeIf { it.length <= 512 }?.let { " [$it]" }.orEmpty()
-    return "${title.boundedModelText(256)}: ${body.boundedModelText(2000)}$item"
+    return "New notification: ${title.boundedModelText(256)}: ${body.boundedModelText(2000)}$item"
 }
 
 // Keep the code-unit budget without leaving half of a supplementary character.

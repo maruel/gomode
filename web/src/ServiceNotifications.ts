@@ -359,13 +359,16 @@ function parseNotifications(text: string): ServiceNotification[] {
   return alerts.filter((alert) => alert.expiresAt === null || alert.expiresAt > now);
 }
 
-/** One line per new alert; itemId lets the model address the item with server tools. */
+/**
+ * One line per new alert. The prefix uses the policy's word so the model announces it instead of acknowledging
+ * it; itemId lets the model address the item with server tools.
+ */
 function alertText(alerts: ServiceNotification[]): string {
   const lines: string[] = [];
   let remaining = MAX_ALERT_CHARS;
   for (const alert of alerts) {
     const item = alert.itemId !== undefined && alert.itemId.length <= 512 ? ` [${alert.itemId}]` : "";
-    const line = `${boundedModelText(alert.title, 256)}: ${boundedModelText(alert.body, 2000)}${item}`;
+    const line = `New notification: ${boundedModelText(alert.title, 256)}: ${boundedModelText(alert.body, 2000)}${item}`;
     if (line.length + 1 > remaining) break;
     lines.push(line);
     remaining -= line.length + 1;

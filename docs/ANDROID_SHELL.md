@@ -399,7 +399,7 @@ opens the opaque host destination in a new or an existing Activity.
 
 Browser and native voice also read this resource while connected. The opening
 snapshot and repeated occurrence IDs send nothing; withdrawal and expiry send
-nothing. Each new alert reaches the model as one `title: body [itemId]` line
+nothing. Each new alert reaches the model as one `New notification: title: body [itemId]` line
 with `context.update.generate: true`, without inventing a user utterance. Native
 multi-server alerts carry the same server header as context. Updates wait for
 the active model/tool/playback turn. The host's instructions decide what the
