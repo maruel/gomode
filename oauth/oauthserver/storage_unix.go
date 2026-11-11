@@ -21,7 +21,7 @@ func checkStorePrivacy(f *os.File) error {
 	}
 	return nil
 }
-func (osStoreIO) CreateTemp(dir string) (*os.File, error) {
+func createStoreTemp(dir string) (*os.File, error) {
 	f, err := os.CreateTemp(dir, ".oauth-state-*")
 	if err != nil {
 		return nil, err
@@ -33,7 +33,7 @@ func (osStoreIO) CreateTemp(dir string) (*os.File, error) {
 	}
 	return f, nil
 }
-func (osStoreIO) Commit(oldPath, newPath string) (bool, error) {
+func commitStore(oldPath, newPath string) (bool, error) {
 	if err := os.Rename(oldPath, newPath); err != nil {
 		return false, err
 	}

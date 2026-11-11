@@ -18,7 +18,7 @@ func testStorePrivacy(t *testing.T) {
 	t.Run("protected from birth under broad parent", func(t *testing.T) {
 		dir := t.TempDir()
 		setTestDACL(t, dir, "D:P(A;OICI;FA;;;WD)")
-		f, err := (osStoreIO{}).CreateTemp(dir)
+		f, err := createStoreTemp(dir)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -84,10 +84,11 @@ func TestServer(t *testing.T) {
 			}
 			current := authorizeOAuthTestClient(t, h, host.user, &client, []string{"read"})
 			host.retire()
-			s.state.io = failingCommitStoreIO{storeIO: osStoreIO{}}
+			restore := blockStorePublication(t, s.state.path)
 			if err := s.RevokeAllUserGrants(host.user.ID); err == nil {
 				t.Fatal("cleanup unexpectedly succeeded")
 			}
+			restore()
 			s.Close()
 			s = newTestServer(t, cfg)
 			h = newTestServerHandler(s)
@@ -1851,7 +1852,7 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 			next.Codes[oauth.RefreshTokenKey(code)] = v5.Code{UserID: user.ID, ClientID: clientID, RedirectURI: "https://client.example/callback", CodeChallenge: testCodeChallenge(), Resource: testResourceURL, Scope: "read", ExpiresAt: time.Now().Add(time.Hour)}
 			return true
 		})
-		s.state.io = failingCommitStoreIO{storeIO: osStoreIO{}}
+		restore := blockStorePublication(t, s.state.path)
 		s.mu.Unlock()
 		if err != nil {
 			t.Fatalf("seed state: %v", err)
@@ -1864,6 +1865,7 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 		if w.Code != http.StatusInternalServerError {
 			t.Fatalf("status = %d, want %d: %s", w.Code, http.StatusInternalServerError, w.Body.String())
 		}
+		restore()
 		reloaded, err := LoadStore(path)
 		if err != nil {
 			t.Fatalf("reload: %v", err)
@@ -1871,7 +1873,6 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 		if _, ok := reloaded.Codes[oauth.RefreshTokenKey(code)]; !ok || len(reloaded.Grants) != 0 || len(reloaded.RefreshTokens) != 0 {
 			t.Fatalf("failed code exchange changed restart state: codes=%d grants=%d refreshTokens=%d", len(reloaded.Codes), len(reloaded.Grants), len(reloaded.RefreshTokens))
 		}
-		s.state.io = osStoreIO{}
 		currentKID := s.tokens.currentKID
 		s.tokens.currentKID = "missing-signing-key"
 		req = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
@@ -1905,11 +1906,12 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 		if err := store.Save(); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
-		store.io = failingCommitStoreIO{storeIO: osStoreIO{}}
+		restore := blockStorePublication(t, path)
 		server := &Server{state: store, refreshTokenTTL: time.Hour, session: &testSessionManager{users: map[string]oauth.User{"user": {ID: "user"}}}}
 		if result, _, err := server.exchangeRefreshToken("refresh", Client{ID: "client"}, "user", "next-refresh", dpopBinding{}); err == nil || result != refreshExchangeRotated {
 			t.Fatalf("exchangeRefreshToken = %d, %v; want rotation persistence failure", result, err)
 		}
+		restore()
 		reloaded, err := LoadStore(path)
 		if err != nil {
 			t.Fatalf("reload: %v", err)
@@ -1932,11 +1934,12 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 		if err := store.Save(); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
-		store.io = failingCommitStoreIO{storeIO: osStoreIO{}}
+		restore := blockStorePublication(t, path)
 		server := &Server{state: store, session: &testSessionManager{users: map[string]oauth.User{"user": {ID: "user"}}}}
 		if revoked, err := server.RevokeUserGrant("user", "grant"); err == nil || !revoked {
 			t.Fatalf("RevokeUserGrant = %t, %v; want matched grant and persistence failure", revoked, err)
 		}
+		restore()
 		reloaded, err := LoadStore(path)
 		if err != nil {
 			t.Fatalf("reload: %v", err)
@@ -1944,7 +1947,6 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 		if !reloaded.Grants["grant"].RevokedAt.IsZero() || !reloaded.RefreshTokens["refresh-digest"].RevokedAt.IsZero() {
 			t.Fatal("failed revocation persisted partial state")
 		}
-		store.io = osStoreIO{}
 		if revoked, err := server.RevokeUserGrant("user", "grant"); err != nil || !revoked {
 			t.Fatalf("successful RevokeUserGrant = %t, %v", revoked, err)
 		}
@@ -1967,7 +1969,7 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 			next.Grants["grant"] = v5.Grant{ID: "grant", ClientID: registered.ClientID, ExpiresAt: time.Now().Add(time.Hour)}
 			return true
 		})
-		s.state.io = failingCommitStoreIO{storeIO: osStoreIO{}}
+		restore := blockStorePublication(t, s.state.path)
 		s.mu.Unlock()
 		if err != nil {
 			t.Fatalf("seed grant: %v", err)
@@ -1980,6 +1982,7 @@ func TestTransactionalOAuthMutations(t *testing.T) {
 		if w.Code != http.StatusInternalServerError {
 			t.Fatalf("status = %d, want %d: %s", w.Code, http.StatusInternalServerError, w.Body.String())
 		}
+		restore()
 		reloaded, err := LoadStore(s.state.Path())
 		if err != nil {
 			t.Fatalf("reload: %v", err)

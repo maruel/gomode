@@ -120,11 +120,10 @@ type Store struct {
 	currentSigningKID      string
 
 	path string
-	io   storeIO
 }
 
 func newEmptyStore(path string) *Store {
-	store := &Store{path: path, io: osStoreIO{}}
+	store := &Store{path: path}
 	store.ensureMaps()
 	return store
 }
@@ -184,6 +183,8 @@ func (s *Store) Save() error {
 	return err
 }
 
+// persistStore reports namespace publication separately from durability errors so a
+// consumed credential cannot be restored in memory after its new state is visible.
 func persistStore(s *Store, file *storeState) (committed bool, err error) {
 	if s.path == "" {
 		return true, nil
@@ -195,7 +196,7 @@ func persistStore(s *Store, file *storeState) (committed bool, err error) {
 	}
 	data = append(data, '\n')
 	dir := filepath.Dir(s.path)
-	tmp, err := s.io.CreateTemp(dir)
+	tmp, err := createStoreTemp(dir)
 	if err != nil {
 		return false, fmt.Errorf("create oauth state temporary file: %w", err)
 	}
@@ -217,7 +218,7 @@ func persistStore(s *Store, file *storeState) (committed bool, err error) {
 	if err := tmp.Close(); err != nil {
 		return false, fmt.Errorf("close oauth state: %w", err)
 	}
-	committed, err = s.io.Commit(tmpPath, s.path)
+	committed, err = commitStore(tmpPath, s.path)
 	if err != nil {
 		return committed, fmt.Errorf("commit oauth state: %w", err)
 	}
@@ -475,14 +476,6 @@ func (s *Store) pruneExpired(now time.Time) bool {
 	file := storeState{RefreshTokens: s.RefreshTokens, Grants: s.Grants, Codes: s.Codes, Consents: s.Consents, DeviceCodes: s.DeviceCodes, DPoPProofs: s.DPoPProofs, DPoPNonces: s.DPoPNonces, ClientAssertionJTIs: s.ClientAssertionJTIs}
 	return pruneExpiredStore(&file, now)
 }
-
-// Commit reports namespace publication separately from durability errors so a
-// consumed credential cannot be restored in memory after its new state is visible.
-type storeIO interface {
-	CreateTemp(dir string) (*os.File, error)
-	Commit(oldPath, newPath string) (committed bool, err error)
-}
-type osStoreIO struct{}
 
 type storeState struct {
 	Clients                map[string]Client

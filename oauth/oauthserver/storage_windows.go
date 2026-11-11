@@ -60,7 +60,7 @@ func checkStorePrivacy(f *os.File) error {
 	return nil
 }
 
-func (osStoreIO) CreateTemp(dir string) (*os.File, error) {
+func createStoreTemp(dir string) (*os.File, error) {
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		return nil, err
@@ -95,7 +95,7 @@ func (osStoreIO) CreateTemp(dir string) (*os.File, error) {
 
 // MoveFileEx write-through owns the Windows durability barrier. No cross-volume
 // copy is allowed; the staged file's protected descriptor moves with it.
-func (osStoreIO) Commit(oldPath, newPath string) (bool, error) {
+func commitStore(oldPath, newPath string) (bool, error) {
 	before, err := storeFileIdentity(oldPath)
 	if err != nil {
 		return false, err

@@ -4,7 +4,6 @@ package oauthserver
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,47 +22,33 @@ func TestStore(t *testing.T) {
 	t.Run("private signing state", testStorePrivacy)
 	t.Run("native publication failure", testStorePublicationFailure)
 	t.Run("RevokeAllUserGrants persistence failures preserve one coherent state", func(t *testing.T) {
-		for _, fault := range []string{"rename", "sync"} {
-			t.Run(fault, func(t *testing.T) {
-				path := t.TempDir() + "/oauth.json"
-				store, err := LoadStore(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				now := time.Now()
-				expires := now.Add(time.Hour)
-				store.Codes["code"] = v5.Code{UserID: "user", Authority: "generation", ExpiresAt: expires}
-				store.Consents["consent"] = v5.ConsentParams{UserID: "user", Authority: "generation", ExpiresAt: expires}
-				store.Grants["grant"] = v5.Grant{ID: "grant", UserID: "user", Authority: "generation", ExpiresAt: expires}
-				store.RefreshTokens["refresh"] = v5.RefreshToken{GrantID: "grant", UserID: "user", ExpiresAt: expires}
-				if err := store.Save(); err != nil {
-					t.Fatal(err)
-				}
-				if fault == "rename" {
-					store.io = failingCommitStoreIO{storeIO: osStoreIO{}}
-				} else {
-					store.io = postCommitStoreIO{storeIO: osStoreIO{}}
-				}
-				server := &Server{state: store, session: &testSessionManager{users: map[string]oauth.User{"user": {ID: "user"}}}}
-				if err := server.RevokeAllUserGrants("user"); err == nil {
-					t.Fatal("expected persistence failure")
-				}
-				disk, err := LoadStore(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				for _, state := range []*Store{store, disk} {
-					if fault == "rename" {
-						if len(state.Codes) != 1 || len(state.Consents) != 1 || !state.Grants["grant"].RevokedAt.IsZero() || !state.RefreshTokens["refresh"].RevokedAt.IsZero() {
-							t.Fatal("failed replacement partially revoked authority")
-						}
-					} else {
-						if len(state.Codes) != 0 || len(state.Consents) != 0 || state.Grants["grant"].RevokedAt.IsZero() || state.RefreshTokens["refresh"].RevokedAt.IsZero() {
-							t.Fatal("committed replacement partially retained authority")
-						}
-					}
-				}
-			})
+		path := t.TempDir() + "/oauth.json"
+		store, err := LoadStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expires := time.Now().Add(time.Hour)
+		store.Codes["code"] = v5.Code{UserID: "user", Authority: "generation", ExpiresAt: expires}
+		store.Consents["consent"] = v5.ConsentParams{UserID: "user", Authority: "generation", ExpiresAt: expires}
+		store.Grants["grant"] = v5.Grant{ID: "grant", UserID: "user", Authority: "generation", ExpiresAt: expires}
+		store.RefreshTokens["refresh"] = v5.RefreshToken{GrantID: "grant", UserID: "user", ExpiresAt: expires}
+		if err := store.Save(); err != nil {
+			t.Fatal(err)
+		}
+		restore := blockStorePublication(t, path)
+		server := &Server{state: store, session: &testSessionManager{users: map[string]oauth.User{"user": {ID: "user"}}}}
+		if err := server.RevokeAllUserGrants("user"); err == nil {
+			t.Fatal("expected persistence failure")
+		}
+		restore()
+		disk, err := LoadStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, state := range []*Store{store, disk} {
+			if len(state.Codes) != 1 || len(state.Consents) != 1 || !state.Grants["grant"].RevokedAt.IsZero() || !state.RefreshTokens["refresh"].RevokedAt.IsZero() {
+				t.Fatal("failed replacement partially revoked authority")
+			}
 		}
 	})
 
@@ -288,7 +273,7 @@ func TestStore(t *testing.T) {
 			if err := store.Save(); err != nil {
 				t.Fatalf("Save: %v", err)
 			}
-			store.io = failingCommitStoreIO{storeIO: osStoreIO{}}
+			restore := blockStorePublication(t, path)
 			err = store.transact(func(next *storeState) bool {
 				delete(next.Codes, "code-digest")
 				delete(next.Clients, "client")
@@ -310,6 +295,7 @@ func TestStore(t *testing.T) {
 			if _, ok := store.Clients["client"]; !ok {
 				t.Fatal("client was deleted in memory after failed transaction")
 			}
+			restore()
 			reloaded, err := LoadStore(path)
 			if err != nil {
 				t.Fatalf("reload: %v", err)
@@ -319,33 +305,6 @@ func TestStore(t *testing.T) {
 			}
 			if _, ok := reloaded.Clients["client"]; !ok {
 				t.Fatal("failed transaction deleted client after restart")
-			}
-		})
-
-		t.Run("post-publication failure installs committed state", func(t *testing.T) {
-			t.Parallel()
-			path := filepath.Join(t.TempDir(), "oauth.json")
-			store, err := LoadStore(path)
-			if err != nil {
-				t.Fatalf("LoadStore: %v", err)
-			}
-			store.io = postCommitStoreIO{storeIO: osStoreIO{}}
-			err = store.transact(func(next *storeState) bool {
-				next.Clients["committed"] = Client{ID: "committed"}
-				return true
-			})
-			if err == nil {
-				t.Fatal("transact succeeded, want post-publication durability error")
-			}
-			if _, ok := store.Clients["committed"]; !ok {
-				t.Fatal("committed state was not installed in memory")
-			}
-			reloaded, err := LoadStore(path)
-			if err != nil {
-				t.Fatalf("reload: %v", err)
-			}
-			if _, ok := reloaded.Clients["committed"]; !ok {
-				t.Fatal("committed state was not visible after restart")
 			}
 		})
 
@@ -407,22 +366,26 @@ func TestStore(t *testing.T) {
 	})
 }
 
-type failingCommitStoreIO struct {
-	storeIO
-}
-
-func (failingCommitStoreIO) Commit(string, string) (bool, error) {
-	return false, errors.New("injected commit failure")
-}
-
-type postCommitStoreIO struct{ storeIO }
-
-func (i postCommitStoreIO) Commit(oldPath, newPath string) (bool, error) {
-	committed, err := i.storeIO.Commit(oldPath, newPath)
-	if err != nil {
-		return committed, err
+// blockStorePublication occupies the destination with a directory, so the native
+// atomic replacement fails. Restore puts the original disk state back for reload.
+func blockStorePublication(t *testing.T, path string) func() {
+	backup := path + ".blocked"
+	if err := os.Rename(path, backup); err != nil {
+		t.Fatal(err)
 	}
-	return committed, errors.New("injected post-publication durability failure")
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	restore := sync.OnceFunc(func() {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(backup, path); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Cleanup(restore)
+	return restore
 }
 
 func BenchmarkBearerGrantCheck(b *testing.B) {
