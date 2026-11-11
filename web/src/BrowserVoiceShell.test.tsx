@@ -1,4 +1,4 @@
-// Tests prepared browser runtime ownership, native suppression, and discovery replacement races.
+// Tests owned browser voice setup, retry, cancellation, and context recovery.
 
 import { afterEach, beforeEach, it } from "node:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
@@ -261,6 +261,74 @@ it("ignores discovery completing after disposal and reports concise host-owned s
   expect(await screen.findByRole("alert")).toHaveTextContent("Voice setup unavailable.");
   expect(errors).toHaveBeenCalledOnce();
 });
+
+it("retries setup once while retaining the focused recovery controls and current translation", async () => {
+  const retried = deferred<Response>();
+  const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValueOnce(new Error("Discovery unavailable"));
+  fetch.mockImplementationOnce(() => retried.promise);
+  globalThis.fetch = fetch;
+  scope.setTools([]);
+  scope.setDataReady(true);
+  const [messages, setMessages] = createSignal({ ...defaultVoiceMessages, retry: "Try voice again" });
+  mount(() => scope, { messages });
+  const notice = await screen.findByRole("alert");
+  const retry = screen.getByRole("button", { name: "Try voice again" });
+  expect(retry).toHaveAttribute("title", "Try voice again");
+  expect(retry.querySelector('[data-icon="refresh"]')).toHaveAttribute("aria-hidden", "true");
+  retry.focus();
+  fireEvent.click(retry);
+  expect(retry).toHaveAttribute("aria-disabled", "true");
+  expect(retry).toHaveFocus();
+  expect(screen.getByRole("alert")).toBe(notice);
+  fireEvent.click(retry);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  setMessages({ ...defaultVoiceMessages, retry: "Erneut versuchen" });
+  expect(screen.getByRole("button", { name: "Erneut versuchen" })).toBe(retry);
+  fetch.mockImplementation(async () => Response.json({ choices: [], defaults: [] }));
+  retried.resolve(Response.json(manifest));
+  await screen.findByTestId("voice-runtime");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(errors).toHaveBeenCalledOnce();
+});
+
+for (const interruption of ["readiness", "replacement", "disposal", "native mode"]) {
+  it(`retires setup retry during ${interruption} before late discovery can mount or report`, async () => {
+    const retried = deferred<Response>();
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockRejectedValueOnce(new Error("Initial discovery unavailable"))
+      .mockImplementationOnce(() => retried.promise)
+      .mockImplementation(async () => Response.json(manifest));
+    globalThis.fetch = fetch;
+    scope.setTools([]);
+    scope.setDataReady(true);
+    const [selected, setSelected] = createSignal(scope);
+    // eslint-disable-next-line solid/reactivity -- mount reads this accessor in JSX under the Router.
+    const rendered = mount(selected);
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const signal = fetch.mock.calls[1]?.[1]?.signal;
+    expect(signal?.aborted).toBe(false);
+    if (interruption === "readiness") scope.setDataReady(false);
+    else if (interruption === "replacement") {
+      const replacement = owner.createScope();
+      replacement.setTools([]);
+      replacement.setDataReady(true);
+      setSelected(replacement);
+      await screen.findByTestId("voice-runtime");
+    } else if (interruption === "disposal") rendered.unmount();
+    else fireEvent.click(screen.getByRole("link", { name: "Native mode" }));
+    await waitFor(() => expect(signal?.aborted).toBe(true));
+    const before = screen.queryByTestId("voice-runtime");
+    retried.resolve(Response.json({ service: "retired malformed response" }));
+    await retried.promise;
+    await Promise.resolve();
+    expect(screen.queryByTestId("voice-runtime")).toBe(before);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(errors).toHaveBeenCalledOnce();
+  });
+}
 
 it("releases an active browser runtime when routing enables host mode", async () => {
   scope.setTools([]);

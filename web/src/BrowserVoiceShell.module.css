@@ -1,5 +1,5 @@
-/* Shared advisory voice context notice, separate from the lazy browser controls. */
-.contextNotice {
+/* Shared setup and advisory context recovery controls, separate from the lazy browser runtime. */
+.notice {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -14,16 +14,24 @@
   line-height: 1.5;
 }
 
-.contextNotice span {
+.notice > span {
   flex: 1 1 16rem;
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-.contextNotice button {
+.notice button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
+  box-sizing: border-box;
+  width: 2.75rem;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   min-height: 2.75rem;
-  padding: 0.5rem 0.75rem;
+  padding: 0.5rem;
   color: var(--color-primary);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-medium);
@@ -32,16 +40,17 @@
   cursor: pointer;
 }
 
-.contextNotice button:hover {
+.notice button:hover {
   background: var(--color-bg-hover);
 }
 
-.contextNotice button:focus-visible {
+.notice button:focus-visible {
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;
 }
 
-.contextNotice button:disabled {
+.notice button:disabled,
+.notice button[aria-disabled="true"] {
   color: var(--color-text-muted);
   cursor: default;
 }

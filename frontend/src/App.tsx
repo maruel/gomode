@@ -66,7 +66,7 @@ export default function App() {
         toolGroup="test"
         clientName="voice-gateway-frontend"
         preparation={scope}
-        setupFailed="Voice controls could not be loaded. Reload the page to retry."
+        setupFailed="Voice controls could not be loaded."
         onError={(cause) => {
           console.error("Voice gateway frontend", cause);
         }}

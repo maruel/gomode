@@ -39,7 +39,7 @@ export const defaultVoiceSettingsMessages = {
 export const defaultVoiceMessages = {
   ...defaultVoiceSettingsMessages,
   contextUnavailable: "Voice context could not update. The assistant may use an earlier selection.",
-  contextRetry: "Retry",
+  retry: "Retry",
   usage: "Usage",
   usageConversation: "Conversation tokens",
   usageInput: "Input",
