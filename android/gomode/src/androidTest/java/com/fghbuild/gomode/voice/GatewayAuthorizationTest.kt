@@ -17,12 +17,14 @@ import com.fghbuild.gomode.ui.ServiceBootstrapState
 import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellSession
 import com.fghbuild.gomode.ui.web.WebShellLoadState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -100,145 +102,150 @@ class GatewayAuthorizationTest {
                     }
                 }
             server.start()
-            val repository = SettingsRepository(MemoryPreferences())
-            val participantID = repository.addService("Participant", server.url("/").toString())
-            val sponsorID = repository.addService("Sponsor", "https://endpoint-sponsor.invalid")
-            if (local) {
-                repository.updateVoiceMode(VoiceMode.DEVICE)
-                repository.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
-            }
-            repository.settings.first {
-                it.activeServiceId == sponsorID && (
-                    !local ||
-                        (it.voiceMode == VoiceMode.DEVICE && it.onDeviceEngine == OnDeviceEngine.LOCAL_LLM)
-                )
-            }
-            val entries =
-                repository.settings.value.services.associate { service ->
-                    val key = ServiceShellKey(service.id, service.url)
-                    key to ServiceShellSession(key) {}
+            val participantURL = server.url("/").toString()
+            // Confine catalog and conversation state to Main, with catalog collectors queued
+            // until the next suspension so both pre-collector and re-prepared checks stay covered.
+            withContext(Dispatchers.Main) {
+                val repository = SettingsRepository(MemoryPreferences())
+                val participantID = repository.addService("Participant", participantURL)
+                val sponsorID = repository.addService("Sponsor", "https://endpoint-sponsor.invalid")
+                if (local) {
+                    repository.updateVoiceMode(VoiceMode.DEVICE)
+                    repository.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
                 }
-            val sponsor = entries.values.single { it.key.serviceID == sponsorID }
-            val participant = entries.values.single { it.key.serviceID == participantID }
-            authenticate(sponsor, "sponsor")
-            participant.updateBootstrap(
-                ServiceBootstrapState.Ready(
-                    Json.decodeFromString(
-                        com.fghbuild.gomode.sdk.v1.Settings
-                            .serializer(),
-                        """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":3,
+                repository.settings.first {
+                    it.activeServiceId == sponsorID && (
+                        !local ||
+                            (it.voiceMode == VoiceMode.DEVICE && it.onDeviceEngine == OnDeviceEngine.LOCAL_LLM)
+                    )
+                }
+                val entries =
+                    repository.settings.value.services.associate { service ->
+                        val key = ServiceShellKey(service.id, service.url)
+                        key to ServiceShellSession(key) {}
+                    }
+                val sponsor = entries.values.single { it.key.serviceID == sponsorID }
+                val participant = entries.values.single { it.key.serviceID == participantID }
+                authenticate(sponsor, "sponsor")
+                participant.updateBootstrap(
+                    ServiceBootstrapState.Ready(
+                        Json.decodeFromString(
+                            com.fghbuild.gomode.sdk.v1.Settings
+                                .serializer(),
+                            """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":3,
                             "toolGroups":[{"name":"fixture","endpoint":"/api/mcp", "protocolVersion":"2026-07-28",
                             "authRequired":true}],"voiceGateway":{"required":false}}}""",
-                    ),
-                ),
-            )
-            val cookies = CookieManager.getInstance()
-            cookies.setCookie(participant.key.url, "endpoint_account=original; Path=/api")
-            assertFalse(cookies.getCookie(participant.key.url).orEmpty().contains("endpoint_account="))
-            val catalog = ServiceCatalog(backgroundScope)
-            val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { entries }
-
-            fun settle() {
-                participant.updateLoad(WebShellLoadState.Ready)
-                participant.bearerStore.onNavigation(participant.key.url)
-                check(
-                    participant.bearerStore.receive(
-                        Uri.parse(participant.key.url),
-                        true,
-                        participant.key.url,
-                        """{"authChanged":true,"nativeAccess":true}""",
+                        ),
                     ),
                 )
-                completeFixtureFrontend(participant)
-            }
+                val cookies = CookieManager.getInstance()
+                cookies.setCookie(participant.key.url, "endpoint_account=original; Path=/api")
+                assertFalse(cookies.getCookie(participant.key.url).orEmpty().contains("endpoint_account="))
+                val catalog = ServiceCatalog(this)
+                val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { entries }
 
-            try {
-                settle()
-                catalog.reconcile(entries, emptyMap())
-                catalog.state.first {
-                    val service = it[participant.key]
-                    check(service?.error == null) { service?.error.orEmpty() }
-                    service?.readiness == ServiceReadiness.READY
-                }
-                if (delayedFrontend) participant.invalidateIdentity()
-                owner.begin(false)
-                if (delayedFrontend) {
-                    assertFalse(participant.isFrontendReady)
-                    assertTrue(owner.contextText().contains(participantID))
-                    val discovery =
-                        checkNotNull(
-                            owner.execute(
-                                "discover_service",
-                                JsonObject(mapOf("server_id" to JsonPrimitive(participantID))),
-                                "conversation",
-                                "en-US",
-                            ) { true },
-                        )
-                    assertFalse(discovery.isError)
-                    assertTrue(discovery.structuredContent.toString().contains("Account facts"))
-                    val requestCount = server.requestCount
-                    participant.bearerStore.receive(
-                        Uri.parse(participant.key.url),
-                        true,
-                        participant.key.url,
-                        """{"bearerToken":"replacement-account"}""",
-                    )
-                    completeFixtureFrontend(participant)
-                    assertFalse(owner.isCurrent())
-                    assertTrue(runCatching { owner.contextText() }.exceptionOrNull() is VoiceSetupException)
-                    assertEquals(requestCount, server.requestCount)
-                    return@runTest
-                }
-                val args = JsonObject(mapOf("server_id" to JsonPrimitive(participantID)))
-                assertFalse(
-                    checkNotNull(owner.execute("discover_service", args, "conversation", "en-US") { true }).isError,
-                )
-                participant.pageUnavailable("Renderer unavailable")
-                catalog.state.first { it[participant.key]?.readiness == ServiceReadiness.UNAVAILABLE }
-                if (replaceEndpoint) {
-                    val bootstrap = participant.state.value.bootstrap as ServiceBootstrapState.Ready
-                    val settings = bootstrap.settings
-                    participant.updateBootstrap(
-                        ServiceBootstrapState.Ready(
-                            settings.copy(
-                                webShell =
-                                    settings.webShell.copy(
-                                        toolGroups =
-                                            settings.webShell.toolGroups.orEmpty().map {
-                                                it.copy(endpoint = "/api/other")
-                                            },
-                                    ),
-                            ),
+                fun settle() {
+                    participant.updateLoad(WebShellLoadState.Ready)
+                    participant.bearerStore.onNavigation(participant.key.url)
+                    check(
+                        participant.bearerStore.receive(
+                            Uri.parse(participant.key.url),
+                            true,
+                            participant.key.url,
+                            """{"authChanged":true,"nativeAccess":true}""",
                         ),
                     )
-                } else {
-                    cookies.setCookie(participant.key.url, "endpoint_account=replacement; Path=/api")
+                    completeFixtureFrontend(participant)
                 }
-                assertTrue(owner.isCurrent())
-                val epoch = participant.bearerStore.identityEpoch.value
-                settle()
-                assertEquals(epoch, participant.bearerStore.identityEpoch.value)
-                if (waitForRepreparation) {
+
+                try {
+                    settle()
+                    catalog.reconcile(entries, emptyMap())
                     catalog.state.first {
                         val service = it[participant.key]
-                        if (service?.readiness == ServiceReadiness.UNAVAILABLE) return@first false
                         check(service?.error == null) { service?.error.orEmpty() }
                         service?.readiness == ServiceReadiness.READY
                     }
+                    if (delayedFrontend) participant.invalidateIdentity()
+                    owner.begin(false)
+                    if (delayedFrontend) {
+                        assertFalse(participant.isFrontendReady)
+                        assertTrue(owner.contextText().contains(participantID))
+                        val discovery =
+                            checkNotNull(
+                                owner.execute(
+                                    "discover_service",
+                                    JsonObject(mapOf("server_id" to JsonPrimitive(participantID))),
+                                    "conversation",
+                                    "en-US",
+                                ) { true },
+                            )
+                        assertFalse(discovery.isError)
+                        assertTrue(discovery.structuredContent.toString().contains("Account facts"))
+                        val requestCount = server.requestCount
+                        participant.bearerStore.receive(
+                            Uri.parse(participant.key.url),
+                            true,
+                            participant.key.url,
+                            """{"bearerToken":"replacement-account"}""",
+                        )
+                        completeFixtureFrontend(participant)
+                        assertFalse(owner.isCurrent())
+                        assertTrue(runCatching { owner.contextText() }.exceptionOrNull() is VoiceSetupException)
+                        assertEquals(requestCount, server.requestCount)
+                        return@withContext
+                    }
+                    val args = JsonObject(mapOf("server_id" to JsonPrimitive(participantID)))
+                    assertFalse(
+                        checkNotNull(owner.execute("discover_service", args, "conversation", "en-US") { true }).isError,
+                    )
+                    participant.pageUnavailable("Renderer unavailable")
+                    catalog.state.first { it[participant.key]?.readiness == ServiceReadiness.UNAVAILABLE }
+                    if (replaceEndpoint) {
+                        val bootstrap = participant.state.value.bootstrap as ServiceBootstrapState.Ready
+                        val settings = bootstrap.settings
+                        participant.updateBootstrap(
+                            ServiceBootstrapState.Ready(
+                                settings.copy(
+                                    webShell =
+                                        settings.webShell.copy(
+                                            toolGroups =
+                                                settings.webShell.toolGroups.orEmpty().map {
+                                                    it.copy(endpoint = "/api/other")
+                                                },
+                                        ),
+                                ),
+                            ),
+                        )
+                    } else {
+                        cookies.setCookie(participant.key.url, "endpoint_account=replacement; Path=/api")
+                    }
+                    assertTrue(owner.isCurrent())
+                    val epoch = participant.bearerStore.identityEpoch.value
+                    settle()
+                    assertEquals(epoch, participant.bearerStore.identityEpoch.value)
+                    if (waitForRepreparation) {
+                        catalog.state.first {
+                            val service = it[participant.key]
+                            if (service?.readiness == ServiceReadiness.UNAVAILABLE) return@first false
+                            check(service?.error == null) { service?.error.orEmpty() }
+                            service?.readiness == ServiceReadiness.READY
+                        }
+                    }
+                    assertFalse(owner.isCurrent())
+                    val requestCount = server.requestCount
+                    assertTrue(runCatching { owner.contextText() }.exceptionOrNull() is VoiceSetupException)
+                    assertTrue(
+                        runCatching { owner.execute("discover_service", args, "conversation", "en-US") { true } }
+                            .exceptionOrNull() is VoiceSetupException,
+                    )
+                    assertEquals(requestCount, server.requestCount)
+                } finally {
+                    owner.finish()
+                    catalog.close()
+                    entries.values.forEach { it.close() }
+                    cookies.setCookie(participant.key.url, "endpoint_account=; Max-Age=0; Path=/api")
                 }
-                assertFalse(owner.isCurrent())
-                val requestCount = server.requestCount
-                assertTrue(runCatching { owner.contextText() }.exceptionOrNull() is VoiceSetupException)
-                assertTrue(
-                    runCatching { owner.execute("discover_service", args, "conversation", "en-US") { true } }
-                        .exceptionOrNull() is VoiceSetupException,
-                )
-                assertEquals(requestCount, server.requestCount)
-            } finally {
-                owner.finish()
-                catalog.close()
-                entries.values.forEach { it.close() }
-                cookies.setCookie(participant.key.url, "endpoint_account=; Max-Age=0; Path=/api")
             }
         }
     }
