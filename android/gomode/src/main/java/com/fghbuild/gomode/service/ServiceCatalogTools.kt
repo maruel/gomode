@@ -1,7 +1,9 @@
-// Stable shell tools discover and dispatch service-owned tools without changing model declarations.
+// Stable shell tools discover and dispatch the active service's tools without changing model declarations.
 //
-// discover_service returns original MCP and frontend schemas, scoped server instructions, and
-// resource descriptors. dispatch_service_tool names a server ID, original tool name, and explicit
+// The declarations stay fixed for a session because realtime providers declare tools at setup. Each
+// call names the active server ID, so a call prepared before a switch is rejected instead of reaching
+// the newly active service. discover_service returns original MCP and frontend schemas, scoped server
+// instructions, and resource descriptors. dispatch_service_tool names a server ID, original tool name, and explicit
 // mcp or frontend kind, refreshes MCP metadata on demand, and validates arguments against the
 // owning schema before execution. Requests pin the participant's credentials and preparation
 // generation; frontend calls also pin the owning page revision. Changed identities, removed
@@ -19,8 +21,9 @@ internal val serviceCatalogTools =
         ToolDescriptor(
             name = "discover_service",
             description =
-                "List servers and readiness. Pass server_id to discover its scoped instructions, original MCP " +
-                    "and frontend tool schemas, resources and current items. Use the original tool name and kind.",
+                "Show the active server and its readiness. Pass its server_id to discover its instructions, " +
+                    "original MCP and frontend tool schemas, resources and current items. Use the original tool " +
+                    "name and kind.",
             inputSchema =
                 Json.parseToJsonElement(
                     """
@@ -32,9 +35,8 @@ internal val serviceCatalogTools =
         ToolDescriptor(
             name = "dispatch_service_tool",
             description =
-                "Call a tool on an explicit server. kind distinguishes mcp from frontend even when names match. " +
-                    "Discover the server first. Match the original schema. Frontend operations requiring " +
-                    "a visible page must ask the user to select that server.",
+                "Call a tool on the active server. kind distinguishes mcp from frontend even when names match. " +
+                    "Discover the server first. Match the original schema.",
             inputSchema =
                 Json.parseToJsonElement(
                     """
@@ -48,7 +50,7 @@ internal val serviceCatalogTools =
         ),
         ToolDescriptor(
             name = "read_service_resource",
-            description = "Read additional detail from one server using a resource URI discovered on that server.",
+            description = "Read additional detail from the active server using a resource URI discovered on it.",
             inputSchema =
                 Json.parseToJsonElement(
                     """

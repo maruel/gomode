@@ -8,9 +8,9 @@
 //
 // The model receives each resource's text verbatim, with no URI, status, or wrapper. Unread,
 // failed, absent, and withdrawn resources contribute nothing. After setup, a refresh sends only the
-// resources whose text changed; changes queued during a turn accumulate in order. Native multi-
-// server context prefixes each server's texts with a "label [server-id]:" line for catalog tools,
-// and a "Selected server:" line names the focus.
+// resources whose text changed; changes queued during a turn accumulate in order. Native voice
+// context carries only the active server's texts, prefixed with a "label [server-id]:" line for
+// catalog tools, after an "Active server:" line.
 //
 // MCP server instructions own domain interpretation and stay unchanged and scoped to their server,
 // including instructions obtained through catalog tools. Clients add no behavioral prompt prose;

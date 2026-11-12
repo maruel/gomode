@@ -399,7 +399,7 @@ internal class CarDialVoiceOwner(
                         voiceConversation = checkNotNull(voiceConversation),
                         languageTag = settings.voiceLanguageTag,
                         callController = call,
-                        switchServer = { id -> settingsRepository.switchService(id) },
+                        switchServer = { id -> switchServer(voiceConversation, id) },
                         startupTiming = { next.timing },
                     )
                 }
@@ -416,7 +416,7 @@ internal class CarDialVoiceOwner(
                         frontendTools = page.frontendTools,
                         isAuthorityCurrent = authorityCurrent,
                         voiceConversation = voiceConversation,
-                        switchServer = { id -> settingsRepository.switchService(id) },
+                        switchServer = { id -> switchServer(voiceConversation, id) },
                         startupTiming = { next.timing },
                     )
                 }
@@ -438,8 +438,8 @@ internal class CarDialVoiceOwner(
                         } else {
                             null
                         }
-                    }.collect { text ->
-                        if (!text.isNullOrEmpty()) voice.injectText(text)
+                    }.collect { update ->
+                        if (update != null) voice.injectText(update.text, update.generate)
                     }
                 }
         }
@@ -472,6 +472,14 @@ internal class CarDialVoiceOwner(
         pages.setVoiceConnected(true)
         mutableState.value = mutableState.value.copy(status = CarDialStatus.CONNECTED)
         next.timing.finish(VoiceStartupOutcome.CONNECTED)
+    }
+
+    private suspend fun switchServer(
+        conversation: VoiceConversation?,
+        id: String,
+    ) {
+        conversation?.noteRequestedSwitch(id)
+        settingsRepository.switchService(id)
     }
 
     private fun allowsFocusChanges(settings: SettingsState): Boolean =

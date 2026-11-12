@@ -51,7 +51,7 @@ internal data class VoiceContextUpdate(
     val generate: Boolean,
 )
 
-// TODO: Accumulated changes can carry a superseded version of the same section: two "Selected
+// TODO: Accumulated changes can carry a superseded version of the same section: two "Active
 // server:" lines arrive in one update when focus changes twice during a tool call
 // (ServerVoiceSwitchTest#spokenTextSwitchKeepsOneConversationAcrossBothDirections). The model
 // reads the newest last, so behavior is correct, but the stale copy wastes tokens. The cause is

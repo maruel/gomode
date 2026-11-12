@@ -296,12 +296,13 @@ internal fun GoModeApp(
         usesGatewayVoice(settings) ||
             (settings.voiceMode == VoiceMode.DEVICE && settings.onDeviceEngine == OnDeviceEngine.LOCAL_LLM)
     val switchVoiceServer: suspend (String) -> Unit =
-        remember(settingsRepository) {
+        remember(settingsRepository, voiceConversation) {
             { id ->
                 if (!settingsEdits.save(voiceEnabled = false, commitURL = true)) {
                     throw IOException(settingsEdits.error ?: "Unable to save settings")
                 }
                 activeNativeScreen = null
+                voiceConversation.noteRequestedSwitch(id)
                 settingsRepository.switchService(id)
             }
         }
@@ -534,7 +535,7 @@ internal fun GoModeApp(
                 voiceSession.disconnect()
                 if (localSelection != null) localModelOwner.restartConversation()
             } else if (voiceSessionActive) {
-                voiceConversation.contextUpdate().takeIf { it.isNotEmpty() }?.let { voiceSession.injectText(it) }
+                voiceConversation.contextUpdate()?.let { voiceSession.injectText(it.text, it.generate) }
             }
         }
     }

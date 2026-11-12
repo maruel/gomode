@@ -241,6 +241,33 @@ class ServerVoiceSwitchTest {
                                 """{"kind":"tool.call","id":"ready-$discoveryAttempt","name":"discover_service","args":{"server_id":"$bearerID"}}""",
                             )
                         }
+                        // Only the active server accepts tools; the hidden bearer rejects them.
+                        conversation.send(catalogCommand("inactive-frontend", bearerID, "frontend", "echo"))
+                        composeRule.waitUntil(30_000) {
+                            cookie.toolResults.any { it.optString("id") == "inactive-frontend" }
+                        }
+                        assertTrue(
+                            cookie.toolResults
+                                .single { it.optString("id") == "inactive-frontend" }
+                                .getJSONObject("result")
+                                .has("error"),
+                        )
+                        assertTrue(bearer.callMetadata.isEmpty())
+                        conversation.send(catalogCommand("pending-source", cookieID, "mcp", "echo"))
+                        assertTrue(cookie.toolStarted.await(10, TimeUnit.SECONDS))
+                        composeRule.onNodeWithTag("gomode-next-app").performClick()
+                        repository.settings.first { it.activeServiceId == bearerID }
+                        pendingTool.countDown()
+                        composeRule.waitUntil(
+                            30_000,
+                        ) { cookie.toolResults.any { it.optString("id") == "pending-source" } }
+                        assertTrue(
+                            cookie.toolResults
+                                .single { it.optString("id") == "pending-source" }
+                                .getJSONObject("result")
+                                .getJSONObject("result")
+                                .getString("source") == "cookie",
+                        )
                         discoverParticipant()
                         composeRule.waitUntil(30_000) {
                             val result =
@@ -263,32 +290,19 @@ class ServerVoiceSwitchTest {
                                 false
                             }
                         }
-                        conversation.send(catalogCommand("hidden-frontend", bearerID, "frontend", "echo"))
+                        conversation.send(catalogCommand("active-frontend", bearerID, "frontend", "echo"))
                         composeRule.waitUntil(
                             30_000,
-                        ) { cookie.toolResults.any { it.optString("id") == "hidden-frontend" } }
+                        ) { cookie.toolResults.any { it.optString("id") == "active-frontend" } }
                         assertTrue(
                             cookie.toolResults
-                                .single { it.optString("id") == "hidden-frontend" }
+                                .single { it.optString("id") == "active-frontend" }
                                 .getJSONObject("result")
                                 .getJSONObject("result")
                                 .getString("source") == "bearer",
                         )
-                        conversation.send(catalogCommand("pending-source", cookieID, "mcp", "echo"))
-                        assertTrue(cookie.toolStarted.await(10, TimeUnit.SECONDS))
-                        composeRule.onNodeWithTag("gomode-next-app").performClick()
-                        repository.settings.first { it.activeServiceId == bearerID }
-                        pendingTool.countDown()
-                        composeRule.waitUntil(
-                            30_000,
-                        ) { cookie.toolResults.any { it.optString("id") == "pending-source" } }
-                        assertTrue(
-                            cookie.toolResults
-                                .single { it.optString("id") == "pending-source" }
-                                .getJSONObject("result")
-                                .getJSONObject("result")
-                                .getString("source") == "cookie",
-                        )
+                        conversation.send(catalogCommand("metadata-b", bearerID, "mcp", "echo"))
+                        composeRule.waitUntil(30_000) { cookie.toolResults.any { it.optString("id") == "metadata-b" } }
                         val beforeManualFocus = cookie.messages.size
                         composeRule.onNodeWithTag("gomode-next-app").performClick()
                         repository.settings.first { it.activeServiceId == cookieID }
@@ -300,8 +314,9 @@ class ServerVoiceSwitchTest {
                                         .getJSONObject(
                                             "context",
                                         ).getString("text")
-                                        .let { selectedServer(it) }
-                                        ?.contains(cookieID) == true
+                                        .let { activeServer(it) }
+                                        ?.contains(cookieID) == true &&
+                                    it.optBoolean("generate")
                             }
                         }
                         conversation.send(switchCommand(bearerID))
@@ -320,8 +335,9 @@ class ServerVoiceSwitchTest {
                                             .getJSONObject(
                                                 "context",
                                             ).getString("text")
-                                            .let { selectedServer(it) }
-                                            ?.contains(bearerID) == true
+                                            .let { activeServer(it) }
+                                            ?.contains(bearerID) == true &&
+                                        !it.optBoolean("generate")
                                 }
                         }
                         conversation.send(switchCommand(cookieID, "switch-back"))
@@ -334,7 +350,7 @@ class ServerVoiceSwitchTest {
                                 .fetchSemanticsNodes()
                                 .isNotEmpty(),
                         )
-                        for ((id, requestID) in listOf(bearerID to "metadata-b", cookieID to "metadata-a")) {
+                        for ((id, requestID) in listOf(cookieID to "metadata-a")) {
                             conversation.send(catalogCommand(requestID, id, "mcp", "echo"))
                             composeRule.waitUntil(30_000) {
                                 cookie.toolResults.any { it.optString("id") == requestID }
@@ -363,11 +379,10 @@ class ServerVoiceSwitchTest {
                         // Destroy the hidden participant's actual shared renderer. Native voice and its
                         // original setup/history must outlive both page owners becoming unavailable.
                         repeat(2) { recovery ->
+                            val sponsorView = visiblePage(cookieServer.url("/").toString())
                             repository.switchService(bearerID)
                             val hiddenView = visiblePage(bearerServer.url("/").toString())
                             composeRule.runOnUiThread { hiddenView.evaluateJavascript("window.holdTool=true", null) }
-                            repository.switchService(cookieID)
-                            val sponsorView = visiblePage(cookieServer.url("/").toString())
                             conversation.send(catalogCommand("lost-$recovery", bearerID, "frontend", "echo"))
                             composeRule.waitUntil(30_000) { bearer.pendingCalls.get() == recovery + 1 }
                             composeRule.runOnUiThread {
@@ -424,12 +439,12 @@ class ServerVoiceSwitchTest {
                             composeRule.runOnIdle {
                                 composeRule.activity.onBackPressedDispatcher.onBackPressed()
                             }
-                            val restoredSponsor = visiblePage(cookieServer.url("/").toString())
-                            assertNotSame(sponsorView, restoredSponsor)
-                            repository.switchService(bearerID)
-                            assertNotSame(hiddenView, visiblePage(bearerServer.url("/").toString()))
+                            val restoredHidden = visiblePage(bearerServer.url("/").toString())
+                            assertNotSame(hiddenView, restoredHidden)
                             repository.switchService(cookieID)
-                            assertSame(restoredSponsor, visiblePage(cookieServer.url("/").toString()))
+                            assertNotSame(sponsorView, visiblePage(cookieServer.url("/").toString()))
+                            repository.switchService(bearerID)
+                            assertSame(restoredHidden, visiblePage(bearerServer.url("/").toString()))
                             conversation.send(catalogCommand("restored-$recovery", bearerID, "frontend", "echo"))
                             composeRule.waitUntil(30_000) {
                                 cookie.toolResults.any { it.optString("id") == "restored-$recovery" }
@@ -459,6 +474,7 @@ class ServerVoiceSwitchTest {
                                     .fetchSemanticsNodes()
                                     .isNotEmpty(),
                             )
+                            repository.switchService(cookieID)
                         }
                         if (mode == VoiceMode.DEVICE) {
                             repository.switchService(bearerID)
@@ -546,6 +562,11 @@ class ServerVoiceSwitchTest {
                             )
                             repository.switchService(cookieID)
                         }
+                        // Requested switches add no announced reply before the mute checks below.
+                        conversation.send(switchCommand(bearerID, "logout-switch"))
+                        composeRule.waitUntil(30_000) {
+                            cookie.toolResults.any { it.optString("id") == "logout-switch" }
+                        }
                         conversation.send(catalogCommand("participant-logout", bearerID, "frontend", "revoke"))
                         composeRule.waitUntil(30_000) {
                             cookie.toolResults.any {
@@ -554,6 +575,10 @@ class ServerVoiceSwitchTest {
                             }
                         }
                         waitForConnected()
+                        conversation.send(switchCommand(cookieID, "logout-return"))
+                        composeRule.waitUntil(30_000) {
+                            cookie.toolResults.any { it.optString("id") == "logout-return" }
+                        }
                         conversation.send("""{"kind":"tool.call","id":"alive","name":"list_servers","args":{}}""")
                         composeRule.waitUntil(30_000) { cookie.toolResults.any { it.optString("id") == "alive" } }
                         cookie.completeToolTurns = false
@@ -1175,6 +1200,14 @@ class ServerVoiceSwitchTest {
                     send("""{"kind":"turn.status","state":"idle"}""")
                 }
 
+                "context.update" -> {
+                    // Announced service changes request a reply; complete that turn like a gateway.
+                    if (message.optBoolean("generate")) {
+                        send("""{"kind":"turn.status","state":"thinking"}""")
+                        send("""{"kind":"turn.status","state":"idle"}""")
+                    }
+                }
+
                 "tool.result" -> {
                     toolResults += message
                     // Tests can hold a reply open to inspect controls before completing playback.
@@ -1209,4 +1242,4 @@ internal class ControlledTransport(
 }
 
 // Queued changes accumulate oldest first, so the newest focus is the last selected-server line.
-private fun selectedServer(text: String): String? = text.lines().lastOrNull { it.startsWith("Selected server: ") }
+private fun activeServer(text: String): String? = text.lines().lastOrNull { it.startsWith("Active server: ") }

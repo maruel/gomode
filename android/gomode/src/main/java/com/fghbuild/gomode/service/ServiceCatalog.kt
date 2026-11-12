@@ -6,11 +6,11 @@
 // readiness and retries a failed connection. Notification IDs stay distinct across services, and
 // notification titles identify their source.
 //
-// The overview has one catalog-wide context budget with source labels; detailed instructions,
-// schemas, and resources are read on demand. Gateway and local LLM conversations use the whole
-// catalog. Keyword engines keep the selected service's direct tools and context. Hidden
-// participants keep monitoring, and shared voice receives their labeled context without duplicate
-// native notifications.
+// Gateway and local LLM conversations see only the active service: its labeled context, and catalog
+// tools that accept only its server ID. Detailed instructions, schemas, and resources are read on
+// demand. Another service's context or tools never reach the model until the user switches to it.
+// Keyword engines keep the selected service's direct tools and context. Hidden participants keep
+// monitoring, so a switch has current context and their alerts still reach shared voice.
 package com.fghbuild.gomode.service
 
 import com.fghbuild.gomode.ui.ServiceBootstrapState
@@ -178,20 +178,18 @@ internal class ServiceCatalog(
         publish()
     }
 
-    // One section per current server with known context, keyed by server. Tool schemas,
-    // instructions, and details are discovered on demand.
-    fun contextSections(snapshots: Map<ServiceShellKey, ServiceMonitorState>): Map<ServiceShellKey, String> =
-        state.value.values
-            .mapNotNull { entry ->
-                val participant = members[entry.key] ?: return@mapNotNull null
-                if (participant.prepared?.let(participant::current) != true) return@mapNotNull null
-                val body = snapshots[entry.key]?.voiceContext.orEmpty()
-                serverSection(
-                    entry.label,
-                    entry.key.serviceID,
-                    body,
-                ).takeIf { it.isNotEmpty() }?.let { entry.key to it }
-            }.toMap()
+    // The active server's labeled context, or null while it is not current or has none. Tool
+    // schemas, instructions, and details are discovered on demand.
+    fun contextSection(
+        active: ServiceShellKey,
+        snapshots: Map<ServiceShellKey, ServiceMonitorState>,
+    ): String? {
+        val entry = state.value[active] ?: return null
+        val participant = members[active] ?: return null
+        if (participant.prepared?.let(participant::current) != true) return null
+        val body = snapshots[active]?.voiceContext.orEmpty()
+        return serverSection(entry.label, active.serviceID, body).takeIf { it.isNotEmpty() }
+    }
 
     // The conversation owns one item-only stream per prepared authority. Keep
     // unchanged sources alive when another participant joins or leaves; alerts
@@ -271,6 +269,7 @@ internal class ServiceCatalog(
     suspend fun execute(
         name: String,
         args: JsonObject,
+        active: ServiceShellKey,
         sessionID: String? = null,
         locale: String? = null,
         isCurrent: () -> Boolean,
@@ -284,7 +283,7 @@ internal class ServiceCatalog(
                     put(
                         "servers",
                         JsonArray(
-                            state.value.values.map { entry ->
+                            state.value.values.filter { it.key == active }.map { entry ->
                                 buildJsonObject {
                                     put("server_id", entry.key.serviceID)
                                     put("label", entry.label.boundedModelText(256))
@@ -301,8 +300,8 @@ internal class ServiceCatalog(
         }
         val id = args.getValue("server_id").jsonPrimitive.content
         val participant =
-            members.values.singleOrNull { it.entry.key.serviceID == id }
-                ?: return catalogError("Server is unavailable. Discover servers again.")
+            members[active]?.takeIf { active.serviceID == id }
+                ?: return catalogError("Server is not active. Discover the active server again.")
         var prepared = participant.prepared ?: return catalogError("Server is not ready. ${participant.status.text}.")
         if (!participant.current(prepared) || !isCurrent()) return catalogError("Service authentication changed.")
         if (name == "read_service_resource" && prepared.mcp?.capabilities?.resources == null) {

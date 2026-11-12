@@ -1,9 +1,10 @@
 // Native voice tool declarations and dispatch for call control and saved server selection.
 //
 // list_servers returns saved server IDs, names, and active status. switch_server and the native
-// picker change the visible page and conversational focus while preserving one transport, Telecom
-// call, audio owner, transcript, and foreground notification. Every ready participant stays
-// callable, including servers without a voice gateway. Focus and participant context wait for
+// picker change the visible page and the server the model can use while preserving one transport,
+// Telecom call, audio owner, transcript, and foreground notification. Only the active server's
+// context and tools reach the model, including a server without a voice gateway. A switch the model
+// did not request reaches it as a notification. Focus and participant context wait for
 // pending tool results and model turn completion; an idle turn can complete without speech, while
 // playback blocks context delivery until speech ends. Shared voice state reaches every retained
 // page, and native notifications are suppressed for every participant while shared voice is active.
@@ -59,7 +60,7 @@ private val nativeTools =
             description =
                 "Switch the active Go Mode server when the user asks. First use list_servers to find the server ID. " +
                     "Ask which server if the name is ambiguous. " +
-                    "The same conversation continues with all ready servers available.",
+                    "The conversation continues with only the new server's context and tools.",
             inputSchema =
                 buildJsonObject {
                     put("type", "object")

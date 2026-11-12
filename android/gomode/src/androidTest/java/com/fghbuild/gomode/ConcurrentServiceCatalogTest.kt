@@ -34,6 +34,7 @@ import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellSession
 import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.ui.web.WebShellScreen
+import com.fghbuild.gomode.voice.McpToolResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -832,4 +833,17 @@ class ConcurrentServiceCatalogTest {
             server.close()
         }
     }
+}
+
+// Routing tests make the server their call names active, as a switch to it would.
+private suspend fun ServiceCatalog.execute(
+    name: String,
+    args: JsonObject,
+    sessionID: String? = null,
+    locale: String? = null,
+    isCurrent: () -> Boolean,
+): McpToolResult? {
+    val id = args["server_id"]?.jsonPrimitive?.content
+    val active = state.value.keys.firstOrNull { it.serviceID == id } ?: state.value.keys.first()
+    return execute(name, args, active, sessionID, locale, isCurrent)
 }

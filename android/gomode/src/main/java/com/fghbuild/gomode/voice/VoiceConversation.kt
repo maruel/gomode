@@ -59,7 +59,7 @@ internal const val FRONTEND_NOT_READY = "Frontend not ready."
 // update independently and never extend connection startup behind a slow peer.
 private const val INITIAL_CONTEXT_BUDGET_MS = 500L
 private const val CATALOG_CONTEXT_BUDGET = 12_000
-private val SELECTED_SECTION = Any()
+private val ACTIVE_SECTION = Any()
 
 internal data class VoiceConversationState(
     val sponsor: String,
@@ -127,6 +127,8 @@ internal class VoiceConversation(
         }
         if (sponsor != null && !frontendReadyForConnection()) throw VoiceSetupException(FRONTEND_NOT_READY)
         conversation?.lifetime?.finish()
+        sentContext = emptyMap()
+        requestedSwitch = null
         conversation =
             Conversation(
                 settings,
@@ -157,7 +159,7 @@ internal class VoiceConversation(
                     // Changing this value is the trigger for hosts to call contextUpdate().
                     mutableState.value =
                         mutableState.value?.copy(
-                            serviceContext = catalog.contextSections(snapshots).values.joinToString("\n\n"),
+                            serviceContext = catalog.contextSection(activeKey(), snapshots),
                         )
                 }
             }
@@ -300,25 +302,41 @@ internal class VoiceConversation(
         return contextText()
     }
 
-    // Sections the current model session already received, keyed by owner.
+    // Sections the current model session already received, keyed by owner. Empty until contextText()
+    // sets the session baseline.
     private var sentContext: Map<Any, String> = emptyMap()
 
+    // The server whose switch the model requested; its own tool result already confirms the change.
+    private var requestedSwitch: String? = null
+
+    // Only the active server's context reaches the model; other services wait until the user switches.
     private fun contextSections(): Map<Any, String> {
         requireCurrent()
         admitParticipants()
         requireCurrent()
+        val active = activeKey()
         val settings = settingsRepository.settings.value
-        val label =
-            settings.services.firstOrNull { it.id == settings.activeServiceId }?.label ?: settings.activeServiceURL
-        val selected = "Selected server: ${label.boundedModelText(256)} [${settings.activeServiceId}]"
-        return mapOf<Any, String>(SELECTED_SECTION to selected) +
-            catalog.contextSections(conversation?.contextSnapshots?.value.orEmpty())
+        val label = settings.services.firstOrNull { it.id == active.serviceID }?.label ?: active.url
+        val selected = "Active server: ${label.boundedModelText(256)} [${active.serviceID}]"
+        val context = catalog.contextSection(active, conversation?.contextSnapshots?.value.orEmpty())
+        return listOfNotNull(ACTIVE_SECTION to selected, context?.let { active to it }).toMap()
+    }
+
+    private fun activeKey(): ServiceShellKey {
+        val settings = settingsRepository.settings.value
+        return ServiceShellKey(settings.activeServiceId, settings.activeServiceURL)
+    }
+
+    /** Records that the model asked to switch to [serviceID], so the change is not announced back. */
+    fun noteRequestedSwitch(serviceID: String) {
+        requestedSwitch = serviceID
     }
 
     /** Full context for a new model session; later calls to contextUpdate() send only changes. */
     fun contextText(): String {
         val sections = contextSections()
         sentContext = sections
+        requestedSwitch = null
         return modelContextText(sections.values, CATALOG_CONTEXT_BUDGET, CATALOG_CONTEXT_BUDGET)
     }
 
@@ -326,12 +344,22 @@ internal class VoiceConversation(
     // queue the result while a turn is active, so later calls diff against undelivered text and
     // PendingVoiceContext accumulates superseded sections. See the TODO on PendingVoiceContext.
 
-    /** Sections changed since the last send, or empty. Removed sections are not model content. */
-    fun contextUpdate(): String {
+    /**
+     * Sections changed since the last send, or null. Removed sections are not model content. A switch
+     * the model did not request is a notification, so the model announces the new active server.
+     */
+    fun contextUpdate(): VoiceContextUpdate? {
+        // Hosts observe state before setup sends the baseline; that setup carries the full context.
+        if (sentContext.isEmpty()) return null
         val sections = contextSections()
         val changed = sections.filter { (key, text) -> sentContext[key] != text }
         sentContext = sections
-        return modelContextText(changed.values, CATALOG_CONTEXT_BUDGET, CATALOG_CONTEXT_BUDGET)
+        val switched = ACTIVE_SECTION in changed
+        val announce = switched && requestedSwitch != activeKey().serviceID
+        if (switched) requestedSwitch = null
+        val text = modelContextText(changed.values, CATALOG_CONTEXT_BUDGET, CATALOG_CONTEXT_BUDGET)
+        if (text.isEmpty()) return null
+        return VoiceContextUpdate(if (announce) "New notification: active server changed.\n\n$text" else text, announce)
     }
 
     suspend fun execute(
@@ -344,7 +372,7 @@ internal class VoiceConversation(
         requireCurrent()
         admitParticipants()
         requireCurrent()
-        val result = catalog.execute(name, args, sessionID, locale) { isCurrentAttempt() && isCurrent() }
+        val result = catalog.execute(name, args, activeKey(), sessionID, locale) { isCurrentAttempt() && isCurrent() }
         requireCurrent()
         return result
     }

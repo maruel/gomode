@@ -168,6 +168,9 @@ class GatewayAuthorizationTest {
                     }
                     if (delayedFrontend) participant.invalidateIdentity()
                     owner.begin(false)
+                    // The conversation pins every signed-in participant, but only the active one accepts tools.
+                    repository.switchService(participantID)
+                    repository.settings.first { it.activeServiceId == participantID }
                     if (delayedFrontend) {
                         assertFalse(participant.isFrontendReady)
                         val discovery =

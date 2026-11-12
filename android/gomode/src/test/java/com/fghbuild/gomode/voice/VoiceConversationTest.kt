@@ -39,6 +39,7 @@ import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -61,23 +62,48 @@ class VoiceConversationTest {
     }
 
     @Test
-    fun selectedServerLineUsesTheBoundedLabelNotTheURL() =
+    fun activeServerChangesAreAnnouncedOnlyWhenTheModelDidNotRequestThem() =
         runTest {
             val repository = SettingsRepository(MemoryPreferences())
+            val other = repository.addService("Other", "https://other.test")
             val url = "https://example.test/" + "資料😀\\\"".repeat(3000)
             val id = repository.addService("Server", url)
             repository.settings.first { it.activeServiceId == id }
-            val entry = ServiceShellSession(ServiceShellKey(id, url)) {}.also { authenticate(it, "identity") }
+            val entries =
+                repository.settings.value.services.associate { service ->
+                    val key = ServiceShellKey(service.id, service.url)
+                    key to ServiceShellSession(key) {}.also { authenticate(it, "identity") }
+                }
             val catalog = ServiceCatalog(backgroundScope)
-            val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { mapOf(entry.key to entry) }
+            val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { entries }
             try {
                 owner.begin(false)
-                assertEquals("Selected server: Server [$id]", owner.contextText())
-                assertEquals("", owner.contextUpdate())
+                assertNull("setup sends the baseline, not an update", owner.contextUpdate())
+                // The line names the bounded label, not the URL.
+                assertEquals("Active server: Server [$id]", owner.contextText())
+                assertNull(owner.contextUpdate())
+                repository.switchService(other)
+                repository.settings.first { it.activeServiceId == other }
+                assertEquals(
+                    VoiceContextUpdate(
+                        "New notification: active server changed.\n\nActive server: Other [$other]",
+                        generate = true,
+                    ),
+                    owner.contextUpdate(),
+                )
+                owner.noteRequestedSwitch(id)
+                repository.switchService(id)
+                repository.settings.first { it.activeServiceId == id }
+                assertEquals(VoiceContextUpdate("Active server: Server [$id]", generate = false), owner.contextUpdate())
+                repository.switchService(other)
+                repository.settings.first { it.activeServiceId == other }
+                assertTrue("a request covers one switch only", checkNotNull(owner.contextUpdate()).generate)
+                owner.begin(false)
+                assertNull("a new conversation starts without a baseline", owner.contextUpdate())
             } finally {
                 owner.finish()
                 catalog.close()
-                entry.close()
+                entries.values.forEach { it.close() }
             }
         }
 

@@ -200,19 +200,7 @@ class CarDialServerSwitchTest {
                     assertEquals(1, cookie.sessions.size)
                     assertEquals(0, bearer.sessions.size)
                     probe(cookie, requireNotNull(bearerID), bearer)
-                    cookie.sessions.single().send(switchCommand(requireNotNull(cookieID)))
-                    awaitCondition { repository.settings.value.activeServiceId == cookieID }
-                    probe(cookie, requireNotNull(cookieID), cookie)
                     val conversation = cookie.callMetadata.first().getString("openai/session")
-                    assertEquals(
-                        listOf(conversation, conversation),
-                        cookie.callMetadata.map { it.getString("openai/session") },
-                    )
-                    assertEquals(
-                        listOf(conversation),
-                        bearer.callMetadata.map { it.getString("openai/session") },
-                    )
-                    assertEquals(listOf("fr-CA"), bearer.callMetadata.map { it.getString("openai/locale") })
                     cookie.sessions.single().send(
                         """
                         {"kind":"tool.call","id":"frontend","name":"dispatch_service_tool","args":{
@@ -235,6 +223,20 @@ class CarDialServerSwitchTest {
                             .getJSONObject("result")
                             .getString("sessionID"),
                     )
+                    cookie.sessions.single().send(switchCommand(requireNotNull(cookieID)))
+                    awaitCondition { repository.settings.value.activeServiceId == cookieID }
+                    probe(cookie, requireNotNull(cookieID), cookie)
+                    // Only the active server accepts tools.
+                    probe(cookie, requireNotNull(bearerID), bearer, expectSuccess = false)
+                    assertEquals(
+                        listOf(conversation, conversation),
+                        cookie.callMetadata.map { it.getString("openai/session") },
+                    )
+                    assertEquals(
+                        listOf(conversation),
+                        bearer.callMetadata.map { it.getString("openai/session") },
+                    )
+                    assertEquals(listOf("fr-CA"), bearer.callMetadata.map { it.getString("openai/locale") })
                     val scopedResources = cookie.resourceMetadata.filter { it.has("openai/session") }
                     assertTrue(scopedResources.isNotEmpty())
                     assertTrue(scopedResources.all { it.getString("openai/session") == conversation })

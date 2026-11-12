@@ -28,6 +28,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -379,9 +380,9 @@ class ServiceCatalogTest {
                     advanceTimeBy(1)
                     runCurrent()
                     assertTrue(preparing.isCompleted)
-                    // Unread context contributes nothing; only the selected server line remains.
+                    // Unread context contributes nothing; only the active server line remains.
                     assertEquals(
-                        "Selected server: Selected [$id]",
+                        "Active server: Selected [$id]",
                         preparing.await().setup.serviceContextText,
                     )
                 } finally {
@@ -420,21 +421,20 @@ class ServiceCatalogTest {
                         }
                         val started = System.nanoTime()
                         owner.prepareLocal()
-                        owner.state.first { value ->
-                            val context = value?.serviceContext.orEmpty()
-                            // Both servers contributed their catalog text.
-                            context.split("\"items\"").size == 3
-                        }
-                        val counts =
+                        // Only the active server's catalog text is exposed; both sources still stream.
+                        val exposed = checkNotNull(owner.state.first { it?.serviceContext != null }?.serviceContext)
+                        assertTrue(exposed.contains("[$bID]:") && !exposed.contains("[$aID]:"))
+
+                        fun counts() =
                             listOf(first, second).map { fixture ->
-                                fixture.resourceReads.count {
-                                    it ==
-                                        FIXTURE_CATALOG_URI to owner.sessionID
-                                }
+                                fixture.resourceReads.count { it == FIXTURE_CATALOG_URI to owner.sessionID }
                             }
+                        withContext(Dispatchers.Default) {
+                            withTimeout(5_000) { while (counts().any { it == 0 }) delay(10) }
+                        }
                         val elapsedMS = (System.nanoTime() - started) / 1_000_000
-                        println("Native startup baseline: item reads=$counts elapsedMS=$elapsedMS")
-                        assertEquals(listOf(1, 1), counts)
+                        println("Native startup baseline: item reads=${counts()} elapsedMS=$elapsedMS")
+                        assertEquals(listOf(1, 1), counts())
                     } finally {
                         owner.finish()
                         catalog.close()
@@ -715,10 +715,31 @@ class ServiceCatalogTest {
                                 it[a.key]?.snapshot?.fixtureReady == true &&
                                     it[b.key]?.snapshot?.fixtureReady == true
                             }
-                        val context = catalog.contextText(snapshot)
-                        assertTrue(context.contains("Alpha"))
-                        assertTrue(context.contains("Beta"))
-                        assertTrue(context.contains("Same item"))
+                        // Each server's context reaches the model only while that server is active.
+                        val contextA = checkNotNull(catalog.contextSection(a.key, snapshot))
+                        val contextB = checkNotNull(catalog.contextSection(b.key, snapshot))
+                        assertTrue(contextA.contains("Alpha") && contextA.contains("Same item"))
+                        assertFalse(contextA.contains("Beta"))
+                        assertTrue(contextB.contains("Beta") && contextB.contains("Same item"))
+                        assertFalse(contextB.contains("Alpha"))
+                        val listedForA =
+                            requireNotNull(catalog.execute("discover_service", buildJsonObject {}, a.key) { true })
+                                .structuredContent
+                                .getValue("servers")
+                                .jsonArray
+                        assertEquals(
+                            listOf("a"),
+                            listedForA.map {
+                                it.jsonObject
+                                    .getValue("server_id")
+                                    .jsonPrimitive.content
+                            },
+                        )
+                        val callsB = second.calls
+                        val inactive =
+                            requireNotNull(catalog.execute("dispatch_service_tool", dispatchArgs("b"), a.key) { true })
+                        assertTrue(inactive.isError)
+                        assertEquals("a call never reaches an inactive server", callsB, second.calls)
                         val large =
                             snapshot.mapValues { (_, value) ->
                                 value.copy(
@@ -729,11 +750,12 @@ class ServiceCatalogTest {
                                 )
                             }
                         // A resource over its budget is dropped whole, leaving no section.
-                        assertTrue(catalog.contextSections(large).isEmpty())
+                        assertTrue(catalog.contextText(large).isEmpty())
                         catalog.reconcile(entries, mapOf("a" to "\"".repeat(255) + "😀", "b" to "Beta"))
-                        val sections = catalog.contextSections(snapshot)
-                        assertEquals(2, sections.size)
-                        assertTrue(sections.values.first().startsWith("\"".repeat(255) + " [a]:\n"))
+                        assertTrue(
+                            checkNotNull(catalog.contextSection(a.key, snapshot))
+                                .startsWith("\"".repeat(255) + " [a]:\n"),
+                        )
                         val discovered =
                             checkNotNull(
                                 catalog.execute(
@@ -749,7 +771,7 @@ class ServiceCatalogTest {
                                 .getValue("label")
                                 .jsonPrimitive.content,
                         )
-                        assertTrue(catalog.contextSections(emptyMap()).isEmpty())
+                        assertTrue(catalog.contextText(emptyMap()).isEmpty())
                         first.minimum = 5
                         assertTrue(dispatch(catalog, "a").isError)
                         first.minimum = 1
@@ -1186,7 +1208,7 @@ class ServiceCatalogTest {
                     assertTrue(read.isError)
                     assertEquals("Tools only", dispatch(catalog, "a").resultString("source"))
                     assertFalse(catalog.hasContextResources(entry.key))
-                    assertTrue(catalog.contextSections(emptyMap()).isEmpty())
+                    assertTrue(catalog.contextText(emptyMap()).isEmpty())
                     assertTrue(fixture.requests.none { it.getHeader("Mcp-Method")?.startsWith("resources/") == true })
                 } finally {
                     catalog.close()
@@ -1662,5 +1684,21 @@ class ServiceCatalogTest {
     }
 }
 
+// Every server's section as if each were active in turn.
 private fun ServiceCatalog.contextText(snapshots: Map<ServiceShellKey, ServiceMonitorState>) =
-    contextSections(snapshots).values.joinToString("\n\n")
+    state.value.keys
+        .mapNotNull { contextSection(it, snapshots) }
+        .joinToString("\n\n")
+
+// Routing tests make the server their call names active, as a switch to it would.
+private suspend fun ServiceCatalog.execute(
+    name: String,
+    args: JsonObject,
+    sessionID: String? = null,
+    locale: String? = null,
+    isCurrent: () -> Boolean,
+): McpToolResult? {
+    val id = args["server_id"]?.jsonPrimitive?.content
+    val active = state.value.keys.firstOrNull { it.serviceID == id } ?: state.value.keys.first()
+    return execute(name, args, active, sessionID, locale, isCurrent)
+}

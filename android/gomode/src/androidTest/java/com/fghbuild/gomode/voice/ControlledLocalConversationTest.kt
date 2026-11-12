@@ -483,10 +483,10 @@ class ControlledLocalConversationTest {
                     }
 
                     message.role == Role.USER -> {
+                        // B is active until the switch, so its tool runs first.
                         Message.model(
                             toolCalls =
                                 listOf(
-                                    ToolCall("switch_server", mapOf("server_id" to a)),
                                     ToolCall(
                                         "dispatch_service_tool",
                                         mapOf(
@@ -496,6 +496,7 @@ class ControlledLocalConversationTest {
                                             "arguments" to mapOf("value" to "cedar"),
                                         ),
                                     ),
+                                    ToolCall("switch_server", mapOf("server_id" to a)),
                                 ),
                         )
                     }

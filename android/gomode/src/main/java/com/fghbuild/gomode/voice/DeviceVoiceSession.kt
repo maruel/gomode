@@ -443,7 +443,7 @@ internal class DeviceVoiceSession(
             withContext(ioDispatcher) { localEngine.initialize(context) }
         }
         if (!ownsAttempt(attempt)) return
-        voiceConversation?.contextUpdate()?.takeIf { it.isNotEmpty() }?.let { localEngine.injectContext(it) }
+        voiceConversation?.contextUpdate()?.let { localEngine.injectContext(it.text) }
         frontendToolNames = frontendTools.declarations.map { it.name }.toSet()
         _state.update {
             it.copy(connectStatus = null, connected = true, error = null)
