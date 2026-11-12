@@ -52,6 +52,9 @@ jobs:
     name: Go packages (Windows)
     runs-on: windows-latest
     steps:
+      # The runner image enables core.autocrlf; test the committed bytes instead.
+      - name: Disable line ending conversion
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
