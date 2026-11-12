@@ -84,7 +84,7 @@ import java.util.concurrent.TimeUnit
 @RunWith(RobolectricTestRunner::class)
 class DeviceVoiceSessionTest {
     @Test
-    fun replacementReadinessIsBoundedAndHangupCancelsItsDeadline() =
+    fun replacementReadinessRetriesWithinTheRecoveryBudgetAndHangupCancelsItsDeadline() =
         runTest {
             Dispatchers.setMain(StandardTestDispatcher(testScheduler))
             for (hangup in listOf(false, true)) {
@@ -108,19 +108,30 @@ class DeviceVoiceSessionTest {
                     assertEquals(2, sockets.size)
                     listeners.last().onOpen(sockets.last(), upgradeResponse())
                     runCurrent()
-                    if (hangup) session.disconnect()
+                    if (hangup) {
+                        session.disconnect()
+                    } else {
+                        // A replacement that never becomes ready is retried with backoff.
+                        advanceTimeBy(15_000)
+                        runCurrent()
+                        assertTrue(sockets.last().closed)
+                        assertNull(session.state.value.error)
+                        advanceTimeBy(2_000)
+                        runCurrent()
+                        assertEquals(3, sockets.size)
+                        listeners.last().onOpen(sockets.last(), upgradeResponse())
+                        runCurrent()
+                        ShadowSystemClock.advanceBy(Duration.ofMillis(RECOVERY_BUDGET_MS))
+                    }
                     advanceTimeBy(15_000)
                     runCurrent()
+                    assertEquals(if (hangup) 2 else 3, sockets.size)
                     assertTrue(sockets.last().closed)
                     assertFalse(session.state.value.connected)
                     if (hangup) {
                         assertNull(session.state.value.error)
                     } else {
-                        assertTrue(
-                            session.state.value.error
-                                .orEmpty()
-                                .contains("session readiness"),
-                        )
+                        assertEquals(RECOVERY_EXHAUSTED_ERROR, session.state.value.error)
                     }
                     val terminal = session.state.value
                     listeners.last().onMessage(sockets.last(), """{"kind":"session.ready"}""")

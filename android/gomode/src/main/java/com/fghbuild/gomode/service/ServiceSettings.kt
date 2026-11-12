@@ -5,7 +5,8 @@
 // pass and its skill catalog and gateway metadata decode, and incompatible otherwise. Only a
 // compatible manifest enables MCP-backed native features; an incompatible one disables them with a
 // visible state while the page keeps loading. The fetch retries after page load, app resume,
-// network recovery, and user actions that need native features. Login never depends on discovery.
+// network recovery, and user actions that need native features. Network failures, 5xx, 408, and
+// 429 also retry with backoff up to 30 s. Login never depends on discovery.
 //
 // The shell and the manifest must both use BRIDGE_VERSION; validation rejects other versions before
 // native voice starts.
@@ -23,15 +24,18 @@ class ServiceSettingsClient {
         try {
             return ApiClient(serviceOrigin(baseURL)).getSettings()
         } catch (e: ApiException) {
-            throw ServiceSettingsException("Service settings request failed: HTTP ${e.statusCode}", e)
+            throw ServiceSettingsException("Service settings request failed: HTTP ${e.statusCode}", e.statusCode, e)
         }
     }
 }
 
 class ServiceSettingsException(
     message: String,
+    val statusCode: Int,
     cause: Throwable? = null,
-) : Exception(message, cause)
+) : Exception(message, cause) {
+    val isTransient: Boolean get() = isTransientHTTPStatus(statusCode)
+}
 
 fun serviceOrigin(url: String): String {
     val uri = URI(url.trim())

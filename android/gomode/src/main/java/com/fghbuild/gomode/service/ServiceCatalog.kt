@@ -441,7 +441,12 @@ internal class ServiceCatalog(
                             }
 
                             ready == null -> {
-                                status = ServiceReadiness.UNAVAILABLE
+                                status =
+                                    if ((identity.bootstrap as? ServiceBootstrapState.Unvalidated)?.transient == true) {
+                                        ServiceReadiness.RECONNECTING
+                                    } else {
+                                        ServiceReadiness.UNAVAILABLE
+                                    }
                                 error =
                                     when (val bootstrap = identity.bootstrap) {
                                         is ServiceBootstrapState.Error -> bootstrap.message

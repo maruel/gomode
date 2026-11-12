@@ -1,4 +1,4 @@
-// Verifies bounded page recovery when an abandoned load fails after a route change.
+// Verifies bounded page and manifest recovery across startup failures and route changes.
 package com.fghbuild.gomode.ui.web
 
 import android.net.ConnectivityManager
@@ -7,14 +7,24 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.ui.ServiceBootstrapState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -59,6 +69,43 @@ class ServiceShellOwnerTest {
                 Dispatchers.resetMain()
             }
             assertTrue(connectivity.networkCallbacks.isEmpty())
+        }
+
+    @Test
+    fun bootstrapRetriesTransientFailuresWithBackoffUntilAFinalAnswer() =
+        runTest {
+            Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+            val server = MockWebServer()
+            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
+            server.enqueue(MockResponse().setResponseCode(503))
+            server.enqueue(MockResponse().setResponseCode(401))
+            server.start()
+            val context = RuntimeEnvironment.getApplication()
+            val settings = SettingsRepository(MemoryPreferences())
+            val owner = ServiceShellOwner(context, settings)
+            try {
+                settings.addService("Service", server.url("/").toString())
+                owner.start()
+                val entry =
+                    owner.state
+                        .map { snapshot -> snapshot.entries.values.singleOrNull { it.key.url.isNotBlank() } }
+                        .filterNotNull()
+                        .first()
+                val final =
+                    entry.state
+                        .map { it.bootstrap }
+                        .filterIsInstance<ServiceBootstrapState.Unvalidated>()
+                        .first { it.reason?.contains("HTTP 401") == true }
+                assertFalse(final.transient)
+                assertEquals(3, server.requestCount)
+                advanceTimeBy(60_000)
+                runCurrent()
+                assertEquals("a final answer stops automatic retries", 3, server.requestCount)
+            } finally {
+                owner.close()
+                server.shutdown()
+                Dispatchers.resetMain()
+            }
         }
 
     private class MemoryPreferences : DataStore<Preferences> {

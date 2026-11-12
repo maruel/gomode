@@ -192,8 +192,10 @@ internal fun observeVoiceStartup(
 }
 
 internal sealed interface ServiceBootstrapState {
+    // A transient failure retries with backoff; other reasons wait for a page load, network change, or user retry.
     data class Unvalidated(
         val reason: String? = null,
+        val transient: Boolean = false,
     ) : ServiceBootstrapState
 
     data class Ready(
@@ -864,9 +866,9 @@ internal suspend fun fetchBootstrapState(
     } catch (e: IllegalArgumentException) {
         ServiceBootstrapState.Error("Invalid service URL: ${e.message.orEmpty()}")
     } catch (e: ServiceSettingsException) {
-        ServiceBootstrapState.Unvalidated(e.message ?: "Could not fetch service settings.")
+        ServiceBootstrapState.Unvalidated(e.message ?: "Could not fetch service settings.", transient = e.isTransient)
     } catch (e: IOException) {
-        ServiceBootstrapState.Unvalidated(e.message ?: "Could not fetch service settings.")
+        ServiceBootstrapState.Unvalidated(e.message ?: "Could not fetch service settings.", transient = true)
     }
 
 @Composable

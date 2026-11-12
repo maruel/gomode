@@ -9,3 +9,6 @@ internal val credentialedHTTPClient: OkHttpClient =
         .followRedirects(false)
         .followSslRedirects(false)
         .build()
+
+// A proxy or server restarting answers 5xx; 408 and 429 ask the client to retry later.
+internal fun isTransientHTTPStatus(status: Int): Boolean = status == 408 || status == 429 || status in 500..599

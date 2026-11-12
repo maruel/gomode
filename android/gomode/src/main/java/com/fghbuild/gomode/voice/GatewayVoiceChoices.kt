@@ -18,6 +18,7 @@ import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.sdk.v1.Settings
 import com.fghbuild.gomode.service.credentialedHTTPClient
+import com.fghbuild.gomode.service.isTransientHTTPStatus
 import com.fghbuild.gomode.service.resolveServiceURL
 import com.fghbuild.gomode.service.serviceOrigin
 import com.fghbuild.voicegateway.sdk.v2.ApiClient
@@ -66,8 +67,10 @@ internal fun gatewayHTTPError(
         }
     }
 
+// Transient failures are worth retrying while recovering an established conversation.
 internal class GatewayConnectionException(
     message: String,
+    val transient: Boolean,
     cause: Throwable? = null,
 ) : IOException(message, cause)
 
@@ -78,6 +81,7 @@ internal fun gatewayNetworkError(error: IOException): GatewayConnectionException
         } else {
             "Voice gateway unreachable."
         },
+        transient = true,
         error,
     )
 
@@ -96,7 +100,7 @@ internal val voiceGatewayHTTPClient =
             val message = gatewayHTTPError(response.code, response.request.url.encodedPath)
             if (message != null) {
                 response.close()
-                throw GatewayConnectionException(message)
+                throw GatewayConnectionException(message, isTransientHTTPStatus(response.code))
             }
             response
         }.build()

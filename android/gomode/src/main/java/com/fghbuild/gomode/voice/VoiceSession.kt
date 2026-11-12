@@ -97,7 +97,13 @@ private const val MIC_LEVEL_POLL_MS = 100L
 private const val SETUP_TIMEOUT_MS = 15_000L
 private const val ICE_GATHERING_TIMEOUT_MS = 10_000L
 private const val ICE_DISCONNECTED_GRACE_MS = 5_000L
-internal const val MAX_RECONNECT_ATTEMPTS = 3
+
+// A Wi-Fi to cellular handover can take tens of seconds. DNS, sockets, ICE gathering, and gateway
+// answers fail repeatedly until the new route settles, so recovery is bounded by time, not attempts.
+internal const val RECOVERY_BUDGET_MS = 120_000L
+private const val RECOVERY_INITIAL_DELAY_MS = 1_000L
+private const val RECOVERY_MAX_DELAY_MS = 8_000L
+internal const val RECOVERY_EXHAUSTED_ERROR = "Voice connection could not be restored within 2 minutes"
 
 /** Conservative data-channel/model-safe bound for a recovery context update. */
 internal const val MAX_RECOVERY_CONTEXT_CHARS = 8_000
@@ -148,25 +154,35 @@ internal fun recoveryDelayMs(state: PeerConnection.IceConnectionState): Long =
         else -> error("ICE state $state does not require recovery")
     }
 
-internal class VoiceRecoveryPolicy(
-    private val maxAttempts: Int,
-) {
+// Recovery lasts from the first loss until a replacement session is ready or RECOVERY_BUDGET_MS
+// has passed. A self-healed loss that never started a replacement does not consume the budget.
+internal class VoiceRecoveryPolicy {
     private var pending = false
+    private var lostAtMillis: Long? = null
     var attempts = 0
         private set
 
+    val recovering: Boolean get() = lostAtMillis != null
+
     fun schedule(): Boolean {
-        if (attempts >= maxAttempts) return false
+        val now = SystemClock.elapsedRealtime()
+        val lostAt = lostAtMillis ?: now.also { lostAtMillis = it }
+        if (now - lostAt >= RECOVERY_BUDGET_MS) return false
         pending = true
         return true
     }
 
+    // Spacing after a failed replacement; doubles up to RECOVERY_MAX_DELAY_MS.
+    fun retryDelayMs(): Long =
+        (RECOVERY_INITIAL_DELAY_MS shl attempts.coerceAtMost(MAX_BACKOFF_SHIFT)).coerceAtMost(RECOVERY_MAX_DELAY_MS)
+
     fun cancelPending() {
         pending = false
+        if (attempts == 0) lostAtMillis = null
     }
 
     fun beginScheduledRecovery(): Boolean {
-        if (!pending || attempts >= maxAttempts) return false
+        if (!pending) return false
         pending = false
         attempts++
         return true
@@ -174,7 +190,12 @@ internal class VoiceRecoveryPolicy(
 
     fun reset() {
         pending = false
+        lostAtMillis = null
         attempts = 0
+    }
+
+    private companion object {
+        const val MAX_BACKOFF_SHIFT = 3
     }
 }
 
@@ -220,7 +241,7 @@ internal class VoiceSession(
     private val attemptGeneration = AtomicLong()
     private val pendingGatewayTools = mutableMapOf<Long, Int>()
     private var awaitingGatewayTurn = false
-    private val recoveryPolicy = VoiceRecoveryPolicy(MAX_RECONNECT_ATTEMPTS)
+    private val recoveryPolicy = VoiceRecoveryPolicy()
     private val voiceModeChime = VoiceModeChime(voiceChimePlayer)
     private val errorLog = (appContext.applicationContext as GoModeApplication).voiceErrors
     private var disconnectAudioAttempt: Long? = null
@@ -590,30 +611,32 @@ internal class VoiceSession(
                                             pc.setRemoteDescription(noOpSdpObserver(), answer)
                                             startSetupTimeout(pc, voiceGatewayClient, voiceGatewayHeaders, timing)
                                             Log.i(TAG, "WebRTC signaling complete, session=${resp.sessionID}")
+                                        } catch (e: TimeoutCancellationException) {
+                                            // ICE gathering on a route that is still settling.
+                                            if (ownsAttempt(attempt) && preserveTranscript) {
+                                                retryRecovery("Network connection failed")
+                                            }
+                                            throw e
                                         } catch (e: CancellationException) {
                                             throw e
                                         } catch (e: GatewayConnectionException) {
                                             if (ownsAttempt(attempt)) {
-                                                if (preserveTranscript && e.cause is IOException) {
-                                                    scheduleReconnect("Network connection failed", 1_000L)
+                                                if (preserveTranscript && e.transient) {
+                                                    retryRecovery("Network connection failed")
                                                 } else {
                                                     timing?.finishFailure(e)
                                                     setError(requireNotNull(e.message))
                                                 }
                                             }
-                                        } catch (e: IOException) {
+                                        } catch (e: Exception) {
                                             if (ownsAttempt(attempt)) {
                                                 if (preserveTranscript) {
-                                                    scheduleReconnect("Network connection failed", 1_000L)
+                                                    // A new route can finish ICE gathering without a usable candidate.
+                                                    retryRecovery("Network connection failed")
                                                 } else {
                                                     timing?.finishFailure(e)
                                                     setError("SDP exchange failed: ${e.message}")
                                                 }
-                                            }
-                                        } catch (e: Exception) {
-                                            if (ownsAttempt(attempt)) {
-                                                timing?.finishFailure(e)
-                                                setError("SDP exchange failed: ${e.message}")
                                             }
                                         }
                                     }
@@ -640,8 +663,8 @@ internal class VoiceSession(
                     throw e
                 } catch (e: IOException) {
                     if (ownsAttempt(attempt)) {
-                        if (preserveTranscript) {
-                            scheduleReconnect("Network connection failed", 1_000L)
+                        if (preserveTranscript && (e as? GatewayConnectionException)?.transient != false) {
+                            retryRecovery("Network connection failed")
                         } else {
                             timing?.finishFailure(e)
                             setError("WebRTC connection failed: ${e.message}")
@@ -808,7 +831,7 @@ internal class VoiceSession(
             reconnectJob?.cancel()
         }
         if (!recoveryPolicy.schedule()) {
-            setError("Voice connection lost after $MAX_RECONNECT_ATTEMPTS recovery attempts")
+            setError(RECOVERY_EXHAUSTED_ERROR)
             return
         }
         setStatus("$reason; reconnecting…")
@@ -836,6 +859,8 @@ internal class VoiceSession(
         reconnectJob?.start()
     }
 
+    private fun retryRecovery(reason: String) = scheduleReconnect(reason, recoveryPolicy.retryDelayMs())
+
     private fun startSetupTimeout(
         pc: PeerConnection,
         gatewayClient: ApiClient,
@@ -856,6 +881,10 @@ internal class VoiceSession(
                     SETUP_TIMEOUT_MS
                 )
                 if (peerConnection !== pc || _state.value.connected || _state.value.error != null) return@launch
+                if (recoveryPolicy.recovering) {
+                    retryRecovery("Voice gateway did not respond")
+                    return@launch
+                }
                 setDiagnosticError(
                     pc = pc,
                     gatewayClient = gatewayClient,

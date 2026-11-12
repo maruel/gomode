@@ -143,6 +143,37 @@ class VoiceSessionLifecycleTest {
         }
 
     @Test
+    fun recoveryPolicyBacksOffUntilTheTimeBudgetElapses() {
+        val policy = VoiceRecoveryPolicy()
+
+        // A disconnected grace that heals before a replacement starts is not a loss.
+        assertTrue(policy.schedule())
+        policy.cancelPending()
+        assertFalse(policy.beginScheduledRecovery())
+        assertFalse(policy.recovering)
+
+        val delays =
+            List(5) {
+                assertTrue(policy.schedule())
+                assertTrue(policy.beginScheduledRecovery())
+                policy.retryDelayMs()
+            }
+        assertEquals(listOf(2_000L, 4_000L, 8_000L, 8_000L, 8_000L), delays)
+        policy.cancelPending()
+        assertTrue("a started replacement keeps the original loss time", policy.recovering)
+
+        ShadowSystemClock.advanceBy(Duration.ofMillis(RECOVERY_BUDGET_MS - 1))
+        assertTrue(policy.schedule())
+        ShadowSystemClock.advanceBy(Duration.ofMillis(1))
+        assertFalse(policy.schedule())
+
+        policy.reset()
+        assertFalse(policy.recovering)
+        assertEquals(1_000L, policy.retryDelayMs())
+        assertTrue(policy.schedule())
+    }
+
+    @Test
     fun toolResultDeliveryFailureStopsTheAttemptWithoutRepeatingTheAction() =
         runTest {
             for (failure in listOf("closed", "rejected", "exception")) {

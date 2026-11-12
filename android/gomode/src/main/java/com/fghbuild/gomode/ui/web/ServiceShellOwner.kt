@@ -17,6 +17,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -25,6 +26,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+
+private const val BOOTSTRAP_RETRY_INITIAL_MS = 1_000L
+private const val BOOTSTRAP_RETRY_MAX_MS = 30_000L
 
 internal enum class ServiceCallStage { PAGE, SIGN_IN, TOOLS, FRONTEND }
 
@@ -120,7 +124,15 @@ internal class ServiceShellOwner(
                     ) {
                         previousReload = reload
                         entry.updateBootstrap(ServiceBootstrapState.Unvalidated())
-                        entry.updateBootstrap(fetchBootstrapState(entry.key.url, ServiceSettingsClient()))
+                        // DNS and sockets can fail briefly at process start or route handover.
+                        var retryMs = BOOTSTRAP_RETRY_INITIAL_MS
+                        while (true) {
+                            val fetched = fetchBootstrapState(entry.key.url, ServiceSettingsClient())
+                            entry.updateBootstrap(fetched)
+                            if ((fetched as? ServiceBootstrapState.Unvalidated)?.transient != true) break
+                            delay(retryMs)
+                            retryMs = (retryMs * 2).coerceAtMost(BOOTSTRAP_RETRY_MAX_MS)
+                        }
                     }
                 }
             }

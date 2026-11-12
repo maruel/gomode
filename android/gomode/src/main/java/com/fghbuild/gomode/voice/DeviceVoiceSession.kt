@@ -16,6 +16,7 @@ import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.service.DefaultNetworkMonitor
 import com.fghbuild.gomode.service.ServiceSettingsClient
+import com.fghbuild.gomode.service.isTransientHTTPStatus
 import com.fghbuild.gomode.ui.web.FrontendVoiceTools
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import com.fghbuild.voicegateway.sdk.v2.AssistantTextDelta
@@ -203,7 +204,7 @@ internal class DeviceVoiceSession(
     private var networkJob: Job? = null
     private var reconnectJob: Job? = null
     private var readinessJob: Job? = null
-    private val recoveryPolicy = VoiceRecoveryPolicy(maxAttempts = MAX_RECONNECT_ATTEMPTS)
+    private val recoveryPolicy = VoiceRecoveryPolicy()
     private var recoveryContext = ""
     private var pinnedVoice: GatewayVoiceSelection? = null
 
@@ -521,9 +522,9 @@ internal class DeviceVoiceSession(
                         // so accept any socket while this attempt owns none.
                         val current = this@DeviceVoiceSession.webSocket
                         if (ownsAttempt(attempt) && (current == null || current === webSocket)) {
-                            if (response == null && t is IOException &&
-                                (_state.value.connected || recoveryPolicy.attempts > 0)
-                            ) {
+                            val transient =
+                                if (response == null) t is IOException else isTransientHTTPStatus(response.code)
+                            if (transient && (_state.value.connected || recoveryPolicy.recovering)) {
                                 scheduleReconnect("Network connection lost")
                                 return@launch
                             }
@@ -544,7 +545,7 @@ internal class DeviceVoiceSession(
                     scope.launch {
                         if (ownsAttempt(attempt) && this@DeviceVoiceSession.webSocket === webSocket) {
                             if (code in setOf(1001, 1011, 1012, 1013, 1014) &&
-                                (_state.value.connected || recoveryPolicy.attempts > 0)
+                                (_state.value.connected || recoveryPolicy.recovering)
                             ) {
                                 scheduleReconnect("Voice gateway restarting")
                             } else {
@@ -598,7 +599,7 @@ internal class DeviceVoiceSession(
     private fun scheduleReconnect(reason: String) {
         if (reconnectJob != null) return
         if (!recoveryPolicy.schedule()) {
-            setError("Voice connection lost after $MAX_RECONNECT_ATTEMPTS recovery attempts")
+            setError(RECOVERY_EXHAUSTED_ERROR)
             return
         }
         val attempt = invalidateAttempt()
@@ -624,7 +625,7 @@ internal class DeviceVoiceSession(
         setStatus("$reason; reconnecting…")
         reconnectJob =
             scope.launch {
-                delay(1_000L)
+                delay(recoveryPolicy.retryDelayMs())
                 networkMonitor.network.filterNotNull().first()
                 reconnectJob = null
                 if (ownsAttempt(attempt) && recoveryPolicy.beginScheduledRecovery()) {
@@ -647,7 +648,7 @@ internal class DeviceVoiceSession(
             scope.launch {
                 delay(RECOVERY_READINESS_TIMEOUT_MS)
                 readinessJob = null
-                if (ownsAttempt(attempt)) setError("Voice connection timed out waiting for session readiness.")
+                if (ownsAttempt(attempt)) scheduleReconnect("Voice gateway did not respond")
             }
     }
 
