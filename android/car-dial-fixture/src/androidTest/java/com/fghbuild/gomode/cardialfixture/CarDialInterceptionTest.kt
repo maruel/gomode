@@ -1044,6 +1044,11 @@ class CarDialInterceptionTest {
         }
     }
 
+    // TODO: The DEVICE branch proves a live session from fixture counters (textSetups, textActive).
+    // It used to require a model turn, which only the removed connect greeting produced; the
+    // fixture recognizer never speaks. Both are gateway internals. Prefer user-visible evidence:
+    // e.g. have FixtureSpeechRecognitionService return one utterance and assert its transcript and
+    // reply appear in the voice panel, so the test covers a real exchange again.
     private fun awaitVoice(
         mode: String,
         before: JSONObject,

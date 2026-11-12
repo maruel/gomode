@@ -62,6 +62,10 @@ export function monitorServiceNotifications(
   let alertDirty = false;
   let alertTimer: ReturnType<typeof setTimeout> | null = null;
   const resources = new Map<string, WatchedResource>();
+  // TODO: This records "sent" when injectText queues the text, and VoiceSession
+  // then accumulates queued changes. A resource changing twice during a turn is
+  // sent twice. Track delivery instead; see the TODO on
+  // VoiceSession.setServiceContext.
   // Last text sent per resource; the model only receives changes.
   const sent = new Map<string, string>();
   const observed = new Set<string>();

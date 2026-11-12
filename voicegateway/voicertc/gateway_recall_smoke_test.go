@@ -100,6 +100,18 @@ func TestSmokeGatewayServerFocusRecall(t *testing.T) {
 	}
 }
 
+// TODO: Add voice-policy smoke cases against real Gemini Live. Unit, e2e, and emulator
+// tests all passed while the policy regressed: a plain alert line got only "Okay." or
+// a restated second sentence in about half of runs, and only live trials showed it.
+// A throwaway harness that caught it: realtimeBridgeBackend{provider: "gemini",
+// model: "gemini-3.8-live"} connected to a realtimeEventSink, session.setup with a
+// host instruction (caic's caicVoiceSystemInstruction) and catalog context, no input
+// for 10s (expect no assistant.text.delta), then a context.update with generate:true
+// and "New notification: Task #2 is waiting: Fix login flake [task-123]" (expect one
+// sentence naming the task). Model output varies, so assert over repeated runs, e.g.
+// at least 9 of 10 pass. Results then: previous policy 11/11; flattened policy
+// ~4/8; current policy with caic's instruction 10/10. Use it to A/B any change to
+// voicegateway/policy/instructions.txt or a host's voice instruction.
 func TestSmokeGeminiBridgeSession(t *testing.T) {
 	t.Run("tool continuation emits native audio", func(t *testing.T) {
 		key := os.Getenv("GEMINI_API_KEY")

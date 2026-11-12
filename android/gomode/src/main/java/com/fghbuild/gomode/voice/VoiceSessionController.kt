@@ -44,6 +44,13 @@ internal data class VoiceContextUpdate(
     val generate: Boolean,
 )
 
+// TODO: Accumulated changes can carry a superseded version of the same section: two "Selected
+// server:" lines arrive in one update when focus changes twice during a tool call
+// (ServerVoiceSwitchTest#spokenTextSwitchKeepsOneConversationAcrossBothDirections). The model
+// reads the newest last, so behavior is correct, but the stale copy wastes tokens. The cause is
+// VoiceConversation.contextUpdate() committing its sent map when GoModeApp/CarDialVoiceOwner call
+// it, before delivery. Compute the diff when this buffer drains instead, so it holds no text and
+// the over-budget fallback disappears. The browser has the same shape (web/src/VoiceSession.ts).
 // Retain every context change and actionable occurrence until the active turn ends. Context updates
 // carry changes only, so they accumulate; an over-budget total keeps the newest whole.
 internal class PendingVoiceContext {

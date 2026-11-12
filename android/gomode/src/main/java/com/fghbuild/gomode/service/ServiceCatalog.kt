@@ -310,6 +310,12 @@ internal class ServiceCatalog(
                         val contents =
                             resource.contents.orEmpty().map { it.copy(_meta = null) }
 
+                        // TODO: This is the last JSON envelope the model sees: the read result is
+                        // wrapped as {"resource": contents} and an oversized one becomes
+                        // {"resource": uri, "status": "omitted"}. Every other model-facing path now
+                        // sends server text verbatim and drops what does not fit (ModelContext.kt).
+                        // Return the resource text itself, and on overflow a plain error result the
+                        // model can act on, e.g. "Resource too large; use the server's tools."
                         val body = buildJsonObject { put("resource", Json.encodeToJsonElement(contents)) }
                         val limit = MODEL_CONTEXT_BUDGET
                         McpToolResult(

@@ -223,6 +223,14 @@ func (s *realtimeBridgeSession) acceptClientMessage(ctx context.Context, data []
 	return s.send(ctx, input)
 }
 
+// TODO: No test runs current clients against an older gateway. Gateways built before
+// 7b9a6c8 reject an empty context.systemInstruction here ("session.setup
+// context.systemInstruction is required"); clients stopped sending one when the shared
+// policy moved into the gateway, and the Android app failed against a not-yet-redeployed
+// host. The field is optional in the schema, so nothing flagged the break. Add a check
+// that replays the setup and client messages produced by web/src/VoiceSession.ts and
+// Android VoiceSession.kt against the gateway from the last published tag, or reject
+// unknown or newly required semantics with an explicit version error.
 func (s *realtimeBridgeSession) setup(msg *voicev2.SessionSetup) error {
 	if err := validateNativeSpeech(msg); err != nil {
 		return err
@@ -374,6 +382,11 @@ func (s *realtimeBridgeSession) handleEvent(event *genai.RealtimeEvent) error {
 			responseID = gatewayResponseID(s.id, event.ResponseID)
 			transcript = &s.outputTranscript
 		}
+		// TODO: Each assistant output-transcript chunk is sent twice, as transcript.delta and as
+		// assistant.text.delta with identical text, doubling assistant text on the data channel.
+		// Check which clients consume each kind (web/src/VoiceSession.ts, Android VoiceSession.kt
+		// and DeviceVoiceSession.kt, the v1 projection in compat.go); if one kind suffices for
+		// transcript display and client-owned speech, drop the other from the v2 protocol.
 		text := transcript.consume(event)
 		if text != "" {
 			out = append(out, mustGatewayServerMessage(&voicev2.TranscriptDelta{Kind: voicev2.MessageKindTranscriptDelta, Speaker: speaker, Text: text, ResponseID: responseID}))

@@ -2164,6 +2164,16 @@ export class VoiceSession {
     }
   }
 
+  // TODO: Queued changes are concatenated, so a resource that changes twice during
+  // one turn reaches the model twice, the stale text first. Observed: two
+  // "focus" blocks for the same context resource in one context.update (mddb
+  // e2e voice-focus-context.spec.ts). Behavior is correct (newest last) but
+  // wastes tokens. The root cause is in ServiceNotifications.ts: its `sent` map
+  // records a resource as delivered when it is queued here, not when it reaches
+  // the gateway. Fix by computing the diff at delivery (flush time), so one
+  // pending text per resource exists; then this accumulation and its budget
+  // fallback go away. Android has the same shape: PendingVoiceContext and
+  // VoiceConversation.contextUpdate().
   /** Send changed service context; changes queued during a turn accumulate, newest last. */
   setServiceContext(text: string): void {
     if (this._contextUpdateBlocked()) {
