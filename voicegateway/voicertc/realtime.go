@@ -43,7 +43,6 @@ type llamaRealtimeBackend struct {
 }
 
 func newLlamaRealtimeBackend(ctx context.Context, cfg voicegateway.RealtimeConfig) (*llamaRealtimeBackend, error) {
-	cfg = cfg.WithDefaults()
 	b := &llamaRealtimeBackend{cfg: cfg, slots: make(chan struct{}, cfg.Slots)}
 	remote := cfg.Remote
 	if remote == "" {

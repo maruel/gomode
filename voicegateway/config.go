@@ -3,6 +3,7 @@
 package voicegateway
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -102,7 +103,7 @@ type providerProbeKey struct {
 
 // Choice is a typed pipeline configuration: *RealtimeConfig, *LLMConfig, or
 // *PipelineConfig. IDs fingerprint effective settings independently of labels
-// and credentials. Each pipeline owns its defaults and validation.
+// and credentials. Resolve selects their defaults; each validates itself.
 type Choice interface {
 	ID() (string, error)
 	validate() error
@@ -168,7 +169,7 @@ func (c *ResolvedConfig) Available(ctx context.Context) ResolvedConfig {
 		}
 	}
 	for _, c := range c.Pipelines {
-		add(&c.LLM)
+		add(&c.LLM.ModelConfig)
 		if !c.TextOnly && c.ASR.Engine == ASREngineGenAI {
 			asr := c.ASR.modelConfig()
 			add(&asr)
@@ -244,7 +245,7 @@ func (c *ResolvedConfig) Available(ctx context.Context) ResolvedConfig {
 	}
 	out.Pipelines = nil
 	for _, c := range c.Pipelines {
-		llmUnavailable := unavailable(c.Label, &c.LLM)
+		llmUnavailable := unavailable(c.Label, &c.LLM.ModelConfig)
 		asrUnavailable := false
 		if !c.TextOnly && c.ASR.Engine == ASREngineGenAI {
 			asr := c.ASR.modelConfig()
@@ -270,6 +271,32 @@ func (c *ASRConfig) modelConfig() ModelConfig {
 		Model:          c.Model,
 		LlamaCPPServer: c.Provider == "llamacpp" && c.Remote == "",
 	}
+}
+
+func (c *ASRConfig) managedLlama() bool {
+	return c.Engine == ASREngineGenAI && c.modelConfig().LlamaCPPServer
+}
+
+func (c *TTSConfig) managedLlama() bool {
+	return c.Engine == TTSEngineGenAI && c.modelConfig().LlamaCPPServer
+}
+
+// validateManagedContext checks context_size, which sizes a managed llama.cpp
+// server and nothing else.
+func validateManagedContext(prefix string, size int, managed bool) error {
+	if !managed {
+		if size != 0 {
+			return fmt.Errorf("%s.context_size requires a managed llama.cpp server", prefix)
+		}
+		return nil
+	}
+	if size == 0 {
+		return fmt.Errorf("%s.context_size is required for a managed llama.cpp server", prefix)
+	}
+	if size < 512 || size > 262144 {
+		return fmt.Errorf("%s.context_size must be between 512 and 262144", prefix)
+	}
+	return nil
 }
 
 func (c *TTSConfig) modelConfig() ModelConfig {
@@ -432,6 +459,10 @@ func (c *ModelConfig) validate(prefix string) error {
 type LLMConfig struct {
 	Label string `toml:"label" json:"-"`
 	ModelConfig
+	// ContextSize is the managed llama.cpp context in tokens, 512 to 262144,
+	// and is required for a managed server. Conversation history is kept
+	// whole, so requests that outgrow it fail.
+	ContextSize int `toml:"context_size" json:"context_size,omitzero"`
 }
 
 // ID returns the fingerprint of the effective LLM settings.
@@ -440,7 +471,11 @@ func (c *LLMConfig) ID() (string, error) {
 }
 
 func (c *LLMConfig) validate() error {
-	return c.ModelConfig.validate("chat")
+	return c.validateAs("chat")
+}
+
+func (c *LLMConfig) validateAs(prefix string) error {
+	return errors.Join(c.ModelConfig.validate(prefix), validateManagedContext(prefix, c.ContextSize, c.LlamaCPPServer))
 }
 
 // choiceID hashes the pipeline's canonical configuration. Labels and credential
@@ -483,12 +518,22 @@ func (c *configFile) Resolve() (ResolvedConfig, error) {
 	return out, nil
 }
 
-// Resolve validates declarations and expands preset references into effective
-// runtime settings. It owns its result slices and leaves declarations unchanged.
+// Resolve validates declarations, selects omitted defaults, and expands preset
+// references into effective runtime settings. It owns its result slices and leaves declarations unchanged.
 // Recognition, language, and synthesis choices retain declaration order in standalone
 // and embedded host configurations.
 func (c *Config) Resolve() (ResolvedConfig, error) {
 	out := ResolvedConfig{Runtime: c.Runtime, Realtime: slices.Clone(c.Realtime)}
+	out.Runtime.IdleTimeoutSeconds = cmp.Or(out.Runtime.IdleTimeoutSeconds, 3600)
+	out.Runtime.MaxInstances = cmp.Or(out.Runtime.MaxInstances, 1)
+	for i := range out.Realtime {
+		if r := &out.Realtime[i]; r.Provider == "llamacpp" {
+			r.Slots = cmp.Or(r.Slots, 1)
+			if r.Staged {
+				r.Effort = cmp.Or(r.Effort, "medium")
+			}
+		}
+	}
 	var errs []error
 	asr := make(map[string]ASRConfig, len(c.ASR))
 	for i, d := range c.ASR {
@@ -559,7 +604,7 @@ func (c *Config) Resolve() (ResolvedConfig, error) {
 		if v.TTS != "" && !ttsOK {
 			errs = append(errs, fmt.Errorf("voice %q: unknown tts %q", v.Label, v.TTS))
 		}
-		out.Pipelines = append(out.Pipelines, PipelineConfig{Label: v.Label, ASR: a, LLM: llm.ModelConfig, TTS: t})
+		out.Pipelines = append(out.Pipelines, PipelineConfig{Label: v.Label, ASR: a, LLM: llm, TTS: t})
 	}
 	if err := errors.Join(errs...); err != nil {
 		return ResolvedConfig{}, err
@@ -636,8 +681,8 @@ func DefaultConfigPath() string {
 // Validate returns an error if c is not a usable runtime configuration.
 func (c *ResolvedConfig) Validate() error {
 	var errs []error
-	if c.Runtime.IdleTimeoutSeconds < 0 || c.Runtime.IdleTimeoutSeconds > 31536000 || c.Runtime.MaxInstances < 0 {
-		errs = append(errs, errors.New("local_stack_runtime requires idle_timeout_seconds in 0..31536000 and max_instances >= 0"))
+	if c.Runtime.IdleTimeoutSeconds < 1 || c.Runtime.IdleTimeoutSeconds > 31536000 || c.Runtime.MaxInstances < 1 {
+		errs = append(errs, errors.New("local_stack_runtime requires idle_timeout_seconds in 1..31536000 and max_instances >= 1"))
 	}
 	if len(c.Realtime)+len(c.LLM)+len(c.Pipelines) == 0 {
 		errs = append(errs, errors.New("at least one realtime, llm, or voice entry is required"))
@@ -713,21 +758,12 @@ func (c *ServerConfig) Validate() error {
 // audio choices, including all their providers and managed workers. Active sessions pin their choice;
 // capacity waits never evict active sessions. Remote servers remain host-owned.
 type RuntimeConfig struct {
-	// IdleTimeoutSeconds defaults to 3600. Time starts when the last session closes.
+	// IdleTimeoutSeconds starts when the last session closes. Resolve selects
+	// 3600 when omitted.
 	IdleTimeoutSeconds int `toml:"idle_timeout_seconds"`
-	// MaxInstances defaults to 1. One instance is a complete choice, including ASR/LLM/TTS.
+	// MaxInstances counts complete choices, including ASR/LLM/TTS. Resolve
+	// selects 1 when omitted.
 	MaxInstances int `toml:"max_instances"`
-}
-
-// WithDefaults resolves omitted runtime limits.
-func (c RuntimeConfig) WithDefaults() RuntimeConfig {
-	if c.IdleTimeoutSeconds == 0 {
-		c.IdleTimeoutSeconds = 3600
-	}
-	if c.MaxInstances == 0 {
-		c.MaxInstances = 1
-	}
-	return c
 }
 
 // PipelineConfig composes recognition, language generation, and synthesis adapters.
@@ -744,8 +780,8 @@ type PipelineConfig struct {
 	ASR      ASRConfig `toml:"asr" json:"asr"`
 	// LLM must support function tools. Its endpoint receives transcripts, the
 	// system instruction, and service-item context, even when speech stays local.
-	LLM ModelConfig `toml:"llm" json:"llm"`
-	TTS TTSConfig   `toml:"tts" json:"tts"`
+	LLM LLMConfig `toml:"llm" json:"llm"`
+	TTS TTSConfig `toml:"tts" json:"tts"`
 	// UnavailableASR and UnavailableTTS retain choice identity while filtering
 	// speech capabilities after provider availability checks.
 	UnavailableASR bool `toml:"-" json:"-"`
@@ -763,7 +799,7 @@ func (c *PipelineConfig) validate() error {
 		if c.ASR != (ASRConfig{}) || c.TTS != (TTSConfig{}) {
 			speechErr = errors.New("local_stack.text_only cannot be combined with asr or tts settings")
 		}
-		return errors.Join(speechErr, c.LLM.validate("voice.llm"))
+		return errors.Join(speechErr, c.LLM.validateAs("voice.llm"))
 	}
 	var speechErr error
 	if c.ASR != (ASRConfig{}) {
@@ -772,7 +808,7 @@ func (c *PipelineConfig) validate() error {
 	if c.TTS != (TTSConfig{}) {
 		speechErr = errors.Join(speechErr, validateTTS(c.TTS))
 	}
-	return errors.Join(speechErr, c.LLM.validate("voice.llm"))
+	return errors.Join(speechErr, c.LLM.validateAs("voice.llm"))
 }
 
 // ASRConfig configures a speech-to-text adapter.
@@ -789,6 +825,9 @@ type ASRConfig struct {
 	Provider  string    `toml:"provider" json:"provider"`
 	Remote    string    `toml:"remote" json:"remote"`
 	Model     string    `toml:"model" json:"model"`
+	// ContextSize is the managed llama.cpp context in tokens, 512 to 262144,
+	// and is required for a managed server. Each request carries one utterance.
+	ContextSize int `toml:"context_size" json:"context_size,omitzero"`
 }
 
 // ID returns the fingerprint of the effective recognition settings.
@@ -830,6 +869,9 @@ type TTSConfig struct {
 	Remote   string    `toml:"remote" json:"remote"`
 	Model    string    `toml:"model" json:"model"`
 	Voice    string    `toml:"voice" json:"voice"`
+	// ContextSize is the managed llama.cpp context in tokens, 512 to 262144,
+	// and is required for a managed server. Each request carries one reply.
+	ContextSize int `toml:"context_size" json:"context_size,omitzero"`
 }
 
 // ID returns the fingerprint of the effective synthesis settings.
@@ -853,6 +895,10 @@ const (
 )
 
 func validateASR(c ASRConfig) error {
+	return errors.Join(validateASREngine(c), validateManagedContext("voice.asr", c.ContextSize, c.managedLlama()))
+}
+
+func validateASREngine(c ASRConfig) error {
 	if c.Streaming && (c.Engine != ASREngineGenAI || c.Provider != "llamacpp" && c.Provider != "gemini") {
 		return errors.New("voice.asr.streaming requires a llama.cpp or Gemini live-ASR provider")
 	}
@@ -895,6 +941,10 @@ func validateASR(c ASRConfig) error {
 }
 
 func validateTTS(c TTSConfig) error {
+	return errors.Join(validateTTSEngine(c), validateManagedContext("voice.tts", c.ContextSize, c.managedLlama()))
+}
+
+func validateTTSEngine(c TTSConfig) error {
 	if c.Provider != "" && c.Engine != TTSEngineGenAI {
 		return errors.New("voice.tts.provider is only used with the genai engine")
 	}

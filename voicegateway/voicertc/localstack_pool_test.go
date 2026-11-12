@@ -23,17 +23,20 @@ import (
 	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
+// testRuntime holds the limits Resolve selects when they are omitted.
+var testRuntime = voicegateway.RuntimeConfig{IdleTimeoutSeconds: 3600, MaxInstances: 1}
+
 func poolTestConfig(model string) voicegateway.PipelineConfig {
-	return voicegateway.PipelineConfig{TextOnly: true, LLM: voicegateway.ModelConfig{
+	return voicegateway.PipelineConfig{TextOnly: true, LLM: voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{
 		Provider: "openaicompatible", Remote: "http://localhost:1/completions", Model: model,
-	}}
+	}}}
 }
 
 func TestLocalStackPool(t *testing.T) {
 	t.Parallel()
 	t.Run("native audio defers initialization", func(t *testing.T) {
 		t.Parallel()
-		p := newLocalStackPool(voicegateway.RuntimeConfig{})
+		p := newLocalStackPool(testRuntime)
 		b, err := backendForConfig(&voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{
 			Provider: "llamacpp", Remote: "http://localhost:1", Model: "audio-model",
 		}}, p)
@@ -51,10 +54,10 @@ func TestLocalStackPool(t *testing.T) {
 	t.Run("native audio lifecycle", func(t *testing.T) {
 		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
-			p := newLocalStackPool(voicegateway.RuntimeConfig{IdleTimeoutSeconds: 10})
+			p := newLocalStackPool(voicegateway.RuntimeConfig{IdleTimeoutSeconds: 10, MaxInstances: 1})
 			b := p.realtimeBackend(voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{
 				Provider: "llamacpp", Remote: "http://localhost:1", Model: "audio-model",
-			}}.WithDefaults())
+			}, Slots: 1})
 			t.Cleanup(func() { _ = b.Close() })
 			var logs bytes.Buffer
 			b.lazy.log = slog.New(slog.NewJSONHandler(&logs, nil))
@@ -99,10 +102,10 @@ func TestLocalStackPool(t *testing.T) {
 	t.Run("native audio shares capacity with text", func(t *testing.T) {
 		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
-			p := newLocalStackPool(voicegateway.RuntimeConfig{})
+			p := newLocalStackPool(testRuntime)
 			a := p.realtimeBackend(voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{
 				Provider: "llamacpp", Remote: "http://localhost:1", Model: "audio-model",
-			}}.WithDefaults())
+			}, Slots: 1})
 			b := p.backend(poolTestConfig("text"))
 			t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
 			if _, err := a.lazy.acquire(t.Context()); err != nil {
@@ -129,7 +132,7 @@ func TestLocalStackPool(t *testing.T) {
 	t.Run("progress survives eviction before acquisition", func(t *testing.T) {
 		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
-			p := newLocalStackPool(voicegateway.RuntimeConfig{})
+			p := newLocalStackPool(testRuntime)
 			a, b := p.backend(poolTestConfig("one")), p.backend(poolTestConfig("two"))
 			t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
 			if _, err := stackVariant(t, a, clientSpeechConfig()).acquire(t.Context()); err != nil {
@@ -185,8 +188,8 @@ func TestLocalStackPool(t *testing.T) {
 					<-r.Context().Done()
 				}))
 				t.Cleanup(model.Close)
-				p := newLocalStackPool(voicegateway.RuntimeConfig{})
-				b := p.backend(voicegateway.PipelineConfig{TextOnly: true, LLM: voicegateway.ModelConfig{Provider: "llamacpp", Remote: model.URL, Model: "chat"}})
+				p := newLocalStackPool(testRuntime)
+				b := p.backend(voicegateway.PipelineConfig{TextOnly: true, LLM: voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", Remote: model.URL, Model: "chat"}}})
 				t.Cleanup(func() { _ = b.Close() })
 				done := make(chan error, 1)
 				logDir := t.TempDir()
@@ -236,7 +239,7 @@ func TestLocalStackPool(t *testing.T) {
 	t.Run("progress while waiting for capacity", func(t *testing.T) {
 		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
-			p := newLocalStackPool(voicegateway.RuntimeConfig{})
+			p := newLocalStackPool(testRuntime)
 			a, b := p.backend(poolTestConfig("one")), p.backend(poolTestConfig("two"))
 			t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
 			if _, err := stackVariant(t, a, clientSpeechConfig()).acquire(t.Context()); err != nil {
@@ -280,8 +283,8 @@ func TestLocalStackPool(t *testing.T) {
 			<-r.Context().Done()
 		}))
 		t.Cleanup(server.Close)
-		p := newLocalStackPool(voicegateway.RuntimeConfig{MaxInstances: 2})
-		cfg := voicegateway.PipelineConfig{TextOnly: true, LLM: voicegateway.ModelConfig{Provider: "llamacpp", Remote: server.URL, Model: "chat"}}
+		p := newLocalStackPool(voicegateway.RuntimeConfig{IdleTimeoutSeconds: 3600, MaxInstances: 2})
+		cfg := voicegateway.PipelineConfig{TextOnly: true, LLM: voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", Remote: server.URL, Model: "chat"}}}
 		a, b := p.backend(cfg), p.backend(cfg)
 		t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
 		select {
@@ -314,7 +317,7 @@ func TestLocalStackPool(t *testing.T) {
 	t.Run("reuse and idle expiry", func(t *testing.T) {
 		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
-			p := newLocalStackPool(voicegateway.RuntimeConfig{IdleTimeoutSeconds: 10})
+			p := newLocalStackPool(voicegateway.RuntimeConfig{IdleTimeoutSeconds: 10, MaxInstances: 1})
 			b := p.backend(poolTestConfig("one"))
 			t.Cleanup(func() { _ = b.Close() })
 			if stackVariant(t, b, clientSpeechConfig()).loaded != nil {
@@ -354,7 +357,7 @@ func TestLocalStackPool(t *testing.T) {
 	t.Run("capacity pins sessions and evicts idle choices", func(t *testing.T) {
 		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
-			p := newLocalStackPool(voicegateway.RuntimeConfig{})
+			p := newLocalStackPool(testRuntime)
 			a, b := p.backend(poolTestConfig("one")), p.backend(poolTestConfig("two"))
 			t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
 			first, err := stackVariant(t, a, clientSpeechConfig()).acquire(t.Context())
@@ -388,7 +391,7 @@ func TestLocalStackPool(t *testing.T) {
 	t.Run("cancel capacity wait", func(t *testing.T) {
 		t.Parallel()
 		synctest.Test(t, func(t *testing.T) {
-			p := newLocalStackPool(voicegateway.RuntimeConfig{})
+			p := newLocalStackPool(testRuntime)
 			a, b := p.backend(poolTestConfig("one")), p.backend(poolTestConfig("two"))
 			t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
 			if _, err := stackVariant(t, a, clientSpeechConfig()).acquire(t.Context()); err != nil {
@@ -421,8 +424,8 @@ func TestLocalStackPool(t *testing.T) {
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		}))
 		t.Cleanup(server.Close)
-		p := newLocalStackPool(voicegateway.RuntimeConfig{})
-		b := p.backend(voicegateway.PipelineConfig{TextOnly: true, LLM: voicegateway.ModelConfig{Provider: "llamacpp", Remote: server.URL, Model: "chat"}})
+		p := newLocalStackPool(testRuntime)
+		b := p.backend(voicegateway.PipelineConfig{TextOnly: true, LLM: voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", Remote: server.URL, Model: "chat"}}})
 		t.Cleanup(func() { _ = b.Close() })
 		if _, err := stackVariant(t, b, clientSpeechConfig()).acquire(t.Context()); err == nil {
 			t.Fatal("unavailable provider loaded")
@@ -514,11 +517,11 @@ func TestLocalStackBackend(t *testing.T) {
 	t.Run("unused workers never initialize", func(t *testing.T) {
 		t.Parallel()
 		cfg := voicegateway.PipelineConfig{
-			ASR: voicegateway.ASRConfig{Engine: voicegateway.ASREngineGenAI, Provider: "llamacpp", Model: "asr"},
-			LLM: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "llm"},
-			TTS: voicegateway.TTSConfig{Engine: voicegateway.TTSEngineGenAI, Provider: "llamacpp", Model: "tts"},
+			ASR: voicegateway.ASRConfig{Engine: voicegateway.ASREngineGenAI, Provider: "llamacpp", Model: "asr", ContextSize: 32768},
+			LLM: voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "llm"}, ContextSize: 65536},
+			TTS: voicegateway.TTSConfig{Engine: voicegateway.TTSEngineGenAI, Provider: "llamacpp", Model: "tts", ContextSize: 32768},
 		}
-		p := newLocalStackPool(voicegateway.RuntimeConfig{})
+		p := newLocalStackPool(testRuntime)
 		b := p.backend(cfg)
 		t.Cleanup(func() { _ = b.Close() })
 		for _, tc := range []struct {
@@ -540,7 +543,7 @@ func TestLocalStackBackend(t *testing.T) {
 				t.Fatalf("missing mode %+v", tc.mode)
 			}
 			var started []string
-			models, err := localStackModelsForConfigWithStarter(t.Context(), variant, func(_ context.Context, model string) (managedLlamaServer, error) {
+			models, err := localStackModelsForConfigWithStarter(t.Context(), variant, func(_ context.Context, model string, _ int) (managedLlamaServer, error) {
 				started = append(started, model)
 				return &fakeManagedLlamaServer{url: "http://localhost:1"}, nil
 			})
@@ -557,7 +560,7 @@ func TestLocalStackBackend(t *testing.T) {
 	})
 	t.Run("unsupported setup does not initialize native or composed models", func(t *testing.T) {
 		t.Parallel()
-		p := newLocalStackPool(voicegateway.RuntimeConfig{})
+		p := newLocalStackPool(testRuntime)
 		local := p.backend(poolTestConfig("text"))
 		native := p.realtimeBackend(voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "must-not-start"}})
 		t.Cleanup(func() { _ = local.Close(); _ = native.Close() })
@@ -594,7 +597,7 @@ func TestLocalStackBackend(t *testing.T) {
 			cfg.TextOnly = false
 			cfg.ASR = voicegateway.ASRConfig{Engine: voicegateway.ASREngineOpenAIAudio, Remote: "http://localhost:1", Model: "asr"}
 			cfg.TTS = voicegateway.TTSConfig{Engine: voicegateway.TTSEngineOpenAIAudio, Remote: "http://localhost:1", Model: "tts", Voice: "voice"}
-			p := newLocalStackPool(voicegateway.RuntimeConfig{MaxInstances: 1})
+			p := newLocalStackPool(voicegateway.RuntimeConfig{IdleTimeoutSeconds: 3600, MaxInstances: 1})
 			b := p.backend(cfg)
 			t.Cleanup(func() { _ = b.Close() })
 			a, err := b.connect(t.Context(), "input", &captureSink{})
@@ -639,11 +642,11 @@ func TestMixedSpeechCapabilities(t *testing.T) {
 	t.Parallel()
 	cfg := voicegateway.PipelineConfig{
 		ASR:            voicegateway.ASRConfig{Engine: voicegateway.ASREngineOpenAIAudio, Remote: "http://localhost:1", Model: "asr"},
-		LLM:            voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "http://localhost:1/chat", Model: "llm"},
+		LLM:            voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "http://localhost:1/chat", Model: "llm"}},
 		TTS:            voicegateway.TTSConfig{Engine: voicegateway.TTSEngineOpenAIAudio, Remote: "http://localhost:1", Model: "tts", Voice: "voice"},
 		UnavailableTTS: true,
 	}
-	p := newLocalStackPool(voicegateway.RuntimeConfig{})
+	p := newLocalStackPool(testRuntime)
 	b := p.backend(cfg)
 	t.Cleanup(func() { _ = b.Close() })
 	choice, err := backendChoice(t.Context(), b, "mixed", "Mixed")
@@ -782,13 +785,13 @@ func TestIndependentSpeechStages(t *testing.T) {
 			}
 		}))
 		t.Cleanup(server.Close)
-		p := newLocalStackPool(voicegateway.RuntimeConfig{MaxInstances: 1})
+		p := newLocalStackPool(voicegateway.RuntimeConfig{IdleTimeoutSeconds: 3600, MaxInstances: 1})
 		p.recognition = []voicegateway.ASRConfig{
 			{Engine: voicegateway.ASREngineOpenAIAudio, Remote: server.URL, Model: "asr-a"},
 			{Engine: voicegateway.ASREngineOpenAIAudio, Remote: server.URL, Model: "asr-b"},
 		}
 		for _, model := range []string{"llm-a", "llm-b"} {
-			b := p.llmBackend(voicegateway.ModelConfig{Provider: "openaicompatible", Remote: server.URL + "/chat", Model: model})
+			b := p.llmBackend(voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: server.URL + "/chat", Model: model}})
 			t.Cleanup(func() {
 				if err := b.Close(); err != nil {
 					t.Error(err)
@@ -842,8 +845,8 @@ func TestIndependentSpeechStages(t *testing.T) {
 	})
 	t.Run("indivisible choices reject overrides before startup", func(t *testing.T) {
 		t.Parallel()
-		p := newLocalStackPool(voicegateway.RuntimeConfig{})
-		fixed := p.backend(voicegateway.PipelineConfig{ASR: voicegateway.ASRConfig{Engine: voicegateway.ASREngineGenAI, Provider: "llamacpp", Model: "asr"}, LLM: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "llm"}})
+		p := newLocalStackPool(testRuntime)
+		fixed := p.backend(voicegateway.PipelineConfig{ASR: voicegateway.ASRConfig{Engine: voicegateway.ASREngineGenAI, Provider: "llamacpp", Model: "asr", ContextSize: 32768}, LLM: voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "llm"}, ContextSize: 65536}})
 		native := p.realtimeBackend(voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "audio"}})
 		t.Cleanup(func() { _ = fixed.Close(); _ = native.Close() })
 		for _, b := range []backendConnector{fixed, native} {
@@ -866,9 +869,9 @@ func TestIndependentSpeechStages(t *testing.T) {
 	})
 	t.Run("canceled startup releases dynamic reservation", func(t *testing.T) {
 		t.Parallel()
-		p := newLocalStackPool(voicegateway.RuntimeConfig{})
-		p.recognition = []voicegateway.ASRConfig{{Engine: voicegateway.ASREngineGenAI, Provider: "llamacpp", Model: "asr"}}
-		b := p.llmBackend(voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "llm"})
+		p := newLocalStackPool(testRuntime)
+		p.recognition = []voicegateway.ASRConfig{{Engine: voicegateway.ASREngineGenAI, Provider: "llamacpp", Model: "asr", ContextSize: 32768}}
+		b := p.llmBackend(voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "llm"}, ContextSize: 65536})
 		t.Cleanup(func() { _ = b.Close() })
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
@@ -888,10 +891,10 @@ func TestIndependentSpeechStages(t *testing.T) {
 	})
 	t.Run("invalid selection never loads models", func(t *testing.T) {
 		t.Parallel()
-		p := newLocalStackPool(voicegateway.RuntimeConfig{})
-		p.recognition = []voicegateway.ASRConfig{{Engine: voicegateway.ASREngineGenAI, Provider: "llamacpp", Model: "must-not-start"}}
-		p.synthesis = []voicegateway.TTSConfig{{Engine: voicegateway.TTSEngineGenAI, Provider: "llamacpp", Model: "must-not-start"}}
-		b := p.llmBackend(voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "must-not-start"})
+		p := newLocalStackPool(testRuntime)
+		p.recognition = []voicegateway.ASRConfig{{Engine: voicegateway.ASREngineGenAI, Provider: "llamacpp", Model: "must-not-start", ContextSize: 32768}}
+		p.synthesis = []voicegateway.TTSConfig{{Engine: voicegateway.TTSEngineGenAI, Provider: "llamacpp", Model: "must-not-start", ContextSize: 32768}}
+		b := p.llmBackend(voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "must-not-start"}, ContextSize: 65536})
 		t.Cleanup(func() { _ = b.Close() })
 		for _, setup := range []voicev2.SessionSetup{
 			{RecognitionModelID: "unknown"},
@@ -917,12 +920,12 @@ func TestIndependentSpeechStages(t *testing.T) {
 	})
 	t.Run("synthesis selection shares and releases cold dynamic entries", func(t *testing.T) {
 		t.Parallel()
-		p := newLocalStackPool(voicegateway.RuntimeConfig{})
+		p := newLocalStackPool(testRuntime)
 		p.synthesis = []voicegateway.TTSConfig{
 			{Engine: voicegateway.TTSEngineOpenAIAudio, Remote: "http://localhost:1", Model: "tts-a", Voice: "a"},
 			{Engine: voicegateway.TTSEngineOpenAIAudio, Remote: "http://localhost:1", Model: "tts-b", Voice: "b"},
 		}
-		b := p.llmBackend(voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "http://localhost:1/chat", Model: "llm"})
+		b := p.llmBackend(voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "http://localhost:1/chat", Model: "llm"}})
 		t.Cleanup(func() { _ = b.Close() })
 		speech := voicev2.SpeechConfig{Input: voicev2.SpeechLocationClient, Output: voicev2.SpeechLocationGateway}
 		for _, a := range p.synthesis {

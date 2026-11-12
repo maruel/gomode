@@ -45,7 +45,7 @@ func stackVariant(t *testing.T, b *localStackBackend, speech voicev2.SpeechConfi
 
 // newTestLocalStackBackend seeds a lazy choice with controlled loaded adapters.
 func newTestLocalStackBackend(t *testing.T, newVAD func() vadSegmenter, asr asrAdapter, llm llmAdapter, tts ttsAdapter) *localStackBackend {
-	p := newLocalStackPool(voicegateway.RuntimeConfig{})
+	p := newLocalStackPool(testRuntime)
 	cfg := voicegateway.PipelineConfig{TextOnly: asr == nil && tts == nil}
 	if asr != nil {
 		cfg.ASR = voicegateway.ASRConfig{Engine: voicegateway.ASREngineWhistle}
@@ -1343,9 +1343,11 @@ func TestLocalStackModelsForConfig(t *testing.T) {
 		}))
 		t.Cleanup(remote.Close)
 		var startedModels []string
+		var contextSizes []int
 		var servers []*fakeManagedLlamaServer
-		models, err := localStackModelsForConfigWithStarter(t.Context(), &voicegateway.PipelineConfig{ASR: voicegateway.ASRConfig{Engine: voicegateway.ASREngineGenAI, Provider: "llamacpp", Model: "owner/asr"}, LLM: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "owner/chat"}, TTS: voicegateway.TTSConfig{Engine: voicegateway.TTSEngineGenAI, Provider: "llamacpp", Model: "owner/tts"}}, func(_ context.Context, model string) (managedLlamaServer, error) {
+		models, err := localStackModelsForConfigWithStarter(t.Context(), &voicegateway.PipelineConfig{ASR: voicegateway.ASRConfig{Engine: voicegateway.ASREngineGenAI, Provider: "llamacpp", Model: "owner/asr", ContextSize: 32768}, LLM: voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "owner/chat"}, ContextSize: 65536}, TTS: voicegateway.TTSConfig{Engine: voicegateway.TTSEngineGenAI, Provider: "llamacpp", Model: "owner/tts", ContextSize: 32768}}, func(_ context.Context, model string, contextSize int) (managedLlamaServer, error) {
 			startedModels = append(startedModels, model)
+			contextSizes = append(contextSizes, contextSize)
 			srv := &fakeManagedLlamaServer{url: remote.URL}
 			servers = append(servers, srv)
 			return srv, nil
@@ -1362,6 +1364,10 @@ func TestLocalStackModelsForConfig(t *testing.T) {
 		wantModels := []string{"owner/chat", "owner/asr", "owner/tts"}
 		if !slices.Equal(startedModels, wantModels) {
 			t.Errorf("started models = %v, want %v", startedModels, wantModels)
+		}
+		// The chat history grows with the conversation; speech requests carry one utterance.
+		if want := []int{65536, 32768, 32768}; !slices.Equal(contextSizes, want) {
+			t.Errorf("context sizes = %v, want %v", contextSizes, want)
 		}
 		if models.runtime == nil {
 			t.Fatal("runtime = nil, want managed server closer")
@@ -1390,11 +1396,11 @@ func TestLocalStackModelsForConfig(t *testing.T) {
 		sentinel := errors.New("TTS process failed")
 		var servers []*fakeManagedLlamaServer
 		cfg := voicegateway.PipelineConfig{
-			ASR: voicegateway.ASRConfig{Engine: voicegateway.ASREngineGenAI, Provider: "llamacpp", Model: "owner/asr"},
-			LLM: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "owner/chat"},
-			TTS: voicegateway.TTSConfig{Engine: voicegateway.TTSEngineGenAI, Provider: "llamacpp", Model: "owner/tts"},
+			ASR: voicegateway.ASRConfig{Engine: voicegateway.ASREngineGenAI, Provider: "llamacpp", Model: "owner/asr", ContextSize: 32768},
+			LLM: voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "owner/chat"}, ContextSize: 65536},
+			TTS: voicegateway.TTSConfig{Engine: voicegateway.TTSEngineGenAI, Provider: "llamacpp", Model: "owner/tts", ContextSize: 32768},
 		}
-		_, err := localStackModelsForConfigWithStarter(t.Context(), &cfg, func(_ context.Context, model string) (managedLlamaServer, error) {
+		_, err := localStackModelsForConfigWithStarter(t.Context(), &cfg, func(_ context.Context, model string, _ int) (managedLlamaServer, error) {
 			if model == "owner/tts" {
 				return nil, sentinel
 			}
@@ -1424,11 +1430,11 @@ func TestLocalStackGroqASR(t *testing.T) { //nolint:paralleltest // Replaces the
 	providers.All["groq"] = configured
 	cfg := voicegateway.PipelineConfig{
 		ASR: voicegateway.ASRConfig{Engine: voicegateway.ASREngineGenAI, Provider: "groq", Model: "whisper-large-v3-turbo"},
-		LLM: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "owner/chat"},
-		TTS: voicegateway.TTSConfig{Engine: voicegateway.TTSEngineGenAI, Provider: "llamacpp", Model: "owner/tts"},
+		LLM: voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "owner/chat"}, ContextSize: 65536},
+		TTS: voicegateway.TTSConfig{Engine: voicegateway.TTSEngineGenAI, Provider: "llamacpp", Model: "owner/tts", ContextSize: 32768},
 	}
 	var models []string
-	runtime, err := localStackModelsForConfigWithStarter(t.Context(), &cfg, func(_ context.Context, model string) (managedLlamaServer, error) {
+	runtime, err := localStackModelsForConfigWithStarter(t.Context(), &cfg, func(_ context.Context, model string, _ int) (managedLlamaServer, error) {
 		models = append(models, model)
 		return &fakeManagedLlamaServer{url: "http://localhost:8080"}, nil
 	})
@@ -1463,15 +1469,15 @@ func TestLocalStackGeminiSpeech(t *testing.T) { //nolint:paralleltest // Replace
 	cfg := voicegateway.PipelineConfig{
 		Label: "Gemini speech with local reasoning",
 		ASR:   voicegateway.ASRConfig{Engine: voicegateway.ASREngineGenAI, Provider: "gemini", Model: "gemini-3.5-transcribe"},
-		LLM:   voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "owner/chat"},
+		LLM:   voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "owner/chat"}, ContextSize: 65536},
 		TTS:   voicegateway.TTSConfig{Engine: voicegateway.TTSEngineGenAI, Provider: "gemini", Model: "gemini-3.8-flash-lite-tts", Voice: "Kore"},
 	}
-	config := voicegateway.ResolvedConfig{Pipelines: []voicegateway.PipelineConfig{cfg}}
+	config := voicegateway.ResolvedConfig{Runtime: testRuntime, Pipelines: []voicegateway.PipelineConfig{cfg}}
 	if err := config.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	var models []string
-	runtime, err := localStackModelsForConfigWithStarter(t.Context(), &cfg, func(_ context.Context, model string) (managedLlamaServer, error) {
+	runtime, err := localStackModelsForConfigWithStarter(t.Context(), &cfg, func(_ context.Context, model string, _ int) (managedLlamaServer, error) {
 		models = append(models, model)
 		return &fakeManagedLlamaServer{url: "http://localhost:8080"}, nil
 	})
@@ -1541,10 +1547,10 @@ func (tr groqASRTestTransport) RoundTrip(r *http.Request) (*http.Response, error
 
 func TestLocalStackTextOnly(t *testing.T) {
 	t.Parallel()
-	cfg := &voicegateway.PipelineConfig{TextOnly: true, LLM: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "owner/chat"}}
+	cfg := &voicegateway.PipelineConfig{TextOnly: true, LLM: voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "owner/chat"}, ContextSize: 65536}}
 	var started []string
 	server := &fakeManagedLlamaServer{url: "http://127.0.0.1:12345"}
-	models, err := localStackModelsForConfigWithStarter(t.Context(), cfg, func(_ context.Context, model string) (managedLlamaServer, error) {
+	models, err := localStackModelsForConfigWithStarter(t.Context(), cfg, func(_ context.Context, model string, _ int) (managedLlamaServer, error) {
 		started = append(started, model)
 		return server, nil
 	})
@@ -1580,12 +1586,12 @@ data: [DONE]
 		}
 	}))
 	t.Cleanup(llmServer.Close)
-	config := voicegateway.ResolvedConfig{}
+	config := voicegateway.ResolvedConfig{Runtime: testRuntime}
 	config.Realtime = nil
 	config.Pipelines = []voicegateway.PipelineConfig{{
 		Label:    "Local",
 		TextOnly: true,
-		LLM:      voicegateway.ModelConfig{Provider: "openaicompatible", Remote: llmServer.URL + "/v1/chat/completions", Model: "test-model"},
+		LLM:      voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: llmServer.URL + "/v1/chat/completions", Model: "test-model"}},
 	}}
 	bridge, err := newBridgeWithTimeout(t.Context(), &config, 0, t.TempDir(), 5*time.Millisecond)
 	if err != nil {
@@ -1660,7 +1666,7 @@ func TestLocalStackProviderCleanup(t *testing.T) {
 		}
 		cfg := &voicegateway.PipelineConfig{
 			ASR: voicegateway.ASRConfig{Engine: voicegateway.ASREngineGenAI, Provider: asrName},
-			LLM: voicegateway.ModelConfig{Provider: llmName},
+			LLM: voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: llmName}},
 		}
 		models, err := localStackModelsForConfigWithStarter(t.Context(), cfg, nil)
 		return models, created, err
@@ -1710,7 +1716,7 @@ func TestLocalStackProviderCleanup(t *testing.T) {
 				t.Fatal("ASR started without an available LLM")
 				return nil, initErr
 			}}
-			cfg := &voicegateway.PipelineConfig{ASR: voicegateway.ASRConfig{Engine: voicegateway.ASREngineGenAI, Provider: asrName}, LLM: voicegateway.ModelConfig{Provider: "unknown"}}
+			cfg := &voicegateway.PipelineConfig{ASR: voicegateway.ASRConfig{Engine: voicegateway.ASREngineGenAI, Provider: asrName}, LLM: voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "unknown"}}}
 			if _, err := localStackModelsForConfigWithStarter(t.Context(), cfg, nil); err == nil || !strings.Contains(err.Error(), "unsupported provider") {
 				t.Fatalf("unknown LLM = %v", err)
 			}
@@ -1887,9 +1893,9 @@ func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
 			t.Cleanup(srv.Close)
 			cfg := &voicegateway.PipelineConfig{
 				ASR: voicegateway.ASRConfig{Engine: voicegateway.ASREngineOpenAIAudio, Remote: srv.URL, Model: "asr"},
-				LLM: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: srv.URL + "/v1/chat/completions", Model: "qwen3-8-27b", APIKeyName: envName},
+				LLM: voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: srv.URL + "/v1/chat/completions", Model: "qwen3-8-27b", APIKeyName: envName}},
 			}
-			models, err := localStackModelsForConfigWithStarter(t.Context(), cfg, func(context.Context, string) (managedLlamaServer, error) {
+			models, err := localStackModelsForConfigWithStarter(t.Context(), cfg, func(context.Context, string, int) (managedLlamaServer, error) {
 				t.Fatal("remote LLM must not start a managed model")
 				return nil, errors.New("unexpected managed model startup")
 			})
@@ -1936,8 +1942,8 @@ func TestLocalStackModelsForConfigOpenAICompatible(t *testing.T) {
 	}
 	t.Run("missing key fails before starting models", func(t *testing.T) {
 		t.Setenv(envName, "")
-		cfg := &voicegateway.PipelineConfig{LLM: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "https://example.com/v1/chat/completions", APIKeyName: envName}}
-		_, err := localStackModelsForConfigWithStarter(t.Context(), cfg, func(context.Context, string) (managedLlamaServer, error) {
+		cfg := &voicegateway.PipelineConfig{LLM: voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "https://example.com/v1/chat/completions", APIKeyName: envName}}}
+		_, err := localStackModelsForConfigWithStarter(t.Context(), cfg, func(context.Context, string, int) (managedLlamaServer, error) {
 			t.Fatal("missing key must fail before starting a managed model")
 			return nil, errors.New("unexpected managed model startup")
 		})

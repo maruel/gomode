@@ -45,7 +45,7 @@ type lazyLocalStack struct {
 }
 
 func newLocalStackPool(limits voicegateway.RuntimeConfig) *localStackPool {
-	return &localStackPool{limits: limits.WithDefaults(), changed: make(chan struct{})}
+	return &localStackPool{limits: limits, changed: make(chan struct{})}
 }
 
 func (p *localStackPool) backend(cfg voicegateway.PipelineConfig) *localStackBackend {
@@ -81,7 +81,7 @@ func (p *localStackPool) backend(cfg voicegateway.PipelineConfig) *localStackBac
 }
 
 // llmBackend keeps one LLM selectable independently of configured speech stages.
-func (p *localStackPool) llmBackend(cfg voicegateway.ModelConfig) *localStackBackend {
+func (p *localStackPool) llmBackend(cfg voicegateway.LLMConfig) *localStackBackend {
 	b := p.backend(voicegateway.PipelineConfig{TextOnly: true, LLM: cfg})
 	b.composition = &speechComposition{pool: p, llm: cfg}
 	if len(p.recognition) > 0 {
@@ -95,7 +95,7 @@ func (p *localStackPool) llmBackend(cfg voicegateway.ModelConfig) *localStackBac
 
 type speechComposition struct {
 	pool *localStackPool
-	llm  voicegateway.ModelConfig
+	llm  voicegateway.LLMConfig
 }
 
 func (b *localStackBackend) selectStages(speech voicev2.SpeechConfig, setup *voicev2.SessionSetup) (*lazyLocalStack, error) {

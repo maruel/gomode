@@ -143,7 +143,7 @@ func TestNewBridge(t *testing.T) {
 	t.Setenv("GEMINI_API_KEY", "test-key")
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Run("configured choices", testBridgeConfiguredChoices)
-	cfg := &voicegateway.ResolvedConfig{Realtime: []voicegateway.RealtimeConfig{{Label: "Gemini", ModelConfig: voicegateway.ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}}}}
+	cfg := &voicegateway.ResolvedConfig{Runtime: testRuntime, Realtime: []voicegateway.RealtimeConfig{{Label: "Gemini", ModelConfig: voicegateway.ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}}}}
 	t.Run("invalid listener", func(t *testing.T) {
 		t.Parallel()
 		for _, port := range []int{-2, 65536} {
@@ -204,7 +204,7 @@ func TestBackendForConfigGeminiModel(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			backend, err := backendForConfig(&voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "gemini", Model: tc.model}}, newLocalStackPool(voicegateway.RuntimeConfig{}))
+			backend, err := backendForConfig(&voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "gemini", Model: tc.model}}, newLocalStackPool(testRuntime))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -227,7 +227,7 @@ func TestBackendForConfigOpenAI(t *testing.T) {
 	t.Run("missing key", func(t *testing.T) {
 		t.Setenv("OPENAI_API_KEY", "")
 
-		if _, err := backendForConfig(&voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openai", Model: "gpt-realtime-2.1-mini"}}, newLocalStackPool(voicegateway.RuntimeConfig{})); err == nil {
+		if _, err := backendForConfig(&voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openai", Model: "gpt-realtime-2.1-mini"}}, newLocalStackPool(testRuntime)); err == nil {
 			t.Fatal("accepted a missing OPENAI_API_KEY")
 		}
 	})
@@ -242,7 +242,7 @@ func TestBackendForConfigOpenAI(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("OPENAI_API_KEY", "test-key")
 
-			backend, err := backendForConfig(&voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openai", Model: tc.model}}, newLocalStackPool(voicegateway.RuntimeConfig{}))
+			backend, err := backendForConfig(&voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openai", Model: tc.model}}, newLocalStackPool(testRuntime))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1300,10 +1300,10 @@ func TestBridge(t *testing.T) {
 		t.Parallel()
 		t.Run("existing audio default", func(t *testing.T) {
 			t.Parallel()
-			cfg := voicegateway.ResolvedConfig{
+			cfg := voicegateway.ResolvedConfig{Runtime: testRuntime,
 				LLM:         []voicegateway.LLMConfig{{Label: "LLM", ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "http://localhost:1/chat", Model: "llm"}}},
 				Recognition: []voicegateway.ASRConfig{{Engine: voicegateway.ASREngineOpenAIAudio, Remote: "http://localhost:1", Model: "recognition"}},
-				Pipelines:   []voicegateway.PipelineConfig{{Label: "Preset", ASR: voicegateway.ASRConfig{Engine: voicegateway.ASREngineOpenAIAudio, Remote: "http://localhost:1", Model: "preset-recognition"}, LLM: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "http://localhost:1/chat", Model: "preset-llm"}}},
+				Pipelines:   []voicegateway.PipelineConfig{{Label: "Preset", ASR: voicegateway.ASRConfig{Engine: voicegateway.ASREngineOpenAIAudio, Remote: "http://localhost:1", Model: "preset-recognition"}, LLM: voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "http://localhost:1/chat", Model: "preset-llm"}}}},
 			}
 			b, err := newBridgeWithTimeout(t.Context(), &cfg, 0, t.TempDir(), 5*time.Millisecond)
 			if err != nil {
@@ -1332,7 +1332,7 @@ func TestBridge(t *testing.T) {
 		})
 		t.Run("independent catalog", func(t *testing.T) {
 			t.Parallel()
-			cfg := voicegateway.ResolvedConfig{
+			cfg := voicegateway.ResolvedConfig{Runtime: testRuntime,
 				LLM:         []voicegateway.LLMConfig{{Label: "LLM", ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "http://localhost:1/chat", Model: "llm"}}},
 				Recognition: []voicegateway.ASRConfig{{Engine: voicegateway.ASREngineOpenAIAudio, Remote: "http://localhost:1", Model: "recognition"}},
 				Synthesis:   []voicegateway.TTSConfig{{Label: "Speech", Engine: voicegateway.TTSEngineOpenAIAudio, Remote: "http://localhost:1", Model: "speech", Voice: "speaker"}},
@@ -2070,7 +2070,7 @@ func TestBackendForConfigChat(t *testing.T) {
 		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: [DONE]\n\n")
 	}))
 	t.Cleanup(server.Close)
-	cfg := voicegateway.ResolvedConfig{LLM: []voicegateway.LLMConfig{{Label: "Chat", ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: server.URL + "/v1/chat/completions", Model: "custom-model", APIKeyName: "CHAT_TEST_KEY"}}}} //nolint:gosec // Environment variable name, not a credential.
+	cfg := voicegateway.ResolvedConfig{Runtime: testRuntime, LLM: []voicegateway.LLMConfig{{Label: "Chat", ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: server.URL + "/v1/chat/completions", Model: "custom-model", APIKeyName: "CHAT_TEST_KEY"}}}} //nolint:gosec // Environment variable name, not a credential.
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -2108,7 +2108,7 @@ func TestBackendForConfigChat(t *testing.T) {
 
 func testBridgeConfiguredChoices(t *testing.T) {
 	t.Parallel()
-	cfg := voicegateway.ResolvedConfig{
+	cfg := voicegateway.ResolvedConfig{Runtime: testRuntime,
 		Realtime: []voicegateway.RealtimeConfig{
 			{Label: "Live", ModelConfig: voicegateway.ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}},
 			{Label: "Other live", ModelConfig: voicegateway.ModelConfig{Provider: "openai", Model: "gpt-realtime-2.1-mini"}},

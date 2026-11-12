@@ -857,21 +857,20 @@ func backendForConfig(cfg voicegateway.Choice, pool *localStackPool) (backendCon
 	case *voicegateway.PipelineConfig:
 		return pool.backend(*c), nil
 	case *voicegateway.LLMConfig:
-		return pool.llmBackend(c.ModelConfig), nil
+		return pool.llmBackend(*c), nil
 	case *voicegateway.RealtimeConfig:
-		resolved := c.WithDefaults()
-		if resolved.Provider == "llamacpp" {
-			return pool.realtimeBackend(resolved), nil
+		if c.Provider == "llamacpp" {
+			return pool.realtimeBackend(*c), nil
 		}
-		entry, ok := providers.All[resolved.Provider]
+		entry, ok := providers.All[c.Provider]
 		if !ok || entry.Factory == nil {
-			return nil, fmt.Errorf("unsupported provider %q", resolved.Provider)
+			return nil, fmt.Errorf("unsupported provider %q", c.Provider)
 		}
 		key := os.Getenv(entry.APIKeyEnvVar)
 		if entry.APIKeyEnvVar != "" && key == "" {
 			return nil, fmt.Errorf("%s not configured", entry.APIKeyEnvVar)
 		}
-		return &realtimeBridgeBackend{provider: resolved.Provider, remote: resolved.Remote, apiKey: key, model: resolved.Model, effort: resolved.Effort}, nil
+		return &realtimeBridgeBackend{provider: c.Provider, remote: c.Remote, apiKey: key, model: c.Model, effort: c.Effort}, nil
 	default:
 		return nil, fmt.Errorf("unsupported pipeline configuration %T", cfg)
 	}

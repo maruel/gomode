@@ -28,6 +28,9 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+// testRuntime holds the limits Resolve selects when they are omitted.
+var testRuntime = RuntimeConfig{IdleTimeoutSeconds: 3600, MaxInstances: 1}
+
 func TestConfig(t *testing.T) {
 	t.Parallel()
 	t.Run("Resolve", func(t *testing.T) {
@@ -218,15 +221,18 @@ label = "Reasoning"
 provider = "llamacpp"
 llamacppsrv = true
 model = "reasoning"
+context_size = 65536
 [[asr]]
 id = "recognition"
 label = "Recognition"
 provider = "llamacpp"
 model = "recognition"
+context_size = 32768
 [[tts]]
 id = "speech"
 provider = "llamacpp"
-model = "speech"`
+model = "speech"
+context_size = 32768`
 		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -331,7 +337,7 @@ tts = "speech"
 		if err := cfg.Validate(); err != nil {
 			t.Fatal(err)
 		}
-		for _, model := range []*ModelConfig{&cfg.LLM[0].ModelConfig, &cfg.Pipelines[0].LLM} {
+		for _, model := range []*ModelConfig{&cfg.LLM[0].ModelConfig, &cfg.Pipelines[0].LLM.ModelConfig} {
 			if model.Auth != openairesponses.AuthCodex {
 				t.Fatalf("decoded auth = %q", model.Auth)
 			}
@@ -392,7 +398,7 @@ tts = "speech"
 					if err := cfg.Validate(); err != nil {
 						t.Fatal(err)
 					}
-					for _, model := range []*ModelConfig{&cfg.LLM[0].ModelConfig, &cfg.Pipelines[0].LLM} {
+					for _, model := range []*ModelConfig{&cfg.LLM[0].ModelConfig, &cfg.Pipelines[0].LLM.ModelConfig} {
 						if string(model.OpenRouterSort) != sort {
 							t.Fatalf("decoded sorting = %q, want %q", model.OpenRouterSort, sort)
 						}
@@ -423,7 +429,7 @@ tts = "speech"
 				{"openai", "latency", "openrouter_sort requires provider openrouter"},
 			} {
 				t.Run(tc.provider+"/"+tc.sort, func(t *testing.T) {
-					cfg := ResolvedConfig{LLM: []LLMConfig{{Label: "Chat", ModelConfig: ModelConfig{
+					cfg := ResolvedConfig{Runtime: testRuntime, LLM: []LLMConfig{{Label: "Chat", ModelConfig: ModelConfig{
 						Provider: tc.provider, Model: "test/model", OpenRouterSort: openrouter.ProviderSort(tc.sort),
 					}}}}
 					if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -515,9 +521,76 @@ tts = "speech"`)
 				}
 			})
 		})
+		t.Run("context size", func(t *testing.T) {
+			t.Setenv("GOMODE_NAMED_STAGE_TEST_KEY", "test-key")
+			managed := definitions + `[[llm]]
+id = "local"
+label = "Local chat"
+provider = "llamacpp"
+llamacppsrv = true
+model = "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"
+context_size = 131072
+[[asr]]
+id = "local_asr"
+provider = "llamacpp"
+model = "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"
+context_size = 8192
+[[tts]]
+id = "local_tts"
+provider = "llamacpp"
+model = "owner/tts"
+context_size = 16384
+[[voice]]
+label = "Local"
+asr = "local_asr"
+llm = "local"
+tts = "local_tts"`
+			t.Run("valid", func(t *testing.T) {
+				cfg, err := load(t, managed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := cfg.Validate(); err != nil {
+					t.Fatal(err)
+				}
+				p := cfg.Pipelines[0]
+				if cfg.LLM[1].ContextSize != 131072 || p.LLM.ContextSize != 131072 || p.ASR.ContextSize != 8192 || p.TTS.ContextSize != 16384 {
+					t.Fatalf("context sizes: llm %d / %d, asr %d, tts %d", cfg.LLM[1].ContextSize, p.LLM.ContextSize, p.ASR.ContextSize, p.TTS.ContextSize)
+				}
+			})
+			t.Run("error", func(t *testing.T) {
+				remote := strings.Replace(definitions, `effort = "low"`, "effort = \"low\"\ncontext_size = 4096", 1)
+				if _, err := load(t, remote); err == nil || !strings.Contains(err.Error(), "chat.context_size requires a managed llama.cpp server") {
+					t.Fatalf("remote context size: %v", err)
+				}
+				for _, tc := range []struct{ old, want string }{
+					{"context_size = 131072\n", "chat.context_size is required"},
+					{"context_size = 8192\n", "voice.asr.context_size is required"},
+					{"context_size = 16384\n", "voice.tts.context_size is required"},
+				} {
+					if _, err := load(t, strings.Replace(managed, tc.old, "", 1)); err == nil || !strings.Contains(err.Error(), tc.want) {
+						t.Fatalf("%s: %v", tc.want, err)
+					}
+				}
+				if _, err := load(t, strings.Replace(managed, "context_size = 131072", "context_size = 262145", 1)); err == nil || !strings.Contains(err.Error(), "context_size must be between 512 and 262144") {
+					t.Fatalf("oversized context: %v", err)
+				}
+				// recognition is a remote server and speech uses kittentts.
+				for _, tc := range []struct{ old, want string }{
+					{`remote = "http://localhost:8081"`, "voice.asr.context_size requires a managed llama.cpp server"},
+					{`engine = "kittentts"`, "voice.tts.context_size requires a managed llama.cpp server"},
+				} {
+					data := strings.Replace(definitions, tc.old, tc.old+"\ncontext_size = 4096", 1)
+					if _, err := load(t, data); err == nil || !strings.Contains(err.Error(), tc.want) {
+						t.Fatalf("%s: %v", tc.want, err)
+					}
+				}
+			})
+		})
 		t.Run("provider speech defaults", func(t *testing.T) {
 			t.Setenv("GOMODE_NAMED_STAGE_TEST_KEY", "test-key")
-			data := strings.ReplaceAll(definitions, `engine = "kittentts"`, `provider = "llamacpp"`)
+			data := strings.ReplaceAll(definitions, `engine = "kittentts"`, `provider = "llamacpp"
+context_size = 32768`)
 			data = strings.ReplaceAll(data, "voice = \"Luna\"\n", "")
 			cfg, err := load(t, data+`[[voice]]
 label = "Provider speech"
@@ -556,7 +629,7 @@ tts = "alternative"
 			if err := cfg.Validate(); err != nil {
 				t.Fatal(err)
 			}
-			if len(cfg.LLM) != 1 || len(cfg.Pipelines) != 2 || cfg.LLM[0].ModelConfig != cfg.Pipelines[0].LLM || cfg.Pipelines[1].TTS.Voice != "Bella" {
+			if len(cfg.LLM) != 1 || len(cfg.Pipelines) != 2 || cfg.LLM[0] != cfg.Pipelines[0].LLM || cfg.Pipelines[1].TTS.Voice != "Bella" {
 				t.Fatalf("resolved choices = %+v", cfg)
 			}
 			stack := &cfg.Pipelines[0]
@@ -655,6 +728,7 @@ label = "Reasoning"
 provider = "llamacpp"
 llamacppsrv = true
 model = "reasoning"
+context_size = 65536
 [[asr]]
 id = "recognition"
 provider = "groq"
@@ -868,16 +942,24 @@ public_key = %q
 
 func TestRuntimeConfig(t *testing.T) {
 	t.Parallel()
-	if got := (RuntimeConfig{}).WithDefaults(); got.IdleTimeoutSeconds != 3600 || got.MaxInstances != 1 {
-		t.Fatalf("defaults = %+v", got)
+	llm := []NamedLLMConfig{{ID: "test", LLMConfig: LLMConfig{Label: "test", ModelConfig: ModelConfig{Provider: "openaicompatible", Remote: "http://localhost/completions", Model: "test"}}}}
+	cfg := Config{LLM: llm}
+	out, err := cfg.Resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Runtime.IdleTimeoutSeconds != 3600 || out.Runtime.MaxInstances != 1 {
+		t.Fatalf("defaults = %+v", out.Runtime)
 	}
 	for _, limits := range []RuntimeConfig{{IdleTimeoutSeconds: -1}, {IdleTimeoutSeconds: 31536001}, {MaxInstances: -1}} {
-		cfg := ResolvedConfig{}
-		cfg.LLM = []LLMConfig{{Label: "test", ModelConfig: ModelConfig{Provider: "openaicompatible", Remote: "http://localhost/completions", Model: "test"}}}
-		cfg.Runtime = limits
-		if err := cfg.Validate(); err == nil {
+		cfg := Config{Runtime: limits, LLM: llm}
+		if _, err := cfg.Resolve(); err == nil {
 			t.Fatalf("accepted invalid runtime limits %+v", limits)
 		}
+	}
+	out.Runtime = RuntimeConfig{}
+	if err := out.Validate(); err == nil {
+		t.Fatal("accepted unresolved runtime limits")
 	}
 }
 
@@ -895,6 +977,7 @@ label = "Client speech"
 provider = "llamacpp"
 llamacppsrv = true
 model = "chat-model"
+context_size = 65536
 [[asr]]
 id = "recognition"
 engine = "openai-audio"
@@ -968,11 +1051,11 @@ func TestResolvedConfig(t *testing.T) {
 		t.Run("authentication", testResolvedConfigAvailableAuthentication)
 		t.Run("independent speech catalogs filter unavailable providers", func(t *testing.T) {
 			t.Setenv("GEMINI_API_KEY", "")
-			cfg := ResolvedConfig{
-				LLM: []LLMConfig{{Label: "LLM", ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "llm"}}},
+			cfg := ResolvedConfig{Runtime: testRuntime,
+				LLM: []LLMConfig{{Label: "LLM", ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "llm"}, ContextSize: 65536}},
 				Recognition: []ASRConfig{
 					{Engine: ASREngineGenAI, Provider: "gemini", Model: "transcribe"},
-					{Engine: ASREngineGenAI, Provider: "llamacpp", Model: "asr"},
+					{Engine: ASREngineGenAI, Provider: "llamacpp", Model: "asr", ContextSize: 32768},
 				},
 				Synthesis: []TTSConfig{{Engine: TTSEngineGenAI, Provider: "gemini", Model: "tts", Voice: "Kore"}},
 			}
@@ -991,7 +1074,7 @@ func TestResolvedConfig(t *testing.T) {
 				return &availabilityProbe{}, nil
 			}}
 			t.Cleanup(func() { providers.All["groq"] = previous })
-			cfg := ResolvedConfig{Pipelines: []PipelineConfig{{Label: "Mixed", LLM: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "reasoning"}, ASR: ASRConfig{Engine: ASREngineGenAI, Provider: "groq", Model: "whisper-large-v3-turbo"}, TTS: TTSConfig{Engine: TTSEngineGenAI, Provider: "gemini", Model: "gemini-3.8-flash-lite-tts", Voice: "Kore"}}}}
+			cfg := ResolvedConfig{Runtime: testRuntime, Pipelines: []PipelineConfig{{Label: "Mixed", LLM: LLMConfig{ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "reasoning"}, ContextSize: 65536}, ASR: ASRConfig{Engine: ASREngineGenAI, Provider: "groq", Model: "whisper-large-v3-turbo"}, TTS: TTSConfig{Engine: TTSEngineGenAI, Provider: "gemini", Model: "gemini-3.8-flash-lite-tts", Voice: "Kore"}}}}
 			before, err := cfg.Pipelines[0].ID()
 			if err != nil {
 				t.Fatal(err)
@@ -1021,7 +1104,7 @@ func TestResolvedConfig(t *testing.T) {
 					providers.All["gomode-healthy"] = providers.Config{Factory: func(context.Context, ...genai.ProviderOption) (genai.Provider, error) { return healthy, nil }}
 					t.Cleanup(func() { delete(providers.All, "gomode-stalled") })
 					t.Cleanup(func() { delete(providers.All, "gomode-healthy") })
-					cfg := ResolvedConfig{LLM: []LLMConfig{
+					cfg := ResolvedConfig{Runtime: testRuntime, LLM: []LLMConfig{
 						{Label: "Stalled", ModelConfig: ModelConfig{Provider: "gomode-stalled", Model: "model"}},
 						{Label: "Healthy", ModelConfig: ModelConfig{Provider: "gomode-healthy", Model: "model"}},
 					}}
@@ -1055,13 +1138,13 @@ func TestResolvedConfig(t *testing.T) {
 			cfg   ResolvedConfig
 			field string
 		}{
-			{"Gemini", ResolvedConfig{Realtime: []RealtimeConfig{{Label: "Live", ModelConfig: ModelConfig{Provider: "gemini"}}}}, "realtime.model"},
-			{"OpenAI", ResolvedConfig{Realtime: []RealtimeConfig{{Label: "Live", ModelConfig: ModelConfig{Provider: "openai"}}}}, "realtime.model"},
-			{"remote realtime", ResolvedConfig{Realtime: []RealtimeConfig{{Label: "Local", ModelConfig: ModelConfig{Provider: "llamacpp", Remote: "http://localhost:8080"}}}}, "realtime.model"},
-			{"chat", ResolvedConfig{LLM: []LLMConfig{{Label: "Chat", ModelConfig: ModelConfig{Provider: "deepseek", Model: "   "}}}}, "chat.model"},
-			{"local LLM", ResolvedConfig{Pipelines: []PipelineConfig{{Label: "Stack", TextOnly: true}}}, "voice.llm.model"},
-			{"local ASR", ResolvedConfig{Pipelines: []PipelineConfig{{Label: "Stack", LLM: ModelConfig{Provider: "deepseek", Model: "deepseek-flash"}, ASR: ASRConfig{Engine: ASREngineGenAI}, TTS: TTSConfig{Engine: TTSEngineKittenTTS, Voice: "Jasper", Model: "KittenML/kitten-tts-2"}}}}, "voice.asr.model"},
-			{"local TTS", ResolvedConfig{Pipelines: []PipelineConfig{{Label: "Stack", LLM: ModelConfig{Provider: "deepseek", Model: "deepseek-flash"}, ASR: ASRConfig{Engine: ASREngineGenAI, Provider: "llamacpp", Model: "asr-model"}, TTS: TTSConfig{Engine: TTSEngineKittenTTS, Voice: "Jasper"}}}}, "voice.tts.model"},
+			{"Gemini", ResolvedConfig{Runtime: testRuntime, Realtime: []RealtimeConfig{{Label: "Live", ModelConfig: ModelConfig{Provider: "gemini"}}}}, "realtime.model"},
+			{"OpenAI", ResolvedConfig{Runtime: testRuntime, Realtime: []RealtimeConfig{{Label: "Live", ModelConfig: ModelConfig{Provider: "openai"}}}}, "realtime.model"},
+			{"remote realtime", ResolvedConfig{Runtime: testRuntime, Realtime: []RealtimeConfig{{Label: "Local", ModelConfig: ModelConfig{Provider: "llamacpp", Remote: "http://localhost:8080"}}}}, "realtime.model"},
+			{"chat", ResolvedConfig{Runtime: testRuntime, LLM: []LLMConfig{{Label: "Chat", ModelConfig: ModelConfig{Provider: "deepseek", Model: "   "}}}}, "chat.model"},
+			{"local LLM", ResolvedConfig{Runtime: testRuntime, Pipelines: []PipelineConfig{{Label: "Stack", TextOnly: true}}}, "voice.llm.model"},
+			{"local ASR", ResolvedConfig{Runtime: testRuntime, Pipelines: []PipelineConfig{{Label: "Stack", LLM: LLMConfig{ModelConfig: ModelConfig{Provider: "deepseek", Model: "deepseek-flash"}}, ASR: ASRConfig{Engine: ASREngineGenAI}, TTS: TTSConfig{Engine: TTSEngineKittenTTS, Voice: "Jasper", Model: "KittenML/kitten-tts-2"}}}}, "voice.asr.model"},
+			{"local TTS", ResolvedConfig{Runtime: testRuntime, Pipelines: []PipelineConfig{{Label: "Stack", LLM: LLMConfig{ModelConfig: ModelConfig{Provider: "deepseek", Model: "deepseek-flash"}}, ASR: ASRConfig{Engine: ASREngineGenAI, Provider: "llamacpp", Model: "asr-model", ContextSize: 32768}, TTS: TTSConfig{Engine: TTSEngineKittenTTS, Voice: "Jasper"}}}}, "voice.tts.model"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				if err := tc.cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.field+" is required") {
@@ -1141,6 +1224,7 @@ func TestResolvedConfig(t *testing.T) {
 			cfg := testGatewayConfig()
 			cfg.Pipelines = []PipelineConfig{testPipelineConfig()}
 			cfg.Pipelines[0].ASR.Provider = ""
+			cfg.Pipelines[0].ASR.ContextSize = 0
 			cfg.Pipelines[0].ASR.Remote = "http://localhost:8090"
 			err := cfg.Validate()
 			if err == nil {
@@ -1156,6 +1240,7 @@ func TestResolvedConfig(t *testing.T) {
 			cfg := testGatewayConfig()
 			cfg.Pipelines = []PipelineConfig{testPipelineConfig()}
 			cfg.Pipelines[0].ASR.Provider = "llamacpp"
+			cfg.Pipelines[0].ASR.ContextSize = 0
 			cfg.Pipelines[0].ASR.Remote = "http://localhost:8090"
 			if err := cfg.Validate(); err != nil {
 				t.Fatal(err)
@@ -1167,6 +1252,7 @@ func TestResolvedConfig(t *testing.T) {
 			cfg := testGatewayConfig()
 			cfg.Pipelines = []PipelineConfig{testPipelineConfig()}
 			cfg.Pipelines[0].ASR.Provider = "llamacpp"
+			cfg.Pipelines[0].ASR.ContextSize = 0
 			cfg.Pipelines[0].ASR.Remote = "not a url"
 			err := cfg.Validate()
 			if err == nil {
@@ -1182,6 +1268,7 @@ func TestResolvedConfig(t *testing.T) {
 			cfg := testGatewayConfig()
 			cfg.Pipelines = []PipelineConfig{testPipelineConfig()}
 			cfg.Pipelines[0].ASR.Provider = "unknown"
+			cfg.Pipelines[0].ASR.ContextSize = 0
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatal("expected error")
@@ -1196,6 +1283,7 @@ func TestResolvedConfig(t *testing.T) {
 			cfg := testGatewayConfig()
 			cfg.Pipelines = []PipelineConfig{testPipelineConfig()}
 			cfg.Pipelines[0].LLM.Provider = ""
+			cfg.Pipelines[0].LLM.ContextSize = 0
 			cfg.Pipelines[0].LLM.LlamaCPPServer = false
 			cfg.Pipelines[0].LLM.Remote = "http://localhost:8080"
 			err := cfg.Validate()
@@ -1212,6 +1300,7 @@ func TestResolvedConfig(t *testing.T) {
 			cfg := testGatewayConfig()
 			cfg.Pipelines = []PipelineConfig{testPipelineConfig()}
 			cfg.Pipelines[0].LLM.Provider = "llamacpp"
+			cfg.Pipelines[0].LLM.ContextSize = 0
 			cfg.Pipelines[0].LLM.LlamaCPPServer = false
 			cfg.Pipelines[0].LLM.Remote = "http://localhost:8080"
 			if err := cfg.Validate(); err != nil {
@@ -1224,6 +1313,7 @@ func TestResolvedConfig(t *testing.T) {
 			cfg := testGatewayConfig()
 			cfg.Pipelines = []PipelineConfig{testPipelineConfig()}
 			cfg.Pipelines[0].LLM.Provider = "llamacpp"
+			cfg.Pipelines[0].LLM.ContextSize = 0
 			cfg.Pipelines[0].LLM.LlamaCPPServer = false
 			cfg.Pipelines[0].LLM.Remote = "not a url"
 			err := cfg.Validate()
@@ -1240,6 +1330,7 @@ func TestResolvedConfig(t *testing.T) {
 			cfg := testGatewayConfig()
 			cfg.Pipelines = []PipelineConfig{testPipelineConfig()}
 			cfg.Pipelines[0].LLM.Provider = "unknown"
+			cfg.Pipelines[0].LLM.ContextSize = 0
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatal("expected error")
@@ -1254,6 +1345,7 @@ func TestResolvedConfig(t *testing.T) {
 			cfg := testGatewayConfig()
 			cfg.Pipelines = []PipelineConfig{testPipelineConfig()}
 			cfg.Pipelines[0].LLM.Provider = "openaicompatible"
+			cfg.Pipelines[0].LLM.ContextSize = 0
 			cfg.Pipelines[0].LLM.LlamaCPPServer = false
 			cfg.Pipelines[0].LLM.Remote = "http://localhost:8080/v1/chat/completions"
 			if err := cfg.Validate(); err != nil {
@@ -1276,7 +1368,7 @@ func TestResolvedConfig(t *testing.T) {
 					t.Parallel()
 					cfg := testGatewayConfig()
 					cfg.Pipelines = []PipelineConfig{testPipelineConfig()}
-					cfg.Pipelines[0].LLM = tc.llm
+					cfg.Pipelines[0].LLM = LLMConfig{ModelConfig: tc.llm}
 					if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
 						t.Fatalf("Validate() = %v, want %s", err, tc.want)
 					}
@@ -1298,14 +1390,14 @@ func TestResolvedConfig(t *testing.T) {
 			{Provider: "openai", Auth: openairesponses.AuthCodex, Model: "gpt-6-luna", Remote: "https://example.com"},
 			{Provider: "openai", Auth: openairesponses.AuthCodex, Model: "gpt-6-luna", APIKeyName: "UNUSED_KEY"},
 		} {
-			cfg := ResolvedConfig{LLM: []LLMConfig{{Label: "Bad", ModelConfig: model}}}
+			cfg := ResolvedConfig{Runtime: testRuntime, LLM: []LLMConfig{{Label: "Bad", ModelConfig: model}}}
 			if err := cfg.Validate(); err == nil {
 				t.Fatalf("accepted %+v", model)
 			}
 		}
 	})
 	t.Run("requires a pipeline", func(t *testing.T) {
-		cfg := ResolvedConfig{}
+		cfg := ResolvedConfig{Runtime: testRuntime}
 		if err := cfg.Validate(); err == nil {
 			t.Fatal("accepted configuration without a pipeline")
 		}
@@ -1422,11 +1514,13 @@ label = "Client speech"
 provider = "llamacpp"
 llamacppsrv = true
 model = "chat-model"
+context_size = 65536
 [[asr]]
 id = "recognition"
 engine = "genai"
 provider = "llamacpp"
 model = "asr-model"
+context_size = 32768
 [[tts]]
 id = "speech"
 engine = "kittentts"
@@ -1468,11 +1562,11 @@ func testValidateASR(t *testing.T) {
 
 func testResolvedConfigChoices(t *testing.T) {
 	t.Parallel()
-	cfg := ResolvedConfig{
+	cfg := ResolvedConfig{Runtime: testRuntime,
 		Realtime: []RealtimeConfig{{Label: "Gemini Live", ModelConfig: ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}}},
 		LLM: []LLMConfig{
 			{Label: "Remote LLM", ModelConfig: ModelConfig{Provider: "openaicompatible", Remote: "https://example.com/v1/chat/completions", APIKeyName: "REMOTE_KEY", Model: "chat-model"}},
-			{Label: "Local LLM", ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "chat-model"}},
+			{Label: "Local LLM", ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "chat-model"}, ContextSize: 65536},
 		},
 	}
 	if err := cfg.Validate(); err != nil {
@@ -1508,7 +1602,7 @@ func testResolvedConfigChoices(t *testing.T) {
 func TestLLMConfig(t *testing.T) {
 	t.Parallel()
 	t.Run("ID", func(t *testing.T) {
-		cfg := ResolvedConfig{LLM: []LLMConfig{
+		cfg := ResolvedConfig{Runtime: testRuntime, LLM: []LLMConfig{
 			{Label: "First", ModelConfig: ModelConfig{Provider: "openaicompatible", Remote: "https://example.com/chat", Model: "model-a", APIKeyName: "KEY_A"}},
 			{Label: "Second", ModelConfig: ModelConfig{Provider: "deepseek", Model: "deepseek-flash"}},
 		}}
@@ -1553,11 +1647,11 @@ func TestPipelineConfig(t *testing.T) {
 				c.TTS = TTSConfig{Engine: TTSEngineGenAI, Provider: "unknown", Model: "speech"}
 			}, "voice.tts.provider"},
 			{"missing provider TTS model", func(c *PipelineConfig) {
-				c.TTS = TTSConfig{Engine: TTSEngineGenAI, Provider: "llamacpp"}
+				c.TTS = TTSConfig{Engine: TTSEngineGenAI, Provider: "llamacpp", ContextSize: 32768}
 			}, "voice.tts.model"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				cfg := ResolvedConfig{Pipelines: []PipelineConfig{testPipelineConfig()}}
+				cfg := ResolvedConfig{Runtime: testRuntime, Pipelines: []PipelineConfig{testPipelineConfig()}}
 				tc.edit(&cfg.Pipelines[0])
 				if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.field) {
 					t.Fatalf("expected %s validation error, got %v", tc.field, err)
@@ -1594,7 +1688,7 @@ func TestPipelineConfig(t *testing.T) {
 
 // testGatewayConfig supplies an explicitly selected model for configuration tests.
 func testGatewayConfig() ResolvedConfig {
-	cfg := ResolvedConfig{}
+	cfg := ResolvedConfig{Runtime: testRuntime}
 	cfg.Realtime = []RealtimeConfig{{Label: "Gemini", ModelConfig: ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}}}
 	return cfg
 }
@@ -1602,8 +1696,8 @@ func testGatewayConfig() ResolvedConfig {
 func testPipelineConfig() PipelineConfig {
 	return PipelineConfig{
 		Label: "Local",
-		ASR:   ASRConfig{Engine: ASREngineGenAI, Provider: "llamacpp", Model: "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"},
-		LLM:   ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"},
+		ASR:   ASRConfig{Engine: ASREngineGenAI, Provider: "llamacpp", Model: "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0", ContextSize: 32768},
+		LLM:   LLMConfig{ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"}, ContextSize: 65536},
 		TTS:   TTSConfig{Engine: TTSEngineKittenTTS, Voice: "Jasper", Model: "KittenML/kitten-tts-2"},
 	}
 }

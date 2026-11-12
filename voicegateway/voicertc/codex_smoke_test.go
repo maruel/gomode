@@ -155,7 +155,7 @@ func TestSmokeChatTokenUsage(t *testing.T) {
 		t.Run(choice.Provider, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 			t.Cleanup(cancel)
-			config := voicegateway.ResolvedConfig{}
+			config := voicegateway.ResolvedConfig{Runtime: testRuntime}
 			config.Realtime, config.Pipelines, config.LLM = nil, nil, []voicegateway.LLMConfig{choice}
 			bridge, err := newBridgeWithTimeout(ctx, &config, 0, t.TempDir(), 5*time.Millisecond)
 			if err != nil {

@@ -1048,7 +1048,7 @@ func TestLlamaRealtimeSession(t *testing.T) {
 				writeGeminiFixture(t, ctx, ws, `{"type":"error","error":{"code":"PRIVATE_RESULT","message":"bad tool output: PRIVATE_RESULT"}}`)
 			}))
 			t.Cleanup(srv.Close)
-			b, err := newLlamaRealtimeBackend(t.Context(), voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", Remote: srv.URL}})
+			b, err := newLlamaRealtimeBackend(t.Context(), voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", Remote: srv.URL}, Slots: 1})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1153,7 +1153,7 @@ func TestLlamaRealtimeSession(t *testing.T) {
 							close(closed)
 						}))
 						t.Cleanup(srv.Close)
-						b, err := newLlamaRealtimeBackend(t.Context(), voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", Remote: srv.URL}})
+						b, err := newLlamaRealtimeBackend(t.Context(), voicegateway.RealtimeConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", Remote: srv.URL}, Slots: 1})
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -1274,7 +1274,7 @@ func TestLlamaRealtimeBackend(t *testing.T) {
 		}))
 		t.Cleanup(srv.Close)
 		b, err := newLlamaRealtimeBackend(t.Context(), voicegateway.RealtimeConfig{
-			ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", Remote: srv.URL}, Staged: true,
+			ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", Remote: srv.URL, Effort: "medium"}, Slots: 1, Staged: true,
 		})
 		if err != nil {
 			t.Fatal(err)

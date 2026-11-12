@@ -20,33 +20,61 @@ func TestRealtimeConfig(t *testing.T) {
 			t.Fatalf("native audio validation = %v", err)
 		}
 	})
-	t.Run("ID", func(t *testing.T) {
-		t.Run("equivalent settings", func(t *testing.T) {
-			for _, pair := range [][2]RealtimeConfig{
-				{
-					{ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}},
-					{ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}, Slots: 1, ContextSize: 65536},
-				},
-			} {
-				first, err := pair[0].ID()
-				if err != nil {
-					t.Fatal(err)
-				}
-				second, err := pair[1].ID()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if first != second {
-					t.Fatalf("equivalent choices differ: %s vs %s", first, second)
-				}
+	t.Run("Resolve", func(t *testing.T) {
+		managed := ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}
+		t.Run("defaults", func(t *testing.T) {
+			cfg := Config{Realtime: []RealtimeConfig{
+				{Label: "Managed", ModelConfig: managed, Staged: true, ContextSize: 32768},
+				{Label: "Remote", ModelConfig: ModelConfig{Provider: "llamacpp", Remote: "http://127.0.0.1:8080", Model: "remote"}},
+				{Label: "Cloud", ModelConfig: ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}},
+			}}
+			out, err := cfg.Resolve()
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := out.Realtime
+			if got[0].Slots != 1 || got[0].Effort != "medium" {
+				t.Fatalf("managed = %+v", got[0])
+			}
+			if got[1].Slots != 1 || got[1].ContextSize != 0 {
+				t.Fatalf("remote = %+v", got[1])
+			}
+			if got[2].Slots != 0 || got[2].ContextSize != 0 {
+				t.Fatalf("cloud = %+v", got[2])
+			}
+			if cfg.Realtime[0].Slots != 0 {
+				t.Fatal("Resolve changed declarations")
 			}
 		})
+		t.Run("explicit defaults share identity", func(t *testing.T) {
+			cfg := Config{Realtime: []RealtimeConfig{
+				{Label: "Implicit", ModelConfig: managed, ContextSize: 65536},
+				{Label: "Explicit", ModelConfig: managed, Slots: 1, ContextSize: 65536},
+			}}
+			if _, err := cfg.Resolve(); err == nil || !strings.Contains(err.Error(), "duplicate choice") {
+				t.Fatalf("Resolve = %v", err)
+			}
+		})
+		t.Run("managed requires context size", func(t *testing.T) {
+			cfg := Config{Realtime: []RealtimeConfig{{Label: "Managed", ModelConfig: managed}}}
+			if _, err := cfg.Resolve(); err == nil || !strings.Contains(err.Error(), "realtime.context_size is required") {
+				t.Fatalf("Resolve = %v", err)
+			}
+		})
+		t.Run("cloud rejects llama.cpp settings", func(t *testing.T) {
+			cfg := Config{Realtime: []RealtimeConfig{{Label: "Cloud", ModelConfig: ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}, Slots: 2}}}
+			if _, err := cfg.Resolve(); err == nil || !strings.Contains(err.Error(), "require provider llamacpp") {
+				t.Fatalf("Resolve = %v", err)
+			}
+		})
+	})
+	t.Run("ID", func(t *testing.T) {
 		t.Run("managed cache default", func(t *testing.T) {
 			cache, err := os.UserCacheDir()
 			if err != nil {
 				t.Fatal(err)
 			}
-			implicit := RealtimeConfig{Label: "Implicit", ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}}
+			implicit := RealtimeConfig{Label: "Implicit", ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}, Slots: 1, ContextSize: 65536}
 			explicit := implicit
 			explicit.Label = "Explicit"
 			explicit.CacheDir = filepath.Join(cache, "gomode", "llama-realtime")
@@ -61,9 +89,9 @@ func TestRealtimeConfig(t *testing.T) {
 			if first != second {
 				t.Fatalf("same runtime cache changed ID: %s vs %s", first, second)
 			}
-			cfg := ResolvedConfig{Realtime: []RealtimeConfig{implicit, explicit}}
-			if err := cfg.Validate(); err == nil {
-				t.Fatal("duplicate effective cache configuration accepted")
+			cfg := ResolvedConfig{Runtime: testRuntime, Realtime: []RealtimeConfig{implicit, explicit}}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate choice") {
+				t.Fatalf("duplicate effective cache configuration: %v", err)
 			}
 		})
 		t.Run("settings change identity", func(t *testing.T) {
@@ -96,9 +124,9 @@ func TestRealtimeConfig(t *testing.T) {
 				c     RealtimeConfig
 				model string
 			}{
-				{RealtimeConfig{ModelConfig: ModelConfig{Remote: "http://127.0.0.1:8080"}}, testRealtimeModel},
+				{RealtimeConfig{ModelConfig: ModelConfig{Remote: "http://127.0.0.1:8080"}, Slots: 1}, testRealtimeModel},
 				{RealtimeConfig{Slots: 2, ContextSize: 8192}, testRealtimeModel},
-				{RealtimeConfig{}, "LiquidAI/LFM3-Audio-2B-GGUF"},
+				{RealtimeConfig{Slots: 1, ContextSize: 65536}, "LiquidAI/LFM3-Audio-2B-GGUF"},
 			} {
 				tc.c.ModelConfig = ModelConfig{Provider: "llamacpp", LlamaCPPServer: tc.c.Remote == "", Remote: tc.c.Remote, Model: tc.model}
 				if err := tc.c.validate(); err != nil {
@@ -111,17 +139,19 @@ func TestRealtimeConfig(t *testing.T) {
 				c     RealtimeConfig
 				model string
 			}{
-				{RealtimeConfig{}, ""},
-				{RealtimeConfig{}, "LiquidAI"},
-				{RealtimeConfig{}, "LiquidAI/"},
-				{RealtimeConfig{}, "LiquidAI/LFM3-Audio-2B-GGUF/"},
-				{RealtimeConfig{}, "LiquidAI/LFM3-Audio-2B-GGUF/sub/file.gguf"},
-				{RealtimeConfig{ModelConfig: ModelConfig{Remote: "ftp://localhost"}}, ""},
-				{RealtimeConfig{ModelConfig: ModelConfig{Remote: "http://localhost"}, ContextSize: 8192}, ""},
-				{RealtimeConfig{ModelConfig: ModelConfig{Remote: "http://localhost"}, Slots: -1}, ""},
+				{RealtimeConfig{Slots: 1, ContextSize: 65536}, ""},
+				{RealtimeConfig{Slots: 1, ContextSize: 65536}, "LiquidAI"},
+				{RealtimeConfig{Slots: 1, ContextSize: 65536}, "LiquidAI/"},
+				{RealtimeConfig{Slots: 1, ContextSize: 65536}, "LiquidAI/LFM3-Audio-2B-GGUF/"},
+				{RealtimeConfig{Slots: 1, ContextSize: 65536}, "LiquidAI/LFM3-Audio-2B-GGUF/sub/file.gguf"},
+				{RealtimeConfig{Slots: 1}, testRealtimeModel},
+				{RealtimeConfig{Slots: 1, ContextSize: 131073}, testRealtimeModel},
+				{RealtimeConfig{ModelConfig: ModelConfig{Remote: "ftp://localhost"}, Slots: 1}, ""},
+				{RealtimeConfig{ModelConfig: ModelConfig{Remote: "http://localhost"}, Slots: 1, ContextSize: 8192}, ""},
+				{RealtimeConfig{ModelConfig: ModelConfig{Remote: "http://localhost"}}, ""},
 				{RealtimeConfig{ModelConfig: ModelConfig{Remote: "http://localhost"}, Slots: 17}, ""},
-				{RealtimeConfig{Slots: 1, CacheDir: "relative"}, testRealtimeModel},
-				{RealtimeConfig{ModelConfig: ModelConfig{Remote: "http://localhost"}, MaxOutputTokens: 2147483648}, ""},
+				{RealtimeConfig{Slots: 1, ContextSize: 65536, CacheDir: "relative"}, testRealtimeModel},
+				{RealtimeConfig{ModelConfig: ModelConfig{Remote: "http://localhost"}, Slots: 1, MaxOutputTokens: 2147483648}, ""},
 			} {
 				tc.c.ModelConfig = ModelConfig{Provider: "llamacpp", LlamaCPPServer: tc.c.Remote == "", Remote: tc.c.Remote, Model: tc.model}
 				if err := tc.c.validate(); err == nil {
@@ -129,11 +159,5 @@ func TestRealtimeConfig(t *testing.T) {
 				}
 			}
 		})
-	})
-	t.Run("WithDefaults", func(t *testing.T) {
-		c := RealtimeConfig{ModelConfig: ModelConfig{Provider: "llamacpp"}}.WithDefaults()
-		if c.Slots != 1 || c.ContextSize != 65536 {
-			t.Fatalf("defaults: %+v", c)
-		}
 	})
 }

@@ -80,7 +80,7 @@ func localStackModelsForConfigWithStarter(
 ) (localStackModels, error) {
 	// Resolve credentials before starting speech models. The LLM is owned here
 	// until all ASR initialization succeeds and ownership transfers to the runtime.
-	llm, err := resolveLocalStackEndpoint(ctx, cfg.LLM, start)
+	llm, err := resolveLocalStackEndpoint(ctx, cfg.LLM.ModelConfig, cfg.LLM.ContextSize, start)
 	if err != nil {
 		return localStackModels{}, err
 	}
@@ -116,7 +116,7 @@ func localStackModelsForConfigWithStarter(
 			asrAdapter = &speechASRAdapter{recognizer: recognizer}
 		default:
 			var err error
-			asr, err = resolveLocalStackEndpoint(ctx, voicegateway.ModelConfig{Provider: cfg.ASR.Provider, Remote: cfg.ASR.Remote, Model: cfg.ASR.Model}, start)
+			asr, err = resolveLocalStackEndpoint(ctx, voicegateway.ModelConfig{Provider: cfg.ASR.Provider, Remote: cfg.ASR.Remote, Model: cfg.ASR.Model}, cfg.ASR.ContextSize, start)
 			if err != nil {
 				return localStackModels{}, errors.Join(err, llm.runtime.Close())
 			}
@@ -154,7 +154,7 @@ func localStackModelsForConfigWithStarter(
 	if !cfg.TextOnly && cfg.TTS != (voicegateway.TTSConfig{}) {
 		switch cfg.TTS.Engine {
 		case voicegateway.TTSEngineGenAI:
-			endpoint, err := resolveLocalStackEndpoint(ctx, voicegateway.ModelConfig{Provider: cfg.TTS.Provider, Remote: cfg.TTS.Remote, Model: cfg.TTS.Model}, start)
+			endpoint, err := resolveLocalStackEndpoint(ctx, voicegateway.ModelConfig{Provider: cfg.TTS.Provider, Remote: cfg.TTS.Remote, Model: cfg.TTS.Model}, cfg.TTS.ContextSize, start)
 			if err != nil {
 				return localStackModels{}, errors.Join(err, runtime.Close())
 			}
@@ -192,10 +192,11 @@ func localStackModelsForConfigWithStarter(
 	}, nil
 }
 
-// resolveLocalStackEndpoint wires one local stack adapter to its configured provider.
-func resolveLocalStackEndpoint(ctx context.Context, cfg voicegateway.ModelConfig, start managedLlamaStarter) (localStackEndpoint, error) {
+// resolveLocalStackEndpoint wires one local stack adapter to its configured
+// provider. contextSize sizes a managed llama.cpp server.
+func resolveLocalStackEndpoint(ctx context.Context, cfg voicegateway.ModelConfig, contextSize int, start managedLlamaStarter) (localStackEndpoint, error) {
 	if cfg.Provider == "llamacpp" {
-		return localStackLlamaEndpoint(ctx, cfg.Remote, cfg.Model, start)
+		return localStackLlamaEndpoint(ctx, cfg.Remote, cfg.Model, contextSize, start)
 	}
 	return localStackGenAIEndpoint(ctx, cfg)
 }
@@ -203,10 +204,10 @@ func resolveLocalStackEndpoint(ctx context.Context, cfg voicegateway.ModelConfig
 // localStackLlamaEndpoint wires the managed (or remote) llama.cpp runtime. A
 // managed server was just started by us, so it is known to be reachable; a
 // user-supplied remote is pinged to fail fast on misconfiguration.
-func localStackLlamaEndpoint(ctx context.Context, remote, model string, start managedLlamaStarter) (localStackEndpoint, error) {
+func localStackLlamaEndpoint(ctx context.Context, remote, model string, contextSize int, start managedLlamaStarter) (localStackEndpoint, error) {
 	var runtime io.Closer
 	if remote == "" {
-		srv, err := start(ctx, model)
+		srv, err := start(ctx, model, contextSize)
 		if err != nil {
 			return localStackEndpoint{}, err
 		}
@@ -279,7 +280,7 @@ type managedLlamaServer interface {
 	URL() string
 }
 
-type managedLlamaStarter func(context.Context, string) (managedLlamaServer, error)
+type managedLlamaStarter func(ctx context.Context, model string, contextSize int) (managedLlamaServer, error)
 
 type managedLlamaReleaseCache struct {
 	gate  chan struct{}
@@ -293,7 +294,7 @@ func newManagedLlamaReleaseCache() *managedLlamaReleaseCache {
 	return &managedLlamaReleaseCache{gate: make(chan struct{}, 1)}
 }
 
-func startManagedLlamaServer(ctx context.Context, model string) (managedLlamaServer, error) {
+func startManagedLlamaServer(ctx context.Context, model string, contextSize int) (managedLlamaServer, error) {
 	version := llamacppsrv.Version
 	cache, err := localStackLlamaCacheDir()
 	if err != nil {
@@ -311,11 +312,11 @@ func startManagedLlamaServer(ctx context.Context, model string) (managedLlamaSer
 		return nil, err
 	}
 	// Gateway sessions share each managed server and queue concurrent turns
-	// through one slot. Bound the context to limit KV cache allocation.
+	// through one slot.
 	args := []string{"-hf", model, "--no-warmup", "--no-log-timestamps"}
-	slog.InfoContext(ctx, "voicertc: starting managed llama.cpp", "model", model, "version", version, "hostPort", hostPort)
+	slog.InfoContext(ctx, "voicertc: starting managed llama.cpp", "model", model, "version", version, "hostPort", hostPort, "context_size", contextSize)
 	logger := slog.NewLogLogger(slog.Default().Handler(), slog.LevelInfo)
-	srv, err := llamacppsrv.New(ctx, exe, &llamacppsrv.Config{HostPort: hostPort, Slots: 1, ContextSize: 32768, Args: args, LogOutput: logger.Writer()})
+	srv, err := llamacppsrv.New(ctx, exe, &llamacppsrv.Config{HostPort: hostPort, Slots: 1, ContextSize: contextSize, Args: args, LogOutput: logger.Writer()})
 	if err != nil {
 		return nil, fmt.Errorf("start managed llama.cpp: %w", err)
 	}

@@ -94,7 +94,7 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 				t.Fatal("TTS did not produce ASR input")
 			}
 			startup := time.Now()
-			endpoint, err := localStackLlamaEndpoint(runtimeCtx, "", "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0", startManagedLlamaServer)
+			endpoint, err := localStackLlamaEndpoint(runtimeCtx, "", "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0", 32768, startManagedLlamaServer)
 			t.Logf("managed Qwen3-ASR startup setup time, excluded from latency measurements: %s", smokeElapsed(startup))
 			if err != nil {
 				t.Fatal(err)
@@ -127,7 +127,7 @@ func TestSmokeVoiceRTCLocalAudio(t *testing.T) {
 
 	t.Run("LLM", func(t *testing.T) {
 		startup := time.Now()
-		endpoint, err := localStackLlamaEndpoint(runtimeCtx, "", "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL", startManagedLlamaServer)
+		endpoint, err := localStackLlamaEndpoint(runtimeCtx, "", "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL", 32768, startManagedLlamaServer)
 		t.Logf("managed Gemma startup setup time, excluded from latency measurements: %s", smokeElapsed(startup))
 		if err != nil {
 			t.Fatal(err)
@@ -292,12 +292,12 @@ func TestSmokeVoiceGatewayToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := voicegateway.ResolvedConfig{}
+	cfg := voicegateway.ResolvedConfig{Runtime: testRuntime}
 	cfg.Realtime = nil
 	cfg.Pipelines = []voicegateway.PipelineConfig{{
 		Label: "Local",
-		ASR:   voicegateway.ASRConfig{Engine: voicegateway.ASREngineGenAI, Provider: "llamacpp", Model: "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0"},
-		LLM:   voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"},
+		ASR:   voicegateway.ASRConfig{Engine: voicegateway.ASREngineGenAI, Provider: "llamacpp", Model: "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0", ContextSize: 32768},
+		LLM:   voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"}, ContextSize: 65536},
 		TTS:   voicegateway.TTSConfig{Engine: voicegateway.TTSEngineKittenTTS, Voice: "Jasper", Model: "KittenML/kitten-tts-2"},
 	}}
 	issuers := []voicegateway.TrustedIssuerConfig{{Service: service.Kind, Issuer: service.BaseURL, PublicKey: encodedPublicKey}}
