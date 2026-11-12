@@ -13,6 +13,8 @@ import (
 
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers/gemini"
+	"github.com/maruel/genai/providers/openaibase"
+	"github.com/maruel/genai/providers/openairesponses"
 	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
 
@@ -380,22 +382,23 @@ func TestGatewayRealtimeToolsCancelsDuringSend(t *testing.T) {
 func TestRealtimeBridgeBackendSetupOptions(t *testing.T) {
 	t.Parallel()
 	setup := &voicev2.SessionSetup{Voice: voicev2.VoiceConfig{Language: "fr-CA"}}
-	geminiOpts := (&realtimeBridgeBackend{provider: "gemini"}).setupOptions(setup)
-	if len(geminiOpts) != 1 || geminiOpts[0].(*gemini.RealtimeOption).InputLanguages[0] != "fr-CA" {
+	geminiOpts := (&realtimeBridgeBackend{provider: "gemini"}).setupOptions(setup, "handle")
+	if o := geminiOpts[0].(*gemini.RealtimeOption); len(geminiOpts) != 1 || o.InputLanguages[0] != "fr-CA" || !o.SessionResumption || o.ResumeHandle != "handle" || o.Compression == nil {
 		t.Fatalf("Gemini options = %+v", geminiOpts)
 	}
-	if openAIOpts := (&realtimeBridgeBackend{provider: "openai"}).setupOptions(setup); len(openAIOpts) != 0 {
+	openAIOpts := (&realtimeBridgeBackend{provider: "openai"}).setupOptions(setup, "")
+	if o, ok := openAIOpts[0].(*openairesponses.RealtimeOption); len(openAIOpts) != 1 || !ok || *o.Truncation != (openaibase.Truncation{Strategy: openaibase.TruncationRetentionRatio, Ratio: 0.8}) {
 		t.Fatalf("OpenAI options = %+v", openAIOpts)
 	}
 	for _, provider := range []string{"gemini", "openai"} {
-		opts := (&realtimeBridgeBackend{provider: provider, effort: genai.EffortLow}).setupOptions(setup)
+		opts := (&realtimeBridgeBackend{provider: provider, effort: genai.EffortLow}).setupOptions(setup, "")
 		if opts[0] != genai.EffortLow {
 			t.Fatalf("%s effort option = %v", provider, opts[0])
 		}
 	}
 	setup.IncludeReasoning = true
 	for _, provider := range []string{"gemini", "openai"} {
-		opts := (&realtimeBridgeBackend{provider: provider}).setupOptions(setup)
+		opts := (&realtimeBridgeBackend{provider: provider}).setupOptions(setup, "")
 		if opts[0] != genai.IncludeReasoning {
 			t.Fatalf("%s omitted requested reasoning output: %v", provider, opts)
 		}

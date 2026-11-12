@@ -9,9 +9,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -154,6 +157,9 @@ func TestGeminiBridgeBackend(t *testing.T) {
 		hints := setup["inputAudioTranscription"].(map[string]any)["languageCodes"].([]any)
 		if !slices.Equal(hints, []any{"fr-CA"}) {
 			t.Fatalf("language hint: %v", hints)
+		}
+		if c := setup["contextWindowCompression"]; !reflect.DeepEqual(c, map[string]any{"slidingWindow": map[string]any{}}) {
+			t.Fatalf("server-default compression: %v", c)
 		}
 		decl := setup["tools"].([]any)[0].(map[string]any)["functionDeclarations"].([]any)[0].(map[string]any)
 		if decl["description"] != "lookup" || decl["behavior"] != "BLOCKING" {
@@ -306,6 +312,139 @@ func TestGeminiBridgeSession(t *testing.T) {
 		}
 	})
 
+	t.Run("resumption", func(t *testing.T) {
+		t.Run("go away waits for a resumable point", func(t *testing.T) {
+			setups := make(chan map[string]any, 2)
+			replaced := make(chan error, 1)
+			var conns atomic.Int32
+			s, sink := newGeminiGateway(t, func(ctx context.Context, ws *websocket.Conn) {
+				setups <- readGeminiFixture(t, ctx, ws)["setup"].(map[string]any)
+				writeGeminiFixture(t, ctx, ws, `{"setupComplete":{}}`)
+				if conns.Add(1) == 2 {
+					writeGeminiFixture(t, ctx, ws, `{"serverContent":{"outputTranscription":{"text":"resumed","finished":true},"turnComplete":true}}`)
+					_, _, _ = ws.Read(ctx)
+					return
+				}
+				for _, frame := range []string{
+					`{"sessionResumptionUpdate":{"newHandle":"stale","resumable":true}}`,
+					`{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":"AQACAA=="}}]}}}`,
+					`{"goAway":{"timeLeft":"50s"}}`,
+					`{"sessionResumptionUpdate":{"resumable":false}}`,
+					`{"serverContent":{"outputTranscription":{"text":"before","finished":true},"turnComplete":true},"sessionResumptionUpdate":{"newHandle":"idle","resumable":true}}`,
+				} {
+					writeGeminiFixture(t, ctx, ws, frame)
+				}
+				// The gateway, not the fixture's deadline, must end this connection.
+				_, _, err := ws.Read(ctx)
+				replaced <- errors.Join(err, ctx.Err())
+			})
+			if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"session.setup","context":{"systemInstruction":"test"}}`)); err != nil {
+				t.Fatal(err)
+			}
+			first, second := <-setups, <-setups
+			if !reflect.DeepEqual(first["sessionResumption"], map[string]any{}) || !reflect.DeepEqual(second["sessionResumption"], map[string]any{"handle": "idle"}) {
+				t.Fatalf("resumption: first %v, second %v", first["sessionResumption"], second["sessionResumption"])
+			}
+			delete(first, "sessionResumption")
+			delete(second, "sessionResumption")
+			if !reflect.DeepEqual(first, second) {
+				t.Fatalf("resumed setup changed policy:\n%v\n%v", first, second)
+			}
+			if err := <-replaced; err == nil || errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("gateway did not close the replaced connection: %v", err)
+			}
+			sink.waitForKind(t, voicev2.MessageKindSpeechEnded, 2)
+			if got := sink.assistantText(); got != "beforeresumed" {
+				t.Fatalf("assistant text = %q", got)
+			}
+			if slices.Contains(sink.kinds(), voicev2.MessageKindError) || slices.Contains(sink.kinds(), voicev2.MessageKindInterrupted) || sink.wasCanceled() {
+				t.Fatalf("lossless move disturbed the client: %v", sink.kinds())
+			}
+		})
+		t.Run("lost connection cancels unresumable work", func(t *testing.T) {
+			setups := make(chan map[string]any, 2)
+			sent := make(chan map[string]any, 1)
+			connected := make(chan struct{})
+			var conns atomic.Int32
+			s, sink := newGeminiGateway(t, func(ctx context.Context, ws *websocket.Conn) {
+				setups <- readGeminiFixture(t, ctx, ws)["setup"].(map[string]any)
+				writeGeminiFixture(t, ctx, ws, `{"setupComplete":{}}`)
+				if conns.Add(1) == 2 {
+					sent <- readGeminiFixture(t, ctx, ws)
+					_, _, _ = ws.Read(ctx)
+					return
+				}
+				select {
+				case <-connected:
+				case <-ctx.Done():
+					return
+				}
+				writeGeminiFixture(t, ctx, ws, `{"sessionResumptionUpdate":{"newHandle":"before-call","resumable":true}}`)
+				writeGeminiFixture(t, ctx, ws, `{"serverContent":{"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":"AQACAA=="}}]}},"toolCall":{"functionCalls":[{"id":"call-1","name":"lookup","args":{}}]}}`)
+				_ = ws.Close(websocket.StatusPolicyViolation, "connection reset")
+			})
+			// The barrier holds the swap after it starts, so the host result below
+			// is in flight when the turn is abandoned and must wait for the swap.
+			barrier := &geminiSwapBarrier{realtimeEventSink: sink, reached: make(chan struct{}), release: make(chan struct{})}
+			s.sink = barrier
+			if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"session.setup","context":{"systemInstruction":"test"},"tools":[{"name":"lookup"}]}`)); err != nil {
+				t.Fatal(err)
+			}
+			close(connected)
+			<-setups
+			<-barrier.reached
+			result := make(chan error, 1)
+			go func() {
+				result <- s.acceptClientMessage(t.Context(), []byte(`{"kind":"tool.result","id":"call-1","name":"lookup","result":{}}`))
+			}()
+			for !s.tools.isSending("call-1") {
+				runtime.Gosched()
+			}
+			close(barrier.release)
+			if second := <-setups; !reflect.DeepEqual(second["sessionResumption"], map[string]any{"handle": "before-call"}) {
+				t.Fatalf("resumed setup: %v", second["sessionResumption"])
+			}
+			if err := <-result; err != nil {
+				t.Fatalf("abandoned tool result ended voice: %v", err)
+			}
+			sink.waitForKind(t, voicev2.MessageKindInterrupted, 1)
+			if sink.pcmLen() != 0 || !slices.Contains(sink.kinds(), voicev2.MessageKindSpeechEnded) {
+				t.Fatalf("abandoned speech continued: audio=%d kinds=%v", sink.pcmLen(), sink.kinds())
+			}
+			if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"user.message","text":"again"}`)); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := (<-sent)["clientContent"]; !ok {
+				t.Fatal("abandoned tool result reached the resumed connection")
+			}
+			if slices.Contains(sink.kinds(), voicev2.MessageKindError) || sink.wasCanceled() {
+				t.Fatalf("resumed session failed: %v", sink.kinds())
+			}
+		})
+		t.Run("lost connection without a handle ends the session", func(t *testing.T) {
+			connected := make(chan struct{})
+			var conns atomic.Int32
+			s, sink := newGeminiGateway(t, func(ctx context.Context, ws *websocket.Conn) {
+				conns.Add(1)
+				readGeminiFixture(t, ctx, ws)
+				writeGeminiFixture(t, ctx, ws, `{"setupComplete":{}}`)
+				select {
+				case <-connected:
+				case <-ctx.Done():
+					return
+				}
+				_ = ws.Close(websocket.StatusPolicyViolation, "connection reset")
+			})
+			if err := s.acceptClientMessage(t.Context(), []byte(`{"kind":"session.setup","context":{"systemInstruction":"test"}}`)); err != nil {
+				t.Fatal(err)
+			}
+			close(connected)
+			sink.waitForKind(t, voicev2.MessageKindError, 1)
+			if n := conns.Load(); n != 1 {
+				t.Fatalf("connections = %d", n)
+			}
+		})
+	})
 	t.Run("acceptClientMessage", func(t *testing.T) {
 		sent := make(chan []map[string]any, 1)
 		s, sink := newGeminiGateway(t, func(ctx context.Context, ws *websocket.Conn) {
@@ -443,6 +582,26 @@ func TestGeminiBridgeSession(t *testing.T) {
 			}
 		}
 	})
+}
+
+// geminiSwapBarrier pauses a connection swap after it holds client sends.
+type geminiSwapBarrier struct {
+	*realtimeEventSink
+	reached chan struct{}
+	release chan struct{}
+}
+
+func (s *geminiSwapBarrier) clearAssistantAudio() {
+	close(s.reached)
+	<-s.release
+	s.realtimeEventSink.clearAssistantAudio()
+}
+
+func (t *gatewayRealtimeTools) isSending(id string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, ok := t.sending[id]
+	return ok
 }
 
 type geminiTranscriptBarrier struct {

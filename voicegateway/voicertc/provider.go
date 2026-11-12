@@ -8,12 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
 
 	"github.com/maruel/genai"
 	"github.com/maruel/genai/providers/gemini"
+	"github.com/maruel/genai/providers/openaibase"
+	"github.com/maruel/genai/providers/openairesponses"
 	"github.com/maruel/gomode/voicegateway"
 	voicev2 "github.com/maruel/gomode/voicegateway/api/v2"
 )
@@ -79,7 +82,9 @@ func (b *realtimeBridgeBackend) newProvider(ctx context.Context) (genai.Provider
 	return cfg.NewProvider(ctx, opts...)
 }
 
-func (b *realtimeBridgeBackend) setupOptions(msg *voicev2.SessionSetup) []genai.RealtimeOption {
+// setupOptions returns provider-specific options. A nonempty Gemini handle
+// resumes that session on a new connection.
+func (b *realtimeBridgeBackend) setupOptions(msg *voicev2.SessionSetup, handle string) []genai.RealtimeOption {
 	var opts []genai.RealtimeOption
 	if msg.IncludeReasoning {
 		opts = append(opts, genai.IncludeReasoning)
@@ -88,7 +93,19 @@ func (b *realtimeBridgeBackend) setupOptions(msg *voicev2.SessionSetup) []genai.
 		opts = append(opts, b.effort)
 	}
 	if b.provider == "gemini" {
-		opts = append(opts, &gemini.RealtimeOption{InputLanguages: []string{msg.Voice.Language}})
+		// Gemini resets each connection after about 10 minutes; resumption carries
+		// the conversation to the next one. Audio-only sessions also end after 15
+		// minutes unless context compression is enabled; the zero value selects
+		// the server's thresholds, which scale with the model's context window.
+		// https://ai.google.dev/gemini-api/docs/live-api/session-management
+		opts = append(opts, &gemini.RealtimeOption{InputLanguages: []string{msg.Voice.Language}, SessionResumption: true, ResumeHandle: handle, Compression: &gemini.RealtimeCompression{}})
+	}
+	if b.provider == "openai" || b.provider == "openairesponses" {
+		// OpenAI drops the oldest items once the conversation outgrows the
+		// model's window. Trimming 20% at once, as OpenAI suggests for long
+		// sessions, keeps the cached prompt prefix valid across more turns.
+		// https://developers.openai.com/blog/realtime-api
+		opts = append(opts, &openairesponses.RealtimeOption{Truncation: &openaibase.Truncation{Strategy: openaibase.TruncationRetentionRatio, Ratio: 0.8}})
 	}
 	return opts
 }
@@ -106,19 +123,32 @@ func (b *realtimeBridgeBackend) connect(ctx context.Context, sessionID string, s
 		return nil, fmt.Errorf("create %s provider: %w", b.providerName(), err)
 	}
 	life, cancel := context.WithCancel(ctx)
-	return &realtimeBridgeSession{id: sessionID, backend: b, provider: provider, sink: sink, ctx: life, cancel: cancel}, nil
+	return &realtimeBridgeSession{id: sessionID, backend: b, provider: provider, sink: sink, ctx: life, cancel: cancel, swapped: make(chan struct{})}, nil
 }
 
 // realtimeBridgeSession defers connection until session.setup supplies policy.
 // The session context owns setup and receive I/O; each caller owns its Send.
+//
+// Gemini Live ends each connection after about 10 minutes and warns with
+// GoAway first. The receive worker moves the conversation to a new connection
+// with the latest resumption handle, without involving the client. It waits for
+// a resumable point after GoAway, so idle sessions move without loss. A
+// connection that ends before that point resumes from its latest handle; work
+// after that handle is lost, so outstanding tool calls are cancelled and
+// assistant speech ends. A connection that issued no handle ends the session,
+// so a resume that fails immediately cannot loop. Sends wait while a
+// replacement connects.
 type realtimeBridgeSession struct {
-	usage       usageTracker
-	id          string
-	backend     *realtimeBridgeBackend
-	provider    genai.Provider
-	sink        backendSink
-	ctx         context.Context
-	cancel      context.CancelFunc
+	usage    usageTracker
+	id       string
+	backend  *realtimeBridgeBackend
+	provider genai.Provider
+	sink     backendSink
+	ctx      context.Context
+	cancel   context.CancelFunc
+	// setupOpts and setupMsg are immutable once setup publishes realtime.
+	setupOpts   []genai.RealtimeOption
+	setupMsg    *voicev2.SessionSetup
 	workers     sync.WaitGroup
 	closeOnce   sync.Once
 	closeErr    error
@@ -126,7 +156,16 @@ type realtimeBridgeSession struct {
 	realtime    genai.RealtimeSession
 	configuring bool
 	closed      bool
-	// The receive worker owns playback state and transcript reconciliation.
+	// swapping holds sends until the receive worker publishes a replacement
+	// connection or gives up; swapped is closed and renewed when it finishes.
+	swapping bool
+	swapped  chan struct{}
+	// The receive worker owns playback state, transcript reconciliation and
+	// connection resumption. resumeHandle is the latest handle the current
+	// connection issued; resumable reports that no activity followed it.
+	resumeHandle      string
+	resumable         bool
+	goAway            bool
 	assistantSpeaking bool
 	inputTranscript   realtimeTranscript
 	outputTranscript  realtimeTranscript
@@ -154,15 +193,42 @@ func (s *realtimeBridgeSession) inputSampleRate() int {
 	return rt.Info().InputFormat.SampleRate
 }
 
+// TODO: A send can still reach a connection the provider has closed before the
+// receive worker observes the closure and starts resume; the send fails and the
+// bridge ends the session. Fixing it needs a way to tell connection termination
+// from input validation errors: genai's RealtimeSession exposes neither a Done
+// channel nor a typed terminal error (github.com/maruel/genai realtime.go,
+// internal/realtime/conn.go). With one, wait on swapped and retry once.
+//
+// Tool results that waited out a swap answer calls the replacement connection
+// never issued; the resumed handle predates them. They are reported cancelled.
 func (s *realtimeBridgeSession) sendLocked(ctx context.Context, input genai.RealtimeInput) error {
-	s.mu.Lock()
-	rt := s.realtime
-	closed := s.closed
-	s.mu.Unlock()
-	if closed || rt == nil {
-		return errSessionClosed
+	for waited := false; ; waited = true {
+		s.mu.Lock()
+		rt := s.realtime
+		closed := s.closed
+		swapping := s.swapping
+		swapped := s.swapped
+		s.mu.Unlock()
+		if closed || rt == nil {
+			return errSessionClosed
+		}
+		if !swapping {
+			if c, ok := input.(genai.RealtimeInputContent); ok && waited && len(c.ToolResults) != 0 {
+				ids := make([]string, len(c.ToolResults))
+				for i := range c.ToolResults {
+					ids[i] = c.ToolResults[i].ID
+				}
+				return &genai.RealtimeToolCallCancelledError{ToolCallIDs: ids}
+			}
+			return rt.Send(ctx, input)
+		}
+		select {
+		case <-swapped:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
-	return rt.Send(ctx, input)
 }
 
 func (s *realtimeBridgeSession) acceptClientMessage(ctx context.Context, data []byte) error {
@@ -260,19 +326,15 @@ func (s *realtimeBridgeSession) setup(msg *voicev2.SessionSetup) error {
 	s.workers.Add(1)
 	s.mu.Unlock()
 	defer s.workers.Done()
-	opts := make([]genai.RealtimeOption, 0, 6)
-	opts = append(opts,
+	s.setupOpts = []genai.RealtimeOption{
 		genai.RealtimeOptionInstructions(instruction),
 		&genai.RealtimeOptionTools{Tools: tools},
 		genai.Modalities{genai.ModalityAudio},
 		genai.RealtimeTurnServer,
 		&genai.RealtimeOptionAudio{Voice: msg.Voice.Name, InputTranscription: s.backend.inputTranscription(), OutputTranscription: true},
-	)
-	opts = append(opts, s.backend.setupOptions(msg)...)
-	rt, err := s.provider.ConnectRealtime(s.ctx, opts...)
-	if err == nil {
-		err = acceptGatewayRealtimeSession(rt)
 	}
+	s.setupMsg = msg
+	rt, err := s.dial("")
 	s.mu.Lock()
 	s.configuring = false
 	if err != nil {
@@ -290,6 +352,20 @@ func (s *realtimeBridgeSession) setup(msg *voicev2.SessionSetup) error {
 	s.workers.Go(func() { s.rxLoop(rt) })
 	s.mu.Unlock()
 	return nil
+}
+
+// dial connects to the provider with the setup policy, resuming handle when
+// nonempty.
+func (s *realtimeBridgeSession) dial(handle string) (genai.RealtimeSession, error) {
+	opts := append(slices.Clip(s.setupOpts), s.backend.setupOptions(s.setupMsg, handle)...)
+	rt, err := s.provider.ConnectRealtime(s.ctx, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if err := acceptGatewayRealtimeSession(rt); err != nil {
+		return nil, err
+	}
+	return rt, nil
 }
 
 func (s *realtimeBridgeSession) acceptMicPCM(ctx context.Context, pcm []byte) error {
@@ -338,26 +414,124 @@ func (s *realtimeBridgeSession) close() error {
 }
 
 func (s *realtimeBridgeSession) rxLoop(rt genai.RealtimeSession) {
+	for rt != nil {
+		rt = s.receive(rt)
+	}
+}
+
+// receive delivers one connection's events and returns its replacement, or
+// nil when the session ends.
+func (s *realtimeBridgeSession) receive(rt genai.RealtimeSession) genai.RealtimeSession {
 	scope := s.backend.errorScope()
 	for event, err := range rt.Receive(s.ctx) {
 		if err != nil {
-			if s.ctx.Err() == nil {
+			if s.ctx.Err() != nil {
+				return nil
+			}
+			if s.resumeHandle == "" {
 				slog.WarnContext(s.ctx, "voicertc: provider receive failed", "session", s.id, "provider", scope, "err", err)
 				s.sink.sendGatewayError(s.ctx, scope+": "+err.Error())
+				return nil
 			}
-			return
+			slog.WarnContext(s.ctx, "voicertc: provider connection lost; resuming", "session", s.id, "provider", scope, "go_away", s.goAway, "lossless", s.resumable, "err", err)
+			return s.resume(rt)
 		}
 		if err := s.handleEvent(&event); err != nil {
 			slog.WarnContext(s.ctx, "voicertc: gateway delivery failed", "session", s.id, "provider", scope, "err", err)
 			s.sink.sendGatewayError(s.ctx, "session: "+err.Error())
 			s.sink.cancelSession()
-			return
+			return nil
+		}
+		if s.goAway && s.resumable {
+			slog.InfoContext(s.ctx, "voicertc: provider connection ending; resuming", "session", s.id, "provider", scope)
+			return s.resume(rt)
 		}
 	}
+	return nil
+}
+
+// resume replaces old with a connection resuming the latest handle. Work the
+// handle does not cover is abandoned: tool calls are cancelled and assistant
+// speech ends.
+func (s *realtimeBridgeSession) resume(old genai.RealtimeSession) genai.RealtimeSession {
+	scope := s.backend.errorScope()
+	s.mu.Lock()
+	s.swapping = true
+	s.mu.Unlock()
+	handle := s.resumeHandle
+	s.resumeHandle, s.resumable, s.goAway = "", false, false
+	s.inputTranscript.text.Reset()
+	s.outputTranscript.text.Reset()
+	if err := s.abandonTurn(); err != nil {
+		s.publish(nil)
+		slog.WarnContext(s.ctx, "voicertc: gateway delivery failed", "session", s.id, "provider", scope, "err", err)
+		s.sink.sendGatewayError(s.ctx, "session: "+err.Error())
+		s.sink.cancelSession()
+		return nil
+	}
+	rt, err := s.dial(handle)
+	if err != nil {
+		s.publish(nil)
+		if s.ctx.Err() == nil {
+			slog.WarnContext(s.ctx, "voicertc: provider resume failed", "session", s.id, "provider", scope, "err", err)
+			s.sink.sendGatewayError(s.ctx, scope+": resume: "+err.Error())
+		}
+		return nil
+	}
+	if !s.publish(rt) {
+		// close owns only the published connection.
+		_ = rt.Close()
+		return nil
+	}
+	if err := old.Close(); err != nil {
+		slog.InfoContext(s.ctx, "voicertc: replaced provider connection close failed", "session", s.id, "provider", scope, "err", err)
+	}
+	return rt
+}
+
+// publish ends a swap and releases waiting sends. A nil rt keeps the current
+// connection. It reports false when close won, leaving rt unpublished.
+func (s *realtimeBridgeSession) publish(rt genai.RealtimeSession) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rt != nil && !s.closed {
+		s.realtime = rt
+	}
+	s.swapping = false
+	close(s.swapped)
+	s.swapped = make(chan struct{})
+	return !s.closed
+}
+
+// abandonTurn ends assistant speech and cancels every tool call the previous
+// connection issued. It is a no-op at a resumable point.
+func (s *realtimeBridgeSession) abandonTurn() error {
+	var out [][]byte
+	if s.assistantSpeaking {
+		s.sink.clearAssistantAudio()
+		s.assistantSpeaking = false
+		out = append(out, mustGatewayServerMessage(&voicev2.SpeechEnded{Kind: voicev2.MessageKindSpeechEnded, Speaker: voicev2.SpeakerAssistant}))
+	}
+	cancelled, err := s.tools.cancelAll()
+	if err != nil {
+		return err
+	}
+	if cancelled {
+		out = append(out, mustGatewayServerMessage(&voicev2.Interrupted{Kind: voicev2.MessageKindInterrupted, Source: voicev2.InterruptSourceTool, Message: "tool call cancelled"}))
+	}
+	for _, msg := range out {
+		if err := s.sink.sendGatewayMessage(s.ctx, msg); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *realtimeBridgeSession) handleEvent(event *genai.RealtimeEvent) error {
 	var out [][]byte
+	if event.Kind != genai.RealtimeEventProvider && event.Kind != genai.RealtimeEventUsage {
+		s.resumable = false
+	}
 	switch event.Kind {
 	case genai.RealtimeEventUsage:
 		// Unidentified reports retain session totals without guessing which
@@ -399,11 +573,23 @@ func (s *realtimeBridgeSession) handleEvent(event *genai.RealtimeEvent) error {
 		s.assistantSpeaking = false
 		out = append(out, mustGatewayServerMessage(&voicev2.Interrupted{Kind: voicev2.MessageKindInterrupted, Source: voicev2.InterruptSourceUser}))
 	case genai.RealtimeEventProvider:
-		if cancelled, ok := event.ProviderEvent.(*gemini.ToolCallCancellation); ok {
-			if err := s.tools.cancel(cancelled.IDs); err != nil {
+		switch e := event.ProviderEvent.(type) {
+		case *gemini.ToolCallCancellation:
+			s.resumable = false
+			if err := s.tools.cancel(e.IDs); err != nil {
 				return err
 			}
 			out = append(out, mustGatewayServerMessage(&voicev2.Interrupted{Kind: voicev2.MessageKindInterrupted, Source: voicev2.InterruptSourceTool, Message: "tool call cancelled"}))
+		case *gemini.GoAway:
+			slog.InfoContext(s.ctx, "voicertc: provider connection ending", "session", s.id, "provider", s.backend.errorScope(), "time_left", e.TimeLeft)
+			s.goAway = true
+		case *gemini.Resumption:
+			// An empty handle marks a point that cannot be resumed without loss;
+			// the previous handle remains the fallback.
+			s.resumable = e.Handle != ""
+			if s.resumable {
+				s.resumeHandle = e.Handle
+			}
 		}
 	case genai.RealtimeEventContentToolCalls:
 		if err := s.tools.register(event.Content.ToolCalls); err != nil {
@@ -427,8 +613,7 @@ func (s *realtimeBridgeSession) handleEvent(event *genai.RealtimeEvent) error {
 			s.sink.sendTurnError(s.ctx, s.backend.errorScope()+": "+detail)
 		}
 	default:
-		// Generation completion and resumption observations have no gateway
-		// DTO. In particular generation completion does not end playback.
+		// Generation completion has no gateway DTO and does not end playback.
 	}
 	for _, msg := range out {
 		if err := s.sink.sendGatewayMessage(s.ctx, msg); err != nil {
@@ -509,6 +694,17 @@ func (t *gatewayRealtimeTools) cancel(ids []string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.cancelLocked(ids)
+}
+
+// cancelAll cancels every outstanding call and reports whether any existed.
+func (t *gatewayRealtimeTools) cancelAll() (bool, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	ids := slices.Concat(slices.Collect(maps.Keys(t.active)), slices.Collect(maps.Keys(t.sending)), slices.Collect(maps.Keys(t.pending)))
+	if len(ids) == 0 {
+		return false, nil
+	}
+	return true, t.cancelLocked(ids)
 }
 
 func (t *gatewayRealtimeTools) cancelLocked(ids []string) error {

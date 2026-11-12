@@ -25,7 +25,7 @@ func TestRealtimeConfig(t *testing.T) {
 			for _, pair := range [][2]RealtimeConfig{
 				{
 					{ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}},
-					{ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}, Slots: 1, ContextSize: 8192},
+					{ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}, Slots: 1, ContextSize: 65536},
 				},
 			} {
 				first, err := pair[0].ID()
@@ -75,7 +75,7 @@ func TestRealtimeConfig(t *testing.T) {
 			for _, edit := range []func(*RealtimeConfig){
 				func(c *RealtimeConfig) { c.Model = "LiquidAI/other-model" },
 				func(c *RealtimeConfig) { c.LlamaCPPServer = false; c.Remote = "http://localhost:8080" },
-				func(c *RealtimeConfig) { c.ContextSize = 65536 },
+				func(c *RealtimeConfig) { c.ContextSize = 32768 },
 				func(c *RealtimeConfig) { c.Slots = 2 },
 			} {
 				changed := base
@@ -132,7 +132,7 @@ func TestRealtimeConfig(t *testing.T) {
 	})
 	t.Run("WithDefaults", func(t *testing.T) {
 		c := RealtimeConfig{ModelConfig: ModelConfig{Provider: "llamacpp"}}.WithDefaults()
-		if c.Slots != 1 || c.ContextSize != 8192 {
+		if c.Slots != 1 || c.ContextSize != 65536 {
 			t.Fatalf("defaults: %+v", c)
 		}
 	})

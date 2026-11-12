@@ -21,11 +21,14 @@ type RealtimeConfig struct {
 	// followed by speech synthesis on the same model instead of realtime output.
 	Staged bool `toml:"staged" json:"staged,omitzero"`
 
-	CacheDir        string `toml:"cache_dir" json:"cache_dir"`
-	Threads         int    `toml:"threads" json:"threads"`
-	Slots           int    `toml:"slots" json:"slots"`
-	ContextSize     int    `toml:"context_size" json:"context_size"`
-	MaxOutputTokens int64  `toml:"max_output_tokens" json:"max_output_tokens"`
+	CacheDir string `toml:"cache_dir" json:"cache_dir"`
+	Threads  int    `toml:"threads" json:"threads"`
+	Slots    int    `toml:"slots" json:"slots"`
+	// ContextSize is tokens per slot, 512 to 131072; zero selects 65536. A
+	// llama.cpp realtime conversation ends when it outgrows its context: the
+	// server neither shifts nor truncates realtime slots.
+	ContextSize     int   `toml:"context_size" json:"context_size"`
+	MaxOutputTokens int64 `toml:"max_output_tokens" json:"max_output_tokens"`
 }
 
 // ID returns the fingerprint of the effective realtime settings.
@@ -64,7 +67,7 @@ func (c RealtimeConfig) WithDefaults() RealtimeConfig {
 		c.Slots = 1
 	}
 	if c.ContextSize == 0 {
-		c.ContextSize = 8192
+		c.ContextSize = 65536
 	}
 	if c.Staged && c.Effort == "" {
 		c.Effort = "medium"

@@ -102,7 +102,7 @@ label = "LFM3 audio"
 provider = "llamacpp"
 llamacppsrv = true
 model = "LiquidAI/LFM3-Audio-2B-GGUF/LFM3-Audio-2B-Q4_K_M.gguf"
-context_size = 65536
+context_size = 128000
 # remote = "http://127.0.0.1:8080" directly on the choice.
 
 # Single-model alternative: speech input -> text thinking/tools -> LFM3 speech.
@@ -112,9 +112,9 @@ label = "LFM3 audio thinking (staged)"
 provider = "llamacpp"
 llamacppsrv = true
 model = "LiquidAI/LFM3-Audio-2B-GGUF/LFM3-Audio-2B-Q4_K_M.gguf"
+context_size = 128000
 staged = true
 effort = "medium"
-context_size = 65536
 
 # Remote LLMs
 # Recognition, language, and synthesis models are offered in file declaration order.
