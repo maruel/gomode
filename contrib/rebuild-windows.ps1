@@ -6,6 +6,7 @@ if ($args.Count -ne 0) { throw 'This script takes no arguments.' }
 
 $installDir = Join-Path $env:LOCALAPPDATA 'voice-gateway'
 $exe = Join-Path $installDir 'voice-gateway.exe'
+$logFile = Join-Path $installDir 'voice-gateway.log'
 $taskName = 'GoModeVoiceGateway'
 $task = Get-ScheduledTask -TaskName $taskName -TaskPath '\'
 if (@($task.Actions).Count -ne 1 -or $task.Actions[0].Execute -ne $exe) {
@@ -43,3 +44,4 @@ if ($installedExe -ne $exe) { Copy-Item -LiteralPath $installedExe -Destination 
 Enable-ScheduledTask -TaskName $taskName -TaskPath '\' | Out-Null
 Start-ScheduledTask -TaskName $taskName -TaskPath '\'
 Write-Host "Installed $exe and requested start of scheduled task $taskName."
+Write-Host "Investigate logs: Get-Content -LiteralPath '$($logFile.Replace("'", "''"))' -Tail 100 -Wait"
