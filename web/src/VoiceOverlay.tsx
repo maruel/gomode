@@ -513,22 +513,22 @@ export default function VoiceOverlay(props: {
             class={styles.settingsSection}
             aria-label={messages().voiceSettings}
           >
-            <div class={styles.settingsHeader}>
-              <h2>{messages().voiceSettings}</h2>
-              <button
-                type="button"
-                class={controls.control}
-                aria-label={messages().closeVoiceSettings}
-                onClick={closeSettings}
-              >
-                <VoiceIcon name="close" />
-              </button>
-            </div>
             <VoiceSettings
               messages={messages}
               onError={setSettingsError}
               onLanguageError={setLanguageError}
               visible={settingsOpen()}
+              tabAction={
+                <button
+                  type="button"
+                  class={controls.control}
+                  aria-label={messages().closeVoiceSettings}
+                  title={messages().closeVoiceSettings}
+                  onClick={closeSettings}
+                >
+                  <VoiceIcon name="close" />
+                </button>
+              }
             />
           </section>
         </div>

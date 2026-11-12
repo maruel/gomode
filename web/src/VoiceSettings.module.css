@@ -70,11 +70,11 @@
 }
 
 .settings .error {
-  /* The overlay grows upward from the viewport bottom, so a message appearing on
-     blur would move every control above it between press and release. */
-  height: 2.4em;
-  overflow-y: auto;
   color: var(--color-danger);
+}
+
+.settings .error:empty {
+  display: none;
 }
 
 .retry {
@@ -119,38 +119,48 @@
   color: var(--color-danger);
 }
 
+.setupHeader {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
 .setupTabs {
   display: grid;
+  flex: 1;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.25rem;
-  padding: 0.25rem;
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-medium);
-  border-radius: var(--radius-sm);
+  border-bottom: 1px solid var(--color-border-medium);
 }
 
 .setupTabs button {
   min-width: 0;
   min-height: 2.75rem;
   padding: 0.5rem;
+  /* Overlap the tab list's rule so the selected underline replaces it. */
+  margin-bottom: -1px;
   font: inherit;
   color: var(--color-text-secondary);
   cursor: pointer;
   background: transparent;
-  border: 2px solid transparent;
-  border-radius: var(--radius-sm);
+  border: none;
+  border-bottom: 3px solid transparent;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+
+.setupTabs button:hover:not(:disabled, [aria-selected="true"]) {
+  color: var(--color-text);
+  background: var(--color-bg-hover);
 }
 
 .setupTabs button[aria-selected="true"] {
   font-weight: 600;
   color: var(--color-text);
-  background: var(--color-bg-hover);
-  border-color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
 }
 
 .setupTabs button:focus-visible {
   outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 
 .setupTabs button:disabled {

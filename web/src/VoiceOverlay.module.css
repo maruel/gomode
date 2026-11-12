@@ -252,20 +252,6 @@
   border-top: 1px solid var(--color-border);
 }
 
-.settingsHeader {
-  display: flex;
-  gap: 0.5rem;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 0.75rem;
-}
-
-.settingsHeader h2 {
-  margin: 0;
-  font-size: 1rem;
-  color: var(--color-text-secondary);
-}
-
 .deviceGroup {
   position: relative;
   isolation: isolate;

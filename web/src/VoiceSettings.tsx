@@ -6,10 +6,12 @@ import {
   createSignal,
   createUniqueId,
   onCleanup,
+  onMount,
   Show,
   For,
   on,
   type Accessor,
+  type JSX,
 } from "solid-js";
 import { browserRecognitionAvailable, browserSynthesisAvailable, browserVoiceMatchesLanguage } from "./BrowserSpeech";
 import { BROWSER_SPEECH_RATES, voiceSession, type VoiceSetupMode } from "./VoiceSession";
@@ -24,6 +26,8 @@ export default function VoiceSettings(props: {
   onError?: (error: string | null) => void;
   onLanguageError?: (error: string | null) => void;
   visible?: boolean;
+  /** Rendered at the end of the setup tab row, such as the host's close button. */
+  tabAction?: JSX.Element;
 }) {
   const [creditsOpen, setCreditsOpen] = createSignal(false);
   let loadedGateway: number | undefined;
@@ -54,6 +58,41 @@ export default function VoiceSettings(props: {
     savedTag = next;
   });
   const [languageError, setLanguageError] = createSignal<string | null>(null);
+  // The overlay grows upward from the viewport bottom, so a message shown during
+  // a press moves its target before release and the click misses. Show blur
+  // errors after the press, one task later: a touch tap dispatches its
+  // compatibility mouse events and click in a single task.
+  const [shownLanguageError, setShownLanguageError] = createSignal<string | null>(null);
+  let pressing = false;
+  let reveal: ReturnType<typeof setTimeout> | undefined;
+  const scheduleReveal = () => {
+    clearTimeout(reveal);
+    reveal = pressing ? undefined : setTimeout(() => setShownLanguageError(languageError()));
+  };
+  createEffect(() => {
+    if (languageError() === null) {
+      clearTimeout(reveal);
+      setShownLanguageError(null);
+    } else scheduleReveal();
+  });
+  onMount(() => {
+    const press = () => {
+      pressing = true;
+    };
+    const release = () => {
+      pressing = false;
+      if (languageError() !== null && shownLanguageError() !== languageError()) scheduleReveal();
+    };
+    document.addEventListener("pointerdown", press, true);
+    document.addEventListener("pointerup", release, true);
+    document.addEventListener("pointercancel", release, true);
+    onCleanup(() => {
+      clearTimeout(reveal);
+      document.removeEventListener("pointerdown", press, true);
+      document.removeEventListener("pointerup", release, true);
+      document.removeEventListener("pointercancel", release, true);
+    });
+  });
   const [choiceError, setChoiceError] = createSignal<string | null>(null);
   const [voiceSaveError, setVoiceSaveError] = createSignal<string | null>(null);
   const [speedSaveError, setSpeedSaveError] = createSignal<string | null>(null);
@@ -74,7 +113,7 @@ export default function VoiceSettings(props: {
     ),
   );
   const error = () =>
-    languageError() ??
+    shownLanguageError() ??
     usageError() ??
     reasoningError() ??
     choiceError() ??
@@ -149,38 +188,41 @@ export default function VoiceSettings(props: {
       <Show when={active()}>
         <p>{messages().endSessionToChange}</p>
       </Show>
-      <div class={styles.setupTabs} role="tablist" aria-label={messages().voiceSetup}>
-        <For each={["all-in-one", "parts"] as const}>
-          {(mode) => (
-            <button
-              type="button"
-              role="tab"
-              id={`${setupId}-${mode}`}
-              aria-selected={voiceSession.state.setupMode === mode}
-              aria-controls={`${setupId}-panel`}
-              tabIndex={voiceSession.state.setupMode === mode ? 0 : -1}
-              disabled={
-                active() ||
-                voiceSession.state.choicesStatus !== "ready" ||
-                (voiceSession.choicesForSetup(mode).length === 0 && voiceSession.state.setupMode !== mode)
-              }
-              onClick={() => chooseSetup(mode)}
-              onKeyDown={(event) => {
-                if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-                event.preventDefault();
-                const tabs = Array.from(
-                  event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [],
-                );
-                const target =
-                  event.key === "Home" ? tabs[0] : event.key === "End" ? tabs[1] : tabs[mode === "parts" ? 0 : 1];
-                if (target && !target.disabled && chooseSetup(target === tabs[0] ? "all-in-one" : "parts"))
-                  target.focus();
-              }}
-            >
-              {mode === "all-in-one" ? messages().allInOne : messages().selectParts}
-            </button>
-          )}
-        </For>
+      <div class={styles.setupHeader}>
+        <div class={styles.setupTabs} role="tablist" aria-label={messages().voiceSetup}>
+          <For each={["all-in-one", "parts"] as const}>
+            {(mode) => (
+              <button
+                type="button"
+                role="tab"
+                id={`${setupId}-${mode}`}
+                aria-selected={voiceSession.state.setupMode === mode}
+                aria-controls={`${setupId}-panel`}
+                tabIndex={voiceSession.state.setupMode === mode ? 0 : -1}
+                disabled={
+                  active() ||
+                  voiceSession.state.choicesStatus !== "ready" ||
+                  (voiceSession.choicesForSetup(mode).length === 0 && voiceSession.state.setupMode !== mode)
+                }
+                onClick={() => chooseSetup(mode)}
+                onKeyDown={(event) => {
+                  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                  event.preventDefault();
+                  const tabs = Array.from(
+                    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [],
+                  );
+                  const target =
+                    event.key === "Home" ? tabs[0] : event.key === "End" ? tabs[1] : tabs[mode === "parts" ? 0 : 1];
+                  if (target && !target.disabled && chooseSetup(target === tabs[0] ? "all-in-one" : "parts"))
+                    target.focus();
+                }}
+              >
+                {mode === "all-in-one" ? messages().allInOne : messages().selectParts}
+              </button>
+            )}
+          </For>
+        </div>
+        {props.tabAction}
       </div>
       <div
         class={styles.setupPanel}
@@ -382,8 +424,8 @@ export default function VoiceSettings(props: {
           }}
           // Flush before a close or connect click can use the saved preference.
           onBlur={saveLanguage}
-          aria-invalid={languageError() !== null}
-          aria-describedby={languageError() === null ? undefined : errorId}
+          aria-invalid={shownLanguageError() !== null}
+          aria-describedby={shownLanguageError() === null ? undefined : errorId}
           spellcheck={false}
           autocapitalize="none"
         />
@@ -424,6 +466,9 @@ export default function VoiceSettings(props: {
         />
         {messages().showUsageStats}
       </label>
+      <p id={errorId} role="alert" class={styles.error}>
+        {error()}
+      </p>
       <details class={styles.credits} onToggle={(event) => setCreditsOpen(event.currentTarget.open)}>
         <summary>{messages().credits}</summary>
         <Show when={creditsOpen()}>
@@ -432,10 +477,6 @@ export default function VoiceSettings(props: {
         <p>{messages().musicComposer}</p>
         <p>{messages().musicArranger}</p>
       </details>
-      {/* Last, so its reserved row reads as the panel's bottom padding. */}
-      <p id={errorId} role="alert" class={styles.error}>
-        {error()}
-      </p>
     </div>
   );
 }

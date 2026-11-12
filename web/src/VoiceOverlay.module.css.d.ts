@@ -31,7 +31,6 @@ declare const classes: {
   readonly "responseUsage": string;
   readonly "row": string;
   readonly "settingsButton": string;
-  readonly "settingsHeader": string;
   readonly "settingsSection": string;
   readonly "spacer": string;
   readonly "statusBusy": string;

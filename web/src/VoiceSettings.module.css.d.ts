@@ -7,6 +7,7 @@ declare const classes: {
   readonly "previewError": string;
   readonly "retry": string;
   readonly "settings": string;
+  readonly "setupHeader": string;
   readonly "setupPanel": string;
   readonly "setupTabs": string;
 };

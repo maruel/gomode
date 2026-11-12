@@ -378,6 +378,23 @@ describe("VoiceSettings", () => {
     expect(localStorage.getItem("gomode.voiceLanguage")).toBe("fr-CA");
   });
 
+  it("shows a blur language error only after the press that moved focus ends", () => {
+    vi.useFakeTimers();
+    render(() => <VoiceSettings />);
+    const input = screen.getByRole("textbox");
+    fireEvent.input(input, { target: { value: "en_US" } });
+    fireEvent.pointerDown(document.body);
+    fireEvent.blur(input);
+    vi.advanceTimersByTime(0);
+    expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+    expect(input).not.toHaveAttribute("aria-invalid", "true");
+    fireEvent.pointerUp(document.body);
+    expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+    vi.advanceTimersByTime(0);
+    expect(screen.getByRole("alert")).toHaveTextContent("en_US");
+    expect(input).toHaveAttribute("aria-invalid", "true");
+  });
+
   it("reports invalid language without changing the saved preference and recovers on edit", () => {
     vi.useFakeTimers();
     render(() => <VoiceSettings />);
