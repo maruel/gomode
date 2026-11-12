@@ -788,6 +788,9 @@ class ServiceCatalogTest {
                 val catalog = ServiceCatalog(backgroundScope)
                 try {
                     catalog.reconcile(mapOf(entry.key to entry), emptyMap())
+                    // A hidden service has not started loading; it must not claim to be loading.
+                    catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.NOT_LOADED }
+                    entry.requestPage()
                     catalog.state.first { it[entry.key]?.readiness == ServiceReadiness.WAITING_FOR_PAGE }
                     assertTrue(fixture.requests.isEmpty())
                     entry.updateLoad(WebShellLoadState.Ready)

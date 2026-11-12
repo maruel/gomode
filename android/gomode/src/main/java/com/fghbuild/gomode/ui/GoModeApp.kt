@@ -941,6 +941,7 @@ private fun GoModeContent(
                         when (retryTargets[entry]) {
                             ServiceRetryTarget.BOOTSTRAP -> entry.reloadBootstrap()
                             ServiceRetryTarget.CATALOG -> onRetryService(entry.key)
+                            ServiceRetryTarget.LOAD -> entry.requestPage()
                             ServiceRetryTarget.PAGE -> entry.reloadWeb()
                             null -> Unit
                         }
@@ -991,6 +992,7 @@ internal enum class ServiceRetryTarget(
 ) {
     BOOTSTRAP("Retry settings"),
     CATALOG("Retry connection"),
+    LOAD("Load page"),
     PAGE("Reload page"),
 }
 
@@ -1002,6 +1004,7 @@ internal fun serviceRetryTarget(
     when {
         (state.load as? WebShellLoadState.Failed)?.canRetry == false -> null
         state.bootstrap !is ServiceBootstrapState.Ready -> ServiceRetryTarget.BOOTSTRAP
+        state.load != WebShellLoadState.Ready && !state.pageRequested -> ServiceRetryTarget.LOAD
         state.load != WebShellLoadState.Ready || !authReady -> ServiceRetryTarget.PAGE
         readiness != null && readiness != ServiceReadiness.READY -> ServiceRetryTarget.CATALOG
         else -> null

@@ -60,6 +60,9 @@ internal enum class ServiceReadiness(
     val text: String,
 ) {
     CONNECTING("Connecting"),
+
+    // Hidden services load their page when selected or when voice starts.
+    NOT_LOADED("Not loaded yet"),
     READY("Ready"),
     RECONNECTING("Reconnecting"),
     UNAVAILABLE("Unavailable"),
@@ -407,7 +410,7 @@ internal class ServiceCatalog(
             job =
                 scope.launch {
                     combine(
-                        entry.state.map { it.bootstrap to it.load }.distinctUntilChanged(),
+                        entry.state.map { Triple(it.bootstrap, it.load, it.pageRequested) }.distinctUntilChanged(),
                         entry.bearerStore.authReady,
                         entry.bearerStore.authEpoch,
                         entry.bearerStore.token,
@@ -416,6 +419,7 @@ internal class ServiceCatalog(
                         ParticipantIdentity(
                             page.first,
                             page.second,
+                            page.third,
                             ready,
                             epoch,
                             token,
@@ -463,7 +467,12 @@ internal class ServiceCatalog(
                             }
 
                             identity.load != WebShellLoadState.Ready -> {
-                                status = ServiceReadiness.WAITING_FOR_PAGE
+                                status =
+                                    if (identity.pageRequested) {
+                                        ServiceReadiness.WAITING_FOR_PAGE
+                                    } else {
+                                        ServiceReadiness.NOT_LOADED
+                                    }
                                 publish()
                             }
 
@@ -683,6 +692,7 @@ private data class FrontendTarget(
 private data class ParticipantIdentity(
     val bootstrap: ServiceBootstrapState,
     val load: WebShellLoadState,
+    val pageRequested: Boolean,
     val ready: Boolean,
     val epoch: Long,
     val token: String?,
