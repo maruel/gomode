@@ -157,16 +157,17 @@ func validateUPnPGatewayRoute(ctx context.Context, hostIP net.IP, loc *url.URL) 
 	if err != nil {
 		return err
 	}
-	sourceIP, err := gatewayRouteSourceIPv4(ctx, gatewayIP)
+	sourceIP, err := gatewayRouteSourceIPv4(ctx, hostIP, gatewayIP)
 	if err != nil {
 		return err
 	}
 	return sameIPv4Address(hostIP, sourceIP)
 }
 
-// gatewayRouteSourceIPv4 returns the source address the OS selects for gatewayIP.
+// unboundRouteSourceIPv4 returns the source address the OS selects for
+// gatewayIP when a socket leaves its source address unbound.
 // Dialing UDP establishes no network traffic.
-func gatewayRouteSourceIPv4(ctx context.Context, gatewayIP net.IP) (sourceIP net.IP, retErr error) {
+func unboundRouteSourceIPv4(ctx context.Context, gatewayIP net.IP) (sourceIP net.IP, retErr error) {
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "udp4", net.JoinHostPort(gatewayIP.String(), "9"))
 	if err != nil {
