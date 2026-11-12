@@ -328,7 +328,7 @@ internal class VoiceSession(
     /** Retains a failure next to the engine and phase that produced it. */
     private fun recordFailure(message: String) {
         errorLog.record(
-            engine = OnDeviceEngine.REMOTE_GATEWAY.descriptor().name,
+            engine = OnDeviceEngine.REMOTE_GATEWAY.label,
             phase = state.value.failurePhase(),
             message = message,
         )

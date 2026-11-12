@@ -1,7 +1,6 @@
-// Unit tests for NeedleWhistleEngine unified biased action model on Google Pixel 8 Pro.
+// Unit tests for NeedleWhistleEngine unified biased action model.
 package com.fghbuild.gomode.voice
 
-import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import com.fghbuild.voicegateway.sdk.v2.ToolCall
 import kotlinx.coroutines.runBlocking
@@ -40,18 +39,6 @@ class NeedleWhistleEngineTest {
             tools = sampleTools,
             mcpClient = null,
         )
-
-    @Test
-    fun `descriptor reports 52 MB size and 120ms latency budget for Pixel 8 Pro`() {
-        val engine = NeedleWhistleEngine(RuntimeEnvironment.getApplication())
-        val descriptor = engine.descriptor
-
-        assertEquals(OnDeviceEngine.NEEDLE_WHISTLE, descriptor.engine)
-        assertEquals("Whistle + Needle", descriptor.name)
-        assertEquals(52, descriptor.modelSizeMb)
-        assertEquals(120, descriptor.latencyBudgetMs)
-        assertEquals("Google Pixel 8 Pro", descriptor.targetHardware)
-    }
 
     @Test
     fun `service data cannot trigger an action command`() =

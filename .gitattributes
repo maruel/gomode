@@ -2,3 +2,5 @@
 # Go embeds these bytes verbatim; Windows checkouts must not convert them to CRLF.
 voicegateway/policy/instructions.txt text eol=lf
 mcp/sdktypes/* text eol=lf
+# Windows batch files use CRLF; the CR is not trailing whitespace.
+*.bat whitespace=cr-at-eol

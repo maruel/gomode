@@ -11,7 +11,7 @@ class FixtureActivity : Activity() {
         setContentView(
             TextView(this).apply {
                 id = android.R.id.text1
-                text = "Car dial test"
+                setText(R.string.fixture_title)
             },
         )
     }

@@ -420,7 +420,7 @@ internal class LocalLlmEngine(
                 sessionContext = boundedContext
                 pendingContext = null
                 toolValidator = preparedValidator
-                Log.i(TAG, "Initialized LocalLlmEngine on Google Pixel 8 Pro with ${context.tools.size} tools")
+                Log.i(TAG, "Initialized LocalLlmEngine with ${context.tools.size} tools")
             } finally {
                 // Also release a model if cancellation or close wins during blocking initialization.
                 if (runner !== preparedRunner) {

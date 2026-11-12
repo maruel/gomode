@@ -2,7 +2,6 @@
 package com.fghbuild.gomode.voice
 
 import com.fghbuild.gomode.data.LocalLlmModel
-import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import com.fghbuild.voicegateway.sdk.v2.ToolCall
 import com.google.ai.edge.litertlm.Content
@@ -150,18 +149,13 @@ class LocalLlmEngineTest {
     )
 
     @Test
-    fun `descriptor and formatted model names identify installed models`() {
-        val engine = engine()
-        assertEquals(OnDeviceEngine.LOCAL_LLM, engine.descriptor.engine)
-        assertEquals("Local LLM", engine.descriptor.name)
-        assertEquals(2588, engine.descriptor.modelSizeMb)
+    fun `formatted model names identify installed models`() {
         assertEquals("Gemma 4 E2B", formatModelName("gemma-4-E2B-it"))
         assertEquals("Gemma 4 E4B", formatModelName("gemma-4-E4B-it.litertlm"))
         assertEquals("LFM3 1.7B · 64K", formatModelName("LFM3-1.7B_int8_64k_fp16.litertlm"))
         assertEquals("LFM3 1.7B · 64K", formatModelName("LFM3-1.7B"))
         assertEquals("custom-model", formatModelName("custom-model.litertlm"))
         assertEquals("Qwen2-0.5B-Instruct", formatModelName("Qwen2-0.5B-Instruct"))
-        engine.close()
     }
 
     @Test

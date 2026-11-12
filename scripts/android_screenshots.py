@@ -3,7 +3,7 @@
 
 The runner renders the real Go Mode app twice against a host-neutral demo,
 compares decoded pixels, then publishes lossless WebP images.
-Website imports consume these images without starting Gradle or an emulator.
+scripts/publish_screenshots.py copies them into the websites without Gradle or an emulator.
 The emulator must use the en-US display locale. `make screenshots-update`
 publishes new baselines; `make screenshots-check` requires exact product pixels.
 """

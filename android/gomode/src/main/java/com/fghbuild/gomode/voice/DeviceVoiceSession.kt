@@ -437,7 +437,7 @@ internal class DeviceVoiceSession(
                 tools = sessionTools,
                 mcpClient = mcpClient,
             )
-        val modelDisplay = localEngine.modelName ?: localEngine.descriptor.name
+        val modelDisplay = localEngine.modelName ?: localEngine.engineType.label
         setStatus("Loading $modelDisplay…")
         if (preparedLocalModel == null) {
             withContext(ioDispatcher) { localEngine.initialize(context) }
@@ -1423,7 +1423,7 @@ internal class DeviceVoiceSession(
         val settings = settingsRepository.settings.value
         return when (settings.onDeviceEngine) {
             OnDeviceEngine.LOCAL_LLM -> settings.localLlmModel.label
-            OnDeviceEngine.NEEDLE_WHISTLE, OnDeviceEngine.REMOTE_GATEWAY -> settings.onDeviceEngine.descriptor().name
+            OnDeviceEngine.NEEDLE_WHISTLE, OnDeviceEngine.REMOTE_GATEWAY -> settings.onDeviceEngine.label
         }
     }
 

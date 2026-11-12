@@ -31,6 +31,8 @@ android {
     lint {
         warningsAsErrors = true
         abortOnError = true
+        // Dependency and SDK freshness belong to `make upgrade`, as in the app and fixture modules.
+        disable += setOf("GradleDependency", "NewerVersionAvailable", "AndroidGradlePluginVersion", "OldTargetApi")
     }
 
     testOptions {

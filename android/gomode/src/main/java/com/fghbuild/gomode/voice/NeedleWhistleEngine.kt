@@ -43,7 +43,7 @@ internal class NeedleWhistleEngine(
                 if (part.length > 2) biasedKeywords.add(part.lowercase(Locale.ROOT))
             }
         }
-        Log.i(TAG, "Initialized NeedleWhistleEngine on Google Pixel 8 Pro with ${toolMap.size} biased tools")
+        Log.i(TAG, "Initialized NeedleWhistleEngine with ${toolMap.size} biased tools")
     }
 
     override suspend fun processTurn(

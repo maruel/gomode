@@ -1,4 +1,4 @@
-// Contracts and descriptors for on-device voice model engines running on Google Pixel 8 Pro.
+// Contracts and labels for on-device voice model engines.
 package com.fghbuild.gomode.voice
 
 import android.content.Context
@@ -10,49 +10,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 
-/** EngineDescriptor captures hardware resource budgets and execution properties. */
-data class EngineDescriptor(
-    val engine: OnDeviceEngine,
-    val name: String,
-    val description: String,
-    val latencyBudgetMs: Int,
-    val modelSizeMb: Int,
-    val targetHardware: String = "Google Pixel 8 Pro",
-)
-
-/** Returns the execution descriptor for an engine. */
-fun OnDeviceEngine.descriptor(): EngineDescriptor =
-    when (this) {
-        OnDeviceEngine.LOCAL_LLM -> {
-            EngineDescriptor(
-                engine = this,
-                name = "Local LLM",
-                description = "Gemma and LFM3 on-device conversations via LiteRT-LM",
-                latencyBudgetMs = 250,
-                modelSizeMb = 2588,
-            )
+/** User-visible engine name, shared by settings diagnostics and voice errors. */
+val OnDeviceEngine.label: String
+    get() =
+        when (this) {
+            OnDeviceEngine.LOCAL_LLM -> "Local LLM"
+            OnDeviceEngine.NEEDLE_WHISTLE -> "Whistle + Needle"
+            OnDeviceEngine.REMOTE_GATEWAY -> "Remote LLM"
         }
-
-        OnDeviceEngine.NEEDLE_WHISTLE -> {
-            EngineDescriptor(
-                engine = this,
-                name = "Whistle + Needle",
-                description = "Biased multilingual ASR + Engram action matching (Cactus Compute)",
-                latencyBudgetMs = 120,
-                modelSizeMb = 52,
-            )
-        }
-
-        OnDeviceEngine.REMOTE_GATEWAY -> {
-            EngineDescriptor(
-                engine = this,
-                name = "Remote LLM",
-                description = "Offloads text turns and tool selection to the voice gateway over WebSocket",
-                latencyBudgetMs = 800,
-                modelSizeMb = 0,
-            )
-        }
-    }
 
 /** UserTurnInput provides recognized user text or an explicit service update to respond to. */
 data class UserTurnInput(
@@ -90,9 +55,6 @@ data class EngineTurnResult(
 interface OnDeviceVoiceEngine {
     val engineType: OnDeviceEngine
 
-    val descriptor: EngineDescriptor
-        get() = engineType.descriptor()
-
     val modelName: String?
         get() = null
 
@@ -121,7 +83,7 @@ interface OnDeviceVoiceEngine {
     fun close()
 }
 
-/** Creates the configured on-device voice engine for Google Pixel 8 Pro. */
+/** Creates the configured on-device voice engine. */
 fun createOnDeviceEngine(
     context: Context,
     engine: OnDeviceEngine,
@@ -133,7 +95,7 @@ fun createOnDeviceEngine(
         OnDeviceEngine.REMOTE_GATEWAY -> RemoteGatewayEngine()
     }
 
-/** RemoteGatewayEngine serves as a descriptor placeholder when delegating to the WebSocket voice gateway. */
+/** RemoteGatewayEngine is the placeholder engine when text turns go to the WebSocket voice gateway. */
 internal class RemoteGatewayEngine : OnDeviceVoiceEngine {
     override val engineType: OnDeviceEngine = OnDeviceEngine.REMOTE_GATEWAY
 

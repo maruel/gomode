@@ -1,7 +1,7 @@
 # Android dependency and plugin versions.
 
 [versions]
-agp = "9.0.1"
+agp = "9.5.1"
 kotlin = "2.4.0"
 detekt = "1.23.7"
 ktlint = "14.2.0"
@@ -18,7 +18,7 @@ activity = "1.9.3"
 constraintlayout = "2.1.4"
 composeBom = "2026.03.00"
 activityCompose = "1.13.0"
-lifecycleViewmodelCompose = "2.8.7"
+lifecycleViewmodelCompose = "2.10.0"
 navigationCompose = "2.9.0"
 navigation3 = "1.0.0"
 hilt = "2.59.2"
@@ -85,7 +85,7 @@ androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lif
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
 androidx-navigation3-runtime = { group = "androidx.navigation3", name = "navigation3-runtime", version.ref = "navigation3" }
 androidx-navigation3-ui = { group = "androidx.navigation3", name = "navigation3-ui", version.ref = "navigation3" }
-androidx-lifecycle-viewmodel-navigation3 = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-navigation3", version = "2.10.0" }
+androidx-lifecycle-viewmodel-navigation3 = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-navigation3", version.ref = "lifecycleViewmodelCompose" }
 hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
 hilt-android-testing = { group = "com.google.dagger", name = "hilt-android-testing", version.ref = "hilt" }
 hilt-compiler = { group = "com.google.dagger", name = "hilt-compiler", version.ref = "hilt" }
