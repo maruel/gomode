@@ -97,6 +97,10 @@
   border-radius: var(--radius-sm);
 }
 
+.credits[open] {
+  padding-bottom: 0.5rem;
+}
+
 .credits[open] summary {
   margin-bottom: 0.5rem;
 }
@@ -123,13 +127,15 @@
   display: flex;
   gap: 0.5rem;
   align-items: center;
+  /* The rule spans the close button so it aligns with the fields below. */
+  border-bottom: 1px solid var(--color-border-medium);
 }
 
 .setupTabs {
   display: grid;
   flex: 1;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  border-bottom: 1px solid var(--color-border-medium);
+  align-self: stretch;
 }
 
 .setupTabs button {
