@@ -141,6 +141,28 @@ class SettingsEditsTest {
         }
 
     @Test
+    fun conflictingURLsKeepTheSavedURLAndBlockCreation() =
+        runTest {
+            val repository = SettingsRepository(MemoryPreferences())
+            repository.addService("First", "https://first.test")
+            val id = repository.addService("Second", "https://second.test")
+            val initial = repository.settings.first { it.activeServiceId == id }
+            val edits = SettingsEdits(repository, initial, this)
+            edits.editService(initial.services.last())
+            edits.service = edits.service?.copy(label = "Renamed", url = "https://first.test/")
+            assertTrue(edits.urlTaken)
+            assertTrue(edits.save(true, commitURL = true))
+            val renamed = repository.settings.first { it.services.last().label == "Renamed" }
+            assertEquals("https://second.test", renamed.services.last().url)
+
+            edits.editService(null)
+            edits.service = edits.service?.copy(label = "Third", url = "https://second.test")
+            assertTrue(edits.urlTaken)
+            assertFalse(edits.addService())
+            assertEquals(2, repository.settings.value.services.size)
+        }
+
+    @Test
     fun removingTheLastServiceOpensANewDraft() =
         runTest {
             val repository = SettingsRepository(MemoryPreferences())

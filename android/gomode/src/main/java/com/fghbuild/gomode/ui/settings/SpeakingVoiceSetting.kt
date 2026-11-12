@@ -18,6 +18,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.unit.dp
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
@@ -63,7 +65,12 @@ internal fun SpeakingVoiceSetting(
             DropdownMenu(
                 expanded = expanded,
                 onDismissRequest = { expanded = false },
-                modifier = Modifier.heightIn(max = 320.dp).testTag("gomode-speaking-voices"),
+                // Menus open a popup window, which does not inherit the screen's flag.
+                modifier =
+                    Modifier
+                        .heightIn(max = 320.dp)
+                        .semantics { testTagsAsResourceId = true }
+                        .testTag("gomode-speaking-voices"),
             ) {
                 (listOf("") + voices).forEach { name ->
                     DropdownMenuItem(

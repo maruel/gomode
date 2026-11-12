@@ -67,6 +67,13 @@ internal class SettingsEdits(
     val aliasTaken: Boolean
         get() = service?.let { SettingsRepository.aliasTaken(services, it.id, it.label) } ?: false
 
+    /** urlTaken reports whether the draft's valid URL belongs to another saved service. */
+    val urlTaken: Boolean
+        get() =
+            service?.let { draft ->
+                draft.normalizedURL?.let { SettingsRepository.urlTaken(services, draft.id, it) }
+            } ?: false
+
     val normalizedLanguage: String?
         get() = runCatching { SettingsRepository.normalizeVoiceLanguageTag(language) }.getOrNull()
 
@@ -109,9 +116,9 @@ internal class SettingsEdits(
             val url = draft?.normalizedURL
             val saved = draft?.id?.let { id -> services.firstOrNull { it.id == id } }
             if (draft != null && saved != null) {
-                // A conflicting alias stays a draft; the URL still saves independently.
+                // A conflicting field stays a draft; the other field still saves independently.
                 val label = if (aliasTaken) saved.label else SettingsRepository.serviceLabel(draft.label)
-                val targetURL = if (commitURL && url != null) url else saved.url
+                val targetURL = if (commitURL && url != null && !urlTaken) url else saved.url
                 if (saved.label != label || saved.url != targetURL) {
                     repository.updateService(saved.id, label, targetURL)
                 }
@@ -127,7 +134,7 @@ internal class SettingsEdits(
         persist {
             val draft = service
             val url = draft?.normalizedURL
-            if (draft != null && draft.id == null && url != null && !aliasTaken) {
+            if (draft != null && draft.id == null && url != null && !aliasTaken && !urlTaken) {
                 val id = repository.addService(draft.label, url)
                 service = service?.copy(id = id)
                 true

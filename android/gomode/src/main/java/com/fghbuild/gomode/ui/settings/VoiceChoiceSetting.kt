@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.FilterChip
@@ -20,6 +21,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -90,13 +92,19 @@ internal fun VoiceChoiceSetting(
         }
 
         is ChoiceDiscovery.Failed -> {
-            Text(state.message, modifier = Modifier.testTag("gomode-voice-choice-error"))
-            IconButton(
-                onClick = { retry += 1 },
-                enabled = enabled,
-                modifier = Modifier.testTag("gomode-voice-choices-retry"),
-            ) {
-                Icon(Icons.Default.Refresh, contentDescription = "Retry")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    state.message,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.weight(1f, fill = false).testTag("gomode-voice-choice-error"),
+                )
+                IconButton(
+                    onClick = { retry += 1 },
+                    enabled = enabled,
+                    modifier = Modifier.testTag("gomode-voice-choices-retry"),
+                ) {
+                    Icon(Icons.Default.Refresh, contentDescription = "Retry voice choices")
+                }
             }
         }
 

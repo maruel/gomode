@@ -108,12 +108,12 @@ class CarDialVoiceOwnerTest {
     @Test
     fun servicePageSnapshotsFollowOneRepositoryAcrossSelectionAndURLReplacement() =
         runTest {
-            val first = repository.addService("First", "")
-            val second = repository.addService("Second", "")
+            val first = repository.addService("First", "http://127.0.0.1:2")
+            val second = repository.addService("Second", "http://127.0.0.1:3")
             repository.settings.first { it.activeServiceId == second }
             pages.start()
             val initial = pages.state.first { it.settings.activeServiceId == second }
-            val oldKey = ServiceShellKey(first, "")
+            val oldKey = ServiceShellKey(first, "http://127.0.0.1:2")
             val entry = initial.entries.getValue(oldKey)
             val generation = entry.openPage()
             repository.switchService(first)

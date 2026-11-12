@@ -1,4 +1,4 @@
-// Saved services as cards that edit in place, with unique aliases and confirmed deletion.
+// Saved services as cards that edit in place, with unique aliases and URLs and confirmed deletion.
 package com.fghbuild.gomode.ui.settings
 
 import androidx.compose.foundation.BorderStroke
@@ -11,11 +11,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -35,6 +36,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.unit.dp
 import com.fghbuild.gomode.data.ServiceInstance
 import com.fghbuild.gomode.data.SettingsLoadState
@@ -70,7 +73,7 @@ internal fun ServicesSetting(
                     enabled = draft == null || draft.id != null,
                     modifier = Modifier.testTag("gomode-add-service"),
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = "Add service")
+                    Icon(Icons.Default.Add, contentDescription = "New service")
                 }
             }
         }
@@ -79,21 +82,22 @@ internal fun ServicesSetting(
                 draft = draft,
                 edits = edits,
                 aliasTaken = edits.aliasTaken,
+                urlTaken = edits.urlTaken,
                 commitURL = commitURL,
                 actions = {
                     if (settings.services.isNotEmpty()) {
-                        TextButton(
+                        IconButton(
                             onClick = { edits.service = null },
                             modifier = Modifier.testTag("gomode-cancel-service"),
-                        ) { Text("Cancel") }
+                        ) { Icon(Icons.Default.Close, contentDescription = "Cancel") }
                     }
-                    Button(
+                    IconButton(
                         onClick = { finish { if (edits.addService()) onAdded() } },
                         enabled =
-                            draft.normalizedURL != null && !edits.aliasTaken &&
+                            draft.normalizedURL != null && !edits.aliasTaken && !edits.urlTaken &&
                                 settings.loadState == SettingsLoadState.Ready,
                         modifier = Modifier.testTag("gomode-create-service"),
-                    ) { Text("Add") }
+                    ) { Icon(Icons.Default.Check, contentDescription = "Add service") }
                 },
             )
         }
@@ -103,13 +107,14 @@ internal fun ServicesSetting(
                     draft = draft,
                     edits = edits,
                     aliasTaken = edits.aliasTaken,
+                    urlTaken = edits.urlTaken,
                     commitURL = commitURL,
                     actions = {
-                        Button(
+                        IconButton(
                             onClick = { finish { edits.service = null } },
-                            enabled = !edits.aliasTaken,
+                            enabled = !edits.aliasTaken && !edits.urlTaken,
                             modifier = Modifier.testTag("gomode-service-done"),
-                        ) { Text("Done") }
+                        ) { Icon(Icons.Default.Check, contentDescription = "Done") }
                     },
                 )
             } else {
@@ -128,6 +133,8 @@ internal fun ServicesSetting(
     if (deleting != null) {
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
+            // Dialogs open their own window, which does not inherit the screen's flag.
+            modifier = Modifier.semantics { testTagsAsResourceId = true },
             title = { Text("Delete ${deleting.label}?") },
             text = {
                 Text(
@@ -159,6 +166,7 @@ private fun ServiceEditor(
     draft: ServiceEdit,
     edits: SettingsEdits,
     aliasTaken: Boolean,
+    urlTaken: Boolean,
     commitURL: () -> Unit,
     actions: @Composable () -> Unit,
 ) {
@@ -177,7 +185,12 @@ private fun ServiceEditor(
                 isError = aliasTaken,
                 supportingText = if (aliasTaken) ({ Text("Another service uses this alias.") }) else null,
             )
-            val invalidURL = draft.url.isNotBlank() && draft.normalizedURL == null
+            val urlError =
+                when {
+                    draft.url.isNotBlank() && draft.normalizedURL == null -> "Use an http:// or https:// URL."
+                    urlTaken -> "Another service uses this URL."
+                    else -> null
+                }
             OutlinedTextField(
                 value = draft.url,
                 onValueChange = { edits.service = edits.service?.copy(url = it) },
@@ -188,12 +201,12 @@ private fun ServiceEditor(
                         .testTag("gomode-service-url"),
                 singleLine = true,
                 label = { Text("Server URL") },
-                isError = invalidURL,
-                supportingText = if (invalidURL) ({ Text("Use an http:// or https:// URL.") }) else null,
+                isError = urlError != null,
+                supportingText = urlError?.let { { Text(it) } },
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) { actions() }
         }

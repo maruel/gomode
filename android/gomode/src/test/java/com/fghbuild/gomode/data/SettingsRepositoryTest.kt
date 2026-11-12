@@ -139,6 +139,18 @@ class SettingsRepositoryTest {
         }
 
     @Test
+    fun `service URLs are unique after normalization`() =
+        runBlocking {
+            val repository = SettingsRepository(InMemoryPreferencesDataStore())
+            repository.addService("Home", "https://home.example")
+            val work = repository.addService("Work", "https://home.example/work")
+            repository.awaitSettings("both services") { it.services.size == 2 }
+            assertTrue(runCatching { repository.addService("Other", " https://home.example/ ") }.isFailure)
+            assertTrue(runCatching { repository.updateService(work, "Work", "https://home.example/") }.isFailure)
+            repository.updateService(work, "Work", "https://home.example/work/")
+        }
+
+    @Test
     fun `removing the active service activates the first remaining one and keeps its car slot reserved`() =
         runBlocking {
             val repository = SettingsRepository(InMemoryPreferencesDataStore())

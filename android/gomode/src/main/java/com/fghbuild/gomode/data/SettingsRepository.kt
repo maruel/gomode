@@ -230,6 +230,7 @@ class SettingsRepository(
                     url = normalizedURL,
                 )
             require(!aliasTaken(services, id, service.label)) { "Another service is named ${service.label}" }
+            require(!urlTaken(services, id, normalizedURL)) { "Another service uses $normalizedURL" }
             prefs[Keys.SERVICES] = json.encodeToString(services + service)
             assignCarCallerSlots(prefs)
             prefs[Keys.ACTIVE_SERVICE_ID] = id
@@ -248,6 +249,7 @@ class SettingsRepository(
             require(services.any { it.id == id }) { "Unknown service ID: $id" }
             val alias = serviceLabel(label)
             require(!aliasTaken(services, id, alias)) { "Another service is named $alias" }
+            require(!urlTaken(services, id, normalizedURL)) { "Another service uses $normalizedURL" }
             prefs[Keys.SERVICES] =
                 json.encodeToString(
                     services.map { service ->
@@ -440,6 +442,16 @@ class SettingsRepository(
         ): Boolean {
             val alias = serviceLabel(label)
             return services.any { it.id != id && it.label.equals(alias, ignoreCase = true) }
+        }
+
+        /** urlTaken reports whether a service other than [id] already uses [url] once normalized. */
+        fun urlTaken(
+            services: List<ServiceInstance>,
+            id: String?,
+            url: String,
+        ): Boolean {
+            val normalized = normalizeURL(url)
+            return services.any { it.id != id && it.url == normalized }
         }
 
         fun normalizeVoiceLanguageTag(tag: String): String {

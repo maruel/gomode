@@ -23,6 +23,8 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -75,6 +77,8 @@ internal fun ModelDownloadControls(
     if (confirmRemoval) {
         AlertDialog(
             onDismissRequest = { confirmRemoval = false },
+            // Dialogs open their own window, which does not inherit the screen's flag.
+            modifier = Modifier.semantics { testTagsAsResourceId = true },
             title = { Text("Delete ${model.label}?") },
             text = { Text("You’ll need to download it again to use it.") },
             confirmButton = {

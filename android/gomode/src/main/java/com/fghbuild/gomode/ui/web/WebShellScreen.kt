@@ -43,6 +43,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.viewinterop.AndroidView
@@ -128,7 +129,7 @@ internal fun WebShellScreen(
     Box(Modifier.fillMaxSize().statusBarsPadding().testTag("gomode-web-shell")) {
         AndroidView(
             factory = { page.webView.apply { (parent as? ViewGroup)?.removeView(this) } },
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().clipToBounds(),
         )
         if (page.loading) {
             CircularProgressIndicator(modifier = Modifier.align(Alignment.Center).testTag("gomode-web-loading"))

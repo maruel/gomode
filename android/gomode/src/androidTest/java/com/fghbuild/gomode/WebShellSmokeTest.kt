@@ -292,6 +292,16 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         closeServiceEditor()
         composeRule.onNodeWithText("First renamed").assertExists()
 
+        // URLs are unique after normalization: a duplicate blocks creation.
+        composeRule.onNodeWithTag("gomode-add-service").performScrollTo().performClick()
+        waitForServiceEditor()
+        fillServiceField("gomode-service-label", "Third")
+        fillServiceField("gomode-service-url", "$baseUrl/")
+        composeRule.onNodeWithText("Another service uses this URL.").assertExists()
+        composeRule.onNodeWithTag("gomode-create-service").performScrollTo().assertIsNotEnabled()
+        dismissServiceKeyboard()
+        composeRule.onNodeWithTag("gomode-cancel-service").performScrollTo().performClick()
+
         // Deleting asks for confirmation, then removes only that service.
         composeRule.onAllNodesWithContentDescription("Delete service").onFirst().performClick()
         composeRule.onNodeWithTag("gomode-confirm-delete-service").performClick()
@@ -482,7 +492,8 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         composeRule.onNodeWithTag("gomode-add-service").performScrollTo().performClick()
         waitForServiceEditor()
         fillServiceField("gomode-service-label", label)
-        fillServiceField("gomode-service-url", baseUrl)
+        // The fixture serves every path; a distinct path keeps service URLs unique.
+        fillServiceField("gomode-service-url", "$baseUrl/${label.lowercase().replace(' ', '-')}")
         dismissServiceKeyboard()
         composeRule.onNodeWithTag("gomode-create-service").performScrollTo().performClick()
     }

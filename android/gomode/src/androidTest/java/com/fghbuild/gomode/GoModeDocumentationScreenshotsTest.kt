@@ -75,7 +75,7 @@ class GoModeDocumentationScreenshotsTest : GoModeE2eTestBase() {
         composeRule.onNodeWithTag("gomode-web-open-settings").performClick()
         composeRule.onNodeWithTag("gomode-add-service").performClick()
         composeRule.onNodeWithTag("gomode-service-label").performTextReplacement("Staging")
-        composeRule.onNodeWithTag("gomode-service-url").performTextReplacement(baseUrl)
+        composeRule.onNodeWithTag("gomode-service-url").performTextReplacement("$baseUrl/staging")
         composeRule.onNodeWithTag("gomode-create-service").performScrollTo().performClick()
         waitForHostedFrontend()
         waitForSettledHostedPage()
