@@ -1,4 +1,22 @@
 // Transports opaque public server context with private response ordering.
+//
+// Private result _meta["com.fghbuild.gomode/context"] carries only transport reconciliation: target
+// uri, authority epoch, monotonic version, bounded URI/aspect event routing groups, and optional
+// public content text after a tool acknowledgement. An authoritative resource read establishes a
+// new epoch; delayed tool metadata cannot replace that authority or an already newer version.
+// Resource reads use standard MCP contents for public text and omit duplicate text from metadata.
+// Clients never expose private result or content-level _meta to models. Ordinary public domain
+// text, including literal _meta keys, is preserved unchanged.
+//
+// Hosts own selection leases and bounded offscreen dependencies; generic clients consume only
+// private routing to avoid irrelevant reads. Host pre-read registration, authorization, and
+// response reconciliation preserve mutations during handoff. Entry eviction or truncation is not
+// deletion. Scope or identity retirement stops watches under the existing conversation authority,
+// preserving host frontend leases.
+//
+// The live conversation subscribes to the marked resources and notifications. Bounded gaps force
+// resynchronization; reads and faults progress independently. Quiet updates never request a model
+// turn. On reconnect, setup uses the freshest bounded authorized snapshots.
 package com.fghbuild.gomode.service
 
 import com.fghbuild.gomode.sdk.v1.ConversationContext

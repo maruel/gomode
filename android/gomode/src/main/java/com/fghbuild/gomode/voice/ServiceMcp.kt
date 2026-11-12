@@ -1,4 +1,7 @@
 // Prepares a service's MCP tools independently of its voice gateway configuration.
+//
+// The shell uses the first webShell.toolGroups entry and registers every tool it lists. It does not
+// read skill files or activation hints; docs/PLAN_GOMODE.md owns progressive skill activation.
 package com.fghbuild.gomode.voice
 
 import com.fghbuild.gomode.sdk.v1.Settings

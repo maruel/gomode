@@ -11,6 +11,12 @@ Host applications own user accounts, authorization policy, product APIs,
 content, and the MCP tools and resources they expose. The Android app connects
 to a host through `/.well-known/gomode.json` and renders its web frontend.
 
+User and integration guides are at [docs.gomode.dev](https://docs.gomode.dev):
+[Android setup](https://docs.gomode.dev/guide/android),
+[host integration](https://docs.gomode.dev/guide/host),
+[voice gateway installation](https://docs.gomode.dev/guide/voice), and
+[SDKs](https://docs.gomode.dev/guide/sdk).
+
 ## Packages
 
 - Go module `github.com/maruel/gomode`: discovery manifest and voice token
@@ -26,17 +32,5 @@ to a host through `/.well-known/gomode.json` and renders its web frontend.
 - `android/gomode/`: native WebView, voice, notifications, settings, and Halo
   shell.
 
-See [the server library guide](docs/SERVER_LIBRARY.md) to integrate a host.
-See [on-device models](docs/ON_DEVICE_VOICE_MODELS.md#lfm3-17b)
-for Android model downloads and the LFM3 export and upload workflow.
-
-## Standalone voice gateway
-
-Run `bash contrib/install.sh` on Linux/macOS or `& .\contrib\install.ps1` in
-Windows PowerShell to install or update a checksummed release. See
-[gateway installation](contrib/README.md) for download commands and user service
-configuration. The installers take no arguments and use the latest stable release.
-
-Copy [contrib/config.toml](contrib/config.toml) to
-`~/.config/voice-gateway/config.toml`. It documents proxy trust, the public URL,
-execution tracing, and the optional unauthenticated debug frontend.
+Go package documentation is on [pkg.go.dev](https://pkg.go.dev/github.com/maruel/gomode).
+[contrib/config.toml](contrib/config.toml) documents every gateway setting.

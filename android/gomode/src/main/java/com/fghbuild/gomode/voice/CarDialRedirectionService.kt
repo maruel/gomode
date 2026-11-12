@@ -1,4 +1,26 @@
 // Starts native voice for exact server or last-server dials when the user enables call redirection.
+//
+// The entry point is Android's user-selected call-redirection role. For an exact server or Go Mode
+// identifier match, the service launches the ordinary Activity while Telecom's binding permits a
+// background Activity, cancels the cellular attempt, and registers a fresh self-managed call before
+// network or model setup. redirectCall() only targets SIM accounts, so it cannot transfer the
+// cellular call into the Core-Telecom session. The callback must answer within five seconds, so
+// host discovery, authentication, model loading, and network requests cannot delay it.
+//
+// Ordinary and unrecognized numbers keep their original number and phone account. Emergency routing
+// stays with Android. Unavailable local settings never hold up ordinary dialing, and no number
+// prefix is intercepted. Matching uses the network number Android supplies: Telecom removes post-
+// dial digits first, and only presentation separators are stripped, so extra digits or extensions
+// never match. Recognized requests that fail later stay canceled and cannot fall back to a cellular
+// attempt. Go Mode's own calls never launch another session.
+//
+// Immediate handover accepts an early-hangup race. CallRedirectionService provides neither an
+// original-call identifier nor a user-disconnect callback, so Android can destroy the managed call
+// while redirection is pending and still allow the later Activity launch. isInManagedCall() cannot
+// authorize the launch: it requires READ_PHONE_STATE and reports any managed call, including an
+// unrelated one. The replacement call is registered before network or model setup, and its Telecom
+// disconnect ends startup. The debug CarDialLaunchProbeService and android/car-dial-fixture
+// reproduce both locked-screen eligibility and this race.
 package com.fghbuild.gomode.voice
 
 import android.content.Intent

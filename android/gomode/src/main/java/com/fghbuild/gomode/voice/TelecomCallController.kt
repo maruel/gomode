@@ -1,4 +1,30 @@
 // Android Telecom self-managed call controller.
+//
+// Every voice session registers as an AndroidX Core-Telecom self-managed audio call, so a car or
+// headset hang-up requests a Telecom disconnect. Go Mode keeps its voice overlay and never becomes
+// the default dialer; Android provides Bluetooth HFP, automotive, audio-route, and call-concurrency
+// integration. MediaSession and SCO broadcasts report media buttons and routing, not call control,
+// so SCO teardown ends voice only when Telecom does not own the call.
+//
+// The controller registers capabilities during app setup, never during a call, and declares
+// MANAGE_OWN_CALLS. It adds an outgoing audio-only call with non-sensitive display metadata and an
+// app-owned URI scheme when voice starts, sets it active once the voice data channel is ready, and
+// ends it on a Telecom or overlay hang-up. A rejected or unavailable Telecom call is a voice setup
+// error. One teardown owner serves the overlay and Telecom, so duplicate or late callbacks are
+// harmless. A user hang-up is a local disconnect; a WebRTC or server failure is a remote or error
+// disconnect, and recovery runs only while the call is active. There is no hold: when Telecom
+// yields to a cellular or VoIP call, voice disconnects. The foreground service posts a
+// Notification.CallStyle.
+//
+// The endpoint picker still uses AudioManager; docs/PLAN_GOMODE.md phase telecom-routing replaces
+// it with Core-Telecom endpoints, keeping the AudioDeviceCallback and SCO receiver as diagnostics
+// and as the fallback without FEATURE_TELECOM.
+//
+// Unit tests use a fake adapter at the Telecom boundary. HFP implementations vary and an emulator
+// cannot validate them; on a Bluetooth headset and the target car, verify that a hang-up ends
+// WebRTC, microphone, foreground call state, and overlay; that ending voice from the overlay clears
+// the remote call UI; that endpoint switches work during voice; and that a cellular call ends
+// voice. Capture GoModeVoiceSession, Telecom, and Bluetooth logs for failures.
 package com.fghbuild.gomode.voice
 
 import android.content.Context

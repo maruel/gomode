@@ -1,4 +1,9 @@
 // Package pairing implements device-code secrets and transitions independently of HTTP, storage, and credential issuance.
+//
+// devicelogin and oauth/oauthserver share it for device secrets, user-code sampling, expiry,
+// decision reservations, and polling state. Browser login owns its memory store, attempt budgets,
+// approval proof, and audited session delivery. OAuth owns its durable transactions, client and scope
+// binding, and token issuance. Each adapter keeps its code format and polling enforcement.
 package pairing
 
 import (

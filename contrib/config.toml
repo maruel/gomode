@@ -240,7 +240,7 @@ llamacppsrv = true
 model = "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
 effort = "low"
 
-# Reusable ASR/LLM/TTS stages. Prerequisites: docs/VOICE_LOCAL_STACK.md.
+# Reusable ASR/LLM/TTS stages. A fully local stack needs uv on the gateway PATH.
 # Define each stage once and compose named choices with [[voice]].
 # Each named LLM can use independently selected gateway or browser speech.
 [[llm]]

@@ -1,4 +1,11 @@
 // Origin-scoped frontend declarations and conversation-bound asynchronous WebView tool dispatch.
+//
+// Native owns each invocation identifier and its deadline, then checks page, identity,
+// registration, and call authority before settling the request once. New invocations and
+// cancellations carry the invoking conversation's openai/session ID. Both sides retire pending work
+// on cancellation, expiry, call or transport replacement, preparation invalidation, and disposal.
+// Late, duplicate, old-page, subframe, and foreign-origin completions cannot settle a new
+// invocation.
 package com.fghbuild.gomode.ui.web
 
 import android.os.Handler

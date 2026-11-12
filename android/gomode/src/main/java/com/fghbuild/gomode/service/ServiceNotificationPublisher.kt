@@ -1,4 +1,15 @@
 // Reconciles native service alerts and creates source-specific, same-origin notification destinations.
+//
+// gomode://notifications is an authoritative JSON array of actionable alerts with id, title, and
+// body, and optional itemId, url, and expiresAt. url resolves against the saved service URL; only
+// HTTP(S) destinations on that origin open. The whole snapshot is validated before deduplicating by
+// id. Opening snapshots establish a quiet baseline. Until saved-service membership and alert
+// snapshots are known, startup preserves posted alerts. Saved-source deletion and explicit account
+// revocation withdraw alerts independently of network availability. Later snapshots deliver new
+// alerts, update posted text without another sound, and dismiss alerts the host removed. A failed
+// read supplies no snapshot and withdraws nothing, and expiry bounds the notification lifetime. The
+// shell owns permission, delivery, and source-specific intents, suppresses alerts while their
+// service is visible, and opens the opaque host destination in a new or an existing Activity.
 package com.fghbuild.gomode.service
 
 import android.app.Notification

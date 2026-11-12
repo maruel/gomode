@@ -1766,7 +1766,7 @@ export class VoiceSession {
       ]);
       if (!this._ownsConnection(attempt)) return;
       // This client owns the bounded session baseline and refreshes it on every
-      // reconnect; see gomode/docs/ANDROID_SHELL.md#service-item-voice-context-ownership.
+      // reconnect; ConversationContext.ts owns the context contract.
 
       // Create PeerConnection.
       const pc = new RTCPeerConnection({

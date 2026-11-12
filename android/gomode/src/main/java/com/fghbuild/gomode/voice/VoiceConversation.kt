@@ -1,4 +1,25 @@
 // Owns voice conversation identities, scoped context streams, and gateway authorization.
+//
+// Account generations are distinct from page availability. Navigation or renderer loss disables a
+// participant's dispatch without replacing a shared gateway call. The call pins its sponsoring
+// identity and credentials when connecting; explicit sponsor revocation, changed sponsor cookies,
+// or sponsor removal ends it, while other participants may log out. A replacement account cannot
+// enter an existing conversation: synchronous checks end the call before admitting its context or
+// tools. First sign-in of a never-admitted participant is allowed. Each admitted participant pins
+// its cookie identity, explicit account epoch, and the catalog's authorization snapshot at the
+// resolved MCP endpoint; both must still match after page loss or catalog re-preparation before
+// schemas, context, or tools can enter. Temporary unavailability keeps the call alive, and
+// revocation cannot erase facts the model already learned.
+//
+// The local conversational LLM uses the same admitted identities and authorization snapshots
+// without a gateway sponsor: a participant's logout disables that service temporarily, and a
+// returning replacement account ends the conversation before admission. Keyword engines keep their
+// selected-service lifecycle and credential-pinned direct MCP requests.
+//
+// Browser and native conversations share one client-owned openai/session value across instructions,
+// resource reads, tools, and subscriptions. It stays stable across transport recovery and belongs
+// to the conversation, not a transport connection. Background monitoring stays sessionless and is
+// the sole owner of user-visible alerts.
 package com.fghbuild.gomode.voice
 
 import android.util.Log

@@ -1,4 +1,14 @@
 // Stable Bluetooth call identifiers and display formatting for car contacts.
+//
+// Android's outgoing HFP call list sends a sanitized number without the Telecom display name, so
+// each saved server gets a stable numeric caller identifier. The Go Mode shortcut resolves the
+// persisted active saved server at dialing time, independently of background page loading; with no
+// unique active server or local settings, its dial is canceled without a cellular call. Assignments
+// persist before saved services load and survive renaming, URL changes, reordering, and restarts.
+// Retired assignments are never recycled, so a saved contact cannot start another server. When all
+// 99 slots are allocated, additional servers use the generic caller identity. Assignments are local
+// to the app's settings. Android's Contacts app owns the import; Go Mode neither reads contacts nor
+// tracks whether one was saved. Standalone voice without a saved server has no contact mapping.
 package com.fghbuild.gomode.voice
 
 import android.net.Uri

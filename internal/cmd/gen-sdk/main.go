@@ -1,4 +1,10 @@
 // Command gen-sdk generates versioned Go Mode protocol SDK packages.
+//
+// It writes TypeScript, Kotlin, and Swift clients and an API.<version>.md reference under
+// sdk/<family> for discovery and SKILL.md frontmatter (gomode v1), MCP (v1), OAuth (v1), and the
+// voice gateway (v1 and v2). Imports name their version: TypeScript exports
+// @maruel/gomode/sdk/<family>/<version>/*, Kotlin packages end in .sdk.v1 or .sdk.v2, and Swift
+// library products are GoModeSDKV1, MCPSDKV1, OAuthSDKV1, VoiceGatewaySDKV1, and VoiceGatewaySDKV2.
 package main
 
 import (

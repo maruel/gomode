@@ -1,4 +1,8 @@
 // WebView shell with host state, origin-scoped auth, and frontend voice tools.
+//
+// The shell enables touch pinch zoom and hides WebView's on-screen zoom buttons. WebView applies a
+// document's user-scalable=no and maximum-scale, so hosted pages that must stay zoomable keep the
+// default viewport.
 package com.fghbuild.gomode.ui.web
 
 import android.annotation.SuppressLint

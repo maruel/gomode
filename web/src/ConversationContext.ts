@@ -1,4 +1,12 @@
 // Validates private resource ordering and routes opaque server-owned public context.
+//
+// Clients load the resources a server marks with _meta["com.fghbuild.gomode/modelContext"]: true
+// and pass each text to the model verbatim, with no URI, status, or wrapper. A server that marks
+// more than MAX_MODEL_RESOURCES fails context loading. A text over MODEL_RESOURCE_BUDGET
+// characters, or one that no longer fits MODEL_CONTEXT_BUDGET, is dropped whole; clients never
+// truncate or rewrite server text. Unread, failed, absent, and withdrawn resources contribute
+// nothing. After setup, a refresh sends only the resources whose text changed, and quiet updates
+// never request a model turn. A hosted browser reuses its authenticated screen feed when available.
 
 import type { ConversationContext, ResourceDependency } from "../../sdk/gomode/ts/v1/types.gen";
 

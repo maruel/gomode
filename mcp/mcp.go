@@ -1,4 +1,29 @@
 // Package mcp implements the Model Context Protocol HTTP endpoint, Skills extension, and SDK DTOs.
+//
+// Implement [SubscriptionRegistry] to publish resource changes. Draft clients use
+// subscriptions/listen. For released Streamable HTTP clients, configure one [NewSessionStore] for the
+// server lifetime and pass it through [Handler].Sessions. Its owner returns a stable authenticated
+// principal key, including login session, task, or authorization scope boundaries, never
+// credentials. Authenticate every request before dispatch; a session ID grants no authorization.
+// Handlers and their authorized registries may be request-local while sharing the store. Bind
+// streaming request contexts to the host's login-session expiry and revocation, and recheck
+// changing workspace or role authorization in registries.
+//
+// Released clients initialize an owner-bound Mcp-Session-Id, subscribe with resources/subscribe, and
+// open a GET with Accept: text/event-stream. Resource discovery activates resource-list
+// notifications. Subscriptions survive stream reconnection; each reconnect invalidates the current
+// subscribed snapshots so clients catch up with resources/read. Clients unsubscribe with
+// resources/unsubscribe and close the session with HTTP DELETE. Disconnected sessions expire after
+// fifteen idle minutes. Streams deliver snapshot invalidations, not a durable event log, so clients
+// read the resource and compare stable item IDs. A resource update never wakes a model by itself;
+// voice clients distinguish passive context from alerts that require a response.
+//
+// openai/session in request _meta is the client's optional conversation identity, independent of the
+// host login session. [Registry].Instructions receives request metadata, and
+// [SubscriptionRegistry].SubscribeResourceUpdates receives the complete subscription params. Resource
+// reads, including initial subscription snapshots and deduplication reads, receive the same
+// metadata. Hosts own session validation, bounded retention, authorization, and sessionless
+// fallback.
 package mcp
 
 import (

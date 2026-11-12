@@ -21,6 +21,25 @@
 // gomodeFrontendToolResult. This module ignores another document, identity,
 // registration, or a duplicate invocation. Legacy bridge-3 invocations may omit
 // sessionID; their host context receives null and must not publish conversation focus.
+//
+// publishAuth(auth) returns an identity owner and retires the previous one. Create it before
+// exposing the new identity; native acknowledgements bind auth generations, not product user IDs.
+// Each createScope() call creates the current product scope and revokes its predecessor without
+// another acknowledgement. setTools supplies every intended tool atomically; setDataReady reports
+// required-data completion, including an empty result, and may become false when the frontend turns
+// unusable. Both must be set before ready() is true. ready() is local readiness and needs no native
+// bridge; native publication waits for the identity's acknowledgement and publishes the complete
+// declarations atomically, while not-ready and disposed scopes publish []. Browser conversations
+// capture the scope at connection start with captureFrontendVoiceTools(), so they cannot dispatch
+// same-named tools of a replacement scope.
+//
+// Tools return a JSON object, directly or through a Promise, and receive {sessionID, signal,
+// isCurrent}. sessionID is the invoking conversation's openai/session identity, shared with MCP
+// reads, subscriptions, and tool calls; it never derives from authentication or scope tokens.
+// Browser snapshot execution requires it. Hosts pass signal to cancellable requests and check
+// isCurrent() after awaited work, immediately before committing an action; cancellation cannot undo
+// a committed action. The runner bounds each invocation to five seconds, aborts retired work, and
+// rejects thrown, rejected, or non-object results.
 
 import { createSignal, untrack, type Accessor } from "solid-js";
 import {

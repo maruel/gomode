@@ -1,4 +1,20 @@
 // Discovers server-advertised model resources and joins their known texts for the model.
+//
+// MCP servers mark model resources with descriptor _meta["com.fghbuild.gomode/modelContext"]: true.
+// Each server chooses its resource URIs, public shape, language, selected entities, and freshness
+// meaning. Unmarked resources stay available only through explicit reads. The client transports
+// complete text contents without parsing a domain schema or rewriting fields. A server that marks
+// more than MAX_MODEL_RESOURCES resources, or repeats a URI, fails its monitoring plan.
+//
+// The model receives each resource's text verbatim, with no URI, status, or wrapper. Unread,
+// failed, absent, and withdrawn resources contribute nothing. After setup, a refresh sends only the
+// resources whose text changed; changes queued during a turn accumulate in order. Native multi-
+// server context prefixes each server's texts with a "label [server-id]:" line for catalog tools,
+// and a "Selected server:" line names the focus.
+//
+// MCP server instructions own domain interpretation and stay unchanged and scoped to their server,
+// including instructions obtained through catalog tools. Clients add no behavioral prompt prose;
+// voicegateway/policy owns the common policy.
 package com.fghbuild.gomode.service
 
 import com.fghbuild.mcp.sdk.v1.ResourceDescriptor

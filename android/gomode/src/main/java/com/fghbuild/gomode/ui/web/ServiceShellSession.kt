@@ -1,4 +1,33 @@
 // Owns saved-service authentication, navigation, page generations, bootstrap, load, and frontend tools.
+//
+// Each saved service has one entry keyed by service identity and URL. The entry owns in-memory
+// authentication, bootstrap and load state, reload counters, and its frontend tool registration.
+// Entries and their WebViews live in the application: visited services keep their pages across
+// selection changes, native settings, and Activity replacement, preparing voice initializes the
+// remaining saved pages, and only the selected page attaches to the screen. Deleting a service or
+// replacing its URL releases its view, credentials, and pending frontend calls. Page generations
+// reject callbacks from replaced or disposed WebViews.
+//
+// Hidden pages stay authenticated and can publish frontend declarations. Native permission
+// requests, file pickers, JavaScript dialogs, external windows, and cross-origin navigation require
+// a selected page in a resumed, unlocked shell; otherwise the entry needs attention. Hidden pages
+// are paused individually, cannot take focus, mute audio, and stop hosted camera and microphone
+// captures, including cloned and removed tracks. Retention requires WebView audio muting and
+// document-start capture-guard support; unsupported WebView versions fail closed with an update
+// message. Renderer loss invalidates dispatch and releases every affected view, which may cover
+// several services. Native settings shows page failures and offers Reload page, which recreates
+// only that page. Manual and automatic retries, reload, and full-document navigation clear page
+// access and settle pending frontend calls; SPA history changes preserve access. Catalog access
+// resumes after page readiness and freshly validated authentication. Recovery does not replay
+// pending tools or restore state after process death.
+//
+// Frontend tools dispatch only through their owning entry while native access is ready. Not-ready
+// signals, preparation-owner replacement, identity changes, page replacement, and failed main-frame
+// navigation clear declarations and reject pending results. A host without MCP groups can still
+// supply frontend tools once its page confirms native access; the shell invents no MCP endpoint.
+// Entries share Android WebView cookies, so services on one origin share a cookie identity:
+// account-changing signals synchronously invalidate same-origin peers, while a new page's settled
+// cookie readiness establishes only its own access.
 package com.fghbuild.gomode.ui.web
 
 import android.content.Context

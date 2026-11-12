@@ -1,4 +1,10 @@
 // MCP transport preserves private metadata and keeps decoder diagnostics out of model-visible errors.
+//
+// The shell calls server/discover, tools/list, tools/call, resources/list, resources/read, and
+// POST-based SSE subscriptions/listen. server/discover capabilities decide which features run;
+// unsupported ones are skipped. Subscription events are invalidations:
+// notifications/resources/updated re-reads the resource, and notifications/resources/list_changed
+// re-reads the list.
 package com.fghbuild.gomode.voice
 
 import android.util.Base64

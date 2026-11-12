@@ -22,11 +22,11 @@ data and authorization policy stay in the hosts.
   endpoints for Telecom-managed calls. Keep the `AudioDeviceCallback` and SCO
   receiver as diagnostics and as the fallback for devices without
   `FEATURE_TELECOM`. Design:
-  [HFP_CALL_CONTROL.md](HFP_CALL_CONTROL.md#audio-routing).
+  [TelecomCallController.kt](../android/gomode/src/main/java/com/fghbuild/gomode/voice/TelecomCallController.kt).
 - **Preserve:** Devices without `FEATURE_TELECOM` keep the current picker. SCO
   teardown never ends a Telecom-managed call.
 - **Verify:** The physical-device checks in
-  [HFP_CALL_CONTROL.md](HFP_CALL_CONTROL.md#verification) pass, including
+  [TelecomCallController.kt](../android/gomode/src/main/java/com/fghbuild/gomode/voice/TelecomCallController.kt) pass, including
   endpoint switches and a cellular call during voice. Unit tests cover endpoint
   listing and selection through a fake Telecom boundary.
 
@@ -34,8 +34,15 @@ data and authorization policy stay in the hosts.
 
 - **Depends on:** live-host-voice
 - **Scope:** Skill discovery and activation in the Android shell from canonical
-  `SKILL.md` metadata and location hints. Hosts advertise `skillUrl`. Contract:
-  [ANDROID_SHELL.md](ANDROID_SHELL.md#skills).
+  `SKILL.md` metadata and location hints. Hosts advertise `skillUrl`; the
+  frontmatter contract is `SkillFrontmatter` in [dto.go](../dto.go). The shell
+  loads each skill's `name` and `description` from the manifest and fetches
+  `SKILL.md` from `skillUrl` when present. Activation state stays local and
+  never reports considered locations. On activation it reads the MCP server
+  instructions, calls `tools/list`, and registers only the tools in
+  `gomode.mcpServers[].tools`. It deactivates skills whose context no longer
+  matches, caps active skills, and resolves colliding tool names
+  deterministically.
 - **Preserve:** A host that advertises one tool group works without new
   configuration.
 - **Verify:** Multi-skill fixtures activate only matching skills, expose their
@@ -46,8 +53,9 @@ data and authorization policy stay in the hosts.
 
 - **Depends on:** none
 - **Scope:** Managed ASR, LLM, and TTS runtimes, bounded assistant PCM
-  backpressure, and local-stack runtime documentation. Design:
-  [VOICE_LOCAL_STACK.md](VOICE_LOCAL_STACK.md).
+  backpressure, and local-stack runtime documentation. Configuration:
+  [contrib/config.toml](../contrib/config.toml); smoke runs:
+  [smoke_test.go](../voicegateway/voicertc/smoke_test.go).
 - **Verify:** The target-Mac smoke run completes a turn without Gemini,
   continues after a client tool, and stops speech and model work on
   interruption. TTS cannot queue audio unboundedly ahead of RTP playback.

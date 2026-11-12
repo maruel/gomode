@@ -1,4 +1,12 @@
 // Owns local model preparation and drained replacement across activity and voice lifetimes.
+//
+// Local LLM preparation is keyed by model and language, independently of server focus; switching
+// during preparation or a live turn preserves the prepared model, LiteRT conversation, tool
+// history, and transcript. Disconnect resets conversation state and keeps loaded weights. Each
+// prepared conversation is bound to its authorization lifetime, so a cancel before preparation
+// completes cannot let a later connection reuse ended authorization or its prefill. Model or
+// language changes drain and replace the native owner, and account replacement ends the
+// conversation before a fresh preparation admits new context.
 package com.fghbuild.gomode.voice
 
 import android.content.Context

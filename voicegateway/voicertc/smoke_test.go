@@ -1,4 +1,10 @@
 // Smoke tests for managed local-stack voice sessions and gateway tool calls.
+//
+// Run `make test-smoke`. To exercise managed llama.cpp ASR, LLM, and TTS alone:
+// `go test -tags=smoke -run '^TestSmokeLlamaSpeech$' -v -timeout 30m ./voicegateway/voicertc`.
+// Allow for cold runtime setup and model downloads; HF_HOME selects the shared model cache. A fully
+// local stack needs uv on PATH and stages without provider API keys. Linux CPU runs prove wiring,
+// not Mac latency or speech quality; docs/PLAN_GOMODE.md owns target-Mac acceptance.
 
 // Copyright 2026 Marc-Antoine Ruel. All Rights Reserved. Use of this
 // source code is governed by the Apache v2 license that can be found in the

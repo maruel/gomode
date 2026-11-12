@@ -1,4 +1,11 @@
 // Shared voice controller and ordered quiet-context/actionable-alert buffering.
+//
+// Connected voice also reads gomode://notifications. The opening snapshot, repeated occurrence IDs,
+// withdrawals, and expiry send nothing. Each new alert reaches the model as one "New notification:
+// title: body [itemId]" line with context.update.generate: true, without inventing a user
+// utterance. Native multi-server alerts carry the same server header as context. Updates wait for
+// the active model, tool, and playback turn. Ending voice or replacing the authenticated scope
+// stops monitoring.
 package com.fghbuild.gomode.voice
 
 import com.fghbuild.gomode.service.boundModelContext

@@ -1,4 +1,13 @@
 // Stable shell tools discover and dispatch service-owned tools without changing model declarations.
+//
+// discover_service returns original MCP and frontend schemas, scoped server instructions, and
+// resource descriptors. dispatch_service_tool names a server ID, original tool name, and explicit
+// mcp or frontend kind, refreshes MCP metadata on demand, and validates arguments against the
+// owning schema before execution. Requests pin the participant's credentials and preparation
+// generation; frontend calls also pin the owning page revision. Changed identities, removed
+// services, and replaced pages reject pending results, and unavailable targets never fall through
+// to another participant or tool kind. read_service_resource returns the actual contents, not a
+// private context envelope.
 package com.fghbuild.gomode.service
 
 import com.fghbuild.gomode.voice.ToolCallValidator

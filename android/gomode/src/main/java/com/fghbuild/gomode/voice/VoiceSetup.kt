@@ -1,4 +1,18 @@
 // Resolves the active service into gateway endpoints, authorization, MCP tools, and voice context.
+//
+// Setup resolves webShell.voiceGateway.url against the service URL, discovers a compatible voice
+// choice, fetches a token from tokenEndpoint for an external gateway, posts the offer, and opens
+// the voice-gateway data channel. It declares the native call and server commands plus the catalog
+// tools; direct selected-server MCP and frontend aliases are not advertised. Bounded sourced
+// context goes in session.setup.context.text before the first response, and server instructions
+// stay scoped to their originating server. Catalog calls carry explicit server, kind, and tool
+// identity and use the owning service's credentials; pending calls keep their destination across
+// selection.
+//
+// Cloud voice and device speech with a remote gateway use one conversation owner, independent of
+// the selected page. Connecting pins the gateway sponsor, endpoint, voice choice, speaking voice,
+// and authorization; WebRTC recovery keeps them. Context from every connected server goes to the
+// chosen gateway.
 package com.fghbuild.gomode.voice
 
 import android.webkit.CookieManager
@@ -89,7 +103,7 @@ internal suspend fun prepareVoiceSetup(
     }
     // Single active skill today. SKILL.md frontmatter activation across the
     // toolGroups catalog (progressive disclosure) is future work; see
-    // gomode/docs/ANDROID_SHELL.md.
+    // docs/PLAN_GOMODE.md phase progressive-skills.
     val group =
         serviceSettings.webShell.toolGroups
             .orEmpty()

@@ -1,4 +1,10 @@
 // Package policy owns voice instructions shared by gateways and bundled offline engines.
+//
+// The common policy covers voice behavior, quiet context updates, isolation between servers, and
+// the selected output language. Clients add no behavioral prose and send no greeting or model turn
+// on session.ready; the connected chime signals readiness. Network recovery replays the newest
+// finalized transcript as "speaker: text" lines. Empty MCP server instructions are valid, so deploy
+// the policy-owning gateway before rolling out clients that omit common policy.
 package policy
 
 import (

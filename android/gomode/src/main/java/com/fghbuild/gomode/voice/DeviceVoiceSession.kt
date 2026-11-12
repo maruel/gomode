@@ -1,4 +1,11 @@
 // Owns device speech and routes text turns to the selected local engine or voice gateway.
+//
+// SpeechRecognizer transcribes and TextToSpeech speaks. With the Remote LLM engine the session
+// opens a WebSocket to the gateway text route, sends session.setup and user.message, synthesizes
+// assistant.text.delta, and executes tool.call through the service catalog; the gateway sends no
+// audio. The wire contract is voicegateway/api/v2/protocol.go. MicrophoneAudioSource owns capture
+// and keeps recognizing during assistant playback, so recognized speech interrupts the reply. Mode
+// and language changes are disabled while a session connects or stays active.
 package com.fghbuild.gomode.voice
 
 import android.content.Context

@@ -1,4 +1,25 @@
 // Owns document-bound frontend preparation and authenticated native voice-lifetime publication.
+//
+// Authentication, document loading, MCP discovery, and frontend preparation are separate
+// conditions. A page is prepared once its host reports ready: the identity is established, every
+// intended tool is registered, and required initial data has loaded. An empty snapshot and zero
+// tools are valid. The bridge 3 messages are defined in web/src/FrontendVoiceTools.ts. The shell
+// checks frontendDocument, frontendRequest, scope, and the origin before mutating auth, publishing
+// declarations, or dispatching a tool. Document and identity tokens live only in memory.
+//
+// scope is an ephemeral registration identifier of at most 128 characters. Hosts replace it when
+// tools change, required data becomes unusable, or the product scope changes, so an already queued
+// dispatch cannot reach a replacement registration. Declarations alone never authorize startup.
+// Navigation, reload, renderer loss, identity changes, and disposal revoke preparation.
+//
+// Voice controls check the same conditions. A pending microphone intent belongs to its original
+// page, document, account generation, and controller; replacement or disposal cannot turn its
+// permission result into a new call. Gateway sessions and device setup admit only prepared
+// frontends; local model prefill may run without one. Retained participants dispatch frontend tools
+// only while prepared; their MCP identity and authorization are pinned independently of
+// preparation. A recovering conversation (preserveTranscript = true) may continue while a page is
+// unavailable, with its declarations cleared and dispatch blocked. Ending an ordinary call cancels
+// call-owned callbacks but keeps the retained preparation for the next call.
 package com.fghbuild.gomode.ui.web
 
 import android.util.Log

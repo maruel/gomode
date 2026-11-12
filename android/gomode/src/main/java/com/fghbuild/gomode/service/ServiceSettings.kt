@@ -1,4 +1,14 @@
 // Service discovery client, URL helpers, and compatibility checks for the Go Mode root settings document.
+//
+// The shell loads the service URL in the WebView first and fetches /.well-known/gomode.json off the
+// WebView's critical path. A manifest is unvalidated until it decodes, compatible when its versions
+// pass and its skill catalog and gateway metadata decode, and incompatible otherwise. Only a
+// compatible manifest enables MCP-backed native features; an incompatible one disables them with a
+// visible state while the page keeps loading. The fetch retries after page load, app resume,
+// network recovery, and user actions that need native features. Login never depends on discovery.
+//
+// The shell and the manifest must both use BRIDGE_VERSION; validation rejects other versions before
+// native voice starts.
 package com.fghbuild.gomode.service
 
 import com.fghbuild.gomode.sdk.v1.ApiClient

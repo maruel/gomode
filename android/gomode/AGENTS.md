@@ -3,8 +3,8 @@
 Go Mode is a Kotlin/Compose Android app with package `com.fghbuild.gomode`.
 It is a thin native shell around backend-hosted mobile web frontends.
 
-Read `../AGENTS.md` first for shared Android rules. Use
-`../../docs/ANDROID_SHELL.md` as the canonical architecture plan.
+Read `../AGENTS.md` first for shared Android rules. Shell contracts live in the
+header comments of their owning source files; the File Index below locates them.
 
 ## Product Boundary
 

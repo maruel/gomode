@@ -1,4 +1,30 @@
 // Owns retryable browser voice setup and shared context recovery without eagerly loading the runtime.
+//
+// BrowserVoiceShell performs abortable manifest discovery only in browser mode and only when local
+// preparation is ready. Hosts supply the expected service and MCP tool-group names, the client
+// name, and the preparation scope. A missing discovery route or an HTML SPA fallback means
+// unavailable voice; malformed JSON, unsupported discovery versions, and invalid endpoint contracts
+// are setup errors. The browser supports discovery API version 1. Gateway origins require HTTPS,
+// with HTTP localhost and canonical loopback addresses allowed for local development; MCP and token
+// endpoints must be same-origin. External gateways require a same-origin token endpoint and an
+// authorize adapter.
+//
+// authorize(endpoint) owns the host's token-exchange method, headers, response validation, and
+// session policy. The optional mcpEndpoint decorator binds a validated endpoint to captured host
+// authority, and its result is validated again. gatewayHeaders are captured for configuration and
+// sent only to same-origin gateway signaling. Adapters capture the owning host session instead of
+// looking up a replacement identity after an await.
+//
+// The runtime and overlay load after discovery, and ownership is rechecked after the import.
+// Replacement, disposal, or a mode change aborts discovery and prevents late configuration. The
+// active runtime owns voice-session cleanup and notification suppression, and a pending Connect
+// action keeps its originating runtime and user intent. The render-prop child receives {session,
+// mcp} for host-owned context and document subscriptions; the child cleans them up. Before setup
+// reads instructions, tools, or items, the preparation scope's prepareSession publishes the host's
+// selected workspace or item through the FrontendVoiceContextPolicy given to createScope. Recovery
+// reuses it with the same session ID, ordinary publication failures are advisory, and abort or
+// retirement cancels setup. Message catalogs in VoiceMessages contain only labels, so hosts load
+// them with their language dictionaries independently of the lazy runtime.
 
 import {
   batch,

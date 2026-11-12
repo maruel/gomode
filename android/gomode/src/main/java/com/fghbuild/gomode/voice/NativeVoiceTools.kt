@@ -1,4 +1,15 @@
 // Native voice tool declarations and dispatch for call control and saved server selection.
+//
+// list_servers returns saved server IDs, names, and active status. switch_server and the native
+// picker change the visible page and conversational focus while preserving one transport, Telecom
+// call, audio owner, transcript, and foreground notification. Every ready participant stays
+// callable, including servers without a voice gateway. Focus and participant context wait for
+// pending tool results and model turn completion; an idle turn can complete without speech, while
+// playback blocks context delivery until speech ends. Shared voice state reaches every retained
+// page, and native notifications are suppressed for every participant while shared voice is active.
+//
+// The nativeTools names are reserved: hosted MCP and frontend tools must use other names. Keyword
+// engines cannot validate the server tools' argument schemas and do not advertise these tools.
 package com.fghbuild.gomode.voice
 
 import com.fghbuild.gomode.data.OnDeviceEngine

@@ -1,4 +1,18 @@
 // Holds hosted-service auth signals in memory for native requests to the active service origin.
+//
+// window.gomodeAuth is exposed to the exact service origin through AndroidX WebView's message
+// listener and accepts messages only from the main frame while the page stays on that origin. Every
+// message also carries the captured frontendDocument and a fresh frontendRequest:
+//
+// - {"bearerToken": "token"} stores an in-memory bearer for MCP and voice and enables native access
+//   after validation.
+// - {"bearerToken": null} clears the bearer and pauses native access.
+// - {"authChanging": true} pauses this participant before logout or account switching; revoking the
+//   gateway sponsor ends shared voice.
+// - {"authChanged": true, "nativeAccess": bool} reports a settled cookie-backed identity.
+//
+// Access-granting messages receive an acknowledgement; revocations receive none. An unknown result
+// keeps access paused until the host validates the identity. No token is stored on disk.
 package com.fghbuild.gomode.ui.web
 
 import android.net.Uri

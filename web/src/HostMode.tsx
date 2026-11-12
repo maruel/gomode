@@ -1,4 +1,8 @@
 // Go Mode host-mode context: exposes native bridge capabilities, including voice state, to the hosted frontend.
+//
+// HostModeProvider wraps every consumer of native mode, browser notification and voice
+// availability, and native voice connection state. useHostMode() is their shared source; it follows
+// route query changes and native voice events.
 
 import { createContext, createEffect, createSignal, onCleanup, useContext, type Accessor, type JSX } from "solid-js";
 import { useLocation, type SearchParams } from "@solidjs/router";

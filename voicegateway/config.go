@@ -35,6 +35,15 @@ import (
 // own configuration and decode it with an ordinary TOML decoder. Stage entries
 // retain declaration order. Resolve validates references and produces runtime
 // configuration without changing declarations.
+//
+// An embedding host decodes Config under its own TOML section with
+// DisallowUnknownFields, calls Resolve during configuration validation, and
+// passes the result through startup. Before creating the bridge it calls
+// Available, checks caller cancellation, and validates the filtered result; an
+// empty catalog prevents startup. It passes the resolved configuration and its
+// own UDP port, validated with ServerConfig.Validate, to voicertc.NewBridge. The
+// host owns its listener, deployment mode, authentication, session admission,
+// and the private directory and lifetime of transcript activity logs.
 type Config struct {
 	Runtime  RuntimeConfig    `toml:"local_stack_runtime"`
 	Realtime []RealtimeConfig `toml:"realtime"`

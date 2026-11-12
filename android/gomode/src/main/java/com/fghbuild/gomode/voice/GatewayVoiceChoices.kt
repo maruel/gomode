@@ -1,4 +1,15 @@
 // Discovers gateway voice choices, explains gateway HTTP failures, and resolves pinned transport-compatible selections.
+//
+// Cloud voice selects a webrtc choice and client speech with a remote gateway selects a text
+// choice. Each family saves its own selection per gateway URL and pins it per session: a first
+// connection uses that family's advertised default, or its first compatible choice, and a removed
+// saved choice blocks reconnecting until the user picks an available one. Switching speech mode or
+// engine keeps the other family's selection. Speaking voices are saved per gateway and choice for
+// webrtc choices that advertise voices; the advertised default applies until then, and a removed
+// saved voice blocks connecting. Active sessions and recovery connections keep the resolved voice.
+// Choices without a voice catalog use the gateway's default, and client speech modes keep the
+// device's synthesis. External gateway metadata requests carry no hosted-service credentials;
+// embedded gateways use the service credentials.
 package com.fghbuild.gomode.voice
 
 import com.fghbuild.gomode.data.OnDeviceEngine

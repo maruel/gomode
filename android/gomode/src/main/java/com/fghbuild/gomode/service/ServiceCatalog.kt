@@ -1,4 +1,16 @@
 // Owns retained-service discovery, background alerts, conversation-scoped context streams, and tool routing.
+//
+// Each retained entry owns its MCP discovery, credential snapshot, retry worker, and resource
+// monitor. Sign-in, logout, removal, and failures affect that entry alone. Participants need a
+// first MCP tool group and need no voice gateway. Native settings shows each participant's
+// readiness and retries a failed connection. Notification IDs stay distinct across services, and
+// notification titles identify their source.
+//
+// The overview has one catalog-wide context budget with source labels; detailed instructions,
+// schemas, and resources are read on demand. Gateway and local LLM conversations use the whole
+// catalog. Keyword engines keep the selected service's direct tools and context. Hidden
+// participants keep monitoring, and shared voice receives their labeled context without duplicate
+// native notifications.
 package com.fghbuild.gomode.service
 
 import com.fghbuild.gomode.ui.ServiceBootstrapState

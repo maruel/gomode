@@ -1,4 +1,26 @@
 // Owns system-dial requests, native startup, live voice context, and call lifetime across Activity replacement.
+//
+// New car calls wait for the selected page, native authentication, MCP catalog readiness, and
+// frontend preparation, all inside the 60-second startup deadline. The accepted identity stays
+// pinned across the MCP and frontend waits. A frontend wait that times out reports only
+// FRONTEND_NOT_READY; cancellation and timeout release call and microphone foreground ownership,
+// and late readiness cannot restart the attempt.
+//
+// Launch requests have bounded lifetimes and a single owner, so duplicate delivery, teardown, role
+// loss, and process replacement cannot start stale voice. Missing prerequisites require explicit
+// recovery after unlocking rather than a delayed automatic microphone start. Arbitrary external
+// Activity intents never gain the authority to start microphone capture or select a server.
+//
+// Android's background microphone restrictions require eligible foreground ownership. MainActivity,
+// launched while Telecom's redirection binding is active, can show native call controls over a
+// secure keyguard and start a microphone foreground service. Car calls load their resolved service
+// after the replacement Telecom call and microphone ownership exist, including while locked. Unless
+// lock-screen service access is enabled, hosted pixels stay behind keyguard and the native call
+// surface shows status, the live transcript, audio routes, and hang-up. Unlocking attaches the same
+// page to the ordinary shell without reconnecting voice; relocking protects hosted content again.
+// Lock-screen service access shows the interactive service above keyguard only during car calls,
+// and ending the call removes that window grant. Native permissions, media capture, file pickers,
+// and external sign-in still require unlocking.
 package com.fghbuild.gomode.voice
 
 import android.Manifest

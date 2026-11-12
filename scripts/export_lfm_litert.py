@@ -23,6 +23,17 @@
 # url = "https://download.pytorch.org/whl/cpu"
 # explicit = true
 # ///
+#
+# Maintainers export and publish the LFM3 bundles that Android downloads:
+#
+#   make android-export-lfm
+#   uv run --locked --script scripts/upload_lfm_litert.py
+#
+# The exporter skips existing bundles in models/lfm3-1.7b-int8-32k-fp16 and
+# models/lfm3-1.7b-int8-64k-fp16; pass --context-length 32768 for one variant.
+# The uploader skips missing exports and unchanged releases, derives each
+# repository name from the manifest's context length, and needs a Hugging Face
+# login with write access. ModelArtifact.kt pins the repositories Android reads.
 
 import argparse
 import contextlib
