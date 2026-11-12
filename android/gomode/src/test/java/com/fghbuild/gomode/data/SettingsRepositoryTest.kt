@@ -119,6 +119,44 @@ class SettingsRepositoryTest {
         }
 
     @Test
+    fun `aliases are unique ignoring case and blank aliases share the default`() =
+        runBlocking {
+            val repository = SettingsRepository(InMemoryPreferencesDataStore())
+            val home = repository.addService(" Home ", "https://home.example")
+            val blank = repository.addService("", "https://blank.example")
+            val state = repository.awaitSettings("both services") { it.services.size == 2 }
+            assertEquals(listOf("Home", "Service"), state.services.map { it.label })
+            assertTrue(runCatching { repository.addService("home", "https://other.example") }.isFailure)
+            assertTrue(runCatching { repository.addService(" ", "https://other.example") }.isFailure)
+            assertTrue(runCatching { repository.updateService(blank, "HOME", "https://blank.example") }.isFailure)
+            repository.updateService(home, "home", "https://home.example")
+            assertEquals(
+                listOf("home", "Service"),
+                repository.awaitSettings("case-only rename") { it.services.first().label == "home" }.services.map {
+                    it.label
+                },
+            )
+        }
+
+    @Test
+    fun `removing the active service activates the first remaining one and keeps its car slot reserved`() =
+        runBlocking {
+            val repository = SettingsRepository(InMemoryPreferencesDataStore())
+            val first = repository.addService("First", "https://first.example")
+            val second = repository.addService("Second", "https://second.example")
+            val slots = repository.awaitSettings("second active") { it.activeServiceId == second }.carCallerSlots
+            repository.removeService(second)
+            val state = repository.awaitSettings("second removed") { it.services.size == 1 }
+            assertEquals(first, state.activeServiceId)
+            assertEquals("https://first.example", state.activeServiceURL)
+            assertEquals(slots, state.carCallerSlots)
+            repository.removeService(first)
+            val empty = repository.awaitSettings("all removed") { it.services.isEmpty() }
+            assertEquals("", empty.activeServiceURL)
+            assertTrue(runCatching { repository.removeService(first) }.isFailure)
+        }
+
+    @Test
     fun `duplicate persisted car slots fail closed`() =
         runBlocking {
             val store = InMemoryPreferencesDataStore()

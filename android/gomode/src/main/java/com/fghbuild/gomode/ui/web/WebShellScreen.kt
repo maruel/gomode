@@ -843,9 +843,9 @@ private val networkLoadErrors =
 
 internal fun webLoadErrorMessage(errorCode: Int): String =
     if (errorCode == WebViewClient.ERROR_TIMEOUT) {
-        "The service took too long to respond. Check your network connection, then retry."
+        "The service took too long to respond."
     } else {
-        "Could not connect to the service. Check your network connection and service address, then retry."
+        "Could not connect to the service."
     }
 
 internal fun openNewWindowInExternalBrowser(

@@ -40,6 +40,7 @@ import androidx.test.uiautomator.UiDevice
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.ui.settings.ServiceStatus
 import com.fghbuild.gomode.ui.settings.SettingsScreen
 import com.fghbuild.gomode.ui.settings.rememberSettingsEdits
 import com.fghbuild.gomode.ui.theme.GoModeTheme
@@ -92,9 +93,16 @@ class VoiceSettingsTest {
                             onDone = {},
                             onOpenHalo = {},
                             edits = rememberSettingsEdits(repository, settings),
-                            serviceReadiness = mapOf(readyID to "Ready", loadingID to "Loading page"),
-                            serviceErrors = serviceError.value?.let { mapOf(loadingID to it) } ?: emptyMap(),
-                            serviceRetryLabels = mapOf(loadingID to "Reload page"),
+                            serviceStatus =
+                                mapOf(
+                                    readyID to ServiceStatus(readiness = "Ready"),
+                                    loadingID to
+                                        ServiceStatus(
+                                            readiness = "Loading page",
+                                            error = serviceError.value,
+                                            retryLabel = "Reload page",
+                                        ),
+                                ),
                             onRetryService = { retried = it },
                         )
                     }

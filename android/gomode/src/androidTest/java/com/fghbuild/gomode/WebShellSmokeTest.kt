@@ -13,8 +13,10 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertContentDescriptionEquals
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -279,6 +281,29 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
         composeRule.onNodeWithText("First renamed").assertExists()
         composeRule.onNodeWithText("Second").assertExists()
         composeRule.onNodeWithText("Active").assertExists()
+
+        // Aliases are unique: a conflicting alias blocks Done until it changes.
+        composeRule.onAllNodesWithContentDescription("Edit service").onFirst().performClick()
+        waitForServiceEditor()
+        fillServiceField("gomode-service-label", "second")
+        composeRule.onNodeWithText("Another service uses this alias.").assertExists()
+        composeRule.onNodeWithTag("gomode-service-done").performScrollTo().assertIsNotEnabled()
+        fillServiceField("gomode-service-label", "First renamed")
+        closeServiceEditor()
+        composeRule.onNodeWithText("First renamed").assertExists()
+
+        // Deleting asks for confirmation, then removes only that service.
+        composeRule.onAllNodesWithContentDescription("Delete service").onFirst().performClick()
+        composeRule.onNodeWithTag("gomode-confirm-delete-service").performClick()
+        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+            composeRule.onAllNodesWithText("First renamed").fetchSemanticsNodes().isEmpty()
+        }
+        composeRule.onNodeWithText("Second").assertExists()
+        val observer = SettingsRepository(composeRule.activity.goModeSettingsDataStore)
+        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+            observer.settings.value.services
+                .map { it.label } == listOf("Second")
+        }
     }
 
     @Test
@@ -470,7 +495,7 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
 
     private fun closeServiceEditor() {
         dismissServiceKeyboard()
-        composeRule.onNodeWithTag("gomode-close-editor").performScrollTo().performClick()
+        composeRule.onNodeWithTag("gomode-service-done").performScrollTo().performClick()
         composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
             composeRule.onAllNodesWithTag("gomode-service-label").fetchSemanticsNodes().isEmpty()
         }

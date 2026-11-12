@@ -118,6 +118,45 @@ class SettingsEditsTest {
             assertEquals(initial, repository.settings.value)
         }
 
+    @Test
+    fun conflictingAliasesKeepTheSavedAliasAndBlockCreation() =
+        runTest {
+            val repository = SettingsRepository(MemoryPreferences())
+            repository.addService("First", "https://first.test")
+            val id = repository.addService("Second", "https://second.test")
+            val initial = repository.settings.first { it.activeServiceId == id }
+            val edits = SettingsEdits(repository, initial, this)
+            edits.editService(initial.services.last())
+            edits.service = edits.service?.copy(label = "first", url = "https://moved.test")
+            assertTrue(edits.aliasTaken)
+            assertTrue(edits.save(true, commitURL = true))
+            val moved = repository.settings.first { it.services.last().url == "https://moved.test" }
+            assertEquals("Second", moved.services.last().label)
+
+            edits.editService(null)
+            edits.service = edits.service?.copy(label = "FIRST", url = "https://third.test")
+            assertTrue(edits.aliasTaken)
+            assertFalse(edits.addService())
+            assertEquals(2, repository.settings.value.services.size)
+        }
+
+    @Test
+    fun removingTheLastServiceOpensANewDraft() =
+        runTest {
+            val repository = SettingsRepository(MemoryPreferences())
+            val first = repository.addService("First", "https://first.test")
+            val second = repository.addService("Second", "https://second.test")
+            val initial = repository.settings.first { it.activeServiceId == second }
+            val edits = SettingsEdits(repository, initial, this)
+            edits.editService(initial.services.first())
+            assertTrue(edits.removeService(first))
+            assertEquals(null, edits.service)
+            repository.settings.first { it.services.size == 1 }
+            assertTrue(edits.removeService(second))
+            assertEquals(ServiceEdit(null, "", ""), edits.service)
+            repository.settings.first { it.services.isEmpty() }
+        }
+
     private class MemoryPreferences : DataStore<Preferences> {
         private val writeMutex = Mutex()
         private val current = MutableStateFlow(emptyPreferences())

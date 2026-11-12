@@ -26,7 +26,7 @@ internal fun rememberSettingsEdits(
 ): SettingsEdits {
     val scope = rememberCoroutineScope()
     val edits = remember(repository) { SettingsEdits(repository, settings, scope) }
-    LaunchedEffect(edits, settings.voiceLanguageTag, settings.loadState) { edits.sync(settings) }
+    LaunchedEffect(edits, settings.voiceLanguageTag, settings.loadState, settings.services) { edits.sync(settings) }
     return edits
 }
 
@@ -60,6 +60,12 @@ internal class SettingsEdits(
     )
     var error by mutableStateOf<String?>(null)
         private set
+    var services by mutableStateOf(initial.services)
+        private set
+
+    /** aliasTaken reports whether the draft's alias belongs to another saved service. */
+    val aliasTaken: Boolean
+        get() = service?.let { SettingsRepository.aliasTaken(services, it.id, it.label) } ?: false
 
     val normalizedLanguage: String?
         get() = runCatching { SettingsRepository.normalizeVoiceLanguageTag(language) }.getOrNull()
@@ -71,6 +77,7 @@ internal class SettingsEdits(
         }
         if (language == savedLanguage) language = settings.voiceLanguageTag
         savedLanguage = settings.voiceLanguageTag
+        services = settings.services
     }
 
     fun editService(service: ServiceInstance?) {
@@ -100,14 +107,13 @@ internal class SettingsEdits(
         persist {
             val draft = service
             val url = draft?.normalizedURL
-            if (draft?.id != null) {
-                val saved =
-                    repository.settings.value.services
-                        .firstOrNull { it.id == draft.id }
-                val label = draft.label.ifBlank { SettingsRepository.DEFAULT_SERVICE_LABEL }
-                val targetURL = if (commitURL && url != null) url else saved?.url
-                if (targetURL != null && (saved == null || saved.label != label || saved.url != targetURL)) {
-                    repository.updateService(draft.id, label, targetURL)
+            val saved = draft?.id?.let { id -> services.firstOrNull { it.id == id } }
+            if (draft != null && saved != null) {
+                // A conflicting alias stays a draft; the URL still saves independently.
+                val label = if (aliasTaken) saved.label else SettingsRepository.serviceLabel(draft.label)
+                val targetURL = if (commitURL && url != null) url else saved.url
+                if (saved.label != label || saved.url != targetURL) {
+                    repository.updateService(saved.id, label, targetURL)
                 }
             }
             val tag = normalizedLanguage
@@ -121,13 +127,28 @@ internal class SettingsEdits(
         persist {
             val draft = service
             val url = draft?.normalizedURL
-            if (draft != null && draft.id == null && url != null) {
+            if (draft != null && draft.id == null && url != null && !aliasTaken) {
                 val id = repository.addService(draft.label, url)
                 service = service?.copy(id = id)
                 true
             } else {
                 false
             }
+        }
+
+    /** removeService deletes the saved service and opens a new draft when none remain. */
+    suspend fun removeService(id: String): Boolean =
+        persist {
+            val remaining =
+                repository.settings.value.services
+                    .count { it.id != id }
+            repository.removeService(id)
+            if (remaining == 0) {
+                service = ServiceEdit(null, "", "")
+            } else if (service?.id == id) {
+                service = null
+            }
+            true
         }
 
     suspend fun setShowReasoning(enabled: Boolean): Boolean =

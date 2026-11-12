@@ -226,9 +226,10 @@ class SettingsRepository(
             val service =
                 ServiceInstance(
                     id = id,
-                    label = label.ifBlank { DEFAULT_SERVICE_LABEL },
+                    label = serviceLabel(label),
                     url = normalizedURL,
                 )
+            require(!aliasTaken(services, id, service.label)) { "Another service is named ${service.label}" }
             prefs[Keys.SERVICES] = json.encodeToString(services + service)
             assignCarCallerSlots(prefs)
             prefs[Keys.ACTIVE_SERVICE_ID] = id
@@ -245,16 +246,29 @@ class SettingsRepository(
         dataStore.edit { prefs ->
             val services = decodeServices(prefs)
             require(services.any { it.id == id }) { "Unknown service ID: $id" }
+            val alias = serviceLabel(label)
+            require(!aliasTaken(services, id, alias)) { "Another service is named $alias" }
             prefs[Keys.SERVICES] =
                 json.encodeToString(
                     services.map { service ->
                         if (service.id == id) {
-                            service.copy(label = label.ifBlank { DEFAULT_SERVICE_LABEL }, url = normalizedURL)
+                            service.copy(label = alias, url = normalizedURL)
                         } else {
                             service
                         }
                     },
                 )
+        }
+    }
+
+    // Car caller slots keep the removed ID so a later service cannot inherit its contact.
+    // Voice choices stay keyed by gateway, which other services can share.
+    suspend fun removeService(id: String) {
+        dataStore.edit { prefs ->
+            val services = decodeServices(prefs)
+            require(services.any { it.id == id }) { "Unknown service ID: $id" }
+            prefs[Keys.SERVICES] = json.encodeToString(services.filter { it.id != id })
+            if (prefs[Keys.ACTIVE_SERVICE_ID] == id) prefs.remove(Keys.ACTIVE_SERVICE_ID)
         }
     }
 
@@ -406,9 +420,27 @@ class SettingsRepository(
         OnDeviceEngine.entries.firstOrNull { it.name == value } ?: OnDeviceEngine.REMOTE_GATEWAY
 
     companion object {
-        const val DEFAULT_SERVICE_LABEL = "Service"
+        private const val DEFAULT_SERVICE_LABEL = "Service"
 
         fun normalizeURL(url: String): String = url.trim().trimEnd('/')
+
+        /** serviceLabel returns the alias saved for an entered [label]. */
+        fun serviceLabel(label: String): String = label.trim().ifEmpty { DEFAULT_SERVICE_LABEL }
+
+        /**
+         * aliasTaken reports whether a service other than [id] already uses [label].
+         *
+         * Voice server selection and car contacts present services by alias, so aliases are
+         * unique regardless of case.
+         */
+        fun aliasTaken(
+            services: List<ServiceInstance>,
+            id: String?,
+            label: String,
+        ): Boolean {
+            val alias = serviceLabel(label)
+            return services.any { it.id != id && it.label.equals(alias, ignoreCase = true) }
+        }
 
         fun normalizeVoiceLanguageTag(tag: String): String {
             val locale = Locale.Builder().setLanguageTag(tag.trim()).build()

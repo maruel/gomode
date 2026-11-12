@@ -84,6 +84,7 @@ import com.fghbuild.gomode.service.alertLine
 import com.fghbuild.gomode.service.compatibilityError
 import com.fghbuild.gomode.service.serverSection
 import com.fghbuild.gomode.ui.halo.HaloScreen
+import com.fghbuild.gomode.ui.settings.ServiceStatus
 import com.fghbuild.gomode.ui.settings.SettingsEdits
 import com.fghbuild.gomode.ui.settings.SettingsScreen
 import com.fghbuild.gomode.ui.settings.rememberSettingsEdits
@@ -907,12 +908,16 @@ private fun GoModeContent(
                 catalogState[entry.key]?.readiness,
             )
         }
-    val servicesNeedingAttention =
-        entryStates
-            .filterValues { it.attentionRequired }
-            .keys
-            .map { it.key.serviceID }
-            .toSet()
+    val serviceStatus =
+        entryStates.entries.associate { (entry, state) ->
+            entry.key.serviceID to
+                ServiceStatus(
+                    readiness = catalogState[entry.key]?.readiness?.text,
+                    error = (state.load as? WebShellLoadState.Failed)?.message ?: catalogState[entry.key]?.error,
+                    retryLabel = retryTargets[entry]?.label,
+                    needsAttention = state.attentionRequired,
+                )
+        }
     val bearerStore = serviceSession.bearerStore
     when {
         activeNativeScreen == NativeScreen.Halo -> {
@@ -928,19 +933,7 @@ private fun GoModeContent(
                 settingsRepository = settingsRepository,
                 edits = settingsEdits,
                 voiceSessionActive = voiceSessionActive,
-                servicesNeedingAttention = servicesNeedingAttention,
-                serviceReadiness = catalogState.values.associate { it.key.serviceID to it.readiness.text },
-                serviceErrors =
-                    entryStates
-                        .mapNotNull { (entry, state) ->
-                            ((state.load as? WebShellLoadState.Failed)?.message ?: catalogState[entry.key]?.error)
-                                ?.let { entry.key.serviceID to it }
-                        }.toMap(),
-                serviceRetryLabels =
-                    retryTargets
-                        .mapNotNull { (entry, target) ->
-                            target?.let { entry.key.serviceID to it.label }
-                        }.toMap(),
+                serviceStatus = serviceStatus,
                 onRetryService = { id ->
                     serviceSessions.firstOrNull { it.key.serviceID == id }?.let { entry ->
                         when (retryTargets[entry]) {

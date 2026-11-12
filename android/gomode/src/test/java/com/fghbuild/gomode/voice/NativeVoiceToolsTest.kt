@@ -57,11 +57,11 @@ class NativeVoiceToolsTest {
     }
 
     @Test
-    fun `lists duplicate names with distinct ids and switches the selected instance`() =
+    fun `lists servers by id and switches the selected instance`() =
         runTest {
             val repository = SettingsRepository(MemoryStore())
             val first = repository.addService("Home", "https://first.example")
-            val second = repository.addService("Home", "https://second.example")
+            val second = repository.addService("Work", "https://second.example")
             repository.awaitSettings { it.activeServiceId == second }
             val result =
                 requireNotNull(
@@ -75,7 +75,7 @@ class NativeVoiceToolsTest {
                 )
             val servers = result.getValue("servers").jsonArray.map { it.jsonObject }
             assertEquals(listOf(first, second), servers.map { it.getValue("id").jsonPrimitive.content })
-            assertEquals(listOf("Home", "Home"), servers.map { it.getValue("name").jsonPrimitive.content })
+            assertEquals(listOf("Home", "Work"), servers.map { it.getValue("name").jsonPrimitive.content })
             assertFalse(servers[0].getValue("active").jsonPrimitive.boolean)
             assertTrue(servers[1].getValue("active").jsonPrimitive.boolean)
             assertEquals(setOf("id", "name", "active"), servers[0].keys)

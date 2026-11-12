@@ -90,10 +90,7 @@ internal fun SettingsScreen(
     bearerTokenFor: (String) -> String? = { null },
     bearerToken: String? = null,
     authEpoch: Long = 0,
-    servicesNeedingAttention: Set<String> = emptySet(),
-    serviceReadiness: Map<String, String> = emptyMap(),
-    serviceErrors: Map<String, String> = emptyMap(),
-    serviceRetryLabels: Map<String, String> = emptyMap(),
+    serviceStatus: Map<String, ServiceStatus> = emptyMap(),
     onRetryService: (String) -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
@@ -131,84 +128,16 @@ internal fun SettingsScreen(
                     .testTag("gomode-settings"),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            if (settings.services.isNotEmpty()) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Services", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                    IconButton(
-                        onClick = {
-                            finish { edits.editService(null) }
-                        },
-                        modifier = Modifier.testTag("gomode-add-service"),
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = "Add new service")
-                    }
-                }
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    settings.services.forEach { service ->
-                        ServiceSetting(
-                            service = service,
-                            selected = service.id == settings.activeServiceId,
-                            readiness = serviceReadiness[service.id],
-                            error = serviceErrors[service.id],
-                            retryLabel = serviceRetryLabels[service.id],
-                            needsAttention = service.id in servicesNeedingAttention,
-                            onRetry = { onRetryService(service.id) },
-                            onEdit = { finish { edits.editService(service) } },
-                        )
-                    }
-                }
-            }
-            edits.service?.let { draft ->
-                Text(
-                    if (draft.id == null) "Add new service" else "Edit service",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                OutlinedTextField(
-                    value = draft.label,
-                    onValueChange = { edits.service = edits.service?.copy(label = it) },
-                    modifier = Modifier.fillMaxWidth().testTag("gomode-service-label"),
-                    singleLine = true,
-                    label = { Text("Alias") },
-                )
-                OutlinedTextField(
-                    value = draft.url,
-                    onValueChange = { edits.service = edits.service?.copy(url = it) },
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .onFocusChanged {
-                                if (!it.isFocused) scope.launch { edits.save(!active, commitURL = true) }
-                            }.testTag("gomode-service-url"),
-                    singleLine = true,
-                    label = { Text("Server URL") },
-                    supportingText =
-                        if (draft.url.isNotBlank() && draft.normalizedURL == null) {
-                            { Text("Use an http:// or https:// URL.") }
-                        } else {
-                            null
-                        },
-                    isError = draft.url.isNotBlank() && draft.normalizedURL == null,
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (draft.id == null) {
-                        IconButton(
-                            onClick = { finish { if (edits.addService()) onDone() } },
-                            enabled = draft.normalizedURL != null && settings.loadState == SettingsLoadState.Ready,
-                            modifier = Modifier.testTag("gomode-create-service"),
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = "Add service")
-                        }
-                    }
-                    if (settings.services.isNotEmpty()) {
-                        IconButton(
-                            onClick = { finish { edits.service = null } },
-                            modifier = Modifier.testTag("gomode-close-editor"),
-                        ) {
-                            Icon(Icons.Default.Close, contentDescription = "Close editor")
-                        }
-                    }
-                }
-            }
+            ServicesSetting(
+                settings = settings,
+                edits = edits,
+                voiceSessionActive = voiceSessionActive,
+                status = serviceStatus,
+                finish = finish,
+                commitURL = { scope.launch { edits.save(!active, commitURL = true) } },
+                onRetry = onRetryService,
+                onAdded = onDone,
+            )
             edits.error?.let {
                 Text(
                     it,
@@ -322,70 +251,6 @@ internal fun SettingsScreen(
             HorizontalDivider()
             CreditsSetting(voiceSessionActive)
         }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun ServiceSetting(
-    service: ServiceInstance,
-    selected: Boolean,
-    readiness: String?,
-    error: String?,
-    retryLabel: String?,
-    needsAttention: Boolean,
-    onRetry: () -> Unit,
-    onEdit: () -> Unit,
-) {
-    Column(Modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            FlowRow(
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-                itemVerticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(service.label.ifBlank { service.url }, style = MaterialTheme.typography.titleSmall)
-                if (selected) {
-                    Surface(
-                        shape = MaterialTheme.shapes.small,
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                    ) {
-                        Text(
-                            "Active",
-                            style = MaterialTheme.typography.labelSmall,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        )
-                    }
-                }
-            }
-            IconButton(onClick = onEdit, modifier = Modifier.testTag("gomode-edit-service-${service.id}")) {
-                Icon(Icons.Default.Edit, contentDescription = "Edit service")
-            }
-        }
-        Text(
-            service.url,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            readiness?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f, fill = false).testTag("gomode-readiness-${service.id}"),
-                )
-            }
-            retryLabel?.let {
-                IconButton(onClick = onRetry, modifier = Modifier.testTag("gomode-retry-${service.id}")) {
-                    Icon(Icons.Default.Refresh, contentDescription = it)
-                }
-            }
-        }
-        error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error) }
-        if (needsAttention) Text("Needs attention", style = MaterialTheme.typography.bodyMedium)
     }
 }
 
