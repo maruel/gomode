@@ -2,6 +2,7 @@
 declare const classes: {
   readonly "credits": string;
   readonly "error": string;
+  readonly "field": string;
   readonly "preview": string;
   readonly "previewError": string;
   readonly "retry": string;

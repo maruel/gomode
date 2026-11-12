@@ -237,7 +237,7 @@ export default function VoiceSettings(props: {
             <p>{messages().browserSynthesisUnavailable}</p>
           </Show>
           <Show when={voiceSession.state.speechOutput === "client" && synthesisSupported}>
-            <label>
+            <label class={styles.field}>
               {messages().speakingVoice}
               <select
                 ref={(select) => {
@@ -292,7 +292,7 @@ export default function VoiceSettings(props: {
             </label>
           </Show>
           <Show when={voiceSession.state.speechOutput === "client" && synthesisSupported}>
-            <label>
+            <label class={styles.field}>
               {messages().speakingSpeed}
               <select
                 disabled={active()}
@@ -316,7 +316,7 @@ export default function VoiceSettings(props: {
           </Show>
         </Show>
         <Show when={voiceSession.speakingVoices.length > 0}>
-          <label>
+          <label class={styles.field}>
             {messages().speakingVoice}
             <select
               disabled={
@@ -368,7 +368,7 @@ export default function VoiceSettings(props: {
           <VoiceIcon name="refresh" />
         </button>
       </Show>
-      <label>
+      <label class={styles.field}>
         {messages().voiceLanguage}
         <input
           type="text"
@@ -422,9 +422,6 @@ export default function VoiceSettings(props: {
         />
         {messages().showUsageStats}
       </label>
-      <p id={errorId} role="alert" class={styles.error}>
-        {error()}
-      </p>
       <details class={styles.credits} onToggle={(event) => setCreditsOpen(event.currentTarget.open)}>
         <summary>{messages().credits}</summary>
         <Show when={creditsOpen()}>
@@ -433,6 +430,10 @@ export default function VoiceSettings(props: {
         <p>{messages().musicComposer}</p>
         <p>{messages().musicArranger}</p>
       </details>
+      {/* Last, so a message appearing on blur moves no control below it. */}
+      <p id={errorId} role="alert" class={styles.error}>
+        {error()}
+      </p>
     </div>
   );
 }
@@ -490,7 +491,7 @@ function ChoiceSelect(props: {
   const choices = () => voiceSession.choicesForSetup(voiceSession.state.setupMode);
   const selected = () => voiceSession.state.choiceIDs[voiceSession.transport];
   return (
-    <label>
+    <label class={styles.field}>
       {props.label}
       <select
         ref={(select) => {
@@ -554,7 +555,7 @@ function SpeechStageSelect(props: {
   const fixed = () =>
     voiceSession.state.choices.find((choice) => choice.id === voiceSession.state.choiceIDs[voiceSession.transport]);
   return (
-    <label>
+    <label class={styles.field}>
       {props.label}
       <select
         ref={(select) => {

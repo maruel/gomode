@@ -1,13 +1,18 @@
 /* Voice setup tabs, ordered stage controls, and saved shared preferences. */
 
 .settings {
-  display: flex;
-  flex-direction: column;
+  /* Field labels share the first column so every control starts on one edge. */
+  display: grid;
+  grid-template-columns: fit-content(40%) minmax(0, 1fr);
   gap: 0.75rem;
   min-width: 0;
   width: 100%;
   max-width: 40rem;
   box-sizing: border-box;
+}
+
+.settings > * {
+  grid-column: 1 / -1;
 }
 
 .settings label {
@@ -37,9 +42,19 @@
   accent-color: var(--color-primary);
 }
 
-.settings select {
-  width: fit-content;
-  max-width: 100%;
+.settings .field {
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-column: 1 / -1;
+  align-items: center;
+}
+
+.settings .field select {
+  width: 100%;
+}
+
+.settings .field input[type="text"] {
+  justify-self: start;
 }
 
 .settings select:disabled,
@@ -55,14 +70,16 @@
 }
 
 .settings .error {
-  /* Keep blur validation from moving the close or connect button during a click. */
-  height: 2.4em;
-  overflow-y: auto;
   color: var(--color-danger);
 }
 
+.settings .error:empty {
+  /* Leave no row gap while keeping the live region in the accessibility tree. */
+  position: absolute;
+}
+
 .retry {
-  align-self: start;
+  justify-self: start;
 }
 
 .credits {
@@ -143,17 +160,11 @@
 }
 
 .setupPanel {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.setupPanel label {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0.35rem;
+  grid-template-columns: subgrid;
+  row-gap: 0.75rem;
 }
 
-.setupPanel select {
-  width: 100%;
+.setupPanel > * {
+  grid-column: 1 / -1;
 }
