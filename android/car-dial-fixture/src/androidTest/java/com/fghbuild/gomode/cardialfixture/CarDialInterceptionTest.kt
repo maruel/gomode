@@ -1049,6 +1049,17 @@ class CarDialInterceptionTest {
     // fixture recognizer never speaks. Both are gateway internals. Prefer user-visible evidence:
     // e.g. have FixtureSpeechRecognitionService return one utterance and assert its transcript and
     // reply appear in the voice panel, so the test covers a real exchange again.
+    // TODO: Find why voice setup sometimes misses its deadline in a full run.
+    // In one full `make android-e2e` run (39 Telecom tests), two tests failed:
+    // coldUnlockedDialShowsHostedServerAndControlsTheSameCall here, with
+    // "Voice controls did not connect: no status", and
+    // coldSecureKeyguardStartsRealTextVoiceAndEndsWithoutUnlocking, with
+    // textSetups 4 instead of 5 after its own 20 s wait. Both passed when run
+    // alone (`android_e2e.py --module telecom --class ...#method`) and in the
+    // next full run. Hypothesis, not confirmed: emulator load from earlier
+    // tests delays Telecom or the fixture gateway. Capture logcat and
+    // fixtureStats() at the failure, then wait on the missing event instead
+    // of a fixed budget, or fix the slow path it exposes.
     private fun awaitVoice(
         mode: String,
         before: JSONObject,
