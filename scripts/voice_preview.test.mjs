@@ -11,6 +11,7 @@ for (const option of ["-h", "--help"]) {
     assert.equal(result.status, 0);
     assert.match(result.stdout, /Usage:.*voice_preview\.mjs/);
     assert.match(result.stdout, /http:\/\/127\.0\.0\.1:4179/);
+    assert.match(result.stdout, /\?state=idle/);
     assert.equal(result.stderr, "");
   });
 }

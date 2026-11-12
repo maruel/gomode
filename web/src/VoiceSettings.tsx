@@ -374,6 +374,8 @@ export default function VoiceSettings(props: {
           type="text"
           disabled={active()}
           value={tag()}
+          // The example shows the BCP 47 format once the field is cleared.
+          placeholder={messages().voiceLanguageExample}
           onInput={(event) => {
             setTag(event.currentTarget.value);
             setLanguageError(null);
@@ -430,7 +432,7 @@ export default function VoiceSettings(props: {
         <p>{messages().musicComposer}</p>
         <p>{messages().musicArranger}</p>
       </details>
-      {/* Last, so a message appearing on blur moves no control below it. */}
+      {/* Last, so its reserved row reads as the panel's bottom padding. */}
       <p id={errorId} role="alert" class={styles.error}>
         {error()}
       </p>

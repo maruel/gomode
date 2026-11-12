@@ -125,6 +125,8 @@ Browser alongside the configured models. Switching tabs retains each setup.
 Check the tabs with arrow keys, then close settings and verify focus returns to
 its trigger. At narrow widths, native browser zoom, and larger default text,
 scroll inside settings to inspect the language and display preferences too.
+Type an invalid voice language, then click **Credits** once: it must open. The
+overlay grows upward, so an error row appearing on blur would move it away.
 
 ## Hosts own browser server switching
 

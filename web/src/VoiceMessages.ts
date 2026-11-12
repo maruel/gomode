@@ -33,7 +33,8 @@ export const defaultVoiceSettingsMessages = {
   musicPlaybackError: "Could not play thinking music.",
   showReasoning: "Show assistant reasoning",
   showUsageStats: "Show usage stats",
-  voiceLanguage: "Voice language (e.g. en-US)",
+  voiceLanguage: "Voice language",
+  voiceLanguageExample: "en-US",
 };
 
 export const defaultVoiceMessages = {

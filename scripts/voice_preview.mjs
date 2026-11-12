@@ -6,8 +6,10 @@ import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const usage =
-  "Usage: node scripts/voice_preview.mjs [--help]\nServe the voice layout fixture at http://127.0.0.1:4179.";
+const usage = `Usage: node scripts/voice_preview.mjs [--help]
+Serve the voice layout fixture at http://127.0.0.1:4179.
+Scenes: ?state=idle (no session, editable settings), ?history=retention, ?layout=wrapping.
+The server builds once; restart it after editing sources. See e2e/voice-preview/README.md.`;
 const args = process.argv.slice(2);
 if (args.length > 0) {
   const help = args.length === 1 && ["-h", "--help"].includes(args[0]);
@@ -71,4 +73,4 @@ const server = createServer((req, res) => {
   res.setHeader("Content-Type", types[path.extname(pathname)] ?? "application/octet-stream");
   res.end(body);
 });
-server.listen(4179, "127.0.0.1", () => console.log(usage.split("\n")[1]));
+server.listen(4179, "127.0.0.1", () => console.log(usage.split("\n").slice(1).join("\n")));

@@ -744,7 +744,7 @@ describe("VoiceOverlay settings", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     await user.click(trigger);
     expect(trigger).toHaveAttribute("aria-expanded", "true");
-    const input = screen.getByRole("textbox", { name: "Voice language (e.g. en-US)" });
+    const input = screen.getByRole("textbox", { name: "Voice language" });
     await user.click(input);
     fireEvent.keyDown(input, { key: "F4" });
     expect(connectMock).not.toHaveBeenCalled();
@@ -759,7 +759,7 @@ describe("VoiceOverlay settings", () => {
     await user.click(screen.getByRole("button", { name: "Voice settings" }));
     voiceSession.setState((s) => ({ ...s, connectStatus: "Connecting…", connectPhase: "setup" }));
     expect(screen.getByRole("combobox", { name: "Speech" })).toBeDisabled();
-    expect(screen.getByRole("textbox", { name: "Voice language (e.g. en-US)" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Voice language" })).toBeDisabled();
     expect(screen.getByText("End the voice session to change its setup.")).toBeInTheDocument();
   });
 
@@ -768,7 +768,7 @@ describe("VoiceOverlay settings", () => {
     const user = userEvent.setup();
     render(() => <VoiceOverlay />);
     await user.click(screen.getByRole("button", { name: "Voice settings" }));
-    const input = screen.getByRole("textbox", { name: "Voice language (e.g. en-US)" });
+    const input = screen.getByRole("textbox", { name: "Voice language" });
     await user.click(input);
     vi.useFakeTimers();
     fireEvent.input(input, { target: { value: "en-GB" } });

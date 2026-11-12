@@ -70,12 +70,11 @@
 }
 
 .settings .error {
+  /* The overlay grows upward from the viewport bottom, so a message appearing on
+     blur would move every control above it between press and release. */
+  height: 2.4em;
+  overflow-y: auto;
   color: var(--color-danger);
-}
-
-.settings .error:empty {
-  /* Leave no row gap while keeping the live region in the accessibility tree. */
-  position: absolute;
 }
 
 .retry {
