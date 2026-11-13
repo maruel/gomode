@@ -127,6 +127,12 @@ DENIED_MICROPHONE = APP_PACKAGE + ".DeniedMicrophonePermission"
 APP_LOCAL_ONLY = APP_PACKAGE + ".LocalEmulatorOnly"
 TELECOM_LOCAL_ONLY = TELECOM_PACKAGE + ".LocalEmulatorOnly"
 RESULTS = ROOT / "android" / "gomode" / "build" / "outputs" / "model-free-tests"
+# The slowest model-free test takes about 70s. AndroidJUnitRunner fails a test method past this
+# limit with its stuck thread's stack and continues with the next test.
+TEST_TIMEOUT_SECONDS = 300
+# A hang outside the test method, such as in a rule, escapes the runner's timeout. Past this
+# limit the script stops the instrumentation process and reports the running test.
+WATCHDOG_SECONDS = TEST_TIMEOUT_SECONDS + 60
 
 
 @dataclasses.dataclass
@@ -306,6 +312,7 @@ def instrument(
     adb: str, serial: str, name: str, runner: str, arguments: dict[str, str], discovery: bool
 ) -> InstrumentationResult:
     command = [adb, "-s", serial, "shell", "am", "instrument", "-w", "-r"]
+    command.extend(("-e", "timeout_msec", str(TEST_TIMEOUT_SECONDS * 1000)))
     for key, value in arguments.items():
         command.extend(("-e", key, value))
     if discovery:
@@ -318,8 +325,28 @@ def instrument(
     summary = False
     failed = False
     completed = False
+    target = runner.partition("/")[0].removesuffix(".test")
+    # The running test's name and start, shared with the watchdog thread.
+    lock = threading.Lock()
+    running: tuple[str, float] | None = None
+    timed_out: TestResult | None = None
+    finished = threading.Event()
+
+    def watchdog() -> None:
+        nonlocal timed_out
+        while not finished.wait(1):
+            with lock:
+                if running is None or time.monotonic() - running[1] < WATCHDOG_SECONDS:
+                    continue
+                timed_out = TestResult(running[0], time.monotonic() - running[1], -2)
+            # Stopping the target ends its instrumentation, so am instrument exits.
+            shell(adb, serial, "am", "force-stop", target)
+            return
+
     with (RESULTS / f"{name}.log").open("w") as log:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        monitor = threading.Thread(target=watchdog, daemon=True)
+        monitor.start()
         try:
             assert process.stdout is not None
             for line in process.stdout:
@@ -338,7 +365,11 @@ def instrument(
                     status = int(code[1])
                     if status == 1:
                         test_started = time.monotonic()
+                        with lock:
+                            running = (current["class"] + "#" + current["test"], test_started)
                     else:
+                        with lock:
+                            running = None
                         test = TestResult(
                             current["class"] + "#" + current["test"], time.monotonic() - test_started, status
                         )
@@ -351,9 +382,10 @@ def instrument(
                 completed |= line.strip() == "INSTRUMENTATION_CODE: -1"
             status = process.wait()
         finally:
+            finished.set()
+            monitor.join()
             if process.poll() is None:
                 # Cancelling adb alone leaves remote instrumentation running.
-                target = runner.partition("/")[0].removesuffix(".test")
                 try:
                     shell(adb, serial, "am", "force-stop", target)
                 finally:
@@ -368,6 +400,14 @@ def instrument(
             if not discovery:
                 with (RESULTS / f"{name}-logcat.log").open("w") as logcat:
                     subprocess.run([adb, "-s", serial, "logcat", "-d", "-t", "3000"], stdout=logcat, check=True)
+    if timed_out is not None:
+        tests.append(timed_out)
+        failed = True
+        print(
+            f"TIMEOUT {timed_out.seconds:.3f}s {timed_out.name}: stopped {target} after {WATCHDOG_SECONDS}s",
+            file=sys.stderr,
+            flush=True,
+        )
     result = InstrumentationResult(
         status == 0 and summary and completed and not failed, time.monotonic() - started, tests
     )
