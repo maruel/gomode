@@ -263,6 +263,7 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun settingsCanAddAndEditServicesWithoutSwitchingTheActiveService() {
         openWebShell()
         composeRule.onNodeWithTag("gomode-web-open-settings").performClick()

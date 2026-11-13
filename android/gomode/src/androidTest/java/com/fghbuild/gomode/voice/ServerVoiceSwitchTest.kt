@@ -32,6 +32,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.GrantPermissionRule
 import androidx.test.uiautomator.UiDevice
+import com.fghbuild.gomode.LocalEmulatorOnly
 import com.fghbuild.gomode.R
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
@@ -82,6 +83,7 @@ class ServerVoiceSwitchTest {
     val composeRule = createAndroidComposeRule<ComponentActivity>(effectContext = StandardTestDispatcher())
 
     @Test
+    @LocalEmulatorOnly
     @ModelFreeSpeech
     fun spokenTextSwitchKeepsOneConversationAcrossBothDirections() = exerciseSharedConversation(VoiceMode.DEVICE)
 

@@ -2,7 +2,8 @@
 """Run all model-free Android tests with owned hosted and gateway fixtures.
 
 Real model inference/transfers and documentation captures are excluded. Use
---module and --class for focused app or independent Telecom instrumentation.
+--module and --class for focused app or independent Telecom instrumentation, and
+--ci for the subset that skips @LocalEmulatorOnly variants.
 """
 
 import argparse
@@ -118,9 +119,13 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
 
 APP_PACKAGE = "com.fghbuild.gomode"
 APP_RUNNER = APP_PACKAGE + ".test/androidx.test.runner.AndroidJUnitRunner"
-TELECOM_RUNNER = "com.fghbuild.gomode.cardialfixture.test/androidx.test.runner.AndroidJUnitRunner"
+TELECOM_PACKAGE = "com.fghbuild.gomode.cardialfixture"
+TELECOM_RUNNER = TELECOM_PACKAGE + ".test/androidx.test.runner.AndroidJUnitRunner"
 EXCLUDED = [APP_PACKAGE + ".DocumentationCapture", APP_PACKAGE + ".ModelAcceptance"]
 DENIED_MICROPHONE = APP_PACKAGE + ".DeniedMicrophonePermission"
+# Each instrumentation APK declares its own annotation; the runner rejects unknown classes.
+APP_LOCAL_ONLY = APP_PACKAGE + ".LocalEmulatorOnly"
+TELECOM_LOCAL_ONLY = TELECOM_PACKAGE + ".LocalEmulatorOnly"
 RESULTS = ROOT / "android" / "gomode" / "build" / "outputs" / "model-free-tests"
 
 
@@ -425,6 +430,7 @@ def main() -> int:
         metavar="CLASS[#METHOD]",
         help="focus a class/method (app unless --module telecom)",
     )
+    parser.add_argument("--ci", action="store_true", help="skip @LocalEmulatorOnly variants to fit slower CI runners")
     args = parser.parse_args()
     module = args.module or ("app" if args.test_class else None)
     adb = adb_path()
@@ -441,6 +447,8 @@ def main() -> int:
     started = time.monotonic()
     prepare_apks(adb, serial, module != "app")
     selection = {"class": args.test_class} if args.test_class else {}
+    app_excluded = [*EXCLUDED, APP_LOCAL_ONLY] if args.ci else EXCLUDED
+    telecom_excluded = {"notAnnotation": TELECOM_LOCAL_ONLY} if args.ci else {}
     results: list[InstrumentationResult] = []
     with hosted_fixture() as hosted, gateway_fixture() as gateway, forward_ports(adb, serial, [hosted, gateway]):
         if module != "telecom":
@@ -455,7 +463,7 @@ def main() -> int:
                     serial,
                     "app-microphone-denied",
                     APP_RUNNER,
-                    {**arguments, "annotation": DENIED_MICROPHONE, "notAnnotation": ",".join(EXCLUDED)},
+                    {**arguments, "annotation": DENIED_MICROPHONE, "notAnnotation": ",".join(app_excluded)},
                     True,
                 )
             )
@@ -465,7 +473,7 @@ def main() -> int:
                     serial,
                     "app",
                     APP_RUNNER,
-                    {**arguments, "notAnnotation": ",".join([*EXCLUDED, DENIED_MICROPHONE])},
+                    {**arguments, "notAnnotation": ",".join([*app_excluded, DENIED_MICROPHONE])},
                     False,
                 )
             )
@@ -476,7 +484,7 @@ def main() -> int:
                     serial,
                     "telecom",
                     TELECOM_RUNNER,
-                    {"baseUrl": f"http://localhost:{gateway}", **selection},
+                    {"baseUrl": f"http://localhost:{gateway}", **telecom_excluded, **selection},
                     False,
                 )
             )

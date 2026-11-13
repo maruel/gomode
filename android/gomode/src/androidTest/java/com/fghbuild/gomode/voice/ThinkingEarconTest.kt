@@ -7,12 +7,14 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.fghbuild.gomode.LocalEmulatorOnly
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
+@LocalEmulatorOnly
 class ThinkingEarconTest {
     @Test
     fun synthesisLeavesAmpleRealtimeHeadroom() {

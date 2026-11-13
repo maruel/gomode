@@ -14,6 +14,7 @@ import org.junit.Test
 import org.junit.runner.Description
 import org.junit.runners.model.Statement
 
+@LocalEmulatorOnly
 class SystemUiRuleTest {
     @get:Rule
     internal val systemUi = SystemUiRule()

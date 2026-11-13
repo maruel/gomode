@@ -20,7 +20,6 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.dp
 import androidx.test.platform.app.InstrumentationRegistry
-import androidx.test.uiautomator.UiDevice
 import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.ui.settings.ModelDownloadControls
 import com.fghbuild.gomode.ui.settings.ModelLoadDiagnosticsControls
@@ -33,12 +32,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 import java.io.File
 import java.util.UUID
 
+@RunWith(RobolectricTestRunner::class)
 class ModelDownloadUiTest {
     @get:Rule
     @OptIn(ExperimentalTestApi::class)
@@ -77,7 +78,6 @@ class ModelDownloadUiTest {
         }
         compose.onNodeWithTag("gomode-model-download-status").assertTextContains("Not downloaded")
         compose.onNodeWithTag("gomode-model-download").assertContentDescriptionEquals("Download model")
-        capture("missing")
         compose.runOnIdle { enabled = false }
         compose.onNodeWithTag("gomode-model-download").assertIsNotEnabled()
         compose.runOnIdle { enabled = true }
@@ -86,7 +86,6 @@ class ModelDownloadUiTest {
         compose.onNodeWithTag("gomode-model-download-progress").assertExists()
         compose.onNodeWithTag("gomode-model-download-status").assertTextContains("Downloading · 0.4%", substring = true)
         compose.onNodeWithTag("gomode-model-download-cancel").assertContentDescriptionEquals("Cancel download")
-        capture("downloading")
         compose.runOnIdle { enabled = false }
         compose.onNodeWithTag("gomode-model-download-cancel").assertIsNotEnabled()
         compose.runOnIdle { enabled = true }
@@ -102,7 +101,6 @@ class ModelDownloadUiTest {
             .onNodeWithTag(
                 "gomode-model-download-status",
             ).assertTextContains("Connection interrupted. Resume the download.")
-        capture("error")
         compose.onNodeWithTag("gomode-model-download").performClick()
         assertEquals(2, starts)
         compose.runOnIdle { state = ModelDownloadState.Ready(2_588_147_712, true) }
@@ -111,34 +109,19 @@ class ModelDownloadUiTest {
         compose.onNodeWithTag("gomode-model-download").assertDoesNotExist()
         compose.onNodeWithTag("gomode-model-download-cancel").assertDoesNotExist()
         compose.onNodeWithTag("gomode-model-download-progress").assertDoesNotExist()
-        capture("ready")
         compose.runOnIdle { enabled = false }
         compose.onNodeWithTag("gomode-model-delete").assertIsNotEnabled()
         compose.runOnIdle { enabled = true }
         compose.onNodeWithTag("gomode-model-delete").performClick()
-        capture("delete-confirmation")
         compose.onNodeWithTag("gomode-model-delete-confirm").performClick()
         compose.onNodeWithTag("gomode-model-download-status").assertTextContains("Deleting model…")
         compose.onNodeWithTag("gomode-model-delete").assertDoesNotExist()
-        capture("deleting")
         compose.runOnIdle { state = ModelDownloadState.Missing(0) }
         compose.onNodeWithTag("gomode-model-download-status").assertTextContains("Not downloaded")
         compose.onNodeWithTag("gomode-model-download").assertExists()
         compose.runOnIdle { state = ModelDownloadState.Ready(2_588_147_712, false) }
         compose.onNodeWithTag("gomode-model-download-status").assertTextContains("developer-managed", substring = true)
         compose.onNodeWithTag("gomode-model-delete").assertDoesNotExist()
-    }
-
-    private fun capture(name: String) {
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val device = UiDevice.getInstance(instrumentation)
-        compose.waitForIdle()
-        device.waitForIdle()
-        assertTrue(
-            device.takeScreenshot(
-                File(instrumentation.targetContext.getExternalFilesDir(null), "model-download-$name.png"),
-            ),
-        )
     }
 
     @Test
@@ -168,7 +151,6 @@ class ModelDownloadUiTest {
             compose.onNodeWithTag("gomode-model-download").performClick()
             compose.onNodeWithTag("gomode-model-download-status").assertTextContains("Resolving model release…")
             compose.onNodeWithTag("gomode-model-download-progress").assertExists()
-            capture("${variant.name}-resolving")
             compose.runOnIdle {
                 state =
                     ModelDownloadState.Downloading(
@@ -179,7 +161,6 @@ class ModelDownloadUiTest {
             compose
                 .onNodeWithTag("gomode-model-download-status")
                 .assertTextContains("Downloading · 1.0% · 18.0 MB of 1.80 GB")
-            capture("${variant.name}-downloading")
             compose.onNodeWithTag("gomode-model-download-cancel").performClick()
             compose.onNodeWithTag("gomode-model-download-status").assertTextContains("Not downloaded")
         }
@@ -216,7 +197,6 @@ class ModelDownloadUiTest {
                 .onNodeWithTag("gomode-model-diagnostics-details")
                 .assertTextContains("LFM3 1.7B · 32K · 32768 tokens · GPU", substring = true)
                 .assertTextContains("Peak sampled RSS:", substring = true)
-            capture("load-diagnostics")
             compose.onNodeWithTag("gomode-model-diagnostics").performClick()
             compose.onNodeWithTag("gomode-model-diagnostics-details").assertDoesNotExist()
         } finally {

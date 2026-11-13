@@ -145,6 +145,8 @@ dependencies {
     // LiteRT's asynchronous JNI callbacks require its declared Kotlin/coroutine runtime ABI.
     implementation(libs.litertlm.android)
 
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation(libs.androidx.compose.ui.test.junit4)
     testImplementation(libs.androidx.work.testing)
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

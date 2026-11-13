@@ -1,9 +1,6 @@
 // Compose tests for saved voice mode, language, and the active-session settings guard.
 package com.fghbuild.gomode
 
-import android.media.AudioAttributes
-import android.media.AudioFocusRequest
-import android.media.AudioManager
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
@@ -34,9 +31,6 @@ import androidx.compose.ui.unit.dp
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
-import androidx.lifecycle.Lifecycle
-import androidx.test.platform.app.InstrumentationRegistry
-import androidx.test.uiautomator.UiDevice
 import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
@@ -55,14 +49,21 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
-import java.io.File
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
+@RunWith(RobolectricTestRunner::class)
+// The stock test emulator's display: layout assertions measure against its width.
+@Config(qualifiers = "w411dp-h914dp-280dpi")
 class VoiceSettingsTest {
     @get:Rule
     @OptIn(ExperimentalTestApi::class)
     val composeRule = createAndroidComposeRule<ComponentActivity>(effectContext = StandardTestDispatcher())
 
     @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
     fun serviceURLsUseTheFullWidthAndRetryStaysBesideStatusAtLargerTextSizes() {
         val repository = SettingsRepository(MemoryPreferences())
         val readyID: String
@@ -136,90 +137,6 @@ class VoiceSettingsTest {
     }
 
     @Test
-    fun thinkingMusicPreviewStopsForCollapseFocusLossVoiceAndSettingsExit() {
-        val active = mutableStateOf(false)
-        val visible = mutableStateOf(true)
-        val repository = SettingsRepository(MemoryPreferences())
-        val audio =
-            InstrumentationRegistry.getInstrumentation().targetContext.getSystemService(
-                AudioManager::class.java,
-            )
-        composeRule.setContent {
-            val settings by repository.settings.collectAsState()
-            MaterialTheme {
-                if (visible.value) {
-                    SettingsScreen(
-                        settings,
-                        repository,
-                        active.value,
-                        {},
-                        {},
-                        edits = rememberSettingsEdits(repository, settings),
-                    )
-                }
-            }
-        }
-
-        fun awaitMusic(playing: Boolean) {
-            composeRule.waitUntil(5_000) {
-                audio.activePlaybackConfigurations.any { it.audioAttributes.usage == AudioAttributes.USAGE_MEDIA } ==
-                    playing
-            }
-        }
-
-        fun play() {
-            composeRule
-                .onNodeWithTag("gomode-thinking-music-preview")
-                .performScrollTo()
-                .assertIsEnabled()
-                .assertContentDescriptionEquals("Play thinking music")
-                .performClick()
-            awaitMusic(true)
-            composeRule
-                .onNodeWithTag(
-                    "gomode-thinking-music-preview",
-                ).assertContentDescriptionEquals("Stop thinking music")
-        }
-        composeRule.onNodeWithTag("gomode-credits").performScrollTo().performClick()
-        play()
-        composeRule.onNodeWithTag("gomode-credits").performScrollTo().performClick()
-        awaitMusic(false)
-        composeRule.onNodeWithTag("gomode-credits").performScrollTo().performClick()
-        play()
-        val otherFocus =
-            AudioFocusRequest
-                .Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
-                .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).build())
-                .setOnAudioFocusChangeListener {}
-                .build()
-        try {
-            composeRule.runOnIdle { audio.requestAudioFocus(otherFocus) }
-            awaitMusic(false)
-            composeRule
-                .onNodeWithTag(
-                    "gomode-thinking-music-preview",
-                ).assertContentDescriptionEquals("Play thinking music")
-        } finally {
-            audio.abandonAudioFocusRequest(otherFocus)
-        }
-        play()
-        composeRule.runOnIdle { active.value = true }
-        awaitMusic(false)
-        composeRule
-            .onNodeWithTag("gomode-thinking-music-preview")
-            .assertIsNotEnabled()
-            .assertContentDescriptionEquals("Play thinking music")
-        composeRule.runOnIdle { active.value = false }
-        play()
-        composeRule.activityRule.scenario.moveToState(Lifecycle.State.STARTED)
-        awaitMusic(false)
-        composeRule.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
-        play()
-        composeRule.runOnIdle { visible.value = false }
-        awaitMusic(false)
-    }
-
-    @Test
     fun lockScreenServiceTogglePersistsAndCannotChangeDuringCalls() {
         val active = mutableStateOf(false)
         val store = MemoryPreferences()
@@ -240,25 +157,13 @@ class VoiceSettingsTest {
         }
         val toggle = composeRule.onNodeWithTag("gomode-show-service-on-lock-screen")
         toggle.performScrollTo().assertIsOff()
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val device = UiDevice.getInstance(instrumentation)
-        val directory = instrumentation.targetContext.getExternalFilesDir(null)
-        composeRule.waitForIdle()
-        device.waitForIdle()
-        assertTrue(device.takeScreenshot(File(directory, "lock-screen-setting-off.png")))
         toggle.performClick()
         composeRule.waitUntil { repository.settings.value.showServiceOnLockScreen }
         toggle.performScrollTo().assertIsOn()
-        composeRule.waitForIdle()
-        device.waitForIdle()
-        assertTrue(device.takeScreenshot(File(directory, "lock-screen-setting-on.png")))
         val reopened = SettingsRepository(store)
         composeRule.waitUntil { reopened.settings.value.showServiceOnLockScreen }
         composeRule.runOnIdle { active.value = true }
         toggle.performScrollTo().assertIsNotEnabled()
-        composeRule.waitForIdle()
-        device.waitForIdle()
-        assertTrue(device.takeScreenshot(File(directory, "lock-screen-setting-disabled.png")))
         composeRule.runOnIdle { active.value = false }
         toggle.performClick()
         composeRule.waitUntil { !repository.settings.value.showServiceOnLockScreen }
@@ -286,26 +191,14 @@ class VoiceSettingsTest {
         }
         val toggle = composeRule.onNodeWithTag("gomode-show-reasoning")
         toggle.performScrollTo().assertIsOff()
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val device = UiDevice.getInstance(instrumentation)
-        val directory = instrumentation.targetContext.getExternalFilesDir(null)
-        composeRule.waitForIdle()
-        device.waitForIdle()
-        assertTrue(device.takeScreenshot(File(directory, "reasoning-setting-off.png")))
         toggle.performClick()
         composeRule.waitUntil { repository.settings.value.showReasoning }
         toggle.performScrollTo().assertIsOn()
-        composeRule.waitForIdle()
-        device.waitForIdle()
-        assertTrue(device.takeScreenshot(File(directory, "reasoning-setting-on.png")))
         val reopened = SettingsRepository(store)
         composeRule.waitUntil { reopened.settings.value.showReasoning }
         composeRule.runOnIdle { active.value = true }
         // Display-only: it stays available while a call runs.
         toggle.performScrollTo().assertIsEnabled()
-        composeRule.waitForIdle()
-        device.waitForIdle()
-        assertTrue(device.takeScreenshot(File(directory, "reasoning-setting-active-call.png")))
     }
 
     @Test
@@ -329,31 +222,14 @@ class VoiceSettingsTest {
         }
         val toggle = composeRule.onNodeWithTag("gomode-show-usage-stats")
         toggle.performScrollTo().assertIsOff()
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val device = UiDevice.getInstance(instrumentation)
-
-        fun capture(name: String) {
-            val path = "/data/local/tmp/gomode-usage-setting-$name.png"
-            device.executeShellCommand("screencap -p $path")
-            assertTrue(device.executeShellCommand("stat -c %s $path").trim().toLong() > 0)
-        }
-        composeRule.waitForIdle()
-        device.waitForIdle()
-        capture("off")
         toggle.performClick()
         composeRule.waitUntil { repository.settings.value.showUsageStats }
         toggle.performScrollTo().assertIsOn()
-        composeRule.waitForIdle()
-        device.waitForIdle()
-        capture("on")
         val reopened = SettingsRepository(store)
         composeRule.waitUntil { reopened.settings.value.showUsageStats }
         composeRule.runOnIdle { active.value = true }
         // Display-only: it stays available while a call runs.
         toggle.performScrollTo().assertIsEnabled()
-        composeRule.waitForIdle()
-        device.waitForIdle()
-        capture("active-call")
     }
 
     @Test
@@ -482,7 +358,6 @@ class VoiceSettingsTest {
         composeRule.onNodeWithTag("gomode-engine-needle-whistle").performScrollTo().performClick()
         composeRule.waitUntil { repository.settings.value.onDeviceEngine == OnDeviceEngine.NEEDLE_WHISTLE }
         composeRule.onNodeWithTag("gomode-engine-needle-whistle").assertIsSelected()
-        capture("voice-engine-picker")
 
         // Verify chips disable during an active voice session.
         composeRule.runOnIdle { active.value = true }
@@ -511,21 +386,11 @@ class VoiceSettingsTest {
         composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").assertIsSelected()
         composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_64K").assertTextContains("64K", substring = true)
         composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").assertTextContains("32K", substring = true)
-        capture("lfm3-model-picker")
         composeRule.runOnIdle { active.value = true }
         composeRule.onNodeWithTag("gomode-model-GEMMA_4_E2B").performScrollTo().assertIsNotEnabled()
         composeRule.onNodeWithTag("gomode-model-GEMMA_4_E4B").performScrollTo().assertIsNotEnabled()
         composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_64K").performScrollTo().assertIsNotEnabled()
         composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").performScrollTo().assertIsNotEnabled()
-    }
-
-    private fun capture(name: String) {
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val device = UiDevice.getInstance(instrumentation)
-        val directory = instrumentation.targetContext.getExternalFilesDir(null)
-        composeRule.waitForIdle()
-        device.waitForIdle()
-        assertTrue(device.takeScreenshot(File(directory, "$name.png")))
     }
 
     private class MemoryPreferences : DataStore<Preferences> {

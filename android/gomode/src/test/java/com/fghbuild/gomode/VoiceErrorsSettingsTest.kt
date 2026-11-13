@@ -14,7 +14,6 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.dp
 import androidx.test.platform.app.InstrumentationRegistry
-import androidx.test.uiautomator.UiDevice
 import com.fghbuild.gomode.ui.settings.VoiceErrorDiagnosticsControls
 import com.fghbuild.gomode.voice.VoiceErrorLog
 import com.fghbuild.gomode.voice.VoiceErrorPhase
@@ -22,12 +21,14 @@ import com.fghbuild.gomode.voice.VoiceErrorRecord
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
-import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 import java.io.File
 import java.util.UUID
 
+@RunWith(RobolectricTestRunner::class)
 class VoiceErrorsSettingsTest {
     @get:Rule
     @OptIn(ExperimentalTestApi::class)
@@ -69,23 +70,10 @@ class VoiceErrorsSettingsTest {
                 .assertTextContains("Remote LLM · While connecting", substring = true)
                 .assertTextContains("Gemma 4 E4B · During a call", substring = true)
                 .assertTextContains("llm: out of memory", substring = true)
-            capture("voice-errors")
             compose.onNodeWithTag("gomode-voice-errors").performClick()
             compose.onNodeWithTag("gomode-voice-error-details").assertDoesNotExist()
         } finally {
             directory.deleteRecursively()
         }
-    }
-
-    private fun capture(name: String) {
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val device = UiDevice.getInstance(instrumentation)
-        compose.waitForIdle()
-        device.waitForIdle()
-        assertTrue(
-            device.takeScreenshot(
-                File(instrumentation.targetContext.getExternalFilesDir(null), "voice-errors-$name.png"),
-            ),
-        )
     }
 }

@@ -169,6 +169,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun coldSecureKeyguardStartsRealTextVoiceAndEndsWithoutUnlocking() {
         prepareVoice("DEVICE")
         withFixtureSpeechRecognizer {
@@ -200,6 +201,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun genericDialUsesTheLatestActiveServerAndSpecificDialStillOverridesIt() {
         shell("pm grant $APP ${Manifest.permission.RECORD_AUDIO}")
         for ((selected, number, expectedName) in listOf(
@@ -231,6 +233,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun genericDialWithoutAnySavedServerIsCanceledWithoutLaunchingVoice() {
         writeSettings(includeServer = false)
         dial(GENERIC_NUMBER)
@@ -268,6 +271,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun warmSettingsDialOpensTheResolvedServerWebView() {
         val firstURL = "${fixtureURL()}/?server=first"
         val secondURL = "${fixtureURL()}/?server=second"
@@ -317,6 +321,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun unlockedFrontendPreparationMustFinishBeforeVoiceTransportStarts() {
         exerciseFrontendPreparation(locked = false)
     }
@@ -353,6 +358,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun hangingUpDuringFrontendPreparationIgnoresLateReadyAndRetainsTheWarmPage() {
         prepareVoice("CLOUD")
         frontendBlocked(true)
@@ -387,6 +393,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun frontendTimeoutKeepsItsSafeCauseAndReleasesCallAndMicrophoneOwnership() {
         prepareVoice("CLOUD")
         frontendBlocked(true)
@@ -436,11 +443,13 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun lockedFailureCanBeDismissedWithoutUnlocking() {
         exerciseLockedFailure(showServiceOnLockScreen = false)
     }
 
     @Test
+    @LocalEmulatorOnly
     fun optedInLockedFailureCanBeDismissedWithoutUnlocking() {
         exerciseLockedFailure(showServiceOnLockScreen = true)
     }
@@ -468,11 +477,13 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun optedInLockedCallShowsTheOrdinaryServiceAndHidesItAfterHangup() {
         exerciseOptedInLockScreen(warm = false)
     }
 
     @Test
+    @LocalEmulatorOnly
     fun optedInWarmCallKeepsTheOrdinaryServiceVisibleAcrossUnlockAndRelock() {
         exerciseOptedInLockScreen(warm = true)
     }
@@ -525,6 +536,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun warmLockedDialHidesTheExistingHostedPageUntilUnlock() {
         prepareVoice("CLOUD")
         shell("am start -W -n $APP/.MainActivity")
@@ -549,6 +561,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun coldLockedBrowserToolMutationsSurviveUnlockAndActivityRecreation() {
         prepareVoice("CLOUD", "${fixtureURL()}/?server=locked")
         withSecureKeyguard {
@@ -702,6 +715,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun unlockedDialUsesMainShellThroughoutDelayedStartup() {
         prepareVoice("CLOUD")
         fixtureConfig(4_000)
@@ -841,6 +855,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun backgroundedActivityStartsCloudModeAndDuplicateDialDoesNotStartAnotherSession() {
         prepareVoice("CLOUD")
         shell("am start -n $APP/.MainActivity")
@@ -864,6 +879,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun replacementCallHangupDuringDelayedSetupPreventsLateSession() {
         prepareVoice("CLOUD")
         fixtureConfig(4_000)
@@ -917,6 +933,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun externalActivityIntentCannotConsumeOrInventNativeVoiceRequest() {
         prepareVoice("CLOUD")
         val before = fixtureStats()
@@ -1196,6 +1213,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun repeatedSecureKeyguardCleanupAllowsProcessReclamation() {
         repeat(3) {
             val launch = shell("am start -W -f 0x10008000 -n $APP/.MainActivity")
@@ -1256,6 +1274,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun externalActivityIntentCannotLaunchMicrophoneProbe() {
         assertThrows(SecurityException::class.java) {
             context.startActivity(
@@ -1267,6 +1286,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun coldSecureKeyguardAllowsNativeSurfaceAndMicrophoneForegroundService() {
         enableLaunchProbe()
         // The outer device rule refused physical devices and existing credentials before
@@ -1294,6 +1314,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun hangingUpPendingManagedDialStillLaunchesProbeWithoutCancellationCallback() {
         enableLaunchProbe()
         killApp()
@@ -1392,6 +1413,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun nativeRoleDenialLeavesDialingOffAndMissingServerExplainsSetup() {
         nativeOnboarding = true
         shell("cmd role remove-role-holder ${RoleManager.ROLE_CALL_REDIRECTION} $APP")
@@ -1502,6 +1524,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun knownNumberIsCanceledAfterAppProcessDeath() {
         killApp()
         assertTrue(shell("pidof $APP").isBlank())
@@ -1527,6 +1550,7 @@ class CarDialInterceptionTest {
     }
 
     @Test
+    @LocalEmulatorOnly
     fun androidRemovesPostDialDigitsBeforeRequestingRedirection() {
         // The platform supplies the network portion alone to CallRedirectionService.
         dial("$NUMBER;123")

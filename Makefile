@@ -1,6 +1,6 @@
 # Build and verification targets for the standalone Go Mode contracts and shell.
 .DEFAULT_GOAL := help
-.PHONY: android-e2e android-export-lfm android-lint android-push android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-test benchmark build coverage fix frontend-build generate-sdks git-hooks help refresh-generated release screenshots-check screenshots-generate screenshots-update test test-race test-smoke upgrade verify
+.PHONY: android-e2e android-e2e-ci android-export-lfm android-lint android-push android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-test benchmark build coverage fix frontend-build generate-sdks git-hooks help refresh-generated release screenshots-check screenshots-generate screenshots-update test test-race test-smoke upgrade verify
 
 # Keep local and CI release tooling on the same version.
 GORELEASER ?= go run github.com/goreleaser/goreleaser/v2@v2.20.0
@@ -46,6 +46,7 @@ help:
 	@printf '  %-27s - %s\n' 'make android-lint' 'Run Android source static analysis and formatting checks'
 	@printf '  %-27s - %s\n' 'make android-test' 'Run Android builds, platform lint, unit tests, and coverage'
 	@printf '  %-27s - %s\n' 'make android-e2e' 'Run all model-free app, gateway, and Telecom emulator tests'
+	@printf '  %-27s - %s\n' 'make android-e2e-ci' 'Run the CI subset, skipping @LocalEmulatorOnly variants'
 	@printf '  %-27s - %s\n' 'make screenshots-update' 'Capture and publish repeatable native Android scenes'
 	@printf '  %-27s - %s\n' 'make screenshots-check' 'Compare native Android captures with committed baselines'
 	@printf '  %-27s - %s\n' 'make screenshots-generate' 'Render native captures once without baseline checks'
@@ -169,6 +170,11 @@ android-push: android-sdk
 android-e2e:
 	@uv run --locked python scripts/android_start_emulator.py --auto-reuse
 	@uv run --locked python scripts/android_e2e.py
+
+# Slow: runs the CI subset of model-free emulator tests, one case per mechanism.
+android-e2e-ci:
+	@uv run --locked python scripts/android_start_emulator.py --auto-reuse
+	@uv run --locked python scripts/android_e2e.py --ci
 
 # Slow: runs the real app on the emulator, two passes for update/check.
 # Encodes at most two lossless WebP files concurrently and publishes a catalog.

@@ -18,8 +18,6 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
-import androidx.test.platform.app.InstrumentationRegistry
-import androidx.test.uiautomator.UiDevice
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.ui.settings.SettingsScreen
@@ -34,11 +32,12 @@ import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
-import java.io.File
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 
+@RunWith(RobolectricTestRunner::class)
 class VoiceChoicesSettingsTest {
     @get:Rule
     @OptIn(ExperimentalTestApi::class)
@@ -177,21 +176,12 @@ class VoiceChoicesSettingsTest {
                         ?.get("webrtc") == "live"
                 }
                 composeRule.onNodeWithTag("gomode-speaking-voice").performScrollTo().performClick()
-                val instrumentation = InstrumentationRegistry.getInstrumentation()
-                val device = UiDevice.getInstance(instrumentation)
-                val directory = requireNotNull(instrumentation.targetContext.getExternalFilesDir(null))
-                composeRule.waitForIdle()
-                device.waitForIdle()
-                assertTrue(device.takeScreenshot(File(directory, "provider-default-menu.png")))
                 composeRule.onNodeWithTag("gomode-speaking-voice-default").performClick()
                 composeRule.waitUntil {
                     repository.settings.value.speakingVoices[base]
                         ?.get("live") == ""
                 }
                 composeRule.onNodeWithTag("gomode-speaking-voice").assertTextContains("Provider default")
-                composeRule.waitForIdle()
-                device.waitForIdle()
-                assertTrue(device.takeScreenshot(File(directory, "provider-default-selected.png")))
                 assertEquals(4, server.requestCount)
             }
         }
