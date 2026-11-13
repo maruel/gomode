@@ -59,6 +59,10 @@ class CarDialRedirectionService : CallRedirectionService() {
                         it.loadState != SettingsLoadState.Loading
                     }
                 }
+            if (settings == null) {
+                // A saved server's number then passes through to the phone; a cold start can cause it.
+                Log.w("GoModeCarDial", "Settings did not load within 1 s of the dial")
+            }
             when (val target = resolveCarDial(handle, settings)) {
                 CarDialTarget.Unrecognized -> {
                     placeCallUnmodified()
