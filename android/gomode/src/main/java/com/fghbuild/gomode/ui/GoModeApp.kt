@@ -348,6 +348,7 @@ internal fun GoModeApp(
             switchVoiceServer,
             deviceSpeech,
             settings.voiceLanguageTag,
+            settings.voiceSetup.deviceSpeechRate,
             voiceCallController,
             languageModel,
             settings.localLlmModel,

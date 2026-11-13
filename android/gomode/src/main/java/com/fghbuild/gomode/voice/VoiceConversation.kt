@@ -254,8 +254,8 @@ internal class VoiceConversation(
         mutableState.value =
             mutableState.value?.copy(
                 gateway = setup.gatewayEndpointURL,
-                choice = setup.choiceID.orEmpty(),
-                voice = setup.voiceName,
+                choice = setup.voice?.choiceID.orEmpty(),
+                voice = setup.voice?.voiceName.orEmpty(),
             )
         return setup.copy(serviceContextText = initialContextText(current))
     }

@@ -37,7 +37,6 @@ import com.fghbuild.voicegateway.sdk.v2.UserMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -49,11 +48,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
@@ -78,9 +74,6 @@ import java.util.concurrent.atomic.AtomicLong
 private const val TAG = "GoModeDeviceVoice"
 private const val TEXT_SESSION_PATH = "/api/voicegateway/v2/voice/text"
 private const val RECOVERY_READINESS_TIMEOUT_MS = 15_000L
-
-private val VoiceState.needsThinkingAudio: Boolean
-    get() = connected && turnState == TurnState.Thinking && !speaking && !muted
 
 private val deviceWebSocketClient: OkHttpClient by lazy {
     OkHttpClient
@@ -127,7 +120,8 @@ internal class DeviceVoiceSession(
     voiceConversation: VoiceConversation? = null,
     private val languageTag: String,
     private val localModelOwner: LocalModelOwner = (appContext.applicationContext as GoModeApplication).localModelOwner,
-    private val speech: DeviceSpeech = AndroidDeviceSpeech(appContext, languageTag),
+    private val speech: DeviceSpeech =
+        AndroidDeviceSpeech(appContext, languageTag, settingsRepository.settings.value.voiceSetup.deviceSpeechRate),
     voiceChimePlayer: VoiceChimePlayer = AndroidVoiceChime(),
     private val thinkingEarcon: ThinkingEarcon = AndroidThinkingEarcon(appContext),
     private val callController: VoiceCallController = NoopVoiceCallController(),
@@ -183,21 +177,7 @@ internal class DeviceVoiceSession(
         languageJob = scope.launch { speech.downloadLanguage() }
     }
 
-    private val thinkingAudioJob =
-        scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            state
-                .map {
-                    it.needsThinkingAudio
-                }.distinctUntilChanged()
-                .collectLatest { thinking ->
-                    thinkingEarcon.setThinking(false)
-                    if (thinking) {
-                        // Keep quick turns and short pauses between speech fragments silent.
-                        delay(200)
-                        thinkingEarcon.setThinking(state.value.needsThinkingAudio)
-                    }
-                }
-        }
+    private val thinkingAudioJob = scope.launchThinkingAudio(state, thinkingEarcon) { it.needsThinkingAudio }
 
     private var connectJob: Job? = null
     private val networkMonitor = DefaultNetworkMonitor(appContext)
@@ -226,10 +206,18 @@ internal class DeviceVoiceSession(
     private var conversationID = UUID.randomUUID().toString()
 
     // Track reply completion across gaps between streamed speech fragments.
-    private var speakerActive = false
     private var turnIdle = false
-    private var pendingSpeech = 0
-    private var speechGeneration = 0L
+    private val output =
+        DeviceSpeechOutput(
+            speech,
+            onSpeaking = {
+                thinkingEarcon.setThinking(false)
+                _state.update { it.copy(speaking = true) }
+                applyMicrophoneMode()
+            },
+            onDrained = ::onSpeechDrained,
+            onError = ::setError,
+        )
     private val localTurnGeneration = AtomicLong()
     private val localTurnLock = Mutex()
     private var suppressReply = false
@@ -237,8 +225,6 @@ internal class DeviceVoiceSession(
     private var pendingCancellations = 0
     private var remoteTurnActive = false
     private val pendingNotifications = PendingVoiceContext()
-    private val segmenter = SentenceSegmenter()
-    private val speechTextFilter = SpeechTextFilter()
 
     private val audioStateJob =
         scope.launch {
@@ -282,16 +268,11 @@ internal class DeviceVoiceSession(
         closeWebSocket()
         releaseEngine()
         speech.stopListening()
-        speech.stopSpeaking()
-        speakerActive = false
         turnIdle = false
-        pendingSpeech = 0
         suppressReply = false
         awaitingReply = false
         pendingCancellations = 0
         remoteTurnActive = false
-        segmenter.clear()
-        speechTextFilter.clear()
         otherSetup = null
         if (!preserveTranscript) {
             pendingNotifications.clear()
@@ -381,10 +362,7 @@ internal class DeviceVoiceSession(
                     }
                     timing?.enter(VoiceStartupStage.TRANSPORT)
                     if (engineType == VoiceLanguageModel.GATEWAY) {
-                        pinnedVoice =
-                            setup.choiceID?.let {
-                                GatewayVoiceSelection(setup.gatewayEndpointURL, it, setup.voiceName)
-                            }
+                        pinnedVoice = setup.voice
                         startNetworkMonitoring()
                         if (preserveTranscript) startReadinessTimeout(attempt)
                         openWebSocket(attempt, setup, timing)
@@ -467,7 +445,7 @@ internal class DeviceVoiceSession(
         val request =
             Request
                 .Builder()
-                .url(textSessionWebSocketURL(setup.gatewayEndpointURL, setup.choiceID))
+                .url(textSessionWebSocketURL(setup.gatewayEndpointURL, setup.voice?.choiceID))
                 .apply { webSocketHeaders(setup).forEach { (name, value) -> header(name, value) } }
                 .build()
         val listener =
@@ -610,7 +588,6 @@ internal class DeviceVoiceSession(
         webSocket = null
         abandoned?.cancel()
         speech.stopListening()
-        speech.stopSpeaking()
         thinkingEarcon.setThinking(false)
         _state.update {
             it.copy(
@@ -723,8 +700,7 @@ internal class DeviceVoiceSession(
                         flushPendingNotifications()
                         if (!ownsAttempt(attempt) || webSocket !== origin) return
                         finalizeAssistantReply()
-                        segmenter.push(speechTextFilter.finish()).forEach(::speak)
-                        speak(segmenter.flush())
+                        if (!suppressReply) output.finish()
                         remoteTurnActive = false
                         turnIdle = true
                         finishReply()
@@ -750,8 +726,6 @@ internal class DeviceVoiceSession(
                         awaitingReply = false
                     }
                     finalizeAssistantReply()
-                    segmenter.clear()
-                    speechTextFilter.clear()
                     stopPlayback()
                     turnIdle = !remoteTurnActive
                     flushAfterRemoteInterruption()
@@ -799,23 +773,7 @@ internal class DeviceVoiceSession(
         _state.update {
             it.withTranscriptChunk(TranscriptSpeaker.ASSISTANT, delta, responseID = responseID)
         }
-        segmenter.push(speechTextFilter.push(delta)).forEach(::speak)
-    }
-
-    private fun speak(fragment: String) {
-        if (fragment.isBlank() || suppressReply) return
-        thinkingEarcon.setThinking(false)
-        val attempt = attemptGeneration.get()
-        val playback = speechGeneration
-        pendingSpeech++
-        speakerActive = true
-        _state.update { it.copy(speaking = true) }
-        applyMicrophoneMode()
-        speech.speak(
-            fragment,
-            onDone = { if (playback == speechGeneration) onSpeechDone(attempt) },
-            onError = { message -> if (playback == speechGeneration) reportAttemptError(attempt, message) },
-        )
+        output.append(delta)
     }
 
     private fun appendToolDiagnostic(
@@ -852,13 +810,9 @@ internal class DeviceVoiceSession(
         }
     }
 
-    // Speech callbacks carry the attempt that started them so a delayed callback
-    // from a superseded session cannot change the current one.
-    private fun onSpeechDone(attempt: Long) {
-        if (attempt != attemptGeneration.get()) return
-        pendingSpeech = maxOf(0, pendingSpeech - 1)
-        if (pendingSpeech > 0) return
-        speakerActive = false
+    // Every attempt change stops the output, so a drained callback belongs to the current attempt.
+    private fun onSpeechDrained() {
+        val attempt = attemptGeneration.get()
         _state.update { it.copy(speaking = false) }
         flushPendingNotifications()
         if (!ownsAttempt(attempt)) return
@@ -867,7 +821,7 @@ internal class DeviceVoiceSession(
 
     // A playback gap between streamed fragments does not finish the reply.
     private fun finishReply() {
-        if (!turnIdle || pendingSpeech > 0 || speakerActive || remoteTurnActive || pendingUserUtterance != null) return
+        if (!turnIdle || output.active || remoteTurnActive || pendingUserUtterance != null) return
         _state.update { it.copy(microphoneMode = it.microphoneMode.afterReply()) }
         maybeStartListening()
     }
@@ -931,8 +885,7 @@ internal class DeviceVoiceSession(
         userSpeechActive = false
         if (!ownsAttempt(attempt)) return
         turnIdle = false
-        segmenter.clear()
-        speechTextFilter.clear()
+        output.clear()
         _state.update {
             it.copy(
                 listening = false,
@@ -956,10 +909,7 @@ internal class DeviceVoiceSession(
     }
 
     private fun stopPlayback() {
-        speechGeneration++
-        speech.stopSpeaking()
-        pendingSpeech = 0
-        speakerActive = false
+        output.stop()
         _state.update { it.copy(speaking = false) }
     }
 
@@ -973,15 +923,14 @@ internal class DeviceVoiceSession(
             } else {
                 !turnIdle
             }
-        val activeReply = generating || pendingSpeech > 0 || speakerActive
+        val activeReply = generating || output.active
         suppressReply = true
         awaitingReply = false
         remoteTurnActive = false
         turnIdle = true
         localTurnGeneration.incrementAndGet()
         finalizeAssistantReply()
-        segmenter.clear()
-        speechTextFilter.clear()
+        output.clear()
         _state.update { it.copy(turnState = TurnState.Idle, activeTool = null) }
         if (!activeReply) return
         stopPlayback()
@@ -1084,8 +1033,7 @@ internal class DeviceVoiceSession(
                         awaitingModelTurn = false
                         thinkingEarcon.setThinking(false)
                         finalizeAssistantReply()
-                        segmenter.push(speechTextFilter.finish()).forEach(::speak)
-                        speak(segmenter.flush())
+                        output.finish()
                         turnIdle = true
                         _state.update { it.copy(turnState = TurnState.Idle) }
                         finishReply()
@@ -1344,17 +1292,12 @@ internal class DeviceVoiceSession(
         closeWebSocket()
         releaseEngine()
         speech.stopListening()
-        speech.stopSpeaking()
         pendingNotifications.clear()
-        speakerActive = false
         turnIdle = false
-        pendingSpeech = 0
         suppressReply = false
         awaitingReply = false
         pendingCancellations = 0
         remoteTurnActive = false
-        segmenter.clear()
-        speechTextFilter.clear()
         voiceModeChime.disconnected { }
         callController.endLocal()
         foreground.stop()
@@ -1382,13 +1325,8 @@ internal class DeviceVoiceSession(
         closeWebSocket()
         releaseEngine()
         speech.stopListening()
-        speech.stopSpeaking()
-        pendingSpeech = 0
-        speakerActive = false
         suppressReply = true
         pendingNotifications.clear()
-        segmenter.clear()
-        speechTextFilter.clear()
         callController.endLocal()
         foreground.stop()
         otherSetup = null
@@ -1460,7 +1398,7 @@ internal class DeviceVoiceSession(
             disconnect()
             return
         }
-        if (userSpeechActive || speakerActive || awaitingModelTurn || !_state.value.connected ||
+        if (userSpeechActive || output.active || awaitingModelTurn || !_state.value.connected ||
             (voiceConversation != null && pendingGatewayTools.containsKey(attemptGeneration.get()))
         ) {
             if (!pendingNotifications.add(text, generate)) {
@@ -1493,18 +1431,8 @@ internal class DeviceVoiceSession(
         speech.close()
     }
 
-    private fun List<TranscriptEntry>.withoutUserDraft(): List<TranscriptEntry> =
-        if (lastOrNull()?.let { it.speaker == TranscriptSpeaker.USER && !it.final } == true) dropLast(1) else this
-
-    private fun List<TranscriptEntry>.replaceUserDraft(
-        text: String,
-        final: Boolean,
-    ): List<TranscriptEntry> =
-        withoutUserDraft() +
-            if (text.isBlank()) emptyList() else listOf(TranscriptEntry(TranscriptSpeaker.USER, text, final))
-
     private fun flushPendingNotifications(allowResponse: Boolean = true) {
-        if (userSpeechActive || speakerActive || awaitingModelTurn) return
+        if (userSpeechActive || output.active || awaitingModelTurn) return
         val attempt = attemptGeneration.get()
         if (voiceConversation?.isCurrent() == false) {
             disconnect()
@@ -1638,51 +1566,10 @@ internal class DeviceVoiceSession(
         toolWork = SupervisorJob()
         pendingUserUtterance = null
         userSpeechActive = false
-        speechGeneration++
+        output.stop()
         localTurnGeneration.incrementAndGet()
         return attempt
     }
 
     private fun ownsAttempt(attempt: Long): Boolean = attemptGeneration.get() == attempt && isAuthorityCurrent()
-}
-
-/** SentenceSegmenter splits streamed assistant text into sentence-sized speech fragments. */
-internal class SentenceSegmenter {
-    private val pending = StringBuilder()
-
-    // Numeric periods need one character of lookahead, including across delta boundaries.
-    // Long prose/code without punctuation is emitted in at most 240-character fragments.
-    fun push(delta: String): List<String> {
-        val fragments = mutableListOf<String>()
-        for (c in delta) {
-            if (pending.length >= 2 && pending.last() == '.' && pending[pending.length - 2].isDigit() &&
-                !c.isDigit()
-            ) {
-                fragments.add(flush())
-            }
-            val numericPeriod = c == '.' && pending.lastOrNull()?.isDigit() == true
-            pending.append(c)
-            if ((c == '.' && !numericPeriod) || c == '!' || c == '?' || c == '\n') {
-                val fragment = flush()
-                if (fragment.isNotEmpty()) fragments.add(fragment)
-            } else if (pending.length >= 240) {
-                val space = pending.indexOfLast { it.isWhitespace() }
-                val end = if (space > 0) space + 1 else pending.length
-                val fragment = pending.substring(0, end).trim()
-                if (fragment.isNotEmpty()) fragments.add(fragment)
-                pending.delete(0, end)
-            }
-        }
-        return fragments
-    }
-
-    fun flush(): String {
-        val text = pending.toString().trim()
-        pending.clear()
-        return text
-    }
-
-    fun clear() {
-        pending.clear()
-    }
 }

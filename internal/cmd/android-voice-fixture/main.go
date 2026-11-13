@@ -100,6 +100,8 @@ binding.then(document => {
 	mux.HandleFunc("GET /fixture/stats", f.handleStats)
 	mux.HandleFunc("POST /fixture/config", f.handleConfig)
 	mux.HandleFunc("POST /fixture/tool", f.handleTool)
+	mux.HandleFunc("POST /fixture/interrupt", f.handleInterrupt)
+	mux.HandleFunc("POST /fixture/drop", f.handleDrop)
 	mux.HandleFunc("GET /fixture/frontend", f.handleFrontend)
 	mux.HandleFunc("POST /fixture/frontend-published", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
@@ -205,13 +207,24 @@ func (f *fixture) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]any{"status": "ok"})
 }
 
+// handleChoices advertises one composable choice with every stage ownership.
 func (f *fixture) handleChoices(w http.ResponseWriter, _ *http.Request) {
+	client, gateway := voicev2.SpeechLocationClient, voicev2.SpeechLocationGateway
 	writeJSON(w, voicev2.VoiceChoicesResp{
 		Choices: []voicev2.VoiceChoice{{
 			ID:         "fixture",
 			Label:      "Fixture text",
 			Transports: []voicev2.VoiceTransport{voicev2.VoiceTransportText, voicev2.VoiceTransportWebRTC},
+			SpeechModes: []voicev2.SpeechConfig{
+				{Input: client, Output: client},
+				{Input: client, Output: gateway},
+				{Input: gateway, Output: client},
+				{Input: gateway, Output: gateway},
+			},
+			Composable: true,
 		}},
+		RecognitionModels: []voicev2.SpeechModel{{ID: "fixture-asr", Label: "Fixture recognition"}},
+		SynthesisModels:   []voicev2.SpeechModel{{ID: "fixture-tts", Label: "Fixture speech"}},
 		Defaults: []voicev2.VoiceChoiceDefault{
 			{Transport: voicev2.VoiceTransportText, ID: "fixture"},
 			{Transport: voicev2.VoiceTransportWebRTC, ID: "fixture"},

@@ -16,6 +16,7 @@ import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsSelected
@@ -264,6 +265,45 @@ class VoiceSettingsTest {
         composeRule.onNodeWithTag("gomode-voice-mode-cloud").performClick()
         composeRule.waitUntil { !repository.settings.value.voiceSetup.deviceSpeech }
         composeRule.onNodeWithTag("gomode-voice-mode-cloud").assertIsSelected()
+    }
+
+    @Test
+    fun deviceSpeakingSpeedPersistsOnlyForDeviceSpeechAndLocksDuringASession() {
+        val active = mutableStateOf(false)
+        val store = MemoryPreferences()
+        val repository = SettingsRepository(store)
+        composeRule.setContent {
+            val settings by repository.settings.collectAsState()
+            MaterialTheme {
+                SettingsScreen(
+                    settings = settings,
+                    settingsRepository = repository,
+                    edits = rememberSettingsEdits(repository, settings),
+                    voiceSessionActive = active.value,
+                    onDone = {},
+                    onOpenHalo = {},
+                )
+            }
+        }
+        // Gateway speech has no device speaking speed.
+        composeRule.onNodeWithTag("gomode-voice-mode-cloud").performScrollTo().assertIsSelected()
+        composeRule.onNodeWithTag("gomode-device-speech-rate").assertDoesNotExist()
+        composeRule.onNodeWithTag("gomode-voice-mode-device").performScrollTo().performClick()
+        composeRule.waitUntil { repository.settings.value.voiceSetup.deviceSpeech }
+        composeRule
+            .onNodeWithTag("gomode-device-speech-rate")
+            .performScrollTo()
+            .assertTextContains("1× (Normal)")
+            .performClick()
+        composeRule.onNodeWithTag("gomode-device-speech-rate-1.0").assertIsSelected()
+        composeRule.onNodeWithTag("gomode-device-speech-rate-1.25").assertIsNotSelected().performClick()
+        composeRule.waitUntil { repository.settings.value.voiceSetup.deviceSpeechRate == 1.25f }
+        composeRule.onNodeWithTag("gomode-device-speech-rate").assertTextContains("1.25×")
+        val reopened = SettingsRepository(store)
+        composeRule.waitUntil { reopened.settings.value.voiceSetup.deviceSpeechRate == 1.25f }
+
+        composeRule.runOnIdle { active.value = true }
+        composeRule.onNodeWithTag("gomode-device-speech-rate").performScrollTo().assertIsNotEnabled()
     }
 
     @Test

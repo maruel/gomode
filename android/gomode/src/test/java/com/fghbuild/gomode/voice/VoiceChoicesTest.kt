@@ -414,19 +414,50 @@ class VoiceChoicesTest {
     }
 
     @Test
-    fun `sessions refuse mixed speech and non-default gateway speech models until Android sends them`() {
-        val mixed = settings.with(gatewayStages.copy(recognition = DEVICE))
-        assertEquals(VoiceTransport.WebRTC, composable.resolveSetup(mixed).transport)
-        val mixedError = assertThrows(VoiceSetupException::class.java) { composable.resolve(mixed) }
-        assertTrue(mixedError.message.orEmpty().startsWith("Android cannot mix device and gateway speech yet."))
-        // The gateway applies its first listed models when the session names none.
-        assertEquals("llm", composable.resolve(settings.with(gatewayStages)).choiceID)
-        val chosen =
-            settings.with(gatewayStages).copy(
+    fun `mixed stage owners and saved gateway models pin the session setup across recovery`() {
+        val mixed =
+            settings.with(gatewayStages.copy(speech = DEVICE)).copy(
                 gatewayVoiceSetups = mapOf(gateway to GatewayVoiceSetup(recognitionModelID = "parakeet")),
             )
-        val modelError = assertThrows(VoiceSetupException::class.java) { composable.resolve(chosen) }
-        assertTrue(modelError.message.orEmpty().startsWith("Android can use only the gateway's first"))
+        val pinned = composable.resolve(mixed)
+        assertEquals(
+            GatewayVoiceSelection(
+                gateway,
+                "llm",
+                "",
+                GATEWAY,
+                DEVICE,
+                recognitionModelID = "parakeet",
+                synthesisModelID = null,
+            ),
+            pinned,
+        )
+        assertEquals(VoiceTransport.WebRTC, pinned.transport)
+        val deviceRecognition = composable.resolve(settings.with(gatewayStages.copy(recognition = DEVICE)))
+        assertEquals(DEVICE to GATEWAY, deviceRecognition.recognition to deviceRecognition.speech)
+        assertEquals(null to "kokoro", deviceRecognition.recognitionModelID to deviceRecognition.synthesisModelID)
+        // Recovery keeps the pinned owners and models even after the saved setup changes.
+        assertEquals(pinned, composable.resolve(settings.with(gatewayStages), pinned))
+        val withdrawnModel =
+            composable.copy(catalog = composable.catalog.copy(recognitionModels = listOf(SpeechModel("whisper", "W"))))
+        assertEquals(
+            "Session speech model is unavailable. Start a new voice session.",
+            assertThrows(VoiceSetupException::class.java) { withdrawnModel.resolve(mixed, pinned) }.message,
+        )
+        val withdrawnMode =
+            composable.copy(
+                catalog =
+                    composable.catalog.copy(
+                        choices =
+                            composable.catalog.choices.orEmpty().map {
+                                it.copy(speechModes = it.speechModes?.filter { mode -> mode.input == mode.output })
+                            },
+                    ),
+            )
+        assertEquals(
+            "Session voice choice is unavailable. Start a new voice session.",
+            assertThrows(VoiceSetupException::class.java) { withdrawnMode.resolve(mixed, pinned) }.message,
+        )
         // An indivisible language model with gateway speech still connects over WebRTC.
         val indivisible =
             settings.with(gatewayStages).copy(

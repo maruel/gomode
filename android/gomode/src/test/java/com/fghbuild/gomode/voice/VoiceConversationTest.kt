@@ -361,12 +361,12 @@ class VoiceConversationTest {
                     try {
                         owner.begin(false)
                         val initial = owner.prepare()
-                        assertEquals(name, voice, initial.voiceName)
+                        assertEquals(name, voice, initial.voice?.voiceName)
                         voices.set(row.getValue("voices"))
                         owner.begin(true)
-                        val recovered = owner.prepare(GatewayVoiceSelection(gateway, "live", initial.voiceName))
-                        assertEquals(name, voice, recovered.voiceName)
-                        assertEquals(name, initial.choiceID, recovered.choiceID)
+                        val recovered = owner.prepare(initial.voice)
+                        assertEquals(name, voice, recovered.voice?.voiceName)
+                        assertEquals(name, initial.voice?.choiceID, recovered.voice?.choiceID)
                         assertEquals(name, initial.gatewayEndpointURL, recovered.gatewayEndpointURL)
                         assertEquals(name, 2, server.requestCount)
                     } finally {
@@ -434,8 +434,8 @@ class VoiceConversationTest {
                     releaseChoices.countDown()
                     val setup = preparing.await()
                     assertEquals(server.url("/").toString().trimEnd('/'), setup.gatewayEndpointURL)
-                    assertEquals("live", setup.choiceID)
-                    assertEquals("Orus", setup.voiceName)
+                    assertEquals("live", setup.voice?.choiceID)
+                    assertEquals("Orus", setup.voice?.voiceName)
                     assertTrue(setup.tools.any { it.name == "dispatch_service_tool" })
                     assertTrue(setup.tools.none { it.name == "product_alias" })
                     assertTrue(setup.serviceContextText.contains(destinationID))
@@ -443,7 +443,7 @@ class VoiceConversationTest {
                     repository.settings.first { it.speakingVoices[setup.gatewayEndpointURL]?.get("live") == "Kore" }
                     owner.begin(true)
                     val recovery = owner.prepare()
-                    assertEquals("Orus", recovery.voiceName)
+                    assertEquals("Orus", recovery.voice?.voiceName)
                     assertEquals(setup.gatewayEndpointURL, recovery.gatewayEndpointURL)
                     assertEquals(2, server.requestCount)
                 } finally {

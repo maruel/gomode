@@ -289,6 +289,22 @@ class SettingsRepositoryTest {
         }
 
     @Test
+    fun `device speaking speed survives recreation and an unavailable saved speed fails loading`() =
+        runBlocking {
+            val store = InMemoryPreferencesDataStore()
+            SettingsRepository(store).updateVoiceSetup { it.copy(deviceSpeechRate = 1.75f) }
+            val restored =
+                SettingsRepository(store).awaitSettings("speed restored") { it.voiceSetup.deviceSpeechRate == 1.75f }
+            assertEquals(SettingsLoadState.Ready, restored.loadState)
+            assertTrue(runCatching { VoiceSetupPreference(deviceSpeechRate = 3f) }.isFailure)
+            val invalid = InMemoryPreferencesDataStore()
+            invalid.edit { it[stringPreferencesKey("VOICE_SETUP")] = """{"deviceSpeechRate":3.0}""" }
+            val state =
+                SettingsRepository(invalid).awaitSettings("invalid speed") { it.loadState is SettingsLoadState.Failed }
+            assertTrue(state.loadState is SettingsLoadState.Failed)
+        }
+
+    @Test
     fun `former voice mode and engine migrate to the voice setup`() =
         runBlocking {
             data class Row(

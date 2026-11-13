@@ -129,7 +129,7 @@ class GatewaySessionIntegrationTest {
                 repository.settings.first { it.activeServiceURL == baseUrl && it.voiceSetup.deviceSpeech }
                 val expectedName = ServiceSettingsClient().fetch(baseUrl).service
 
-                val speech = AndroidDeviceSpeech(context, "en-US")
+                val speech = AndroidDeviceSpeech(context, "en-US", 1f)
                 val calls = TelecomCallController(context, onTelecomEnded = {})
                 val finishSetup = CompletableDeferred<Unit>()
                 val activity = ActivityScenario.launch(MainActivity::class.java)

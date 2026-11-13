@@ -13,6 +13,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.data.SpeechStageLocation
 import com.fghbuild.gomode.data.VoiceLanguageModel
 import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.service.ServiceCatalog
@@ -903,7 +904,7 @@ class DeviceVoiceSessionTest {
         ShadowSpeechRecognizer.setIsOnDeviceRecognitionAvailable(true)
         val socket = FakeWebSocket()
         var listener: WebSocketListener? = null
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US")
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
         val session =
             createSession(speech) { _, captured ->
                 listener = captured
@@ -2206,7 +2207,21 @@ class DeviceVoiceSessionTest {
             createSession(
                 FakeSpeech(),
                 setupProvider = {
-                    testSetup().copy(choiceID = "local", gatewayHeaders = mapOf("Authorization" to "Bearer scoped"))
+                    testSetup().let {
+                        it.copy(
+                            voice =
+                                GatewayVoiceSelection(
+                                    it.gatewayEndpointURL,
+                                    "local",
+                                    "",
+                                    SpeechStageLocation.DEVICE,
+                                    SpeechStageLocation.DEVICE,
+                                    recognitionModelID = null,
+                                    synthesisModelID = null,
+                                ),
+                            gatewayHeaders = mapOf("Authorization" to "Bearer scoped"),
+                        )
+                    }
                 },
             ) { captured, _ ->
                 request = captured

@@ -1,11 +1,11 @@
 // Persisted Go Mode service-instance settings backed by DataStore preferences.
 //
 // The voice setup has two parts. VOICE_SETUP is device-wide: the setup mode, where recognition and
-// speech run, and the language model kind. These pick the session (WebRTC, text, or an on-device
-// engine) before any gateway is discovered; car dials and on-device engines need no loaded
-// service. GATEWAY_VOICE_SETUPS holds, per normalized gateway URL, the all-in-one choice, the
-// separate-stages choice, and the recognition and synthesis model IDs, so a mode switch restores
-// the other mode's selection. SPEAKING_VOICES stays keyed by gateway and choice.
+// speech run, the language model kind, and the device speech speed. These pick the session (WebRTC,
+// text, or an on-device engine) before any gateway is discovered; car dials and on-device engines
+// need no loaded service. GATEWAY_VOICE_SETUPS holds, per normalized gateway URL, the all-in-one
+// choice, the separate-stages choice, and the recognition and synthesis model IDs, so a mode switch
+// restores the other mode's selection. SPEAKING_VOICES stays keyed by gateway and choice.
 //
 // The FOLLOW_GATEWAY mode runs gateway recognition and speech with the saved all-in-one choice, or
 // the gateway's WebRTC default. GatewayVoiceChoices resolves it to all-in-one for a native audio
@@ -103,11 +103,14 @@ enum class VoiceLanguageModel {
     NEEDLE_WHISTLE,
 }
 
+/** Device speech speeds as multiples of the voice's normal rate; web/src/VoiceSession.ts BROWSER_SPEECH_RATES. */
+val DEVICE_SPEECH_RATES: List<Float> = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
+
 /**
  * VoiceSetupPreference is the device-wide voice setup.
  *
  * [recognition], [speech], and [languageModel] are the separate-stages selections; other modes
- * keep them for a later switch back.
+ * keep them for a later switch back. [deviceSpeechRate] applies whenever the device speaks.
  */
 @Serializable
 data class VoiceSetupPreference(
@@ -115,7 +118,12 @@ data class VoiceSetupPreference(
     val recognition: SpeechStageLocation = SpeechStageLocation.DEVICE,
     val speech: SpeechStageLocation = SpeechStageLocation.DEVICE,
     val languageModel: VoiceLanguageModel = VoiceLanguageModel.GATEWAY,
+    val deviceSpeechRate: Float = 1f,
 ) {
+    init {
+        require(deviceSpeechRate in DEVICE_SPEECH_RATES) { "Choose an available speaking speed" }
+    }
+
     /** The language model sessions run: only separate stages run one on the device. */
     val effectiveLanguageModel: VoiceLanguageModel
         get() =

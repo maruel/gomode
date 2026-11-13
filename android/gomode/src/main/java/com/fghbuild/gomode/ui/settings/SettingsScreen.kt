@@ -70,6 +70,7 @@ import com.fghbuild.gomode.data.ServiceInstance
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
+import com.fghbuild.gomode.data.SpeechStageLocation
 import com.fghbuild.gomode.data.VoiceLanguageModel
 import com.fghbuild.gomode.data.VoiceSetupMode
 import com.fghbuild.gomode.data.VoiceSetupPreference
@@ -152,7 +153,7 @@ internal fun SettingsScreen(
             }
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Voice", style = MaterialTheme.typography.titleMedium)
-                if (voiceSessionActive) Text("End the voice session to change voice mode, voice choice, or language.")
+                if (voiceSessionActive) Text("End the voice session to change voice settings.")
                 VoiceModeSetting(settings.voiceSetup, settingsRepository, enabled = !voiceSessionActive)
                 if (settings.voiceSetup.deviceSpeech) {
                     val languageModel = settings.voiceSetup.languageModel
@@ -170,6 +171,13 @@ internal fun SettingsScreen(
                         bearerTokenFor,
                         bearerToken,
                         authEpoch,
+                    )
+                }
+                if (settings.voiceSetup.effectiveSpeech == SpeechStageLocation.DEVICE) {
+                    DeviceSpeechRateSetting(
+                        settings.voiceSetup.deviceSpeechRate,
+                        settingsRepository,
+                        enabled = !voiceSessionActive && settings.loadState == SettingsLoadState.Ready,
                     )
                 }
                 VoiceLanguageSetting(

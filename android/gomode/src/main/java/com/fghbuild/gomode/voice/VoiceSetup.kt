@@ -11,8 +11,8 @@
 //
 // Cloud voice and device speech with a remote gateway use one conversation owner, independent of
 // the selected page. Connecting pins the gateway sponsor, endpoint, voice choice, speaking voice,
-// and authorization; WebRTC recovery keeps them. Context from every connected server goes to the
-// chosen gateway.
+// speech stage owners and models, and authorization; WebRTC recovery keeps them. Context from
+// every connected server goes to the chosen gateway.
 package com.fghbuild.gomode.voice
 
 import android.webkit.CookieManager
@@ -43,8 +43,8 @@ internal data class VoiceSetup(
     val serverID: String?,
     val gatewayEndpointURL: String,
     val service: ServiceAuthorization?,
-    val choiceID: String? = null,
-    val voiceName: String = "",
+    /** The gateway voice setup; null when an on-device engine runs the language model. */
+    val voice: GatewayVoiceSelection? = null,
     val tokenEndpointURL: String?,
     val gatewayHeaders: Map<String, String>,
     val mcpClient: McpClient?,
@@ -180,8 +180,7 @@ internal suspend fun prepareVoiceSetup(
         serverName = serviceSettings.service,
         serverID = settings.activeServiceId,
         gatewayEndpointURL = gatewayEndpointURL,
-        choiceID = selection?.choiceID,
-        voiceName = selection?.voiceName.orEmpty(),
+        voice = selection,
         service = service,
         tokenEndpointURL = tokenEndpointURL,
         gatewayHeaders = gatewayHeaders,

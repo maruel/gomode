@@ -1,4 +1,4 @@
-// On-device speech recognition and synthesis for the text voice mode.
+// On-device speech recognition and synthesis for client-owned voice stages.
 package com.fghbuild.gomode.voice
 
 import android.content.Context
@@ -70,10 +70,11 @@ internal interface DeviceSpeech {
     fun close()
 }
 
-/** AndroidDeviceSpeech uses the on-device recognizer and text-to-speech engine. */
+/** AndroidDeviceSpeech uses the on-device recognizer and text-to-speech engine at [speechRate]. */
 internal class AndroidDeviceSpeech(
     private val context: Context,
     private val languageTag: String,
+    private val speechRate: Float,
 ) : DeviceSpeech {
     private val language = AndroidSpeechLanguage(context, languageTag)
     override val languageState = language.state
@@ -136,6 +137,7 @@ internal class AndroidDeviceSpeech(
                             return@TextToSpeech
                         }
                         engineReady = true
+                        engine?.setSpeechRate(speechRate)
                         engine?.setAudioAttributes(
                             AudioAttributes
                                 .Builder()

@@ -112,7 +112,7 @@ internal fun VoiceChoiceSetting(
 
         is ChoiceDiscovery.Ready -> {
             val resolved =
-                runCatching { state.choices.resolveSetup(settings).also(state.choices::requireAndroidSpeech) }
+                runCatching { state.choices.resolveSetup(settings) }
             resolved.exceptionOrNull()?.message?.let {
                 Text(it, modifier = Modifier.testTag("gomode-voice-choice-error"))
             }

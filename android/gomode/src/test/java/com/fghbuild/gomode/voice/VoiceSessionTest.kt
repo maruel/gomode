@@ -2,6 +2,9 @@
 package com.fghbuild.gomode.voice
 
 import com.fghbuild.gomode.data.SettingsState
+import com.fghbuild.gomode.data.SpeechStageLocation
+import com.fghbuild.gomode.data.SpeechStageLocation.DEVICE
+import com.fghbuild.gomode.data.SpeechStageLocation.GATEWAY
 import com.fghbuild.gomode.service.credentialedHTTPClient
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import com.fghbuild.voicegateway.sdk.v2.ApiClient
@@ -24,6 +27,18 @@ import org.junit.Test
 import java.util.concurrent.TimeUnit
 
 class VoiceSessionTest {
+    @Test
+    fun endingAClientTurnFinalizesItsTextAndKeepsOnlyADeviceRecognitionDraftRevisable() {
+        val transcript =
+            listOf(
+                TranscriptEntry(TranscriptSpeaker.USER, "How is it?"),
+                TranscriptEntry(TranscriptSpeaker.ASSISTANT, "Ready."),
+                TranscriptEntry(TranscriptSpeaker.USER, "Wai"),
+            )
+        assertEquals(listOf(true, true, false), transcript.withFinalTurnText(keepUserDraft = true).map { it.final })
+        assertEquals(listOf(true, true, true), transcript.withFinalTurnText(keepUserDraft = false).map { it.final })
+    }
+
     @Test
     fun gatewayClientDoesNotForwardCookieAcrossRedirects() =
         runBlocking {
@@ -109,7 +124,15 @@ class VoiceSessionTest {
 
     @Test
     fun sessionSetupSerializesSelectedVoiceAndOmitsProviderDefault() {
-        val selected = gatewaySessionSetup(emptyList(), "", "", "fr-CA", "Kore", includeReasoning = true)
+        val selected =
+            gatewaySessionSetup(
+                emptyList(),
+                "",
+                "",
+                "fr-CA",
+                includeReasoning = true,
+                voice = selection(voice = "Kore"),
+            )
         val payload = Json.parseToJsonElement(Json.encodeToString(SessionSetup.serializer(), selected)).jsonObject
         assertEquals("true", payload.getValue("includeReasoning").jsonPrimitive.content)
         assertEquals(
@@ -121,7 +144,7 @@ class VoiceSessionTest {
                 .jsonPrimitive.content,
         )
         assertEquals("fr-CA", selected.voice.language)
-        val providerDefault = gatewaySessionSetup(emptyList(), "", "", "en-US")
+        val providerDefault = gatewaySessionSetup(emptyList(), "", "", "en-US", voice = selection())
         val defaultPayload = Json.parseToJsonElement(Json.encodeToString(SessionSetup.serializer(), providerDefault))
         assertFalse(defaultPayload.jsonObject.containsKey("includeReasoning"))
         assertFalse(
@@ -131,6 +154,57 @@ class VoiceSessionTest {
                 .containsKey("name"),
         )
     }
+
+    // The gateway rejects a model ID for a client-owned stage, so each frame names only gateway models.
+    @Test
+    fun webRtcSessionSetupNamesStageOwnersAndOnlyGatewayModels() {
+        val cases =
+            listOf(
+                selection(GATEWAY, DEVICE, recognitionModelID = "asr") to
+                    """{"input":"gateway","output":"client"}|asr|""",
+                selection(DEVICE, GATEWAY, synthesisModelID = "tts") to
+                    """{"input":"client","output":"gateway"}||tts""",
+                selection(GATEWAY, GATEWAY, "asr", "tts") to """{"input":"gateway","output":"gateway"}|asr|tts""",
+                selection(GATEWAY, GATEWAY) to """{"input":"gateway","output":"gateway"}||""",
+            )
+        for ((voice, expected) in cases) {
+            val payload =
+                Json
+                    .parseToJsonElement(
+                        Json.encodeToString(
+                            SessionSetup.serializer(),
+                            gatewaySessionSetup(emptyList(), "", "", "en-US", voice = voice),
+                        ),
+                    ).jsonObject
+            val actual =
+                listOf(
+                    payload.getValue("speech").toString(),
+                    payload["recognitionModelID"]?.jsonPrimitive?.content.orEmpty(),
+                    payload["synthesisModelID"]?.jsonPrimitive?.content.orEmpty(),
+                ).joinToString("|")
+            assertEquals(voice.toString(), expected, actual)
+        }
+        // Text sessions leave both stages to the client by transport default.
+        val text = Json.encodeToString(SessionSetup.serializer(), gatewaySessionSetup(emptyList(), "", "", "en-US"))
+        val textPayload = Json.parseToJsonElement(text).jsonObject
+        assertFalse(listOf("speech", "recognitionModelID", "synthesisModelID").any(textPayload::containsKey))
+    }
+
+    private fun selection(
+        recognition: SpeechStageLocation = GATEWAY,
+        speech: SpeechStageLocation = GATEWAY,
+        recognitionModelID: String? = null,
+        synthesisModelID: String? = null,
+        voice: String = "",
+    ) = GatewayVoiceSelection(
+        "https://gateway.example",
+        "choice",
+        voice,
+        recognition,
+        speech,
+        recognitionModelID,
+        synthesisModelID,
+    )
 
     @Test
     fun sessionSetupSendsSelectedLanguage() {

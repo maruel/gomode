@@ -1,4 +1,15 @@
 // Manages Go Mode voice gateway sessions via WebRTC, service MCP tools, and Android audio routing.
+//
+// The pinned setup decides who owns each speech stage, following web/src/VoiceSession.ts. Gateway
+// recognition streams the microphone over RTP; device recognition sends user.message from
+// SpeechRecognizer and offers no microphone track, because the gateway rejects microphone audio
+// for client recognition. Gateway speech plays the remote RTP track; device speech mutes it and
+// speaks assistant.text.delta through DeviceSpeechOutput, with thinking music while the gateway
+// thinks. With either device stage, a client turn is idle once the gateway reports idle and device
+// playback drained; device recognition listens only while the assistant speaks or the turn is idle.
+// A recognized hypothesis during assistant output sends turn.cancel; output of the cancelled turn
+// is dropped until the gateway acknowledges with interrupted and the next user turn starts
+// thinking. Tool calls still receive results. Device speech survives WebRTC recovery.
 package com.fghbuild.gomode.voice
 
 import android.content.BroadcastReceiver
@@ -16,11 +27,13 @@ import android.os.SystemClock
 import android.util.Log
 import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.data.SpeechStageLocation
 import com.fghbuild.gomode.data.VoiceLanguageModel
 import com.fghbuild.gomode.service.DefaultNetworkMonitor
 import com.fghbuild.gomode.service.VoiceTokenClient
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import com.fghbuild.voicegateway.sdk.v2.ApiClient
+import com.fghbuild.voicegateway.sdk.v2.AssistantTextDelta
 import com.fghbuild.voicegateway.sdk.v2.ContextUpdate
 import com.fghbuild.voicegateway.sdk.v2.Error
 import com.fghbuild.voicegateway.sdk.v2.MessageEnvelope
@@ -30,12 +43,14 @@ import com.fghbuild.voicegateway.sdk.v2.SessionSetup
 import com.fghbuild.voicegateway.sdk.v2.SessionStatus
 import com.fghbuild.voicegateway.sdk.v2.SessionUsage
 import com.fghbuild.voicegateway.sdk.v2.Speaker
+import com.fghbuild.voicegateway.sdk.v2.SpeechConfig
 import com.fghbuild.voicegateway.sdk.v2.TokenUsage
 import com.fghbuild.voicegateway.sdk.v2.ToolCall
 import com.fghbuild.voicegateway.sdk.v2.ToolDeclaration
 import com.fghbuild.voicegateway.sdk.v2.ToolResult
 import com.fghbuild.voicegateway.sdk.v2.TranscriptDelta
 import com.fghbuild.voicegateway.sdk.v2.TranscriptDraft
+import com.fghbuild.voicegateway.sdk.v2.TurnCancel
 import com.fghbuild.voicegateway.sdk.v2.TurnState
 import com.fghbuild.voicegateway.sdk.v2.TurnStatus
 import com.fghbuild.voicegateway.sdk.v2.UserMessage
@@ -81,9 +96,11 @@ import org.webrtc.DataChannel
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
+import org.webrtc.MediaStreamTrack
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.RtpReceiver
+import org.webrtc.RtpTransceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
 import java.io.IOException
@@ -110,6 +127,24 @@ internal const val MAX_RECOVERY_CONTEXT_CHARS = 8_000
 private val sdpWhitespaceRegex = Regex("\\s+")
 
 private val emptyObjectSchema = JsonObject(mapOf("type" to JsonPrimitive("object")))
+
+// Output of a turn the user cancelled; dropped until the next user turn starts thinking.
+private val cancelledTurnOutput =
+    setOf(
+        MessageKind.AssistantTextDelta,
+        MessageKind.ReasoningDelta,
+        MessageKind.TranscriptDelta,
+        MessageKind.TurnStatus,
+        MessageKind.SpeechStarted,
+        MessageKind.SpeechEnded,
+    )
+
+/** Progress of a device-recognized barge-in through the gateway. */
+private enum class ClientCancellation {
+    NONE,
+    PENDING,
+    ACKNOWLEDGED,
+}
 
 private fun normalizedToolSchema(schema: JsonElement?): JsonObject =
     (schema as? JsonObject)?.takeUnless { it.isEmpty() } ?: emptyObjectSchema
@@ -208,6 +243,10 @@ internal class VoiceSession(
     private val callController: VoiceCallController = NoopVoiceCallController(),
     private val switchServer: suspend (String) -> Unit = { id -> settingsRepository.switchService(id) },
     private val startupTiming: () -> VoiceStartupTiming? = { null },
+    private val thinkingEarcon: ThinkingEarcon = AndroidThinkingEarcon(appContext),
+    private val createDeviceSpeech: () -> DeviceSpeech = {
+        AndroidDeviceSpeech(appContext, languageTag, settingsRepository.settings.value.voiceSetup.deviceSpeechRate)
+    },
 ) : VoiceSessionController {
     private val foreground = VoiceForegroundLease(appContext)
     private val audioManager = appContext.getSystemService(AudioManager::class.java)
@@ -275,6 +314,22 @@ internal class VoiceSession(
     private var lastIceGatheringState: String? = null
     private var lastSignalingState: String? = null
 
+    // Device speech stages of the pinned setup. A fresh conversation creates them; recovery keeps them.
+    private var deviceSpeech: DeviceSpeech? = null
+    private var speechOutput: DeviceSpeechOutput? = null
+    private var deviceMicrophoneJob: Job? = null
+    private var remoteAudioTrack: org.webrtc.AudioTrack? = null
+    private var clientTurnIdle = false
+    private var userSpeechActive = false
+    private var clientCancellation = ClientCancellation.NONE
+    private var listeningGeneration = 0L
+    private val clientRecognition: Boolean get() = pinnedVoice?.recognition == SpeechStageLocation.DEVICE
+    private val clientSpeech: Boolean get() = pinnedVoice?.speech == SpeechStageLocation.DEVICE
+    private val clientStages: Boolean get() = clientRecognition || clientSpeech
+
+    private val thinkingAudioJob =
+        scope.launchThinkingAudio(state, thinkingEarcon) { clientSpeech && it.needsThinkingAudio }
+
     private val audioStateJob =
         if (callController.isSupported()) {
             scope.launch {
@@ -304,6 +359,7 @@ internal class VoiceSession(
         Log.e(TAG, "setError: $message")
         releaseTransport()
         closePeerConnection()
+        releaseDeviceSpeech()
         rtcSessionID = null
         voiceTokenEndpointURL = null
         sessionTools = emptyList()
@@ -376,7 +432,9 @@ internal class VoiceSession(
         lastSignalingState = "new"
         lastOfferSDP = ""
         lastAnswerSDP = ""
+        resetClientTurn()
         if (!preserveTranscript) {
+            releaseDeviceSpeech()
             this.conversationID = conversationID ?: UUID.randomUUID().toString()
             pinnedVoice = null
             pendingNotifications.clear()
@@ -422,12 +480,9 @@ internal class VoiceSession(
                         return@launch
                     }
                     foreground.start(setup.serverName)
-                    pinnedVoice =
-                        GatewayVoiceSelection(
-                            setup.gatewayEndpointURL,
-                            requireNotNull(setup.choiceID),
-                            setup.voiceName,
-                        )
+                    val voice = requireNotNull(setup.voice)
+                    pinnedVoice = voice
+                    if (!prepareDeviceSpeech(attempt)) return@launch
                     sessionTools = setup.tools
                     voiceTokenEndpointURL = setup.tokenEndpointURL
                     val systemInstruction = setup.systemInstruction
@@ -491,27 +546,16 @@ internal class VoiceSession(
                     }
                     peerConnection = pc
 
-                    // Add local audio track (mic → RTP) so the SDP offer
-                    // contains an m=audio line required by the backend bridge.
-                    val audioConstraints =
-                        MediaConstraints().apply {
-                            mandatory.add(
-                                MediaConstraints.KeyValuePair("googEchoCancellation", "true"),
-                            )
-                            mandatory.add(
-                                MediaConstraints.KeyValuePair("googAutoGainControl", "true"),
-                            )
-                            mandatory.add(
-                                MediaConstraints.KeyValuePair("googNoiseSuppression", "true"),
-                            )
-                        }
-                    val audioSrc = factory.createAudioSource(audioConstraints)
-                    rtcAudioSource = audioSrc
-                    val micTrack = factory.createAudioTrack("mic-audio", audioSrc)
-                    micTrack.setEnabled(!_state.value.muted)
-                    localAudioTrack = micTrack
-                    pc.addTrack(micTrack)
-                    startMicLevelMonitoring(attempt)
+                    // The backend bridge requires an m=audio line in the SDP offer. Device
+                    // recognition only receives; gateway recognition sends the microphone over RTP.
+                    if (clientRecognition) {
+                        pc.addTransceiver(
+                            MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
+                            RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY),
+                        )
+                    } else {
+                        addMicrophoneTrack(factory, pc, attempt)
+                    }
 
                     val dcInit = DataChannel.Init().apply { ordered = true }
                     val dc =
@@ -531,7 +575,7 @@ internal class VoiceSession(
                                     Log.d(TAG, "DC state: ${dc.state()}")
                                     if (dc.state() == DataChannel.State.OPEN) {
                                         setStatus("Waiting for server…")
-                                        sendSetupMessage(systemInstruction, serviceContextText, setup.voiceName)
+                                        sendSetupMessage(systemInstruction, serviceContextText, voice)
                                     }
                                 }
                             }
@@ -578,7 +622,7 @@ internal class VoiceSession(
                                                     VoiceRTCOfferReq(
                                                         sdp = offerSDP,
                                                         service = serviceAuth,
-                                                        choiceID = setup.choiceID,
+                                                        choiceID = voice.choiceID,
                                                     ),
                                                     headers = voiceGatewayHeaders,
                                                 )
@@ -679,6 +723,26 @@ internal class VoiceSession(
             }
     }
 
+    private fun addMicrophoneTrack(
+        factory: PeerConnectionFactory,
+        pc: PeerConnection,
+        attempt: Long,
+    ) {
+        val audioConstraints =
+            MediaConstraints().apply {
+                mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
+                mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
+                mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
+            }
+        val audioSrc = factory.createAudioSource(audioConstraints)
+        rtcAudioSource = audioSrc
+        val micTrack = factory.createAudioTrack("mic-audio", audioSrc)
+        micTrack.setEnabled(!_state.value.muted)
+        localAudioTrack = micTrack
+        pc.addTrack(micTrack)
+        startMicLevelMonitoring(attempt)
+    }
+
     @Suppress("TooManyFunctions") // PeerConnection.Observer has many required overrides.
     private fun createPeerConnectionObserver(
         attempt: Long,
@@ -760,8 +824,10 @@ internal class VoiceSession(
                 if (!ownsAttempt(attempt)) return@launch
                 val track = receiver.track()
                 if (track is org.webrtc.AudioTrack) {
-                    track.setEnabled(true)
-                    Log.i(TAG, "WebRTC remote audio track enabled")
+                    remoteAudioTrack = track
+                    // Device speech owns output; gateway audio stays silent.
+                    track.setEnabled(!clientSpeech)
+                    Log.i(TAG, "WebRTC remote audio track enabled=${!clientSpeech}")
                 }
             }
         }
@@ -844,6 +910,7 @@ internal class VoiceSession(
                 setupTimeoutJob = null
                 releaseTransport()
                 closePeerConnection()
+                resetClientTurn()
                 _state.update {
                     it.copy(connected = false, listening = false, speaking = false, activeTool = null, micLevel = 0f)
                 }
@@ -1057,6 +1124,8 @@ internal class VoiceSession(
         val muted = _state.value.muted
         localAudioTrack?.setEnabled(!muted)
         if (muted) _state.update { it.copy(micLevel = 0f) }
+        if (!clientRecognition) return
+        if (muted) stopClientListening() else startClientListening()
     }
 
     override fun selectAudioDevice(deviceId: Int) {
@@ -1068,6 +1137,7 @@ internal class VoiceSession(
     }
 
     private fun releaseTransport() {
+        remoteAudioTrack = null
         stopMicLevelMonitoring()
         unregisterDeviceCallback()
         unregisterScoReceiver()
@@ -1103,6 +1173,7 @@ internal class VoiceSession(
         setupTimeoutJob?.cancel()
         setupTimeoutJob = null
         releaseTransport()
+        releaseDeviceSpeech()
         if (!deferAudioRelease) finishDisconnectAudio(attempt)
         callController.endLocal()
         telecomCallActive = false
@@ -1155,10 +1226,7 @@ internal class VoiceSession(
             disconnect()
             return
         }
-        if (speakerActive || awaitingGatewayTurn || _state.value.turnState != TurnState.Idle ||
-            !_state.value.connected ||
-            pendingGatewayTools.containsKey(attemptGeneration.get())
-        ) {
+        if (contextUpdateBlocked()) {
             if (!pendingNotifications.add(text, generate)) {
                 setError("Too many pending service alerts. Reconnect voice.")
             }
@@ -1169,6 +1237,7 @@ internal class VoiceSession(
 
     override fun close() {
         audioStateJob?.cancel()
+        thinkingAudioJob.cancel()
         disconnect()
         pcFactory?.dispose()
         pcFactory = null
@@ -1208,29 +1277,37 @@ internal class VoiceSession(
         text: String,
         generate: Boolean = false,
     ) {
-        if (generate) awaitingGatewayTurn = true
+        if (generate) {
+            awaitingGatewayTurn = true
+            if (clientStages) {
+                speakerActive = true
+                clientTurnIdle = false
+            }
+        }
         send(json.encodeToString(ContextUpdate.serializer(), gatewayContextUpdate(text, generate)))
     }
 
-    private fun flushPendingNotifications() {
+    private fun contextUpdateBlocked(): Boolean =
+        userSpeechActive || speakerActive || awaitingGatewayTurn || _state.value.turnState != TurnState.Idle ||
+            !_state.value.connected ||
+            pendingGatewayTools.containsKey(attemptGeneration.get())
+
+    // A user utterance about to be sent already requests the next response, so its alerts
+    // become context without a competing turn.
+    private fun flushPendingNotifications(allowResponse: Boolean = true) {
         if (!voiceConversation.isCurrent()) {
             disconnect()
             return
         }
-        if (speakerActive || awaitingGatewayTurn || _state.value.turnState != TurnState.Idle ||
-            !_state.value.connected ||
-            pendingGatewayTools.containsKey(attemptGeneration.get())
-        ) {
-            return
-        }
+        if (contextUpdateBlocked()) return
         val update = pendingNotifications.drain() ?: return
-        sendClientContent(update.text, update.generate)
+        sendClientContent(update.text, update.generate && allowResponse)
     }
 
     private fun sendSetupMessage(
         systemInstruction: String,
         serviceContextText: String,
-        voiceName: String,
+        voice: GatewayVoiceSelection,
     ) {
         val setup =
             gatewaySessionSetup(
@@ -1238,8 +1315,8 @@ internal class VoiceSession(
                 systemInstruction,
                 serviceContextText,
                 languageTag,
-                voiceName,
                 settingsRepository.settings.value.showReasoning,
+                voice,
             )
         Log.i(TAG, "sending setup message")
         // Omit default-null fields such as an unselected voice.
@@ -1255,6 +1332,9 @@ internal class VoiceSession(
         if (!ownsAttempt(attempt) || dataChannel !== originChannel) return
         try {
             val env = json.decodeFromString(MessageEnvelope.serializer(), text)
+            if (clientCancellation != ClientCancellation.NONE && dropCancelledTurnMessage(env.kind, text, attempt)) {
+                return
+            }
             when (env.kind) {
                 MessageKind.SessionStatus -> {
                     if (!_state.value.connected) {
@@ -1277,7 +1357,8 @@ internal class VoiceSession(
                         it.copy(
                             connectStatus = null,
                             connected = true,
-                            listening = true,
+                            // Device recognition reports its own listening.
+                            listening = !clientRecognition,
                             error = null,
                         )
                     }
@@ -1287,7 +1368,9 @@ internal class VoiceSession(
                         send(json.encodeToString(ContextUpdate.serializer(), gatewayContextUpdate(recoveryContext)))
                         recoveryContext = ""
                     }
+                    clientTurnIdle = true
                     flushPendingNotifications()
+                    if (clientStages && ownsAttempt(attempt) && dataChannel === originChannel) drainClientTurn()
                 }
 
                 MessageKind.SessionUsage -> {
@@ -1296,12 +1379,22 @@ internal class VoiceSession(
                 }
 
                 MessageKind.TranscriptDelta -> {
-                    handleTranscriptDelta(json.decodeFromString(TranscriptDelta.serializer(), text))
+                    val delta = json.decodeFromString(TranscriptDelta.serializer(), text)
+                    // Device recognition already owns the user's hypotheses and final text.
+                    if (!clientRecognition || delta.speaker != Speaker.User) handleTranscriptDelta(delta)
                 }
 
                 MessageKind.TranscriptDraft -> {
-                    val draft = json.decodeFromString(TranscriptDraft.serializer(), text)
-                    _state.update { it.withTranscriptDraft(draft) }
+                    if (!clientRecognition) {
+                        val draft = json.decodeFromString(TranscriptDraft.serializer(), text)
+                        _state.update { it.withTranscriptDraft(draft) }
+                    }
+                }
+
+                MessageKind.AssistantTextDelta -> {
+                    val delta = json.decodeFromString(AssistantTextDelta.serializer(), text)
+                    // Gateway speech reports its words as transcript deltas.
+                    if (clientSpeech) handleAssistantText(delta)
                 }
 
                 MessageKind.ReasoningDelta -> {
@@ -1330,6 +1423,12 @@ internal class VoiceSession(
 
                 MessageKind.Interrupted -> {
                     if (!pendingGatewayTools.containsKey(attempt)) awaitingGatewayTurn = false
+                    if (clientSpeech) {
+                        speechOutput?.stop()
+                        _state.update { it.copy(speaking = false, activeTool = null, turnState = TurnState.Idle) }
+                        finishClientTurn()
+                        return
+                    }
                     speakerActive = false
                     _state.update {
                         it.copy(
@@ -1341,6 +1440,10 @@ internal class VoiceSession(
                     }
                     flushPendingNotifications()
                     applyMicrophoneMode()
+                    if (clientRecognition) {
+                        clientTurnIdle = true
+                        drainClientTurn()
+                    }
                 }
 
                 MessageKind.TurnStatus -> {
@@ -1348,6 +1451,10 @@ internal class VoiceSession(
                     _state.update { it.copy(turnState = msg.state) }
                     if (msg.state == TurnState.Idle && !pendingGatewayTools.containsKey(attempt)) {
                         awaitingGatewayTurn = false
+                    }
+                    if (clientStages) {
+                        handleClientTurnStatus(msg.state)
+                    } else if (msg.state == TurnState.Idle && !pendingGatewayTools.containsKey(attempt)) {
                         if (!speakerActive) {
                             _state.update {
                                 if (it.microphoneMode == MicrophoneMode.MUTE_ONCE) {
@@ -1412,6 +1519,214 @@ internal class VoiceSession(
             }
         val chunk = msg.text ?: return
         _state.update { it.withTranscriptChunk(speaker, chunk, responseID = msg.responseID) }
+    }
+
+    // -----------------------------------------------------------------------
+    // Device speech stages
+    // -----------------------------------------------------------------------
+
+    /** Creates the pinned setup's device stages once per conversation; false after reporting a failure. */
+    private suspend fun prepareDeviceSpeech(attempt: Long): Boolean {
+        if (!clientStages || deviceSpeech != null) return true
+        val speech = createDeviceSpeech()
+        deviceSpeech = speech
+        speechOutput =
+            DeviceSpeechOutput(
+                speech,
+                onSpeaking = {
+                    thinkingEarcon.setThinking(false)
+                    _state.update { it.copy(speaking = true) }
+                    applyMicrophoneMode()
+                },
+                onDrained = {
+                    _state.update { it.copy(speaking = false) }
+                    applyMicrophoneMode()
+                    drainClientTurn()
+                },
+                onError = ::setError,
+            )
+        if (!clientRecognition) return true
+        deviceMicrophoneJob =
+            scope.launch {
+                speech.microphoneRms.collect { rms ->
+                    _state.update {
+                        it.copy(micLevel = if (it.connected && !it.muted) microphoneLevelFromRms(rms) else 0f)
+                    }
+                }
+            }
+        if (!speech.isAvailable()) {
+            setError("On-device speech recognition is not available")
+            return false
+        }
+        val language = speech.checkLanguage()
+        if (!ownsAttempt(attempt)) return false
+        if (language != SpeechLanguageState.Ready && language !is SpeechLanguageState.Unverified) {
+            setError(
+                "Speech language $languageTag is not installed. " +
+                    "Download it or choose another voice mode in Settings.",
+            )
+            return false
+        }
+        return true
+    }
+
+    private fun releaseDeviceSpeech() {
+        resetClientTurn()
+        deviceMicrophoneJob?.cancel()
+        deviceMicrophoneJob = null
+        speechOutput = null
+        deviceSpeech?.close()
+        deviceSpeech = null
+    }
+
+    /** Ends device listening and playback when the transport that carried the turn goes away. */
+    private fun resetClientTurn() {
+        stopClientListening()
+        speechOutput?.stop()
+        thinkingEarcon.setThinking(false)
+        clientTurnIdle = false
+        userSpeechActive = false
+        clientCancellation = ClientCancellation.NONE
+        if (clientSpeech) _state.update { it.copy(speaking = false) }
+    }
+
+    private fun startClientListening() {
+        val speech = deviceSpeech ?: return
+        val current = _state.value
+        if (!clientRecognition || !current.connected || current.muted || current.listening) return
+        // Recognition stays off while the gateway thinks and nothing plays.
+        if (!current.speaking && !clientTurnIdle) return
+        thinkingEarcon.setThinking(false)
+        val attempt = attemptGeneration.get()
+        val recognition = ++listeningGeneration
+
+        fun currentRecognition() = ownsAttempt(attempt) && recognition == listeningGeneration && _state.value.listening
+        _state.update { it.copy(listening = true) }
+        speech.startListening(
+            onResult = { text -> if (currentRecognition()) submitUserUtterance(text) },
+            onPartial = { text -> if (currentRecognition()) reviseUserUtterance(text) },
+            onIdle = { if (currentRecognition()) finishListening() },
+            onError = { message -> if (currentRecognition()) setError(message) },
+        )
+    }
+
+    private fun stopClientListening() {
+        listeningGeneration++
+        deviceSpeech?.stopListening()
+        if (clientRecognition) _state.update { it.copy(listening = false) }
+    }
+
+    private fun reviseUserUtterance(text: String) {
+        if (text.isNotBlank()) {
+            userSpeechActive = true
+            if (speakerActive) interruptClientTurn()
+        }
+        _state.update { it.copy(transcript = it.transcript.replaceUserDraft(text, final = false)) }
+    }
+
+    private fun finishListening() {
+        userSpeechActive = false
+        _state.update { it.copy(listening = false, transcript = it.transcript.withoutUserDraft()) }
+        flushPendingNotifications()
+        startClientListening()
+    }
+
+    private fun submitUserUtterance(text: String) {
+        if (speakerActive) interruptClientTurn()
+        userSpeechActive = false
+        _state.update { it.copy(listening = false, transcript = it.transcript.replaceUserDraft(text, final = true)) }
+        flushPendingNotifications(allowResponse = false)
+        clientTurnIdle = false
+        speakerActive = true
+        send(json.encodeToString(UserMessage.serializer(), gatewayUserMessage(text)))
+    }
+
+    private fun interruptClientTurn() {
+        if (clientCancellation != ClientCancellation.NONE) return
+        clientCancellation = ClientCancellation.PENDING
+        clientTurnIdle = true
+        speakerActive = false
+        speechOutput?.stop()
+        if (!clientSpeech) remoteAudioTrack?.setEnabled(false)
+        _state.update {
+            it.copy(
+                speaking = false,
+                activeTool = null,
+                turnState = TurnState.Idle,
+                transcript = it.transcript.withFinalTurnText(clientRecognition),
+            )
+        }
+        send(json.encodeToString(TurnCancel.serializer(), TurnCancel(MessageKind.TurnCancel, "user speech")))
+    }
+
+    // Returns true when [kind] belongs to the cancelled turn. Tool calls still need results.
+    private fun dropCancelledTurnMessage(
+        kind: MessageKind,
+        text: String,
+        attempt: Long,
+    ): Boolean {
+        if (kind == MessageKind.Interrupted) {
+            clientCancellation = ClientCancellation.ACKNOWLEDGED
+            if (!pendingGatewayTools.containsKey(attempt)) awaitingGatewayTurn = false
+            drainClientTurn()
+            return true
+        }
+        if (kind == MessageKind.TurnStatus) {
+            val state = json.decodeFromString(TurnStatus.serializer(), text).state
+            val nextTurn = clientCancellation == ClientCancellation.ACKNOWLEDGED && !clientTurnIdle
+            if (nextTurn && state == TurnState.Thinking) {
+                clientCancellation = ClientCancellation.NONE
+                return false
+            }
+            if (state == TurnState.Idle && !pendingGatewayTools.containsKey(attempt)) {
+                awaitingGatewayTurn = false
+                flushPendingNotifications()
+            }
+        }
+        return kind in cancelledTurnOutput
+    }
+
+    private fun handleAssistantText(delta: AssistantTextDelta) {
+        if (delta.text.isEmpty()) return
+        clientTurnIdle = false
+        speakerActive = true
+        _state.update {
+            it.withTranscriptChunk(TranscriptSpeaker.ASSISTANT, delta.text, responseID = delta.responseID)
+        }
+        speechOutput?.append(delta.text)
+    }
+
+    private fun handleClientTurnStatus(state: TurnState) {
+        if (state == TurnState.Idle) {
+            if (clientSpeech) {
+                finishClientTurn()
+            } else {
+                clientTurnIdle = true
+                drainClientTurn()
+            }
+            return
+        }
+        clientTurnIdle = false
+        speakerActive = true
+        if (!clientSpeech) remoteAudioTrack?.setEnabled(true)
+        if (!_state.value.speaking) stopClientListening()
+    }
+
+    // Generation owns transcript boundaries, independently of queued playback.
+    private fun finishClientTurn() {
+        _state.update { it.copy(transcript = it.transcript.withFinalTurnText(clientRecognition)) }
+        clientTurnIdle = true
+        speechOutput?.finish()
+        drainClientTurn()
+    }
+
+    private fun drainClientTurn() {
+        val current = _state.value
+        if (!current.connected || !clientTurnIdle || current.speaking) return
+        speakerActive = false
+        _state.update { it.copy(microphoneMode = it.microphoneMode.afterReply()) }
+        flushPendingNotifications()
+        applyMicrophoneMode()
     }
 
     private suspend fun handleToolCall(
@@ -1806,6 +2121,12 @@ internal fun VoiceState.withCommittedTranscript(message: TranscriptDelta): Voice
     )
 }
 
+/** Ends a turn's entries; [keepUserDraft] keeps device recognition's live hypothesis revisable. */
+internal fun List<TranscriptEntry>.withFinalTurnText(keepUserDraft: Boolean): List<TranscriptEntry> {
+    val draft = if (keepUserDraft && withoutUserDraft().size < size) last() else null
+    return map { if (it === draft) it else it.copy(final = true) }
+}
+
 /** Replay the newest finalized transcript lines that fit, oldest first, as `speaker: text`. */
 internal fun buildNetworkRecoveryContext(transcript: List<TranscriptEntry>): String {
     val lines = ArrayDeque<String>()
@@ -1820,19 +2141,20 @@ internal fun buildNetworkRecoveryContext(transcript: List<TranscriptEntry>): Str
     return lines.joinToString("\n")
 }
 
+/** Builds session.setup; a WebRTC session names its pinned [voice] setup, a text session sends none. */
 internal fun gatewaySessionSetup(
     tools: List<ToolDeclaration>,
     systemInstruction: String,
     serviceContextText: String,
     languageTag: String,
-    voiceName: String = "",
     includeReasoning: Boolean = false,
+    voice: GatewayVoiceSelection? = null,
 ) = SessionSetup(
     kind = MessageKind.SessionSetup,
     includeReasoning = includeReasoning.takeIf { it },
     voice =
         VoiceConfig(
-            name = voiceName.takeIf { it.isNotEmpty() },
+            name = voice?.voiceName?.takeIf { it.isNotEmpty() },
             language = languageTag,
         ),
     tools = tools,
@@ -1841,6 +2163,9 @@ internal fun gatewaySessionSetup(
             systemInstruction = systemInstruction,
             text = serviceContextText,
         ),
+    speech = voice?.let { SpeechConfig(wireLocation(it.recognition), wireLocation(it.speech)) },
+    recognitionModelID = voice?.recognitionModelID,
+    synthesisModelID = voice?.synthesisModelID,
 )
 
 internal fun gatewayContextUpdate(

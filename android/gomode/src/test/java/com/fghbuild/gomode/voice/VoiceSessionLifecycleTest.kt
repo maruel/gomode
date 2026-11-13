@@ -8,6 +8,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.data.SpeechStageLocation
 import com.fghbuild.gomode.data.VoiceLanguageModel
 import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.service.ServiceCatalog
@@ -518,7 +519,15 @@ class VoiceSessionLifecycleTest {
                                     { null },
                                     pinnedVoice =
                                         if (change == "recovery catalog") {
-                                            GatewayVoiceSelection(base, "live", "Orus")
+                                            GatewayVoiceSelection(
+                                                base,
+                                                "live",
+                                                "Orus",
+                                                SpeechStageLocation.GATEWAY,
+                                                SpeechStageLocation.GATEWAY,
+                                                recognitionModelID = null,
+                                                synthesisModelID = null,
+                                            )
                                         } else {
                                             null
                                         },

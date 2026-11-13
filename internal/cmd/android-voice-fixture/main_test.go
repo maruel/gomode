@@ -187,8 +187,13 @@ func TestFixtureVoiceChoices(t *testing.T) {
 		catalog.Choices[0].ID != catalog.DefaultChoiceID(voicev2.VoiceTransportWebRTC) {
 		t.Fatalf("catalog must select its single fixture choice: %+v", catalog)
 	}
-	if got := catalog.Choices[0].Transports; len(got) != 2 || got[0] != voicev2.VoiceTransportText || got[1] != voicev2.VoiceTransportWebRTC {
+	choice := catalog.Choices[0]
+	if got := choice.Transports; len(got) != 2 || got[0] != voicev2.VoiceTransportText || got[1] != voicev2.VoiceTransportWebRTC {
 		t.Fatalf("fixture transports = %v, want text and WebRTC", got)
+	}
+	// Android resolves mixed stage owners only for a composable choice listing them and their models.
+	if !choice.Composable || len(choice.SpeechModes) != 4 || len(catalog.RecognitionModels) != 1 || len(catalog.SynthesisModels) != 1 {
+		t.Fatalf("fixture must offer every stage owner with gateway models: %+v", catalog)
 	}
 }
 

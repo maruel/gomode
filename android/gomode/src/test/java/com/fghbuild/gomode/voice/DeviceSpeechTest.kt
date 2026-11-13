@@ -29,7 +29,7 @@ class DeviceSpeechTest {
 
     @Test
     fun `silent startup retries once and reports a second timeout`() {
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US")
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
         val errors = mutableListOf<String>()
         speech.startListening({}, {}, {}, errors::add)
         shadowOf(Looper.getMainLooper()).idle()
@@ -53,7 +53,7 @@ class DeviceSpeechTest {
     @Test
     fun `ready and cancellation prevent startup recovery`() {
         for (cancel in listOf(false, true)) {
-            val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US")
+            val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
             val errors = mutableListOf<String>()
             speech.startListening({}, {}, {}, errors::add)
             shadowOf(Looper.getMainLooper()).idle()
@@ -76,7 +76,7 @@ class DeviceSpeechTest {
             SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE to SpeechLanguageState.Missing,
             SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED to SpeechLanguageState.Unsupported,
         )) {
-            val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "fr-CA")
+            val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "fr-CA", 1f)
             val errors = mutableListOf<String>()
             try {
                 speech.startListening({}, {}, {}, errors::add)
@@ -94,7 +94,7 @@ class DeviceSpeechTest {
 
     @Test
     fun `a disconnected recognition service is recreated once without ending the voice session`() {
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US")
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
         val finals = mutableListOf<String>()
         val errors = mutableListOf<String>()
         speech.startListening(finals::add, {}, {}, errors::add)
@@ -119,7 +119,7 @@ class DeviceSpeechTest {
 
     @Test
     fun `replacing input cancels recovery owned by the previous listener`() {
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US")
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
         val retired = mutableListOf<String>()
         val current = mutableListOf<String>()
         speech.startListening(retired::add, {}, {}, { error(it) })
@@ -144,7 +144,7 @@ class DeviceSpeechTest {
 
     @Test
     fun `recognition service recovery is bounded and repeated failure is reported`() {
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US")
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
         val errors = mutableListOf<String>()
         speech.startListening({}, {}, {}, errors::add)
         shadowOf(Looper.getMainLooper()).idle()
@@ -166,7 +166,7 @@ class DeviceSpeechTest {
     @Test
     fun `mute and close cancel pending recognition service recovery`() {
         for (close in listOf(false, true)) {
-            val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US")
+            val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
             val errors = mutableListOf<String>()
             speech.startListening({}, {}, {}, errors::add)
             shadowOf(Looper.getMainLooper()).idle()
@@ -186,7 +186,7 @@ class DeviceSpeechTest {
 
     @Test
     fun `a missed final match submits the last nonempty transcript`() {
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US")
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
         val finals = mutableListOf<String>()
         speech.startListening(finals::add, {}, { error("Recognized speech must not become idle") }, { error(it) })
         shadowOf(Looper.getMainLooper()).idle()
@@ -207,7 +207,7 @@ class DeviceSpeechTest {
 
     @Test
     fun `speech end submits recognized text even if no final callback arrives`() {
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US")
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
         val finals = mutableListOf<String>()
         speech.startListening(finals::add, {}, {}, { error(it) })
         shadowOf(Looper.getMainLooper()).idle()
@@ -239,7 +239,7 @@ class DeviceSpeechTest {
 
     @Test
     fun `end of speech keeps supplied audio open until the final result`() {
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US")
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
         val finals = mutableListOf<String>()
         val partials = mutableListOf<String>()
         speech.startListening(finals::add, partials::add, {}, { error(it) })
@@ -269,7 +269,7 @@ class DeviceSpeechTest {
 
     @Test
     fun `Android requests live hypotheses and ignores partials after final or cancellation`() {
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "fr-CA")
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "fr-CA", 1f)
         val partials = mutableListOf<String>()
         val finals = mutableListOf<String>()
         speech.startListening(finals::add, partials::add, {}, { error(it) })

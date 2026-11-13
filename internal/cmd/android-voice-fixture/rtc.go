@@ -13,8 +13,10 @@ import (
 	"maps"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -40,6 +42,11 @@ type fixtureStats struct {
 	AssistantPackets     int               `json:"assistantPackets"`
 	ReceiverReports      int               `json:"receiverReports"`
 	ToolResults          []json.RawMessage `json:"toolResults"`
+	// RTCSetup is the most recent WebRTC session.setup frame.
+	RTCSetup json.RawMessage `json:"rtcSetup"`
+	// RTCUserMessages lists user.message texts received over WebRTC.
+	RTCUserMessages []string `json:"rtcUserMessages"`
+	RTCTurnCancels  int      `json:"rtcTurnCancels"`
 
 	// MicFrameSamples counts decoded microphone packets by samples per packet,
 	// which is the sender's frame size at the 48kHz decode rate.
@@ -59,6 +66,12 @@ type mediaPeer struct {
 	workers     sync.WaitGroup
 	lifecycle   sync.WaitGroup
 	done        chan struct{}
+	// speech holds the stage owners session.setup selected; nil before setup.
+	speech *voicev2.SpeechConfig
+	// held is true while a "hold" reply waits for turn.cancel.
+	held bool
+	// clientOutput silences gateway audio while the client owns speech.
+	clientOutput atomic.Bool
 }
 
 func (f *fixture) handleStats(w http.ResponseWriter, _ *http.Request) {
@@ -66,6 +79,7 @@ func (f *fixture) handleStats(w http.ResponseWriter, _ *http.Request) {
 	stats := f.stats
 	stats.ToolResults = append([]json.RawMessage(nil), f.stats.ToolResults...)
 	stats.MicFrameSamples = maps.Clone(f.stats.MicFrameSamples)
+	stats.RTCUserMessages = append([]string{}, f.stats.RTCUserMessages...)
 	f.mu.Unlock()
 	writeJSON(w, stats)
 }
@@ -246,6 +260,13 @@ func (p *mediaPeer) requestClose() {
 	p.closed.Do(p.cancel)
 }
 
+// handleMessages answers the data channel. A session without client stages
+// gets a canned greeting: a user transcript and an assistant transcript. With a
+// client stage, gateway recognition produces that user transcript and a reply,
+// while client recognition waits for user.message. Replies stream
+// assistant.text.delta for client speech and transcripts between
+// speech.started and speech.ended for gateway speech. The user text "hold"
+// starts a reply that only turn.cancel ends, with an interrupted message.
 func (p *mediaPeer) handleMessages(dc *webrtc.DataChannel) {
 	p.fixture.mu.Lock()
 	p.dataChannel = dc
@@ -257,37 +278,117 @@ func (p *mediaPeer) handleMessages(dc *webrtc.DataChannel) {
 			p.fixture.log.Warn("decode RTC message", "err", err)
 			return
 		}
-		if env.Kind == voicev2.MessageKindToolResult {
+		switch env.Kind {
+		case voicev2.MessageKindToolResult:
 			p.fixture.recordToolResult(msg.Data)
+		case voicev2.MessageKindSessionSetup:
+			p.handleSetup(dc, msg.Data)
+		case voicev2.MessageKindUserMessage:
+			var user voicev2.UserMessage
+			if err := json.Unmarshal(msg.Data, &user); err != nil {
+				p.fixture.log.Warn("decode user message", "err", err)
+				return
+			}
+			p.fixture.mu.Lock()
+			p.fixture.stats.RTCUserMessages = append(p.fixture.stats.RTCUserMessages, user.Text)
+			speech := p.speech
+			p.held = user.Text == "hold"
+			p.fixture.mu.Unlock()
+			if speech == nil {
+				return
+			}
+			if user.Text == "hold" {
+				p.send(dc, p.replyStart(speech, "Holding the reply.")...)
+				return
+			}
+			p.send(dc, p.reply(speech, "Your service is ready.")...)
+		case voicev2.MessageKindTurnCancel:
+			p.fixture.mu.Lock()
+			p.fixture.stats.RTCTurnCancels++
+			held := p.held
+			p.held = false
+			p.fixture.mu.Unlock()
+			if held {
+				p.send(dc, voicev2.Interrupted{Kind: voicev2.MessageKindInterrupted, Source: voicev2.InterruptSourceUser})
+			}
+		default:
 		}
-		if env.Kind != voicev2.MessageKindSessionSetup {
-			return
-		}
-		p.fixture.mu.Lock()
-		p.fixture.stats.RTCSetups++
-		p.fixture.mu.Unlock()
-		for _, message := range []any{
+	})
+}
+
+func (p *mediaPeer) handleSetup(dc *webrtc.DataChannel, data []byte) {
+	var setup voicev2.SessionSetup
+	if err := json.Unmarshal(data, &setup); err != nil {
+		p.fixture.log.Warn("decode session setup", "err", err)
+		return
+	}
+	speech := setup.Speech
+	if speech != nil && speech.Input == voicev2.SpeechLocationGateway && speech.Output == voicev2.SpeechLocationGateway {
+		speech = nil
+	}
+	p.clientOutput.Store(speech != nil && speech.Output == voicev2.SpeechLocationClient)
+	p.fixture.mu.Lock()
+	p.fixture.stats.RTCSetups++
+	p.fixture.stats.RTCSetup = append(json.RawMessage(nil), data...)
+	p.speech = speech
+	p.held = false
+	p.fixture.mu.Unlock()
+	userTranscript := voicev2.TranscriptDelta{
+		Kind: voicev2.MessageKindTranscriptDelta, Speaker: voicev2.SpeakerUser,
+		Text: "How is the service doing?",
+	}
+	switch {
+	case speech == nil:
+		p.send(dc,
 			voicev2.SessionReady{Kind: voicev2.MessageKindSessionReady},
-			voicev2.TranscriptDelta{
-				Kind: voicev2.MessageKindTranscriptDelta, Speaker: voicev2.SpeakerUser,
-				Text: "How is the service doing?",
-			},
+			userTranscript,
 			voicev2.TranscriptDelta{
 				Kind: voicev2.MessageKindTranscriptDelta, Speaker: voicev2.SpeakerAssistant,
 				Text: "Your service is ready.",
 			},
-		} {
-			data, err := json.Marshal(message)
-			if err != nil {
-				p.fixture.log.Error("encode RTC message", "err", err)
-				return
-			}
-			if err := dc.SendText(string(data)); err != nil {
-				p.fixture.log.Warn("send RTC message", "err", err)
-				return
-			}
+		)
+	case speech.Input == voicev2.SpeechLocationGateway:
+		p.send(dc, append([]any{voicev2.SessionReady{Kind: voicev2.MessageKindSessionReady}, userTranscript},
+			p.reply(speech, "Your service is ready.")...)...)
+	default:
+		p.send(dc, voicev2.SessionReady{Kind: voicev2.MessageKindSessionReady})
+	}
+}
+
+// replyStart starts an assistant turn that has not finished speaking.
+func (p *mediaPeer) replyStart(speech *voicev2.SpeechConfig, text string) []any {
+	thinking := voicev2.TurnStatus{Kind: voicev2.MessageKindTurnStatus, State: voicev2.TurnStateThinking}
+	if speech.Output == voicev2.SpeechLocationClient {
+		return []any{thinking, voicev2.AssistantTextDelta{Kind: voicev2.MessageKindAssistantTextDelta, Text: text}}
+	}
+	return []any{
+		thinking,
+		voicev2.SpeechStarted{Kind: voicev2.MessageKindSpeechStarted, Speaker: voicev2.SpeakerAssistant},
+		voicev2.TranscriptDelta{Kind: voicev2.MessageKindTranscriptDelta, Speaker: voicev2.SpeakerAssistant, Text: text},
+	}
+}
+
+// reply is a complete assistant turn.
+func (p *mediaPeer) reply(speech *voicev2.SpeechConfig, text string) []any {
+	messages := p.replyStart(speech, text)
+	if speech.Output == voicev2.SpeechLocationGateway {
+		messages = append(messages, voicev2.SpeechEnded{Kind: voicev2.MessageKindSpeechEnded, Speaker: voicev2.SpeakerAssistant})
+	}
+	return append(messages, voicev2.TurnStatus{Kind: voicev2.MessageKindTurnStatus, State: voicev2.TurnStateIdle})
+}
+
+func (p *mediaPeer) send(dc *webrtc.DataChannel, messages ...any) {
+	for _, message := range messages {
+		data, err := json.Marshal(message)
+		if err != nil {
+			p.fixture.log.Error("encode RTC message", "err", err)
+			return
 		}
-	})
+		if err := dc.SendText(string(data)); err != nil {
+			p.fixture.log.Warn("send RTC message", "err", err)
+			return
+		}
+	}
 }
 
 func (p *mediaPeer) receiveMic(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
@@ -366,7 +467,8 @@ func (p *mediaPeer) sendTone(track *webrtc.TrackLocalStaticSample) {
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
-			if p.pc.ConnectionState() != webrtc.PeerConnectionStateConnected {
+			// Client speech leaves the gateway's audio track silent.
+			if p.pc.ConnectionState() != webrtc.PeerConnectionStateConnected || p.clientOutput.Load() {
 				continue
 			}
 			n, err := encoder.Encode(pcm, encoded)
@@ -408,13 +510,7 @@ func (f *fixture) handleTool(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	text := f.textPeer
-	var channel *webrtc.DataChannel
-	for _, peer := range f.peers {
-		if peer.dataChannel != nil {
-			channel = peer.dataChannel
-			break
-		}
-	}
+	channel := f.rtcChannelLocked()
 	f.mu.Unlock()
 	switch {
 	case channel != nil:
@@ -428,6 +524,54 @@ func (f *fixture) handleTool(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+// rtcChannelLocked returns a connected WebRTC data channel, or nil. f.mu must be held.
+func (f *fixture) rtcChannelLocked() *webrtc.DataChannel {
+	for _, peer := range f.peers {
+		if peer.dataChannel != nil {
+			return peer.dataChannel
+		}
+	}
+	return nil
+}
+
+// handleInterrupt reports user speech interrupting the current WebRTC turn,
+// as gateway recognition does on barge-in.
+func (f *fixture) handleInterrupt(w http.ResponseWriter, _ *http.Request) {
+	f.mu.Lock()
+	channel := f.rtcChannelLocked()
+	f.mu.Unlock()
+	if channel == nil {
+		http.Error(w, "no connected WebRTC session", http.StatusConflict)
+		return
+	}
+	data, err := json.Marshal(voicev2.Interrupted{Kind: voicev2.MessageKindInterrupted, Source: voicev2.InterruptSourceUser})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := channel.SendText(string(data)); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+// handleDrop closes every WebRTC peer without the client's close request, as a
+// lost gateway does. The client sees ICE disconnect and recovers.
+func (f *fixture) handleDrop(w http.ResponseWriter, _ *http.Request) {
+	f.mu.Lock()
+	peers := slices.Collect(maps.Values(f.peers))
+	f.mu.Unlock()
+	if len(peers) == 0 {
+		http.Error(w, "no WebRTC session", http.StatusConflict)
+		return
+	}
+	for _, peer := range peers {
+		peer.close()
 	}
 	writeJSON(w, map[string]bool{"ok": true})
 }

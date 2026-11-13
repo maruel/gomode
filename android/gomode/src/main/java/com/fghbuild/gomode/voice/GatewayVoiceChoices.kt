@@ -11,7 +11,8 @@
 // the user picks another. Composable choices resolve each gateway stage's model, the first listed
 // by default. SettingsRepository documents the mode that follows the gateway's choice.
 //
-// Connecting pins the resolved choice per session; recovery keeps it. Speaking voices are saved per
+// Connecting pins the resolved choice, stage owners, and speech models per session; recovery keeps
+// them and fails when the gateway withdrew one. Speaking voices are saved per
 // gateway and choice when the gateway owns speech and the choice advertises voices; the advertised
 // default applies until then, and a removed saved voice blocks connecting. External gateway
 // metadata requests carry no hosted-service credentials; embedded gateways use the service
@@ -203,8 +204,15 @@ internal data class GatewayVoiceChoices(
     ): GatewayVoiceSelection {
         if (pinned == null) {
             val setup = resolveSetup(settings)
-            requireAndroidSpeech(setup)
-            return GatewayVoiceSelection(gatewayURL, setup.choice.id, speakingVoice(settings, setup.choice))
+            return GatewayVoiceSelection(
+                gatewayURL = gatewayURL,
+                choiceID = setup.choice.id,
+                voiceName = speakingVoice(settings, setup.choice),
+                recognition = setup.recognition,
+                speech = setup.speech,
+                recognitionModelID = setup.recognitionModelID,
+                synthesisModelID = setup.synthesisModelID,
+            )
         }
         requireLoadedVoiceSettings(settings)
         if (gatewayURL != pinned.gatewayURL) {
@@ -212,14 +220,19 @@ internal data class GatewayVoiceChoices(
         }
         val choice =
             choices.firstOrNull {
-                it.id == pinned.choiceID && sessionTransport(settings) in it.transports.orEmpty()
+                it.id == pinned.choiceID &&
+                    pinned.transport in it.transports.orEmpty() &&
+                    choiceSupportsSpeech(it, pinned.recognition, pinned.speech)
             } ?: throw VoiceSetupException("Session voice choice is unavailable. Start a new voice session.")
-        val voices =
-            if (settings.voiceSetup.effectiveSpeech == SpeechStageLocation.GATEWAY) {
-                speakingVoices(choice)
-            } else {
-                emptyList()
-            }
+        val removedModel =
+            listOf(
+                catalog.recognitionModels to pinned.recognitionModelID,
+                catalog.synthesisModels to pinned.synthesisModelID,
+            ).any { (models, id) -> id != null && models.orEmpty().none { it.id == id } }
+        if (removedModel) {
+            throw VoiceSetupException("Session speech model is unavailable. Start a new voice session.")
+        }
+        val voices = if (pinned.speech == SpeechStageLocation.GATEWAY) speakingVoices(choice) else emptyList()
         if (pinned.voiceName.isNotEmpty() && pinned.voiceName !in voices) {
             throw VoiceSetupException("Session speaking voice is unavailable. Start a new voice session.")
         }
@@ -282,32 +295,6 @@ internal data class GatewayVoiceChoices(
         )
     }
 
-    // TODO: VoiceSession sends no SessionSetup.speech, recognitionModelID, or synthesisModelID, and
-    // DeviceVoiceSession speaks only over the text transport, so neither drives mixed stage owners.
-    // Without them, a composable choice over WebRTC gets the gateway's default: gateway recognition and
-    // speech with the first listed models (voicegateway/voicertc/localstack_pool.go llmBackend and
-    // selectStages), so only that selection connects. Remove this check once the WebRTC session sends
-    // the setup and speaks client-owned output.
-
-    /** Refuses a resolved setup the current Android sessions cannot request from the gateway. */
-    fun requireAndroidSpeech(setup: ResolvedVoiceSetup) {
-        if (setup.recognition != setup.speech) {
-            throw VoiceSetupException(
-                "Android cannot mix device and gateway speech yet. " +
-                    "Choose device recognition and speech, or gateway recognition and speech, in Settings.",
-            )
-        }
-        val defaultModels =
-            setup.recognitionModelID == catalog.recognitionModels?.firstOrNull()?.id &&
-                setup.synthesisModelID == catalog.synthesisModels?.firstOrNull()?.id
-        if (setup.choice.composable == true && setup.recognition == SpeechStageLocation.GATEWAY && !defaultModels) {
-            throw VoiceSetupException(
-                "Android can use only the gateway's first recognition and speech models yet. " +
-                    "Choose them, on-device voice, or an all-in-one model in Settings.",
-            )
-        }
-    }
-
     // The followed choice selects the kind it belongs to; without language models, all-in-one applies.
     private fun followedKind(choiceID: String?): VoiceSetupKind {
         val candidate = choices.firstOrNull { it.id == choiceID }
@@ -342,10 +329,6 @@ internal fun transportFor(
         VoiceTransport.WebRTC
     }
 
-/** The transport of the saved setup; it needs no catalog because only stage owners select it. */
-internal fun sessionTransport(settings: SettingsState): VoiceTransport =
-    transportFor(settings.voiceSetup.effectiveRecognition, settings.voiceSetup.effectiveSpeech)
-
 internal fun choiceSupportsSpeech(
     choice: VoiceChoice,
     recognition: SpeechStageLocation,
@@ -362,7 +345,7 @@ internal fun choiceSupportsSpeech(
     return modes.any { it.input == wireLocation(recognition) && it.output == wireLocation(speech) }
 }
 
-private fun wireLocation(location: SpeechStageLocation): SpeechLocation =
+internal fun wireLocation(location: SpeechStageLocation): SpeechLocation =
     when (location) {
         SpeechStageLocation.DEVICE -> SpeechLocation.Client
         SpeechStageLocation.GATEWAY -> SpeechLocation.Gateway
@@ -460,8 +443,18 @@ internal fun requireLoadedVoiceSettings(settings: SettingsState) {
     }
 }
 
+/** The setup a session pins; recovery reconnects with the same choice, voice, stage owners, and models. */
 internal data class GatewayVoiceSelection(
     val gatewayURL: String,
     val choiceID: String,
+    /** Empty uses the provider default; only gateway speech names a voice. */
     val voiceName: String,
-)
+    val recognition: SpeechStageLocation,
+    val speech: SpeechStageLocation,
+    /** Set only for a composable choice with gateway recognition. */
+    val recognitionModelID: String?,
+    /** Set only for a composable choice with gateway speech. */
+    val synthesisModelID: String?,
+) {
+    val transport: VoiceTransport get() = transportFor(recognition, speech)
+}

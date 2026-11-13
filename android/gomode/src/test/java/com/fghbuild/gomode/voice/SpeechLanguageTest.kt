@@ -69,7 +69,7 @@ class SpeechLanguageTest {
     @Test
     fun `preflight uses the same recognizer for listening`() =
         runTest {
-            val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "fr-CA")
+            val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "fr-CA", 1f)
             val check = async { speech.checkLanguage() }
             runCurrent()
             val recognizer = checkNotNull(ShadowSpeechRecognizer.getLatestSpeechRecognizer())
