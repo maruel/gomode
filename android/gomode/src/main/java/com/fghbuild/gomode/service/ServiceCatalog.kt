@@ -48,7 +48,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
@@ -277,31 +276,9 @@ internal class ServiceCatalog(
         if (name !in serviceCatalogToolNames) return null
         catalogValidator.validate(name, args)?.let { return catalogError(it) }
         if (!isCurrent()) return catalogError("Voice session ended.")
-        if (name == "discover_service" && args["server_id"] == null) {
-            return McpToolResult(
-                buildJsonObject {
-                    put(
-                        "servers",
-                        JsonArray(
-                            state.value.values.filter { it.key == active }.map { entry ->
-                                buildJsonObject {
-                                    put("server_id", entry.key.serviceID)
-                                    put("label", entry.label.boundedModelText(256))
-                                    put("labelTruncated", entry.label.length > 256)
-                                    put("url", entry.key.url)
-                                    put("status", entry.readiness.text)
-                                    entry.error?.let { put("error", it) }
-                                }
-                            },
-                        ),
-                    )
-                },
-            )
-        }
-        val id = args.getValue("server_id").jsonPrimitive.content
-        val participant =
-            members[active]?.takeIf { active.serviceID == id }
-                ?: return catalogError("Server is not active. Discover the active server again.")
+        val id = args["server_id"]?.jsonPrimitive?.content ?: active.serviceID
+        if (id != active.serviceID) return catalogError("Server is not active. Use the active server from context.")
+        val participant = members[active] ?: return catalogError("Active server is unavailable.")
         var prepared = participant.prepared ?: return catalogError("Server is not ready. ${participant.status.text}.")
         if (!participant.current(prepared) || !isCurrent()) return catalogError("Service authentication changed.")
         if (name == "read_service_resource" && prepared.mcp?.capabilities?.resources == null) {

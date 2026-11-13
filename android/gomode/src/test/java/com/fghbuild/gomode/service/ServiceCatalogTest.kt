@@ -722,24 +722,30 @@ class ServiceCatalogTest {
                         assertFalse(contextA.contains("Beta"))
                         assertTrue(contextB.contains("Beta") && contextB.contains("Same item"))
                         assertFalse(contextB.contains("Alpha"))
-                        val listedForA =
+                        // Without server_id, calls target the active server.
+                        val activeA =
                             requireNotNull(catalog.execute("discover_service", buildJsonObject {}, a.key) { true })
-                                .structuredContent
-                                .getValue("servers")
-                                .jsonArray
                         assertEquals(
-                            listOf("a"),
-                            listedForA.map {
-                                it.jsonObject
-                                    .getValue("server_id")
-                                    .jsonPrimitive.content
-                            },
+                            "a",
+                            activeA.structuredContent
+                                .getValue("server_id")
+                                .jsonPrimitive.content,
                         )
                         val callsB = second.calls
+                        val implicitB =
+                            requireNotNull(
+                                catalog.execute(
+                                    "dispatch_service_tool",
+                                    JsonObject(dispatchArgs("b") - "server_id"),
+                                    b.key,
+                                ) { true },
+                            )
+                        assertEquals("B", implicitB.resultString("source"))
+                        assertEquals(callsB + 1, second.calls)
                         val inactive =
                             requireNotNull(catalog.execute("dispatch_service_tool", dispatchArgs("b"), a.key) { true })
                         assertTrue(inactive.isError)
-                        assertEquals("a call never reaches an inactive server", callsB, second.calls)
+                        assertEquals("a call never reaches an inactive server", callsB + 1, second.calls)
                         val large =
                             snapshot.mapValues { (_, value) ->
                                 value.copy(
@@ -755,21 +761,6 @@ class ServiceCatalogTest {
                         assertTrue(
                             checkNotNull(catalog.contextSection(a.key, snapshot))
                                 .startsWith("\"".repeat(255) + " [a]:\n"),
-                        )
-                        val discovered =
-                            checkNotNull(
-                                catalog.execute(
-                                    "discover_service",
-                                    kotlinx.serialization.json.buildJsonObject {},
-                                ) { true },
-                            )
-                        val listed = discovered.structuredContent.getValue("servers") as JsonArray
-                        assertEquals(
-                            "\"".repeat(255),
-                            listed[0]
-                                .jsonObject
-                                .getValue("label")
-                                .jsonPrimitive.content,
                         )
                         assertTrue(catalog.contextText(emptyMap()).isEmpty())
                         first.minimum = 5
