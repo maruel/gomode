@@ -19,10 +19,19 @@ import com.fghbuild.gomode.sdk.v1.ToolGroup
 import com.fghbuild.gomode.sdk.v1.VoiceGatewaySettings
 import java.net.URI
 
+// Discovery follows redirects; sharing the base client's dispatcher and pool keeps retries from
+// each starting an HTTP thread pool.
+private val discoveryHTTPClient =
+    credentialedHTTPClient
+        .newBuilder()
+        .followRedirects(true)
+        .followSslRedirects(true)
+        .build()
+
 class ServiceSettingsClient {
     suspend fun fetch(baseURL: String): Settings {
         try {
-            return ApiClient(serviceOrigin(baseURL)).getSettings()
+            return ApiClient(serviceOrigin(baseURL), httpClient = discoveryHTTPClient).getSettings()
         } catch (e: ApiException) {
             throw ServiceSettingsException("Service settings request failed: HTTP ${e.statusCode}", e.statusCode, e)
         }
