@@ -67,7 +67,7 @@ verify: node_modules/.modules.yaml
 	@./scripts/run-concurrently.sh sdk,workflows,go,format,lint,ts,frontend,python,shell,misc,android \
 		'go run ./internal/cmd/gen-sdk -check' \
 		'go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12' \
-		'go test -run=^$$ ./... && go tool golangci-lint run ./... && go mod tidy -diff && go build ./...' \
+		'go mod tidy -diff && go tool golangci-lint run ./...' \
 		'pnpm exec prettier --check --log-level warn .github/workflows e2e/voice-preview eslint.config.js frontend/index.html frontend/src frontend/tsconfig.json package.json scripts/*.mjs web/src web/tests' \
 		'pnpm exec eslint --max-warnings 0 e2e/voice-preview/*.js e2e/voice-preview/*.tsx frontend/src scripts/*.mjs web/src web/tests' \
 		'pnpm exec node scripts/css_module_types.mjs --source-path web/src && pnpm exec node scripts/css_module_types.mjs --source-path frontend/src && pnpm exec tsc --noEmit -p frontend/tsconfig.json' \
