@@ -22,7 +22,7 @@ import threading
 import time
 from collections.abc import Iterator
 
-from android_devices import adb_path, ready_device_serials, selected_device_serial
+from android_devices import adb_path, print_failure, ready_device_serials, selected_device_serial
 from android_sdk import find_sdkmanager
 
 SETTINGS = {
@@ -504,5 +504,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
-        print(error, file=sys.stderr)
+        print_failure(error)
         sys.exit(1)

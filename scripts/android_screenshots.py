@@ -21,7 +21,7 @@ import tempfile
 import threading
 import time
 
-from android_devices import adb_path, selected_device_serial
+from android_devices import adb_path, print_failure, selected_device_serial
 from android_e2e import FixtureHandler, require_emulator, run_capture_tests
 from screenshot_publish import publication_lock, publish_images, recover_images, validate_images
 
@@ -341,5 +341,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except (OSError, RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-        print(error, file=sys.stderr)
+        print_failure(error)
         sys.exit(1)

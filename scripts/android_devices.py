@@ -4,6 +4,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 
 
 def adb_path() -> str:
@@ -46,3 +47,21 @@ def selected_device_serial(adb: str) -> str:
     if len(ready) != 1:
         raise RuntimeError(f"Expected one ready Android device, found {len(ready)}; set ANDROID_SERIAL")
     return ready[0]
+
+
+def print_failure(error: BaseException) -> None:
+    """Print an error and the errors it interrupted, root cause first.
+
+    Device cleanup in `finally` blocks fails again once adb loses the device;
+    the earlier errors explain why.
+    """
+    chain: list[BaseException] = []
+    current: BaseException | None = error
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    for item in reversed(chain):
+        message = str(item)
+        if isinstance(item, subprocess.CalledProcessError) and isinstance(item.stderr, str) and item.stderr.strip():
+            message += ": " + item.stderr.strip()
+        print(message, file=sys.stderr)
