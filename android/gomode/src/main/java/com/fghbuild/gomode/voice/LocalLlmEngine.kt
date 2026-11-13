@@ -6,7 +6,7 @@ import android.os.SystemClock
 import android.util.Log
 import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.data.LocalLlmModel
-import com.fghbuild.gomode.data.OnDeviceEngine
+import com.fghbuild.gomode.data.VoiceLanguageModel
 import com.fghbuild.gomode.service.boundModelContext
 import com.fghbuild.voicegateway.sdk.v2.MessageKind
 import com.fghbuild.voicegateway.sdk.v2.ToolCall
@@ -343,7 +343,7 @@ internal class LocalLlmEngine(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     val model: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
 ) : OnDeviceVoiceEngine {
-    override val engineType: OnDeviceEngine = OnDeviceEngine.LOCAL_LLM
+    override val engineType: VoiceLanguageModel = VoiceLanguageModel.LOCAL_LLM
 
     override val modelName: String
         get() = model.label

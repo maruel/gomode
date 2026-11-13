@@ -760,7 +760,7 @@ describe("VoiceOverlay settings", () => {
     voiceSession.setState((s) => ({ ...s, connectStatus: "Connecting…", connectPhase: "setup" }));
     expect(screen.getByRole("combobox", { name: "Speech" })).toBeDisabled();
     expect(screen.getByRole("textbox", { name: "Voice language" })).toBeDisabled();
-    expect(screen.getByText("End the voice session to change its setup.")).toBeInTheDocument();
+    expect(screen.getByText("End the voice session to change voice settings.")).toBeInTheDocument();
   });
 
   it("allows correcting the language after a failed connection", async () => {
@@ -1121,7 +1121,7 @@ it("discloses reported usage after disconnect with zero distinct from unavailabl
   await user.click(screen.getByRole("button", { name: "Show transcript" }));
   const settings = screen.getByRole("button", { name: "Voice settings" });
   await user.click(settings);
-  const toggle = screen.getByRole("checkbox", { name: "Show usage stats" });
+  const toggle = screen.getByRole("switch", { name: "Show usage stats" });
   expect(toggle).not.toBeChecked();
   await user.click(toggle);
   expect(localStorage.getItem("gomode.voiceUsageStats")).toBe("on");

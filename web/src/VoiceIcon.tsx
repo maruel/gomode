@@ -5,6 +5,7 @@ import styles from "./VoiceControls.module.css";
 type VoiceIconName =
   | "arrowUpward"
   | "arrowDownward"
+  | "arrowDropDown"
   | "dataUsage"
   | "history"
   | "build"
@@ -12,6 +13,7 @@ type VoiceIconName =
   | "psychology"
   | "bluetooth"
   | "callEnd"
+  | "check"
   | "close"
   | "headphones"
   | "mic"

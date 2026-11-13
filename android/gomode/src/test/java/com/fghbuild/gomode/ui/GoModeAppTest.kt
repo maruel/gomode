@@ -1,10 +1,8 @@
 // Unit tests for Go Mode shell recovery and voice account changes.
 package com.fghbuild.gomode.ui
 
-import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsState
-import com.fghbuild.gomode.data.VoiceMode
 import com.fghbuild.gomode.ui.web.WebShellLoadState
 import com.fghbuild.gomode.voice.AudioDevice
 import com.fghbuild.gomode.voice.VoiceState

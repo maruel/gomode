@@ -31,9 +31,9 @@ import androidx.compose.ui.unit.dp
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
-import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
-import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.data.VoiceLanguageModel
+import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.ui.settings.ServiceStatus
 import com.fghbuild.gomode.ui.settings.SettingsScreen
 import com.fghbuild.gomode.ui.settings.rememberSettingsEdits
@@ -74,8 +74,8 @@ class VoiceSettingsTest {
             loadingID = repository.addService("Documents", longURL)
             repository.switchService(readyID)
             // Keep gateway discovery out of this controlled layout fixture.
-            repository.updateVoiceMode(VoiceMode.DEVICE)
-            repository.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+            repository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
+            repository.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
         }
         val fontScale = mutableStateOf(1f)
         val serviceError = mutableStateOf<String?>(null)
@@ -252,17 +252,17 @@ class VoiceSettingsTest {
         }
         composeRule.onNodeWithTag("gomode-voice-mode-cloud").performScrollTo().assertIsSelected()
         composeRule.onNodeWithTag("gomode-voice-mode-device").performScrollTo().performClick()
-        composeRule.waitUntil { repository.settings.value.voiceMode == VoiceMode.DEVICE }
+        composeRule.waitUntil { repository.settings.value.voiceSetup.deviceSpeech }
         composeRule.onNodeWithTag("gomode-voice-mode-device").assertIsSelected()
         val reopened = SettingsRepository(store)
-        composeRule.waitUntil { reopened.settings.value.voiceMode == VoiceMode.DEVICE }
+        composeRule.waitUntil { reopened.settings.value.voiceSetup.deviceSpeech }
 
         composeRule.runOnIdle { active.value = true }
         composeRule.onNodeWithTag("gomode-voice-mode-cloud").performScrollTo().assertIsNotEnabled()
         composeRule.onNodeWithTag("gomode-voice-mode-device").assertIsNotEnabled()
         composeRule.runOnIdle { active.value = false }
         composeRule.onNodeWithTag("gomode-voice-mode-cloud").performClick()
-        composeRule.waitUntil { repository.settings.value.voiceMode == VoiceMode.CLOUD }
+        composeRule.waitUntil { !repository.settings.value.voiceSetup.deviceSpeech }
         composeRule.onNodeWithTag("gomode-voice-mode-cloud").assertIsSelected()
     }
 
@@ -344,7 +344,7 @@ class VoiceSettingsTest {
         }
         // Switch to device voice mode to reveal engine selection chips.
         composeRule.onNodeWithTag("gomode-voice-mode-device").performScrollTo().performClick()
-        composeRule.waitUntil { repository.settings.value.voiceMode == VoiceMode.DEVICE }
+        composeRule.waitUntil { repository.settings.value.voiceSetup.deviceSpeech }
 
         // Initial default engine is remote gateway.
         composeRule.onNodeWithText("Engine").assertExists()
@@ -356,7 +356,9 @@ class VoiceSettingsTest {
 
         // Select Whistle + Needle.
         composeRule.onNodeWithTag("gomode-engine-needle-whistle").performScrollTo().performClick()
-        composeRule.waitUntil { repository.settings.value.onDeviceEngine == OnDeviceEngine.NEEDLE_WHISTLE }
+        composeRule.waitUntil {
+            repository.settings.value.voiceSetup.effectiveLanguageModel == VoiceLanguageModel.NEEDLE_WHISTLE
+        }
         composeRule.onNodeWithTag("gomode-engine-needle-whistle").assertIsSelected()
 
         // Verify chips disable during an active voice session.
@@ -367,7 +369,9 @@ class VoiceSettingsTest {
 
         composeRule.runOnIdle { active.value = false }
         composeRule.onNodeWithTag("gomode-engine-local-llm").performScrollTo().performClick()
-        composeRule.waitUntil { repository.settings.value.onDeviceEngine == OnDeviceEngine.LOCAL_LLM }
+        composeRule.waitUntil {
+            repository.settings.value.voiceSetup.effectiveLanguageModel == VoiceLanguageModel.LOCAL_LLM
+        }
         composeRule.onNodeWithTag("gomode-engine-local-llm").assertIsSelected().assertTextContains("Local LLM")
         composeRule.onNodeWithTag("gomode-model-GEMMA_4_E2B").performScrollTo().assertIsSelected()
         composeRule.onNodeWithTag("gomode-model-GEMMA_4_E4B").performScrollTo().performClick()

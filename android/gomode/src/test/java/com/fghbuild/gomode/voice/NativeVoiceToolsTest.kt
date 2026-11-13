@@ -4,12 +4,12 @@ package com.fghbuild.gomode.voice
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
-import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.ServiceInstance
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
-import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.data.VoiceLanguageModel
+import com.fghbuild.gomode.data.VoiceSetupPreference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,8 +38,8 @@ class NativeVoiceToolsTest {
         assertEquals(listOf("hang_up", "mute"), nativeVoiceTools(SettingsState()).map { it.name })
         assertEquals(listOf("hang_up", "mute"), nativeVoiceTools(oneServer).map { it.name })
         val multiple = oneServer.copy(services = oneServer.services + ServiceInstance("two"))
-        for (engine in listOf(OnDeviceEngine.LOCAL_LLM, OnDeviceEngine.REMOTE_GATEWAY)) {
-            val device = multiple.copy(voiceMode = VoiceMode.DEVICE, onDeviceEngine = engine)
+        for (engine in listOf(VoiceLanguageModel.LOCAL_LLM, VoiceLanguageModel.GATEWAY)) {
+            val device = multiple.copy(voiceSetup = VoiceSetupPreference(languageModel = engine).withDeviceSpeech())
             assertEquals(
                 listOf("hang_up", "list_servers", "mute", "switch_server"),
                 nativeVoiceTools(device).map { it.name },
@@ -51,7 +51,12 @@ class NativeVoiceToolsTest {
         )
         assertTrue(
             nativeVoiceTools(
-                multiple.copy(voiceMode = VoiceMode.DEVICE, onDeviceEngine = OnDeviceEngine.NEEDLE_WHISTLE),
+                multiple.copy(
+                    voiceSetup =
+                        VoiceSetupPreference(
+                            languageModel = VoiceLanguageModel.NEEDLE_WHISTLE,
+                        ).withDeviceSpeech(),
+                ),
             ).isEmpty(),
         )
     }

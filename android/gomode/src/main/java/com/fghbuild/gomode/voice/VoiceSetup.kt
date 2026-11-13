@@ -209,9 +209,8 @@ internal fun ensureVoiceSettingsCurrent(
     current: SettingsState,
 ) {
     if (captured.activeServiceId != current.activeServiceId ||
-        captured.activeServiceURL != current.activeServiceURL || captured.voiceMode != current.voiceMode ||
-        captured.onDeviceEngine != current.onDeviceEngine || captured.voiceChoices != current.voiceChoices ||
-        captured.speakingVoices != current.speakingVoices
+        captured.activeServiceURL != current.activeServiceURL || captured.voiceSetup != current.voiceSetup ||
+        captured.gatewayVoiceSetups != current.gatewayVoiceSetups || captured.speakingVoices != current.speakingVoices
     ) {
         throw VoiceSetupException("Voice settings changed. Try connecting again.")
     }

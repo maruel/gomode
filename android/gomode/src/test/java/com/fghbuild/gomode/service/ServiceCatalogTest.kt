@@ -6,9 +6,9 @@ import android.webkit.WebView
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
-import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
-import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.data.VoiceLanguageModel
+import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.sdk.v1.Settings
 import com.fghbuild.gomode.sdk.v1.ToolGroup
 import com.fghbuild.gomode.sdk.v1.VoiceGatewaySettings
@@ -310,11 +310,11 @@ class ServiceCatalogTest {
                     val aID = settings.addService("Healthy", first.server.url("/").toString())
                     val bID = settings.addService("Slow", second.server.url("/").toString())
                     settings.switchService(aID)
-                    settings.updateVoiceMode(VoiceMode.DEVICE)
-                    settings.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+                    settings.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
+                    settings.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
                     settings.settings.first {
-                        it.activeServiceId == aID && it.voiceMode == VoiceMode.DEVICE &&
-                            it.onDeviceEngine == OnDeviceEngine.LOCAL_LLM
+                        it.activeServiceId == aID && it.voiceSetup.deviceSpeech &&
+                            it.voiceSetup.languageModel == VoiceLanguageModel.LOCAL_LLM
                     }
                     val a = first.entry(aID)
                     val b = second.entry(bID)
@@ -358,11 +358,11 @@ class ServiceCatalogTest {
             Fixture("Selected").use { fixture ->
                 val settings = SettingsRepository(ContextPreferences())
                 val id = settings.addService("Selected", fixture.server.url("/").toString())
-                settings.updateVoiceMode(VoiceMode.DEVICE)
-                settings.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+                settings.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
+                settings.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
                 settings.settings.first {
-                    it.activeServiceId == id && it.voiceMode == VoiceMode.DEVICE &&
-                        it.onDeviceEngine == OnDeviceEngine.LOCAL_LLM
+                    it.activeServiceId == id && it.voiceSetup.deviceSpeech &&
+                        it.voiceSetup.languageModel == VoiceLanguageModel.LOCAL_LLM
                 }
                 val entry = fixture.entry(id)
                 val catalog = ServiceCatalog(backgroundScope)
@@ -402,11 +402,11 @@ class ServiceCatalogTest {
                     val settings = SettingsRepository(ContextPreferences())
                     val aID = settings.addService("A", first.server.url("/").toString())
                     val bID = settings.addService("B", second.server.url("/").toString())
-                    settings.updateVoiceMode(VoiceMode.DEVICE)
-                    settings.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+                    settings.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
+                    settings.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
                     settings.settings.first {
-                        it.voiceMode == VoiceMode.DEVICE &&
-                            it.onDeviceEngine == OnDeviceEngine.LOCAL_LLM
+                        it.voiceSetup.deviceSpeech &&
+                            it.voiceSetup.languageModel == VoiceLanguageModel.LOCAL_LLM
                     }
                     val a = first.entry(aID)
                     val b = second.entry(bID)

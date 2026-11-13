@@ -65,11 +65,10 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fghbuild.gomode.GoModeApplication
-import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
-import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.data.VoiceLanguageModel
 import com.fghbuild.gomode.halo.HaloController
 import com.fghbuild.gomode.service.CatalogNotification
 import com.fghbuild.gomode.service.CatalogService
@@ -116,7 +115,6 @@ import com.fghbuild.gomode.voice.VoiceStartupSource
 import com.fghbuild.gomode.voice.VoiceStartupStage
 import com.fghbuild.gomode.voice.VoiceStartupTiming
 import com.fghbuild.gomode.voice.VoiceState
-import com.fghbuild.gomode.voice.usesGatewayVoice
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -292,9 +290,8 @@ internal fun GoModeApp(
             VoiceConversation(settingsRepository, settingsClient, serviceCatalog) { currentEntries }
         }
     val gatewayState by key(voiceConversation) { voiceConversation.state.collectAsStateWithLifecycle() }
-    val sharedConversation =
-        usesGatewayVoice(settings) ||
-            (settings.voiceMode == VoiceMode.DEVICE && settings.onDeviceEngine == OnDeviceEngine.LOCAL_LLM)
+    val languageModel = settings.voiceSetup.effectiveLanguageModel
+    val sharedConversation = languageModel != VoiceLanguageModel.NEEDLE_WHISTLE
     val switchVoiceServer: suspend (String) -> Unit =
         remember(settingsRepository, voiceConversation) {
             { id ->
@@ -306,23 +303,22 @@ internal fun GoModeApp(
                 settingsRepository.switchService(id)
             }
         }
-    val voiceMode = settings.voiceMode
+    val deviceSpeech = settings.voiceSetup.deviceSpeech
     val localSelection =
         remember(
             voiceConversation,
-            voiceMode,
-            settings.onDeviceEngine,
+            languageModel,
             settings.localLlmModel,
             settings.voiceLanguageTag,
         ) {
-            if (voiceMode == VoiceMode.DEVICE && settings.onDeviceEngine == OnDeviceEngine.LOCAL_LLM) {
+            if (languageModel == VoiceLanguageModel.LOCAL_LLM) {
                 LocalModelSelection(
                     languageTag = settings.voiceLanguageTag,
                     model = settings.localLlmModel,
                     prepareSetup = { withContext(Dispatchers.Main) { voiceConversation.prepareLocal() } },
                     isCurrent = {
                         val current = settingsRepository.settings.value
-                        current.voiceMode == VoiceMode.DEVICE && current.onDeviceEngine == OnDeviceEngine.LOCAL_LLM &&
+                        current.voiceSetup.effectiveLanguageModel == VoiceLanguageModel.LOCAL_LLM &&
                             current.voiceLanguageTag == settings.voiceLanguageTag &&
                             current.localLlmModel == settings.localLlmModel
                     },
@@ -350,40 +346,36 @@ internal fun GoModeApp(
             settingsRepository,
             voiceServiceOwner,
             switchVoiceServer,
-            voiceMode,
+            deviceSpeech,
             settings.voiceLanguageTag,
             voiceCallController,
-            settings.onDeviceEngine,
+            languageModel,
             settings.localLlmModel,
         ) {
-            when (voiceMode) {
-                VoiceMode.DEVICE -> {
-                    DeviceVoiceSession(
-                        context.applicationContext,
-                        settingsRepository,
-                        settingsClient,
-                        bearerTokenFor = if (sharedConversation) voiceConversation::tokenFor else bearerStore::tokenFor,
-                        frontendTools = if (sharedConversation) FrontendVoiceTools() else serviceSession.frontendTools,
-                        voiceConversation = voiceConversation.takeIf { sharedConversation },
-                        languageTag = settings.voiceLanguageTag,
-                        localModelOwner = localModelOwner,
-                        callController = voiceCallController,
-                        switchServer = switchVoiceServer,
-                        startupTiming = { manualStartup },
-                    )
-                }
-
-                VoiceMode.CLOUD -> {
-                    VoiceSession(
-                        context.applicationContext,
-                        settingsRepository,
-                        voiceConversation = voiceConversation,
-                        languageTag = settings.voiceLanguageTag,
-                        callController = voiceCallController,
-                        switchServer = switchVoiceServer,
-                        startupTiming = { manualStartup },
-                    )
-                }
+            if (deviceSpeech) {
+                DeviceVoiceSession(
+                    context.applicationContext,
+                    settingsRepository,
+                    settingsClient,
+                    bearerTokenFor = if (sharedConversation) voiceConversation::tokenFor else bearerStore::tokenFor,
+                    frontendTools = if (sharedConversation) FrontendVoiceTools() else serviceSession.frontendTools,
+                    voiceConversation = voiceConversation.takeIf { sharedConversation },
+                    languageTag = settings.voiceLanguageTag,
+                    localModelOwner = localModelOwner,
+                    callController = voiceCallController,
+                    switchServer = switchVoiceServer,
+                    startupTiming = { manualStartup },
+                )
+            } else {
+                VoiceSession(
+                    context.applicationContext,
+                    settingsRepository,
+                    voiceConversation = voiceConversation,
+                    languageTag = settings.voiceLanguageTag,
+                    callController = voiceCallController,
+                    switchServer = switchVoiceServer,
+                    startupTiming = { manualStartup },
+                )
             }
         }
     DisposableEffect(manualVoiceSession) {
@@ -548,7 +540,7 @@ internal fun GoModeApp(
         configuredServices = serviceKeys.toSet().takeIf { settings.loadState == SettingsLoadState.Ready },
         voiceSessionActive =
             !carVoiceBusy && voiceSessionActive &&
-                (settings.voiceMode != VoiceMode.DEVICE || settings.onDeviceEngine != OnDeviceEngine.NEEDLE_WHISTLE),
+                languageModel != VoiceLanguageModel.NEEDLE_WHISTLE,
         sharedConversation = sharedConversation,
         onVoiceNotification = { event ->
             val notification = event.notification

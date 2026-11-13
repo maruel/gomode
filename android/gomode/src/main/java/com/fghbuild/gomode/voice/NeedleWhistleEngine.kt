@@ -3,7 +3,7 @@ package com.fghbuild.gomode.voice
 
 import android.content.Context
 import android.util.Log
-import com.fghbuild.gomode.data.OnDeviceEngine
+import com.fghbuild.gomode.data.VoiceLanguageModel
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import com.fghbuild.voicegateway.sdk.v2.MessageKind
 import com.fghbuild.voicegateway.sdk.v2.ToolCall
@@ -26,7 +26,7 @@ private const val CONFIDENCE_THRESHOLD = 0.70f
 internal class NeedleWhistleEngine(
     private val context: Context,
 ) : OnDeviceVoiceEngine {
-    override val engineType: OnDeviceEngine = OnDeviceEngine.NEEDLE_WHISTLE
+    override val engineType: VoiceLanguageModel = VoiceLanguageModel.NEEDLE_WHISTLE
 
     private var sessionContext: EngineSessionContext? = null
     private val biasedKeywords = mutableSetOf<String>()

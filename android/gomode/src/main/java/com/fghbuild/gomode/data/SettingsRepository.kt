@@ -1,4 +1,30 @@
 // Persisted Go Mode service-instance settings backed by DataStore preferences.
+//
+// The voice setup has two parts. VOICE_SETUP is device-wide: the setup mode, where recognition and
+// speech run, and the language model kind. These pick the session (WebRTC, text, or an on-device
+// engine) before any gateway is discovered; car dials and on-device engines need no loaded
+// service. GATEWAY_VOICE_SETUPS holds, per normalized gateway URL, the all-in-one choice, the
+// separate-stages choice, and the recognition and synthesis model IDs, so a mode switch restores
+// the other mode's selection. SPEAKING_VOICES stays keyed by gateway and choice.
+//
+// The FOLLOW_GATEWAY mode runs gateway recognition and speech with the saved all-in-one choice, or
+// the gateway's WebRTC default. GatewayVoiceChoices resolves it to all-in-one for a native audio
+// choice and to separate gateway stages otherwise, the way web/src/VoiceSession.ts derives a missing
+// saved setup. Fresh installations and migrated cloud voice use it, because whether a saved cloud
+// choice is a native audio model or a composable language model is known only from the gateway
+// catalog. A serialized setup without a mode decodes to it.
+// Migration reads the former VOICE_MODE, ON_DEVICE_VOICE_ENGINE, and VOICE_CHOICES keys while
+// VOICE_SETUP is absent; the first voice setup write replaces them:
+//
+// | Former value | Voice setup |
+// | --- | --- |
+// | CLOUD | Follow the gateway; per gateway, the saved WebRTC choice as the all-in-one choice |
+// | DEVICE + REMOTE_GATEWAY | Separate stages, device recognition and speech, the saved text choice |
+// | DEVICE + LOCAL_LLM | Separate stages, device recognition and speech, the saved local model |
+// | DEVICE + NEEDLE_WHISTLE | Separate stages, device recognition and speech, Whistle + Needle |
+//
+// The former engine also becomes the separate-stages language model for cloud voice, so choosing
+// device speech later restores it.
 package com.fghbuild.gomode.data
 
 import androidx.datastore.core.DataStore
@@ -17,6 +43,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -34,25 +61,127 @@ data class ServiceInstance(
     val url: String = "",
 )
 
-/** VoiceMode selects where speech recognition and synthesis run. */
-enum class VoiceMode {
-    /** CLOUD sends microphone audio to the gateway and plays gateway audio. */
-    CLOUD,
+/** VoiceSetupMode selects the gateway's choice, one native audio model, or independently chosen stages. */
+@Serializable
+enum class VoiceSetupMode {
+    /** FOLLOW_GATEWAY runs the saved gateway-speech choice, or the default, with gateway recognition and speech. */
+    @SerialName("follow-gateway")
+    FOLLOW_GATEWAY,
 
-    /** DEVICE transcribes and speaks on the device and sends only text. */
-    DEVICE,
+    /** ALL_IN_ONE runs recognition, reasoning, and speech in one gateway native audio model. */
+    @SerialName("all-in-one")
+    ALL_IN_ONE,
+
+    /** SEPARATE_STAGES selects recognition, the language model, and speech independently. */
+    @SerialName("separate-stages")
+    SEPARATE_STAGES,
 }
 
-/** OnDeviceEngine selects which engine handles turns in on-device voice mode. */
-enum class OnDeviceEngine {
+/** SpeechStageLocation names where a recognition or speech stage runs. */
+@Serializable
+enum class SpeechStageLocation {
+    @SerialName("device")
+    DEVICE,
+
+    @SerialName("gateway")
+    GATEWAY,
+}
+
+/** VoiceLanguageModel selects where the language model of separate stages runs. */
+@Serializable
+enum class VoiceLanguageModel {
+    /** GATEWAY runs a gateway choice. */
+    @SerialName("gateway")
+    GATEWAY,
+
     /** LOCAL_LLM runs a compact conversational model locally on device. */
+    @SerialName("local-llm")
     LOCAL_LLM,
 
     /** NEEDLE_WHISTLE runs Whistle biased ASR with Needle engram action matching. */
+    @SerialName("needle-whistle")
     NEEDLE_WHISTLE,
+}
 
-    /** REMOTE_GATEWAY delegates turn execution to the voice gateway over WebSocket. */
-    REMOTE_GATEWAY,
+/**
+ * VoiceSetupPreference is the device-wide voice setup.
+ *
+ * [recognition], [speech], and [languageModel] are the separate-stages selections; other modes
+ * keep them for a later switch back.
+ */
+@Serializable
+data class VoiceSetupPreference(
+    val mode: VoiceSetupMode = VoiceSetupMode.FOLLOW_GATEWAY,
+    val recognition: SpeechStageLocation = SpeechStageLocation.DEVICE,
+    val speech: SpeechStageLocation = SpeechStageLocation.DEVICE,
+    val languageModel: VoiceLanguageModel = VoiceLanguageModel.GATEWAY,
+) {
+    /** The language model sessions run: only separate stages run one on the device. */
+    val effectiveLanguageModel: VoiceLanguageModel
+        get() =
+            when (mode) {
+                VoiceSetupMode.FOLLOW_GATEWAY, VoiceSetupMode.ALL_IN_ONE -> VoiceLanguageModel.GATEWAY
+                VoiceSetupMode.SEPARATE_STAGES -> languageModel
+            }
+
+    /** Where recognition runs; on-device language models require device recognition and speech. */
+    val effectiveRecognition: SpeechStageLocation
+        get() = effectiveLocation(recognition)
+
+    /** Where speech runs; on-device language models require device recognition and speech. */
+    val effectiveSpeech: SpeechStageLocation
+        get() = effectiveLocation(speech)
+
+    /** Separate stages with device recognition and speech, keeping the language model. */
+    fun withDeviceSpeech(): VoiceSetupPreference =
+        copy(
+            mode = VoiceSetupMode.SEPARATE_STAGES,
+            recognition = SpeechStageLocation.DEVICE,
+            speech = SpeechStageLocation.DEVICE,
+        )
+
+    /** Both stages run on the device, so turns travel as text or stay on the device. */
+    val deviceSpeech: Boolean
+        get() = effectiveRecognition == SpeechStageLocation.DEVICE && effectiveSpeech == SpeechStageLocation.DEVICE
+
+    private fun effectiveLocation(location: SpeechStageLocation): SpeechStageLocation =
+        when (mode) {
+            VoiceSetupMode.FOLLOW_GATEWAY, VoiceSetupMode.ALL_IN_ONE -> {
+                SpeechStageLocation.GATEWAY
+            }
+
+            VoiceSetupMode.SEPARATE_STAGES -> {
+                if (languageModel == VoiceLanguageModel.GATEWAY) location else SpeechStageLocation.DEVICE
+            }
+        }
+}
+
+/** GatewayVoiceSetup remembers one gateway's selections for each setup mode. */
+@Serializable
+data class GatewayVoiceSetup(
+    /** The all-in-one choice. Following the gateway saves any gateway-speech choice here. */
+    @SerialName("allInOneChoiceID") val allInOneChoiceID: String? = null,
+    @SerialName("separateStagesChoiceID") val separateStagesChoiceID: String? = null,
+    @SerialName("recognitionModelID") val recognitionModelID: String? = null,
+    @SerialName("synthesisModelID") val synthesisModelID: String? = null,
+) {
+    fun choiceID(mode: VoiceSetupMode): String? =
+        when (mode) {
+            VoiceSetupMode.FOLLOW_GATEWAY, VoiceSetupMode.ALL_IN_ONE -> allInOneChoiceID
+            VoiceSetupMode.SEPARATE_STAGES -> separateStagesChoiceID
+        }
+
+    fun modelID(stage: SpeechStage): String? =
+        when (stage) {
+            SpeechStage.RECOGNITION -> recognitionModelID
+            SpeechStage.SYNTHESIS -> synthesisModelID
+        }
+}
+
+/** SpeechStage names a gateway speech model slot. */
+enum class SpeechStage {
+    RECOGNITION,
+    SYNTHESIS,
 }
 
 // Each variant owns a separate installed weight file.
@@ -138,15 +267,14 @@ data class SettingsState(
     val haloAutoConnect: Boolean = false,
     val services: List<ServiceInstance> = emptyList(),
     val activeServiceId: String = "",
-    val voiceMode: VoiceMode = VoiceMode.CLOUD,
+    val voiceSetup: VoiceSetupPreference = VoiceSetupPreference(),
     val voiceLanguageTag: String = DEFAULT_VOICE_LANGUAGE_TAG,
     val showReasoning: Boolean = false,
     val showUsageStats: Boolean = false,
-    val onDeviceEngine: OnDeviceEngine = OnDeviceEngine.REMOTE_GATEWAY,
     val localLlmModel: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
     val voiceAudioDeviceType: Int? = null,
-    /** Saved gateway choice per gateway URL, then per transport family. */
-    val voiceChoices: Map<String, Map<String, String>> = emptyMap(),
+    /** Saved selections per normalized gateway URL. */
+    val gatewayVoiceSetups: Map<String, GatewayVoiceSetup> = emptyMap(),
     val speakingVoices: Map<String, Map<String, String>> = emptyMap(),
     val carCallerSlots: Map<String, Int> = emptyMap(),
     val showServiceOnLockScreen: Boolean = false,
@@ -167,12 +295,14 @@ class SettingsRepository(
         val HALO_ADDRESS = stringPreferencesKey("HALO_ADDRESS")
         val HALO_AUTO_CONNECT = booleanPreferencesKey("HALO_AUTO_CONNECT")
         val SPEAKING_VOICES = stringPreferencesKey("SPEAKING_VOICES")
-        val VOICE_CHOICES = stringPreferencesKey("VOICE_CHOICES")
-        val VOICE_MODE = stringPreferencesKey("VOICE_MODE")
+        val VOICE_SETUP = stringPreferencesKey("VOICE_SETUP")
+        val GATEWAY_VOICE_SETUPS = stringPreferencesKey("GATEWAY_VOICE_SETUPS")
+        val LEGACY_VOICE_CHOICES = stringPreferencesKey("VOICE_CHOICES")
+        val LEGACY_VOICE_MODE = stringPreferencesKey("VOICE_MODE")
         val VOICE_LANGUAGE_TAG = stringPreferencesKey("VOICE_LANGUAGE_TAG")
         val SHOW_REASONING = booleanPreferencesKey("SHOW_REASONING")
         val SHOW_USAGE_STATS = booleanPreferencesKey("SHOW_USAGE_STATS")
-        val ON_DEVICE_VOICE_ENGINE = stringPreferencesKey("ON_DEVICE_VOICE_ENGINE")
+        val LEGACY_ON_DEVICE_VOICE_ENGINE = stringPreferencesKey("ON_DEVICE_VOICE_ENGINE")
         val LOCAL_LLM_MODEL = stringPreferencesKey("LOCAL_LLM_MODEL")
         val VOICE_AUDIO_DEVICE_TYPE = intPreferencesKey("VOICE_AUDIO_DEVICE_TYPE")
     }
@@ -188,7 +318,8 @@ class SettingsRepository(
                 SettingsState(
                     activeServiceURL = active?.url ?: "",
                     loadState = SettingsLoadState.Ready,
-                    voiceChoices = decodeVoiceChoices(prefs),
+                    voiceSetup = decodeVoiceSetup(prefs),
+                    gatewayVoiceSetups = decodeGatewayVoiceSetups(prefs),
                     speakingVoices = decodeSpeakingVoices(prefs),
                     carCallerSlots = decodeCarCallerSlots(prefs),
                     showServiceOnLockScreen = prefs[Keys.SHOW_SERVICE_ON_LOCK_SCREEN] ?: false,
@@ -197,11 +328,9 @@ class SettingsRepository(
                     services = services,
                     activeServiceId = active?.id ?: "",
                     voiceAudioDeviceType = prefs[Keys.VOICE_AUDIO_DEVICE_TYPE],
-                    voiceMode = decodeVoiceMode(prefs[Keys.VOICE_MODE]),
                     voiceLanguageTag = prefs[Keys.VOICE_LANGUAGE_TAG] ?: DEFAULT_VOICE_LANGUAGE_TAG,
                     showReasoning = prefs[Keys.SHOW_REASONING] ?: false,
                     showUsageStats = prefs[Keys.SHOW_USAGE_STATS] ?: false,
-                    onDeviceEngine = decodeOnDeviceEngine(prefs[Keys.ON_DEVICE_VOICE_ENGINE]),
                     localLlmModel =
                         when (val saved = prefs[Keys.LOCAL_LLM_MODEL]) {
                             "LFM_2_5_1_2B", "LFM_2_5_2_6B", "LFM_3_1_7B" -> LocalLlmModel.LFM_3_1_7B_64K
@@ -308,9 +437,49 @@ class SettingsRepository(
         }
     }
 
-    suspend fun updateVoiceMode(mode: VoiceMode) {
+    /** Replaces the device-wide voice setup and keeps gateway selections. */
+    suspend fun updateVoiceSetup(transform: (VoiceSetupPreference) -> VoiceSetupPreference) {
         dataStore.edit { prefs ->
-            prefs[Keys.VOICE_MODE] = mode.name
+            writeVoiceSetup(prefs, transform(decodeVoiceSetup(prefs)), decodeGatewayVoiceSetups(prefs))
+        }
+    }
+
+    /** Saves [choiceID] as the selection of the setup [transform] yields, in one write. */
+    suspend fun updateVoiceChoice(
+        gatewayURL: String,
+        choiceID: String,
+        transform: (VoiceSetupPreference) -> VoiceSetupPreference,
+    ) {
+        require(choiceID.isNotBlank()) { "Select a voice choice" }
+        dataStore.edit { prefs ->
+            val setup = transform(decodeVoiceSetup(prefs))
+            updateGatewayVoiceSetup(prefs, setup, gatewayURL) {
+                when (setup.mode) {
+                    VoiceSetupMode.FOLLOW_GATEWAY, VoiceSetupMode.ALL_IN_ONE -> it.copy(allInOneChoiceID = choiceID)
+                    VoiceSetupMode.SEPARATE_STAGES -> it.copy(separateStagesChoiceID = choiceID)
+                }
+            }
+        }
+    }
+
+    // TODO: Only SettingsRepositoryTest calls updateSpeechModel, so recognitionModelID and synthesisModelID
+    // stay unset in production and resolveSpeechModel always applies the first listed model. A per-stage
+    // model picker in native settings will call it.
+
+    /** Saves one stage's gateway model for composable language models. */
+    suspend fun updateSpeechModel(
+        gatewayURL: String,
+        stage: SpeechStage,
+        modelID: String,
+    ) {
+        require(modelID.isNotBlank()) { "Select a speech model" }
+        dataStore.edit { prefs ->
+            updateGatewayVoiceSetup(prefs, decodeVoiceSetup(prefs), gatewayURL) {
+                when (stage) {
+                    SpeechStage.RECOGNITION -> it.copy(recognitionModelID = modelID)
+                    SpeechStage.SYNTHESIS -> it.copy(synthesisModelID = modelID)
+                }
+            }
         }
     }
 
@@ -331,30 +500,12 @@ class SettingsRepository(
         dataStore.edit { it[Keys.SHOW_USAGE_STATS] = enabled }
     }
 
-    suspend fun updateOnDeviceEngine(engine: OnDeviceEngine) {
-        dataStore.edit { prefs -> prefs[Keys.ON_DEVICE_VOICE_ENGINE] = engine.name }
-    }
-
     suspend fun updateVoiceAudioDeviceType(type: Int) {
         dataStore.edit { prefs -> prefs[Keys.VOICE_AUDIO_DEVICE_TYPE] = type }
     }
 
     suspend fun updateLocalLlmModel(model: LocalLlmModel) {
         dataStore.edit { prefs -> prefs[Keys.LOCAL_LLM_MODEL] = model.name }
-    }
-
-    suspend fun updateVoiceChoice(
-        gatewayURL: String,
-        transport: String,
-        choiceID: String,
-    ) {
-        require(transport.isNotBlank() && choiceID.isNotBlank()) { "Select a voice choice" }
-        dataStore.edit { prefs ->
-            val gateway = normalizeURL(gatewayURL)
-            val saved = decodeVoiceChoices(prefs)
-            val families = saved[gateway].orEmpty() + (transport to choiceID)
-            prefs[Keys.VOICE_CHOICES] = json.encodeToString(saved + (gateway to families))
-        }
     }
 
     suspend fun updateSpeakingVoice(
@@ -398,31 +549,91 @@ class SettingsRepository(
         return slots
     }
 
-    private fun decodeVoiceChoices(prefs: Preferences): Map<String, Map<String, String>> =
-        prefs[Keys.VOICE_CHOICES]?.let { encoded ->
-            val parsed = json.parseToJsonElement(encoded)
-            // A build with one selection per gateway stored plain strings. It
-            // cannot be mapped to a family, so each family uses its advertised default.
-            if (parsed is JsonObject && parsed.values.all { it is JsonPrimitive }) {
-                emptyMap()
-            } else {
-                json.decodeFromJsonElement<Map<String, Map<String, String>>>(parsed)
-            }
-        } ?: emptyMap()
+    private fun updateGatewayVoiceSetup(
+        prefs: MutablePreferences,
+        setup: VoiceSetupPreference,
+        gatewayURL: String,
+        transform: (GatewayVoiceSetup) -> GatewayVoiceSetup,
+    ) {
+        val gateway = normalizeURL(gatewayURL)
+        require(gateway.isNotEmpty()) { "Voice gateway is unknown" }
+        val saved = decodeGatewayVoiceSetups(prefs)
+        writeVoiceSetup(prefs, setup, saved + (gateway to transform(saved[gateway] ?: GatewayVoiceSetup())))
+    }
+
+    // Both voice setup keys are written together, so neither falls back to the former keys alone.
+    private fun writeVoiceSetup(
+        prefs: MutablePreferences,
+        setup: VoiceSetupPreference,
+        gateways: Map<String, GatewayVoiceSetup>,
+    ) {
+        prefs[Keys.VOICE_SETUP] = json.encodeToString(setup)
+        prefs[Keys.GATEWAY_VOICE_SETUPS] = json.encodeToString(gateways)
+        prefs.remove(Keys.LEGACY_VOICE_MODE)
+        prefs.remove(Keys.LEGACY_ON_DEVICE_VOICE_ENGINE)
+        prefs.remove(Keys.LEGACY_VOICE_CHOICES)
+    }
+
+    private fun decodeVoiceSetup(prefs: Preferences): VoiceSetupPreference =
+        prefs[Keys.VOICE_SETUP]?.let { json.decodeFromString<VoiceSetupPreference>(it) }
+            ?: legacyVoiceSetup(prefs[Keys.LEGACY_VOICE_MODE], prefs[Keys.LEGACY_ON_DEVICE_VOICE_ENGINE])
+
+    private fun decodeGatewayVoiceSetups(prefs: Preferences): Map<String, GatewayVoiceSetup> {
+        val encoded = prefs[Keys.GATEWAY_VOICE_SETUPS] ?: return legacyGatewayVoiceSetups(prefs)
+        val setups = json.decodeFromString<Map<String, GatewayVoiceSetup>>(encoded)
+        require(
+            setups.keys.none(String::isBlank) &&
+                setups.values.all { setup ->
+                    listOf(
+                        setup.allInOneChoiceID,
+                        setup.separateStagesChoiceID,
+                        setup.recognitionModelID,
+                        setup.synthesisModelID,
+                    ).all { it == null || it.isNotBlank() }
+                },
+        ) { "Invalid saved voice setup" }
+        return setups
+    }
+
+    // The former WebRTC family was cloud voice and the text family was device speech.
+    private fun legacyGatewayVoiceSetups(prefs: Preferences): Map<String, GatewayVoiceSetup> {
+        val encoded = prefs[Keys.LEGACY_VOICE_CHOICES] ?: return emptyMap()
+        val parsed = json.parseToJsonElement(encoded)
+        // A build with one selection per gateway stored plain strings. It
+        // cannot be mapped to a family, so each family uses its advertised default.
+        if (parsed is JsonObject && parsed.values.all { it is JsonPrimitive }) return emptyMap()
+        return json.decodeFromJsonElement<Map<String, Map<String, String>>>(parsed).mapValues { (_, families) ->
+            GatewayVoiceSetup(
+                allInOneChoiceID = families["webrtc"]?.takeIf(String::isNotBlank),
+                separateStagesChoiceID = families["text"]?.takeIf(String::isNotBlank),
+            )
+        }
+    }
 
     private fun decodeServices(prefs: Preferences): List<ServiceInstance> =
         prefs[Keys.SERVICES]?.let { encoded ->
             runCatching { json.decodeFromString<List<ServiceInstance>>(encoded) }.getOrNull()
         } ?: emptyList()
 
-    private fun decodeVoiceMode(value: String?): VoiceMode =
-        VoiceMode.entries.firstOrNull { it.name == value } ?: VoiceMode.CLOUD
-
-    private fun decodeOnDeviceEngine(value: String?): OnDeviceEngine =
-        OnDeviceEngine.entries.firstOrNull { it.name == value } ?: OnDeviceEngine.REMOTE_GATEWAY
-
     companion object {
         private const val DEFAULT_SERVICE_LABEL = "Service"
+
+        /** Maps the former voice mode and on-device engine values onto the voice setup. */
+        internal fun legacyVoiceSetup(
+            mode: String?,
+            engine: String?,
+        ): VoiceSetupPreference {
+            val languageModel =
+                when (engine) {
+                    "LOCAL_LLM" -> VoiceLanguageModel.LOCAL_LLM
+                    "NEEDLE_WHISTLE" -> VoiceLanguageModel.NEEDLE_WHISTLE
+                    else -> VoiceLanguageModel.GATEWAY
+                }
+            return VoiceSetupPreference(
+                mode = if (mode == "DEVICE") VoiceSetupMode.SEPARATE_STAGES else VoiceSetupMode.FOLLOW_GATEWAY,
+                languageModel = languageModel,
+            )
+        }
 
         fun normalizeURL(url: String): String = url.trim().trimEnd('/')
 

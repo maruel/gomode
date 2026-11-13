@@ -1,93 +1,376 @@
-/* Voice setup tabs, ordered stage controls, and saved shared preferences. */
+/* Stacked voice setup fields, segmented setup choice, display switches, and per-control errors. */
 
 .settings {
-  /* Field labels share the first column so every control starts on one edge. */
   display: grid;
-  grid-template-columns: fit-content(40%) minmax(0, 1fr);
-  gap: 0.75rem;
+  gap: 1.5rem;
   min-width: 0;
   width: 100%;
-  max-width: 40rem;
+  /* Every control spans the column, so all fields share both edges. */
+  max-width: 28rem;
   box-sizing: border-box;
 }
 
-.settings > * {
-  grid-column: 1 / -1;
+.settings p {
+  margin: 0;
 }
 
-.settings label {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: center;
-  font-size: 0.85rem;
-}
-
-.settings select,
-.settings input[type="text"] {
-  width: 8rem;
+.group {
+  display: grid;
+  gap: 1rem;
   min-width: 0;
-  max-width: 100%;
-  padding: 0.4rem 0.6rem;
-  font: inherit;
+}
+
+.heading {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--color-text);
+}
+
+.notice,
+.hint {
+  font-size: 0.8125rem;
+  line-height: 1.4;
   color: var(--color-text-secondary);
+}
+
+.field {
+  display: grid;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+/* ---- Outlined pickers and text field ---- */
+
+.picker {
+  position: relative;
+  display: grid;
+  min-width: 0;
+}
+
+.picker select,
+.textField {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 3rem;
+  margin: 0;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--color-text);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-medium);
   border-radius: var(--radius-sm);
 }
 
-.settings input[type="checkbox"] {
-  flex-shrink: 0;
-  margin: 0;
-  accent-color: var(--color-primary);
+.picker select {
+  /* Room for the dropdown arrow, which replaces the native one. */
+  padding: 0 2.75rem 0 0.875rem;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  appearance: none;
 }
 
-.settings .field {
-  display: grid;
-  grid-template-columns: subgrid;
-  grid-column: 1 / -1;
-  align-items: center;
+.textField {
+  padding: 0 0.875rem;
 }
 
-.settings .field select {
-  width: 100%;
+.textField::placeholder {
+  color: var(--color-text-faint);
 }
 
-.settings .field input[type="text"] {
-  justify-self: start;
+.picker select:hover:not(:disabled),
+.textField:hover:not(:disabled) {
+  border-color: var(--color-text);
 }
 
-.settings select:disabled,
-.settings input:disabled {
+.picker select:focus-visible,
+.textField:focus-visible {
+  /* Material outlined fields thicken their outline to 2px on focus. */
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+  border-color: var(--color-primary);
+}
+
+.textField[aria-invalid="true"] {
+  border-color: var(--color-danger);
+}
+
+.textField[aria-invalid="true"]:focus-visible {
+  outline-color: var(--color-danger);
+}
+
+.picker select:disabled,
+.textField:disabled {
   cursor: default;
   opacity: 0.6;
 }
 
-.settings p {
+.pickerArrow {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0.625rem;
+  display: flex;
+  align-items: center;
+  font-size: 1.25rem;
+  color: var(--color-text-secondary);
+  pointer-events: none;
+}
+
+.picker:has(select:disabled) .pickerArrow {
+  opacity: 0.6;
+}
+
+/* ---- Segmented setup choice ---- */
+
+.setupRow {
+  container-type: inline-size;
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  min-width: 0;
+}
+
+.segmented {
+  display: grid;
+  flex: 1;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border-medium);
+  border-radius: 999px;
+}
+
+.segment {
+  position: relative;
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 2.75rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--color-text-secondary);
+  text-align: center;
+  cursor: pointer;
+}
+
+.segment + .segment {
+  border-inline-start: 1px solid var(--color-border-medium);
+}
+
+/* The native radio covers its segment, keeping arrow keys and one Tab stop. */
+.segment input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   margin: 0;
-  font-size: 0.8rem;
+  cursor: inherit;
+  opacity: 0;
+}
+
+.segmentLabel {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.segmentCheck {
+  display: none;
+  flex-shrink: 0;
+  font-size: 1rem;
+}
+
+.segment:has(input:checked) {
+  font-weight: 600;
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-primary) 18%, var(--color-bg-surface));
+}
+
+.segment:has(input:checked) .segmentCheck {
+  display: inline-flex;
+}
+
+/* Narrow rows keep labels on one line; weight and fill still mark the selection. */
+@container (width < 25rem) {
+  .segment:has(input:checked) .segmentCheck {
+    display: none;
+  }
+}
+
+.segment:hover:not(:has(input:checked, input:disabled)) {
+  color: var(--color-text);
+  background: var(--color-bg-hover);
+}
+
+.segment:has(input:focus-visible) {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -3px;
+  border-radius: 999px;
+}
+
+.segment:has(input:disabled) {
+  cursor: default;
+}
+
+.segment:has(input:disabled:not(:checked)) {
+  opacity: 0.6;
+}
+
+/* ---- Display switches ---- */
+
+.switchRow {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 3rem;
+  font-size: 0.9375rem;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.switch {
+  position: relative;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  width: 3.25rem;
+  height: 2rem;
+  margin: 0;
+  cursor: pointer;
+  background: var(--color-bg-hover);
+  border: 2px solid var(--color-border-medium);
+  border-radius: 999px;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+  appearance: none;
+}
+
+.switch::before {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-start: 0.375rem;
+  width: 1rem;
+  height: 1rem;
+  content: "";
+  background: var(--color-border-medium);
+  border-radius: 50%;
+  translate: 0 -50%;
+  transition:
+    inset-inline-start 0.15s,
+    width 0.15s,
+    height 0.15s;
+}
+
+.switch:checked {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.switch:checked::before {
+  inset-inline-start: calc(100% - 1.625rem);
+  width: 1.5rem;
+  height: 1.5rem;
+  background: var(--color-bg-surface);
+}
+
+.switch:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .switch,
+  .switch::before {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .switch::before {
+    background: ButtonText;
+  }
+
+  .switch:checked {
+    background: Highlight;
+    border-color: Highlight;
+  }
+
+  .switch:checked::before {
+    background: HighlightText;
+  }
+
+  /* Without opting out, the label keeps a Canvas text backplate that hides HighlightText. */
+  .segment:has(input:checked) {
+    --voice-icon-forced-color: HighlightText;
+
+    forced-color-adjust: none;
+    color: HighlightText;
+    background: Highlight;
+  }
+
+  .segment:has(input:checked:focus-visible) {
+    outline-color: HighlightText;
+  }
+}
+
+/* ---- Errors, loading, and retry ---- */
+
+.errorLine,
+.statusLine {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+  min-width: 0;
+}
+
+.statusLine {
+  min-height: 3rem;
+  font-size: 0.875rem;
   color: var(--color-text-secondary);
 }
 
-.settings .error {
+.error {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.8125rem;
+  line-height: 1.4;
   color: var(--color-danger);
+  overflow-wrap: anywhere;
 }
 
-.settings .error:empty {
-  display: none;
+.statusLine .error {
+  font-size: 0.875rem;
 }
 
 .retry {
-  justify-self: start;
+  flex-shrink: 0;
 }
 
+/* ---- Credits ---- */
+
 .credits {
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary);
   border-top: 1px solid var(--color-border-medium);
 }
 
 .credits summary {
   padding: 0.75rem 0;
-  font-size: 0.85rem;
+  font-size: 0.875rem;
+  color: var(--color-text);
   cursor: pointer;
 }
 
@@ -111,75 +394,14 @@
 
 .preview {
   display: flex;
+  gap: 0.75rem;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
   margin-bottom: 0.75rem;
-  font-size: 0.85rem;
+  font-size: 0.875rem;
 }
 
 .credits .previewError {
   margin-bottom: 0.5rem;
   color: var(--color-danger);
-}
-
-.setupHeader {
-  display: flex;
-  gap: 0.5rem;
-  align-items: center;
-  /* The rule spans the close button so it aligns with the fields below. */
-  border-bottom: 1px solid var(--color-border-medium);
-}
-
-.setupTabs {
-  display: grid;
-  flex: 1;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-self: stretch;
-}
-
-.setupTabs button {
-  min-width: 0;
-  min-height: 2.75rem;
-  padding: 0.5rem;
-  /* Overlap the tab list's rule so the selected underline replaces it. */
-  margin-bottom: -1px;
-  font: inherit;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  background: transparent;
-  border: none;
-  border-bottom: 3px solid transparent;
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-}
-
-.setupTabs button:hover:not(:disabled, [aria-selected="true"]) {
-  color: var(--color-text);
-  background: var(--color-bg-hover);
-}
-
-.setupTabs button[aria-selected="true"] {
-  font-weight: 600;
-  color: var(--color-text);
-  border-bottom-color: var(--color-primary);
-}
-
-.setupTabs button:focus-visible {
-  outline: 2px solid var(--color-primary);
-  outline-offset: -2px;
-}
-
-.setupTabs button:disabled {
-  cursor: default;
-  opacity: 0.6;
-}
-
-.setupPanel {
-  display: grid;
-  grid-template-columns: subgrid;
-  row-gap: 0.75rem;
-}
-
-.setupPanel > * {
-  grid-column: 1 / -1;
 }

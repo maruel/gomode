@@ -15,8 +15,8 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import com.fghbuild.gomode.GoModeApplication
-import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.data.VoiceLanguageModel
 import com.fghbuild.gomode.service.DefaultNetworkMonitor
 import com.fghbuild.gomode.service.VoiceTokenClient
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
@@ -328,7 +328,7 @@ internal class VoiceSession(
     /** Retains a failure next to the engine and phase that produced it. */
     private fun recordFailure(message: String) {
         errorLog.record(
-            engine = OnDeviceEngine.REMOTE_GATEWAY.label,
+            engine = VoiceLanguageModel.GATEWAY.label,
             phase = state.value.failurePhase(),
             message = message,
         )

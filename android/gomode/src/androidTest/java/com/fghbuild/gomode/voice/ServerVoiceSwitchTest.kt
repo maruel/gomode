@@ -35,7 +35,7 @@ import androidx.test.uiautomator.UiDevice
 import com.fghbuild.gomode.LocalEmulatorOnly
 import com.fghbuild.gomode.R
 import com.fghbuild.gomode.data.SettingsRepository
-import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.data.VoiceSetupMode
 import com.fghbuild.gomode.frontendPreparationFixtureScript
 import com.fghbuild.gomode.ui.GoModeApp
 import com.fghbuild.gomode.ui.theme.GoModeTheme
@@ -85,19 +85,19 @@ class ServerVoiceSwitchTest {
     @Test
     @LocalEmulatorOnly
     @ModelFreeSpeech
-    fun spokenTextSwitchKeepsOneConversationAcrossBothDirections() = exerciseSharedConversation(VoiceMode.DEVICE)
+    fun spokenTextSwitchKeepsOneConversationAcrossBothDirections() = exerciseSharedConversation(SpeechOwner.DEVICE)
 
     @Test
-    fun spokenWebRtcSwitchKeepsOneConversationAcrossBothDirections() = exerciseSharedConversation(VoiceMode.CLOUD)
+    fun spokenWebRtcSwitchKeepsOneConversationAcrossBothDirections() = exerciseSharedConversation(SpeechOwner.GATEWAY)
 
     @Test
     @ModelFreeSpeech
-    fun textStartupProgressPrecedesReadiness() = exerciseStartupProgress(VoiceMode.DEVICE)
+    fun textStartupProgressPrecedesReadiness() = exerciseStartupProgress(SpeechOwner.DEVICE)
 
     @Test
-    fun webRtcStartupProgressPrecedesReadiness() = exerciseStartupProgress(VoiceMode.CLOUD)
+    fun webRtcStartupProgressPrecedesReadiness() = exerciseStartupProgress(SpeechOwner.GATEWAY)
 
-    private fun exerciseStartupProgress(mode: VoiceMode) =
+    private fun exerciseStartupProgress(mode: SpeechOwner) =
         runTest {
             MockWebServer().use { server ->
                 val startup = CountDownLatch(1)
@@ -106,9 +106,13 @@ class ServerVoiceSwitchTest {
                 server.start()
                 val repository = SettingsRepository(MemoryPreferences())
                 val id = repository.addService("Local stack", server.url("/").toString())
-                repository.updateVoiceMode(mode)
+                repository.selectSpeech(mode)
                 repository.updateShowReasoning(true)
-                repository.settings.first { it.activeServiceId == id && it.voiceMode == mode && it.showReasoning }
+                repository.settings.first {
+                    it.activeServiceId == id &&
+                        it.voiceSetup.deviceSpeech == (mode == SpeechOwner.DEVICE) &&
+                        it.showReasoning
+                }
                 val context = InstrumentationRegistry.getInstrumentation().targetContext
                 val owner = LocalModelOwner(context, localModelInstallation(ModelDownloadState.Missing(0)))
                 val shellOwner = ServiceShellOwner(context, repository)
@@ -156,7 +160,7 @@ class ServerVoiceSwitchTest {
             }
         }
 
-    private fun exerciseSharedConversation(mode: VoiceMode) =
+    private fun exerciseSharedConversation(mode: SpeechOwner) =
         runTest {
             MockWebServer().use { cookieServer ->
                 MockWebServer().use { bearerServer ->
@@ -170,8 +174,11 @@ class ServerVoiceSwitchTest {
                     val repository = SettingsRepository(MemoryPreferences())
                     val bearerID = repository.addService("Bearer service", bearerServer.url("/").toString())
                     val cookieID = repository.addService("Cookie service", cookieServer.url("/").toString())
-                    repository.updateVoiceMode(mode)
-                    repository.settings.first { it.activeServiceId == cookieID && it.voiceMode == mode }
+                    repository.selectSpeech(mode)
+                    repository.settings.first {
+                        it.activeServiceId == cookieID &&
+                            it.voiceSetup.deviceSpeech == (mode == SpeechOwner.DEVICE)
+                    }
                     val context = InstrumentationRegistry.getInstrumentation().targetContext
                     val owner = LocalModelOwner(context, localModelInstallation(ModelDownloadState.Missing(0)))
                     val shellOwner = ServiceShellOwner(context, repository)
@@ -198,7 +205,7 @@ class ServerVoiceSwitchTest {
                         waitForConnected()
                         val conversation = cookie.sessions.single()
                         // This controlled-backend test supplies model events, not microphone input.
-                        if (mode == VoiceMode.DEVICE) {
+                        if (mode == SpeechOwner.DEVICE) {
                             composeRule.onNodeWithTag("gomode-microphone-mode").performClick()
                             composeRule.onNodeWithTag("gomode-microphone-mode").performClick()
                             waitForMicrophoneMuted()
@@ -229,7 +236,7 @@ class ServerVoiceSwitchTest {
                             }
                         }
                         conversation.send(
-                            if (mode == VoiceMode.CLOUD) {
+                            if (mode == SpeechOwner.GATEWAY) {
                                 """{"kind":"transcript.delta","speaker":"assistant","text":"The code word is cedar."}"""
                             } else {
                                 """{"kind":"assistant.text.delta","text":"The code word is cedar."}"""
@@ -478,7 +485,7 @@ class ServerVoiceSwitchTest {
                             )
                             repository.switchService(cookieID)
                         }
-                        if (mode == VoiceMode.DEVICE) {
+                        if (mode == SpeechOwner.DEVICE) {
                             repository.switchService(bearerID)
                             val retryView = visiblePage(bearerServer.url("/").toString())
                             composeRule.runOnUiThread {
@@ -603,7 +610,7 @@ class ServerVoiceSwitchTest {
                                 file.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
                             }
                         }
-                        if (mode == VoiceMode.DEVICE) {
+                        if (mode == SpeechOwner.DEVICE) {
                             conversation.send("""{"kind":"assistant.text.delta","text":"Okay."}""")
                             conversation.send("""{"kind":"turn.status","state":"idle"}""")
                         } else {
@@ -618,7 +625,7 @@ class ServerVoiceSwitchTest {
                                 .isNotEmpty()
                         }
                         cookie.completeToolTurns = true
-                        if (mode == VoiceMode.DEVICE) {
+                        if (mode == SpeechOwner.DEVICE) {
                             repeat(2) { cycle ->
                                 composeRule.onNodeWithContentDescription("End voice").performClick()
                                 composeRule.waitUntil(30_000) {
@@ -673,8 +680,8 @@ class ServerVoiceSwitchTest {
                 val repository = SettingsRepository(MemoryPreferences())
                 repository.addService("Hidden", server.url("/second").toString())
                 val sourceID = repository.addService("Source", server.url("/first").toString())
-                repository.updateVoiceMode(VoiceMode.CLOUD)
-                repository.settings.first { it.activeServiceId == sourceID && it.voiceMode == VoiceMode.CLOUD }
+                repository.selectSpeech(SpeechOwner.GATEWAY)
+                repository.settings.first { it.activeServiceId == sourceID && !it.voiceSetup.deviceSpeech }
                 val context = InstrumentationRegistry.getInstrumentation().targetContext
                 val owner = LocalModelOwner(context, localModelInstallation(ModelDownloadState.Missing(0)))
                 val shellOwner = ServiceShellOwner(context, repository)
@@ -1245,3 +1252,17 @@ internal class ControlledTransport(
 
 // Queued changes accumulate oldest first, so the newest focus is the last selected-server line.
 private fun activeServer(text: String): String? = text.lines().lastOrNull { it.startsWith("Active server: ") }
+
+// Device speech carries text turns; gateway speech follows the gateway's choice over WebRTC.
+private enum class SpeechOwner {
+    DEVICE,
+    GATEWAY,
+}
+
+private suspend fun SettingsRepository.selectSpeech(owner: SpeechOwner) =
+    updateVoiceSetup {
+        when (owner) {
+            SpeechOwner.DEVICE -> it.withDeviceSpeech()
+            SpeechOwner.GATEWAY -> it.copy(mode = VoiceSetupMode.FOLLOW_GATEWAY)
+        }
+    }

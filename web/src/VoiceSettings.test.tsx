@@ -89,7 +89,7 @@ describe("VoiceSettings", () => {
       await user.selectOptions(speed, "1.5");
       expect(speed).toHaveValue("1");
       expect(voiceSession.state.browserSpeechRate).toBe(1);
-      expect(screen.getByRole("alert")).toHaveTextContent("Storage unavailable");
+      expect(speed).toHaveAccessibleDescription("Storage unavailable");
     } finally {
       save.mockRestore();
     }
@@ -211,7 +211,7 @@ describe("VoiceSettings", () => {
       await user.selectOptions(select, "samantha");
       expect(select).toHaveValue("");
       expect(voiceSession.state.browserVoiceURI).toBe("");
-      expect(screen.getByRole("alert")).toHaveTextContent("Storage unavailable");
+      expect(select).toHaveAccessibleDescription("Storage unavailable");
     } finally {
       save.mockRestore();
     }
@@ -301,10 +301,32 @@ describe("VoiceSettings", () => {
     expect(new VoiceSession().speech).toEqual({ input: "gateway", output: "client" });
   });
 
+  it("explains locked voice controls once while display switches stay editable", () => {
+    render(() => <VoiceSettings />);
+    const notice = "End the voice session to change voice settings.";
+    expect(screen.queryByText(notice)).toBeNull();
+    voiceSession.setState((s) => ({ ...s, connected: true }));
+    expect(screen.getAllByText(notice)).toHaveLength(1);
+    for (const radio of screen.getAllByRole("radio")) expect(radio).toBeDisabled();
+    for (const select of screen.getAllByRole("combobox")) expect(select).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Voice language" })).toBeDisabled();
+    for (const toggle of screen.getAllByRole("switch")) expect(toggle).toBeEnabled();
+    expect(screen.getByRole("heading", { name: "Voice" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Display" })).toBeInTheDocument();
+  });
+
+  it("toggles a display switch from anywhere on its row", async () => {
+    const user = userEvent.setup();
+    render(() => <VoiceSettings />);
+    await user.click(screen.getByText("Show usage stats"));
+    expect(screen.getByRole("switch", { name: "Show usage stats" })).toBeChecked();
+    expect(voiceSession.state.showUsageStats).toBe(true);
+  });
+
   it("shows assistant reasoning only after the operator enables it", async () => {
     const user = userEvent.setup();
     render(() => <VoiceSettings />);
-    const toggle = screen.getByRole("checkbox", { name: "Show assistant reasoning" });
+    const toggle = screen.getByRole("switch", { name: "Show assistant reasoning" });
     expect(toggle).not.toBeChecked();
     await user.click(toggle);
     expect(toggle).toBeChecked();
@@ -319,7 +341,7 @@ describe("VoiceSettings", () => {
   it("saves usage visibility and keeps it editable during a call", async () => {
     const user = userEvent.setup();
     render(() => <VoiceSettings />);
-    const toggle = screen.getByRole("checkbox", { name: "Show usage stats" });
+    const toggle = screen.getByRole("switch", { name: "Show usage stats" });
     expect(toggle).not.toBeChecked();
     await user.click(toggle);
     expect(toggle).toBeChecked();
@@ -386,12 +408,12 @@ describe("VoiceSettings", () => {
     fireEvent.pointerDown(document.body);
     fireEvent.blur(input);
     vi.advanceTimersByTime(0);
-    expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(input).not.toHaveAttribute("aria-invalid", "true");
     fireEvent.pointerUp(document.body);
-    expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+    expect(screen.queryByRole("alert")).toBeNull();
     vi.advanceTimersByTime(0);
-    expect(screen.getByRole("alert")).toHaveTextContent("en_US");
+    expect(input).toHaveAccessibleDescription(/en_US/);
     expect(input).toHaveAttribute("aria-invalid", "true");
   });
 
@@ -401,11 +423,11 @@ describe("VoiceSettings", () => {
     const input = screen.getByRole("textbox");
     fireEvent.input(input, { target: { value: "en_US" } });
     vi.advanceTimersByTime(1000);
-    expect(screen.getByRole("alert")).toBeInTheDocument();
+    expect(input).toHaveAccessibleDescription(/en_US/);
     expect(input).toHaveAttribute("aria-invalid", "true");
     expect(voiceSession.state.languageTag).toBe("en-US");
     fireEvent.input(input, { target: { value: "de-DE" } });
-    expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+    expect(screen.queryByRole("alert")).toBeNull();
     vi.advanceTimersByTime(1000);
     expect(localStorage.getItem("gomode.voiceLanguage")).toBe("de-DE");
   });
@@ -442,7 +464,7 @@ describe("VoiceSettings", () => {
       render(() => <VoiceSettings />);
       fireEvent.input(screen.getByRole("textbox"), { target: { value: "fr-CA" } });
       vi.advanceTimersByTime(1000);
-      expect(screen.getByRole("alert")).toHaveTextContent("Storage unavailable");
+      expect(screen.getByRole("textbox")).toHaveAccessibleDescription("Storage unavailable");
       expect(voiceSession.state.languageTag).toBe("en-US");
     } finally {
       save.mockRestore();
@@ -456,12 +478,10 @@ describe("VoiceSettings", () => {
     try {
       const user = userEvent.setup();
       render(() => <VoiceSettings />);
-      const toggle = screen.getByRole("checkbox", { name: "Show assistant reasoning" });
+      const toggle = screen.getByRole("switch", { name: "Show assistant reasoning" });
       await user.click(toggle);
       expect(toggle).not.toBeChecked();
-      expect(screen.getByRole("alert")).toHaveTextContent(
-        "Could not save the reasoning preference: Storage unavailable",
-      );
+      expect(toggle).toHaveAccessibleDescription("Could not save the reasoning preference: Storage unavailable");
       expect(voiceSession.state.showReasoning).toBe(false);
     } finally {
       save.mockRestore();
@@ -475,10 +495,10 @@ describe("VoiceSettings", () => {
     try {
       const user = userEvent.setup();
       render(() => <VoiceSettings />);
-      const toggle = screen.getByRole("checkbox", { name: "Show usage stats" });
+      const toggle = screen.getByRole("switch", { name: "Show usage stats" });
       await user.click(toggle);
       expect(toggle).not.toBeChecked();
-      expect(screen.getByRole("alert")).toHaveTextContent("Could not save the usage preference: Storage unavailable");
+      expect(toggle).toHaveAccessibleDescription("Could not save the usage preference: Storage unavailable");
       expect(voiceSession.state.showUsageStats).toBe(false);
     } finally {
       save.mockRestore();
@@ -493,7 +513,7 @@ describe("VoiceSettings", () => {
     });
     try {
       await user.selectOptions(screen.getByRole("combobox", { name: "Speech" }), "browser");
-      expect(screen.getByRole("alert")).toHaveTextContent("Storage unavailable");
+      expect(screen.getByRole("combobox", { name: "Speech" })).toHaveAccessibleDescription("Storage unavailable");
       expect(screen.getByRole("combobox", { name: "Speech" })).toHaveValue("model:kokoro");
       expect(voiceSession.speech).toEqual({ input: "gateway", output: "gateway" });
     } finally {

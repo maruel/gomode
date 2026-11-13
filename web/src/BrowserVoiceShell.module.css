@@ -54,3 +54,14 @@
   color: var(--color-text-muted);
   cursor: default;
 }
+
+@media (forced-colors: active) {
+  .notice button {
+    --voice-icon-forced-color: ButtonText;
+  }
+
+  .notice button:disabled,
+  .notice button[aria-disabled="true"] {
+    --voice-icon-forced-color: GrayText;
+  }
+}

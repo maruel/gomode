@@ -160,16 +160,16 @@ describe("voice choices", () => {
     render(() => <VoiceSettings />);
     await readySelect();
     const user = userEvent.setup();
-    await user.click(screen.getByRole("tab", { name: "Select parts" }));
+    await user.click(screen.getByRole("radio", { name: "Separate stages" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "Recognition" }), "browser");
     const model = screen.getByRole("combobox", { name: "Language model" });
     await user.selectOptions(model, "local");
     expect(model).toHaveValue("local");
     expect(voiceSession.state.choiceIDs[voiceSession.transport]).toBe("local");
-    expect(screen.getByRole("alert")).toHaveTextContent("does not support the selected recognition and speech output");
+    expect(model).toHaveAccessibleDescription(/does not support the selected recognition and speech output/);
     await user.selectOptions(screen.getByRole("combobox", { name: "Speech" }), "browser");
     expect(model).toHaveValue("local");
-    expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(voiceSession.speech).toEqual({ input: "client", output: "client" });
   });
 
@@ -182,14 +182,14 @@ describe("voice choices", () => {
       throw new Error("Storage unavailable");
     });
     try {
-      await user.click(screen.getByRole("tab", { name: "All-in-one model" }));
+      await user.click(screen.getByRole("radio", { name: "All-in-one" }));
     } finally {
       save.mockRestore();
     }
-    expect(screen.getByRole("alert")).toHaveTextContent("Storage unavailable");
+    expect(screen.getByRole("radiogroup", { name: "Voice setup" })).toHaveAccessibleDescription("Storage unavailable");
     await user.selectOptions(screen.getByRole("combobox", { name: "Recognition" }), "model:asr-b");
     expect(voiceSession.state.speechModelIDs.input).toBe("asr-b");
-    expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   for (const outcome of ["failure", "cancel"] as const) {
@@ -219,7 +219,7 @@ describe("voice choices", () => {
         await waitFor(() => expect(requests).toBe(3));
         retry.resolve(new Response(JSON.stringify(independent)));
         expect(await readySelect()).toHaveValue("first");
-        expect(screen.getByRole("tab", { name: "All-in-one model" })).toBeEnabled();
+        expect(screen.getByRole("radio", { name: "All-in-one" })).toBeEnabled();
         expect(screen.getByRole("combobox", { name: "Recognition" })).toBeEnabled();
         expect(voiceSession.state.choicesError).toBeNull();
         expect(screen.queryByRole("status")).toBeNull();
@@ -256,11 +256,11 @@ describe("voice choices", () => {
     expect(saved.partsChoiceID).toBe("second");
     expect(saved.recognitionModelID).toBe("asr-b");
     expect(saved.synthesisModelID).toBe("tts-b");
-    await user.click(screen.getByRole("tab", { name: "All-in-one model" }));
+    await user.click(screen.getByRole("radio", { name: "All-in-one" }));
     expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("native");
     expect(screen.queryByRole("combobox", { name: "Recognition" })).toBeNull();
     await user.selectOptions(screen.getByRole("combobox", { name: "Speaking voice" }), "Aoede");
-    await user.click(screen.getByRole("tab", { name: "Select parts" }));
+    await user.click(screen.getByRole("radio", { name: "Separate stages" }));
     expect(await readySelect()).toHaveValue("second");
     expect(recognition()).toHaveValue("model:asr-b");
     expect(synthesis()).toHaveValue("model:tts-b");
@@ -271,7 +271,7 @@ describe("voice choices", () => {
     voiceSession.setState((s) => ({ ...s, connected: true }));
     expect(recognition()).toBeDisabled();
     expect(synthesis()).toBeDisabled();
-    expect(screen.getByRole("tab", { name: "All-in-one model" })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "All-in-one" })).toBeDisabled();
   });
 
   it("retains missing saved stages and restores a selection when persistence fails", async () => {
@@ -281,20 +281,90 @@ describe("voice choices", () => {
     await readySelect();
     const select = screen.getByRole("combobox", { name: "Recognition" });
     expect(select).toHaveProperty("value", "model:removed");
-    expect(screen.getByRole("alert")).toHaveTextContent("selected recognition model is unavailable");
+    expect(select).toHaveAccessibleDescription(/selected recognition model is unavailable/);
     const save = vi.spyOn(window.Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("Storage unavailable");
     });
     try {
       await userEvent.setup().selectOptions(select, "model:asr-b");
       expect(select).toHaveProperty("value", "model:removed");
-      expect(screen.getByRole("alert")).toHaveTextContent("Storage unavailable");
+      expect(select).toHaveAccessibleDescription("Storage unavailable");
     } finally {
       save.mockRestore();
     }
     await userEvent.setup().selectOptions(select, "model:asr-b");
     expect(select).toHaveValue("model:asr-b");
-    expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("places each failure under the control that owns it", async () => {
+    localStorage.setItem("gomode.voiceSpeechModel.https://voice.example.output", "removed");
+    globalThis.fetch = async () => new Response(JSON.stringify(independent));
+    render(() => <VoiceSettings />);
+    const model = await readySelect();
+    const recognition = screen.getByRole("combobox", { name: "Recognition" });
+    const speech = screen.getByRole("combobox", { name: "Speech" });
+    expect(speech).toHaveAccessibleDescription(/selected speech model is unavailable/);
+    expect(recognition).not.toHaveAttribute("aria-describedby");
+    expect(model).not.toHaveAttribute("aria-describedby");
+    const save = vi.spyOn(window.Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    try {
+      await userEvent.setup().selectOptions(recognition, "model:asr-b");
+    } finally {
+      save.mockRestore();
+    }
+    expect(recognition).toHaveAccessibleDescription("Storage unavailable");
+    expect(speech).toHaveAccessibleDescription(/selected speech model is unavailable/);
+    expect(model).not.toHaveAttribute("aria-describedby");
+    expect(screen.getAllByRole("alert")).toHaveLength(2);
+    await userEvent.setup().selectOptions(speech, "model:tts-b");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("moves the setup choice with arrow keys from one Tab stop and skips an unavailable setup", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify(independent));
+    render(() => <VoiceSettings />);
+    await readySelect();
+    const user = userEvent.setup();
+    const allInOne = screen.getByRole("radio", { name: "All-in-one" });
+    const stages = screen.getByRole("radio", { name: "Separate stages" });
+    await user.tab();
+    expect(stages).toHaveFocus();
+    await user.keyboard("{ArrowLeft}");
+    expect(allInOne).toHaveFocus();
+    expect(allInOne).toBeChecked();
+    expect(voiceSession.state.setupMode).toBe("all-in-one");
+    expect(JSON.parse(localStorage.getItem("gomode.voiceSetup.https://voice.example") ?? "null")).toMatchObject({
+      mode: "all-in-one",
+    });
+    expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("native");
+    await user.tab();
+    expect(allInOne).not.toHaveFocus();
+    expect(stages).not.toHaveFocus();
+    await user.tab({ shift: true });
+    expect(allInOne).toHaveFocus();
+    await user.keyboard("{ArrowRight}");
+    expect(stages).toBeChecked();
+    expect(voiceSession.state.setupMode).toBe("parts");
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          ...independent,
+          choices: independent.choices.filter((choice) => choice.composable),
+          defaults: [{ transport: "text", id: "first" }],
+        }),
+      );
+    configureVoiceGateway("https://other.example", null);
+    await waitFor(() => expect(screen.getByRole("radio", { name: "All-in-one" })).toBeDisabled());
+    const parts = screen.getByRole("radio", { name: "Separate stages" });
+    await waitFor(() => expect(parts).toBeEnabled());
+    parts.focus();
+    await user.keyboard("{ArrowLeft}");
+    expect(parts).toHaveFocus();
+    expect(parts).toBeChecked();
+    expect(voiceSession.state.setupMode).toBe("parts");
   });
 
   it("rejects choices without valid transports", async () => {
@@ -392,7 +462,7 @@ describe("voice choices", () => {
     const user = userEvent.setup();
     render(() => <VoiceSettings />);
     await readySelect();
-    await user.click(screen.getByRole("tab", { name: "Select parts" }));
+    await user.click(screen.getByRole("radio", { name: "Separate stages" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "Speech" }), "browser");
     const model = screen.getByRole("combobox", { name: "Language model" });
     expect(model).toHaveValue("remote");
@@ -435,7 +505,7 @@ describe("voice choices", () => {
     const user = userEvent.setup();
     render(() => <VoiceSettings />);
     expect(await readySelect()).toHaveValue("gemini");
-    await user.click(screen.getByRole("tab", { name: "Select parts" }));
+    await user.click(screen.getByRole("radio", { name: "Separate stages" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "Recognition" }), "browser");
     await user.selectOptions(screen.getByRole("combobox", { name: "Speech" }), "browser");
     await user.selectOptions(screen.getByRole("combobox", { name: "Language model" }), "local");
@@ -444,9 +514,9 @@ describe("voice choices", () => {
     expect(restored.state.setupMode).toBe("parts");
     expect(restored.state.choiceIDs.text).toBe("local");
     expect(restored.speech).toEqual({ input: "client", output: "client" });
-    await user.click(screen.getByRole("tab", { name: "All-in-one model" }));
+    await user.click(screen.getByRole("radio", { name: "All-in-one" }));
     expect(await readySelect()).toHaveValue("gemini");
-    await user.click(screen.getByRole("tab", { name: "Select parts" }));
+    await user.click(screen.getByRole("radio", { name: "Separate stages" }));
     expect(await readySelect()).toHaveValue("local");
     configureVoiceGateway("https://other.example", null);
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("gemini"));
@@ -462,7 +532,7 @@ describe("voice choices", () => {
     voiceSession.selectSpeechOutput("client");
     render(() => <VoiceSettings />);
     expect(await readySelect()).toHaveValue("remote");
-    expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(localStorage.getItem("gomode.voiceChoice.https://voice.example.text")).toBe("gemini");
   });
 
@@ -490,10 +560,10 @@ describe("voice choices", () => {
     const restored = new VoiceSession();
     await restored.loadVoiceChoices();
     expect(restored.state.voiceName).toBe("Aoede");
-    await user.click(screen.getByRole("tab", { name: "Select parts" }));
+    await user.click(screen.getByRole("radio", { name: "Separate stages" }));
     expect(speaking()).toHaveValue("");
     await user.selectOptions(speaking(), "Leda");
-    await user.click(screen.getByRole("tab", { name: "All-in-one model" }));
+    await user.click(screen.getByRole("radio", { name: "All-in-one" }));
     expect(speaking()).toHaveValue("Aoede");
     configureVoiceGateway("https://other.example", null);
     await readySelect();
@@ -501,7 +571,7 @@ describe("voice choices", () => {
     configureVoiceGateway("https://voice.example", null);
     await readySelect();
     expect(speaking()).toHaveValue("Aoede");
-    await user.click(screen.getByRole("tab", { name: "Select parts" }));
+    await user.click(screen.getByRole("radio", { name: "Separate stages" }));
     await user.selectOptions(screen.getByRole("combobox", { name: "Recognition" }), "browser");
     await user.selectOptions(screen.getByRole("combobox", { name: "Speech" }), "browser");
     expect(speaking()).toHaveValue("");
@@ -532,7 +602,9 @@ describe("voice choices", () => {
       render(() => <VoiceSettings />);
       await readySelect();
       expect(screen.getByRole("combobox", { name: "Speaking voice" })).toBeDisabled();
-      expect(screen.getByRole("alert")).toHaveTextContent("Voice storage unavailable");
+      expect(screen.getByRole("combobox", { name: "Speaking voice" })).toHaveAccessibleDescription(
+        "Voice storage unavailable",
+      );
       await voiceSession.connect();
       expect(voiceSession.state.error).toBe("Voice storage unavailable");
       load.mockRestore();
@@ -540,12 +612,12 @@ describe("voice choices", () => {
       await waitFor(() => expect(screen.getByRole("combobox", { name: "Speaking voice" })).toBeEnabled());
       const speaking = screen.getByRole("combobox", { name: "Speaking voice" });
       expect(speaking).toHaveValue("Retired");
-      expect(screen.getByRole("alert")).toHaveTextContent("saved speaking voice is unavailable");
+      expect(speaking).toHaveAccessibleDescription(/saved speaking voice is unavailable/);
       expect(localStorage.getItem(key)).toBe("Retired");
       await userEvent.setup().selectOptions(speaking, "Aoede");
       expect(speaking).toHaveValue("Aoede");
       expect(localStorage.getItem(key)).toBe("Aoede");
-      expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+      expect(screen.queryByRole("alert")).toBeNull();
     } finally {
       load.mockRestore();
       prepare.mockRestore();
@@ -562,7 +634,9 @@ describe("voice choices", () => {
       await userEvent.setup().selectOptions(screen.getByRole("combobox", { name: "Speaking voice" }), "Aoede");
       expect(voiceSession.state.voiceName).toBe("");
       expect(screen.getByRole("combobox", { name: "Speaking voice" })).toHaveValue("");
-      expect(screen.getByRole("alert")).toHaveTextContent("Voice write failed");
+      expect(screen.getByRole("combobox", { name: "Speaking voice" })).toHaveAccessibleDescription(
+        "Voice write failed",
+      );
     } finally {
       save.mockRestore();
     }
@@ -611,12 +685,14 @@ describe("voice choices", () => {
     const user = userEvent.setup();
     render(() => <VoiceSettings />);
     expect(await readySelect()).toHaveValue("gemini");
-    await user.click(screen.getByRole("tab", { name: "Select parts" }));
+    await user.click(screen.getByRole("radio", { name: "Separate stages" }));
     expect(await readySelect()).toHaveProperty("value", "removed");
-    expect(screen.getByRole("alert")).toHaveTextContent("selected voice choice is unavailable");
+    expect(screen.getByRole("combobox", { name: "Language model" })).toHaveAccessibleDescription(
+      /selected voice choice is unavailable/,
+    );
     expect(localStorage.getItem("gomode.voiceChoice.https://voice.example.text")).toBe("removed");
     await user.selectOptions(screen.getByRole("combobox", { name: "Language model" }), "remote");
-    expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("shows pending discovery, reports failure, and retries", async () => {
@@ -629,13 +705,20 @@ describe("voice choices", () => {
     globalThis.fetch = () => discovery;
     render(() => <VoiceSettings />);
     expect(screen.getByRole("status")).toHaveTextContent("Loading voice choices");
-    expect(screen.getByRole("combobox", { name: "Language model" })).toBeDisabled();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.getByRole("radio", { name: "Separate stages" })).toBeDisabled();
     rejectRequest(new Error("Gateway offline"));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Voice gateway unreachable."));
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    // The cause and its retry share one line in place of the pickers.
+    expect(screen.getByRole("alert").parentElement).toContainElement(
+      screen.getByRole("button", { name: "Retry loading voice choices" }),
+    );
     globalThis.fetch = async () => new Response(JSON.stringify(metadata));
     await userEvent.setup().click(screen.getByRole("button", { name: "Retry loading voice choices" }));
     expect(await readySelect()).toHaveValue("gemini");
-    expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("ignores delayed discovery from the gateway replaced during loading", async () => {
@@ -682,7 +765,7 @@ describe("voice choices", () => {
     try {
       render(() => <VoiceSettings />);
       await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Storage unavailable"));
-      expect(screen.getByRole("combobox", { name: "Language model" })).toBeDisabled();
+      expect(screen.queryByRole("combobox", { name: "Language model" })).toBeNull();
       expect(screen.getByRole("button", { name: "Retry loading voice choices" })).toBeEnabled();
       await voiceSession.connect();
       expect(voiceSession.state.error).toBe("Storage unavailable");
@@ -690,14 +773,14 @@ describe("voice choices", () => {
       await userEvent.setup().click(screen.getByRole("button", { name: "Retry loading voice choices" }));
       const select = await readySelect();
       expect(select).toHaveProperty("value", "removed");
-      expect(screen.getByRole("alert")).toHaveTextContent("selected voice choice is unavailable");
+      expect(select).toHaveAccessibleDescription(/selected voice choice is unavailable/);
       await voiceSession.connect();
       expect(voiceSession.state.connected).toBe(false);
       expect(voiceSession.state.error).toContain("selected voice choice is unavailable");
       expect(localStorage.getItem("gomode.voiceChoice.https://voice.example.text")).toBe("removed");
       await userEvent.setup().selectOptions(select, "local");
       expect(select).toHaveValue("local");
-      expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+      expect(screen.queryByRole("alert")).toBeNull();
     } finally {
       load.mockRestore();
       prepare.mockRestore();
@@ -743,7 +826,7 @@ describe("voice choices", () => {
       throw new Error("Storage unavailable");
     });
     try {
-      await userEvent.setup().click(screen.getByRole("tab", { name: "Select parts" }));
+      await userEvent.setup().click(screen.getByRole("radio", { name: "Separate stages" }));
       expect(select).toHaveValue("gemini");
       expect(
         JSON.stringify({
@@ -753,12 +836,16 @@ describe("voice choices", () => {
         }),
       ).toBe(before);
       expect(localStorage.getItem("gomode.voiceSetup.https://voice.example")).toBe(stored);
-      expect(screen.getByRole("alert")).toHaveTextContent("Storage unavailable");
+      expect(screen.getByRole("radiogroup", { name: "Voice setup" })).toHaveAccessibleDescription(
+        "Storage unavailable",
+      );
+      expect(screen.getByRole("radio", { name: "All-in-one" })).toBeChecked();
+      expect(screen.getByRole("radio", { name: "Separate stages" })).not.toBeChecked();
     } finally {
       save.mockRestore();
     }
-    await userEvent.setup().click(screen.getByRole("tab", { name: "Select parts" }));
+    await userEvent.setup().click(screen.getByRole("radio", { name: "Separate stages" }));
     expect(await readySelect()).toHaveValue("remote");
-    expect(screen.getByRole("alert")).toBeEmptyDOMElement();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

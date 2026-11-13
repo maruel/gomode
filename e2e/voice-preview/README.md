@@ -118,15 +118,26 @@ into `web/src`.
 ## Voice setup settings
 
 Open the preview with `?state=idle`, then open **Voice settings**. Capture both
-**All-in-one model** and **Select parts** at the same viewport. The parts tab
-orders recognition, language model, and speech; each speech selector includes
-Browser alongside the configured models. Switching tabs retains each setup.
+**All-in-one** and **Separate stages** at 360 and 640 CSS px widths. Separate
+stages orders recognition, language model, and speech; each speech picker
+includes Browser alongside the configured models. Switching setups retains each
+one. Add `choices=loading` or `choices=error` for pending or failed discovery,
+and use `?state=locked` for a session started after discovery. Seed a removed
+saved stage, such as `gomode.voiceSpeechModel.<origin>.input`, to place an error
+under its picker.
 
-Check the tabs with arrow keys, then close settings and verify focus returns to
-its trigger. At narrow widths, native browser zoom, and larger default text,
-scroll inside settings to inspect the language and display preferences too.
-Type an invalid voice language, then click **Credits** once: it must open. The
-overlay grows upward, so an error row appearing on blur would move it away.
+Add `theme=dark` for the host's dark tokens and `lang=de`, `es`, or `fr` for a
+shipped translation; at 360 CSS px the longest segment labels wrap beside the
+close button. Emulate forced colors through CDP `Emulation.setEmulatedMedia`
+with `forced-colors: active`, in both color schemes: icons and the selected
+segment must use system colors.
+
+Check the setup choice with arrow keys, then close settings and verify focus
+returns to its trigger. At narrow widths, native browser zoom, and larger
+default text, scroll inside settings to inspect the language and display
+preferences too. Type an invalid voice language, then click **Credits** once: it
+must open. The overlay grows upward, so an error row appearing on blur would
+move it away.
 
 ## Hosts own browser server switching
 

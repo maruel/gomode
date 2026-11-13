@@ -16,7 +16,8 @@ import androidx.test.rule.GrantPermissionRule
 import androidx.test.uiautomator.UiDevice
 import com.fghbuild.gomode.MainActivity
 import com.fghbuild.gomode.data.SettingsRepository
-import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.data.VoiceSetupMode
+import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.ui.web.ServiceShellOwner
 import kotlinx.coroutines.CompletableDeferred
@@ -68,8 +69,8 @@ class GatewaySessionIntegrationTest {
                         ),
                     )
                 repository.addService("fixture", baseUrl)
-                repository.updateVoiceMode(VoiceMode.CLOUD)
-                repository.settings.first { it.activeServiceURL == baseUrl && it.voiceMode == VoiceMode.CLOUD }
+                repository.updateVoiceSetup { it.copy(mode = VoiceSetupMode.FOLLOW_GATEWAY) }
+                repository.settings.first { it.activeServiceURL == baseUrl && !it.voiceSetup.deviceSpeech }
                 val activity = ActivityScenario.launch(MainActivity::class.java)
                 val pages = ServiceShellOwner(context, repository)
                 val conversation =
@@ -124,8 +125,8 @@ class GatewaySessionIntegrationTest {
                     )
                 val repository = SettingsRepository(dataStore)
                 repository.addService("fixture", baseUrl)
-                repository.updateVoiceMode(VoiceMode.DEVICE)
-                repository.settings.first { it.activeServiceURL == baseUrl && it.voiceMode == VoiceMode.DEVICE }
+                repository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
+                repository.settings.first { it.activeServiceURL == baseUrl && it.voiceSetup.deviceSpeech }
                 val expectedName = ServiceSettingsClient().fetch(baseUrl).service
 
                 val speech = AndroidDeviceSpeech(context, "en-US")

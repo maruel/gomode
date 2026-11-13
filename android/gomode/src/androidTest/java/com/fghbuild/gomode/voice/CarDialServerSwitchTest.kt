@@ -20,7 +20,8 @@ import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import com.fghbuild.gomode.GoModeApplication
 import com.fghbuild.gomode.MainActivity
-import com.fghbuild.gomode.data.OnDeviceEngine
+import com.fghbuild.gomode.data.VoiceLanguageModel
+import com.fghbuild.gomode.data.VoiceSetupMode
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockWebServer
@@ -121,13 +122,13 @@ class CarDialServerSwitchTest {
                 try {
                     cookieID = repository.addService("Car cookie", cookieURL)
                     bearerID = repository.addService("Prepared bearer", bearerServer.url("/").toString())
-                    repository.updateVoiceMode(com.fghbuild.gomode.data.VoiceMode.CLOUD)
+                    repository.updateVoiceSetup { it.copy(mode = VoiceSetupMode.FOLLOW_GATEWAY) }
                     repository.updateVoiceLanguageTag("fr-CA")
-                    repository.updateOnDeviceEngine(OnDeviceEngine.REMOTE_GATEWAY)
+                    repository.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.GATEWAY) }
                     repository.switchService(requireNotNull(bearerID))
                     repository.settings.first {
                         it.activeServiceId == bearerID &&
-                            it.voiceLanguageTag == "fr-CA" && it.onDeviceEngine == OnDeviceEngine.REMOTE_GATEWAY
+                            it.voiceLanguageTag == "fr-CA" && it.voiceSetup.languageModel == VoiceLanguageModel.GATEWAY
                     }
                     instrumentation.runOnMainSync {
                         CookieManager.getInstance().setCookie(cookieURL, "session=confirmed; Path=/")

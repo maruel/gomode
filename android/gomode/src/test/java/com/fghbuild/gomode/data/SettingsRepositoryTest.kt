@@ -15,6 +15,7 @@ import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -224,20 +225,133 @@ class SettingsRepositoryTest {
         }
 
     @Test
-    fun `voice choice survives recreation and stays isolated per gateway`() =
+    fun `gateway selections survive recreation, stay per gateway, and keep the other mode's choice`() =
         runBlocking {
             val store = InMemoryPreferencesDataStore()
             val repository = SettingsRepository(store)
-            repository.updateVoiceChoice("https://first.example/", "webrtc", "live")
-            repository.updateVoiceChoice("https://first.example/", "text", "remote")
-            repository.updateVoiceChoice("https://second.example", "text", "local")
+            val allInOne = { setup: VoiceSetupPreference -> setup.copy(mode = VoiceSetupMode.ALL_IN_ONE) }
+            repository.updateVoiceChoice("https://first.example/", "live", allInOne)
+            repository.updateVoiceChoice("https://first.example/", "remote", VoiceSetupPreference::withDeviceSpeech)
+            repository.updateVoiceChoice("https://second.example", "local", VoiceSetupPreference::withDeviceSpeech)
+            repository.updateSpeechModel("https://first.example", SpeechStage.RECOGNITION, "whisper")
             val restored =
-                SettingsRepository(store).awaitSettings("gateway choices restored") {
-                    it.voiceChoices.size ==
-                        2
+                SettingsRepository(store).awaitSettings("gateway selections restored") {
+                    it.gatewayVoiceSetups.size == 2 &&
+                        it.gatewayVoiceSetups["https://first.example"]?.recognitionModelID != null
                 }
-            assertEquals(mapOf("text" to "remote", "webrtc" to "live"), restored.voiceChoices["https://first.example"])
-            assertEquals(mapOf("text" to "local"), restored.voiceChoices["https://second.example"])
+            assertEquals(
+                GatewayVoiceSetup(
+                    allInOneChoiceID = "live",
+                    separateStagesChoiceID = "remote",
+                    recognitionModelID = "whisper",
+                ),
+                restored.gatewayVoiceSetups["https://first.example"],
+            )
+            assertEquals(
+                GatewayVoiceSetup(separateStagesChoiceID = "local"),
+                restored.gatewayVoiceSetups["https://second.example"],
+            )
+            assertEquals(VoiceSetupPreference().withDeviceSpeech(), restored.voiceSetup)
+            repository.updateVoiceSetup(allInOne)
+            val switched =
+                repository.awaitSettings("all-in-one restored") { it.voiceSetup.mode == VoiceSetupMode.ALL_IN_ONE }
+            assertEquals("remote", switched.gatewayVoiceSetups["https://first.example"]?.separateStagesChoiceID)
+            assertEquals("live", switched.gatewayVoiceSetups["https://first.example"]?.allInOneChoiceID)
+        }
+
+    @Test
+    fun `a choice made while following the gateway is its all-in-one choice`() =
+        runBlocking {
+            val repository = createRepo()
+            repository.awaitSettings("loaded") { it.loadState == SettingsLoadState.Ready }
+            repository.updateVoiceChoice("https://first.example", "llm") { it }
+            val saved = repository.awaitSettings("followed choice") { it.gatewayVoiceSetups.isNotEmpty() }
+            assertEquals(VoiceSetupMode.FOLLOW_GATEWAY, saved.voiceSetup.mode)
+            assertEquals(GatewayVoiceSetup(allInOneChoiceID = "llm"), saved.gatewayVoiceSetups["https://first.example"])
+        }
+
+    @Test
+    fun `unreadable voice setup surfaces an error instead of a default`() =
+        runBlocking {
+            for (key in listOf("VOICE_SETUP", "GATEWAY_VOICE_SETUPS")) {
+                val store = InMemoryPreferencesDataStore()
+                store.edit { it[stringPreferencesKey(key)] = "invalid JSON" }
+                val state = SettingsRepository(store).awaitSettings(key) { it.loadState is SettingsLoadState.Failed }
+                assertTrue(key, state.loadState is SettingsLoadState.Failed)
+            }
+            val store = InMemoryPreferencesDataStore()
+            store.edit {
+                it[stringPreferencesKey("GATEWAY_VOICE_SETUPS")] =
+                    """{"https://a.example":{"allInOneChoiceID":""}}"""
+            }
+            val blank = SettingsRepository(store).awaitSettings("blank ID") { it.loadState is SettingsLoadState.Failed }
+            assertTrue(blank.loadState is SettingsLoadState.Failed)
+        }
+
+    @Test
+    fun `former voice mode and engine migrate to the voice setup`() =
+        runBlocking {
+            data class Row(
+                val mode: String?,
+                val engine: String?,
+                val expected: VoiceSetupPreference,
+            )
+            val device = VoiceSetupPreference().withDeviceSpeech()
+            val rows =
+                listOf(
+                    // Cloud follows the gateway: the catalog decides all-in-one or separate gateway stages.
+                    Row(null, null, VoiceSetupPreference()),
+                    Row("CLOUD", null, VoiceSetupPreference()),
+                    Row("CLOUD", "LOCAL_LLM", VoiceSetupPreference(languageModel = VoiceLanguageModel.LOCAL_LLM)),
+                    Row("DEVICE", null, device),
+                    Row("DEVICE", "REMOTE_GATEWAY", device),
+                    Row("DEVICE", "LOCAL_LLM", device.copy(languageModel = VoiceLanguageModel.LOCAL_LLM)),
+                    Row("DEVICE", "NEEDLE_WHISTLE", device.copy(languageModel = VoiceLanguageModel.NEEDLE_WHISTLE)),
+                )
+            for (row in rows) {
+                val store = InMemoryPreferencesDataStore()
+                store.edit { prefs ->
+                    row.mode?.let { prefs[stringPreferencesKey("VOICE_MODE")] = it }
+                    row.engine?.let { prefs[stringPreferencesKey("ON_DEVICE_VOICE_ENGINE")] = it }
+                    prefs[stringPreferencesKey("VOICE_CHOICES")] =
+                        """{"https://first.example":{"webrtc":"live","text":"remote"}}"""
+                }
+                val state = SettingsRepository(store).awaitSettings("$row") { it.loadState == SettingsLoadState.Ready }
+                assertEquals("$row", row.expected, state.voiceSetup)
+                assertEquals(
+                    "$row",
+                    GatewayVoiceSetup(allInOneChoiceID = "live", separateStagesChoiceID = "remote"),
+                    state.gatewayVoiceSetups["https://first.example"],
+                )
+                assertEquals(
+                    "$row",
+                    row.expected.mode == VoiceSetupMode.SEPARATE_STAGES,
+                    state.voiceSetup.deviceSpeech,
+                )
+            }
+        }
+
+    @Test
+    fun `the first voice setup write replaces the former keys`() =
+        runBlocking {
+            val store = InMemoryPreferencesDataStore()
+            store.edit { prefs ->
+                prefs[stringPreferencesKey("VOICE_MODE")] = "DEVICE"
+                prefs[stringPreferencesKey("ON_DEVICE_VOICE_ENGINE")] = "LOCAL_LLM"
+                prefs[stringPreferencesKey("VOICE_CHOICES")] = """{"https://first.example":{"text":"remote"}}"""
+            }
+            val repository = SettingsRepository(store)
+            repository.awaitSettings("migrated") { it.loadState == SettingsLoadState.Ready }
+            repository.updateSpeechModel("https://second.example", SpeechStage.SYNTHESIS, "kokoro")
+            val prefs = store.data.first()
+            for (key in listOf("VOICE_MODE", "ON_DEVICE_VOICE_ENGINE", "VOICE_CHOICES")) {
+                assertNull(key, prefs[stringPreferencesKey(key)])
+            }
+            val restored =
+                SettingsRepository(store).awaitSettings("rewritten") { it.loadState == SettingsLoadState.Ready }
+            assertEquals(VoiceLanguageModel.LOCAL_LLM, restored.voiceSetup.effectiveLanguageModel)
+            assertEquals("remote", restored.gatewayVoiceSetups["https://first.example"]?.separateStagesChoiceID)
+            assertEquals("kokoro", restored.gatewayVoiceSetups["https://second.example"]?.synthesisModelID)
         }
 
     @Test
@@ -271,7 +385,7 @@ class SettingsRepositoryTest {
             assertEquals("Kore", restored.speakingVoices["https://first.example"]?.get("live"))
             assertEquals("Orus", restored.speakingVoices["https://first.example"]?.get("other"))
             assertEquals("Puck", restored.speakingVoices["https://second.example"]?.get("live"))
-            assertEquals("live", restored.voiceChoices["https://first.example"]?.get("webrtc"))
+            assertEquals("live", restored.gatewayVoiceSetups["https://first.example"]?.allInOneChoiceID)
             repository.updateSpeakingVoice("https://first.example", "live", "")
             val providerDefault =
                 SettingsRepository(store).awaitSettings("provider default") {
@@ -288,7 +402,7 @@ class SettingsRepositoryTest {
             val repository = SettingsRepository(store)
             repository.awaitSettings("legacy choices") { it.loadState == SettingsLoadState.Ready }
             assertTrue(
-                repository.settings.value.voiceChoices
+                repository.settings.value.gatewayVoiceSetups
                     .isEmpty(),
             )
         }
@@ -491,46 +605,57 @@ class SettingsRepositoryTest {
     }
 
     @Test
-    fun `voice mode defaults to cloud and persists device`() =
-        runBlocking {
-            val repo = createRepo()
-            val initial = repo.awaitSettings("default voice mode")
-            assertEquals(VoiceMode.CLOUD, initial.voiceMode)
-
-            repo.updateVoiceMode(VoiceMode.DEVICE)
-            val updated = repo.awaitSettings("device voice mode") { it.voiceMode == VoiceMode.DEVICE }
-
-            assertEquals(VoiceMode.DEVICE, updated.voiceMode)
-        }
-
-    @Test
-    fun `on-device voice engine defaults to remote gateway and persists engine changes`() =
+    fun `voice setup defaults to following the gateway and persists on-device language models`() =
         runBlocking {
             val store = InMemoryPreferencesDataStore()
             val repo = SettingsRepository(store)
-            val initial = repo.awaitSettings("default engine")
-            assertEquals(OnDeviceEngine.REMOTE_GATEWAY, initial.onDeviceEngine)
+            val initial = repo.awaitSettings("default voice setup")
+            assertEquals(VoiceSetupMode.FOLLOW_GATEWAY, initial.voiceSetup.mode)
+            assertEquals(SpeechStageLocation.GATEWAY, initial.voiceSetup.effectiveSpeech)
+            assertEquals(VoiceLanguageModel.GATEWAY, initial.voiceSetup.effectiveLanguageModel)
 
-            repo.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
-            val localLlm =
-                repo.awaitSettings("local llm engine") {
-                    it.onDeviceEngine == OnDeviceEngine.LOCAL_LLM
+            repo.updateVoiceSetup { it.withDeviceSpeech().copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
+            val reopened =
+                SettingsRepository(store).awaitSettings("reopened local llm") {
+                    it.voiceSetup.effectiveLanguageModel == VoiceLanguageModel.LOCAL_LLM
                 }
-            assertEquals(OnDeviceEngine.LOCAL_LLM, localLlm.onDeviceEngine)
+            assertTrue(reopened.voiceSetup.deviceSpeech)
 
-            val reopened = SettingsRepository(store)
-            val reopenedState =
-                reopened.awaitSettings("reopened engine") {
-                    it.onDeviceEngine == OnDeviceEngine.LOCAL_LLM
-                }
-            assertEquals(OnDeviceEngine.LOCAL_LLM, reopenedState.onDeviceEngine)
-
-            repo.updateOnDeviceEngine(OnDeviceEngine.NEEDLE_WHISTLE)
+            // Gateway stages with an on-device language model still run both stages on the device.
+            repo.updateVoiceSetup {
+                it.copy(
+                    languageModel = VoiceLanguageModel.NEEDLE_WHISTLE,
+                    recognition = SpeechStageLocation.GATEWAY,
+                    speech = SpeechStageLocation.GATEWAY,
+                )
+            }
             val needle =
-                repo.awaitSettings("needle whistle engine") {
-                    it.onDeviceEngine == OnDeviceEngine.NEEDLE_WHISTLE
+                repo.awaitSettings("needle whistle") {
+                    it.voiceSetup.effectiveLanguageModel == VoiceLanguageModel.NEEDLE_WHISTLE
                 }
-            assertEquals(OnDeviceEngine.NEEDLE_WHISTLE, needle.onDeviceEngine)
+            assertTrue(needle.voiceSetup.deviceSpeech)
+            assertEquals(SpeechStageLocation.GATEWAY, needle.voiceSetup.speech)
+
+            // All-in-one keeps the separate-stages selections for a later switch back.
+            repo.updateVoiceSetup { it.copy(mode = VoiceSetupMode.ALL_IN_ONE) }
+            val allInOne = repo.awaitSettings("all-in-one") { it.voiceSetup.mode == VoiceSetupMode.ALL_IN_ONE }
+            assertEquals(VoiceLanguageModel.GATEWAY, allInOne.voiceSetup.effectiveLanguageModel)
+            assertFalse(allInOne.voiceSetup.deviceSpeech)
+            assertEquals(VoiceLanguageModel.NEEDLE_WHISTLE, allInOne.voiceSetup.languageModel)
+
+            // A serialized setup without a mode follows the gateway.
+            val stored = InMemoryPreferencesDataStore()
+            stored.edit { it[stringPreferencesKey("VOICE_SETUP")] = """{"languageModel":"local-llm"}""" }
+            val modeless =
+                SettingsRepository(stored).awaitSettings("modeless") {
+                    it.loadState ==
+                        SettingsLoadState.Ready
+                }
+            assertEquals(
+                VoiceSetupPreference(languageModel = VoiceLanguageModel.LOCAL_LLM),
+                modeless.voiceSetup,
+            )
+            assertEquals(VoiceSetupMode.FOLLOW_GATEWAY, modeless.voiceSetup.mode)
         }
 
     @Test

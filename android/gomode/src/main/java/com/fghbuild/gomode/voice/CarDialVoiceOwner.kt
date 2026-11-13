@@ -38,11 +38,10 @@ import androidx.annotation.StringRes
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import com.fghbuild.gomode.R
-import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.ServiceInstance
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
-import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.data.VoiceLanguageModel
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.ui.web.ServiceCallStage
@@ -377,7 +376,7 @@ internal class CarDialVoiceOwner(
                 null
             }
         conversation = voiceConversation
-        if (settings.voiceMode == VoiceMode.DEVICE && settings.onDeviceEngine == OnDeviceEngine.LOCAL_LLM) {
+        if (settings.voiceSetup.effectiveLanguageModel == VoiceLanguageModel.LOCAL_LLM) {
             val selection =
                 LocalModelSelection(
                     languageTag = settings.voiceLanguageTag,
@@ -391,35 +390,31 @@ internal class CarDialVoiceOwner(
             localModelOwner.select(selection)
         }
         val voice =
-            when (settings.voiceMode) {
-                VoiceMode.CLOUD -> {
-                    VoiceSession(
-                        context,
-                        settingsRepository,
-                        voiceConversation = checkNotNull(voiceConversation),
-                        languageTag = settings.voiceLanguageTag,
-                        callController = call,
-                        switchServer = { id -> switchServer(voiceConversation, id) },
-                        startupTiming = { next.timing },
-                    )
-                }
-
-                VoiceMode.DEVICE -> {
-                    DeviceVoiceSession(
-                        context,
-                        settingsRepository,
-                        settingsClient,
-                        bearerTokenFor = bearer,
-                        languageTag = settings.voiceLanguageTag,
-                        localModelOwner = localModelOwner,
-                        callController = call,
-                        frontendTools = page.frontendTools,
-                        isAuthorityCurrent = authorityCurrent,
-                        voiceConversation = voiceConversation,
-                        switchServer = { id -> switchServer(voiceConversation, id) },
-                        startupTiming = { next.timing },
-                    )
-                }
+            if (!settings.voiceSetup.deviceSpeech) {
+                VoiceSession(
+                    context,
+                    settingsRepository,
+                    voiceConversation = checkNotNull(voiceConversation),
+                    languageTag = settings.voiceLanguageTag,
+                    callController = call,
+                    switchServer = { id -> switchServer(voiceConversation, id) },
+                    startupTiming = { next.timing },
+                )
+            } else {
+                DeviceVoiceSession(
+                    context,
+                    settingsRepository,
+                    settingsClient,
+                    bearerTokenFor = bearer,
+                    languageTag = settings.voiceLanguageTag,
+                    localModelOwner = localModelOwner,
+                    callController = call,
+                    frontendTools = page.frontendTools,
+                    isAuthorityCurrent = authorityCurrent,
+                    voiceConversation = voiceConversation,
+                    switchServer = { id -> switchServer(voiceConversation, id) },
+                    startupTiming = { next.timing },
+                )
             }
         mutableSession.value = voice
         if (voiceConversation != null) {
@@ -483,7 +478,7 @@ internal class CarDialVoiceOwner(
     }
 
     private fun allowsFocusChanges(settings: SettingsState): Boolean =
-        usesGatewayVoice(settings) || settings.onDeviceEngine == OnDeviceEngine.LOCAL_LLM
+        settings.voiceSetup.effectiveLanguageModel != VoiceLanguageModel.NEEDLE_WHISTLE
 
     // Shared sessions permit focus changes; keyword engines remain selected-service sessions.
     private fun settingsCurrent(captured: SettingsState): Boolean {

@@ -12,8 +12,8 @@ import android.content.Context
 import android.os.SystemClock
 import android.util.Log
 import com.fghbuild.gomode.GoModeApplication
-import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.data.VoiceLanguageModel
 import com.fghbuild.gomode.service.DefaultNetworkMonitor
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.service.isTransientHTTPStatus
@@ -111,8 +111,8 @@ internal fun textSessionWebSocketURL(
 
 /**
  * DeviceVoiceSession owns Android speech recognition, synthesis, and turn orchestration.
- * [OnDeviceEngine.REMOTE_GATEWAY] sends recognized text to the gateway over WebSocket;
- * [OnDeviceEngine.LOCAL_LLM] runs inference on the phone. Tool calls use the same session routing.
+ * [VoiceLanguageModel.GATEWAY] sends recognized text to the gateway over WebSocket;
+ * [VoiceLanguageModel.LOCAL_LLM] runs inference on the phone. Tool calls use the same session routing.
  *
  * Microphone capture and recognition stay active during generation and playback.
  * A nonblank recognition hypothesis cancels playback and the current reply.
@@ -140,7 +140,7 @@ internal class DeviceVoiceSession(
         deviceWebSocketClient.newWebSocket(request, listener)
     },
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val engineFactory: (OnDeviceEngine) -> OnDeviceVoiceEngine = { engineType ->
+    private val engineFactory: (VoiceLanguageModel) -> OnDeviceVoiceEngine = { engineType ->
         createOnDeviceEngine(appContext, engineType, ioDispatcher)
     },
 ) : VoiceSessionController {
@@ -310,13 +310,13 @@ internal class DeviceVoiceSession(
             setError("On-device speech recognition is not available")
             return
         }
-        val engineType = settingsRepository.settings.value.onDeviceEngine
+        val engineType = settingsRepository.settings.value.voiceSetup.effectiveLanguageModel
         voiceConversation =
             sharedConversation.takeIf {
-                engineType == OnDeviceEngine.REMOTE_GATEWAY || engineType == OnDeviceEngine.LOCAL_LLM
+                engineType == VoiceLanguageModel.GATEWAY || engineType == VoiceLanguageModel.LOCAL_LLM
             }
         try {
-            if (engineType == OnDeviceEngine.REMOTE_GATEWAY) {
+            if (engineType == VoiceLanguageModel.GATEWAY) {
                 voiceConversation?.begin(preserveTranscript, this.conversationID)
                 voiceConversation?.let { this.conversationID = it.sessionID }
             }
@@ -337,10 +337,10 @@ internal class DeviceVoiceSession(
                         return@launch
                     }
                     setStatus("Connecting…")
-                    if (engineType != OnDeviceEngine.LOCAL_LLM) {
+                    if (engineType != VoiceLanguageModel.LOCAL_LLM) {
                         foreground.start(initialVoiceCallerName(settingsRepository.settings.value))
                     }
-                    if (engineType == OnDeviceEngine.LOCAL_LLM) {
+                    if (engineType == VoiceLanguageModel.LOCAL_LLM) {
                         checkNotNull(voiceConversation) { "Local conversation owner is unavailable" }
                         setStatus("Preparing local model…")
                         timing?.enter(VoiceStartupStage.MODEL)
@@ -353,7 +353,7 @@ internal class DeviceVoiceSession(
                             voiceConversation?.prepare(pinnedVoice)
                                 ?: setupProvider(this@DeviceVoiceSession.conversationID)
                         } catch (e: VoiceSetupException) {
-                            if (engineType == OnDeviceEngine.REMOTE_GATEWAY || engineType == OnDeviceEngine.LOCAL_LLM) {
+                            if (engineType != VoiceLanguageModel.NEEDLE_WHISTLE) {
                                 if (ownsAttempt(attempt)) setError(e.message ?: "Voice setup failed")
                                 return@launch
                             } else {
@@ -380,7 +380,7 @@ internal class DeviceVoiceSession(
                         return@launch
                     }
                     timing?.enter(VoiceStartupStage.TRANSPORT)
-                    if (engineType == OnDeviceEngine.REMOTE_GATEWAY) {
+                    if (engineType == VoiceLanguageModel.GATEWAY) {
                         pinnedVoice =
                             setup.choiceID?.let {
                                 GatewayVoiceSelection(setup.gatewayEndpointURL, it, setup.voiceName)
@@ -403,7 +403,7 @@ internal class DeviceVoiceSession(
                     throw e
                 } catch (e: IOException) {
                     if (ownsAttempt(attempt)) {
-                        if (preserveTranscript && engineType == OnDeviceEngine.REMOTE_GATEWAY && networkJob != null) {
+                        if (preserveTranscript && engineType == VoiceLanguageModel.GATEWAY && networkJob != null) {
                             scheduleReconnect("Network connection failed")
                         } else {
                             timing?.finishFailure(e)
@@ -424,9 +424,9 @@ internal class DeviceVoiceSession(
     private suspend fun openLocalEngine(
         attempt: Long,
         setup: VoiceSetup,
-        engineType: OnDeviceEngine,
+        engineType: VoiceLanguageModel,
     ) {
-        check(engineType != OnDeviceEngine.LOCAL_LLM || preparedLocalModel != null)
+        check(engineType != VoiceLanguageModel.LOCAL_LLM || preparedLocalModel != null)
         val localEngine = preparedLocalModel?.engine ?: withContext(ioDispatcher) { engineFactory(engineType) }
         if (preparedLocalModel == null) otherEngine = localEngine
         val context =
@@ -941,7 +941,7 @@ internal class DeviceVoiceSession(
             )
         }
         val currentEngine = engine
-        if (currentEngine != null && currentEngine.engineType != OnDeviceEngine.REMOTE_GATEWAY) {
+        if (currentEngine != null && currentEngine.engineType != VoiceLanguageModel.GATEWAY) {
             executeLocalTurn(attempt, text, currentEngine)
         } else if (pendingNotifications.isNotEmpty() && awaitingModelTurn) {
             // Keep the replacement behind canceled model/tool work so its focus
@@ -965,7 +965,7 @@ internal class DeviceVoiceSession(
 
     private fun interruptReply() {
         val attempt = attemptGeneration.get()
-        val remote = engine == null || engine?.engineType == OnDeviceEngine.REMOTE_GATEWAY
+        val remote = engine == null || engine?.engineType == VoiceLanguageModel.GATEWAY
         if (suppressReply && (!remote || !remoteTurnActive)) return
         val generating =
             if (remote) {
@@ -1002,7 +1002,8 @@ internal class DeviceVoiceSession(
         serviceUpdate: Boolean = false,
     ) {
         val turn = localTurnGeneration.incrementAndGet()
-        val responseID = if (activeEngine.engineType == OnDeviceEngine.LOCAL_LLM) UUID.randomUUID().toString() else null
+        val responseID =
+            if (activeEngine.engineType == VoiceLanguageModel.LOCAL_LLM) UUID.randomUUID().toString() else null
         localInferenceOwner = turn
         suppressReply = false
         awaitingModelTurn = true
@@ -1421,9 +1422,10 @@ internal class DeviceVoiceSession(
     private fun engineLabel(): String {
         engine?.modelName?.let { return it }
         val settings = settingsRepository.settings.value
-        return when (settings.onDeviceEngine) {
-            OnDeviceEngine.LOCAL_LLM -> settings.localLlmModel.label
-            OnDeviceEngine.NEEDLE_WHISTLE, OnDeviceEngine.REMOTE_GATEWAY -> settings.onDeviceEngine.label
+        val languageModel = settings.voiceSetup.effectiveLanguageModel
+        return when (languageModel) {
+            VoiceLanguageModel.LOCAL_LLM -> settings.localLlmModel.label
+            VoiceLanguageModel.NEEDLE_WHISTLE, VoiceLanguageModel.GATEWAY -> languageModel.label
         }
     }
 
@@ -1467,7 +1469,7 @@ internal class DeviceVoiceSession(
             return
         }
         val currentEngine = engine
-        if (currentEngine != null && currentEngine.engineType != OnDeviceEngine.REMOTE_GATEWAY) {
+        if (currentEngine != null && currentEngine.engineType != VoiceLanguageModel.GATEWAY) {
             val attempt = attemptGeneration.get()
             if (generate) {
                 executeLocalTurn(attempt, text, currentEngine, serviceUpdate = true)
@@ -1519,7 +1521,7 @@ internal class DeviceVoiceSession(
             // its service alerts as context before that request, without a competing turn.
             val generate = update.generate && allowResponse && pendingUserUtterance == null
             val currentEngine = engine
-            if (currentEngine != null && currentEngine.engineType != OnDeviceEngine.REMOTE_GATEWAY) {
+            if (currentEngine != null && currentEngine.engineType != VoiceLanguageModel.GATEWAY) {
                 val attempt = attemptGeneration.get()
                 if (generate) {
                     executeLocalTurn(attempt, update.text, currentEngine, serviceUpdate = true)

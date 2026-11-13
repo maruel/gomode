@@ -415,6 +415,8 @@ export interface VoiceState extends AudioRouteState {
   choiceIDs: Record<VoiceTransport, string | null>;
   choicesStatus: "idle" | "loading" | "ready" | "error";
   choicesError: string | null;
+  /** Speech stage whose model resolution produced choicesError; null when the model choice or catalog owns it. */
+  choicesErrorStage: SpeechStage | null;
   voiceName: string | null;
   voiceError: string | null;
   voiceStatus: "idle" | "ready" | "error";
@@ -628,7 +630,7 @@ function compatibleChoices(
   );
 }
 
-type SpeechStage = "input" | "output";
+export type SpeechStage = "input" | "output";
 
 function speechModelStorageKey(origin: string, stage: SpeechStage): string {
   return `gomode.voiceSpeechModel.${origin}.${stage}`;
@@ -914,6 +916,7 @@ export class VoiceSession {
       },
       choicesStatus: "idle",
       choicesError: null,
+      choicesErrorStage: null,
       voiceName: null,
       voiceError: null,
       voiceStatus: "idle",
@@ -1048,6 +1051,7 @@ export class VoiceSession {
     const choices = setupChoices(this.state.choices, preference.mode);
     let id = preference[idKey];
     let failure: string | null = null;
+    let failureStage: SpeechStage | null = null;
     const compatible = compatibleChoices(choices, transport, speech);
     if (
       id !== null &&
@@ -1071,7 +1075,10 @@ export class VoiceSession {
         try {
           models[stage] = resolveSpeechModel(this.state.speechModels[stage], models[stage], stage);
         } catch (error) {
-          failure ??= error instanceof Error ? error.message : String(error);
+          if (failure === null) {
+            failure = error instanceof Error ? error.message : String(error);
+            failureStage = stage;
+          }
         }
       }
       preference.recognitionModelID = models.input;
@@ -1101,6 +1108,7 @@ export class VoiceSession {
       },
       speechModelIDs: models,
       choicesError: failure,
+      choicesErrorStage: failureStage,
       voiceName: name,
       voiceError,
       voiceStatus,
@@ -1205,6 +1213,7 @@ export class VoiceSession {
       this._update((s) => {
         s.choicesStatus = "loading";
         s.choicesError = null;
+        s.choicesErrorStage = null;
         s.voiceStatus = "idle";
         s.voiceError = null;
       });
@@ -1254,6 +1263,7 @@ export class VoiceSession {
       this._update((s) => {
         s.choicesStatus = "error";
         s.choicesError = error instanceof Error ? error.message : String(error);
+        s.choicesErrorStage = null;
       });
     }
   }
@@ -1339,6 +1349,7 @@ export class VoiceSession {
         s.speechModelIDs = { ...this._sessionSpeechModelIDs };
         s.choicesStatus = "ready";
         s.choicesError = null;
+        s.choicesErrorStage = null;
       });
     }
     let choiceID: string | null;
@@ -1364,6 +1375,7 @@ export class VoiceSession {
       if (snapshot.version === untrack(gatewayVersion))
         this._update((s) => {
           s.choicesError = error instanceof Error ? error.message : String(error);
+          s.choicesErrorStage = null;
         });
       throw error;
     }

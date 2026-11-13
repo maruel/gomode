@@ -70,10 +70,22 @@
 }
 
 @media (forced-colors: active) {
+  /*
+   * Forced colors would replace the mask background with Canvas, and an opted-out icon inherits the
+   * author's unforced color, so each context names its system color through --voice-icon-forced-color.
+   */
   .icon {
-    /* Mask backgrounds must retain the user's system icon color. */
-    background-color: ButtonText;
+    background-color: var(--voice-icon-forced-color, CanvasText);
     forced-color-adjust: none;
+  }
+
+  .control {
+    --voice-icon-forced-color: ButtonText;
+  }
+
+  .control:disabled,
+  .control:has(select:disabled) {
+    --voice-icon-forced-color: GrayText;
   }
 }
 
@@ -155,6 +167,14 @@
 
 .arrowDownward {
   mask-image: url("@material-symbols/svg-400/outlined/arrow_downward.svg");
+}
+
+.arrowDropDown {
+  mask-image: url("@material-symbols/svg-400/outlined/arrow_drop_down.svg");
+}
+
+.check {
+  mask-image: url("@material-symbols/svg-400/outlined/check.svg");
 }
 
 .cached {

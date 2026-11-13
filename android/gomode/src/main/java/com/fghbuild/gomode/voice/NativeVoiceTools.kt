@@ -13,10 +13,9 @@
 // engines cannot validate the server tools' argument schemas and do not advertise these tools.
 package com.fghbuild.gomode.voice
 
-import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
-import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.data.VoiceLanguageModel
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -81,9 +80,7 @@ internal val nativeVoiceToolNames = nativeTools.map { it.name }.toSet()
 internal fun nativeVoiceTools(settings: SettingsState): List<ToolDescriptor> {
     // Keyword engines match description words and emit free-form query arguments.
     // They cannot safely select or validate these conversational commands.
-    if (settings.voiceMode == VoiceMode.DEVICE &&
-        settings.onDeviceEngine != OnDeviceEngine.LOCAL_LLM && settings.onDeviceEngine != OnDeviceEngine.REMOTE_GATEWAY
-    ) {
+    if (settings.voiceSetup.effectiveLanguageModel == VoiceLanguageModel.NEEDLE_WHISTLE) {
         return emptyList()
     }
     return nativeTools.filter {

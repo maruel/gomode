@@ -2,7 +2,7 @@
 package com.fghbuild.gomode.voice
 
 import android.content.Context
-import com.fghbuild.gomode.data.OnDeviceEngine
+import com.fghbuild.gomode.data.VoiceLanguageModel
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import com.fghbuild.voicegateway.sdk.v2.ToolCall
 import kotlinx.coroutines.CoroutineDispatcher
@@ -11,12 +11,12 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 
 /** User-visible engine name, shared by settings diagnostics and voice errors. */
-val OnDeviceEngine.label: String
+val VoiceLanguageModel.label: String
     get() =
         when (this) {
-            OnDeviceEngine.LOCAL_LLM -> "Local LLM"
-            OnDeviceEngine.NEEDLE_WHISTLE -> "Whistle + Needle"
-            OnDeviceEngine.REMOTE_GATEWAY -> "Remote LLM"
+            VoiceLanguageModel.LOCAL_LLM -> "Local LLM"
+            VoiceLanguageModel.NEEDLE_WHISTLE -> "Whistle + Needle"
+            VoiceLanguageModel.GATEWAY -> "Remote LLM"
         }
 
 /** UserTurnInput provides recognized user text or an explicit service update to respond to. */
@@ -53,7 +53,7 @@ data class EngineTurnResult(
  * OnDeviceVoiceEngine handles conversation turns and tool decisions locally on device.
  */
 interface OnDeviceVoiceEngine {
-    val engineType: OnDeviceEngine
+    val engineType: VoiceLanguageModel
 
     val modelName: String?
         get() = null
@@ -86,18 +86,18 @@ interface OnDeviceVoiceEngine {
 /** Creates the configured on-device voice engine. */
 fun createOnDeviceEngine(
     context: Context,
-    engine: OnDeviceEngine,
+    engine: VoiceLanguageModel,
     ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ): OnDeviceVoiceEngine =
     when (engine) {
-        OnDeviceEngine.LOCAL_LLM -> LocalLlmEngine(context, ioDispatcher = ioDispatcher)
-        OnDeviceEngine.NEEDLE_WHISTLE -> NeedleWhistleEngine(context)
-        OnDeviceEngine.REMOTE_GATEWAY -> RemoteGatewayEngine()
+        VoiceLanguageModel.LOCAL_LLM -> LocalLlmEngine(context, ioDispatcher = ioDispatcher)
+        VoiceLanguageModel.NEEDLE_WHISTLE -> NeedleWhistleEngine(context)
+        VoiceLanguageModel.GATEWAY -> RemoteGatewayEngine()
     }
 
 /** RemoteGatewayEngine is the placeholder engine when text turns go to the WebSocket voice gateway. */
 internal class RemoteGatewayEngine : OnDeviceVoiceEngine {
-    override val engineType: OnDeviceEngine = OnDeviceEngine.REMOTE_GATEWAY
+    override val engineType: VoiceLanguageModel = VoiceLanguageModel.GATEWAY
 
     override suspend fun initialize(context: EngineSessionContext) = Unit
 

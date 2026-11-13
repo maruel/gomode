@@ -1,69 +1,92 @@
 // Render the production browser voice overlay with a controlled conversation.
 import { createSignal } from "solid-js";
 import { render } from "solid-js/web";
+import { defaultVoiceMessages } from "../../web/src/VoiceMessages";
 import VoiceOverlay from "../../web/src/VoiceOverlay";
 import { voiceSession, type TranscriptEntry } from "../../web/src/VoiceSession";
+import { voiceMessages as de } from "../../web/src/voiceMessages/de";
+import { voiceMessages as es } from "../../web/src/voiceMessages/es";
+import { voiceMessages as fr } from "../../web/src/voiceMessages/fr";
 import scene from "./scene/conversation.json";
 
+// ?theme=dark applies the host's dark tokens; ?lang=de|es|fr renders a shipped translation.
+const params = new URLSearchParams(location.search);
+if (params.get("theme") === "dark") document.documentElement.dataset.theme = "dark";
+const translations = { de, es, fr };
+const lang = params.get("lang");
+const translated = lang === "de" || lang === "es" || lang === "fr" ? lang : null;
+const messages = translated === null ? defaultVoiceMessages : translations[translated];
+document.documentElement.lang = translated ?? "en";
+
+// ?choices=loading keeps discovery pending; ?choices=error fails it, as an unreachable gateway does.
+const choicesScene = new URLSearchParams(location.search).get("choices");
 const originalFetch = window.fetch.bind(window);
 window.fetch = (input, init) =>
   (input instanceof Request ? input.url : String(input)).endsWith("/voice/choices")
-    ? Promise.resolve(
-        new Response(
-          JSON.stringify({
-            choices: [
-              {
-                id: "preview",
-                label: "GPT-6 Luna",
-                composable: true,
-                transports: ["text", "webrtc"],
-                speechModes: [
-                  { input: "gateway", output: "gateway" },
-                  { input: "gateway", output: "client" },
-                  { input: "client", output: "gateway" },
-                  { input: "client", output: "client" },
+    ? choicesScene === "loading"
+      ? new Promise<Response>(() => {})
+      : choicesScene === "error"
+        ? Promise.reject(new TypeError("Failed to fetch"))
+        : Promise.resolve(
+            new Response(
+              JSON.stringify({
+                choices: [
+                  {
+                    id: "preview",
+                    label: "GPT-6 Luna",
+                    composable: true,
+                    transports: ["text", "webrtc"],
+                    speechModes: [
+                      { input: "gateway", output: "gateway" },
+                      { input: "gateway", output: "client" },
+                      { input: "client", output: "gateway" },
+                      { input: "client", output: "client" },
+                    ],
+                  },
+                  {
+                    id: "preview-alt",
+                    label: "Claude Haiku",
+                    composable: true,
+                    transports: ["text", "webrtc"],
+                    speechModes: [
+                      { input: "gateway", output: "gateway" },
+                      { input: "gateway", output: "client" },
+                      { input: "client", output: "gateway" },
+                      { input: "client", output: "client" },
+                    ],
+                  },
+                  {
+                    id: "native",
+                    label: "Gemini Live",
+                    voices: ["Aoede", "Kore", "Orus"],
+                    transports: ["webrtc"],
+                    speechModes: [{ input: "gateway", output: "gateway" }],
+                  },
                 ],
-              },
-              {
-                id: "preview-alt",
-                label: "Claude Haiku",
-                composable: true,
-                transports: ["text", "webrtc"],
-                speechModes: [
-                  { input: "gateway", output: "gateway" },
-                  { input: "gateway", output: "client" },
-                  { input: "client", output: "gateway" },
-                  { input: "client", output: "client" },
+                recognitionModels: [
+                  { id: "whisper", label: "Whisper" },
+                  { id: "parakeet", label: "Parakeet" },
                 ],
-              },
-              {
-                id: "native",
-                label: "Gemini Live",
-                voices: ["Aoede", "Kore", "Orus"],
-                transports: ["webrtc"],
-                speechModes: [{ input: "gateway", output: "gateway" }],
-              },
-            ],
-            recognitionModels: [
-              { id: "whisper", label: "Whisper" },
-              { id: "parakeet", label: "Parakeet" },
-            ],
-            synthesisModels: [
-              { id: "gemini-tts", label: "Gemini speech" },
-              { id: "kokoro", label: "Kokoro" },
-            ],
-            defaults: [
-              { transport: "webrtc", id: "preview" },
-              { transport: "text", id: "preview" },
-            ],
-          }),
-          { headers: { "Content-Type": "application/json" } },
-        ),
-      )
+                synthesisModels: [
+                  { id: "gemini-tts", label: "Gemini speech" },
+                  { id: "kokoro", label: "Kokoro" },
+                ],
+                defaults: [
+                  { transport: "webrtc", id: "preview" },
+                  { transport: "text", id: "preview" },
+                ],
+              }),
+              { headers: { "Content-Type": "application/json" } },
+            ),
+          )
     : originalFetch(input, init);
 
-const idle = new URLSearchParams(location.search).get("state") === "idle";
+const state = new URLSearchParams(location.search).get("state");
+// ?state=locked starts a session after discovery, so settings show loaded choices locked.
+const idle = state === "idle" || state === "locked";
 voiceSession.setState((state) => ({ ...state, connected: !idle }));
+if (state === "locked")
+  void voiceSession.loadVoiceChoices().then(() => voiceSession.setState((state) => ({ ...state, connected: true })));
 const root = document.getElementById("voice-root");
 if (!root) throw new Error("Missing voice fixture root");
 const [first, second] = scene.servers;
@@ -76,7 +99,10 @@ function selectNextServer() {
   if (!heading) throw new Error("Missing fixture server heading");
   heading.textContent = server();
 }
-render(() => <VoiceOverlay nextServer={{ name: nextServer(), onSelect: selectNextServer }} />, root);
+render(
+  () => <VoiceOverlay messages={messages} nextServer={{ name: nextServer(), onSelect: selectNextServer }} />,
+  root,
+);
 
 // Controlled retention scene, advanced through fixture controls rather than DOM mutation.
 const retention = new URLSearchParams(location.search).get("history") === "retention";

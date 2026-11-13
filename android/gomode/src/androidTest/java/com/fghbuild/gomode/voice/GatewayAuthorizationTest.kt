@@ -7,9 +7,9 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import com.fghbuild.gomode.completeFixtureFrontend
-import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
-import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.data.VoiceLanguageModel
+import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceReadiness
 import com.fghbuild.gomode.service.ServiceSettingsClient
@@ -110,13 +110,13 @@ class GatewayAuthorizationTest {
                 val participantID = repository.addService("Participant", participantURL)
                 val sponsorID = repository.addService("Sponsor", "https://endpoint-sponsor.invalid")
                 if (local) {
-                    repository.updateVoiceMode(VoiceMode.DEVICE)
-                    repository.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+                    repository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
+                    repository.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
                 }
                 repository.settings.first {
                     it.activeServiceId == sponsorID && (
                         !local ||
-                            (it.voiceMode == VoiceMode.DEVICE && it.onDeviceEngine == OnDeviceEngine.LOCAL_LLM)
+                            (it.voiceSetup.deviceSpeech && it.voiceSetup.languageModel == VoiceLanguageModel.LOCAL_LLM)
                     )
                 }
                 val entries =

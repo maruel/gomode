@@ -8,7 +8,9 @@ import { fileURLToPath } from "node:url";
 
 const usage = `Usage: node scripts/voice_preview.mjs [--help]
 Serve the voice layout fixture at http://127.0.0.1:4179.
-Scenes: ?state=idle (no session, editable settings), ?history=retention, ?layout=wrapping.
+Scenes: ?state=idle (no session, editable settings), ?state=locked (session after discovery),
+?choices=loading|error (pending or failed discovery), ?history=retention, ?layout=wrapping,
+?theme=dark, ?lang=de|es|fr.
 The server builds once; restart it after editing sources. See e2e/voice-preview/README.md.`;
 const args = process.argv.slice(2);
 if (args.length > 0) {

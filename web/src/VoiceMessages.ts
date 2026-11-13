@@ -2,8 +2,8 @@
 
 export const defaultVoiceSettingsMessages = {
   voiceSetup: "Voice setup",
-  allInOne: "All-in-one model",
-  selectParts: "Select parts",
+  allInOne: "All-in-one",
+  separateStages: "Separate stages",
   languageModel: "Language model",
   browserSpeech: "Browser",
   recognition: "Recognition",
@@ -12,7 +12,7 @@ export const defaultVoiceSettingsMessages = {
   browserSpeechPrivacy: "Browser recognition may use your browser vendor's cloud service.",
   browserRecognitionUnavailable: "Browser recognition is unavailable. Choose a model.",
   browserSynthesisUnavailable: "Browser speech is unavailable. Choose a model.",
-  endSessionToChange: "End the voice session to change its setup.",
+  endSessionToChange: "End the voice session to change voice settings.",
   speakingVoice: "Speaking voice",
   speakingSpeed: "Speaking speed",
   speakingSpeedNormal: "1× (Normal)",
@@ -31,6 +31,8 @@ export const defaultVoiceSettingsMessages = {
   playMusicLabel: "Play thinking music",
   stopMusicLabel: "Stop thinking music",
   musicPlaybackError: "Could not play thinking music.",
+  voiceSection: "Voice",
+  displaySection: "Display",
   showReasoning: "Show assistant reasoning",
   showUsageStats: "Show usage stats",
   voiceLanguage: "Voice language",

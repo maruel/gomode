@@ -1,15 +1,21 @@
-// Tests native gateway choice filtering, credential boundaries, removed selections, and setup ownership.
+// Tests gateway setup resolution with the web rules, credential boundaries, removed selections, and setup ownership.
 package com.fghbuild.gomode.voice
 
 import android.webkit.CookieManager
-import com.fghbuild.gomode.data.OnDeviceEngine
+import com.fghbuild.gomode.data.GatewayVoiceSetup
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsState
-import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.data.SpeechStageLocation
+import com.fghbuild.gomode.data.VoiceLanguageModel
+import com.fghbuild.gomode.data.VoiceSetupMode
+import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.sdk.v1.Settings
 import com.fghbuild.gomode.sdk.v1.VoiceGatewaySettings
 import com.fghbuild.gomode.sdk.v1.WebShellSettings
 import com.fghbuild.voicegateway.sdk.v2.ApiClient
+import com.fghbuild.voicegateway.sdk.v2.SpeechConfig
+import com.fghbuild.voicegateway.sdk.v2.SpeechLocation
+import com.fghbuild.voicegateway.sdk.v2.SpeechModel
 import com.fghbuild.voicegateway.sdk.v2.VoiceChoice
 import com.fghbuild.voicegateway.sdk.v2.VoiceChoiceDefault
 import com.fghbuild.voicegateway.sdk.v2.VoiceChoicesResp
@@ -112,6 +118,40 @@ class VoiceChoicesTest {
             ),
         )
     private val settings = SettingsState(loadState = SettingsLoadState.Ready)
+    private val allInOne = VoiceSetupPreference(mode = VoiceSetupMode.ALL_IN_ONE)
+    private val deviceStages = VoiceSetupPreference().withDeviceSpeech()
+    private val gatewayStages =
+        VoiceSetupPreference(mode = VoiceSetupMode.SEPARATE_STAGES, recognition = GATEWAY, speech = GATEWAY)
+
+    // A composable language model beside a fixed text preset and a native audio model.
+    private val composable =
+        GatewayVoiceChoices(
+            gateway,
+            VoiceChoicesResp(
+                listOf(
+                    VoiceChoice("live", "Gemini Live", listOf(VoiceTransport.WebRTC)),
+                    VoiceChoice("preset", "Preset", listOf(VoiceTransport.Text)),
+                    VoiceChoice(
+                        "llm",
+                        "Language model",
+                        listOf(VoiceTransport.Text, VoiceTransport.WebRTC),
+                        speechModes =
+                            listOf(
+                                SpeechConfig(SpeechLocation.Client, SpeechLocation.Client),
+                                SpeechConfig(SpeechLocation.Client, SpeechLocation.Gateway),
+                                SpeechConfig(SpeechLocation.Gateway, SpeechLocation.Client),
+                                SpeechConfig(SpeechLocation.Gateway, SpeechLocation.Gateway),
+                            ),
+                        composable = true,
+                    ),
+                ),
+                listOf(VoiceChoiceDefault(VoiceTransport.WebRTC, "live")),
+                recognitionModels = listOf(SpeechModel("whisper", "Whisper"), SpeechModel("parakeet", "Parakeet")),
+                synthesisModels = listOf(SpeechModel("kokoro", "Kokoro")),
+            ),
+        )
+
+    private fun SettingsState.with(setup: VoiceSetupPreference) = copy(voiceSetup = setup)
 
     private fun audioCatalog(voices: List<String>?) =
         GatewayVoiceChoices(
@@ -149,9 +189,14 @@ class VoiceChoicesTest {
                         )
                     val catalog = GatewayVoiceChoices(gateway, VoiceChoicesResp(listOf(choice), emptyList()))
                     val saved = row["savedVoice"]?.jsonPrimitive?.content
-                    val mode = if (row["mode"]?.jsonPrimitive?.content == "text") VoiceMode.DEVICE else VoiceMode.CLOUD
+                    val setup =
+                        if (row["mode"]?.jsonPrimitive?.content == "text") {
+                            VoiceSetupPreference().withDeviceSpeech()
+                        } else {
+                            VoiceSetupPreference()
+                        }
                     val preferences = if (saved == null) emptyMap() else mapOf(gateway to mapOf("live" to saved))
-                    catalog.resolve(settings.copy(voiceMode = mode, speakingVoices = preferences)).voiceName
+                    catalog.resolve(settings.copy(voiceSetup = setup, speakingVoices = preferences)).voiceName
                 }
             when (error) {
                 "catalog" -> {
@@ -220,29 +265,174 @@ class VoiceChoicesTest {
     }
 
     @Test
-    fun `default and saved choices respect the speech transport`() {
-        assertEquals(listOf("live", "remote"), choices.compatible(settings).map { it.id })
-        assertEquals("live", choices.selection(settings).id)
-        val device = settings.copy(voiceMode = VoiceMode.DEVICE)
-        assertEquals(listOf("remote", "local"), choices.compatible(device).map { it.id })
-        assertEquals("remote", choices.selection(device).id)
-        val saved = device.copy(voiceChoices = mapOf(gateway to mapOf("text" to "local")))
-        assertEquals("local", choices.selection(saved).id)
-        assertEquals("live", choices.selection(saved.copy(voiceMode = VoiceMode.CLOUD)).id)
-        val both = settings.copy(voiceChoices = mapOf(gateway to mapOf("text" to "local", "webrtc" to "remote")))
-        assertEquals("remote", choices.selection(both).id)
-        assertEquals("local", choices.selection(both.copy(voiceMode = VoiceMode.DEVICE)).id)
+    fun `modes list native models or language models and transports follow the stage owners`() {
+        assertEquals(listOf("live"), choices.setupChoices(VoiceSetupKind.ALL_IN_ONE).map { it.id })
+        assertEquals(listOf("remote", "local"), choices.setupChoices(VoiceSetupKind.SEPARATE_STAGES).map { it.id })
+        assertEquals(
+            listOf("remote"),
+            choices.compatibleChoices(VoiceSetupKind.SEPARATE_STAGES, GATEWAY, GATEWAY).map { it.id },
+        )
+        assertEquals(VoiceTransport.Text, transportFor(DEVICE, DEVICE))
+        assertEquals(VoiceTransport.WebRTC, transportFor(DEVICE, GATEWAY))
+        assertEquals(VoiceTransport.WebRTC, transportFor(GATEWAY, DEVICE))
+        // Composable language models replace fixed text presets in separate stages.
+        assertEquals(listOf("llm"), composable.setupChoices(VoiceSetupKind.SEPARATE_STAGES).map { it.id })
     }
 
     @Test
-    fun `removed selection and unreadable preferences block a new session`() {
-        assertThrows(VoiceSetupException::class.java) {
-            choices.selection(settings.copy(voiceChoices = mapOf(gateway to mapOf("webrtc" to "removed"))))
+    fun `a mode switch restores the other mode's selection`() {
+        val saved =
+            settings.copy(
+                gatewayVoiceSetups = mapOf(gateway to GatewayVoiceSetup(separateStagesChoiceID = "local")),
+            )
+        assertEquals("live", choices.resolveSetup(saved.with(allInOne)).choice.id)
+        val device = choices.resolveSetup(saved.with(deviceStages))
+        assertEquals("local", device.choice.id)
+        assertEquals(VoiceTransport.Text, device.transport)
+        assertEquals("live", choices.resolveSetup(saved.with(allInOne)).choice.id)
+        // Without a saved selection, each mode uses its transport's advertised default.
+        assertEquals("remote", choices.resolveSetup(settings.with(deviceStages)).choice.id)
+    }
+
+    @Test
+    fun `following the gateway, as migrated cloud voice, resolves the kind of the saved gateway speech choice`() {
+        val native = choices.resolveSetup(settings)
+        assertEquals("live", native.choice.id)
+        val indivisible =
+            choices.resolveSetup(
+                settings.copy(gatewayVoiceSetups = mapOf(gateway to GatewayVoiceSetup(allInOneChoiceID = "remote"))),
+            )
+        assertEquals(GATEWAY, indivisible.speech)
+        assertEquals("remote", indivisible.choice.id)
+        val llm =
+            composable.resolveSetup(
+                settings.copy(gatewayVoiceSetups = mapOf(gateway to GatewayVoiceSetup(allInOneChoiceID = "llm"))),
+            )
+        assertEquals(GATEWAY, llm.recognition)
+        assertEquals("llm", llm.choice.id)
+    }
+
+    @Test
+    fun `a removed saved choice blocks a new session but another mode's choice falls back`() {
+        for (setup in listOf(VoiceSetupPreference(), allInOne, deviceStages)) {
+            val error =
+                assertThrows(VoiceSetupException::class.java) {
+                    choices.resolve(
+                        settings.with(setup).copy(
+                            gatewayVoiceSetups =
+                                mapOf(
+                                    gateway to
+                                        GatewayVoiceSetup(
+                                            allInOneChoiceID = "removed",
+                                            separateStagesChoiceID = "removed",
+                                        ),
+                                ),
+                        ),
+                    )
+                }
+            assertEquals("Saved voice choice is unavailable. Select a voice choice in Settings.", error.message)
         }
-        assertThrows(VoiceSetupException::class.java) { choices.selection(SettingsState()) }
+        val otherMode =
+            settings.with(deviceStages).copy(
+                gatewayVoiceSetups = mapOf(gateway to GatewayVoiceSetup(separateStagesChoiceID = "live")),
+            )
+        assertEquals("remote", choices.resolveSetup(otherMode).choice.id)
+        assertThrows(VoiceSetupException::class.java) { choices.resolveSetup(SettingsState()) }
         assertThrows(VoiceSetupException::class.java) {
-            choices.selection(settings.copy(loadState = SettingsLoadState.Failed("read failed")))
+            choices.resolveSetup(settings.copy(loadState = SettingsLoadState.Failed("read failed")))
         }
+    }
+
+    @Test
+    fun `a choice without the selected stage owners is unsupported`() {
+        val textOnly =
+            composable.copy(
+                catalog =
+                    composable.catalog.copy(
+                        choices =
+                            composable.catalog.choices.orEmpty().map {
+                                it.copy(
+                                    speechModes = listOf(SpeechConfig(SpeechLocation.Client, SpeechLocation.Client)),
+                                )
+                            },
+                    ),
+            )
+        val error =
+            assertThrows(VoiceSetupException::class.java) {
+                textOnly.resolveSetup(
+                    settings.with(gatewayStages).copy(
+                        gatewayVoiceSetups = mapOf(gateway to GatewayVoiceSetup(separateStagesChoiceID = "llm")),
+                    ),
+                )
+            }
+        assertEquals(
+            "This model does not support the selected recognition and speech. Choose another in Settings.",
+            error.message,
+        )
+        val empty =
+            assertThrows(VoiceSetupException::class.java) {
+                choices.resolveSetup(
+                    settings.with(
+                        allInOne.copy(mode = VoiceSetupMode.SEPARATE_STAGES, recognition = DEVICE, speech = GATEWAY),
+                    ),
+                )
+            }
+        assertEquals(
+            "The voice gateway has no model for this setup. Choose another setup in Settings.",
+            empty.message,
+        )
+    }
+
+    @Test
+    fun `composable gateway stages resolve saved, first, or missing speech models`() {
+        val resolved = composable.resolveSetup(settings.with(gatewayStages))
+        assertEquals("whisper", resolved.recognitionModelID)
+        assertEquals("kokoro", resolved.synthesisModelID)
+        val saved =
+            settings.with(gatewayStages).copy(
+                gatewayVoiceSetups =
+                    mapOf(gateway to GatewayVoiceSetup(recognitionModelID = "parakeet", synthesisModelID = "removed")),
+            )
+        val removed = assertThrows(VoiceSetupException::class.java) { composable.resolveSetup(saved) }
+        assertEquals(
+            "The selected speech model is unavailable. Choose another speech model in Settings.",
+            removed.message,
+        )
+        val unlisted =
+            composable.copy(catalog = composable.catalog.copy(recognitionModels = null))
+        val missing =
+            assertThrows(VoiceSetupException::class.java) { unlisted.resolveSetup(settings.with(gatewayStages)) }
+        assertEquals(
+            "The gateway has no recognition models. Choose device recognition or an all-in-one model in Settings.",
+            missing.message,
+        )
+        // Device-owned stages need no gateway model, and the text transport carries them.
+        val device = unlisted.resolveSetup(settings.with(deviceStages))
+        assertNull(device.recognitionModelID)
+        assertNull(device.synthesisModelID)
+        assertEquals("llm", unlisted.resolve(settings.with(deviceStages)).choiceID)
+    }
+
+    @Test
+    fun `sessions refuse mixed speech and non-default gateway speech models until Android sends them`() {
+        val mixed = settings.with(gatewayStages.copy(recognition = DEVICE))
+        assertEquals(VoiceTransport.WebRTC, composable.resolveSetup(mixed).transport)
+        val mixedError = assertThrows(VoiceSetupException::class.java) { composable.resolve(mixed) }
+        assertTrue(mixedError.message.orEmpty().startsWith("Android cannot mix device and gateway speech yet."))
+        // The gateway applies its first listed models when the session names none.
+        assertEquals("llm", composable.resolve(settings.with(gatewayStages)).choiceID)
+        val chosen =
+            settings.with(gatewayStages).copy(
+                gatewayVoiceSetups = mapOf(gateway to GatewayVoiceSetup(recognitionModelID = "parakeet")),
+            )
+        val modelError = assertThrows(VoiceSetupException::class.java) { composable.resolve(chosen) }
+        assertTrue(modelError.message.orEmpty().startsWith("Android can use only the gateway's first"))
+        // An indivisible language model with gateway speech still connects over WebRTC.
+        val indivisible =
+            settings.with(gatewayStages).copy(
+                gatewayVoiceSetups = mapOf(gateway to GatewayVoiceSetup(separateStagesChoiceID = "remote")),
+            )
+        assertEquals("remote", choices.resolve(indivisible).choiceID)
     }
 
     @Test
@@ -284,8 +474,12 @@ class VoiceChoicesTest {
 
     @Test
     fun `fully native engines do not use gateway choices`() {
-        OnDeviceEngine.entries.filter { it != OnDeviceEngine.REMOTE_GATEWAY }.forEach {
-            assertFalse(usesGatewayVoice(settings.copy(voiceMode = VoiceMode.DEVICE, onDeviceEngine = it)))
+        VoiceLanguageModel.entries.filter { it != VoiceLanguageModel.GATEWAY }.forEach {
+            val device = settings.with(deviceStages.copy(languageModel = it))
+            assertFalse(usesGatewayVoice(device))
+            assertTrue(device.voiceSetup.deviceSpeech)
+            // The other modes keep the language model for a later switch back.
+            assertTrue(usesGatewayVoice(settings.with(device.voiceSetup.copy(mode = VoiceSetupMode.ALL_IN_ONE))))
         }
         assertTrue(usesGatewayVoice(settings))
     }
@@ -299,7 +493,7 @@ class VoiceChoicesTest {
         assertThrows(VoiceSetupException::class.java) {
             ensureVoiceSettingsCurrent(
                 captured,
-                captured.copy(voiceChoices = mapOf(gateway to mapOf("webrtc" to "remote"))),
+                captured.copy(gatewayVoiceSetups = mapOf(gateway to GatewayVoiceSetup(allInOneChoiceID = "remote"))),
             )
         }
         assertThrows(VoiceSetupException::class.java) {
@@ -307,6 +501,9 @@ class VoiceChoicesTest {
                 captured,
                 captured.copy(speakingVoices = mapOf(gateway to mapOf("live" to "Kore"))),
             )
+        }
+        assertThrows(VoiceSetupException::class.java) {
+            ensureVoiceSettingsCurrent(captured, captured.with(deviceStages))
         }
     }
 
@@ -350,6 +547,8 @@ class VoiceChoicesTest {
     }
 
     companion object {
+        private val DEVICE = SpeechStageLocation.DEVICE
+        private val GATEWAY = SpeechStageLocation.GATEWAY
         private const val CATALOG =
             """{"choices":[{"id":"live","label":"Gemini Live","transports":["webrtc"]}],""" +
                 """"defaults":[{"transport":"webrtc","id":"live"}]}"""

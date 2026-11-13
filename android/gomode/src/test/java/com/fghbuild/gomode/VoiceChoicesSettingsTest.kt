@@ -19,7 +19,9 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import com.fghbuild.gomode.data.SettingsRepository
-import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.data.SettingsState
+import com.fghbuild.gomode.data.VoiceSetupMode
+import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.ui.settings.SettingsScreen
 import com.fghbuild.gomode.ui.settings.rememberSettingsEdits
 import kotlinx.coroutines.flow.Flow
@@ -130,51 +132,42 @@ class VoiceChoicesSettingsTest {
                 composeRule.runOnIdle { active.value = true }
                 composeRule.onNodeWithTag("gomode-speaking-voice").assertTextContains("Kore").assertIsNotEnabled()
                 composeRule.runOnIdle { active.value = false }
+                // Gateway speech follows the picked choice, a native model or a language model.
                 composeRule.onNodeWithTag("gomode-voice-choice-remote").performScrollTo().performClick()
-                composeRule.waitUntil {
-                    repository.settings.value.voiceChoices[base]
-                        ?.get("webrtc") == "remote"
-                }
+                composeRule.waitUntil { repository.settings.value.followsGateway(base, "remote") }
                 composeRule.onNodeWithTag("gomode-speaking-voice").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-voice-choice-live").performClick()
-                composeRule.waitUntil {
-                    repository.settings.value.voiceChoices[base]
-                        ?.get("webrtc") == "live"
-                }
+                composeRule.waitUntil { repository.settings.value.followsGateway(base, "live") }
                 composeRule.onNodeWithTag("gomode-speaking-voice").performScrollTo().assertTextContains("Kore")
                 composeRule.onNodeWithTag("gomode-voice-choice-remote").performScrollTo().performClick()
-                composeRule.waitUntil {
-                    repository.settings.value.voiceChoices[base]
-                        ?.get("webrtc") == "remote"
-                }
+                composeRule.waitUntil { repository.settings.value.followsGateway(base, "remote") }
                 composeRule.onNodeWithTag("gomode-voice-mode-device").performScrollTo().performClick()
-                composeRule.waitUntil { repository.settings.value.voiceMode == VoiceMode.DEVICE }
+                composeRule.waitUntil { repository.settings.value.voiceSetup.deviceSpeech }
                 composeRule.onNodeWithTag("gomode-voice-choice-live").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-voice-choice-remote").performScrollTo().assertIsSelected()
                 composeRule.onNodeWithTag("gomode-voice-choice-local").performClick()
                 composeRule.waitUntil {
-                    repository.settings.value.voiceChoices[base]
-                        ?.get("text") == "local"
+                    repository.settings.value.let {
+                        it.voiceSetup.mode == VoiceSetupMode.SEPARATE_STAGES &&
+                            it.gatewayVoiceSetups[base]?.separateStagesChoiceID == "local"
+                    }
                 }
                 composeRule.runOnIdle { active.value = true }
                 composeRule.onNodeWithTag("gomode-voice-choice-local").assertIsSelected().assertIsNotEnabled()
                 composeRule.onNodeWithTag("gomode-voice-choice-remote").assertIsNotEnabled()
                 composeRule.runOnIdle { active.value = false }
                 composeRule.onNodeWithTag("gomode-voice-mode-cloud").performScrollTo().performClick()
-                composeRule.waitUntil { repository.settings.value.voiceMode == VoiceMode.CLOUD }
-                // Each family keeps its own selection.
+                composeRule.waitUntil { repository.settings.value.voiceSetup.mode == VoiceSetupMode.FOLLOW_GATEWAY }
+                // Gateway speech restores the language model picked under it; device speech keeps its own.
                 composeRule.onNodeWithTag("gomode-voice-choice-remote").performScrollTo().assertIsSelected()
                 composeRule.onNodeWithTag("gomode-voice-choice-local").assertDoesNotExist()
                 assertEquals(
                     "local",
-                    repository.settings.value.voiceChoices[base]
-                        ?.get("text"),
+                    repository.settings.value.gatewayVoiceSetups[base]
+                        ?.separateStagesChoiceID,
                 )
                 composeRule.onNodeWithTag("gomode-voice-choice-live").performScrollTo().performClick()
-                composeRule.waitUntil {
-                    repository.settings.value.voiceChoices[base]
-                        ?.get("webrtc") == "live"
-                }
+                composeRule.waitUntil { repository.settings.value.followsGateway(base, "live") }
                 composeRule.onNodeWithTag("gomode-speaking-voice").performScrollTo().performClick()
                 composeRule.onNodeWithTag("gomode-speaking-voice-default").performClick()
                 composeRule.waitUntil {
@@ -245,21 +238,23 @@ class VoiceChoicesSettingsTest {
                 }
 
                 composeRule.onNodeWithTag("gomode-voice-mode-device").performScrollTo().performClick()
-                composeRule.waitUntil { repository.settings.value.voiceMode == VoiceMode.DEVICE }
+                composeRule.waitUntil { repository.settings.value.voiceSetup.deviceSpeech }
                 composeRule.onNodeWithText("Engine").assertExists()
                 composeRule.onNodeWithTag("gomode-engine-remote-gateway").assertTextContains("Remote LLM")
                 composeRule.onNodeWithText("LLM").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-voice-choice-local").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-speaking-voice").assertDoesNotExist()
 
-                repository.updateVoiceChoice(base, "text", "missing")
+                repository.updateVoiceChoice(base, "missing", VoiceSetupPreference::withDeviceSpeech)
                 composeRule.waitUntil {
                     composeRule.onAllNodes(hasTestTag("gomode-voice-choice-error")).fetchSemanticsNodes().isNotEmpty()
                 }
                 composeRule.onNodeWithTag("gomode-voice-choice-local").performScrollTo().performClick()
                 composeRule.waitUntil {
-                    repository.settings.value.voiceChoices[base]
-                        ?.get("text") == "local"
+                    repository.settings.value.let {
+                        it.voiceSetup.mode == VoiceSetupMode.SEPARATE_STAGES &&
+                            it.gatewayVoiceSetups[base]?.separateStagesChoiceID == "local"
+                    }
                 }
                 composeRule.onNodeWithText("LLM").assertDoesNotExist()
                 composeRule.onNodeWithTag("gomode-voice-choice-error").assertDoesNotExist()
@@ -267,6 +262,12 @@ class VoiceChoicesSettingsTest {
                 assertEquals(2, server.requestCount)
             }
         }
+
+    private fun SettingsState.followsGateway(
+        gateway: String,
+        choiceID: String,
+    ): Boolean =
+        voiceSetup.mode == VoiceSetupMode.FOLLOW_GATEWAY && gatewayVoiceSetups[gateway]?.allInOneChoiceID == choiceID
 
     private class MemoryPreferences : DataStore<Preferences> {
         var failWrites = false

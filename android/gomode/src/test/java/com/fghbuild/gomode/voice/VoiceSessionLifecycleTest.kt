@@ -7,9 +7,9 @@ import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
-import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
-import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.data.VoiceLanguageModel
+import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.ui.observeVoiceStartup
@@ -533,8 +533,10 @@ class VoiceSessionLifecycleTest {
                         }
 
                         "choice" -> {
-                            repository.updateVoiceChoice(base, "text", "remote")
-                            repository.settings.first { it.voiceChoices[base]?.get("text") == "remote" }
+                            repository.updateVoiceChoice(base, "remote", VoiceSetupPreference::withDeviceSpeech)
+                            repository.settings.first {
+                                it.gatewayVoiceSetups[base]?.separateStagesChoiceID == "remote"
+                            }
                         }
                     }
                     releaseDiscovery.countDown()
@@ -596,19 +598,19 @@ class VoiceSessionLifecycleTest {
                 val repository = SettingsRepository(InMemoryPreferencesDataStore())
                 repository.addService("Other", "https://other.example")
                 repository.addService("Fixture", server.url("/").toString())
-                repository.updateVoiceMode(VoiceMode.DEVICE)
+                repository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
                 for (engine in listOf(
-                    OnDeviceEngine.LOCAL_LLM,
-                    OnDeviceEngine.NEEDLE_WHISTLE,
+                    VoiceLanguageModel.LOCAL_LLM,
+                    VoiceLanguageModel.NEEDLE_WHISTLE,
                 )) {
-                    repository.updateOnDeviceEngine(engine)
-                    repository.settings.first { it.voiceMode == VoiceMode.DEVICE && it.onDeviceEngine == engine }
+                    repository.updateVoiceSetup { it.copy(languageModel = engine) }
+                    repository.settings.first { it.voiceSetup.deviceSpeech && it.voiceSetup.languageModel == engine }
                     val setup = prepareVoiceSetup(repository, ServiceSettingsClient(), { null })
                     assertEquals(repository.settings.value.activeServiceId, setup.serverID)
                     val names = setup.tools.map { it.name }
                     assertTrue("host tools remain available", "host_tool" in names)
-                    assertEquals(engine == OnDeviceEngine.LOCAL_LLM, "list_servers" in names)
-                    assertEquals(engine == OnDeviceEngine.LOCAL_LLM, "switch_server" in names)
+                    assertEquals(engine == VoiceLanguageModel.LOCAL_LLM, "list_servers" in names)
+                    assertEquals(engine == VoiceLanguageModel.LOCAL_LLM, "switch_server" in names)
                 }
                 for (name in listOf("hang_up", "list_servers", "mute", "switch_server")) {
                     hostTool = name

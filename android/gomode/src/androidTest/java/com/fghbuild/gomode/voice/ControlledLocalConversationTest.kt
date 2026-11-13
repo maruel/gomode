@@ -21,9 +21,9 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.GrantPermissionRule
 import com.fghbuild.gomode.completeFixtureFrontend
-import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.SettingsRepository
-import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.data.VoiceLanguageModel
+import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.frontendPreparationFixtureScript
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceReadiness
@@ -434,11 +434,11 @@ class ControlledLocalConversationTest {
         runBlocking {
             val second = repository.addService("B", b.url)
             val first = repository.addService("A", a.url)
-            repository.updateVoiceMode(VoiceMode.DEVICE)
-            repository.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+            repository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
+            repository.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
             repository.settings.first {
-                it.activeServiceId == first && it.onDeviceEngine == OnDeviceEngine.LOCAL_LLM &&
-                    it.voiceMode == VoiceMode.DEVICE
+                it.activeServiceId == first && it.voiceSetup.languageModel == VoiceLanguageModel.LOCAL_LLM &&
+                    it.voiceSetup.deviceSpeech
             }
             first to second
         }

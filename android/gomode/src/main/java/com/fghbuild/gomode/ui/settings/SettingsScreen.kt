@@ -66,12 +66,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import com.fghbuild.gomode.data.LocalLlmModel
-import com.fghbuild.gomode.data.OnDeviceEngine
 import com.fghbuild.gomode.data.ServiceInstance
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
-import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.data.VoiceLanguageModel
+import com.fghbuild.gomode.data.VoiceSetupMode
+import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.voice.AndroidThinkingEarcon
 import com.fghbuild.gomode.voice.usesGatewayVoice
 import kotlinx.coroutines.FlowPreview
@@ -152,10 +153,11 @@ internal fun SettingsScreen(
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Voice", style = MaterialTheme.typography.titleMedium)
                 if (voiceSessionActive) Text("End the voice session to change voice mode, voice choice, or language.")
-                VoiceModeSetting(settings.voiceMode, settingsRepository, enabled = !voiceSessionActive)
-                if (settings.voiceMode == VoiceMode.DEVICE) {
-                    OnDeviceEngineSetting(settings.onDeviceEngine, settingsRepository, enabled = !voiceSessionActive)
-                    if (settings.onDeviceEngine == OnDeviceEngine.LOCAL_LLM) {
+                VoiceModeSetting(settings.voiceSetup, settingsRepository, enabled = !voiceSessionActive)
+                if (settings.voiceSetup.deviceSpeech) {
+                    val languageModel = settings.voiceSetup.languageModel
+                    OnDeviceEngineSetting(languageModel, settingsRepository, enabled = !voiceSessionActive)
+                    if (languageModel == VoiceLanguageModel.LOCAL_LLM) {
                         LocalLlmModelSetting(settings.localLlmModel, settingsRepository, enabled = !voiceSessionActive)
                         ModelDownloadSetting(settings.localLlmModel, enabled = !voiceSessionActive)
                     }
@@ -319,7 +321,7 @@ private fun ThinkingMusicPreview(enabled: Boolean) {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun VoiceModeSetting(
-    mode: VoiceMode,
+    setup: VoiceSetupPreference,
     repository: SettingsRepository,
     enabled: Boolean,
 ) {
@@ -331,15 +333,18 @@ private fun VoiceModeSetting(
             modifier = Modifier.fillMaxWidth(),
         ) {
             FilterChip(
-                selected = mode == VoiceMode.CLOUD,
-                onClick = { scope.launch { repository.updateVoiceMode(VoiceMode.CLOUD) } },
+                // Gateway speech follows the selected gateway choice: all-in-one or separate stages.
+                selected = !setup.deviceSpeech,
+                onClick = {
+                    scope.launch { repository.updateVoiceSetup { it.copy(mode = VoiceSetupMode.FOLLOW_GATEWAY) } }
+                },
                 enabled = enabled,
                 label = { Text("Cloud voice") },
                 modifier = Modifier.testTag("gomode-voice-mode-cloud"),
             )
             FilterChip(
-                selected = mode == VoiceMode.DEVICE,
-                onClick = { scope.launch { repository.updateVoiceMode(VoiceMode.DEVICE) } },
+                selected = setup.deviceSpeech,
+                onClick = { scope.launch { repository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech) } },
                 enabled = enabled,
                 label = { Text("On-device voice") },
                 modifier = Modifier.testTag("gomode-voice-mode-device"),
@@ -375,7 +380,7 @@ private fun LocalLlmModelSetting(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun OnDeviceEngineSetting(
-    engine: OnDeviceEngine,
+    engine: VoiceLanguageModel,
     repository: SettingsRepository,
     enabled: Boolean,
 ) {
@@ -387,22 +392,22 @@ private fun OnDeviceEngineSetting(
             modifier = Modifier.fillMaxWidth(),
         ) {
             FilterChip(
-                selected = engine == OnDeviceEngine.REMOTE_GATEWAY,
-                onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.REMOTE_GATEWAY) } },
+                selected = engine == VoiceLanguageModel.GATEWAY,
+                onClick = { scope.launch { repository.updateLanguageModel(VoiceLanguageModel.GATEWAY) } },
                 enabled = enabled,
                 label = { Text("Remote LLM") },
                 modifier = Modifier.testTag("gomode-engine-remote-gateway"),
             )
             FilterChip(
-                selected = engine == OnDeviceEngine.LOCAL_LLM,
-                onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM) } },
+                selected = engine == VoiceLanguageModel.LOCAL_LLM,
+                onClick = { scope.launch { repository.updateLanguageModel(VoiceLanguageModel.LOCAL_LLM) } },
                 enabled = enabled,
                 label = { Text("Local LLM") },
                 modifier = Modifier.testTag("gomode-engine-local-llm"),
             )
             FilterChip(
-                selected = engine == OnDeviceEngine.NEEDLE_WHISTLE,
-                onClick = { scope.launch { repository.updateOnDeviceEngine(OnDeviceEngine.NEEDLE_WHISTLE) } },
+                selected = engine == VoiceLanguageModel.NEEDLE_WHISTLE,
+                onClick = { scope.launch { repository.updateLanguageModel(VoiceLanguageModel.NEEDLE_WHISTLE) } },
                 enabled = enabled,
                 label = { Text("Whistle + Needle") },
                 modifier = Modifier.testTag("gomode-engine-needle-whistle"),
@@ -410,6 +415,9 @@ private fun OnDeviceEngineSetting(
         }
     }
 }
+
+private suspend fun SettingsRepository.updateLanguageModel(model: VoiceLanguageModel) =
+    updateVoiceSetup { it.withDeviceSpeech().copy(languageModel = model) }
 
 @Composable
 private fun VoiceLanguageSetting(

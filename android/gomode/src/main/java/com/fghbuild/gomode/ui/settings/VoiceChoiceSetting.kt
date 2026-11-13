@@ -28,12 +28,14 @@ import androidx.compose.ui.unit.dp
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
-import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.data.SpeechStageLocation
+import com.fghbuild.gomode.data.VoiceSetupMode
+import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.voice.GatewayVoiceChoices
+import com.fghbuild.gomode.voice.VoiceSetupKind
 import com.fghbuild.gomode.voice.discoverVoiceChoices
-import com.fghbuild.gomode.voice.voiceTransport
-import com.fghbuild.voicegateway.sdk.v2.VoiceTransport
+import com.fghbuild.voicegateway.sdk.v2.VoiceChoice
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
@@ -109,28 +111,27 @@ internal fun VoiceChoiceSetting(
         }
 
         is ChoiceDiscovery.Ready -> {
-            val selection = runCatching { state.choices.selection(settings) }
-            selection.exceptionOrNull()?.message?.let {
+            val resolved =
+                runCatching { state.choices.resolveSetup(settings).also(state.choices::requireAndroidSpeech) }
+            resolved.exceptionOrNull()?.message?.let {
                 Text(it, modifier = Modifier.testTag("gomode-voice-choice-error"))
             }
-            val transport = voiceTransport(settings)
-            val compatible = state.choices.compatible(settings)
-            // The cloud family selects a model; the text family selects an LLM.
-            val familyLabel = if (transport == VoiceTransport.WebRTC) "Model" else "LLM"
+            val deviceSpeech = settings.voiceSetup.deviceSpeech
+            val listed = listedChoices(state.choices, deviceSpeech)
+            // Gateway speech selects a model; device speech selects an LLM.
+            val familyLabel = if (deviceSpeech) "LLM" else "Model"
             // A missing saved choice still needs an explicit replacement, even with only one candidate.
-            if (compatible.size > 1 || (compatible.isNotEmpty() && selection.isFailure)) {
+            if (listed.size > 1 || (listed.isNotEmpty() && resolved.isFailure)) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(familyLabel, style = MaterialTheme.typography.labelLarge)
-                    ChoiceChips(state.choices, settings, selection.getOrNull()?.id, enabled && !saving) { choiceID ->
+                    ChoiceChips(listed, settings, resolved.getOrNull()?.choice?.id, enabled && !saving) { choice ->
                         scope.launch {
                             saving = true
                             saveError = null
                             try {
-                                repository.updateVoiceChoice(
-                                    state.choices.gatewayURL,
-                                    transport.value,
-                                    choiceID,
-                                )
+                                repository.updateVoiceChoice(state.choices.gatewayURL, choice.id) {
+                                    choiceSetup(it, deviceSpeech)
+                                }
                             } catch (e: CancellationException) {
                                 throw e
                             } catch (
@@ -145,8 +146,8 @@ internal fun VoiceChoiceSetting(
                     }
                 }
             }
-            if (settings.voiceMode == VoiceMode.CLOUD) {
-                selection.getOrNull()?.let { choice ->
+            if (!deviceSpeech) {
+                resolved.getOrNull()?.choice?.let { choice ->
                     SpeakingVoiceSetting(state.choices, choice, settings, repository, enabled && !saving)
                 }
             }
@@ -158,17 +159,17 @@ internal fun VoiceChoiceSetting(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ChoiceChips(
-    choices: GatewayVoiceChoices,
+    choices: List<VoiceChoice>,
     settings: SettingsState,
     selectedID: String?,
     enabled: Boolean,
-    onSelect: (String) -> Unit,
+    onSelect: (VoiceChoice) -> Unit,
 ) {
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        choices.compatible(settings).forEach { choice ->
+        choices.forEach { choice ->
             FilterChip(
                 selected = choice.id == selectedID,
-                onClick = { onSelect(choice.id) },
+                onClick = { onSelect(choice) },
                 enabled = enabled && settings.loadState == SettingsLoadState.Ready,
                 label = { Text(choice.label) },
                 modifier = Modifier.testTag("gomode-voice-choice-${choice.id}"),
@@ -176,3 +177,24 @@ private fun ChoiceChips(
         }
     }
 }
+
+// Gateway speech lists native models and language models with gateway recognition and speech.
+private fun listedChoices(
+    choices: GatewayVoiceChoices,
+    deviceSpeech: Boolean,
+): List<VoiceChoice> {
+    val stage = if (deviceSpeech) SpeechStageLocation.DEVICE else SpeechStageLocation.GATEWAY
+    val stages = choices.compatibleChoices(VoiceSetupKind.SEPARATE_STAGES, stage, stage)
+    if (deviceSpeech) return stages
+    val native = choices.setupChoices(VoiceSetupKind.ALL_IN_ONE)
+    return choices.catalog.choices
+        .orEmpty()
+        .filter { it in native || it in stages }
+}
+
+// Device speech saves the separate-stages choice; gateway speech follows the picked gateway choice.
+private fun choiceSetup(
+    setup: VoiceSetupPreference,
+    deviceSpeech: Boolean,
+): VoiceSetupPreference =
+    if (deviceSpeech) setup.withDeviceSpeech() else setup.copy(mode = VoiceSetupMode.FOLLOW_GATEWAY)

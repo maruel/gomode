@@ -17,8 +17,8 @@ import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import androidx.work.WorkManager
 import com.fghbuild.gomode.data.LocalLlmModel
-import com.fghbuild.gomode.data.OnDeviceEngine
-import com.fghbuild.gomode.data.VoiceMode
+import com.fghbuild.gomode.data.VoiceLanguageModel
+import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.voice.LocalModelDownloads
 import com.fghbuild.gomode.voice.ModelDownloadState
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -145,8 +145,8 @@ class BackgroundModelTransferAcceptanceTest {
 
     private suspend fun configure() {
         assumeTrue("An existing model is never removed by acceptance", !downloads.isInstalled(model))
-        app.settingsRepository.updateVoiceMode(VoiceMode.DEVICE)
-        app.settingsRepository.updateOnDeviceEngine(OnDeviceEngine.LOCAL_LLM)
+        app.settingsRepository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
+        app.settingsRepository.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
         app.settingsRepository.updateLocalLlmModel(model)
         downloads.cancel(model)?.join()
         compose.waitUntil(30_000) { downloads.states.value[model] is ModelDownloadState.Missing }
