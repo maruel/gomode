@@ -6,7 +6,6 @@ import com.fghbuild.gomode.data.VoiceLanguageModel
 import com.fghbuild.mcp.sdk.v1.ToolDescriptor
 import com.fghbuild.voicegateway.sdk.v2.ToolCall
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 
@@ -22,7 +21,6 @@ val VoiceLanguageModel.label: String
 /** UserTurnInput provides recognized user text or an explicit service update to respond to. */
 data class UserTurnInput(
     val text: String,
-    val audioPcm: ByteArray? = null,
     val serviceUpdate: Boolean = false,
 )
 
@@ -41,12 +39,6 @@ data class EngineUsage(
     val outputTokens: Long,
     val contextTokens: Long,
     val contextWindow: Long,
-)
-
-/** EngineTurnResult summarizes the finished turn. */
-data class EngineTurnResult(
-    val assistantText: String = "",
-    val toolCalls: List<ToolCall> = emptyList(),
 )
 
 /**
@@ -74,7 +66,7 @@ interface OnDeviceVoiceEngine {
         onDelta: (String) -> Unit,
         onUsage: suspend (EngineUsage) -> Unit,
         onToolCall: suspend (ToolCall) -> JsonElement?,
-    ): EngineTurnResult
+    )
 
     /** Injects external context into the engine memory. */
     suspend fun injectContext(text: String)
@@ -87,7 +79,7 @@ interface OnDeviceVoiceEngine {
 fun createOnDeviceEngine(
     context: Context,
     engine: VoiceLanguageModel,
-    ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    ioDispatcher: CoroutineDispatcher,
 ): OnDeviceVoiceEngine =
     when (engine) {
         VoiceLanguageModel.LOCAL_LLM -> LocalLlmEngine(context, ioDispatcher = ioDispatcher)
@@ -106,7 +98,7 @@ internal class RemoteGatewayEngine : OnDeviceVoiceEngine {
         onDelta: (String) -> Unit,
         onUsage: suspend (EngineUsage) -> Unit,
         onToolCall: suspend (ToolCall) -> JsonElement?,
-    ): EngineTurnResult = EngineTurnResult()
+    ) = Unit
 
     override suspend fun injectContext(text: String) = Unit
 

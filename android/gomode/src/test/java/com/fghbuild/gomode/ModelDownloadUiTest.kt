@@ -103,7 +103,7 @@ class ModelDownloadUiTest {
             ).assertTextContains("Connection interrupted. Resume the download.")
         compose.onNodeWithTag("gomode-model-download").performClick()
         assertEquals(2, starts)
-        compose.runOnIdle { state = ModelDownloadState.Ready(2_588_147_712, true) }
+        compose.runOnIdle { state = ModelDownloadState.Ready(2_588_147_712, true, removalError = null) }
         compose.onNodeWithTag("gomode-model-download-status").assertTextContains("Installed · 2.59 GB")
         compose.onNodeWithTag("gomode-model-storage").assertTextContains("8.00 GB available")
         compose.onNodeWithTag("gomode-model-download").assertDoesNotExist()
@@ -119,7 +119,7 @@ class ModelDownloadUiTest {
         compose.runOnIdle { state = ModelDownloadState.Missing(0) }
         compose.onNodeWithTag("gomode-model-download-status").assertTextContains("Not downloaded")
         compose.onNodeWithTag("gomode-model-download").assertExists()
-        compose.runOnIdle { state = ModelDownloadState.Ready(2_588_147_712, false) }
+        compose.runOnIdle { state = ModelDownloadState.Ready(2_588_147_712, false, removalError = null) }
         compose.onNodeWithTag("gomode-model-download-status").assertTextContains("developer-managed", substring = true)
         compose.onNodeWithTag("gomode-model-delete").assertDoesNotExist()
     }
@@ -139,7 +139,10 @@ class ModelDownloadUiTest {
                         onRemove = { state = ModelDownloadState.Missing(0) },
                         onDownload = {
                             state =
-                                ModelDownloadState.Downloading(ModelTransferProgress(0, ModelTransferStage.CHECKING))
+                                ModelDownloadState.Downloading(
+                                    ModelTransferProgress(0, ModelTransferStage.CHECKING),
+                                    totalBytes = null,
+                                )
                         },
                         onCancel = { state = ModelDownloadState.Missing(0) },
                     )

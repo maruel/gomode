@@ -35,7 +35,7 @@ internal sealed interface ModelDownloadState {
     data class Ready(
         val bytes: Long,
         val removable: Boolean,
-        val removalError: String? = null,
+        val removalError: String?,
     ) : ModelDownloadState
 
     data object Removing : ModelDownloadState
@@ -53,7 +53,7 @@ internal sealed interface ModelDownloadState {
 
     data class Downloading(
         val progress: ModelTransferProgress,
-        val totalBytes: Long? = null,
+        val totalBytes: Long?,
     ) : ModelDownloadState
 
     data class Failed(

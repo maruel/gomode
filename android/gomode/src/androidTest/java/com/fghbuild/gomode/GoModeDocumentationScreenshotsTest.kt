@@ -88,7 +88,7 @@ class GoModeDocumentationScreenshotsTest : GoModeE2eTestBase() {
         }
         capture(device, directory, "connections")
 
-        composeRule.onNodeWithTag("gomode-voice-mode-device").performScrollTo().performClick()
+        composeRule.onNodeWithTag("gomode-voice-setup-separate-stages").performScrollTo().performClick()
         composeRule.onNodeWithTag("gomode-voice-language").performScrollTo()
         capture(device, directory, "voice-settings")
 

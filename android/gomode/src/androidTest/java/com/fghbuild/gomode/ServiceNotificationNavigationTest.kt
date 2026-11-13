@@ -56,12 +56,26 @@ class ServiceNotificationNavigationTest {
                 manager.cancelAll()
                 publisher.publish(
                     ServiceShellKey(ids.first, firstURL),
-                    ServiceNotification("first-event", "Alpha ready", "Work A", url = "/work/stable-a"),
+                    ServiceNotification(
+                        "first-event",
+                        "Alpha ready",
+                        "Work A",
+                        url = "/work/stable-a",
+                        itemId = null,
+                        expiresAt = null,
+                    ),
                 )
                 val firstIntent = posted(manager, "Alpha ready").contentIntent
                 publisher.publish(
                     ServiceShellKey(ids.second, secondURL),
-                    ServiceNotification("second-event", "Beta ready", "Work B", url = "/work/stable-b"),
+                    ServiceNotification(
+                        "second-event",
+                        "Beta ready",
+                        "Work B",
+                        url = "/work/stable-b",
+                        itemId = null,
+                        expiresAt = null,
+                    ),
                 )
                 val secondIntent = posted(manager, "Beta ready").contentIntent
                 try {
@@ -94,7 +108,14 @@ class ServiceNotificationNavigationTest {
                     assertTrue(!coldActivity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
                     publisher.publish(
                         ServiceShellKey(ids.second, secondURL),
-                        ServiceNotification("background-event", "Beta background", "Work B", url = "/work/stable-b"),
+                        ServiceNotification(
+                            "background-event",
+                            "Beta background",
+                            "Work B",
+                            url = "/work/stable-b",
+                            itemId = null,
+                            expiresAt = null,
+                        ),
                     )
                     posted(manager, "Beta background")
                     firstIntent.send()

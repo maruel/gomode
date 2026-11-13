@@ -22,8 +22,8 @@ If no emulator is present, run `make android-start-emulator` to provision and st
 one. Missing emulator images, AVDs, or connected devices do not justify skipping
 instrumented test execution.
 Run `make android-push` to install and launch the app on a connected device.
-Use native **Settings → On-device voice → Local LLM** to download local model
-weights. Keep `/data/local/tmp/llm/` resolution for developer and model acceptance fixtures.
+Pick a local model under native **Settings → Voice → Separate stages → Language
+model** to download its weights. Keep `/data/local/tmp/llm/` resolution for developer and model acceptance fixtures.
 
 <!-- BEGIN FILE INDEX -->
 ## File Index

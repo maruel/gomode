@@ -59,9 +59,9 @@ data class ServiceNotification(
     val id: String,
     val title: String,
     val text: String,
-    val itemId: String? = null,
-    val url: String? = null,
-    val expiresAt: Instant? = null,
+    val itemId: String?,
+    val url: String?,
+    val expiresAt: Instant?,
 )
 
 data class ServiceMonitorState(
@@ -96,7 +96,7 @@ class ServiceMonitor(
 
     // Last verified ordering survives advisory faults; no content cache or second lifetime.
     private val contextOrdering = mutableMapOf<String, Pair<String, Long>>()
-    internal val observedNotificationIDs = mutableSetOf<String>()
+    private val observedNotificationIDs = mutableSetOf<String>()
 
     fun start(
         serviceURL: String,

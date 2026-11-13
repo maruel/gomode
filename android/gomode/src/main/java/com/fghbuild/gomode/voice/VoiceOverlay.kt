@@ -335,11 +335,12 @@ private fun UsagePanel(usage: VoiceUsage?) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.fillMaxWidth(),
             metrics = {
-                if (reported && totals != null) TokenMetrics(totals)
+                if (reported) TokenMetrics(totals)
                 if (usage?.latest?.contextTokens != null || usage?.latest?.contextWindow != null) {
-                    val context = "${formatUsageCount(
-                        usage?.latest?.contextTokens,
-                    )} / ${formatUsageCount(usage?.latest?.contextWindow)}"
+                    val context =
+                        "${formatUsageCount(
+                            usage.latest.contextTokens,
+                        )} / ${formatUsageCount(usage.latest.contextWindow)}"
                     UsageMetric("Context tokens: $context", context, Icons.Default.DataUsage)
                 }
             },
@@ -656,12 +657,7 @@ private fun ConversationPanel(
                     Text(
                         text = voiceStatusText(voiceState),
                         style = MaterialTheme.typography.bodyMedium,
-                        color =
-                            if (voiceState.activeTool != null) {
-                                MaterialTheme.colorScheme.tertiary
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
-                            },
+                        color = MaterialTheme.colorScheme.onSurface,
                         modifier =
                             Modifier
                                 .then(

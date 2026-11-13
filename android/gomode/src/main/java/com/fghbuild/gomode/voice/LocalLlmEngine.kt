@@ -58,7 +58,7 @@ private const val INVALID_TOOL_REPLY = "Local model could not form a valid tool 
 private val toolJson = GsonBuilder().serializeNulls().create()
 
 internal class LocalModelUnavailableException(
-    val model: LocalLlmModel,
+    model: LocalLlmModel,
 ) : IllegalStateException("${model.label} is not ready yet. Check its download in Settings.")
 
 private enum class TurnOutcome { CANCELLED, COMPLETED, FAILED, INVALIDATED }
@@ -89,13 +89,11 @@ private class LocalTurnDiagnostics(
 internal fun selectedModelPaths(
     context: Context,
     model: LocalLlmModel,
-    explicitModelPath: String? = null,
 ): List<String> {
     val deviceDir = File("/data/local/tmp/llm")
     val metadata = File(deviceDir, "model_name.txt")
     val legacyName = if (metadata.isFile) metadata.readText().trim() else null
     return buildList {
-        explicitModelPath?.let(::add)
         add(File(context.noBackupFilesDir, "models/${model.fileName}").absolutePath)
         add(File(context.filesDir, "models/${model.fileName}").absolutePath)
         add(File(deviceDir, model.fileName).absolutePath)
@@ -121,9 +119,6 @@ internal fun acceptsLegacyModel(
         metadata.removeSuffix(".litertlm").lowercase() in setOf("gemma", "gemma 4", "model")
     return generic && model == LocalLlmModel.GEMMA_4_E2B
 }
-
-internal fun formatModelName(raw: String): String =
-    LocalLlmModel.fromRawName(raw)?.label ?: raw.removeSuffix(".litertlm")
 
 internal fun backendsFor(model: LocalLlmModel): List<Backend> =
     when (model) {
@@ -158,8 +153,7 @@ internal interface EdgeLlmRunner : AutoCloseable {
 internal class LiteRtLmRunner(
     private val context: Context,
     conversationConfig: ConversationConfig,
-    modelPath: String? = null,
-    private val model: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
+    private val model: LocalLlmModel,
 ) : EdgeLlmRunner {
     private var engine: Engine? = null
     private var conversation: Conversation? = null
@@ -171,7 +165,7 @@ internal class LiteRtLmRunner(
         get() = engine != null && conversation != null
 
     init {
-        val candidatePaths = selectedModelPaths(context, model, modelPath)
+        val candidatePaths = selectedModelPaths(context, model)
         existingPath =
             candidatePaths.firstOrNull { File(it).isFile } ?: throw LocalModelUnavailableException(model)
         initialize(conversationConfig)
@@ -409,11 +403,7 @@ internal class LocalLlmEngine(
                     check(!closed.get()) { "Local model engine is closed" }
                     preparedRunner =
                         runnerFactory?.invoke(this@LocalLlmEngine.context, conversationConfig(boundedContext))
-                            ?: LiteRtLmRunner(
-                                this@LocalLlmEngine.context,
-                                conversationConfig(boundedContext),
-                                model = model,
-                            )
+                            ?: LiteRtLmRunner(this@LocalLlmEngine.context, conversationConfig(boundedContext), model)
                 }
                 check(!closed.get()) { "Local model engine was closed during initialization" }
                 runner = preparedRunner
@@ -457,14 +447,14 @@ internal class LocalLlmEngine(
         onDelta: (String) -> Unit,
         onUsage: suspend (EngineUsage) -> Unit,
         onToolCall: suspend (ToolCall) -> JsonElement?,
-    ): EngineTurnResult {
+    ) {
         val generation = turnGeneration.get()
 
-        return withContext(ioDispatcher) {
+        withContext(ioDispatcher) {
             nativeOperation.withLock {
                 check(!closed.get()) { "Local model engine is closed" }
                 val query = input.text.trim()
-                if (query.isEmpty()) return@withContext EngineTurnResult()
+                if (query.isEmpty()) return@withContext
 
                 val activeRunner = checkNotNull(runner) { "Local model session is not initialized" }
                 val validator = checkNotNull(toolValidator)
@@ -477,8 +467,6 @@ internal class LocalLlmEngine(
                     return current
                 }
                 try {
-                    val text = StringBuilder()
-                    val executed = mutableListOf<ToolCall>()
                     var usage: EngineUsage? = null
 
                     suspend fun observeUsage(next: EngineUsage) {
@@ -495,35 +483,20 @@ internal class LocalLlmEngine(
                     // Context changes precede the request; the request is always last.
                     var message = Message.user(listOfNotNull(contextUpdate, query).joinToString("\n\n"))
                     while (true) {
-                        if (!validateTurn()) {
-                            return@withContext EngineTurnResult(
-                                assistantText = text.toString(),
-                                toolCalls = executed,
-                            )
-                        }
-                        val roundStart = text.length
+                        if (!validateTurn()) return@withContext
+                        val round = StringBuilder()
                         val reply =
                             generateReply(activeRunner, message, diagnostics, ::validateTurn, ::observeUsage) { delta ->
-                                text.append(delta)
+                                round.append(delta)
                                 onDelta(delta)
                             }
-                                ?: return@withContext EngineTurnResult(
-                                    assistantText = text.toString(),
-                                    toolCalls = executed,
-                                )
+                                ?: return@withContext
                         val calls = reply.toolCalls
                         conversationHistory.add(message)
                         conversationHistory.add(reply)
-                        if (!validateTurn()) {
-                            return@withContext EngineTurnResult(
-                                assistantText = text.toString(),
-                                toolCalls = executed,
-                            )
-                        }
+                        if (!validateTurn()) return@withContext
                         if (calls.isEmpty()) {
-                            require(
-                                text.substring(roundStart).isNotBlank(),
-                            ) { "Local model returned an empty response" }
+                            require(round.isNotBlank()) { "Local model returned an empty response" }
                             break
                         }
                         require(
@@ -563,21 +536,10 @@ internal class LocalLlmEngine(
                         }
                         val results = mutableListOf<Content.ToolResponse>()
                         for (dispatched in requested) {
-                            if (!validateTurn()) {
-                                return@withContext EngineTurnResult(
-                                    assistantText = text.toString(),
-                                    toolCalls = executed,
-                                )
-                            }
+                            if (!validateTurn()) return@withContext
                             val result = onToolCall(dispatched)
-                            executed.add(dispatched)
                             // Hang-up invalidates the turn even when the owner retains the loaded model.
-                            if (!validateTurn()) {
-                                return@withContext EngineTurnResult(
-                                    assistantText = text.toString(),
-                                    toolCalls = executed,
-                                )
-                            }
+                            if (!validateTurn()) return@withContext
                             results.add(
                                 Content.ToolResponse(
                                     dispatched.name,
@@ -587,9 +549,7 @@ internal class LocalLlmEngine(
                         }
                         message = Message.tool(Contents.of(results))
                     }
-                    val response = text.toString().trim()
                     diagnostics.outcome = TurnOutcome.COMPLETED
-                    EngineTurnResult(assistantText = response, toolCalls = executed)
                 } catch (e: CancellationException) {
                     diagnostics.outcome = TurnOutcome.CANCELLED
                     throw e

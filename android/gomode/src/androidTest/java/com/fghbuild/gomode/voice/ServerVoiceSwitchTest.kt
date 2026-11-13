@@ -35,6 +35,7 @@ import androidx.test.uiautomator.UiDevice
 import com.fghbuild.gomode.LocalEmulatorOnly
 import com.fghbuild.gomode.R
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.data.SpeechStageLocation
 import com.fghbuild.gomode.data.VoiceSetupMode
 import com.fghbuild.gomode.frontendPreparationFixtureScript
 import com.fghbuild.gomode.ui.GoModeApp
@@ -1260,9 +1261,21 @@ private enum class SpeechOwner {
 }
 
 private suspend fun SettingsRepository.selectSpeech(owner: SpeechOwner) =
-    updateVoiceSetup {
-        when (owner) {
-            SpeechOwner.DEVICE -> it.withDeviceSpeech()
-            SpeechOwner.GATEWAY -> it.copy(mode = VoiceSetupMode.FOLLOW_GATEWAY)
-        }
+    updateSavedVoiceSetup(null) {
+        it.copy(
+            preference =
+                when (owner) {
+                    SpeechOwner.DEVICE -> {
+                        it.preference.copy(
+                            mode = VoiceSetupMode.SEPARATE_STAGES,
+                            recognition = SpeechStageLocation.DEVICE,
+                            speech = SpeechStageLocation.DEVICE,
+                        )
+                    }
+
+                    SpeechOwner.GATEWAY -> {
+                        it.preference.copy(mode = VoiceSetupMode.FOLLOW_GATEWAY)
+                    }
+                },
+        )
     }

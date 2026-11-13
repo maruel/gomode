@@ -7,8 +7,9 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.data.SpeechStageLocation
 import com.fghbuild.gomode.data.VoiceLanguageModel
-import com.fghbuild.gomode.data.VoiceSetupPreference
+import com.fghbuild.gomode.data.VoiceSetupMode
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.ui.web.ServiceShellKey
@@ -202,8 +203,10 @@ class VoiceConversationTest {
         runTest {
             val repository = SettingsRepository(MemoryPreferences())
             val id = repository.addService("Server", "https://example.test")
-            repository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
-            repository.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
+            repository.selectDeviceStages()
+            repository.updateSavedVoiceSetup(null) {
+                it.copy(preference = it.preference.copy(languageModel = VoiceLanguageModel.LOCAL_LLM))
+            }
             repository.settings.first {
                 it.activeServiceId == id &&
                     it.voiceSetup.languageModel == VoiceLanguageModel.LOCAL_LLM
@@ -241,8 +244,10 @@ class VoiceConversationTest {
         runTest {
             val repository = SettingsRepository(MemoryPreferences())
             val id = repository.addService("Server", "https://example.test")
-            repository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
-            repository.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
+            repository.selectDeviceStages()
+            repository.updateSavedVoiceSetup(null) {
+                it.copy(preference = it.preference.copy(languageModel = VoiceLanguageModel.LOCAL_LLM))
+            }
             repository.settings.first {
                 it.activeServiceId == id &&
                     it.voiceSetup.languageModel == VoiceLanguageModel.LOCAL_LLM
@@ -352,7 +357,7 @@ class VoiceConversationTest {
                     val repository = SettingsRepository(MemoryPreferences())
                     val id = repository.addService("Gateway", gateway)
                     repository.settings.first { it.activeServiceId == id }
-                    repository.updateSpeakingVoice(gateway, "live", voice)
+                    repository.updateSpeakingVoice(gateway, "live", voice) { it }
                     repository.settings.first { it.speakingVoices[gateway]?.get("live") == voice }
                     val key = ServiceShellKey(id, gateway)
                     val page = ServiceShellSession(key) {}.also { authenticate(it, "initial") }
@@ -360,7 +365,7 @@ class VoiceConversationTest {
                     val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { mapOf(key to page) }
                     try {
                         owner.begin(false)
-                        val initial = owner.prepare()
+                        val initial = owner.prepare(pinnedVoice = null)
                         assertEquals(name, voice, initial.voice?.voiceName)
                         voices.set(row.getValue("voices"))
                         owner.begin(true)
@@ -414,7 +419,7 @@ class VoiceConversationTest {
                 val destinationID = repository.addService("Tools only", "https://tools.invalid")
                 val sponsorID = repository.addService("Gateway sponsor", server.url("/").toString())
                 repository.settings.first { it.activeServiceId == sponsorID }
-                repository.updateSpeakingVoice(server.url("/").toString().trimEnd('/'), "live", "Orus")
+                repository.updateSpeakingVoice(server.url("/").toString().trimEnd('/'), "live", "Orus") { it }
                 repository.settings.first {
                     it.speakingVoices[server.url("/").toString().trimEnd('/')]?.get("live") == "Orus"
                 }
@@ -427,7 +432,7 @@ class VoiceConversationTest {
                 val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { entries }
                 try {
                     owner.begin(false)
-                    val preparing = async(Dispatchers.IO) { owner.prepare() }
+                    val preparing = async(Dispatchers.IO) { owner.prepare(pinnedVoice = null) }
                     assertTrue(choicesStarted.await(5, TimeUnit.SECONDS))
                     repository.switchService(destinationID)
                     repository.settings.first { it.activeServiceId == destinationID }
@@ -439,10 +444,10 @@ class VoiceConversationTest {
                     assertTrue(setup.tools.any { it.name == "dispatch_service_tool" })
                     assertTrue(setup.tools.none { it.name == "product_alias" })
                     assertTrue(setup.serviceContextText.contains(destinationID))
-                    repository.updateSpeakingVoice(setup.gatewayEndpointURL, "live", "Kore")
+                    repository.updateSpeakingVoice(setup.gatewayEndpointURL, "live", "Kore") { it }
                     repository.settings.first { it.speakingVoices[setup.gatewayEndpointURL]?.get("live") == "Kore" }
                     owner.begin(true)
-                    val recovery = owner.prepare()
+                    val recovery = owner.prepare(pinnedVoice = null)
                     assertEquals("Orus", recovery.voice?.voiceName)
                     assertEquals(setup.gatewayEndpointURL, recovery.gatewayEndpointURL)
                     assertEquals(2, server.requestCount)
@@ -601,8 +606,10 @@ class VoiceConversationTest {
             val repository = SettingsRepository(MemoryPreferences())
             val a = repository.addService("A", "https://local-a.invalid")
             val b = repository.addService("B", "https://local-b.invalid")
-            repository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
-            repository.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
+            repository.selectDeviceStages()
+            repository.updateSavedVoiceSetup(null) {
+                it.copy(preference = it.preference.copy(languageModel = VoiceLanguageModel.LOCAL_LLM))
+            }
             repository.settings.first {
                 it.voiceSetup.languageModel == VoiceLanguageModel.LOCAL_LLM &&
                     it.voiceSetup.deviceSpeech
@@ -652,8 +659,10 @@ class VoiceConversationTest {
     fun finishedLocalPreparationRejectsContextAndToolAdmission() =
         runTest {
             val repository = SettingsRepository(MemoryPreferences())
-            repository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
-            repository.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
+            repository.selectDeviceStages()
+            repository.updateSavedVoiceSetup(null) {
+                it.copy(preference = it.preference.copy(languageModel = VoiceLanguageModel.LOCAL_LLM))
+            }
             repository.settings.first { it.voiceSetup.languageModel == VoiceLanguageModel.LOCAL_LLM }
             val catalog = ServiceCatalog(backgroundScope)
             val owner = VoiceConversation(repository, ServiceSettingsClient(), catalog) { emptyMap() }
@@ -694,3 +703,16 @@ class VoiceConversationTest {
             writeMutex.withLock { transform(state.value).also { state.value = it } }
     }
 }
+
+/** Runs both speech stages on the device with the saved language model. */
+private suspend fun SettingsRepository.selectDeviceStages() =
+    updateSavedVoiceSetup(null) {
+        it.copy(
+            preference =
+                it.preference.copy(
+                    mode = VoiceSetupMode.SEPARATE_STAGES,
+                    recognition = SpeechStageLocation.DEVICE,
+                    speech = SpeechStageLocation.DEVICE,
+                ),
+        )
+    }

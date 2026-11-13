@@ -149,16 +149,6 @@ class LocalLlmEngineTest {
     )
 
     @Test
-    fun `formatted model names identify installed models`() {
-        assertEquals("Gemma 4 E2B", formatModelName("gemma-4-E2B-it"))
-        assertEquals("Gemma 4 E4B", formatModelName("gemma-4-E4B-it.litertlm"))
-        assertEquals("LFM3 1.7B · 64K", formatModelName("LFM3-1.7B_int8_64k_fp16.litertlm"))
-        assertEquals("LFM3 1.7B · 64K", formatModelName("LFM3-1.7B"))
-        assertEquals("custom-model", formatModelName("custom-model.litertlm"))
-        assertEquals("Qwen2-0.5B-Instruct", formatModelName("Qwen2-0.5B-Instruct"))
-    }
-
-    @Test
     fun `variant paths and display names never select the other named model`() {
         val app = RuntimeEnvironment.getApplication()
         val e2b = selectedModelPaths(app, LocalLlmModel.GEMMA_4_E2B)
@@ -211,8 +201,7 @@ class LocalLlmEngineTest {
             engine.initialize(sessionContext)
             engine.processTurn(UserTurnInput("Hi"), {}, {}, { error("No call") })
             val deltas = mutableListOf<String>()
-            val result = engine.processTurn(UserTurnInput("Run"), deltas::add, {}) { error("No malformed dispatch") }
-            assertEquals("Recovered", result.assistantText)
+            engine.processTurn(UserTurnInput("Run"), deltas::add, {}) { error("No malformed dispatch") }
             assertEquals(listOf("Recovered"), deltas)
             assertEquals(requests[1].toString(), requests[2].toString())
             val initialSampler = assertRecommendedSampler(configs.first())
@@ -270,13 +259,13 @@ class LocalLlmEngineTest {
                     }
                 }
             engine.initialize(sessionContext)
-            val result =
-                engine.processTurn(UserTurnInput("Run"), {}, {}) {
-                    dispatches++
-                    Json.parseToJsonElement("""{"ok":true}""")
-                }
+            val deltas = mutableListOf<String>()
+            engine.processTurn(UserTurnInput("Run"), deltas::add, {}) {
+                dispatches++
+                Json.parseToJsonElement("""{"ok":true}""")
+            }
             assertEquals(1, dispatches)
-            assertEquals("Done", result.assistantText)
+            assertEquals(listOf("Done"), deltas)
             assertEquals(Role.TOOL, requests[1].role)
             assertEquals(requests[1].toString(), requests[2].toString())
             assertEquals(2, configs.last().initialMessages.size)
@@ -334,8 +323,7 @@ class LocalLlmEngineTest {
             engine.initialize(sessionContext)
             engine.processTurn(UserTurnInput("First request"), {}, {}, { error("No tool") })
             val deltas = mutableListOf<String>()
-            val result = engine.processTurn(UserTurnInput("Second request"), deltas::add, {}) { error("No tool") }
-            assertEquals("Second answer", result.assistantText)
+            engine.processTurn(UserTurnInput("Second request"), deltas::add, {}) { error("No tool") }
             assertEquals(listOf("Second answer"), deltas)
             assertEquals(requests[1].toString(), requests[2].toString())
             assertEquals(2, configs.last().initialMessages.size)
@@ -501,17 +489,15 @@ class LocalLlmEngineTest {
         runTest {
             val engine = engine { flowOf(Message.model("<!tool")) }
             engine.initialize(sessionContext)
-            assertEquals(
-                "<!tool",
-                engine.processTurn(UserTurnInput("Hi"), {}, {}, { error("No dispatch") }).assistantText,
-            )
+            val prefix = StringBuilder()
+            engine.processTurn(UserTurnInput("Hi"), { prefix.append(it) }, {}, { error("No dispatch") })
+            assertEquals("<!tool", prefix.toString())
             engine.closeAndJoin()
             val normal = engine { flowOf(Message.model("A marker: <!tool_call>")) }
             normal.initialize(sessionContext)
-            assertEquals(
-                "A marker: <!tool_call>",
-                normal.processTurn(UserTurnInput("Hi"), {}, {}, { error("No dispatch") }).assistantText,
-            )
+            val marker = StringBuilder()
+            normal.processTurn(UserTurnInput("Hi"), { marker.append(it) }, {}, { error("No dispatch") })
+            assertEquals("A marker: <!tool_call>", marker.toString())
             normal.closeAndJoin()
         }
 
@@ -655,11 +641,10 @@ class LocalLlmEngineTest {
             engine.initialize(sessionContext)
             val dispatched = mutableListOf<ToolCall>()
             val deltas = mutableListOf<String>()
-            val result =
-                engine.processTurn(UserTurnInput("Use music"), deltas::add, {}) { call ->
-                    dispatched.add(call)
-                    Json.parseToJsonElement("""{"message":"Switched to media"}""")
-                }
+            engine.processTurn(UserTurnInput("Use music"), deltas::add, {}) { call ->
+                dispatched.add(call)
+                Json.parseToJsonElement("""{"message":"Switched to media"}""")
+            }
             assertEquals(Json.parseToJsonElement("""{"service":"media"}"""), dispatched.single().args)
             assertEquals(Role.USER, requests.first().role)
             assertEquals(Role.TOOL, requests.last().role)
@@ -671,8 +656,6 @@ class LocalLlmEngineTest {
             assertEquals("switch_service", response.name)
             assertEquals("Switched to media", (response.response as com.google.gson.JsonObject)["message"].asString)
             assertEquals("Sure. Switched to media.", deltas.joinToString(""))
-            assertEquals(deltas.joinToString(""), result.assistantText)
-            assertEquals(dispatched, result.toolCalls)
             engine.closeAndJoin()
         }
 
@@ -707,15 +690,13 @@ class LocalLlmEngineTest {
                 }
             engine.initialize(sessionContext)
             val calls = mutableListOf<ToolCall>()
-            val result =
-                engine.processTurn(UserTurnInput("Switch"), {}, {}) {
-                    calls.add(it)
-                    JsonObject(emptyMap())
-                }
-            assertEquals(1, calls.size)
+            val deltas = mutableListOf<String>()
+            engine.processTurn(UserTurnInput("Switch"), deltas::add, {}) {
+                calls.add(it)
+                JsonObject(emptyMap())
+            }
             assertEquals(Json.parseToJsonElement("""{"service":"corrected"}"""), calls.single().args)
-            assertEquals(calls, result.toolCalls)
-            assertEquals("Done", result.assistantText)
+            assertEquals("Done", deltas.joinToString(""))
             engine.closeAndJoin()
         }
 
@@ -902,14 +883,14 @@ class LocalLlmEngineTest {
                 ),
             )
             val calls = mutableListOf<ToolCall>()
-            val result =
-                engine.processTurn(UserTurnInput("Run twice"), {}, {}) {
-                    calls.add(it)
-                    Json.parseToJsonElement("""{"error":{"code":42}}""")
-                }
+            val deltas = mutableListOf<String>()
+            engine.processTurn(UserTurnInput("Run twice"), deltas::add, {}) {
+                calls.add(it)
+                Json.parseToJsonElement("""{"error":{"code":42}}""")
+            }
             assertEquals(2, calls.size)
             assertEquals(JsonObject(emptyMap()), calls.first().args)
-            assertEquals("The service rejected the change.", result.assistantText)
+            assertEquals("The service rejected the change.", deltas.joinToString(""))
             engine.closeAndJoin()
         }
 
@@ -923,13 +904,14 @@ class LocalLlmEngineTest {
                     flowOf(Message.model(toolCalls = callMessage().toolCalls + callMessage().toolCalls))
                 }
             engine.initialize(sessionContext)
-            val result =
-                engine.processTurn(UserTurnInput("Disconnect"), {}, {}) {
-                    engine.close()
-                    null
-                }
+            var dispatches = 0
+            engine.processTurn(UserTurnInput("Disconnect"), {}, {}) {
+                dispatches++
+                engine.close()
+                null
+            }
             assertEquals(1, generations)
-            assertEquals(1, result.toolCalls.size)
+            assertEquals(1, dispatches)
             engine.closeAndJoin()
         }
 
@@ -939,9 +921,13 @@ class LocalLlmEngineTest {
             val text = "Explain switch_service and `TOOL_CALL:`, without running it."
             val engine = engine { flowOf(Message.model(text)) }
             engine.initialize(sessionContext)
-            val result = engine.processTurn(UserTurnInput("Explain the tool"), {}, {}) { error("No structured call") }
-            assertEquals(text, result.assistantText)
-            assertTrue(result.toolCalls.isEmpty())
+            val spoken = StringBuilder()
+            engine.processTurn(
+                UserTurnInput("Explain the tool"),
+                { spoken.append(it) },
+                {},
+            ) { error("No structured call") }
+            assertEquals(text, spoken.toString())
             engine.closeAndJoin()
         }
 
@@ -1163,17 +1149,25 @@ class LocalLlmEngineTest {
         runTest {
             val engine =
                 LocalLlmEngine(RuntimeEnvironment.getApplication(), { context, config ->
-                    LiteRtLmRunner(context, config, "/nonexistent/path/model.litertlm")
+                    LiteRtLmRunner(context, config, LocalLlmModel.GEMMA_4_E2B)
                 })
             val failure = runCatching { engine.initialize(sessionContext) }.exceptionOrNull()
             assertTrue(failure is LocalModelUnavailableException)
             assertFalse(engine.isModelLoaded)
             engine.closeAndJoin()
-            val model = File.createTempFile("invalid-local-model", ".litertlm")
+            val app = RuntimeEnvironment.getApplication()
+            // An invalid file at the installed-model location reaches native loading.
+            val model = File(app.noBackupFilesDir, "models/${LocalLlmModel.GEMMA_4_E2B.fileName}")
+            model.parentFile?.mkdirs()
+            model.writeText("invalid")
             try {
                 val linkage =
                     runCatching {
-                        LiteRtLmRunner(RuntimeEnvironment.getApplication(), ConversationConfig(), model.absolutePath)
+                        LiteRtLmRunner(
+                            app,
+                            ConversationConfig(),
+                            LocalLlmModel.GEMMA_4_E2B,
+                        )
                     }.exceptionOrNull()
                 assertTrue(linkage is LinkageError)
             } finally {

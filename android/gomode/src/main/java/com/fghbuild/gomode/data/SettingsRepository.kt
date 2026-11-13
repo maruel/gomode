@@ -3,22 +3,25 @@
 // The voice setup has two parts. VOICE_SETUP is device-wide: the setup mode, where recognition and
 // speech run, the language model kind, and the device speech speed. These pick the session (WebRTC,
 // text, or an on-device engine) before any gateway is discovered; car dials and on-device engines
-// need no loaded service. GATEWAY_VOICE_SETUPS holds, per normalized gateway URL, the all-in-one
-// choice, the separate-stages choice, and the recognition and synthesis model IDs, so a mode switch
-// restores the other mode's selection. SPEAKING_VOICES stays keyed by gateway and choice.
+// need no loaded service. GATEWAY_VOICE_SETUPS holds, per normalized gateway URL, one choice per
+// mode and the recognition and synthesis model IDs, so a mode switch restores the other mode's
+// selection. LOCAL_LLM_MODEL names the local model variant. SPEAKING_VOICES stays keyed by gateway
+// and choice. SavedVoiceSetup edits the three voice setup keys in one write.
 //
-// The FOLLOW_GATEWAY mode runs gateway recognition and speech with the saved all-in-one choice, or
-// the gateway's WebRTC default. GatewayVoiceChoices resolves it to all-in-one for a native audio
-// choice and to separate gateway stages otherwise, the way web/src/VoiceSession.ts derives a missing
-// saved setup. Fresh installations and migrated cloud voice use it, because whether a saved cloud
-// choice is a native audio model or a composable language model is known only from the gateway
-// catalog. A serialized setup without a mode decodes to it.
+// The FOLLOW_GATEWAY mode runs gateway recognition and speech with the followed choice, or the
+// gateway's WebRTC default. GatewayVoiceChoices resolves it to all-in-one for a native audio choice
+// and to separate gateway stages otherwise, the way web/src/VoiceSession.ts derives a missing saved
+// setup. Fresh installations and migrated cloud voice use it, because whether a saved cloud choice
+// is a native audio model or a composable language model is known only from the gateway catalog.
+// A serialized setup without a mode decodes to it. The followed choice has its own field, so an
+// explicit all-in-one choice never replaces a followed language model; its serialized name is
+// followedChoiceID, and saved setups that name it allInOneChoiceID still decode to it.
 // Migration reads the former VOICE_MODE, ON_DEVICE_VOICE_ENGINE, and VOICE_CHOICES keys while
 // VOICE_SETUP is absent; the first voice setup write replaces them:
 //
 // | Former value | Voice setup |
 // | --- | --- |
-// | CLOUD | Follow the gateway; per gateway, the saved WebRTC choice as the all-in-one choice |
+// | CLOUD | Follow the gateway; per gateway, the saved WebRTC choice as the followed choice |
 // | DEVICE + REMOTE_GATEWAY | Separate stages, device recognition and speech, the saved text choice |
 // | DEVICE + LOCAL_LLM | Separate stages, device recognition and speech, the saved local model |
 // | DEVICE + NEEDLE_WHISTLE | Separate stages, device recognition and speech, Whistle + Needle |
@@ -43,10 +46,12 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNames
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -64,7 +69,7 @@ data class ServiceInstance(
 /** VoiceSetupMode selects the gateway's choice, one native audio model, or independently chosen stages. */
 @Serializable
 enum class VoiceSetupMode {
-    /** FOLLOW_GATEWAY runs the saved gateway-speech choice, or the default, with gateway recognition and speech. */
+    /** FOLLOW_GATEWAY runs the followed gateway-speech choice, or the default, with gateway recognition and speech. */
     @SerialName("follow-gateway")
     FOLLOW_GATEWAY,
 
@@ -140,13 +145,26 @@ data class VoiceSetupPreference(
     val effectiveSpeech: SpeechStageLocation
         get() = effectiveLocation(speech)
 
-    /** Separate stages with device recognition and speech, keeping the language model. */
-    fun withDeviceSpeech(): VoiceSetupPreference =
-        copy(
-            mode = VoiceSetupMode.SEPARATE_STAGES,
-            recognition = SpeechStageLocation.DEVICE,
-            speech = SpeechStageLocation.DEVICE,
-        )
+    /** Separate stages with [model] as the language model, keeping the other selections. */
+    fun withLanguageModel(model: VoiceLanguageModel): VoiceSetupPreference =
+        copy(mode = VoiceSetupMode.SEPARATE_STAGES, languageModel = model)
+
+    /** Separate stages with [stage] at [location], keeping the other selections. */
+    fun withStage(
+        stage: SpeechStage,
+        location: SpeechStageLocation,
+    ): VoiceSetupPreference =
+        when (stage) {
+            SpeechStage.RECOGNITION -> copy(mode = VoiceSetupMode.SEPARATE_STAGES, recognition = location)
+            SpeechStage.SYNTHESIS -> copy(mode = VoiceSetupMode.SEPARATE_STAGES, speech = location)
+        }
+
+    /** Where [stage] runs; on-device language models require device recognition and speech. */
+    fun effectiveLocation(stage: SpeechStage): SpeechStageLocation =
+        when (stage) {
+            SpeechStage.RECOGNITION -> effectiveRecognition
+            SpeechStage.SYNTHESIS -> effectiveSpeech
+        }
 
     /** Both stages run on the device, so turns travel as text or stay on the device. */
     val deviceSpeech: Boolean
@@ -165,18 +183,33 @@ data class VoiceSetupPreference(
 }
 
 /** GatewayVoiceSetup remembers one gateway's selections for each setup mode. */
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class GatewayVoiceSetup(
-    /** The all-in-one choice. Following the gateway saves any gateway-speech choice here. */
-    @SerialName("allInOneChoiceID") val allInOneChoiceID: String? = null,
+    /** The choice following the gateway runs, of either kind. */
+    @SerialName("followedChoiceID") @JsonNames("allInOneChoiceID") val followedChoiceID: String? = null,
+    /** The native audio choice of the all-in-one mode. */
+    @SerialName("nativeChoiceID") val allInOneChoiceID: String? = null,
     @SerialName("separateStagesChoiceID") val separateStagesChoiceID: String? = null,
     @SerialName("recognitionModelID") val recognitionModelID: String? = null,
     @SerialName("synthesisModelID") val synthesisModelID: String? = null,
 ) {
     fun choiceID(mode: VoiceSetupMode): String? =
         when (mode) {
-            VoiceSetupMode.FOLLOW_GATEWAY, VoiceSetupMode.ALL_IN_ONE -> allInOneChoiceID
+            VoiceSetupMode.FOLLOW_GATEWAY -> followedChoiceID
+            VoiceSetupMode.ALL_IN_ONE -> allInOneChoiceID
             VoiceSetupMode.SEPARATE_STAGES -> separateStagesChoiceID
+        }
+
+    /** Saves [choiceID] as the choice of [mode]. */
+    fun withChoice(
+        mode: VoiceSetupMode,
+        choiceID: String,
+    ): GatewayVoiceSetup =
+        when (mode) {
+            VoiceSetupMode.FOLLOW_GATEWAY -> copy(followedChoiceID = choiceID)
+            VoiceSetupMode.ALL_IN_ONE -> copy(allInOneChoiceID = choiceID)
+            VoiceSetupMode.SEPARATE_STAGES -> copy(separateStagesChoiceID = choiceID)
         }
 
     fun modelID(stage: SpeechStage): String? =
@@ -184,7 +217,27 @@ data class GatewayVoiceSetup(
             SpeechStage.RECOGNITION -> recognitionModelID
             SpeechStage.SYNTHESIS -> synthesisModelID
         }
+
+    fun withModel(
+        stage: SpeechStage,
+        modelID: String,
+    ): GatewayVoiceSetup =
+        when (stage) {
+            SpeechStage.RECOGNITION -> copy(recognitionModelID = modelID)
+            SpeechStage.SYNTHESIS -> copy(synthesisModelID = modelID)
+        }
 }
+
+/**
+ * SavedVoiceSetup is what one voice setup write edits: the device-wide setup, one gateway's
+ * selections, and the local model variant.
+ */
+data class SavedVoiceSetup(
+    val preference: VoiceSetupPreference,
+    /** Empty when the write names no gateway; such a write cannot change it. */
+    val gateway: GatewayVoiceSetup,
+    val localLlmModel: LocalLlmModel,
+)
 
 /** SpeechStage names a gateway speech model slot. */
 enum class SpeechStage {
@@ -202,7 +255,6 @@ enum class LocalLlmModel(
     val topK: Int,
     val topP: Double,
     val temperature: Double,
-    val alias: String? = null,
 ) {
     GEMMA_4_E2B(
         label = "Gemma 4 E2B",
@@ -227,7 +279,6 @@ enum class LocalLlmModel(
         topK = 50,
         topP = 1.0,
         temperature = 0.1,
-        alias = "LFM3-1.7B",
     ),
     LFM_3_1_7B_32K(
         label = "LFM3 1.7B · 32K",
@@ -241,13 +292,13 @@ enum class LocalLlmModel(
 
     val isLfm3: Boolean get() = this == LFM_3_1_7B_64K || this == LFM_3_1_7B_32K
 
-    fun matches(raw: String): Boolean {
+    private fun matches(raw: String): Boolean {
         val clean = raw.removeSuffix(".litertlm")
         val fileStem = fileName.removeSuffix(".litertlm")
-        return (this == LFM_3_1_7B_64K && clean.equals("LFM3 1.7B", ignoreCase = true)) ||
+        val lfm3Alias = clean.equals("LFM3 1.7B", ignoreCase = true) || clean.equals("LFM3-1.7B", ignoreCase = true)
+        return (this == LFM_3_1_7B_64K && lfm3Alias) ||
             clean.equals(label, ignoreCase = true) ||
-            clean.equals(fileStem, ignoreCase = true) ||
-            clean.equals(alias, ignoreCase = true)
+            clean.equals(fileStem, ignoreCase = true)
     }
 
     companion object {
@@ -339,12 +390,7 @@ class SettingsRepository(
                     voiceLanguageTag = prefs[Keys.VOICE_LANGUAGE_TAG] ?: DEFAULT_VOICE_LANGUAGE_TAG,
                     showReasoning = prefs[Keys.SHOW_REASONING] ?: false,
                     showUsageStats = prefs[Keys.SHOW_USAGE_STATS] ?: false,
-                    localLlmModel =
-                        when (val saved = prefs[Keys.LOCAL_LLM_MODEL]) {
-                            "LFM_2_5_1_2B", "LFM_2_5_2_6B", "LFM_3_1_7B" -> LocalLlmModel.LFM_3_1_7B_64K
-                            else -> LocalLlmModel.entries.firstOrNull { it.name == saved }
-                        }
-                            ?: LocalLlmModel.GEMMA_4_E2B,
+                    localLlmModel = decodeLocalLlmModel(prefs),
                 )
             }.catch {
                 emit(
@@ -445,49 +491,38 @@ class SettingsRepository(
         }
     }
 
-    /** Replaces the device-wide voice setup and keeps gateway selections. */
-    suspend fun updateVoiceSetup(transform: (VoiceSetupPreference) -> VoiceSetupPreference) {
-        dataStore.edit { prefs ->
-            writeVoiceSetup(prefs, transform(decodeVoiceSetup(prefs)), decodeGatewayVoiceSetups(prefs))
-        }
+    /** Edits the voice setup and, when [gatewayURL] is set, that gateway's selections, in one write. */
+    suspend fun updateSavedVoiceSetup(
+        gatewayURL: String?,
+        transform: (SavedVoiceSetup) -> SavedVoiceSetup,
+    ) {
+        val gateway = gatewayURL?.let(::normalizeURL)
+        require(gateway == null || gateway.isNotEmpty()) { "Voice gateway is unknown" }
+        dataStore.edit { prefs -> editSavedVoiceSetup(prefs, gateway, transform) }
     }
 
-    /** Saves [choiceID] as the selection of the setup [transform] yields, in one write. */
+    /** Saves [choiceID] as the choice of the setup mode [transform] yields, in one write. */
     suspend fun updateVoiceChoice(
         gatewayURL: String,
         choiceID: String,
-        transform: (VoiceSetupPreference) -> VoiceSetupPreference,
+        transform: (SavedVoiceSetup) -> SavedVoiceSetup,
     ) {
         require(choiceID.isNotBlank()) { "Select a voice choice" }
-        dataStore.edit { prefs ->
-            val setup = transform(decodeVoiceSetup(prefs))
-            updateGatewayVoiceSetup(prefs, setup, gatewayURL) {
-                when (setup.mode) {
-                    VoiceSetupMode.FOLLOW_GATEWAY, VoiceSetupMode.ALL_IN_ONE -> it.copy(allInOneChoiceID = choiceID)
-                    VoiceSetupMode.SEPARATE_STAGES -> it.copy(separateStagesChoiceID = choiceID)
-                }
-            }
+        updateSavedVoiceSetup(gatewayURL) { saved ->
+            transform(saved).let { it.copy(gateway = it.gateway.withChoice(it.preference.mode, choiceID)) }
         }
     }
 
-    // TODO: Only SettingsRepositoryTest calls updateSpeechModel, so recognitionModelID and synthesisModelID
-    // stay unset in production and resolveSpeechModel always applies the first listed model. A per-stage
-    // model picker in native settings will call it.
-
-    /** Saves one stage's gateway model for composable language models. */
+    /** Saves one stage's gateway model for composable language models with the setup [transform] yields. */
     suspend fun updateSpeechModel(
         gatewayURL: String,
         stage: SpeechStage,
         modelID: String,
+        transform: (SavedVoiceSetup) -> SavedVoiceSetup,
     ) {
         require(modelID.isNotBlank()) { "Select a speech model" }
-        dataStore.edit { prefs ->
-            updateGatewayVoiceSetup(prefs, decodeVoiceSetup(prefs), gatewayURL) {
-                when (stage) {
-                    SpeechStage.RECOGNITION -> it.copy(recognitionModelID = modelID)
-                    SpeechStage.SYNTHESIS -> it.copy(synthesisModelID = modelID)
-                }
-            }
+        updateSavedVoiceSetup(gatewayURL) { saved ->
+            transform(saved).let { it.copy(gateway = it.gateway.withModel(stage, modelID)) }
         }
     }
 
@@ -512,18 +547,18 @@ class SettingsRepository(
         dataStore.edit { prefs -> prefs[Keys.VOICE_AUDIO_DEVICE_TYPE] = type }
     }
 
-    suspend fun updateLocalLlmModel(model: LocalLlmModel) {
-        dataStore.edit { prefs -> prefs[Keys.LOCAL_LLM_MODEL] = model.name }
-    }
-
+    /** Saves [voiceName] for [choiceID] with the voice setup [transform] yields, in one write. */
     suspend fun updateSpeakingVoice(
         gatewayURL: String,
         choiceID: String,
         voiceName: String,
+        transform: (SavedVoiceSetup) -> SavedVoiceSetup,
     ) {
         require(choiceID.isNotBlank() && (voiceName.isEmpty() || voiceName.isNotBlank())) { "Select a speaking voice" }
+        val gateway = normalizeURL(gatewayURL)
+        require(gateway.isNotEmpty()) { "Voice gateway is unknown" }
         dataStore.edit { prefs ->
-            val gateway = normalizeURL(gatewayURL)
+            editSavedVoiceSetup(prefs, gateway, transform)
             val saved = decodeSpeakingVoices(prefs)
             val choices = saved[gateway].orEmpty() + (choiceID to voiceName)
             prefs[Keys.SPEAKING_VOICES] = json.encodeToString(saved + (gateway to choices))
@@ -557,16 +592,26 @@ class SettingsRepository(
         return slots
     }
 
-    private fun updateGatewayVoiceSetup(
+    private fun editSavedVoiceSetup(
         prefs: MutablePreferences,
-        setup: VoiceSetupPreference,
-        gatewayURL: String,
-        transform: (GatewayVoiceSetup) -> GatewayVoiceSetup,
+        gateway: String?,
+        transform: (SavedVoiceSetup) -> SavedVoiceSetup,
     ) {
-        val gateway = normalizeURL(gatewayURL)
-        require(gateway.isNotEmpty()) { "Voice gateway is unknown" }
-        val saved = decodeGatewayVoiceSetups(prefs)
-        writeVoiceSetup(prefs, setup, saved + (gateway to transform(saved[gateway] ?: GatewayVoiceSetup())))
+        val gateways = decodeGatewayVoiceSetups(prefs)
+        val saved =
+            SavedVoiceSetup(
+                decodeVoiceSetup(prefs),
+                gateway?.let { gateways[it] } ?: GatewayVoiceSetup(),
+                decodeLocalLlmModel(prefs),
+            )
+        val edited = transform(saved)
+        require(gateway != null || edited.gateway == saved.gateway) { "Voice gateway is unknown" }
+        writeVoiceSetup(
+            prefs,
+            edited.preference,
+            if (gateway == null) gateways else gateways + (gateway to edited.gateway),
+        )
+        if (edited.localLlmModel != saved.localLlmModel) prefs[Keys.LOCAL_LLM_MODEL] = edited.localLlmModel.name
     }
 
     // Both voice setup keys are written together, so neither falls back to the former keys alone.
@@ -593,6 +638,7 @@ class SettingsRepository(
             setups.keys.none(String::isBlank) &&
                 setups.values.all { setup ->
                     listOf(
+                        setup.followedChoiceID,
                         setup.allInOneChoiceID,
                         setup.separateStagesChoiceID,
                         setup.recognitionModelID,
@@ -612,11 +658,17 @@ class SettingsRepository(
         if (parsed is JsonObject && parsed.values.all { it is JsonPrimitive }) return emptyMap()
         return json.decodeFromJsonElement<Map<String, Map<String, String>>>(parsed).mapValues { (_, families) ->
             GatewayVoiceSetup(
-                allInOneChoiceID = families["webrtc"]?.takeIf(String::isNotBlank),
+                followedChoiceID = families["webrtc"]?.takeIf(String::isNotBlank),
                 separateStagesChoiceID = families["text"]?.takeIf(String::isNotBlank),
             )
         }
     }
+
+    private fun decodeLocalLlmModel(prefs: Preferences): LocalLlmModel =
+        when (val saved = prefs[Keys.LOCAL_LLM_MODEL]) {
+            "LFM_2_5_1_2B", "LFM_2_5_2_6B", "LFM_3_1_7B" -> LocalLlmModel.LFM_3_1_7B_64K
+            else -> LocalLlmModel.entries.firstOrNull { it.name == saved }
+        } ?: LocalLlmModel.GEMMA_4_E2B
 
     private fun decodeServices(prefs: Preferences): List<ServiceInstance> =
         prefs[Keys.SERVICES]?.let { encoded ->

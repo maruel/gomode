@@ -86,7 +86,7 @@ private val deviceWebSocketClient: OkHttpClient by lazy {
 /** textSessionWebSocketURL maps a gateway base URL to the text session WebSocket URL. */
 internal fun textSessionWebSocketURL(
     gatewayEndpointURL: String,
-    choiceID: String? = null,
+    choiceID: String?,
 ): String {
     val httpURL =
         (gatewayEndpointURL.trimEnd('/') + TEXT_SESSION_PATH)
@@ -766,7 +766,7 @@ internal class DeviceVoiceSession(
 
     private fun handleAssistantText(
         delta: String,
-        responseID: String? = null,
+        responseID: String?,
     ) {
         if (delta.isEmpty() || suppressReply) return
         turnIdle = false
@@ -1523,7 +1523,7 @@ internal class DeviceVoiceSession(
 
     private fun sendContextUpdate(
         text: String,
-        generate: Boolean = false,
+        generate: Boolean,
     ) {
         if (generate) {
             remoteTurnActive = true

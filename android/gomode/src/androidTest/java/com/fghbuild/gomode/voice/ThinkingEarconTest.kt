@@ -19,7 +19,7 @@ class ThinkingEarconTest {
     @Test
     fun synthesisLeavesAmpleRealtimeHeadroom() {
         val score = ThinkingScore.load(InstrumentationRegistry.getInstrumentation().targetContext)
-        val piano = ThinkingPiano(score)
+        val piano = ThinkingPiano(score, loop = true)
         val samples = ShortArray(480)
         val started = SystemClock.elapsedRealtime()
         val chunks = (score.duration * 50).toInt()

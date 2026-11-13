@@ -9,7 +9,7 @@ data class VoiceUsage(
     val totals: TokenUsage,
     val latest: SessionUsage,
     /** Bounded reports that can precede text; historical transcript rows retain their own counts. */
-    val responses: Map<String, TokenUsage> = emptyMap(),
+    val responses: Map<String, TokenUsage>,
 )
 
 internal fun mergeVoiceUsage(

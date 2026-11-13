@@ -52,7 +52,12 @@ class VoiceTokenClientTest {
                         """{"kind":"example","instanceID":"home","baseURL":"https://service.example.com","token":"signed"}""",
                     ),
                 )
-                val auth = VoiceTokenClient().fetch(server.url("/voice/token").toString(), "session=abc")
+                val auth =
+                    VoiceTokenClient().fetch(
+                        server.url("/voice/token").toString(),
+                        "session=abc",
+                        bearerToken = null,
+                    )
                 assertEquals("example", auth.kind)
                 assertEquals("signed", auth.token)
                 assertEquals("session=abc", server.takeRequest().getHeader("Cookie"))
@@ -68,7 +73,14 @@ class VoiceTokenClientTest {
             server.start()
             try {
                 server.enqueue(MockResponse().setResponseCode(401))
-                val result = runCatching { VoiceTokenClient().fetch(server.url("/voice/token").toString(), null) }
+                val result =
+                    runCatching {
+                        VoiceTokenClient().fetch(
+                            server.url("/voice/token").toString(),
+                            null,
+                            bearerToken = null,
+                        )
+                    }
                 assertTrue(result.exceptionOrNull() is VoiceTokenException)
             } finally {
                 server.shutdown()

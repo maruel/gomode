@@ -73,8 +73,8 @@ internal data class CatalogService(
     val key: ServiceShellKey,
     val label: String,
     val readiness: ServiceReadiness,
-    val error: String? = null,
-    val monitoring: ServiceMonitorState = ServiceMonitorState(),
+    val error: String?,
+    val monitoring: ServiceMonitorState,
 )
 
 internal data class CatalogNotification(
@@ -269,8 +269,8 @@ internal class ServiceCatalog(
         name: String,
         args: JsonObject,
         active: ServiceShellKey,
-        sessionID: String? = null,
-        locale: String? = null,
+        sessionID: String?,
+        locale: String?,
         isCurrent: () -> Boolean,
     ): McpToolResult? {
         if (name !in serviceCatalogToolNames) return null

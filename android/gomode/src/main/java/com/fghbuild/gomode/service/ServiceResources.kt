@@ -28,7 +28,7 @@ import kotlinx.serialization.json.booleanOrNull
 
 data class ServiceMonitoringPlan(
     val modelResources: List<ResourceDescriptor>,
-    val notificationResourceURI: String? = null,
+    val notificationResourceURI: String?,
 ) {
     val resourceURIs: List<String>
         get() = modelResources.map { it.uri } + listOfNotNull(notificationResourceURI)
@@ -65,7 +65,7 @@ fun serviceMonitoringPlan(resources: List<ResourceDescriptor>): ServiceMonitorin
 }
 
 @Suppress("TooGenericExceptionCaught") // Model context is advisory; cancellation still propagates.
-suspend fun readInitialServiceContext(client: ServiceResourceClient, sessionID: String? = null): String =
+suspend fun readInitialServiceContext(client: ServiceResourceClient, sessionID: String?): String =
     try {
         val plan = serviceMonitoringPlan(client.listResources(sessionID))
         coroutineScope {

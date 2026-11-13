@@ -18,6 +18,7 @@ package com.fghbuild.gomode.voice
 import android.webkit.CookieManager
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
+import com.fghbuild.gomode.data.SpeechStage
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.service.VoiceTokenClient
@@ -31,6 +32,8 @@ import com.fghbuild.voicegateway.sdk.v2.ServiceAuthorization
 /** VoiceSetupException reports a configuration or sign-in problem the user can act on. */
 internal class VoiceSetupException(
     message: String,
+    /** The speech stage whose gateway model is at fault, if any. */
+    val stage: SpeechStage? = null,
 ) : Exception(message)
 
 // Foreground ownership starts at the user's connect action, before discovery can suspend.

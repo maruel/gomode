@@ -14,7 +14,7 @@ internal const val THINKING_SAMPLE_RATE = 24_000
 
 internal class ThinkingPiano(
     private val score: ThinkingScore,
-    private val loop: Boolean = true,
+    private val loop: Boolean,
 ) {
     private class Voice(
         note: PianoNote,

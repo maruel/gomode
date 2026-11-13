@@ -7,8 +7,9 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.data.SpeechStageLocation
 import com.fghbuild.gomode.data.VoiceLanguageModel
-import com.fghbuild.gomode.data.VoiceSetupPreference
+import com.fghbuild.gomode.data.VoiceSetupMode
 import com.fghbuild.gomode.sdk.v1.Settings
 import com.fghbuild.gomode.sdk.v1.ToolGroup
 import com.fghbuild.gomode.sdk.v1.VoiceGatewaySettings
@@ -310,8 +311,10 @@ class ServiceCatalogTest {
                     val aID = settings.addService("Healthy", first.server.url("/").toString())
                     val bID = settings.addService("Slow", second.server.url("/").toString())
                     settings.switchService(aID)
-                    settings.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
-                    settings.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
+                    settings.selectDeviceStages()
+                    settings.updateSavedVoiceSetup(null) {
+                        it.copy(preference = it.preference.copy(languageModel = VoiceLanguageModel.LOCAL_LLM))
+                    }
                     settings.settings.first {
                         it.activeServiceId == aID && it.voiceSetup.deviceSpeech &&
                             it.voiceSetup.languageModel == VoiceLanguageModel.LOCAL_LLM
@@ -358,8 +361,10 @@ class ServiceCatalogTest {
             Fixture("Selected").use { fixture ->
                 val settings = SettingsRepository(ContextPreferences())
                 val id = settings.addService("Selected", fixture.server.url("/").toString())
-                settings.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
-                settings.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
+                settings.selectDeviceStages()
+                settings.updateSavedVoiceSetup(null) {
+                    it.copy(preference = it.preference.copy(languageModel = VoiceLanguageModel.LOCAL_LLM))
+                }
                 settings.settings.first {
                     it.activeServiceId == id && it.voiceSetup.deviceSpeech &&
                         it.voiceSetup.languageModel == VoiceLanguageModel.LOCAL_LLM
@@ -402,8 +407,10 @@ class ServiceCatalogTest {
                     val settings = SettingsRepository(ContextPreferences())
                     val aID = settings.addService("A", first.server.url("/").toString())
                     val bID = settings.addService("B", second.server.url("/").toString())
-                    settings.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
-                    settings.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
+                    settings.selectDeviceStages()
+                    settings.updateSavedVoiceSetup(null) {
+                        it.copy(preference = it.preference.copy(languageModel = VoiceLanguageModel.LOCAL_LLM))
+                    }
                     settings.settings.first {
                         it.voiceSetup.deviceSpeech &&
                             it.voiceSetup.languageModel == VoiceLanguageModel.LOCAL_LLM
@@ -724,7 +731,9 @@ class ServiceCatalogTest {
                         assertFalse(contextB.contains("Alpha"))
                         // Without server_id, calls target the active server.
                         val activeA =
-                            requireNotNull(catalog.execute("discover_service", buildJsonObject {}, a.key) { true })
+                            requireNotNull(
+                                catalog.execute("discover_service", buildJsonObject {}, a.key, null, null) { true },
+                            )
                         assertEquals(
                             "a",
                             activeA.structuredContent
@@ -738,12 +747,16 @@ class ServiceCatalogTest {
                                     "dispatch_service_tool",
                                     JsonObject(dispatchArgs("b") - "server_id"),
                                     b.key,
+                                    null,
+                                    null,
                                 ) { true },
                             )
                         assertEquals("B", implicitB.resultString("source"))
                         assertEquals(callsB + 1, second.calls)
                         val inactive =
-                            requireNotNull(catalog.execute("dispatch_service_tool", dispatchArgs("b"), a.key) { true })
+                            requireNotNull(
+                                catalog.execute("dispatch_service_tool", dispatchArgs("b"), a.key, null, null) { true },
+                            )
                         assertTrue(inactive.isError)
                         assertEquals("a call never reaches an inactive server", callsB + 1, second.calls)
                         val large =
@@ -1693,3 +1706,16 @@ private suspend fun ServiceCatalog.execute(
     val active = state.value.keys.firstOrNull { it.serviceID == id } ?: state.value.keys.first()
     return execute(name, args, active, sessionID, locale, isCurrent)
 }
+
+/** Runs both speech stages on the device with the saved language model. */
+private suspend fun SettingsRepository.selectDeviceStages() =
+    updateSavedVoiceSetup(null) {
+        it.copy(
+            preference =
+                it.preference.copy(
+                    mode = VoiceSetupMode.SEPARATE_STAGES,
+                    recognition = SpeechStageLocation.DEVICE,
+                    speech = SpeechStageLocation.DEVICE,
+                ),
+        )
+    }

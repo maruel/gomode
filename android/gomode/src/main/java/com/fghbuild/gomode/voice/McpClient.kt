@@ -1,4 +1,4 @@
-// MCP transport preserves private metadata and keeps decoder diagnostics out of model-visible errors.
+// MCP transport sends private request metadata and keeps decoder diagnostics out of model-visible errors.
 //
 // The shell calls server/discover, tools/list, tools/call, resources/list, resources/read, and
 // POST-based SSE subscriptions/listen. server/discover capabilities decide which features run;
@@ -19,7 +19,6 @@ import com.fghbuild.mcp.sdk.v1.Implementation
 import com.fghbuild.mcp.sdk.v1.JSONPresence
 import com.fghbuild.mcp.sdk.v1.JSONRPCNotification
 import com.fghbuild.mcp.sdk.v1.JSONRPCRequest
-import com.fghbuild.mcp.sdk.v1.MetaObject
 import com.fghbuild.mcp.sdk.v1.Method
 import com.fghbuild.mcp.sdk.v1.OpenAIUserLocation
 import com.fghbuild.mcp.sdk.v1.PaginatedRequestParams
@@ -71,8 +70,6 @@ internal class InvalidMcpResponse(
 data class McpToolResult(
     val structuredContent: JsonObject,
     val isError: Boolean = false,
-    // Opaque transport metadata, separate from model-visible tool content.
-    val meta: MetaObject? = null,
 )
 
 class McpClient(
@@ -151,7 +148,7 @@ class McpClient(
             params = buildJsonObject { put("_meta", json.encodeToJsonElement(requestMeta(sessionID))) },
         )
 
-    suspend fun serverInstructions(sessionID: String? = null): String = serverDiscover(sessionID).instructions.orEmpty()
+    suspend fun serverInstructions(sessionID: String?): String = serverDiscover(sessionID).instructions.orEmpty()
 
     suspend fun listTools(sessionID: String? = null): List<ToolDescriptor> {
         val tools = mutableListOf<ToolDescriptor>()
@@ -178,8 +175,8 @@ class McpClient(
     suspend fun callTool(
         name: String,
         args: JsonObject,
-        sessionID: String? = null,
-        locale: String? = null,
+        sessionID: String?,
+        locale: String?,
     ): McpToolResult {
         val result =
             request<ToolCallResult>(
@@ -204,7 +201,6 @@ class McpClient(
         return McpToolResult(
             structuredContent = structuredContent,
             isError = result.isError ?: false,
-            meta = result._meta,
         )
     }
 
@@ -229,7 +225,7 @@ class McpClient(
         return resources
     }
 
-    suspend fun listResourceTemplates(sessionID: String? = null): List<ResourceTemplateDescriptor> {
+    suspend fun listResourceTemplates(sessionID: String?): List<ResourceTemplateDescriptor> {
         val templates = mutableListOf<ResourceTemplateDescriptor>()
         var cursor: String? = null
         do {

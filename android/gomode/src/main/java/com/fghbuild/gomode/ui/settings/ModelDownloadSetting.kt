@@ -106,10 +106,8 @@ internal fun ModelDownloadControls(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
-            Text(
-                if (sizeLabel == null) model.label else "${model.label} · $sizeLabel download",
-                style = MaterialTheme.typography.bodyMedium,
-            )
+            // The Language model picker above names the model; only the transfer size adds to it.
+            sizeLabel?.let { Text("$it download", style = MaterialTheme.typography.bodyMedium) }
             val status =
                 when (state) {
                     ModelDownloadState.Checking -> {

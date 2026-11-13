@@ -17,7 +17,6 @@ import androidx.test.uiautomator.UiDevice
 import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceLanguageModel
-import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.ui.settings.SettingsScreen
 import com.fghbuild.gomode.ui.settings.rememberSettingsEdits
 import com.fghbuild.gomode.ui.theme.GoModeTheme
@@ -62,9 +61,12 @@ class PublicModelDownloadAcceptanceTest {
         val repository = SettingsRepository(PreferenceDataStoreFactory.create(scope = scope) { preferences })
         try {
             runBlocking {
-                repository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
-                repository.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
-                repository.updateLocalLlmModel(model)
+                repository.updateSavedVoiceSetup(null) {
+                    it.copy(
+                        preference = it.preference.withLanguageModel(VoiceLanguageModel.LOCAL_LLM),
+                        localLlmModel = model,
+                    )
+                }
             }
 
             fun mount(activity: ComponentActivity) {

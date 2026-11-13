@@ -1,4 +1,4 @@
-// Tests native MCP requests, opaque result metadata, and SSE configuration.
+// Tests native MCP requests, tool result normalization, and SSE configuration.
 package com.fghbuild.gomode.voice
 
 import com.fghbuild.gomode.service.readInitialServiceContext
@@ -202,7 +202,13 @@ class McpClientTest {
                     "structuredContent":{"saved":true},"_meta":{"com.fghbuild.gomode/context":${malformed.first()}}}}""",
                     ),
                 )
-                val applied = client.callTool("save", Json.parseToJsonElement("{}").jsonObject, "conversation")
+                val applied =
+                    client.callTool(
+                        "save",
+                        Json.parseToJsonElement("{}").jsonObject,
+                        "conversation",
+                        locale = null,
+                    )
                 assertTrue(!applied.isError)
                 assertEquals(JsonPrimitive(true), applied.structuredContent["saved"])
                 assertTrue(!applied.structuredContent.toString().contains("private-version-sentinel"))
@@ -250,6 +256,8 @@ class McpClientTest {
                             client.callTool(
                                 "read_item",
                                 Json.parseToJsonElement("{}").jsonObject,
+                                sessionID = null,
+                                locale = null,
                             )
                         }.exceptionOrNull()
                     assertNotNull(failure)
@@ -264,7 +272,7 @@ class McpClientTest {
         }
 
     @Test
-    fun `tool results retain opaque metadata outside normalized content`() =
+    fun `tool results normalize content beside opaque metadata`() =
         runTest {
             MockWebServer().use { server ->
                 server.start()
@@ -287,8 +295,13 @@ class McpClientTest {
                                 """.trimIndent(),
                             ),
                         )
-                        val result = client.callTool("read_item", Json.parseToJsonElement("{}").jsonObject)
-                        assertEquals(meta, result.meta)
+                        val result =
+                            client.callTool(
+                                "read_item",
+                                Json.parseToJsonElement("{}").jsonObject,
+                                sessionID = null,
+                                locale = null,
+                            )
                         assertEquals(isError, result.isError)
                         assertEquals(
                             Json.parseToJsonElement(
@@ -518,7 +531,7 @@ class McpClientTest {
                         cookieProvider = { null },
                     )
 
-                val templates = client.listResourceTemplates()
+                val templates = client.listResourceTemplates(sessionID = null)
 
                 assertEquals(listOf("item"), templates.map { it.name })
                 val request = server.takeRequest()

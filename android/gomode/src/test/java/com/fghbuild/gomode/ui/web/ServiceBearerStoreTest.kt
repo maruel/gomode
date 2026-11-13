@@ -109,7 +109,8 @@ class ServiceBearerStoreTest {
     fun acceptedAuthChangeStopsNativeConsumersBeforeReturningToWebView() {
         val store = ServiceBearerStore(serviceURL)
         val invalidations = mutableListOf<Long>()
-        val handler = ServiceAuthMessageHandler(store) { invalidations += store.authEpoch.value }
+        val handler =
+            ServiceAuthMessageHandler(store, onIdentityChanged = {}) { invalidations += store.authEpoch.value }
         handler.onNavigation(serviceURL)
 
         assertFalse(handler.receive(origin, false, serviceURL, settled(true)))
@@ -127,7 +128,7 @@ class ServiceBearerStoreTest {
     fun bearerReplacementInvalidatesSynchronouslyOnlyWhenItChanges() {
         val store = ServiceBearerStore(serviceURL)
         var invalidations = 0
-        val handler = ServiceAuthMessageHandler(store) { invalidations += 1 }
+        val handler = ServiceAuthMessageHandler(store, onIdentityChanged = {}) { invalidations += 1 }
         handler.onNavigation(serviceURL)
 
         assertTrue(handler.receive(origin, true, serviceURL, token("account-a")))
@@ -144,7 +145,7 @@ class ServiceBearerStoreTest {
     fun cookieLogoutPausesNativeAuthUntilSettledIdentityArrives() {
         val store = ServiceBearerStore(serviceURL)
         var invalidations = 0
-        val handler = ServiceAuthMessageHandler(store) { invalidations += 1 }
+        val handler = ServiceAuthMessageHandler(store, onIdentityChanged = {}) { invalidations += 1 }
         handler.onNavigation(serviceURL)
         assertFalse(store.authReady.value)
 

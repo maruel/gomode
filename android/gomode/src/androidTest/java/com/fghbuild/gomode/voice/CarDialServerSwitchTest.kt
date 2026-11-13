@@ -122,9 +122,13 @@ class CarDialServerSwitchTest {
                 try {
                     cookieID = repository.addService("Car cookie", cookieURL)
                     bearerID = repository.addService("Prepared bearer", bearerServer.url("/").toString())
-                    repository.updateVoiceSetup { it.copy(mode = VoiceSetupMode.FOLLOW_GATEWAY) }
+                    repository.updateSavedVoiceSetup(null) {
+                        it.copy(preference = it.preference.copy(mode = VoiceSetupMode.FOLLOW_GATEWAY))
+                    }
                     repository.updateVoiceLanguageTag("fr-CA")
-                    repository.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.GATEWAY) }
+                    repository.updateSavedVoiceSetup(null) {
+                        it.copy(preference = it.preference.copy(languageModel = VoiceLanguageModel.GATEWAY))
+                    }
                     repository.switchService(requireNotNull(bearerID))
                     repository.settings.first {
                         it.activeServiceId == bearerID &&

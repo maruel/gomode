@@ -30,7 +30,7 @@ internal class LocalModelSelection(
     val languageTag: String,
     val prepareSetup: suspend () -> LocalConversationPreparation,
     val isCurrent: () -> Boolean,
-    val model: LocalLlmModel = LocalLlmModel.GEMMA_4_E2B,
+    val model: LocalLlmModel,
 )
 
 internal data class PreparedLocalModel(

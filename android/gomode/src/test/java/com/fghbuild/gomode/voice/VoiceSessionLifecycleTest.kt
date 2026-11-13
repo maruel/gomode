@@ -10,7 +10,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SpeechStageLocation
 import com.fghbuild.gomode.data.VoiceLanguageModel
-import com.fghbuild.gomode.data.VoiceSetupPreference
+import com.fghbuild.gomode.data.VoiceSetupMode
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.ui.observeVoiceStartup
@@ -130,14 +130,16 @@ class VoiceSessionLifecycleTest {
                     isAccessible = true
                     get(session) as VoiceRecoveryPolicy
                 }
-            assertEquals(0, policy.attempts)
+            // No replacement attempt has spent backoff.
+            assertEquals(VoiceRecoveryPolicy().retryDelayMs(), policy.retryDelayMs())
             assertTrue(peer.closed)
             assertTrue(peer.disposed)
             assertNull(session.state.value.error)
             session.disconnect()
             callback.onLinkPropertiesChanged(ShadowNetwork.newInstance(42), LinkProperties())
             runCurrent()
-            assertEquals(0, policy.attempts)
+            // No replacement attempt has spent backoff.
+            assertEquals(VoiceRecoveryPolicy().retryDelayMs(), policy.retryDelayMs())
             assertNull(session.state.value.connectStatus)
             assertTrue(connectivity.networkCallbacks.isEmpty())
             session.close()
@@ -537,12 +539,21 @@ class VoiceSessionLifecycleTest {
                     assertTrue(discoveryStarted.await(5, TimeUnit.SECONDS))
                     when (change) {
                         "speaking voice" -> {
-                            repository.updateSpeakingVoice(base, "live", "Kore")
+                            repository.updateSpeakingVoice(base, "live", "Kore") { it }
                             repository.settings.first { it.speakingVoices[base]?.get("live") == "Kore" }
                         }
 
                         "choice" -> {
-                            repository.updateVoiceChoice(base, "remote", VoiceSetupPreference::withDeviceSpeech)
+                            repository.updateVoiceChoice(base, "remote") {
+                                it.copy(
+                                    preference =
+                                        it.preference.copy(
+                                            mode = VoiceSetupMode.SEPARATE_STAGES,
+                                            recognition = SpeechStageLocation.DEVICE,
+                                            speech = SpeechStageLocation.DEVICE,
+                                        ),
+                                )
+                            }
                             repository.settings.first {
                                 it.gatewayVoiceSetups[base]?.separateStagesChoiceID == "remote"
                             }
@@ -607,12 +618,23 @@ class VoiceSessionLifecycleTest {
                 val repository = SettingsRepository(InMemoryPreferencesDataStore())
                 repository.addService("Other", "https://other.example")
                 repository.addService("Fixture", server.url("/").toString())
-                repository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
+                repository.updateSavedVoiceSetup(null) {
+                    it.copy(
+                        preference =
+                            it.preference.copy(
+                                mode = VoiceSetupMode.SEPARATE_STAGES,
+                                recognition = SpeechStageLocation.DEVICE,
+                                speech = SpeechStageLocation.DEVICE,
+                            ),
+                    )
+                }
                 for (engine in listOf(
                     VoiceLanguageModel.LOCAL_LLM,
                     VoiceLanguageModel.NEEDLE_WHISTLE,
                 )) {
-                    repository.updateVoiceSetup { it.copy(languageModel = engine) }
+                    repository.updateSavedVoiceSetup(
+                        null,
+                    ) { it.copy(preference = it.preference.copy(languageModel = engine)) }
                     repository.settings.first { it.voiceSetup.deviceSpeech && it.voiceSetup.languageModel == engine }
                     val setup = prepareVoiceSetup(repository, ServiceSettingsClient(), { null })
                     assertEquals(repository.settings.value.activeServiceId, setup.serverID)

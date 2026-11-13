@@ -41,7 +41,7 @@ class ServiceSettingsClient {
 class ServiceSettingsException(
     message: String,
     val statusCode: Int,
-    cause: Throwable? = null,
+    cause: Throwable,
 ) : Exception(message, cause) {
     val isTransient: Boolean get() = isTransientHTTPStatus(statusCode)
 }
@@ -61,23 +61,20 @@ fun resolveServiceURL(
     return baseOrigin.resolve(advertisedURL).toString().trimEnd('/')
 }
 
-data class ShellCompatibility(
-    val bridgeVersion: Int = GoModeShellContract.BRIDGE_VERSION,
-)
-
 object GoModeShellContract {
     const val API_VERSION = 1
     const val BRIDGE_VERSION = 3
 }
 
-fun Settings.compatibilityError(compatibility: ShellCompatibility = ShellCompatibility()): String? =
+fun Settings.compatibilityError(): String? =
     validationError() ?: when {
         apiVersion != GoModeShellContract.API_VERSION -> {
             "Unsupported Go Mode service API version $apiVersion. This app supports ${GoModeShellContract.API_VERSION}."
         }
 
-        compatibility.bridgeVersion != webShell.bridgeVersion -> {
-            "Service requires bridge version ${webShell.bridgeVersion}. This app provides ${compatibility.bridgeVersion}."
+        webShell.bridgeVersion != GoModeShellContract.BRIDGE_VERSION -> {
+            "Service requires bridge version ${webShell.bridgeVersion}. " +
+                "This app provides ${GoModeShellContract.BRIDGE_VERSION}."
         }
 
         else -> {

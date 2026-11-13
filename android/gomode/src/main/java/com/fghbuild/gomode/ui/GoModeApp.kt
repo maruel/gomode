@@ -948,10 +948,6 @@ private fun GoModeContent(
                 authEpoch = key(bearerStore) { bearerStore.authEpoch.collectAsStateWithLifecycle().value },
             )
         }
-
-        else -> {
-            Unit
-        }
     }
     serviceSessions.forEach { entry ->
         key(entry) {
@@ -1036,7 +1032,7 @@ internal data class ShellRecoveryState(
 internal fun shellRecoveryState(
     bootstrapError: String?,
     webLoadState: WebShellLoadState,
-    bootstrapFailure: String? = null,
+    bootstrapFailure: String?,
 ): ShellRecoveryState? =
     when {
         bootstrapError != null -> {

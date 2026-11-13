@@ -1,4 +1,4 @@
-// Compose tests for saved voice mode, language, and the active-session settings guard.
+// Compose tests for the voice setup without a gateway, language, display toggles, and the active-session guard.
 package com.fghbuild.gomode
 
 import androidx.activity.ComponentActivity
@@ -21,6 +21,8 @@ import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isHeading
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -32,9 +34,10 @@ import androidx.compose.ui.unit.dp
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
+import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceLanguageModel
-import com.fghbuild.gomode.data.VoiceSetupPreference
+import com.fghbuild.gomode.data.VoiceSetupMode
 import com.fghbuild.gomode.ui.settings.ServiceStatus
 import com.fghbuild.gomode.ui.settings.SettingsScreen
 import com.fghbuild.gomode.ui.settings.rememberSettingsEdits
@@ -75,8 +78,9 @@ class VoiceSettingsTest {
             loadingID = repository.addService("Documents", longURL)
             repository.switchService(readyID)
             // Keep gateway discovery out of this controlled layout fixture.
-            repository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
-            repository.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
+            repository.updateSavedVoiceSetup(null) {
+                it.copy(preference = it.preference.withLanguageModel(VoiceLanguageModel.LOCAL_LLM))
+            }
         }
         val fontScale = mutableStateOf(1f)
         val serviceError = mutableStateOf<String?>(null)
@@ -234,71 +238,83 @@ class VoiceSettingsTest {
     }
 
     @Test
-    fun voiceModeChipsSaveSelectionAndDisableDuringAnActiveSession() {
-        val active = mutableStateOf(false)
-        val store = MemoryPreferences()
-        val repository = SettingsRepository(store)
-        composeRule.setContent {
-            val settings by repository.settings.collectAsState()
-            MaterialTheme {
-                SettingsScreen(
-                    settings = settings,
-                    settingsRepository = repository,
-                    edits = rememberSettingsEdits(repository, settings),
-                    voiceSessionActive = active.value,
-                    onDone = {},
-                    onOpenHalo = {},
-                )
+    fun withoutAServiceASavedAllInOneSetupAsksForAService() {
+        val repository = SettingsRepository(MemoryPreferences())
+        runBlocking {
+            repository.updateSavedVoiceSetup(null) {
+                it.copy(preference = it.preference.copy(mode = VoiceSetupMode.ALL_IN_ONE))
             }
         }
-        composeRule.onNodeWithTag("gomode-voice-mode-cloud").performScrollTo().assertIsSelected()
-        composeRule.onNodeWithTag("gomode-voice-mode-device").performScrollTo().performClick()
-        composeRule.waitUntil { repository.settings.value.voiceSetup.deviceSpeech }
-        composeRule.onNodeWithTag("gomode-voice-mode-device").assertIsSelected()
-        val reopened = SettingsRepository(store)
-        composeRule.waitUntil { reopened.settings.value.voiceSetup.deviceSpeech }
-
-        composeRule.runOnIdle { active.value = true }
-        composeRule.onNodeWithTag("gomode-voice-mode-cloud").performScrollTo().assertIsNotEnabled()
-        composeRule.onNodeWithTag("gomode-voice-mode-device").assertIsNotEnabled()
-        composeRule.runOnIdle { active.value = false }
-        composeRule.onNodeWithTag("gomode-voice-mode-cloud").performClick()
-        composeRule.waitUntil { !repository.settings.value.voiceSetup.deviceSpeech }
-        composeRule.onNodeWithTag("gomode-voice-mode-cloud").assertIsSelected()
+        showSettings(repository) { false }
+        composeRule.onNodeWithTag("gomode-voice-setup-all-in-one").performScrollTo().assertIsSelected()
+        composeRule.onNodeWithTag("gomode-all-in-one-no-service").assertTextContains("Add a service to use All-in-one.")
+        composeRule.onNodeWithTag("gomode-voice-setup-separate-stages").assertIsEnabled()
     }
 
     @Test
-    fun deviceSpeakingSpeedPersistsOnlyForDeviceSpeechAndLocksDuringASession() {
+    fun withoutAServiceTheFollowedSetupShowsDeviceStagesAndLocksDuringASession() {
         val active = mutableStateOf(false)
         val store = MemoryPreferences()
         val repository = SettingsRepository(store)
-        composeRule.setContent {
-            val settings by repository.settings.collectAsState()
-            MaterialTheme {
-                SettingsScreen(
-                    settings = settings,
-                    settingsRepository = repository,
-                    edits = rememberSettingsEdits(repository, settings),
-                    voiceSessionActive = active.value,
-                    onDone = {},
-                    onOpenHalo = {},
-                )
+        showSettings(repository) { active.value }
+        // Without a gateway, the followed setup shows the device stages its first edit saves.
+        val allInOne = composeRule.onNodeWithTag("gomode-voice-setup-all-in-one")
+        val separate = composeRule.onNodeWithTag("gomode-voice-setup-separate-stages")
+        allInOne.performScrollTo().assertIsNotSelected().assertIsNotEnabled()
+        separate.assertIsSelected().assertIsEnabled()
+        composeRule.onNodeWithTag("gomode-recognition").performScrollTo().assertTextContains("Local")
+        composeRule
+            .onNodeWithTag("gomode-language-model")
+            .performScrollTo()
+            .assertTextContains("Choose an available model")
+        composeRule.onNodeWithTag("gomode-speech").performScrollTo().assertTextContains("Local")
+        composeRule.onNodeWithTag("gomode-device-speech-rate").performScrollTo().assertTextContains("1× (Normal)")
+        assertEquals(VoiceSetupMode.FOLLOW_GATEWAY, repository.settings.value.voiceSetup.mode)
+        composeRule.onNodeWithTag("gomode-speech").performClick()
+        composeRule.onNodeWithTag("gomode-speech-device").assertIsSelected()
+        composeRule.onNodeWithTag("gomode-speech-device").performClick()
+        assertEquals(VoiceSetupMode.FOLLOW_GATEWAY, repository.settings.value.voiceSetup.mode)
+        composeRule.onNodeWithTag("gomode-language-model").performScrollTo().performClick()
+        composeRule.onNodeWithTag("gomode-language-model-needle-whistle").performClick()
+        val reopened = SettingsRepository(store)
+        composeRule.waitUntil {
+            reopened.settings.value.voiceSetup.let {
+                it.mode == VoiceSetupMode.SEPARATE_STAGES && it.deviceSpeech &&
+                    it.languageModel == VoiceLanguageModel.NEEDLE_WHISTLE
             }
         }
-        // Gateway speech has no device speaking speed.
-        composeRule.onNodeWithTag("gomode-voice-mode-cloud").performScrollTo().assertIsSelected()
-        composeRule.onNodeWithTag("gomode-device-speech-rate").assertDoesNotExist()
-        composeRule.onNodeWithTag("gomode-voice-mode-device").performScrollTo().performClick()
-        composeRule.waitUntil { repository.settings.value.voiceSetup.deviceSpeech }
+        separate.performScrollTo().assertIsSelected()
+
+        composeRule.runOnIdle { active.value = true }
+        separate.performScrollTo().assertIsSelected().assertIsNotEnabled()
+        for (tag in listOf("gomode-recognition", "gomode-language-model", "gomode-speech")) {
+            composeRule.onNodeWithTag(tag).performScrollTo().assertIsNotEnabled()
+        }
+    }
+
+    @Test
+    fun deviceSpeakingSpeedPersistsAndLocksDuringASession() {
+        val active = mutableStateOf(false)
+        val store = MemoryPreferences()
+        val repository = SettingsRepository(store)
+        showSettings(repository) { active.value }
         composeRule
             .onNodeWithTag("gomode-device-speech-rate")
             .performScrollTo()
             .assertTextContains("1× (Normal)")
             .performClick()
         composeRule.onNodeWithTag("gomode-device-speech-rate-1.0").assertIsSelected()
+        // A held write keeps the picker disabled while it saves, as a slow disk does.
+        runBlocking { store.writes.lock() }
         composeRule.onNodeWithTag("gomode-device-speech-rate-1.25").assertIsNotSelected().performClick()
+        composeRule.onNodeWithTag("gomode-device-speech-rate").assertIsNotEnabled()
+        store.writes.unlock()
         composeRule.waitUntil { repository.settings.value.voiceSetup.deviceSpeechRate == 1.25f }
         composeRule.onNodeWithTag("gomode-device-speech-rate").assertTextContains("1.25×")
+        // After a save, reselecting the current speed closes the menu without saving.
+        composeRule.onNodeWithTag("gomode-device-speech-rate").performClick()
+        composeRule.onNodeWithTag("gomode-device-speech-rate-1.25").assertIsSelected().performClick()
+        composeRule.onNodeWithTag("gomode-device-speech-rates").assertDoesNotExist()
         val reopened = SettingsRepository(store)
         composeRule.waitUntil { reopened.settings.value.voiceSetup.deviceSpeechRate == 1.25f }
 
@@ -365,10 +381,54 @@ class VoiceSettingsTest {
     }
 
     @Test
-    fun onDeviceEngineChipsSaveSelectionAndDisableDuringAnActiveSession() {
+    fun onDeviceLanguageModelsSaveSelectionAndDisableDuringAnActiveSession() {
         val active = mutableStateOf(false)
         val store = MemoryPreferences()
         val repository = SettingsRepository(store)
+        showSettings(repository) { active.value }
+        val languageModel = composeRule.onNodeWithTag("gomode-language-model")
+
+        languageModel.performScrollTo().performClick()
+        composeRule.onNode(hasText("Local") and isHeading()).assertExists()
+        composeRule.onNodeWithTag("gomode-language-model-needle-whistle").assertIsNotSelected().performClick()
+        composeRule.waitUntil {
+            repository.settings.value.voiceSetup.effectiveLanguageModel == VoiceLanguageModel.NEEDLE_WHISTLE
+        }
+        languageModel.assertTextContains("Whistle + Needle")
+        composeRule.onNodeWithTag("gomode-model-download-status").assertDoesNotExist()
+
+        for (model in LocalLlmModel.entries) {
+            languageModel.performScrollTo().performClick()
+            composeRule.onNodeWithTag("gomode-model-${model.name}").assertTextContains(model.label).performClick()
+            composeRule.waitUntil {
+                repository.settings.value.let {
+                    it.localLlmModel == model && it.voiceSetup.effectiveLanguageModel == VoiceLanguageModel.LOCAL_LLM
+                }
+            }
+            languageModel.assertTextContains(model.label)
+            composeRule.onNodeWithTag("gomode-model-download-status").performScrollTo().assertExists()
+        }
+        languageModel.performScrollTo().performClick()
+        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").assertIsSelected()
+        composeRule.onNodeWithTag("gomode-model-GEMMA_4_E2B").assertIsNotSelected().performClick()
+        composeRule.waitUntil { repository.settings.value.localLlmModel == LocalLlmModel.GEMMA_4_E2B }
+        val reopened = SettingsRepository(store)
+        composeRule.waitUntil {
+            reopened.settings.value.let {
+                it.localLlmModel == LocalLlmModel.GEMMA_4_E2B &&
+                    it.voiceSetup.effectiveLanguageModel == VoiceLanguageModel.LOCAL_LLM
+            }
+        }
+
+        composeRule.runOnIdle { active.value = true }
+        languageModel.performScrollTo().assertIsNotEnabled()
+        composeRule.onNodeWithTag("gomode-model-download").performScrollTo().assertIsNotEnabled()
+    }
+
+    private fun showSettings(
+        repository: SettingsRepository,
+        active: () -> Boolean,
+    ) {
         composeRule.setContent {
             val settings by repository.settings.collectAsState()
             MaterialTheme {
@@ -376,73 +436,21 @@ class VoiceSettingsTest {
                     settings = settings,
                     settingsRepository = repository,
                     edits = rememberSettingsEdits(repository, settings),
-                    voiceSessionActive = active.value,
+                    voiceSessionActive = active(),
                     onDone = {},
                     onOpenHalo = {},
                 )
             }
         }
-        // Switch to device voice mode to reveal engine selection chips.
-        composeRule.onNodeWithTag("gomode-voice-mode-device").performScrollTo().performClick()
-        composeRule.waitUntil { repository.settings.value.voiceSetup.deviceSpeech }
-
-        // Initial default engine is remote gateway.
-        composeRule.onNodeWithText("Engine").assertExists()
-        composeRule
-            .onNodeWithTag("gomode-engine-remote-gateway")
-            .performScrollTo()
-            .assertIsSelected()
-            .assertTextContains("Remote LLM")
-
-        // Select Whistle + Needle.
-        composeRule.onNodeWithTag("gomode-engine-needle-whistle").performScrollTo().performClick()
-        composeRule.waitUntil {
-            repository.settings.value.voiceSetup.effectiveLanguageModel == VoiceLanguageModel.NEEDLE_WHISTLE
-        }
-        composeRule.onNodeWithTag("gomode-engine-needle-whistle").assertIsSelected()
-
-        // Verify chips disable during an active voice session.
-        composeRule.runOnIdle { active.value = true }
-        composeRule.onNodeWithTag("gomode-engine-remote-gateway").performScrollTo().assertIsNotEnabled()
-        composeRule.onNodeWithTag("gomode-engine-needle-whistle").assertIsNotEnabled()
-        composeRule.onNodeWithTag("gomode-engine-local-llm").assertIsNotEnabled()
-
-        composeRule.runOnIdle { active.value = false }
-        composeRule.onNodeWithTag("gomode-engine-local-llm").performScrollTo().performClick()
-        composeRule.waitUntil {
-            repository.settings.value.voiceSetup.effectiveLanguageModel == VoiceLanguageModel.LOCAL_LLM
-        }
-        composeRule.onNodeWithTag("gomode-engine-local-llm").assertIsSelected().assertTextContains("Local LLM")
-        composeRule.onNodeWithTag("gomode-model-GEMMA_4_E2B").performScrollTo().assertIsSelected()
-        composeRule.onNodeWithTag("gomode-model-GEMMA_4_E4B").performScrollTo().performClick()
-        composeRule.waitUntil {
-            repository.settings.value.localLlmModel == com.fghbuild.gomode.data.LocalLlmModel.GEMMA_4_E4B
-        }
-        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_64K").performScrollTo().performClick()
-        composeRule.waitUntil {
-            repository.settings.value.localLlmModel == com.fghbuild.gomode.data.LocalLlmModel.LFM_3_1_7B_64K
-        }
-        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_64K").assertIsSelected()
-        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").performScrollTo().performClick()
-        composeRule.waitUntil {
-            repository.settings.value.localLlmModel == com.fghbuild.gomode.data.LocalLlmModel.LFM_3_1_7B_32K
-        }
-        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").assertIsSelected()
-        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_64K").assertTextContains("64K", substring = true)
-        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").assertTextContains("32K", substring = true)
-        composeRule.runOnIdle { active.value = true }
-        composeRule.onNodeWithTag("gomode-model-GEMMA_4_E2B").performScrollTo().assertIsNotEnabled()
-        composeRule.onNodeWithTag("gomode-model-GEMMA_4_E4B").performScrollTo().assertIsNotEnabled()
-        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_64K").performScrollTo().assertIsNotEnabled()
-        composeRule.onNodeWithTag("gomode-model-LFM_3_1_7B_32K").performScrollTo().assertIsNotEnabled()
     }
 
     private class MemoryPreferences : DataStore<Preferences> {
-        private val writeMutex = Mutex()
+        /** Serializes writes; a test holds it to keep a save in progress. */
+        val writes = Mutex()
         private val state = MutableStateFlow(emptyPreferences())
         override val data: Flow<Preferences> = state
 
         override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences =
-            writeMutex.withLock { transform(state.value).also { state.value = it } }
+            writes.withLock { transform(state.value).also { state.value = it } }
     }
 }

@@ -9,6 +9,7 @@ import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.VoiceLanguageModel
+import com.fghbuild.gomode.data.VoiceSetupMode
 import com.fghbuild.gomode.data.VoiceSetupPreference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -39,7 +40,10 @@ class NativeVoiceToolsTest {
         assertEquals(listOf("hang_up", "mute"), nativeVoiceTools(oneServer).map { it.name })
         val multiple = oneServer.copy(services = oneServer.services + ServiceInstance("two"))
         for (engine in listOf(VoiceLanguageModel.LOCAL_LLM, VoiceLanguageModel.GATEWAY)) {
-            val device = multiple.copy(voiceSetup = VoiceSetupPreference(languageModel = engine).withDeviceSpeech())
+            val device =
+                multiple.copy(
+                    voiceSetup = VoiceSetupPreference(mode = VoiceSetupMode.SEPARATE_STAGES, languageModel = engine),
+                )
             assertEquals(
                 listOf("hang_up", "list_servers", "mute", "switch_server"),
                 nativeVoiceTools(device).map { it.name },
@@ -54,8 +58,9 @@ class NativeVoiceToolsTest {
                 multiple.copy(
                     voiceSetup =
                         VoiceSetupPreference(
+                            mode = VoiceSetupMode.SEPARATE_STAGES,
                             languageModel = VoiceLanguageModel.NEEDLE_WHISTLE,
-                        ).withDeviceSpeech(),
+                        ),
                 ),
             ).isEmpty(),
         )

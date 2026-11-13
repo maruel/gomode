@@ -147,7 +147,7 @@ internal class ServiceBearerStore(
 // Invokes native invalidation in the same WebView callback that accepts an auth change.
 internal class ServiceAuthMessageHandler(
     private val store: ServiceBearerStore,
-    private val onIdentityChanged: () -> Unit = {},
+    private val onIdentityChanged: () -> Unit,
     private val onInvalidated: () -> Unit,
 ) {
     fun onNavigation(url: String?) {

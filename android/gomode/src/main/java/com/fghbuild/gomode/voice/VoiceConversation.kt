@@ -221,7 +221,7 @@ internal class VoiceConversation(
         return current.bearer.takeIf { serviceOrigin(endpoint) == serviceOrigin(sponsor.key.url) }
     }
 
-    suspend fun prepare(pinnedVoice: GatewayVoiceSelection? = null): VoiceSetup {
+    suspend fun prepare(pinnedVoice: GatewayVoiceSelection?): VoiceSetup {
         val current = conversation ?: throw VoiceSetupException("Gateway conversation ended")
         requireCurrent()
         val cached = current.setup

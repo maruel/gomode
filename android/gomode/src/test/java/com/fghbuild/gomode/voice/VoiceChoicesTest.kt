@@ -3,6 +3,8 @@ package com.fghbuild.gomode.voice
 
 import android.webkit.CookieManager
 import com.fghbuild.gomode.data.GatewayVoiceSetup
+import com.fghbuild.gomode.data.LocalLlmModel
+import com.fghbuild.gomode.data.SavedVoiceSetup
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsState
 import com.fghbuild.gomode.data.SpeechStageLocation
@@ -119,7 +121,7 @@ class VoiceChoicesTest {
         )
     private val settings = SettingsState(loadState = SettingsLoadState.Ready)
     private val allInOne = VoiceSetupPreference(mode = VoiceSetupMode.ALL_IN_ONE)
-    private val deviceStages = VoiceSetupPreference().withDeviceSpeech()
+    private val deviceStages = VoiceSetupPreference(mode = VoiceSetupMode.SEPARATE_STAGES)
     private val gatewayStages =
         VoiceSetupPreference(mode = VoiceSetupMode.SEPARATE_STAGES, recognition = GATEWAY, speech = GATEWAY)
 
@@ -191,12 +193,16 @@ class VoiceChoicesTest {
                     val saved = row["savedVoice"]?.jsonPrimitive?.content
                     val setup =
                         if (row["mode"]?.jsonPrimitive?.content == "text") {
-                            VoiceSetupPreference().withDeviceSpeech()
+                            VoiceSetupPreference(mode = VoiceSetupMode.SEPARATE_STAGES)
                         } else {
                             VoiceSetupPreference()
                         }
                     val preferences = if (saved == null) emptyMap() else mapOf(gateway to mapOf("live" to saved))
-                    catalog.resolve(settings.copy(voiceSetup = setup, speakingVoices = preferences)).voiceName
+                    catalog
+                        .resolve(
+                            settings.copy(voiceSetup = setup, speakingVoices = preferences),
+                            pinned = null,
+                        ).voiceName
                 }
             when (error) {
                 "catalog" -> {
@@ -222,7 +228,7 @@ class VoiceChoicesTest {
     fun `recovery uses pinned choice and voice after advertised defaults change`() {
         val original = audioCatalog(listOf("Kore", "Orus"))
         val saved = settings.copy(speakingVoices = mapOf(gateway to mapOf("live" to "Orus")))
-        val pinned = original.resolve(saved)
+        val pinned = original.resolve(saved, pinned = null)
         assertThrows(VoiceSetupException::class.java) {
             original.copy(gatewayURL = "https://other.example").resolve(settings, pinned)
         }
@@ -239,8 +245,8 @@ class VoiceChoicesTest {
         val recovered = updated.resolve(settings, pinned)
         assertEquals("live", recovered.choiceID)
         assertEquals("Orus", recovered.voiceName)
-        assertEquals("alternative", updated.resolve(settings).choiceID)
-        assertEquals("", updated.resolve(settings).voiceName)
+        assertEquals("alternative", updated.resolve(settings, pinned = null).choiceID)
+        assertEquals("", updated.resolve(settings, pinned = null).voiceName)
         val incompatible = oldChoice.copy(transports = listOf(VoiceTransport.Text))
         assertThrows(VoiceSetupException::class.java) {
             updated
@@ -300,16 +306,59 @@ class VoiceChoicesTest {
         assertEquals("live", native.choice.id)
         val indivisible =
             choices.resolveSetup(
-                settings.copy(gatewayVoiceSetups = mapOf(gateway to GatewayVoiceSetup(allInOneChoiceID = "remote"))),
+                settings.copy(gatewayVoiceSetups = mapOf(gateway to GatewayVoiceSetup(followedChoiceID = "remote"))),
             )
         assertEquals(GATEWAY, indivisible.speech)
         assertEquals("remote", indivisible.choice.id)
         val llm =
             composable.resolveSetup(
-                settings.copy(gatewayVoiceSetups = mapOf(gateway to GatewayVoiceSetup(allInOneChoiceID = "llm"))),
+                settings.copy(gatewayVoiceSetups = mapOf(gateway to GatewayVoiceSetup(followedChoiceID = "llm"))),
             )
         assertEquals(GATEWAY, llm.recognition)
         assertEquals("llm", llm.choice.id)
+    }
+
+    @Test
+    fun `following the gateway becomes the explicit setup it resolves to and keeps the other mode's selections`() {
+        val device = deviceStages.copy(deviceSpeechRate = 1.5f)
+
+        fun saved(gatewaySetup: GatewayVoiceSetup) =
+            SavedVoiceSetup(device.copy(mode = VoiceSetupMode.FOLLOW_GATEWAY), gatewaySetup, LocalLlmModel.GEMMA_4_E4B)
+
+        // A followed language model shows as separate gateway stages and pins itself there.
+        val stages = saved(GatewayVoiceSetup(followedChoiceID = "llm", allInOneChoiceID = "live"))
+        val separate = composable.explicit(stages)
+        assertEquals(
+            gatewayStages.copy(deviceSpeechRate = 1.5f),
+            separate.preference,
+        )
+        assertEquals(
+            GatewayVoiceSetup(followedChoiceID = "llm", allInOneChoiceID = "live", separateStagesChoiceID = "llm"),
+            separate.gateway,
+        )
+        assertEquals(LocalLlmModel.GEMMA_4_E4B, separate.localLlmModel)
+        assertEquals("llm", composable.resolveSetup(separate.preference, separate.gateway).choice.id)
+
+        // The gateway's WebRTC default decides a setup that followed nothing yet; the stages stay saved.
+        val native = composable.explicit(saved(GatewayVoiceSetup(separateStagesChoiceID = "preset")))
+        assertEquals(device.copy(mode = VoiceSetupMode.ALL_IN_ONE), native.preference)
+        assertEquals(
+            GatewayVoiceSetup(allInOneChoiceID = "live", separateStagesChoiceID = "preset"),
+            native.gateway,
+        )
+
+        // A removed followed choice becomes the explicit choice, so explicit resolution reports it.
+        val removed = composable.explicit(saved(GatewayVoiceSetup(followedChoiceID = "gone")))
+        assertEquals(VoiceSetupMode.SEPARATE_STAGES, removed.preference.mode)
+        assertEquals("gone", removed.gateway.separateStagesChoiceID)
+        val unavailable =
+            assertThrows(VoiceSetupException::class.java) {
+                composable.resolveSetup(removed.preference, removed.gateway)
+            }
+        assertEquals("Saved voice choice is unavailable. Select a voice choice in Settings.", unavailable.message)
+
+        val explicit = SavedVoiceSetup(gatewayStages, GatewayVoiceSetup(), LocalLlmModel.GEMMA_4_E2B)
+        assertEquals(explicit, composable.explicit(explicit))
     }
 
     @Test
@@ -323,11 +372,13 @@ class VoiceChoicesTest {
                                 mapOf(
                                     gateway to
                                         GatewayVoiceSetup(
+                                            followedChoiceID = "removed",
                                             allInOneChoiceID = "removed",
                                             separateStagesChoiceID = "removed",
                                         ),
                                 ),
                         ),
+                        pinned = null,
                     )
                 }
             assertEquals("Saved voice choice is unavailable. Select a voice choice in Settings.", error.message)
@@ -403,14 +454,14 @@ class VoiceChoicesTest {
         val missing =
             assertThrows(VoiceSetupException::class.java) { unlisted.resolveSetup(settings.with(gatewayStages)) }
         assertEquals(
-            "The gateway has no recognition models. Choose device recognition or an all-in-one model in Settings.",
+            "The gateway has no recognition models. Choose Local for recognition, or an all-in-one model in Settings.",
             missing.message,
         )
         // Device-owned stages need no gateway model, and the text transport carries them.
         val device = unlisted.resolveSetup(settings.with(deviceStages))
         assertNull(device.recognitionModelID)
         assertNull(device.synthesisModelID)
-        assertEquals("llm", unlisted.resolve(settings.with(deviceStages)).choiceID)
+        assertEquals("llm", unlisted.resolve(settings.with(deviceStages), pinned = null).choiceID)
     }
 
     @Test
@@ -419,7 +470,7 @@ class VoiceChoicesTest {
             settings.with(gatewayStages.copy(speech = DEVICE)).copy(
                 gatewayVoiceSetups = mapOf(gateway to GatewayVoiceSetup(recognitionModelID = "parakeet")),
             )
-        val pinned = composable.resolve(mixed)
+        val pinned = composable.resolve(mixed, pinned = null)
         assertEquals(
             GatewayVoiceSelection(
                 gateway,
@@ -433,7 +484,11 @@ class VoiceChoicesTest {
             pinned,
         )
         assertEquals(VoiceTransport.WebRTC, pinned.transport)
-        val deviceRecognition = composable.resolve(settings.with(gatewayStages.copy(recognition = DEVICE)))
+        val deviceRecognition =
+            composable.resolve(
+                settings.with(gatewayStages.copy(recognition = DEVICE)),
+                pinned = null,
+            )
         assertEquals(DEVICE to GATEWAY, deviceRecognition.recognition to deviceRecognition.speech)
         assertEquals(null to "kokoro", deviceRecognition.recognitionModelID to deviceRecognition.synthesisModelID)
         // Recovery keeps the pinned owners and models even after the saved setup changes.
@@ -463,7 +518,7 @@ class VoiceChoicesTest {
             settings.with(gatewayStages).copy(
                 gatewayVoiceSetups = mapOf(gateway to GatewayVoiceSetup(separateStagesChoiceID = "remote")),
             )
-        assertEquals("remote", choices.resolve(indivisible).choiceID)
+        assertEquals("remote", choices.resolve(indivisible, pinned = null).choiceID)
     }
 
     @Test

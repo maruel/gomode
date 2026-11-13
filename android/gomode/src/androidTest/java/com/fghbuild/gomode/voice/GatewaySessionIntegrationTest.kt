@@ -16,8 +16,8 @@ import androidx.test.rule.GrantPermissionRule
 import androidx.test.uiautomator.UiDevice
 import com.fghbuild.gomode.MainActivity
 import com.fghbuild.gomode.data.SettingsRepository
+import com.fghbuild.gomode.data.SpeechStageLocation
 import com.fghbuild.gomode.data.VoiceSetupMode
-import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.ui.web.ServiceShellOwner
 import kotlinx.coroutines.CompletableDeferred
@@ -69,7 +69,9 @@ class GatewaySessionIntegrationTest {
                         ),
                     )
                 repository.addService("fixture", baseUrl)
-                repository.updateVoiceSetup { it.copy(mode = VoiceSetupMode.FOLLOW_GATEWAY) }
+                repository.updateSavedVoiceSetup(null) {
+                    it.copy(preference = it.preference.copy(mode = VoiceSetupMode.FOLLOW_GATEWAY))
+                }
                 repository.settings.first { it.activeServiceURL == baseUrl && !it.voiceSetup.deviceSpeech }
                 val activity = ActivityScenario.launch(MainActivity::class.java)
                 val pages = ServiceShellOwner(context, repository)
@@ -125,7 +127,16 @@ class GatewaySessionIntegrationTest {
                     )
                 val repository = SettingsRepository(dataStore)
                 repository.addService("fixture", baseUrl)
-                repository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
+                repository.updateSavedVoiceSetup(null) {
+                    it.copy(
+                        preference =
+                            it.preference.copy(
+                                mode = VoiceSetupMode.SEPARATE_STAGES,
+                                recognition = SpeechStageLocation.DEVICE,
+                                speech = SpeechStageLocation.DEVICE,
+                            ),
+                    )
+                }
                 repository.settings.first { it.activeServiceURL == baseUrl && it.voiceSetup.deviceSpeech }
                 val expectedName = ServiceSettingsClient().fetch(baseUrl).service
 

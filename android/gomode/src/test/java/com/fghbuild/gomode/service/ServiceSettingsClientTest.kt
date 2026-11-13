@@ -132,8 +132,8 @@ class ServiceSettingsClientTest {
     fun `compatibility accepts matching shell contract`() {
         assertNull(settings(bridgeVersion = 3).compatibilityError())
         assertEquals(
-            "Service requires bridge version 3. This app provides 1.",
-            settings(bridgeVersion = 3).compatibilityError(ShellCompatibility(bridgeVersion = 1)),
+            "Service requires bridge version 4. This app provides 3.",
+            settings(bridgeVersion = 4).compatibilityError(),
         )
         assertEquals(
             "Service requires bridge version 1. This app provides 3.",

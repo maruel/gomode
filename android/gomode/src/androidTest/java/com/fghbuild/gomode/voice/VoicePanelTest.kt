@@ -123,7 +123,7 @@ class VoicePanelTest {
                         Box(if (narrow.value) Modifier.width(320.dp) else Modifier.fillMaxWidth()) {
                             VoicePanel(
                                 VoiceState(
-                                    usage = VoiceUsage(counts, report),
+                                    usage = VoiceUsage(counts, report, responses = emptyMap()),
                                     error = error.value,
                                     transcript =
                                         listOf(
@@ -1675,7 +1675,7 @@ class VoicePanelTest {
             inputModes = LocalInputModeManager.current
             GoModeTheme {
                 VoicePanel(
-                    VoiceState(usage = VoiceUsage(counts, report)),
+                    VoiceState(usage = VoiceUsage(counts, report, responses = emptyMap())),
                     true,
                     {},
                     {},

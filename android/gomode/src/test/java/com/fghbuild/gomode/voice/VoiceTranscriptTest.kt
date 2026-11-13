@@ -9,10 +9,31 @@ class VoiceTranscriptTest {
     fun reasoningMergesIntoItsOwnEntryAndNeverIntoSpokenText() {
         val transcript =
             emptyList<TranscriptEntry>()
-                .appendChunk(TranscriptSpeaker.ASSISTANT, "The first date ")
-                .appendChunk(TranscriptSpeaker.ASSISTANT, "is earlier.")
-                .appendChunk(TranscriptSpeaker.ASSISTANT, "Weigh both ", TranscriptKind.REASONING)
-                .appendChunk(TranscriptSpeaker.ASSISTANT, "dates.", TranscriptKind.REASONING)
+                .appendChunk(
+                    TranscriptSpeaker.ASSISTANT,
+                    "The first date ",
+                    kind = TranscriptKind.TRANSCRIPT,
+                    responseID = null,
+                    responseUsage = null,
+                ).appendChunk(
+                    TranscriptSpeaker.ASSISTANT,
+                    "is earlier.",
+                    kind = TranscriptKind.TRANSCRIPT,
+                    responseID = null,
+                    responseUsage = null,
+                ).appendChunk(
+                    TranscriptSpeaker.ASSISTANT,
+                    "Weigh both ",
+                    TranscriptKind.REASONING,
+                    responseID = null,
+                    responseUsage = null,
+                ).appendChunk(
+                    TranscriptSpeaker.ASSISTANT,
+                    "dates.",
+                    TranscriptKind.REASONING,
+                    responseID = null,
+                    responseUsage = null,
+                )
         assertEquals(
             listOf(
                 TranscriptEntry(TranscriptSpeaker.ASSISTANT, "The first date is earlier."),
@@ -30,7 +51,13 @@ class VoiceTranscriptTest {
                 TranscriptEntry(TranscriptSpeaker.ASSISTANT, "Earlier.", final = true),
                 TranscriptEntry(TranscriptSpeaker.ASSISTANT, "Then.", kind = TranscriptKind.REASONING),
             ),
-            finished.appendChunk(TranscriptSpeaker.ASSISTANT, "Then.", TranscriptKind.REASONING),
+            finished.appendChunk(
+                TranscriptSpeaker.ASSISTANT,
+                "Then.",
+                TranscriptKind.REASONING,
+                responseID = null,
+                responseUsage = null,
+            ),
         )
     }
 }

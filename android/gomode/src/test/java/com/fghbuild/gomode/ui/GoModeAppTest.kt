@@ -155,6 +155,7 @@ class GoModeAppTest {
             shellRecoveryState(
                 bootstrapError = "Unsupported service version.",
                 webLoadState = WebShellLoadState.Failed("The service took too long to respond."),
+                bootstrapFailure = null,
             )
 
         assertEquals(
@@ -185,6 +186,7 @@ class GoModeAppTest {
             shellRecoveryState(
                 bootstrapError = null,
                 webLoadState = WebShellLoadState.Failed("The service took too long to respond."),
+                bootstrapFailure = null,
             )
 
         assertEquals(
@@ -203,6 +205,7 @@ class GoModeAppTest {
             shellRecoveryState(
                 bootstrapError = null,
                 webLoadState = WebShellLoadState.Reconnecting,
+                bootstrapFailure = null,
             )
 
         assertEquals(
@@ -221,6 +224,7 @@ class GoModeAppTest {
             shellRecoveryState(
                 bootstrapError = null,
                 webLoadState = WebShellLoadState.Failed("Update Android System WebView.", canRetry = false),
+                bootstrapFailure = null,
             )
         assertEquals("Update Android System WebView.", recovery?.message)
         assertNull(recovery?.retryTarget)
@@ -228,6 +232,8 @@ class GoModeAppTest {
 
     @Test
     fun readyServiceAndWebViewNeedNoRecoveryStrip() {
-        assertNull(shellRecoveryState(bootstrapError = null, webLoadState = WebShellLoadState.Ready))
+        assertNull(
+            shellRecoveryState(bootstrapError = null, webLoadState = WebShellLoadState.Ready, bootstrapFailure = null),
+        )
     }
 }

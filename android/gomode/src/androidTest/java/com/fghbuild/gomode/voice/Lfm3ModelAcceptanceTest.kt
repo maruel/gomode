@@ -150,21 +150,23 @@ class Lfm3ModelAcceptanceTest {
                 try {
                     engine.initialize(setup)
                     val spoken = StringBuilder()
-                    val reply =
-                        engine.processTurn(UserTurnInput("What is the weather in Paris?"), spoken::append, {}) { call ->
-                            assertEquals("get_weather", call.name)
-                            buildJsonObject {
-                                put("weather", "18 Celsius, light rain")
-                                put("verification_code", "MINT-739")
-                            }
+                    var calls = 0
+                    engine.processTurn(UserTurnInput("What is the weather in Paris?"), spoken::append, {}) { call ->
+                        calls++
+                        assertEquals("get_weather", call.name)
+                        buildJsonObject {
+                            put("weather", "18 Celsius, light rain")
+                            put("verification_code", "MINT-739")
                         }
-                    assertTrue(reply.toolCalls.isNotEmpty())
-                    assertTrue(reply.assistantText.contains("MINT-739"))
+                    }
+                    assertTrue(calls > 0)
+                    assertTrue(spoken.contains("MINT-739"))
                     assertFalse(spoken.contains("<tool_call>"))
                     assertFalse(spoken.contains("<think>"))
                     engine.resetConversation(setup.copy(tools = emptyList(), systemInstruction = "Answer briefly."))
-                    val fresh = engine.processTurn(UserTurnInput("What is the capital of Japan?"), {}, {}) { null }
-                    assertTrue(fresh.assistantText.contains("Tokyo", ignoreCase = true))
+                    val fresh = StringBuilder()
+                    engine.processTurn(UserTurnInput("What is the capital of Japan?"), fresh::append, {}) { null }
+                    assertTrue(fresh.contains("Tokyo", ignoreCase = true))
                 } finally {
                     engine.closeAndJoin()
                 }
@@ -199,8 +201,9 @@ class Lfm3ModelAcceptanceTest {
                     val notes =
                         "The archive access code is ORCHID-6829.\n" +
                             " neutral".repeat(20_000) + "\nWhat is the archive access code?"
-                    val reply = engine.processTurn(UserTurnInput(notes), {}, {}) { error("No tools are advertised") }
-                    assertTrue(reply.assistantText.contains("ORCHID-6829"))
+                    val reply = StringBuilder()
+                    engine.processTurn(UserTurnInput(notes), reply::append, {}) { error("No tools are advertised") }
+                    assertTrue(reply.contains("ORCHID-6829"))
                 } finally {
                     engine.closeAndJoin()
                 }

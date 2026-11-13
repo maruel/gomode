@@ -51,12 +51,12 @@ internal class NeedleWhistleEngine(
         onDelta: (String) -> Unit,
         onUsage: suspend (EngineUsage) -> Unit,
         onToolCall: suspend (ToolCall) -> JsonElement?,
-    ): EngineTurnResult {
+    ) {
         // External service data must never be interpreted as a user's action command.
-        if (input.serviceUpdate) return EngineTurnResult()
+        if (input.serviceUpdate) return
 
         val query = input.text.trim()
-        if (query.isEmpty()) return EngineTurnResult()
+        if (query.isEmpty()) return
 
         val (matchedTool, confidence) = scoreToolConfidence(query)
         if (matchedTool != null && confidence >= CONFIDENCE_THRESHOLD) {
@@ -82,8 +82,7 @@ internal class NeedleWhistleEngine(
             if (summary.isNotEmpty()) {
                 onDelta(" $summary")
             }
-            val fullAssistantText = "$transcriptLead Executing ${matchedTool.name}… $summary".trim()
-            return EngineTurnResult(assistantText = fullAssistantText, toolCalls = listOf(call))
+            return
         }
 
         // Low confidence or conversational utterance: emit verbatim audio_text.
@@ -91,7 +90,6 @@ internal class NeedleWhistleEngine(
         val conversationalResponse =
             "Heard: \"$query\". No high-confidence action matched (confidence: $formattedConfidence)."
         onDelta(conversationalResponse)
-        return EngineTurnResult(assistantText = conversationalResponse)
     }
 
     override suspend fun injectContext(text: String) {

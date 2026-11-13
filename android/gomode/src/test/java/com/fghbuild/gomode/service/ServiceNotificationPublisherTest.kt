@@ -26,14 +26,31 @@ class ServiceNotificationPublisherTest {
     @Test
     fun eachPendingIntentKeepsItsSourceAndStableDestination() {
         shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
-        publisher.publish(first, ServiceNotification("event-a", "Task #4 is waiting", "First", url = "/work/stable-a"))
+        publisher.publish(
+            first,
+            ServiceNotification(
+                "event-a",
+                "Task #4 is waiting",
+                "First",
+                url = "/work/stable-a",
+                itemId = null,
+                expiresAt = null,
+            ),
+        )
         val a =
             manager.activeNotifications
                 .single()
                 .notification.contentIntent
         publisher.publish(
             second,
-            ServiceNotification("event-b", "Task #4 has a question", "Second", url = "/work/stable-b"),
+            ServiceNotification(
+                "event-b",
+                "Task #4 has a question",
+                "Second",
+                url = "/work/stable-b",
+                itemId = null,
+                expiresAt = null,
+            ),
         )
         val b =
             manager.activeNotifications
@@ -50,7 +67,17 @@ class ServiceNotificationPublisherTest {
             ServiceNotificationDestination(second, "https://second.test/work/stable-b"),
             ServiceNotificationPublisher.destination(shadowOf(b).savedIntent),
         )
-        publisher.publish(first, ServiceNotification("event-a", "Task #2 is waiting", "First", url = "/work/stable-a"))
+        publisher.publish(
+            first,
+            ServiceNotification(
+                "event-a",
+                "Task #2 is waiting",
+                "First",
+                url = "/work/stable-a",
+                itemId = null,
+                expiresAt = null,
+            ),
+        )
         val posted =
             manager.activeNotifications.first {
                 it.notification.extras.getString(Notification.EXTRA_TEXT) ==
@@ -67,8 +94,8 @@ class ServiceNotificationPublisherTest {
     @Test
     fun snapshotWithdrawalAndServiceRemovalCancelOnlyAffectedAlerts() {
         shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
-        val a = ServiceNotification("a", "Ready", "First")
-        val b = ServiceNotification("b", "Ready", "Second")
+        val a = ServiceNotification("a", "Ready", "First", itemId = null, url = null, expiresAt = null)
+        val b = ServiceNotification("b", "Ready", "Second", itemId = null, url = null, expiresAt = null)
         publisher.publish(first, a)
         publisher.publish(second, b)
         publisher.reconcile(mapOf(first to null, second to null))
@@ -93,7 +120,7 @@ class ServiceNotificationPublisherTest {
     @Test
     fun androidGroupSummariesAreNotOwnedByAlertReconciliation() {
         shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
-        val alert = ServiceNotification("work", "Ready", "Work")
+        val alert = ServiceNotification("work", "Ready", "Work", itemId = null, url = null, expiresAt = null)
         publisher.publish(first, alert)
         manager.notify(
             "ranker_group",
@@ -128,7 +155,10 @@ class ServiceNotificationPublisherTest {
             assertNull(url, resolveNotificationURL(first.url, url))
         }
         shadowOf(context).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
-        publisher.publish(first, ServiceNotification("evil", "Ready", "First", url = "https://evil.test/"))
+        publisher.publish(
+            first,
+            ServiceNotification("evil", "Ready", "First", url = "https://evil.test/", itemId = null, expiresAt = null),
+        )
         assertNull(
             ServiceNotificationPublisher.destination(
                 shadowOf(

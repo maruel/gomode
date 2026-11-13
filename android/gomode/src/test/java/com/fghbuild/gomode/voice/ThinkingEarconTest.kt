@@ -34,9 +34,9 @@ class ThinkingEarconTest {
     @Test
     fun arbitraryChunkSizesPreserveTheExactWaveform() {
         val expected = ShortArray(71_321)
-        ThinkingPiano(score).render(expected)
+        ThinkingPiano(score, loop = true).render(expected)
         val actual = ShortArray(expected.size)
-        val piano = ThinkingPiano(score)
+        val piano = ThinkingPiano(score, loop = true)
         val sizes = intArrayOf(1, 119, 120, 121, 479, 503, 4_001)
         var offset = 0
         var chunk = 0
@@ -51,7 +51,7 @@ class ThinkingEarconTest {
 
     @Test
     fun fullScoreAndLoopStayQuietWithoutClipping() {
-        val piano = ThinkingPiano(score)
+        val piano = ThinkingPiano(score, loop = true)
         val buffer = ShortArray(2_400)
         val levels = mutableListOf<Double>()
         var peak = 0
@@ -81,7 +81,7 @@ class ThinkingEarconTest {
     @Test
     fun eachNewTurnFadesInWithoutAnInitialClick() {
         val buffer = ShortArray(THINKING_SAMPLE_RATE * 2)
-        ThinkingPiano(score).render(buffer)
+        ThinkingPiano(score, loop = true).render(buffer)
         assertEquals(0, buffer.first().toInt())
         val onset = rms(buffer.copyOfRange(0, 480))
         val sustained = rms(buffer.copyOfRange(buffer.size - 480, buffer.size))

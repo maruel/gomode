@@ -16,7 +16,6 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
 import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.VoiceLanguageModel
-import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.voice.ModelDownloadState
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -47,9 +46,12 @@ class ModelStorageTest {
         assumeTrue("Existing models are never replaced by fixtures", !downloads.isInstalled(model))
         runBlocking {
             app.goModeSettingsDataStore.edit { it.clear() }
-            app.settingsRepository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
-            app.settingsRepository.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
-            app.settingsRepository.updateLocalLlmModel(model)
+            app.settingsRepository.updateSavedVoiceSetup(null) {
+                it.copy(
+                    preference = it.preference.withLanguageModel(VoiceLanguageModel.LOCAL_LLM),
+                    localLlmModel = model,
+                )
+            }
             downloads.cancel(model)?.join()
         }
         compose.waitUntil(30_000) { downloads.states.value[model] is ModelDownloadState.Missing }

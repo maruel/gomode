@@ -15,7 +15,7 @@ import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SpeechStageLocation
 import com.fghbuild.gomode.data.VoiceLanguageModel
-import com.fghbuild.gomode.data.VoiceSetupPreference
+import com.fghbuild.gomode.data.VoiceSetupMode
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceSettingsClient
 import com.fghbuild.gomode.service.VoiceTokenClient
@@ -161,7 +161,7 @@ class DeviceVoiceSessionTest {
                         calls = calls,
                         setupProvider = {
                             if (preparations++ > 0) {
-                                VoiceTokenClient().fetch(server.url("/token").toString(), null)
+                                VoiceTokenClient().fetch(server.url("/token").toString(), null, bearerToken = null)
                             }
                             testSetup()
                         },
@@ -978,7 +978,16 @@ class DeviceVoiceSessionTest {
                 val repository = SettingsRepository(InMemoryPreferencesDataStore())
                 val second = repository.addService("Tools only", "https://second.invalid")
                 val first = repository.addService("Sponsor", server.url("/").toString())
-                repository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
+                repository.updateSavedVoiceSetup(null) {
+                    it.copy(
+                        preference =
+                            it.preference.copy(
+                                mode = VoiceSetupMode.SEPARATE_STAGES,
+                                recognition = SpeechStageLocation.DEVICE,
+                                speech = SpeechStageLocation.DEVICE,
+                            ),
+                    )
+                }
                 repository.settings.first { it.activeServiceId == first && it.voiceSetup.deviceSpeech }
                 val entries =
                     repository.settings.value.services.associate { service ->
@@ -1341,7 +1350,7 @@ class DeviceVoiceSessionTest {
                                     onUsage: suspend (EngineUsage) -> Unit,
                                     onToolCall: suspend (com.fghbuild.voicegateway.sdk.v2.ToolCall) ->
                                     kotlinx.serialization.json.JsonElement?,
-                                ): EngineTurnResult {
+                                ) {
                                     onDelta("First sentence. ")
                                     val result =
                                         onToolCall(
@@ -1357,7 +1366,6 @@ class DeviceVoiceSessionTest {
                                         result,
                                     )
                                     onDelta("Second sentence.")
-                                    return EngineTurnResult(assistantText = "First sentence. Second sentence.")
                                 }
 
                                 override suspend fun injectContext(text: String) = Unit
@@ -1589,7 +1597,7 @@ class DeviceVoiceSessionTest {
         runTest {
             val repository = SettingsRepository(InMemoryPreferencesDataStore())
             selectEngine(repository, VoiceLanguageModel.LOCAL_LLM)
-            repository.updateLocalLlmModel(LocalLlmModel.GEMMA_4_E4B)
+            repository.updateSavedVoiceSetup(null) { it.copy(localLlmModel = LocalLlmModel.GEMMA_4_E4B) }
             repository.settings.first { it.localLlmModel == LocalLlmModel.GEMMA_4_E4B }
             val session =
                 createSession(
@@ -1836,7 +1844,7 @@ class DeviceVoiceSessionTest {
                                 onUsage: suspend (EngineUsage) -> Unit,
                                 onToolCall: suspend (com.fghbuild.voicegateway.sdk.v2.ToolCall) ->
                                 kotlinx.serialization.json.JsonElement?,
-                            ): EngineTurnResult {
+                            ) {
                                 turns.add(input.text)
                                 if (input.text == "First") {
                                     onDelta("First reply.")
@@ -1863,7 +1871,6 @@ class DeviceVoiceSessionTest {
                                 } else {
                                     onDelta("Replacement.")
                                 }
-                                return EngineTurnResult()
                             }
 
                             override suspend fun injectContext(text: String) {
@@ -1927,10 +1934,9 @@ class DeviceVoiceSessionTest {
                                 onToolCall: suspend (
                                     com.fghbuild.voicegateway.sdk.v2.ToolCall,
                                 ) -> kotlinx.serialization.json.JsonElement?,
-                            ): EngineTurnResult {
+                            ) {
                                 turns.add(input.text)
                                 if (input.text == "First") release.await()
-                                return EngineTurnResult()
                             }
                         }
                     },
@@ -2192,11 +2198,11 @@ class DeviceVoiceSessionTest {
     fun `textSessionWebSocketURL maps gateway schemes and path`() {
         assertEquals(
             "wss://gateway.example.com/api/voicegateway/v2/voice/text",
-            textSessionWebSocketURL("https://gateway.example.com"),
+            textSessionWebSocketURL("https://gateway.example.com", choiceID = null),
         )
         assertEquals(
             "ws://127.0.0.1:3479/api/voicegateway/v2/voice/text",
-            textSessionWebSocketURL("http://127.0.0.1:3479/"),
+            textSessionWebSocketURL("http://127.0.0.1:3479/", choiceID = null),
         )
     }
 
@@ -2261,7 +2267,6 @@ class DeviceVoiceSessionTest {
             val speech = FakeSpeech()
             var webSocketOpened = false
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
-            repo.updateVoiceSetup(com.fghbuild.gomode.data.VoiceSetupPreference::withDeviceSpeech)
             selectEngine(repo, VoiceLanguageModel.NEEDLE_WHISTLE)
 
             val session =
@@ -2297,7 +2302,6 @@ class DeviceVoiceSessionTest {
             Dispatchers.setMain(dispatcher)
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
-            repo.updateVoiceSetup(com.fghbuild.gomode.data.VoiceSetupPreference::withDeviceSpeech)
             selectEngine(repo, VoiceLanguageModel.LOCAL_LLM)
 
             val conversation = localConversation(repo)
@@ -2307,7 +2311,9 @@ class DeviceVoiceSessionTest {
                     localModelInstallation(ModelDownloadState.Missing(0)),
                     dispatcher,
                 )
-            owner.select(LocalModelSelection("en-US", { localSetup(conversation) }, { true }))
+            owner.select(
+                LocalModelSelection("en-US", { localSetup(conversation) }, { true }, model = LocalLlmModel.GEMMA_4_E2B),
+            )
             val session =
                 createSession(
                     speech = speech,
@@ -2341,7 +2347,6 @@ class DeviceVoiceSessionTest {
             Dispatchers.setMain(dispatcher)
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
-            repo.updateVoiceSetup(com.fghbuild.gomode.data.VoiceSetupPreference::withDeviceSpeech)
             selectEngine(repo, VoiceLanguageModel.LOCAL_LLM)
 
             var failTurn = false
@@ -2352,7 +2357,7 @@ class DeviceVoiceSessionTest {
             val owner =
                 LocalModelOwner(
                     RuntimeEnvironment.getApplication(),
-                    localModelInstallation(ModelDownloadState.Ready(1, true)),
+                    localModelInstallation(ModelDownloadState.Ready(1, true, removalError = null)),
                     dispatcher,
                 ) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
@@ -2378,7 +2383,7 @@ class DeviceVoiceSessionTest {
                 LocalModelSelection("en-US", {
                     discoveries++
                     localSetup(conversation)
-                }, { true }),
+                }, { true }, model = LocalLlmModel.GEMMA_4_E2B),
             )
 
             val session =
@@ -2466,7 +2471,6 @@ class DeviceVoiceSessionTest {
             Dispatchers.setMain(dispatcher)
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
-            repo.updateVoiceSetup(com.fghbuild.gomode.data.VoiceSetupPreference::withDeviceSpeech)
             selectEngine(repo, VoiceLanguageModel.LOCAL_LLM)
             val finishSetup = CompletableDeferred<Unit>()
             val calls = FakeVoiceCallController()
@@ -2476,7 +2480,7 @@ class DeviceVoiceSessionTest {
             val owner =
                 LocalModelOwner(
                     RuntimeEnvironment.getApplication(),
-                    localModelInstallation(ModelDownloadState.Ready(1, true)),
+                    localModelInstallation(ModelDownloadState.Ready(1, true, removalError = null)),
                     dispatcher,
                 ) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
@@ -2500,7 +2504,7 @@ class DeviceVoiceSessionTest {
                 LocalModelSelection("en-US", {
                     finishSetup.await()
                     localSetup(conversation)
-                }, { true }),
+                }, { true }, model = LocalLlmModel.GEMMA_4_E2B),
             )
             val session =
                 createSession(
@@ -2546,7 +2550,6 @@ class DeviceVoiceSessionTest {
             Dispatchers.setMain(dispatcher)
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
-            repo.updateVoiceSetup(com.fghbuild.gomode.data.VoiceSetupPreference::withDeviceSpeech)
             selectEngine(repo, VoiceLanguageModel.LOCAL_LLM)
             val finishTurn = CompletableDeferred<Unit>()
             var allocations = 0
@@ -2555,7 +2558,7 @@ class DeviceVoiceSessionTest {
             val owner =
                 LocalModelOwner(
                     RuntimeEnvironment.getApplication(),
-                    localModelInstallation(ModelDownloadState.Ready(1, true)),
+                    localModelInstallation(ModelDownloadState.Ready(1, true, removalError = null)),
                     dispatcher,
                 ) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
@@ -2593,7 +2596,9 @@ class DeviceVoiceSessionTest {
                         }
                     }, dispatcher)
                 }
-            owner.select(LocalModelSelection("en-US", { localSetup(conversation) }, { true }))
+            owner.select(
+                LocalModelSelection("en-US", { localSetup(conversation) }, { true }, model = LocalLlmModel.GEMMA_4_E2B),
+            )
             val session =
                 createSession(
                     speech = speech,
@@ -2629,7 +2634,6 @@ class DeviceVoiceSessionTest {
             Dispatchers.setMain(dispatcher)
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
-            repo.updateVoiceSetup(com.fghbuild.gomode.data.VoiceSetupPreference::withDeviceSpeech)
             selectEngine(repo, VoiceLanguageModel.LOCAL_LLM)
             val finishTurn = CompletableDeferred<Unit>()
             var generations = 0
@@ -2638,7 +2642,7 @@ class DeviceVoiceSessionTest {
             val owner =
                 LocalModelOwner(
                     RuntimeEnvironment.getApplication(),
-                    localModelInstallation(ModelDownloadState.Ready(1, true)),
+                    localModelInstallation(ModelDownloadState.Ready(1, true, removalError = null)),
                     dispatcher,
                 ) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
@@ -2686,7 +2690,7 @@ class DeviceVoiceSessionTest {
                                         ),
                                 ),
                         ).let { localSetup(conversation, it) }
-                }, { true }),
+                }, { true }, model = LocalLlmModel.GEMMA_4_E2B),
             )
             val session =
                 createSession(
@@ -2720,7 +2724,6 @@ class DeviceVoiceSessionTest {
             Dispatchers.setMain(dispatcher)
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
-            repo.updateVoiceSetup(com.fghbuild.gomode.data.VoiceSetupPreference::withDeviceSpeech)
             selectEngine(repo, VoiceLanguageModel.LOCAL_LLM)
             var generations = 0
             var resets = 0
@@ -2728,7 +2731,7 @@ class DeviceVoiceSessionTest {
             val owner =
                 LocalModelOwner(
                     RuntimeEnvironment.getApplication(),
-                    localModelInstallation(ModelDownloadState.Ready(1, true)),
+                    localModelInstallation(ModelDownloadState.Ready(1, true, removalError = null)),
                     dispatcher,
                 ) {
                     LocalLlmEngine(RuntimeEnvironment.getApplication(), { _, _ ->
@@ -2777,7 +2780,7 @@ class DeviceVoiceSessionTest {
                                         ),
                                 ),
                         ).let { localSetup(conversation, it) }
-                }, { true }),
+                }, { true }, model = LocalLlmModel.GEMMA_4_E2B),
             )
             val session =
                 createSession(
@@ -2804,7 +2807,6 @@ class DeviceVoiceSessionTest {
         runTest {
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
-            repo.updateVoiceSetup(com.fghbuild.gomode.data.VoiceSetupPreference::withDeviceSpeech)
             selectEngine(repo, VoiceLanguageModel.NEEDLE_WHISTLE)
             val serverId = repo.addService("Home", "https://home.example")
             repo.settings.first { it.activeServiceId == serverId }
@@ -2827,7 +2829,7 @@ class DeviceVoiceSessionTest {
                                 onToolCall: suspend (
                                     com.fghbuild.voicegateway.sdk.v2.ToolCall,
                                 ) -> kotlinx.serialization.json.JsonElement?,
-                            ): EngineTurnResult {
+                            ) {
                                 val servers =
                                     onToolCall(
                                         com.fghbuild.voicegateway.sdk.v2.ToolCall(
@@ -2870,7 +2872,6 @@ class DeviceVoiceSessionTest {
         runTest {
             for (offline in listOf(false, true)) {
                 val repo = SettingsRepository(InMemoryPreferencesDataStore())
-                repo.updateVoiceSetup(com.fghbuild.gomode.data.VoiceSetupPreference::withDeviceSpeech)
                 selectEngine(repo, VoiceLanguageModel.NEEDLE_WHISTLE)
                 val savedID = repo.addService("Saved caller", "https://saved.example")
                 repo.settings.first { it.activeServiceId == savedID }
@@ -2905,7 +2906,7 @@ class DeviceVoiceSessionTest {
                                     onToolCall: suspend (
                                         com.fghbuild.voicegateway.sdk.v2.ToolCall,
                                     ) -> kotlinx.serialization.json.JsonElement?,
-                                ) = EngineTurnResult(assistantText = "")
+                                ) = Unit
 
                                 override suspend fun injectContext(text: String) = Unit
 
@@ -2932,7 +2933,6 @@ class DeviceVoiceSessionTest {
         runTest {
             val speech = FakeSpeech()
             val repo = SettingsRepository(InMemoryPreferencesDataStore())
-            repo.updateVoiceSetup(com.fghbuild.gomode.data.VoiceSetupPreference::withDeviceSpeech)
             selectEngine(repo, VoiceLanguageModel.NEEDLE_WHISTLE)
 
             var connectedChimes = 0
@@ -2968,7 +2968,17 @@ class DeviceVoiceSessionTest {
         repository: SettingsRepository,
         engine: VoiceLanguageModel,
     ) {
-        repository.updateVoiceSetup { it.withDeviceSpeech().copy(languageModel = engine) }
+        repository.updateSavedVoiceSetup(null) {
+            it.copy(
+                preference =
+                    it.preference.copy(
+                        mode = VoiceSetupMode.SEPARATE_STAGES,
+                        recognition = SpeechStageLocation.DEVICE,
+                        speech = SpeechStageLocation.DEVICE,
+                        languageModel = engine,
+                    ),
+            )
+        }
         // Saving preferences does not wait for the repository's IO collector to publish them.
         repository.settings.first { it.voiceSetup.effectiveLanguageModel == engine }
     }
@@ -3084,9 +3094,8 @@ class DeviceVoiceSessionTest {
                                 onUsage: suspend (EngineUsage) -> Unit,
                                 onToolCall: suspend (com.fghbuild.voicegateway.sdk.v2.ToolCall) ->
                                 kotlinx.serialization.json.JsonElement?,
-                            ): EngineTurnResult {
+                            ) {
                                 finish.await()
-                                return EngineTurnResult()
                             }
                         }
                     },

@@ -21,9 +21,9 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.GrantPermissionRule
 import com.fghbuild.gomode.completeFixtureFrontend
+import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.VoiceLanguageModel
-import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.frontendPreparationFixtureScript
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceReadiness
@@ -137,7 +137,10 @@ class ControlledLocalConversationTest {
                 val release = CountDownLatch(1)
                 val configurations = CopyOnWriteArrayList<ConversationConfig>()
                 val owner =
-                    LocalModelOwner(context, localModelInstallation(ModelDownloadState.Ready(1, true))) {
+                    LocalModelOwner(
+                        context,
+                        localModelInstallation(ModelDownloadState.Ready(1, true, removalError = null)),
+                    ) {
                         LocalLlmEngine(context, { _, config ->
                             configurations += config
                             started.countDown()
@@ -182,7 +185,10 @@ class ControlledLocalConversationTest {
                 val configs = CopyOnWriteArrayList<ConversationConfig>()
                 val runner = ControlledRunner(configs, ids.first, ids.second)
                 val owner =
-                    LocalModelOwner(context, localModelInstallation(ModelDownloadState.Ready(1, true))) {
+                    LocalModelOwner(
+                        context,
+                        localModelInstallation(ModelDownloadState.Ready(1, true, removalError = null)),
+                    ) {
                         LocalLlmEngine(context, { _, config ->
                             configs += config
                             runner
@@ -249,7 +255,7 @@ class ControlledLocalConversationTest {
                     owner.select(
                         LocalModelSelection("en-US", {
                             withContext(Dispatchers.Main) { conversation.prepareLocal() }
-                        }, { true }),
+                        }, { true }, model = LocalLlmModel.GEMMA_4_E2B),
                     )
                 }
                 composeRule.waitUntil(30_000) { owner.state.value == LocalModelState.Ready }
@@ -318,7 +324,10 @@ class ControlledLocalConversationTest {
                 val runner = ControlledRunner(configs)
                 val speech = ControlledSpeech()
                 val owner =
-                    LocalModelOwner(context, localModelInstallation(ModelDownloadState.Ready(1, true))) {
+                    LocalModelOwner(
+                        context,
+                        localModelInstallation(ModelDownloadState.Ready(1, true, removalError = null)),
+                    ) {
                         LocalLlmEngine(context, { _, config ->
                             configs += config
                             started.countDown()
@@ -372,7 +381,7 @@ class ControlledLocalConversationTest {
                         owner.select(
                             LocalModelSelection("en-US", {
                                 withContext(Dispatchers.Main) { conversation.prepareLocal() }
-                            }, { true }),
+                            }, { true }, model = LocalLlmModel.GEMMA_4_E2B),
                         )
                         session.connect()
                     }
@@ -434,8 +443,9 @@ class ControlledLocalConversationTest {
         runBlocking {
             val second = repository.addService("B", b.url)
             val first = repository.addService("A", a.url)
-            repository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech)
-            repository.updateVoiceSetup { it.copy(languageModel = VoiceLanguageModel.LOCAL_LLM) }
+            repository.updateSavedVoiceSetup(null) {
+                it.copy(preference = it.preference.withLanguageModel(VoiceLanguageModel.LOCAL_LLM))
+            }
             repository.settings.first {
                 it.activeServiceId == first && it.voiceSetup.languageModel == VoiceLanguageModel.LOCAL_LLM &&
                     it.voiceSetup.deviceSpeech

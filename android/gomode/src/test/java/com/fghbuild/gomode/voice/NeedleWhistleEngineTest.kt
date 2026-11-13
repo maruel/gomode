@@ -8,7 +8,6 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -45,14 +44,12 @@ class NeedleWhistleEngineTest {
         runTest {
             val engine = NeedleWhistleEngine(RuntimeEnvironment.getApplication())
             engine.initialize(sessionContext)
-            val result =
-                engine.processTurn(
-                    UserTurnInput("Please toggle_mute now", serviceUpdate = true),
-                    { error("Command matching must not speak service data") },
-                    { error("Command matching must not report LLM usage") },
-                    { error("Service data must not dispatch user actions") },
-                )
-            assertEquals(EngineTurnResult(), result)
+            engine.processTurn(
+                UserTurnInput("Please toggle_mute now", serviceUpdate = true),
+                { error("Command matching must not speak service data") },
+                { error("Command matching must not report LLM usage") },
+                { error("Service data must not dispatch user actions") },
+            )
             engine.close()
         }
 
@@ -63,25 +60,27 @@ class NeedleWhistleEngineTest {
             engine.initialize(sessionContext)
 
             val deltas = mutableListOf<String>()
-            var executedCall: ToolCall? = null
+            val executedCalls = mutableListOf<ToolCall>()
 
-            val result =
-                engine.processTurn(
-                    input = UserTurnInput(text = "Please toggle_mute now"),
-                    onDelta = { deltas.add(it) },
-                    onUsage = {},
-                    onToolCall = { call ->
-                        executedCall = call
-                        JsonObject(mapOf("status" to JsonPrimitive("Muted")))
-                    },
-                )
+            engine.processTurn(
+                input = UserTurnInput(text = "Please toggle_mute now"),
+                onDelta = { deltas.add(it) },
+                onUsage = {},
+                onToolCall = { call ->
+                    executedCalls += call
+                    JsonObject(mapOf("status" to JsonPrimitive("Muted")))
+                },
+            )
 
-            assertNotNull("high confidence action triggers tool call", executedCall)
-            assertEquals("toggle_mute", executedCall?.name)
-            assertTrue("assistant text contains verbatim recognized lead", result.assistantText.contains("Recognized:"))
-            assertTrue("confidence score is included in transcript lead", result.assistantText.contains("0.95"))
-            assertTrue("tool execution summary is appended", result.assistantText.contains("Muted"))
-            assertEquals(1, result.toolCalls.size)
+            assertEquals(
+                "high confidence action triggers one tool call",
+                listOf("toggle_mute"),
+                executedCalls.map { it.name },
+            )
+            val spoken = deltas.joinToString("")
+            assertTrue("assistant text contains verbatim recognized lead", spoken.contains("Recognized:"))
+            assertTrue("confidence score is included in transcript lead", spoken.contains("0.95"))
+            assertTrue("tool execution summary is appended", spoken.contains("Muted"))
 
             engine.close()
         }
@@ -95,23 +94,22 @@ class NeedleWhistleEngineTest {
             var toolDispatched = false
             val deltas = mutableListOf<String>()
 
-            val result =
-                engine.processTurn(
-                    input = UserTurnInput(text = "What is the weather outside today?"),
-                    onDelta = { deltas.add(it) },
-                    onUsage = {},
-                    onToolCall = {
-                        toolDispatched = true
-                        null
-                    },
-                )
+            engine.processTurn(
+                input = UserTurnInput(text = "What is the weather outside today?"),
+                onDelta = { deltas.add(it) },
+                onUsage = {},
+                onToolCall = {
+                    toolDispatched = true
+                    null
+                },
+            )
 
             assertTrue("no tool executed below confidence threshold", !toolDispatched)
-            assertTrue("tool calls list is empty", result.toolCalls.isEmpty())
-            assertTrue("assistant text preserves verbatim audio text", result.assistantText.contains("Heard:"))
+            val spoken = deltas.joinToString("")
+            assertTrue("assistant text preserves verbatim audio text", spoken.contains("Heard:"))
             assertTrue(
                 "explains that no high-confidence action matched",
-                result.assistantText.contains("No high-confidence action matched"),
+                spoken.contains("No high-confidence action matched"),
             )
 
             engine.close()

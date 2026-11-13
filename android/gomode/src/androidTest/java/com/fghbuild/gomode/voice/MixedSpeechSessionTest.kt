@@ -198,12 +198,15 @@ class MixedSpeechSessionTest {
                         ),
                     )
                 repository.addService("fixture", baseUrl)
-                repository.updateVoiceSetup {
+                repository.updateSavedVoiceSetup(null) {
                     it.copy(
-                        mode = VoiceSetupMode.SEPARATE_STAGES,
-                        recognition = recognition,
-                        speech = speech,
-                        languageModel = VoiceLanguageModel.GATEWAY,
+                        preference =
+                            it.preference.copy(
+                                mode = VoiceSetupMode.SEPARATE_STAGES,
+                                recognition = recognition,
+                                speech = speech,
+                                languageModel = VoiceLanguageModel.GATEWAY,
+                            ),
                     )
                 }
                 repository.settings.first {

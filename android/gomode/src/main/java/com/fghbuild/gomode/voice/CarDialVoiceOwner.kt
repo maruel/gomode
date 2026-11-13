@@ -93,9 +93,9 @@ internal data class CarDialVoiceState(
 
 private class CarDialRequest(
     val server: ServiceInstance,
-    val expiresAt: Long = SystemClock.elapsedRealtime() + 10_000,
-    val identity: String = UUID.randomUUID().toString(),
 ) {
+    val expiresAt = SystemClock.elapsedRealtime() + 10_000
+    val identity = UUID.randomUUID().toString()
     var activity: Any? = null
     var starting = false
 }

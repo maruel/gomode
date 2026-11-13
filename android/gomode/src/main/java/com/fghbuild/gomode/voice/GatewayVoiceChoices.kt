@@ -9,7 +9,8 @@
 // the transport's advertised default, then the first compatible choice; a removed saved choice, a
 // choice without the selected stage owners, or a removed saved speech model blocks connecting until
 // the user picks another. Composable choices resolve each gateway stage's model, the first listed
-// by default. SettingsRepository documents the mode that follows the gateway's choice.
+// by default. SettingsRepository documents the mode that follows the gateway's choice; explicit
+// shows it as the setup it resolves to, which settings save on the first explicit edit.
 //
 // Connecting pins the resolved choice, stage owners, and speech models per session; recovery keeps
 // them and fails when the gateway withdrew one. Speaking voices are saved per
@@ -20,6 +21,7 @@
 package com.fghbuild.gomode.voice
 
 import com.fghbuild.gomode.data.GatewayVoiceSetup
+import com.fghbuild.gomode.data.SavedVoiceSetup
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
@@ -27,6 +29,7 @@ import com.fghbuild.gomode.data.SpeechStage
 import com.fghbuild.gomode.data.SpeechStageLocation
 import com.fghbuild.gomode.data.VoiceLanguageModel
 import com.fghbuild.gomode.data.VoiceSetupMode
+import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.sdk.v1.Settings
 import com.fghbuild.gomode.service.credentialedHTTPClient
 import com.fghbuild.gomode.service.isTransientHTTPStatus
@@ -200,7 +203,7 @@ internal data class GatewayVoiceChoices(
     /** Resolves the session selection, or checks that a pinned one is still available. */
     fun resolve(
         settings: SettingsState,
-        pinned: GatewayVoiceSelection? = null,
+        pinned: GatewayVoiceSelection?,
     ): GatewayVoiceSelection {
         if (pinned == null) {
             val setup = resolveSetup(settings)
@@ -242,15 +245,53 @@ internal data class GatewayVoiceChoices(
     /** Applies the saved setup to this catalog with the same rules as the web's _applySetup. */
     fun resolveSetup(settings: SettingsState): ResolvedVoiceSetup {
         requireLoadedVoiceSettings(settings)
-        val preference = settings.voiceSetup
+        return resolveSetup(settings.voiceSetup, savedSetup(settings))
+    }
+
+    /** This gateway's selections in [settings]. */
+    fun savedSetup(settings: SettingsState): GatewayVoiceSetup =
+        settings.gatewayVoiceSetups[SettingsRepository.normalizeURL(gatewayURL)] ?: GatewayVoiceSetup()
+
+    /** Resolves [preference] with this gateway's [saved] selections. */
+    fun resolveSetup(
+        preference: VoiceSetupPreference,
+        saved: GatewayVoiceSetup,
+    ): ResolvedVoiceSetup {
+        val choice = resolveChoice(preference, saved)
+        val recognition = preference.effectiveRecognition
+        val speech = preference.effectiveSpeech
+        val composable = choice.composable == true
+        return ResolvedVoiceSetup(
+            recognition = recognition,
+            speech = speech,
+            choice = choice,
+            recognitionModelID =
+                if (composable && recognition == SpeechStageLocation.GATEWAY) {
+                    resolveSpeechModel(catalog.recognitionModels.orEmpty(), saved, SpeechStage.RECOGNITION)
+                } else {
+                    null
+                },
+            synthesisModelID =
+                if (composable && speech == SpeechStageLocation.GATEWAY) {
+                    resolveSpeechModel(catalog.synthesisModels.orEmpty(), saved, SpeechStage.SYNTHESIS)
+                } else {
+                    null
+                },
+        )
+    }
+
+    /** The choice [preference] runs with this gateway's [saved] selections, before its speech models. */
+    fun resolveChoice(
+        preference: VoiceSetupPreference,
+        saved: GatewayVoiceSetup,
+    ): VoiceChoice {
         check(preference.effectiveLanguageModel == VoiceLanguageModel.GATEWAY) {
             "The language model runs on this device"
         }
-        val saved = settings.gatewayVoiceSetups[SettingsRepository.normalizeURL(gatewayURL)] ?: GatewayVoiceSetup()
         val savedID = saved.choiceID(preference.mode)
         val kind =
             when (preference.mode) {
-                VoiceSetupMode.FOLLOW_GATEWAY -> followedKind(savedID ?: defaultChoiceID(VoiceTransport.WebRTC))
+                VoiceSetupMode.FOLLOW_GATEWAY -> followedKind(saved)
                 VoiceSetupMode.ALL_IN_ONE -> VoiceSetupKind.ALL_IN_ONE
                 VoiceSetupMode.SEPARATE_STAGES -> VoiceSetupKind.SEPARATE_STAGES
             }
@@ -275,28 +316,49 @@ internal data class GatewayVoiceChoices(
                 "This model does not support the selected recognition and speech. Choose another in Settings.",
             )
         }
-        val composable = choice.composable == true
-        return ResolvedVoiceSetup(
-            recognition = recognition,
-            speech = speech,
-            choice = choice,
-            recognitionModelID =
-                if (composable && recognition == SpeechStageLocation.GATEWAY) {
-                    resolveSpeechModel(catalog.recognitionModels.orEmpty(), saved, SpeechStage.RECOGNITION)
-                } else {
-                    null
-                },
-            synthesisModelID =
-                if (composable && speech == SpeechStageLocation.GATEWAY) {
-                    resolveSpeechModel(catalog.synthesisModels.orEmpty(), saved, SpeechStage.SYNTHESIS)
-                } else {
-                    null
-                },
+        return choice
+    }
+
+    /**
+     * The explicit setup that runs the same session as [saved]: following the gateway becomes
+     * all-in-one with the followed native audio choice, or separate gateway stages with the
+     * followed language model. A followed choice that does not resolve becomes the explicit choice,
+     * so the explicit setup fails the way the followed one does. Other setups are already explicit.
+     */
+    fun explicit(saved: SavedVoiceSetup): SavedVoiceSetup {
+        val preference = saved.preference
+        if (preference.mode != VoiceSetupMode.FOLLOW_GATEWAY) return saved
+        // An unresolvable followed choice moves to the explicit mode, whose resolution reports the same failure.
+        val choiceID =
+            try {
+                resolveChoice(preference, saved.gateway).id
+            } catch (_: VoiceSetupException) {
+                saved.gateway.followedChoiceID
+            }
+        val explicit =
+            when (followedKind(saved.gateway)) {
+                VoiceSetupKind.ALL_IN_ONE -> {
+                    preference.copy(mode = VoiceSetupMode.ALL_IN_ONE)
+                }
+
+                VoiceSetupKind.SEPARATE_STAGES -> {
+                    preference.copy(
+                        mode = VoiceSetupMode.SEPARATE_STAGES,
+                        recognition = SpeechStageLocation.GATEWAY,
+                        speech = SpeechStageLocation.GATEWAY,
+                        languageModel = VoiceLanguageModel.GATEWAY,
+                    )
+                }
+            }
+        return saved.copy(
+            preference = explicit,
+            gateway = choiceID?.let { saved.gateway.withChoice(explicit.mode, it) } ?: saved.gateway,
         )
     }
 
     // The followed choice selects the kind it belongs to; without language models, all-in-one applies.
-    private fun followedKind(choiceID: String?): VoiceSetupKind {
+    private fun followedKind(saved: GatewayVoiceSetup): VoiceSetupKind {
+        val choiceID = saved.followedChoiceID ?: defaultChoiceID(VoiceTransport.WebRTC)
         val candidate = choices.firstOrNull { it.id == choiceID }
         return if ((candidate != null && nativeVoiceChoice(candidate)) ||
             setupChoices(VoiceSetupKind.SEPARATE_STAGES).isEmpty()
@@ -363,13 +425,15 @@ internal fun resolveSpeechModel(
         if (models.none { it.id == selected }) {
             throw VoiceSetupException(
                 "The selected $label model is unavailable. Choose another $label model in Settings.",
+                stage,
             )
         }
         return selected
     }
     return models.firstOrNull()?.id
         ?: throw VoiceSetupException(
-            "The gateway has no $label models. Choose device $label or an all-in-one model in Settings.",
+            "The gateway has no $label models. Choose Local for $label, or an all-in-one model in Settings.",
+            stage,
         )
 }
 

@@ -4,8 +4,6 @@ package com.fghbuild.gomode.ui.settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,18 +13,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -58,6 +51,8 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.testTagsAsResourceId
@@ -65,17 +60,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
-import com.fghbuild.gomode.data.LocalLlmModel
 import com.fghbuild.gomode.data.ServiceInstance
 import com.fghbuild.gomode.data.SettingsLoadState
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.data.SettingsState
-import com.fghbuild.gomode.data.SpeechStageLocation
-import com.fghbuild.gomode.data.VoiceLanguageModel
-import com.fghbuild.gomode.data.VoiceSetupMode
-import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.voice.AndroidThinkingEarcon
-import com.fghbuild.gomode.voice.usesGatewayVoice
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
@@ -152,38 +141,25 @@ internal fun SettingsScreen(
                 Text(it, modifier = Modifier.testTag("gomode-settings-error"))
             }
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Voice", style = MaterialTheme.typography.titleMedium)
+                SectionHeading("Voice")
                 if (voiceSessionActive) Text("End the voice session to change voice settings.")
-                VoiceModeSetting(settings.voiceSetup, settingsRepository, enabled = !voiceSessionActive)
-                if (settings.voiceSetup.deviceSpeech) {
-                    val languageModel = settings.voiceSetup.languageModel
-                    OnDeviceEngineSetting(languageModel, settingsRepository, enabled = !voiceSessionActive)
-                    if (languageModel == VoiceLanguageModel.LOCAL_LLM) {
-                        LocalLlmModelSetting(settings.localLlmModel, settingsRepository, enabled = !voiceSessionActive)
-                        ModelDownloadSetting(settings.localLlmModel, enabled = !voiceSessionActive)
-                    }
-                }
-                if (settings.activeServiceURL.isNotBlank() && usesGatewayVoice(settings)) {
-                    VoiceChoiceSetting(
-                        settings,
-                        settingsRepository,
-                        !voiceSessionActive,
-                        bearerTokenFor,
-                        bearerToken,
-                        authEpoch,
-                    )
-                }
-                if (settings.voiceSetup.effectiveSpeech == SpeechStageLocation.DEVICE) {
-                    DeviceSpeechRateSetting(
-                        settings.voiceSetup.deviceSpeechRate,
-                        settingsRepository,
-                        enabled = !voiceSessionActive && settings.loadState == SettingsLoadState.Ready,
-                    )
-                }
+                VoiceSetupSetting(
+                    settings,
+                    settingsRepository,
+                    !voiceSessionActive,
+                    bearerTokenFor,
+                    bearerToken,
+                    authEpoch,
+                )
                 VoiceLanguageSetting(
                     edits,
                     enabled = !voiceSessionActive && settings.loadState == SettingsLoadState.Ready,
                 )
+                VoiceErrorDiagnosticsSetting()
+            }
+            HorizontalDivider()
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                SectionHeading("Display")
                 ListItem(
                     modifier =
                         Modifier.testTag("gomode-show-reasoning").toggleable(
@@ -218,7 +194,6 @@ internal fun SettingsScreen(
                         )
                     },
                 )
-                VoiceErrorDiagnosticsSetting()
             }
             HorizontalDivider()
             CarDialSetting(settings, enabled = !voiceSessionActive)
@@ -326,106 +301,10 @@ private fun ThinkingMusicPreview(enabled: Boolean) {
     if (failed) Text("Could not play thinking music.", color = MaterialTheme.colorScheme.error)
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun VoiceModeSetting(
-    setup: VoiceSetupPreference,
-    repository: SettingsRepository,
-    enabled: Boolean,
-) {
-    val scope = rememberCoroutineScope()
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("Mode", style = MaterialTheme.typography.labelLarge)
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            FilterChip(
-                // Gateway speech follows the selected gateway choice: all-in-one or separate stages.
-                selected = !setup.deviceSpeech,
-                onClick = {
-                    scope.launch { repository.updateVoiceSetup { it.copy(mode = VoiceSetupMode.FOLLOW_GATEWAY) } }
-                },
-                enabled = enabled,
-                label = { Text("Cloud voice") },
-                modifier = Modifier.testTag("gomode-voice-mode-cloud"),
-            )
-            FilterChip(
-                selected = setup.deviceSpeech,
-                onClick = { scope.launch { repository.updateVoiceSetup(VoiceSetupPreference::withDeviceSpeech) } },
-                enabled = enabled,
-                label = { Text("On-device voice") },
-                modifier = Modifier.testTag("gomode-voice-mode-device"),
-            )
-        }
-    }
+private fun SectionHeading(text: String) {
+    Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
 }
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun LocalLlmModelSetting(
-    model: LocalLlmModel,
-    repository: SettingsRepository,
-    enabled: Boolean,
-) {
-    val scope = rememberCoroutineScope()
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("Model", style = MaterialTheme.typography.labelLarge)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            LocalLlmModel.entries.forEach { choice ->
-                FilterChip(
-                    selected = model == choice,
-                    onClick = { scope.launch { repository.updateLocalLlmModel(choice) } },
-                    enabled = enabled,
-                    label = { Text(choice.label) },
-                    modifier = Modifier.testTag("gomode-model-${choice.name}"),
-                )
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun OnDeviceEngineSetting(
-    engine: VoiceLanguageModel,
-    repository: SettingsRepository,
-    enabled: Boolean,
-) {
-    val scope = rememberCoroutineScope()
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("Engine", style = MaterialTheme.typography.labelLarge)
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            FilterChip(
-                selected = engine == VoiceLanguageModel.GATEWAY,
-                onClick = { scope.launch { repository.updateLanguageModel(VoiceLanguageModel.GATEWAY) } },
-                enabled = enabled,
-                label = { Text("Remote LLM") },
-                modifier = Modifier.testTag("gomode-engine-remote-gateway"),
-            )
-            FilterChip(
-                selected = engine == VoiceLanguageModel.LOCAL_LLM,
-                onClick = { scope.launch { repository.updateLanguageModel(VoiceLanguageModel.LOCAL_LLM) } },
-                enabled = enabled,
-                label = { Text("Local LLM") },
-                modifier = Modifier.testTag("gomode-engine-local-llm"),
-            )
-            FilterChip(
-                selected = engine == VoiceLanguageModel.NEEDLE_WHISTLE,
-                onClick = { scope.launch { repository.updateLanguageModel(VoiceLanguageModel.NEEDLE_WHISTLE) } },
-                enabled = enabled,
-                label = { Text("Whistle + Needle") },
-                modifier = Modifier.testTag("gomode-engine-needle-whistle"),
-            )
-        }
-    }
-}
-
-private suspend fun SettingsRepository.updateLanguageModel(model: VoiceLanguageModel) =
-    updateVoiceSetup { it.withDeviceSpeech().copy(languageModel = model) }
 
 @Composable
 private fun VoiceLanguageSetting(
@@ -433,14 +312,19 @@ private fun VoiceLanguageSetting(
     enabled: Boolean,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("Language", style = MaterialTheme.typography.labelLarge)
+        Text("Voice language", style = MaterialTheme.typography.labelLarge)
         OutlinedTextField(
             value = edits.language,
             onValueChange = { edits.language = it },
-            modifier = Modifier.fillMaxWidth().testTag("gomode-voice-language"),
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    // The visible label sits above the field, outside its semantics.
+                    .semantics { contentDescription = "Voice language" }
+                    .testTag("gomode-voice-language"),
             singleLine = true,
-            label = { Text("Language tag") },
-            supportingText = { Text("English (US): en-US. Sets device speech and assistant reply language.") },
+            placeholder = { Text("en-US") },
+            supportingText = { Text("Applies to recognition, speech, and replies.") },
             isError = edits.normalizedLanguage == null,
             enabled = enabled,
         )

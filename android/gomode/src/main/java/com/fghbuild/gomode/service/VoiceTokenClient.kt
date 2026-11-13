@@ -17,7 +17,7 @@ class VoiceTokenClient {
     suspend fun fetch(
         endpointURL: String,
         cookie: String?,
-        bearerToken: String? = null,
+        bearerToken: String?,
     ): ServiceAuthorization =
         withContext(Dispatchers.IO) {
             val request =

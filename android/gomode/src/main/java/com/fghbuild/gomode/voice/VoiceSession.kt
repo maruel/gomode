@@ -212,8 +212,7 @@ internal fun recoveryDelayMs(state: PeerConnection.IceConnectionState): Long =
 internal class VoiceRecoveryPolicy {
     private var pending = false
     private var lostAtMillis: Long? = null
-    var attempts = 0
-        private set
+    private var attempts = 0
 
     val recovering: Boolean get() = lostAtMillis != null
 
@@ -257,7 +256,6 @@ internal class VoiceSession(
     private val settingsRepository: SettingsRepository,
     private val voiceConversation: VoiceConversation,
     private val languageTag: String,
-    voiceChimePlayer: VoiceChimePlayer = AndroidVoiceChime(),
     private val callController: VoiceCallController = NoopVoiceCallController(),
     private val switchServer: suspend (String) -> Unit = { id -> settingsRepository.switchService(id) },
     private val startupTiming: () -> VoiceStartupTiming? = { null },
@@ -299,7 +297,7 @@ internal class VoiceSession(
     private val pendingGatewayTools = mutableMapOf<Long, Int>()
     private var awaitingGatewayTurn = false
     private val recoveryPolicy = VoiceRecoveryPolicy()
-    private val voiceModeChime = VoiceModeChime(voiceChimePlayer)
+    private val voiceModeChime = VoiceModeChime(AndroidVoiceChime())
     private val errorLog = (appContext.applicationContext as GoModeApplication).voiceErrors
     private var disconnectAudioAttempt: Long? = null
     private var recoveryContext = ""
@@ -1310,7 +1308,7 @@ internal class VoiceSession(
 
     private fun sendClientContent(
         text: String,
-        generate: Boolean = false,
+        generate: Boolean,
     ) {
         if (generate) {
             awaitingGatewayTurn = true
@@ -1535,9 +1533,8 @@ internal class VoiceSession(
     private fun handleReasoningDelta(msg: ReasoningDelta) {
         // Reasoning is display-only: it is never spoken or replayed as context.
         if (!settingsRepository.settings.value.showReasoning) return
-        val chunk = msg.text ?: return
         _state.update {
-            it.withTranscriptChunk(TranscriptSpeaker.ASSISTANT, chunk, TranscriptKind.REASONING, msg.responseID)
+            it.withTranscriptChunk(TranscriptSpeaker.ASSISTANT, msg.text, TranscriptKind.REASONING, msg.responseID)
         }
     }
 
@@ -1552,8 +1549,7 @@ internal class VoiceSession(
                 Speaker.Assistant -> TranscriptSpeaker.ASSISTANT
                 else -> return
             }
-        val chunk = msg.text ?: return
-        _state.update { it.withTranscriptChunk(speaker, chunk, responseID = msg.responseID) }
+        _state.update { it.withTranscriptChunk(speaker, msg.text, responseID = msg.responseID) }
     }
 
     // -----------------------------------------------------------------------
@@ -2240,9 +2236,9 @@ internal fun gatewayToolResult(
 internal fun List<TranscriptEntry>.appendChunk(
     speaker: TranscriptSpeaker,
     text: String,
-    kind: TranscriptKind = TranscriptKind.TRANSCRIPT,
-    responseID: String? = null,
-    responseUsage: TokenUsage? = null,
+    kind: TranscriptKind,
+    responseID: String?,
+    responseUsage: TokenUsage?,
 ): List<TranscriptEntry> {
     val id = responseID.takeIf { speaker == TranscriptSpeaker.ASSISTANT }
     val index =
