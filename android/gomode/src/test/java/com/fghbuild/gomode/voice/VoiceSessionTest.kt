@@ -225,6 +225,26 @@ class VoiceSessionTest {
     }
 
     @Test
+    fun describeICECandidateReportsProtocolTypeAndFamilyWithoutAddress() {
+        assertEquals(
+            "udp host ipv4 usable=true",
+            describeICECandidate("candidate:1 1 udp 2130706431 192.168.1.64 57033 typ host"),
+        )
+        assertEquals(
+            "udp host mdns usable=false",
+            describeICECandidate("candidate:2 1 udp 2130706431 0f1e2d3c.local 57033 typ host"),
+        )
+        assertEquals(
+            "udp host ipv4-link-local usable=false",
+            describeICECandidate("candidate:3 1 udp 2122260223 169.254.58.144 58981 typ host"),
+        )
+        assertEquals(
+            "udp srflx ipv6 usable=false",
+            describeICECandidate("candidate:4 1 udp 1686052607 2001:db8::1 9 typ srflx raddr :: rport 0"),
+        )
+    }
+
+    @Test
     fun summarizeSDPCandidatesReportsCandidateHostPortAndType() {
         val sdp =
             "v=0\r\n" +

@@ -343,7 +343,18 @@ def instrument(
             shell(adb, serial, "am", "force-stop", target)
             return
 
-    with (RESULTS / f"{name}.log").open("w") as log:
+    with contextlib.ExitStack() as stack:
+        log = stack.enter_context((RESULTS / f"{name}.log").open("w"))
+        if not discovery:
+            # The ring buffer holds seconds of a loaded emulator; stream the whole run so a
+            # failure in an early test keeps its evidence.
+            shell(adb, serial, "logcat", "-c")
+            logcat = stack.enter_context((RESULTS / f"{name}-logcat.log").open("w"))
+            reader = subprocess.Popen(
+                [adb, "-s", serial, "logcat", "-v", "threadtime"], stdout=logcat, stderr=subprocess.STDOUT
+            )
+            stack.callback(reader.wait)
+            stack.callback(reader.terminate)
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         monitor = threading.Thread(target=watchdog, daemon=True)
         monitor.start()
@@ -397,9 +408,6 @@ def instrument(
                         process.wait()
             if process.stdout is not None:
                 process.stdout.close()
-            if not discovery:
-                with (RESULTS / f"{name}-logcat.log").open("w") as logcat:
-                    subprocess.run([adb, "-s", serial, "logcat", "-d", "-t", "3000"], stdout=logcat, check=True)
     if timed_out is not None:
         tests.append(timed_out)
         failed = True

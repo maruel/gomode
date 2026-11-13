@@ -16,6 +16,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ApplicationInfo
 import android.media.AudioAttributes
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
@@ -94,6 +95,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.webrtc.DataChannel
 import org.webrtc.IceCandidate
+import org.webrtc.Logging
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
 import org.webrtc.MediaStreamTrack
@@ -173,6 +175,22 @@ internal fun voiceToolDeclarations(
 internal fun isUsableICECandidate(candidate: String): Boolean {
     val fields = candidate.trim().split(sdpWhitespaceRegex)
     return fields.size >= 8 && fields[2] == "udp" && isUsableIPv4(fields[4])
+}
+
+// Summarizes a gathered candidate for logs without its address or port.
+internal fun describeICECandidate(candidate: String): String {
+    val fields = candidate.trim().split(sdpWhitespaceRegex)
+    if (fields.size < 8) return "malformed usable=false"
+    val address = fields[4]
+    val family =
+        when {
+            address.endsWith(".local") -> "mdns"
+            address.startsWith("169.254.") -> "ipv4-link-local"
+            isUsableIPv4(address) -> "ipv4"
+            address.contains(':') -> "ipv6"
+            else -> "other"
+        }
+    return "${fields[2]} ${fields[7]} $family usable=${isUsableICECandidate(candidate)}"
 }
 
 private fun isUsableIPv4(address: String): Boolean {
@@ -513,6 +531,11 @@ internal class VoiceSession(
                                 .setEnableInternalTracer(false)
                                 .createInitializationOptions(),
                         )
+                        // Native logs name each enumerated network and candidate gathering error.
+                        val debuggable = appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+                        Logging.enableLogToDebugOutput(
+                            if (debuggable) Logging.Severity.LS_INFO else Logging.Severity.LS_WARNING,
+                        )
                         pcFactory =
                             PeerConnectionFactory
                                 .builder()
@@ -657,8 +680,14 @@ internal class VoiceSession(
                                             Log.i(TAG, "WebRTC signaling complete, session=${resp.sessionID}")
                                         } catch (e: TimeoutCancellationException) {
                                             // ICE gathering on a route that is still settling.
-                                            if (ownsAttempt(attempt) && preserveTranscript) {
-                                                retryRecovery("Network connection failed")
+                                            if (ownsAttempt(attempt)) {
+                                                Log.w(TAG, "No usable ICE candidate: $lastIceGatheringState", e)
+                                                if (preserveTranscript) {
+                                                    retryRecovery("Network connection failed")
+                                                } else {
+                                                    timing?.finish(VoiceStartupOutcome.TIMED_OUT)
+                                                    setError("Network connection failed: no usable route")
+                                                }
                                             }
                                             throw e
                                         } catch (e: CancellationException) {
@@ -753,6 +782,7 @@ internal class VoiceSession(
 
         override fun onIceCandidate(candidate: IceCandidate) {
             if (!ownsAttempt(attempt)) return
+            Log.i(TAG, "ICE candidate: ${describeICECandidate(candidate.sdp)}")
             if (isUsableICECandidate(candidate.sdp)) {
                 usableICECandidateWaiter?.complete(Unit)
             }
@@ -803,7 +833,14 @@ internal class VoiceSession(
 
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) {
             if (!ownsAttempt(attempt)) return
+            Log.i(TAG, "ICE gathering: $state")
             lastIceGatheringState = state.name.lowercase()
+            // Candidates arrive on this thread before COMPLETE, so an open waiter has no usable one.
+            if (state == PeerConnection.IceGatheringState.COMPLETE) {
+                usableICECandidateWaiter?.completeExceptionally(
+                    IllegalStateException("WebRTC ICE gathering completed without a usable candidate"),
+                )
+            }
         }
 
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) = Unit
@@ -1079,9 +1116,7 @@ internal class VoiceSession(
         pc: PeerConnection,
         candidate: CompletableDeferred<Unit>,
     ) {
-        if (!candidate.isCompleted && pc.iceGatheringState() == PeerConnection.IceGatheringState.COMPLETE) {
-            error("WebRTC ICE gathering completed without a usable candidate")
-        }
+        // The peer connection observer fails the waiter when gathering completes without one.
         withTimeout(ICE_GATHERING_TIMEOUT_MS) {
             candidate.await()
         }

@@ -82,7 +82,8 @@ class WebShellSmokeTest : GoModeE2eTestBase() {
 
         fun clickSystemText(text: String) {
             requireNotNull(device.wait(Until.findObject(By.text(text)), GOMODE_DEFAULT_TIMEOUT_MS)) {
-                "System settings did not show $text"
+                val shown = device.findObjects(By.text(Pattern.compile(".+"))).mapNotNull { it.text }
+                "System settings did not show $text in ${device.currentPackageName}; visible: $shown"
             }.click()
         }
         clickSystemText("Permissions")

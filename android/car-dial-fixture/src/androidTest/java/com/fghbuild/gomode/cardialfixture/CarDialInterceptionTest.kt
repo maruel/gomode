@@ -1034,17 +1034,19 @@ class CarDialInterceptionTest {
     // fixture recognizer never speaks. Both are gateway internals. Prefer user-visible evidence:
     // e.g. have FixtureSpeechRecognitionService return one utterance and assert its transcript and
     // reply appear in the voice panel, so the test covers a real exchange again.
-    // TODO: Find why voice setup sometimes misses its deadline in a full run.
-    // In one full `make android-e2e` run (39 Telecom tests), two tests failed:
-    // coldUnlockedDialShowsHostedServerAndControlsTheSameCall here, with
-    // "Voice controls did not connect: no status", and
-    // coldSecureKeyguardStartsRealTextVoiceAndEndsWithoutUnlocking, with
-    // textSetups 4 instead of 5 after its own 20 s wait. Both passed when run
-    // alone (`android_e2e.py --module telecom --class ...#method`) and in the
-    // next full run. Hypothesis, not confirmed: emulator load from earlier
-    // tests delays Telecom or the fixture gateway. Capture logcat and
-    // fixtureStats() at the failure, then wait on the missing event instead
-    // of a fixed budget, or fix the slow path it exposes.
+    // TODO: Find why WebRTC sometimes gathers no IPv4 candidate on the emulator.
+    // CI runs fail one CLOUD test with "Voice controls did not connect" in most
+    // runs, a different test each time. On a degraded local emulator, every
+    // CLOUD start logged only "ICE candidate: udp host ipv6" from
+    // GoModeVoiceSession, and libwebrtc's basic_port_allocator logged
+    // "Discarding candidate because it doesn't match filter" for the port it
+    // allocated on IPv4 wlan0. With CF_HOST set, its IsAllowedByCandidateFilter
+    // drops a host candidate only for an any-address, which implies the IPv4 socket
+    // reported 0.0.0.0. Cause not confirmed; a freshly booted emulator gathers
+    // IPv4 host and srflx candidates and passes. Read the native log
+    // (PhysicalSocket::Bind and AndroidNetworkMonitor::BindSocketToNetwork) of
+    // the failing test in the CI telecom-logcat.log artifact, then fix the
+    // binding or retry gathering on that network.
     private fun awaitVoice(
         mode: String,
         before: JSONObject,
@@ -1055,7 +1057,10 @@ class CarDialInterceptionTest {
         while (!voiceConnected() && System.nanoTime() < connectedDeadline) {
             Thread.sleep(100)
         }
-        assertTrue("Voice controls did not connect: ${voiceStatusText()}", voiceConnected())
+        if (!voiceConnected()) {
+            val status = voiceStatusText()
+            throw AssertionError("Voice controls did not connect: $status\n${voiceFailureDiagnostics(before)}")
+        }
         awaitMicrophoneForeground()
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
         var stats = fixtureStats()
@@ -1072,12 +1077,15 @@ class CarDialInterceptionTest {
                         stats.getInt("receiverReports") > before.getInt("receiverReports")
                 }
             if (complete) {
-                assertTwentyMillisecondMicFrames(stats)
+                // DEVICE mode has no RTC uplink; its frame counter holds only earlier sessions.
+                if (mode != "DEVICE") assertTwentyMillisecondMicFrames(stats)
                 return
             }
             Thread.sleep(100)
         }
-        throw AssertionError("No real $mode media/turn evidence: before=$before after=$stats")
+        throw AssertionError(
+            "No real $mode media/turn evidence: before=$before after=$stats\n${voiceFailureDiagnostics(before)}",
+        )
     }
 
     // The gateway's microphone clock and downlink budget assume 20ms uplink
@@ -1095,6 +1103,18 @@ class CarDialInterceptionTest {
 
     private fun voiceConnected(): Boolean =
         device.hasObject(By.res("car_dial_status").text("Voice connected")) || device.hasObject(By.desc("End voice"))
+
+    // Names the stage a voice start stopped at: the app's startup records and session
+    // log, the fixture counters, and Telecom's record of the latest call.
+    private fun voiceFailureDiagnostics(before: JSONObject): String {
+        val log =
+            shell(
+                "logcat -d -s GoModeCarDial:V GoModeVoiceStartup:V GoModeVoiceSession:V " +
+                    "GoModeDeviceVoice:V GoModeTelecom:V *:S",
+            )
+        val call = latestCallRecord(shell("dumpsys telecom")).take(4_000)
+        return "fixture before=$before\nfixture after=${fixtureStats()}\napp log:\n$log\nTelecom call:\n$call"
+    }
 
     private fun voiceStatusText(): String = device.findObject(By.res("car_dial_status"))?.text ?: "no status"
 
