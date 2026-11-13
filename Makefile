@@ -1,6 +1,6 @@
 # Build and verification targets for the standalone Go Mode contracts and shell.
 .DEFAULT_GOAL := help
-.PHONY: android-e2e android-e2e-ci android-lint android-push android-sdk android-start-emulator android-stop-emulator android-test benchmark build fix frontend-build git-hooks help release screenshots-generate screenshots-update test test-smoke upgrade verify
+.PHONY: android-e2e android-e2e-ci android-lint android-push android-sdk android-start-emulator android-stop-emulator android-test benchmark build fix frontend-build git-hooks help release screenshots-update test test-smoke upgrade verify
 
 # Keep local and CI release tooling on the same version.
 GORELEASER ?= go run github.com/goreleaser/goreleaser/v2@v2.20.0
@@ -148,8 +148,8 @@ android-e2e-ci:
 	@uv run --locked python scripts/android_start_emulator.py --auto-reuse
 	@uv run --locked python scripts/android_e2e.py --ci
 
-# Slow: runs the real app on the emulator. Generate renders once for CI; update
-# renders twice, requires matching passes, and publishes lossless WebP files.
-screenshots-generate screenshots-update: android-sdk
+# Slow: runs the real app on the emulator twice, requires matching passes, and
+# publishes lossless WebP files.
+screenshots-update: android-sdk
 	@uv run --locked python scripts/android_start_emulator.py --auto-reuse
-	@uv run --locked python scripts/android_screenshots.py $(subst screenshots-,,$@)
+	@uv run --locked python scripts/android_screenshots.py

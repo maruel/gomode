@@ -1,4 +1,4 @@
-# Build the Android shell and run model-free app, gateway, Telecom tests and documentation captures.
+# Build the Android shell and run model-free app, gateway, and Telecom tests.
 name: Android
 on:
   push:
@@ -12,7 +12,6 @@ on:
       - pyproject.toml
       - scripts/android*
       - scripts/run-concurrently.sh
-      - scripts/screenshot_publish.py
       - sdk/**
       - testdata/service-items/**
       - testdata/speech-text/**
@@ -56,10 +55,6 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - name: Run the CI subset of model-free Android tests
         run: make android-e2e-ci
-      - name: Install capture encoders
-        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
-      - name: Render native documentation scenes on the same emulator
-        run: make screenshots-generate
       - name: Upload Android results on failure
         if: failure()
         uses: actions/upload-artifact@v7
@@ -77,6 +72,5 @@ jobs:
             android/gomode/build/outputs/androidTest-results/connected/
             android/gomode/build/outputs/model-free-tests/
             /tmp/gomode_test_stock-emulator.log
-            android-screenshots-failures/
           if-no-files-found: ignore
           retention-days: 7

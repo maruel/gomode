@@ -4,8 +4,8 @@
 The runner renders the real Go Mode app twice against a host-neutral demo,
 compares decoded pixels, then publishes lossless WebP images.
 scripts/publish_screenshots.py copies them into the websites without Gradle or an emulator.
-The emulator must use the en-US display locale. `make screenshots-update`
-publishes the captures; CI runs `make screenshots-generate`, which renders once.
+The emulator must use the en-US display locale. Run through
+`make screenshots-update`.
 """
 
 import argparse
@@ -233,23 +233,20 @@ def validate_previous_android_images(directory: pathlib.Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("generate", "update"))
-    args = parser.parse_args()
+    argparse.ArgumentParser(description=__doc__).parse_args()
     for executable in ("ffmpeg", "ffprobe"):
         if shutil.which(executable) is None:
             raise RuntimeError(f"{executable} is required for Android screenshots")
     with publication_lock(ROOT, PUBLISHED, "capture"):
-        return _capture(args.mode)
+        return _capture()
 
 
-def _capture(mode: str) -> int:
+def _capture() -> int:
     """Own selection, fixture/device mutations, publication and restoration under the run lock."""
     adb = adb_path()
     serial = selected_device_serial(adb)
     require_emulator(adb, serial)
-    if mode == "update":
-        recover_images(ROOT, PUBLISHED, validate_previous_android_images)
+    recover_images(ROOT, PUBLISHED, validate_previous_android_images)
     demo_state, overlay_list = wait_for_capture_services(adb, serial)
     incompatible_overlays = {
         "[x] com.android.internal.emulation.pixel_6",
@@ -298,29 +295,27 @@ def _capture(mode: str) -> int:
                 raise RuntimeError(
                     f"Measured SystemUI inset {status_height}px disagrees with the {STATUS_BAR_HEIGHT_PX}px profile"
                 )
-            if mode != "generate":
-                render(second, serial, adb, hidden_icons)
-                try:
-                    compare(first, second, status_height)
-                except RuntimeError:
-                    if FAILURES.exists():
-                        shutil.rmtree(FAILURES)
-                    shutil.copytree(first, FAILURES / "first")
-                    shutil.copytree(second, FAILURES / "second")
-                    print(f"Failed captures preserved at {FAILURES}", file=sys.stderr)
-                    raise
+            render(second, serial, adb, hidden_icons)
+            try:
+                compare(first, second, status_height)
+            except RuntimeError:
+                if FAILURES.exists():
+                    shutil.rmtree(FAILURES)
+                shutil.copytree(first, FAILURES / "first")
+                shutil.copytree(second, FAILURES / "second")
+                print(f"Failed captures preserved at {FAILURES}", file=sys.stderr)
+                raise
             output = work / "published"
             output.mkdir()
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 list(executor.map(lambda name: encode(first, output, name), SCENARIOS))
-            if mode == "update":
-                publish_images(
-                    output,
-                    ROOT,
-                    PUBLISHED,
-                    lambda staged: validate_android_images(staged, EXPECTED_FILES),
-                    validate_previous_android_images,
-                )
+            publish_images(
+                output,
+                ROOT,
+                PUBLISHED,
+                lambda staged: validate_android_images(staged, EXPECTED_FILES),
+                validate_previous_android_images,
+            )
     finally:
         broadcast_demo(adb, serial, "exit")
         for key, value in original_secure.items():
@@ -333,7 +328,7 @@ def _capture(mode: str) -> int:
                 adb_command(adb, serial, "shell", "settings", "delete", "global", key)
             else:
                 adb_command(adb, serial, "shell", "settings", "put", "global", key, value)
-    print(f"Android screenshots {mode} completed in {time.monotonic() - started:.2f}s")
+    print(f"Android screenshots update completed in {time.monotonic() - started:.2f}s")
     return 0
 
 
