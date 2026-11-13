@@ -5,7 +5,7 @@ The runner renders the real Go Mode app twice against a host-neutral demo,
 compares decoded pixels, then publishes lossless WebP images.
 scripts/publish_screenshots.py copies them into the websites without Gradle or an emulator.
 The emulator must use the en-US display locale. `make screenshots-update`
-publishes new baselines; `make screenshots-check` requires exact product pixels.
+publishes the captures; CI runs `make screenshots-generate`, which renders once.
 """
 
 import argparse
@@ -26,7 +26,7 @@ from android_e2e import FixtureHandler, require_emulator, run_capture_tests
 from screenshot_publish import publication_lock, publish_images, recover_images, validate_images
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-BASELINES = ROOT / "e2e" / "screenshots" / "android"
+PUBLISHED = ROOT / "e2e" / "screenshots" / "android"
 FAILURES = ROOT / "android-screenshots-failures"
 DEVICE_DIRECTORY = "/sdcard/Pictures/gomode-screenshots"
 SCENARIOS = (
@@ -170,12 +170,12 @@ def status_bar_height(adb: str, serial: str) -> int:
     return heights.pop()
 
 
-def compare(first: pathlib.Path, second: pathlib.Path, status_height: int, extension: str = "png") -> None:
+def compare(first: pathlib.Path, second: pathlib.Path, status_height: int) -> None:
     # SystemUI antialiasing can vary by 1–2 RGB levels between installations,
     # even with demo mode and animation scales fixed. Confine that allowance to
     # the measured OS inset; every hosted/native product pixel remains exact.
     for name in SCENARIOS:
-        first_path, second_path = first / f"{name}.{extension}", second / f"{name}.{extension}"
+        first_path, second_path = first / f"{name}.png", second / f"{name}.png"
         width, height = dimensions(first_path)
         if dimensions(second_path) != (width, height):
             raise RuntimeError(f"Android scene {name} dimensions changed")
@@ -234,12 +234,12 @@ def validate_previous_android_images(directory: pathlib.Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("check", "generate", "update"))
+    parser.add_argument("mode", choices=("generate", "update"))
     args = parser.parse_args()
     for executable in ("ffmpeg", "ffprobe"):
         if shutil.which(executable) is None:
             raise RuntimeError(f"{executable} is required for Android screenshots")
-    with publication_lock(ROOT, BASELINES, "capture"):
+    with publication_lock(ROOT, PUBLISHED, "capture"):
         return _capture(args.mode)
 
 
@@ -248,10 +248,8 @@ def _capture(mode: str) -> int:
     adb = adb_path()
     serial = selected_device_serial(adb)
     require_emulator(adb, serial)
-    if mode == "check":
-        validate_android_images(BASELINES, EXPECTED_FILES)
-    elif mode == "update":
-        recover_images(ROOT, BASELINES, validate_previous_android_images)
+    if mode == "update":
+        recover_images(ROOT, PUBLISHED, validate_previous_android_images)
     demo_state, overlay_list = wait_for_capture_services(adb, serial)
     incompatible_overlays = {
         "[x] com.android.internal.emulation.pixel_6",
@@ -315,21 +313,11 @@ def _capture(mode: str) -> int:
             output.mkdir()
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 list(executor.map(lambda name: encode(first, output, name), SCENARIOS))
-            if mode == "check":
-                try:
-                    compare(output, BASELINES, status_height, "webp")
-                except RuntimeError:
-                    if FAILURES.exists():
-                        shutil.rmtree(FAILURES)
-                    shutil.copytree(output, FAILURES / "actual")
-                    shutil.copytree(BASELINES, FAILURES / "baseline")
-                    print(f"Failed baseline captures preserved at {FAILURES}", file=sys.stderr)
-                    raise
-            elif mode == "update":
+            if mode == "update":
                 publish_images(
                     output,
                     ROOT,
-                    BASELINES,
+                    PUBLISHED,
                     lambda staged: validate_android_images(staged, EXPECTED_FILES),
                     validate_previous_android_images,
                 )

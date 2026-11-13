@@ -203,7 +203,7 @@ def main() -> int:
             else:
                 print(f"Skipping missing {context}K export: {directory}", flush=True)
         if not output_dirs:
-            parser.error("no completed 32K or 64K exports found; run make android-export-lfm first")
+            parser.error("no completed 32K or 64K exports found; run scripts/export_lfm_litert.py first")
     # Validate every local release before authentication or any upload.
     releases = []
     for output_dir in output_dirs:

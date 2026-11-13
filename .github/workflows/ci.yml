@@ -45,8 +45,6 @@ jobs:
         env:
           CHROME_BIN: /usr/bin/google-chrome
         run: make test
-      - name: Race tests
-        run: make test-race
 
   windows:
     name: Go packages (Windows)

@@ -15,8 +15,8 @@ or a host contract changes. Document contracts and internals in comments beside
 the owning source. `docs/` holds only implementation plans, unbuilt designs,
 and research notes.
 
-Use `make fix`, `make verify`, `make test`, and `make test-race` after changes. Regenerate SDKs
-with `make generate-sdks` after DTO or route changes. `make android-test` builds
+Use `make fix`, `make verify`, and `make test` after changes.
+`make fix` also regenerates SDKs after DTO or route changes. `make android-test` builds
 the Android app and SDKs, compiles instrumented tests, and runs build-dependent
 lint, unit tests, and coverage.
 

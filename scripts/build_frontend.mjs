@@ -90,7 +90,7 @@ if (args[0] === "--write") {
   }
   for (const [name, body] of compressed) {
     if (!existing.delete(name) || !body.equals(await readFile(path.join(output, name))))
-      throw new Error("Embedded frontend is stale; run make frontend-build");
+      throw new Error("Embedded frontend is stale; run make fix");
   }
-  if (existing.size) throw new Error("Embedded frontend has obsolete files; run make frontend-build");
+  if (existing.size) throw new Error("Embedded frontend has obsolete files; run make fix");
 }

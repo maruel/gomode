@@ -26,7 +26,7 @@
 #
 # Maintainers export and publish the LFM3 bundles that Android downloads:
 #
-#   make android-export-lfm
+#   uv run --locked --script scripts/export_lfm_litert.py
 #   uv run --locked --script scripts/upload_lfm_litert.py
 #
 # The exporter skips existing bundles in models/lfm3-1.7b-int8-32k-fp16 and

@@ -3,7 +3,7 @@ package frontend
 
 import "embed"
 
-// Files contains only precompressed production assets. Regenerate with make frontend-build.
+// Files contains only precompressed production assets. Regenerate with make fix.
 //
 //go:embed dist
 var Files embed.FS

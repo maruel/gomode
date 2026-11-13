@@ -60,7 +60,7 @@ func run() error {
 			return err
 		}
 		if !bytes.Equal(data, []byte(policy.Instructions)) {
-			return fmt.Errorf("%s is stale; run make generate-sdks", destination)
+			return fmt.Errorf("%s is stale; run make fix", destination)
 		}
 		return nil
 	}

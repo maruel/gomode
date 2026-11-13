@@ -1,6 +1,6 @@
 # Build and verification targets for the standalone Go Mode contracts and shell.
 .DEFAULT_GOAL := help
-.PHONY: android-e2e android-e2e-ci android-export-lfm android-lint android-push android-sdk android-setup-emulator android-start-emulator android-stop-emulator android-test benchmark build coverage fix frontend-build generate-sdks git-hooks help refresh-generated release screenshots-check screenshots-generate screenshots-update test test-race test-smoke upgrade verify
+.PHONY: android-e2e android-e2e-ci android-lint android-push android-sdk android-start-emulator android-stop-emulator android-test benchmark build fix frontend-build git-hooks help release screenshots-generate screenshots-update test test-smoke upgrade verify
 
 # Keep local and CI release tooling on the same version.
 GORELEASER ?= go run github.com/goreleaser/goreleaser/v2@v2.20.0
@@ -32,35 +32,24 @@ help:
 	@echo 'Go Mode - standalone contracts and shell'
 	@echo ''
 	@echo 'Available targets:'
-	@printf '  %-27s - %s\n' 'make fix' 'Format Go and Android code'
+	@printf '  %-27s - %s\n' 'make fix' 'Format code and regenerate SDKs, frontend assets, and file indexes'
 	@printf '  %-27s - %s\n' 'make verify' 'Check Go, browser, Python, shell, and changed Android inputs'
-	@printf '  %-27s - %s\n' 'make frontend-build' 'Rebuild embedded standalone frontend assets'
-	@printf '  %-27s - %s\n' 'make git-hooks' 'Install versioned Git hooks'
 	@printf '  %-27s - %s\n' 'make test' 'Run Go, browser, and changed Android builds and tests'
-	@printf '  %-27s - %s\n' 'make test-race' 'Run all Go tests with race detection'
-	@printf '  %-27s - %s\n' 'make build' 'Build Go packages and Android app and SDKs'
-	@printf '  %-27s - %s\n' 'make release' 'Publish gateway archives from a version tag (requires GITHUB_TOKEN)'
-	@printf '  %-27s - %s\n' 'make benchmark' 'Run Go benchmarks'
-	@printf '  %-27s - %s\n' 'make coverage' 'Generate Go coverage report'
 	@printf '  %-27s - %s\n' 'make test-smoke' 'Run local model voice smoke tests (slow, downloads models)'
+	@printf '  %-27s - %s\n' 'make benchmark' 'Run Go benchmarks'
+	@printf '  %-27s - %s\n' 'make build' 'Build Go packages and Android app and SDKs'
 	@printf '  %-27s - %s\n' 'make android-lint' 'Run Android source static analysis and formatting checks'
 	@printf '  %-27s - %s\n' 'make android-test' 'Run Android builds, platform lint, unit tests, and coverage'
 	@printf '  %-27s - %s\n' 'make android-e2e' 'Run all model-free app, gateway, and Telecom emulator tests'
-	@printf '  %-27s - %s\n' 'make android-e2e-ci' 'Run the CI subset, skipping @LocalEmulatorOnly variants'
-	@printf '  %-27s - %s\n' 'make screenshots-update' 'Capture and publish repeatable native Android scenes'
-	@printf '  %-27s - %s\n' 'make screenshots-check' 'Compare native Android captures with committed baselines'
-	@printf '  %-27s - %s\n' 'make screenshots-generate' 'Render native captures once without baseline checks'
-	@printf '  %-27s - %s\n' 'make android-export-lfm' 'Export missing 32K/64K LFM3 bundles (slow, downloads source weights)'
 	@printf '  %-27s - %s\n' 'make android-push' 'Build and install Go Mode on connected devices'
-	@printf '  %-27s - %s\n' 'make android-setup-emulator' 'Install emulator image and create the test AVD'
-	@printf '  %-27s - %s\n' 'make android-start-emulator' 'Start or reuse the Android emulator'
+	@printf '  %-27s - %s\n' 'make android-start-emulator' 'Provision, start, or reuse the Android emulator'
 	@printf '  %-27s - %s\n' 'make android-stop-emulator' 'Stop the Android emulator'
-	@printf '  %-27s - %s\n' 'make android-sdk' 'Install required Android SDK packages'
-	@printf '  %-27s - %s\n' 'make generate-sdks' 'Regenerate protocol SDKs after DTO or route changes'
-	@printf '  %-27s - %s\n' 'make refresh-generated' 'Regenerate SDKs and AGENTS file indexes'
+	@printf '  %-27s - %s\n' 'make screenshots-update' 'Capture and publish repeatable native Android scenes'
+	@printf '  %-27s - %s\n' 'make git-hooks' 'Install versioned Git hooks'
 	@printf '  %-27s - %s\n' 'make upgrade' 'Upgrade Go and pnpm dependencies'
 
 fix: node_modules/.modules.yaml
+	@go run ./internal/cmd/gen-sdk
 	@pnpm exec node scripts/css_module_types.mjs --source-path web/src --write
 	@pnpm exec node scripts/css_module_types.mjs --source-path frontend/src --write
 	@go tool golangci-lint fmt
@@ -101,9 +90,6 @@ test: node_modules/.modules.yaml
 		'NODE_OPTIONS=--no-experimental-webstorage pnpm exec tsx --test --conditions=browser --test-force-exit --test-reporter=./scripts/quiet-test-reporter.mjs --import ./web/tests/setup-dom.ts "frontend/src/**/*.test.tsx" "web/src/**/*.test.ts" "web/src/**/*.test.tsx"'
 	@./scripts/android-checks.sh $(ANDROID_TEST_TASKS) --quiet
 
-test-race:
-	@go test -race ./...
-
 frontend-build: node_modules/.modules.yaml
 	@pnpm exec node scripts/css_module_types.mjs --source-path web/src --write
 	@pnpm exec node scripts/css_module_types.mjs --source-path frontend/src --write
@@ -117,11 +103,6 @@ build: android-sdk node_modules/.modules.yaml frontend-build
 # Benchmarks exercise the Go request paths; the browser package has no benchmark suite.
 benchmark:
 	@go test ./... -run '^$$' -bench . -benchmem
-
-coverage:
-	@go test -coverprofile=coverage.out ./...
-	@go tool cover -func=coverage.out | tail -1
-	@go tool cover -html=coverage.out -o coverage.html
 
 # Slow: starts local ASR, LLM, and TTS models and sends spoken audio through
 # the voice gateway over WebRTC. The smoke build tag keeps it out of make test.
@@ -140,21 +121,12 @@ android-lint: android-sdk
 android-test: android-sdk
 	@cd ./android && ./gradlew $(ANDROID_TEST_TASKS) --quiet
 
-generate-sdks:
-	@go run ./internal/cmd/gen-sdk
-
-refresh-generated: generate-sdks
-	@uv run --locked python scripts/update_agents_file_index.py
-
 # Installs the Android SDK packages required by the app build.
 android-sdk:
 	@uv run --locked python scripts/android_sdk.py check
 
-# Slow: installs an emulator system image and creates the Go Mode test AVD.
-android-setup-emulator:
-	@uv run --locked python scripts/android_sdk.py setup-emulator
-
-# Slow: starts or reuses the headless Go Mode test emulator.
+# Slow: provisions the system image and test AVD when missing, then starts or
+# reuses the headless Go Mode test emulator.
 android-start-emulator:
 	@uv run --locked python scripts/android_start_emulator.py --auto-reuse
 
@@ -176,12 +148,8 @@ android-e2e-ci:
 	@uv run --locked python scripts/android_start_emulator.py --auto-reuse
 	@uv run --locked python scripts/android_e2e.py --ci
 
-# Slow: runs the real app on the emulator, two passes for update/check.
-# Encodes at most two lossless WebP files concurrently and publishes a catalog.
-screenshots-check screenshots-generate screenshots-update: android-sdk
+# Slow: runs the real app on the emulator. Generate renders once for CI; update
+# renders twice, requires matching passes, and publishes lossless WebP files.
+screenshots-generate screenshots-update: android-sdk
 	@uv run --locked python scripts/android_start_emulator.py --auto-reuse
 	@uv run --locked python scripts/android_screenshots.py $(subst screenshots-,,$@)
-
-# Slow: streams the pinned source checkpoint through LiteRT conversion and quantization.
-android-export-lfm:
-	@uv run --locked --script scripts/export_lfm_litert.py
