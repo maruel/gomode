@@ -261,7 +261,9 @@ internal class VoiceSession(
     private val startupTiming: () -> VoiceStartupTiming? = { null },
     private val thinkingEarcon: ThinkingEarcon = AndroidThinkingEarcon(appContext),
     private val createDeviceSpeech: () -> DeviceSpeech = {
-        AndroidDeviceSpeech(appContext, languageTag, settingsRepository.settings.value.voiceSetup.deviceSpeechRate)
+        settingsRepository.settings.value.voiceSetup.let {
+            AndroidDeviceSpeech(appContext, languageTag, it.deviceSpeechVoice, it.deviceSpeechRate)
+        }
     },
 ) : VoiceSessionController {
     private val foreground = VoiceForegroundLease(appContext)

@@ -3,6 +3,8 @@ package com.fghbuild.gomode
 
 import android.Manifest
 import android.os.Environment
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.isEnabled
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
@@ -88,8 +90,28 @@ class GoModeDocumentationScreenshotsTest : GoModeE2eTestBase() {
         }
         capture(device, directory, "connections")
 
+        // Both segments stay disabled until the gateway's choices load. The browser preview
+        // captures the same setup: gateway recognition and language model, then local speech.
+        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+            composeRule
+                .onAllNodes(hasTestTag("gomode-voice-setup-separate-stages") and isEnabled())
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
         composeRule.onNodeWithTag("gomode-voice-setup-separate-stages").performScrollTo().performClick()
-        composeRule.onNodeWithTag("gomode-voice-language").performScrollTo()
+        composeRule.onNodeWithTag("gomode-speech").performScrollTo().performClick()
+        composeRule.onNodeWithTag("gomode-speech-device").performClick()
+        // The speaking-voice picker enables once the TextToSpeech engine lists its voices.
+        composeRule.waitUntil(GOMODE_DEFAULT_TIMEOUT_MS) {
+            composeRule
+                .onAllNodes(hasTestTag("gomode-device-speaking-voice") and isEnabled())
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        // The closed menu's anchor keeps focus; capture the resting outline instead.
+        composeRule.runOnUiThread { composeRule.activity.currentFocus?.clearFocus() }
+        // Show the setup through the Display switches, as the browser capture does.
+        composeRule.onNodeWithTag("gomode-show-usage-stats").performScrollTo()
         capture(device, directory, "voice-settings")
 
         composeRule.onNodeWithTag("gomode-manage-halo").performScrollTo().performClick()

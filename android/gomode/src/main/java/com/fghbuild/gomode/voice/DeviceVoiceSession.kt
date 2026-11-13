@@ -121,7 +121,9 @@ internal class DeviceVoiceSession(
     private val languageTag: String,
     private val localModelOwner: LocalModelOwner = (appContext.applicationContext as GoModeApplication).localModelOwner,
     private val speech: DeviceSpeech =
-        AndroidDeviceSpeech(appContext, languageTag, settingsRepository.settings.value.voiceSetup.deviceSpeechRate),
+        settingsRepository.settings.value.voiceSetup.let {
+            AndroidDeviceSpeech(appContext, languageTag, it.deviceSpeechVoice, it.deviceSpeechRate)
+        },
     voiceChimePlayer: VoiceChimePlayer = AndroidVoiceChime(),
     private val thinkingEarcon: ThinkingEarcon = AndroidThinkingEarcon(appContext),
     private val callController: VoiceCallController = NoopVoiceCallController(),

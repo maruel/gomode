@@ -115,7 +115,8 @@ val DEVICE_SPEECH_RATES: List<Float> = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75
  * VoiceSetupPreference is the device-wide voice setup.
  *
  * [recognition], [speech], and [languageModel] are the separate-stages selections; other modes
- * keep them for a later switch back. [deviceSpeechRate] applies whenever the device speaks.
+ * keep them for a later switch back. [deviceSpeechVoice] and [deviceSpeechRate] apply whenever the
+ * device speaks; an empty [deviceSpeechVoice] uses the engine's default voice for the voice language.
  */
 @Serializable
 data class VoiceSetupPreference(
@@ -123,6 +124,8 @@ data class VoiceSetupPreference(
     val recognition: SpeechStageLocation = SpeechStageLocation.DEVICE,
     val speech: SpeechStageLocation = SpeechStageLocation.DEVICE,
     val languageModel: VoiceLanguageModel = VoiceLanguageModel.GATEWAY,
+    /** The Android TextToSpeech voice name, or empty for the engine's default. */
+    val deviceSpeechVoice: String = "",
     val deviceSpeechRate: Float = 1f,
 ) {
     init {

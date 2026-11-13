@@ -132,6 +132,12 @@ close button. Emulate forced colors through CDP `Emulation.setEmulatedMedia`
 with `forced-colors: active`, in both color schemes: icons and the selected
 segment must use system colors.
 
+The [web reference](../screenshots/voice/web-settings.webp) and the
+[Android reference](../screenshots/android/voice-settings.webp) show the same
+setup: Whisper recognition, GPT-6 Luna, client speech, and its speaking voice and speed.
+Both fixtures serve `scene/voice-choices.json`. The client speech option is
+"Browser" on web and "Local" on Android.
+
 Check the setup choice with arrow keys, then close settings and verify focus
 returns to its trigger. At narrow widths, native browser zoom, and larger
 default text, scroll inside settings to inspect the language and display
@@ -262,6 +268,23 @@ The second click is the real Enable microphone action. It leaves the notice with
 its Enable microphone label and no error line. The wait settles the toolbar
 button transition; without it repeated captures differ by a few pixels.
 
+Refresh the voice settings reference at Android's 411 dp width and 1.75
+density. The settings panel stops at 55% of the viewport height, so a tall
+viewport shows the whole Voice and Display sections. The capture is the voice
+overlay alone:
+
+```bash
+agent-browser --session voice-settings open 'http://127.0.0.1:4179/?state=idle'
+agent-browser --session voice-settings set viewport 411 1700 1.75
+agent-browser --session voice-settings reload
+agent-browser --session voice-settings click '[aria-label="Voice settings"]'
+agent-browser --session voice-settings select 'select:has(option[value="model:kokoro"])' Browser
+agent-browser --session voice-settings eval 'document.activeElement.blur()'
+agent-browser --session voice-settings mouse move 0 0
+agent-browser --session voice-settings screenshot '[role="region"][aria-label="Voice assistant"]' /tmp/gomode-voice-web-settings.png
+agent-browser --session voice-settings close
+```
+
 Wait for the complete conversation before each capture. Reload at the target
 viewport so the initial transcript position matches the reference. Stop the
 preview server after use. It serves build output from memory without creating
@@ -302,4 +325,5 @@ ffmpeg -v error -y -i /tmp/gomode-voice-android-idle.png -c:v libwebp -lossless 
 ffmpeg -v error -y -i /tmp/gomode-voice-mobile-idle.png -c:v libwebp -lossless 1 -threads 1 e2e/screenshots/voice/web-mobile-idle.webp
 ffmpeg -v error -y -i /tmp/gomode-voice-desktop-idle.png -c:v libwebp -lossless 1 -threads 1 e2e/screenshots/voice/web-desktop-idle.webp
 ffmpeg -v error -y -i /tmp/gomode-voice-web-microphone-denied.png -c:v libwebp -lossless 1 -threads 1 e2e/screenshots/voice/web-microphone-denied.webp
+ffmpeg -v error -y -i /tmp/gomode-voice-web-settings.png -c:v libwebp -lossless 1 -threads 1 e2e/screenshots/voice/web-settings.webp
 ```

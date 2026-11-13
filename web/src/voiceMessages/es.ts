@@ -41,6 +41,7 @@ export const voiceMessages: VoiceMessages = {
   showUsageStats: "Mostrar estadísticas de uso",
   voiceLanguage: "Idioma de voz",
   voiceLanguageExample: "es-ES",
+  voiceLanguageHint: "Se aplica al reconocimiento, la síntesis de voz y las respuestas.",
   voiceSettings: "Ajustes de voz",
   closeVoiceSettings: "Cerrar ajustes de voz",
   settingUpBrowserSpeech: "Configurando la voz del navegador…",

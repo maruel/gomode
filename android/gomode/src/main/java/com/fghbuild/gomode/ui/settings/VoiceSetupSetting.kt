@@ -8,7 +8,9 @@
 // recognition and speech: those pickers show Local and disable gateway options while the saved
 // gateway selections stay, and the model's download, storage, and diagnostics follow the Language
 // model picker. Speech details follow the Speech picker: the speaking voice for gateway speech, the
-// speaking speed for device speech. All-in-one has no device stage, so the gateway is required.
+// speaking voice and speed for device speech. All-in-one has no device stage, so the gateway is
+// required. Without a service, a gateway language model cannot run, so a line under the Language
+// model picker says to add a service or choose a local model.
 //
 // Following the gateway shows the explicit setup it resolves to with the loaded catalog. Every
 // edit, the speaking voice and speed included, saves that explicit setup with the edit, so the
@@ -143,7 +145,7 @@ private class SetupEditor(
     val repository: SettingsRepository,
     val settings: SettingsState,
     val choices: GatewayVoiceChoices?,
-    private val noService: Boolean,
+    val noService: Boolean,
     val shown: SavedVoiceSetup,
     /** Set when a gateway language model's setup resolves against the loaded catalog. */
     val resolution: Result<ResolvedVoiceSetup>?,
@@ -454,6 +456,13 @@ private fun SeparateStagesSetting(
             }
         }
     } else {
+        DeviceSpeakingVoiceSetting(
+            shown.preference.deviceSpeechVoice,
+            editor.settings.voiceLanguageTag,
+            editor.enabled,
+        ) { name ->
+            editor.saveExplicit { it.copy(preference = it.preference.copy(deviceSpeechVoice = name)) }
+        }
         DeviceSpeechRateSetting(shown.preference.deviceSpeechRate, editor.enabled) { rate ->
             editor.saveExplicit { it.copy(preference = it.preference.copy(deviceSpeechRate = rate)) }
         }
@@ -480,6 +489,10 @@ private fun LanguageModelPicker(editor: SetupEditor) {
         menuTag = "gomode-language-models",
         error = editor.failure(SetupControl.MODEL) ?: editor.resolutionError(null),
         errorTag = "gomode-language-model-error",
+        hint =
+            "Add a service, or choose a Local language model.".takeIf {
+                editor.noService && languageModel == VoiceLanguageModel.GATEWAY
+            },
     ) {
         if (choices != null) {
             listed.forEach { choice ->

@@ -904,7 +904,7 @@ class DeviceVoiceSessionTest {
         ShadowSpeechRecognizer.setIsOnDeviceRecognitionAvailable(true)
         val socket = FakeWebSocket()
         var listener: WebSocketListener? = null
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", "", 1f)
         val session =
             createSession(speech) { _, captured ->
                 listener = captured

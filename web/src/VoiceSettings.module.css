@@ -23,15 +23,22 @@
 .heading {
   margin: 0;
   font-size: 1rem;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.5;
   color: var(--color-text);
 }
 
-.notice,
+/* Body text, like Android's notice and choice status. */
+.notice {
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--color-text);
+}
+
+/* Material bodySmall, like Android's hints and per-control errors. */
 .hint {
-  font-size: 0.8125rem;
-  line-height: 1.4;
+  font-size: 0.75rem;
+  line-height: 1.333;
   color: var(--color-text-secondary);
 }
 
@@ -161,7 +168,7 @@
   font-size: 0.875rem;
   font-weight: 500;
   line-height: 1.2;
-  color: var(--color-text-secondary);
+  color: var(--color-text);
   text-align: center;
   cursor: pointer;
 }
@@ -193,8 +200,6 @@
 }
 
 .segment:has(input:checked) {
-  font-weight: 600;
-  color: var(--color-text);
   background: color-mix(in srgb, var(--color-primary) 18%, var(--color-bg-surface));
 }
 
@@ -204,13 +209,16 @@
 
 /* Narrow rows keep labels on one line; weight and fill still mark the selection. */
 @container (width < 25rem) {
+  .segment:has(input:checked) {
+    font-weight: 600;
+  }
+
   .segment:has(input:checked) .segmentCheck {
     display: none;
   }
 }
 
 .segment:hover:not(:has(input:checked, input:disabled)) {
-  color: var(--color-text);
   background: var(--color-bg-hover);
 }
 
@@ -338,21 +346,22 @@
 
 .statusLine {
   min-height: 3rem;
-  font-size: 0.875rem;
-  color: var(--color-text-secondary);
+  font-size: 1rem;
+  color: var(--color-text);
 }
 
 .error {
   flex: 1;
   min-width: 0;
-  font-size: 0.8125rem;
-  line-height: 1.4;
+  font-size: 0.75rem;
+  line-height: 1.333;
   color: var(--color-danger);
   overflow-wrap: anywhere;
 }
 
 .statusLine .error {
-  font-size: 0.875rem;
+  font-size: 1rem;
+  line-height: 1.5;
 }
 
 .retry {

@@ -374,6 +374,13 @@ describe("VoiceSettings", () => {
     expect(inputs[1]).toHaveValue("de-DE");
   });
 
+  it("describes the language's scope below its field, as on Android", () => {
+    render(() => <VoiceSettings messages={{ voiceLanguageHint: "Gilt für Spracherkennung." }} />);
+    expect(screen.getByRole("textbox", { name: "Voice language" })).toHaveAccessibleDescription(
+      "Gilt für Spracherkennung.",
+    );
+  });
+
   it("saves one second after the last edit and normalizes the language", () => {
     vi.useFakeTimers();
     render(() => <VoiceSettings />);
@@ -464,7 +471,9 @@ describe("VoiceSettings", () => {
       render(() => <VoiceSettings />);
       fireEvent.input(screen.getByRole("textbox"), { target: { value: "fr-CA" } });
       vi.advanceTimersByTime(1000);
-      expect(screen.getByRole("textbox")).toHaveAccessibleDescription("Storage unavailable");
+      expect(screen.getByRole("textbox")).toHaveAccessibleDescription(
+        "Storage unavailable Applies to recognition, speech, and replies.",
+      );
       expect(voiceSession.state.languageTag).toBe("en-US");
     } finally {
       save.mockRestore();

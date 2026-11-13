@@ -1,6 +1,9 @@
 // Compose tests for the voice setup without a gateway, language, display toggles, and the active-session guard.
 package com.fghbuild.gomode
 
+import android.speech.tts.TextToSpeech
+import android.speech.tts.Voice
+import android.view.ViewGroup
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
@@ -12,6 +15,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsEnabled
@@ -21,6 +26,9 @@ import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isHeading
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -28,9 +36,13 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import androidx.core.graphics.Insets
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
@@ -55,8 +67,11 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
+import org.robolectric.shadows.ShadowTextToSpeech
+import java.util.Locale
 
 @RunWith(RobolectricTestRunner::class)
 // The stock test emulator's display: layout assertions measure against its width.
@@ -320,6 +335,139 @@ class VoiceSettingsTest {
 
         composeRule.runOnIdle { active.value = true }
         composeRule.onNodeWithTag("gomode-device-speech-rate").performScrollTo().assertIsNotEnabled()
+    }
+
+    @Test
+    fun localSpeakingVoiceListsTheLanguageVoicesAfterTheDefaultAndPersists() {
+        val active = mutableStateOf(false)
+        val store = MemoryPreferences()
+        val repository = SettingsRepository(store)
+        val us = Voice("en-us-x-one", Locale.US, Voice.QUALITY_HIGH, Voice.LATENCY_NORMAL, false, emptySet())
+        val gb = Voice("en-gb-x-two", Locale.UK, Voice.QUALITY_HIGH, Voice.LATENCY_NORMAL, false, emptySet())
+        val french = Voice("fr-fr-x-three", Locale.FRANCE, Voice.QUALITY_HIGH, Voice.LATENCY_NORMAL, false, emptySet())
+        val missing =
+            Voice(
+                "en-us-x-missing",
+                Locale.US,
+                Voice.QUALITY_HIGH,
+                Voice.LATENCY_NORMAL,
+                false,
+                setOf(TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED),
+            )
+        listOf(us, gb, french, missing).forEach(ShadowTextToSpeech::addVoice)
+        showSettings(repository) { active.value }
+        val picker = composeRule.onNodeWithTag("gomode-device-speaking-voice")
+        // The picker waits for the engine's voices.
+        picker.performScrollTo().assertTextContains("Local default").assertIsNotEnabled()
+        initializeTextToSpeech()
+        composeRule.waitUntil { runCatching { picker.assertIsEnabled() }.isSuccess }
+        // Speaking voice sits between Speech and Speaking speed, as on web.
+        val tops =
+            listOf("gomode-speech", "gomode-device-speaking-voice", "gomode-device-speech-rate").map {
+                composeRule
+                    .onNodeWithTag(it)
+                    .fetchSemanticsNode()
+                    .positionInRoot.y
+            }
+        assertEquals(tops.sorted(), tops)
+
+        picker.performClick()
+        val items =
+            composeRule
+                .onAllNodes(hasAnyAncestor(hasTestTag("gomode-device-speaking-voices")) and hasClickAction())
+                .fetchSemanticsNodes()
+                .map { it.config[SemanticsProperties.TestTag] }
+        assertEquals(
+            listOf(
+                "gomode-device-speaking-voice-default",
+                "gomode-device-speaking-voice-en-gb-x-two",
+                "gomode-device-speaking-voice-en-us-x-one",
+            ),
+            items,
+        )
+        composeRule.onNodeWithTag("gomode-device-speaking-voice-default").assertIsSelected()
+        composeRule
+            .onNodeWithTag("gomode-device-speaking-voice-en-us-x-one")
+            .assertTextContains("en-us-x-one (en-US)")
+            .performClick()
+        val reopened = SettingsRepository(store)
+        composeRule.waitUntil { reopened.settings.value.voiceSetup.deviceSpeechVoice == "en-us-x-one" }
+        picker.assertTextContains("en-us-x-one (en-US)").performClick()
+        composeRule.onNodeWithTag("gomode-device-speaking-voice-en-us-x-one").assertIsSelected()
+        composeRule.onNodeWithTag("gomode-device-speaking-voice-default").assertIsNotSelected()
+        composeRule.onNodeWithTag("gomode-device-speaking-voice-en-us-x-one").performClick()
+
+        // A voice outside the voice language is unavailable until a pick replaces it.
+        runBlocking { repository.updateVoiceLanguageTag("fr-CA") }
+        picker.performScrollTo().assertTextContains("Choose an available speaking voice").performClick()
+        composeRule.onNodeWithTag("gomode-device-speaking-voice-fr-fr-x-three").assertIsNotSelected().performClick()
+        composeRule.waitUntil { repository.settings.value.voiceSetup.deviceSpeechVoice == "fr-fr-x-three" }
+
+        composeRule.runOnIdle { active.value = true }
+        picker.performScrollTo().assertIsNotEnabled()
+    }
+
+    @Test
+    fun withoutAServiceTheGatewayLanguageModelAsksForAServiceOrALocalModel() {
+        val repository = SettingsRepository(MemoryPreferences())
+        showSettings(repository) { false }
+        val hint = composeRule.onNodeWithTag("gomode-language-model-hint")
+        hint.performScrollTo().assertTextContains("Add a service, or choose a Local language model.")
+        composeRule
+            .onNodeWithTag("gomode-language-model")
+            .assertContentDescriptionEquals("Language model. Add a service, or choose a Local language model.")
+        composeRule.onNodeWithTag("gomode-language-model").performClick()
+        composeRule.onNodeWithTag("gomode-language-model-needle-whistle").performClick()
+        composeRule.waitUntil {
+            repository.settings.value.voiceSetup.effectiveLanguageModel == VoiceLanguageModel.NEEDLE_WHISTLE
+        }
+        hint.assertDoesNotExist()
+    }
+
+    @Test
+    fun hintsAndDisplaySwitchLabelsAlignWithFieldLabelsAndTheLastSettingClearsTheNavigationBar() {
+        val repository = SettingsRepository(MemoryPreferences())
+        showSettings(repository) { false }
+        val navigationBar = 48
+        composeRule.runOnUiThread {
+            val content = composeRule.activity.findViewById<ViewGroup>(android.R.id.content).getChildAt(0)
+            val insets =
+                WindowInsetsCompat
+                    .Builder()
+                    .setInsets(WindowInsetsCompat.Type.navigationBars(), Insets.of(0, 0, 0, navigationBar))
+                    .build()
+            ViewCompat.dispatchApplyWindowInsets(content, insets)
+        }
+        val field =
+            composeRule.onNodeWithText("Voice language", useUnmergedTree = true).performScrollTo().fetchSemanticsNode()
+        val reasoning =
+            composeRule
+                .onNodeWithText("Show assistant reasoning", useUnmergedTree = true)
+                .performScrollTo()
+                .fetchSemanticsNode()
+        assertEquals(field.positionInRoot.x, reasoning.positionInRoot.x, 0.5f)
+        val hint = composeRule.onNodeWithText("Applies to recognition, speech, and replies.").fetchSemanticsNode()
+        assertEquals(field.positionInRoot.x, hint.positionInRoot.x, 0.5f)
+        composeRule
+            .onNodeWithTag("gomode-voice-language")
+            .assertContentDescriptionEquals("Voice language. Applies to recognition, speech, and replies.")
+        val screen = composeRule.onNodeWithTag("gomode-settings")
+        screen.performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, Float.MAX_VALUE) }
+        val credits = composeRule.onNodeWithTag("gomode-credits").fetchSemanticsNode()
+        val creditsBottom = credits.positionInRoot.y + credits.size.height
+        val screenBottom = screen.fetchSemanticsNode().boundsInRoot.bottom
+        assertTrue(
+            "Credits end at $creditsBottom, inside the navigation bar above $screenBottom",
+            creditsBottom <= screenBottom - navigationBar,
+        )
+    }
+
+    private fun initializeTextToSpeech() {
+        composeRule.waitUntil { ShadowTextToSpeech.getLastTextToSpeechInstance() != null }
+        composeRule.runOnUiThread {
+            val engine = checkNotNull(ShadowTextToSpeech.getLastTextToSpeechInstance())
+            shadowOf(engine).onInitListener.onInit(TextToSpeech.SUCCESS)
+        }
     }
 
     @Test

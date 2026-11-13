@@ -1,4 +1,4 @@
-// Tests Android recognition partial-result requests, revisions, and terminal callback isolation.
+// Tests Android recognition partial-result requests, revisions, callback isolation, and the saved local voice.
 package com.fghbuild.gomode.voice
 
 import android.os.Bundle
@@ -6,6 +6,8 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
+import android.speech.tts.Voice
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
@@ -17,8 +19,10 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.shadows.ShadowSpeechRecognizer
+import org.robolectric.shadows.ShadowTextToSpeech
 import org.robolectric.util.ReflectionHelpers
 import java.time.Duration
+import java.util.Locale
 
 @RunWith(RobolectricTestRunner::class)
 class DeviceSpeechTest {
@@ -29,7 +33,7 @@ class DeviceSpeechTest {
 
     @Test
     fun `silent startup retries once and reports a second timeout`() {
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", "", 1f)
         val errors = mutableListOf<String>()
         speech.startListening({}, {}, {}, errors::add)
         shadowOf(Looper.getMainLooper()).idle()
@@ -53,7 +57,7 @@ class DeviceSpeechTest {
     @Test
     fun `ready and cancellation prevent startup recovery`() {
         for (cancel in listOf(false, true)) {
-            val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
+            val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", "", 1f)
             val errors = mutableListOf<String>()
             speech.startListening({}, {}, {}, errors::add)
             shadowOf(Looper.getMainLooper()).idle()
@@ -76,7 +80,7 @@ class DeviceSpeechTest {
             SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE to SpeechLanguageState.Missing,
             SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED to SpeechLanguageState.Unsupported,
         )) {
-            val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "fr-CA", 1f)
+            val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "fr-CA", "", 1f)
             val errors = mutableListOf<String>()
             try {
                 speech.startListening({}, {}, {}, errors::add)
@@ -94,7 +98,7 @@ class DeviceSpeechTest {
 
     @Test
     fun `a disconnected recognition service is recreated once without ending the voice session`() {
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", "", 1f)
         val finals = mutableListOf<String>()
         val errors = mutableListOf<String>()
         speech.startListening(finals::add, {}, {}, errors::add)
@@ -119,7 +123,7 @@ class DeviceSpeechTest {
 
     @Test
     fun `replacing input cancels recovery owned by the previous listener`() {
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", "", 1f)
         val retired = mutableListOf<String>()
         val current = mutableListOf<String>()
         speech.startListening(retired::add, {}, {}, { error(it) })
@@ -144,7 +148,7 @@ class DeviceSpeechTest {
 
     @Test
     fun `recognition service recovery is bounded and repeated failure is reported`() {
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", "", 1f)
         val errors = mutableListOf<String>()
         speech.startListening({}, {}, {}, errors::add)
         shadowOf(Looper.getMainLooper()).idle()
@@ -166,7 +170,7 @@ class DeviceSpeechTest {
     @Test
     fun `mute and close cancel pending recognition service recovery`() {
         for (close in listOf(false, true)) {
-            val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
+            val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", "", 1f)
             val errors = mutableListOf<String>()
             speech.startListening({}, {}, {}, errors::add)
             shadowOf(Looper.getMainLooper()).idle()
@@ -186,7 +190,7 @@ class DeviceSpeechTest {
 
     @Test
     fun `a missed final match submits the last nonempty transcript`() {
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", "", 1f)
         val finals = mutableListOf<String>()
         speech.startListening(finals::add, {}, { error("Recognized speech must not become idle") }, { error(it) })
         shadowOf(Looper.getMainLooper()).idle()
@@ -207,7 +211,7 @@ class DeviceSpeechTest {
 
     @Test
     fun `speech end submits recognized text even if no final callback arrives`() {
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", "", 1f)
         val finals = mutableListOf<String>()
         speech.startListening(finals::add, {}, {}, { error(it) })
         shadowOf(Looper.getMainLooper()).idle()
@@ -239,7 +243,7 @@ class DeviceSpeechTest {
 
     @Test
     fun `end of speech keeps supplied audio open until the final result`() {
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", 1f)
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", "", 1f)
         val finals = mutableListOf<String>()
         val partials = mutableListOf<String>()
         speech.startListening(finals::add, partials::add, {}, { error(it) })
@@ -269,7 +273,7 @@ class DeviceSpeechTest {
 
     @Test
     fun `Android requests live hypotheses and ignores partials after final or cancellation`() {
-        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "fr-CA", 1f)
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "fr-CA", "", 1f)
         val partials = mutableListOf<String>()
         val finals = mutableListOf<String>()
         speech.startListening(finals::add, partials::add, {}, { error(it) })
@@ -312,5 +316,45 @@ class DeviceSpeechTest {
         assertEquals(listOf("Turn off the light", "New input after switching"), finals)
         speech.close()
         shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    @Test
+    fun `speech uses the saved local voice`() {
+        val voice = Voice("en-us-x-one", Locale.US, Voice.QUALITY_HIGH, Voice.LATENCY_NORMAL, false, emptySet())
+        ShadowTextToSpeech.addVoice(voice)
+        ShadowTextToSpeech.addLanguageAvailability(Locale.US)
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", "en-us-x-one", 1.5f)
+        val errors = mutableListOf<String>()
+        speech.speak("Hello", {}, errors::add)
+        val engine = initializeTextToSpeech()
+        assertEquals(voice, engine.currentVoice)
+        assertEquals("Hello", engine.lastSpokenText)
+        assertTrue(errors.isEmpty())
+        speech.close()
+        shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    @Test
+    fun `a saved local voice that disappeared fails speech instead of substituting another`() {
+        ShadowTextToSpeech.addVoice(
+            Voice("en-us-x-other", Locale.US, Voice.QUALITY_HIGH, Voice.LATENCY_NORMAL, false, emptySet()),
+        )
+        ShadowTextToSpeech.addLanguageAvailability(Locale.US)
+        val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", "en-us-x-removed", 1f)
+        val errors = mutableListOf<String>()
+        speech.speak("Hello", { error("Speech must not complete") }, errors::add)
+        val engine = initializeTextToSpeech()
+        assertEquals(listOf("The saved local voice is unavailable. Choose another speaking voice in Settings."), errors)
+        assertEquals(null, engine.lastSpokenText)
+        speech.close()
+        shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    private fun initializeTextToSpeech(): ShadowTextToSpeech {
+        shadowOf(Looper.getMainLooper()).idle()
+        val engine = shadowOf(checkNotNull(ShadowTextToSpeech.getLastTextToSpeechInstance()))
+        engine.onInitListener.onInit(TextToSpeech.SUCCESS)
+        shadowOf(Looper.getMainLooper()).idle()
+        return engine
     }
 }

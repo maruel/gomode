@@ -8,6 +8,7 @@ import { voiceMessages as de } from "../../web/src/voiceMessages/de";
 import { voiceMessages as es } from "../../web/src/voiceMessages/es";
 import { voiceMessages as fr } from "../../web/src/voiceMessages/fr";
 import scene from "./scene/conversation.json";
+import voiceChoices from "./scene/voice-choices.json";
 
 // ?theme=dark applies the host's dark tokens; ?lang=de|es|fr renders a shipped translation.
 const params = new URLSearchParams(location.search);
@@ -18,6 +19,7 @@ const translated = lang === "de" || lang === "es" || lang === "fr" ? lang : null
 const messages = translated === null ? defaultVoiceMessages : translations[translated];
 document.documentElement.lang = translated ?? "en";
 
+// The Android documentation fixture serves the same choices, so both platforms' captures compare.
 // ?choices=loading keeps discovery pending; ?choices=error fails it, as an unreachable gateway does.
 const choicesScene = new URLSearchParams(location.search).get("choices");
 const originalFetch = window.fetch.bind(window);
@@ -28,56 +30,7 @@ window.fetch = (input, init) =>
       : choicesScene === "error"
         ? Promise.reject(new TypeError("Failed to fetch"))
         : Promise.resolve(
-            new Response(
-              JSON.stringify({
-                choices: [
-                  {
-                    id: "preview",
-                    label: "GPT-6 Luna",
-                    composable: true,
-                    transports: ["text", "webrtc"],
-                    speechModes: [
-                      { input: "gateway", output: "gateway" },
-                      { input: "gateway", output: "client" },
-                      { input: "client", output: "gateway" },
-                      { input: "client", output: "client" },
-                    ],
-                  },
-                  {
-                    id: "preview-alt",
-                    label: "Claude Haiku",
-                    composable: true,
-                    transports: ["text", "webrtc"],
-                    speechModes: [
-                      { input: "gateway", output: "gateway" },
-                      { input: "gateway", output: "client" },
-                      { input: "client", output: "gateway" },
-                      { input: "client", output: "client" },
-                    ],
-                  },
-                  {
-                    id: "native",
-                    label: "Gemini Live",
-                    voices: ["Aoede", "Kore", "Orus"],
-                    transports: ["webrtc"],
-                    speechModes: [{ input: "gateway", output: "gateway" }],
-                  },
-                ],
-                recognitionModels: [
-                  { id: "whisper", label: "Whisper" },
-                  { id: "parakeet", label: "Parakeet" },
-                ],
-                synthesisModels: [
-                  { id: "gemini-tts", label: "Gemini speech" },
-                  { id: "kokoro", label: "Kokoro" },
-                ],
-                defaults: [
-                  { transport: "webrtc", id: "preview" },
-                  { transport: "text", id: "preview" },
-                ],
-              }),
-              { headers: { "Content-Type": "application/json" } },
-            ),
+            new Response(JSON.stringify(voiceChoices), { headers: { "Content-Type": "application/json" } }),
           )
     : originalFetch(input, init);
 

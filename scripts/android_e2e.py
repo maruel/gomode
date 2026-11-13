@@ -43,27 +43,11 @@ SETTINGS = {
     },
 }
 
-# Public gateway choices served by the fixture so documentation captures show the
-# voice settings a real host would expose.
-VOICE_CHOICES = {
-    "choices": [
-        {
-            "id": "gemini",
-            "label": "Gemini Live",
-            "transports": ["webrtc"],
-            "voices": ["Orus", "Puck"],
-        },
-        {"id": "remote", "label": "Remote LLM", "transports": ["text"]},
-        {"id": "local", "label": "Local LLM", "transports": ["text"]},
-    ],
-    "defaults": [
-        {"transport": "text", "id": "remote"},
-        {"transport": "webrtc", "id": "gemini"},
-    ],
-}
-
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PAGE = (ROOT / "e2e" / "hosted.html").read_bytes()
+# The browser voice preview serves the same gateway choices, so documentation captures of both
+# platforms show the same setup.
+VOICE_CHOICES = (ROOT / "e2e" / "voice-preview" / "scene" / "voice-choices.json").read_bytes()
 
 
 class FixtureHandler(http.server.BaseHTTPRequestHandler):
@@ -101,7 +85,7 @@ class FixtureHandler(http.server.BaseHTTPRequestHandler):
             body = json.dumps(SETTINGS).encode("utf-8")
             content_type = "application/json"
         elif self.path == "/voice/api/voicegateway/v2/voice/choices":
-            body = json.dumps(VOICE_CHOICES).encode("utf-8")
+            body = VOICE_CHOICES
             content_type = "application/json"
         else:
             body = PAGE

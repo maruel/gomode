@@ -8,7 +8,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
@@ -53,6 +56,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.testTagsAsResourceId
@@ -114,6 +118,8 @@ internal fun SettingsScreen(
                     .fillMaxSize()
                     .padding(padding)
                     .verticalScroll(rememberScrollState())
+                    // The last setting scrolls clear of the navigation bar; the root shell applies the IME inset.
+                    .windowInsetsPadding(WindowInsets.navigationBars)
                     .padding(20.dp)
                     .semantics { testTagsAsResourceId = true }
                     .testTag("gomode-settings"),
@@ -160,40 +166,19 @@ internal fun SettingsScreen(
             HorizontalDivider()
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 SectionHeading("Display")
-                ListItem(
-                    modifier =
-                        Modifier.testTag("gomode-show-reasoning").toggleable(
-                            value = settings.showReasoning,
-                            enabled = settings.loadState == SettingsLoadState.Ready,
-                            role = Role.Switch,
-                            onValueChange = { value -> scope.launch { edits.setShowReasoning(value) } },
-                        ),
-                    headlineContent = { Text("Show assistant reasoning") },
-                    trailingContent = {
-                        Switch(
-                            checked = settings.showReasoning,
-                            onCheckedChange = null,
-                            enabled = settings.loadState == SettingsLoadState.Ready,
-                        )
-                    },
-                )
-                ListItem(
-                    modifier =
-                        Modifier.testTag("gomode-show-usage-stats").toggleable(
-                            value = settings.showUsageStats,
-                            enabled = settings.loadState == SettingsLoadState.Ready,
-                            role = Role.Switch,
-                            onValueChange = { value -> scope.launch { edits.setShowUsageStats(value) } },
-                        ),
-                    headlineContent = { Text("Show usage stats") },
-                    trailingContent = {
-                        Switch(
-                            checked = settings.showUsageStats,
-                            onCheckedChange = null,
-                            enabled = settings.loadState == SettingsLoadState.Ready,
-                        )
-                    },
-                )
+                // Display preferences stay available during calls.
+                SwitchRow(
+                    "Show assistant reasoning",
+                    checked = settings.showReasoning,
+                    enabled = settings.loadState == SettingsLoadState.Ready,
+                    tag = "gomode-show-reasoning",
+                ) { value -> scope.launch { edits.setShowReasoning(value) } }
+                SwitchRow(
+                    "Show usage stats",
+                    checked = settings.showUsageStats,
+                    enabled = settings.loadState == SettingsLoadState.Ready,
+                    tag = "gomode-show-usage-stats",
+                ) { value -> scope.launch { edits.setShowUsageStats(value) } }
             }
             HorizontalDivider()
             CarDialSetting(settings, enabled = !voiceSessionActive)
@@ -301,10 +286,36 @@ private fun ThinkingMusicPreview(enabled: Boolean) {
     if (failed) Text("Could not play thinking music.", color = MaterialTheme.colorScheme.error)
 }
 
+/** A switch row whose label starts at the field-label inset; the whole row toggles. */
+@Composable
+private fun SwitchRow(
+    label: String,
+    checked: Boolean,
+    enabled: Boolean,
+    tag: String,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 56.dp)
+                .testTag(tag)
+                .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onCheckedChange),
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
+    }
+}
+
 @Composable
 private fun SectionHeading(text: String) {
     Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
 }
+
+private const val VOICE_LANGUAGE_HINT = "Applies to recognition, speech, and replies."
 
 @Composable
 private fun VoiceLanguageSetting(
@@ -319,14 +330,20 @@ private fun VoiceLanguageSetting(
             modifier =
                 Modifier
                     .fillMaxWidth()
-                    // The visible label sits above the field, outside its semantics.
-                    .semantics { contentDescription = "Voice language" }
+                    // The label and hint render outside the field; its semantics carry them.
+                    .semantics { contentDescription = "Voice language. $VOICE_LANGUAGE_HINT" }
                     .testTag("gomode-voice-language"),
             singleLine = true,
             placeholder = { Text("en-US") },
-            supportingText = { Text("Applies to recognition, speech, and replies.") },
             isError = edits.normalizedLanguage == null,
             enabled = enabled,
+        )
+        // Aligned with the field like the picker hints and the web's hint, not inset as supporting text.
+        Text(
+            VOICE_LANGUAGE_HINT,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.semantics { hideFromAccessibility() },
         )
     }
 }

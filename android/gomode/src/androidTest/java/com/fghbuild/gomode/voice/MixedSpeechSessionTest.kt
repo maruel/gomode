@@ -51,18 +51,17 @@ class MixedSpeechSessionTest {
     fun gatewayRecognitionSpeaksAssistantTextOnTheDeviceAndStopsOnBargeIn() =
         // Held playback keeps the reply audible after generation ends.
         withSession(SpeechStageLocation.GATEWAY, SpeechStageLocation.DEVICE, holdPlayback = true) { session, speech ->
-            awaitState(session) { it.speaking && it.turnState == TurnState.Idle }
+            // Turn completion and the final transcript events arrive separately; wait for both.
+            val spoken =
+                awaitState(session) { state ->
+                    state.speaking && state.turnState == TurnState.Idle && state.transcript.all { it.final }
+                }
             assertEquals(
                 listOf(
                     TranscriptSpeaker.USER to "How is the service doing?",
                     TranscriptSpeaker.ASSISTANT to "Your service is ready.",
                 ),
-                session.state.value.transcript
-                    .map { it.speaker to it.text },
-            )
-            assertTrue(
-                session.state.value.transcript
-                    .all { it.final },
+                spoken.transcript.map { it.speaker to it.text },
             )
             assertEquals(listOf("Your service is ready."), speech.spoken)
             val setup = setupFrame()

@@ -37,6 +37,7 @@ export const defaultVoiceSettingsMessages = {
   showUsageStats: "Show usage stats",
   voiceLanguage: "Voice language",
   voiceLanguageExample: "en-US",
+  voiceLanguageHint: "Applies to recognition, speech, and replies.",
 };
 
 export const defaultVoiceMessages = {

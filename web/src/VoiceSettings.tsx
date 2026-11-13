@@ -201,6 +201,7 @@ export default function VoiceSettings(props: {
   const speedId = createUniqueId();
   const speakingVoiceId = createUniqueId();
   const languageId = createUniqueId();
+  const languageHintId = createUniqueId();
   const reasoningErrorId = createUniqueId();
   const usageErrorId = createUniqueId();
   const setupRadios: Partial<Record<VoiceSetupMode, HTMLInputElement>> = {};
@@ -486,7 +487,16 @@ export default function VoiceSettings(props: {
             )}
           </Field>
         </Show>
-        <Field label={messages().voiceLanguage} for={languageId} error={shownLanguageError()}>
+        <Field
+          label={messages().voiceLanguage}
+          for={languageId}
+          error={shownLanguageError()}
+          hint={
+            <p id={languageHintId} class={styles.hint}>
+              {messages().voiceLanguageHint}
+            </p>
+          }
+        >
           {(errorId) => (
             <input
               id={languageId}
@@ -503,7 +513,7 @@ export default function VoiceSettings(props: {
               // Flush before a close or connect click can use the saved preference.
               onBlur={saveLanguage}
               aria-invalid={shownLanguageError() !== null}
-              aria-describedby={errorId()}
+              aria-describedby={[errorId(), languageHintId].filter(Boolean).join(" ")}
               spellcheck={false}
               autocapitalize="none"
             />

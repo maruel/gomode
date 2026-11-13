@@ -14,12 +14,15 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
 import android.util.Log
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 private const val TAG = "GoModeDeviceSpeech"
@@ -70,10 +73,40 @@ internal interface DeviceSpeech {
     fun close()
 }
 
-/** AndroidDeviceSpeech uses the on-device recognizer and text-to-speech engine at [speechRate]. */
+/** Reports whether [voice] speaks the language of [languageTag], in any region, as the web's browser voices do. */
+internal fun deviceVoiceMatchesLanguage(
+    voice: Voice,
+    languageTag: String,
+): Boolean = voice.locale.language == Locale.forLanguageTag(languageTag).language
+
+/**
+ * The installed voices of the default text-to-speech engine, sorted by locale and name; empty
+ * when the engine is unavailable. Voices whose data is not installed cannot speak, so they are omitted.
+ */
+internal suspend fun installedDeviceVoices(context: Context): List<Voice> =
+    withContext(Dispatchers.Main) {
+        val initialized = CompletableDeferred<Boolean>()
+        val engine = TextToSpeech(context) { initialized.complete(it == TextToSpeech.SUCCESS) }
+        try {
+            if (!initialized.await()) return@withContext emptyList()
+            engine.voices
+                .orEmpty()
+                .filterNot { TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED in it.features }
+                .sortedWith(compareBy({ it.locale.toLanguageTag() }, { it.name }))
+        } finally {
+            engine.shutdown()
+        }
+    }
+
+/**
+ * AndroidDeviceSpeech uses the on-device recognizer and text-to-speech engine, speaking with the
+ * voice named [voiceName], or the engine's default for [languageTag] when empty, at [speechRate].
+ * A saved voice the engine no longer offers fails speech instead of substituting another voice.
+ */
 internal class AndroidDeviceSpeech(
     private val context: Context,
     private val languageTag: String,
+    private val voiceName: String,
     private val speechRate: Float,
 ) : DeviceSpeech {
     private val language = AndroidSpeechLanguage(context, languageTag)
@@ -125,35 +158,52 @@ internal class AndroidDeviceSpeech(
         main.post {
             engine =
                 TextToSpeech(context) { status ->
-                    if (status == TextToSpeech.SUCCESS) {
-                        val languageStatus = engine?.setLanguage(Locale.forLanguageTag(languageTag))
-                        if (languageStatus == TextToSpeech.LANG_MISSING_DATA ||
-                            languageStatus == TextToSpeech.LANG_NOT_SUPPORTED
+                    val failure =
+                        if (status ==
+                            TextToSpeech.SUCCESS
                         ) {
-                            val failure = "Text-to-speech language $languageTag is unavailable"
-                            Log.w(TAG, failure)
-                            engineFailure = failure
-                            failQueuedSpeech(failure)
-                            return@TextToSpeech
+                            configureEngine()
+                        } else {
+                            "Text-to-speech is unavailable"
                         }
-                        engineReady = true
-                        engine?.setSpeechRate(speechRate)
-                        engine?.setAudioAttributes(
-                            AudioAttributes
-                                .Builder()
-                                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                                .build(),
-                        )
-                        engine?.setOnUtteranceProgressListener(utteranceListener)
-                        flushQueuedSpeech()
-                    } else {
-                        Log.w(TAG, "Text-to-speech engine unavailable")
-                        engineFailure = "Text-to-speech is unavailable"
-                        failQueuedSpeech("Text-to-speech is unavailable")
+                    if (failure != null) {
+                        Log.w(TAG, failure)
+                        engineFailure = failure
+                        failQueuedSpeech(failure)
+                        return@TextToSpeech
                     }
+                    engineReady = true
+                    flushQueuedSpeech()
                 }
         }
+    }
+
+    /** Applies the language, voice, rate, and audio route to the initialized engine; returns a failure. */
+    private fun configureEngine(): String? {
+        val tts = engine ?: return "Text-to-speech is unavailable"
+        val languageStatus = tts.setLanguage(Locale.forLanguageTag(languageTag))
+        if (languageStatus == TextToSpeech.LANG_MISSING_DATA || languageStatus == TextToSpeech.LANG_NOT_SUPPORTED) {
+            return "Text-to-speech language $languageTag is unavailable"
+        }
+        if (voiceName.isNotEmpty()) {
+            val voice =
+                tts.voices.orEmpty().firstOrNull {
+                    it.name == voiceName && deviceVoiceMatchesLanguage(it, languageTag)
+                }
+            if (voice == null || tts.setVoice(voice) != TextToSpeech.SUCCESS) {
+                return "The saved local voice is unavailable. Choose another speaking voice in Settings."
+            }
+        }
+        tts.setSpeechRate(speechRate)
+        tts.setAudioAttributes(
+            AudioAttributes
+                .Builder()
+                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build(),
+        )
+        tts.setOnUtteranceProgressListener(utteranceListener)
+        return null
     }
 
     override fun isAvailable(): Boolean = SpeechRecognizer.isOnDeviceRecognitionAvailable(context)

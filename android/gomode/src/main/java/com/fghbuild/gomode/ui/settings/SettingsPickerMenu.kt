@@ -1,4 +1,4 @@
-// Outlined dropdown setting with its label above, a checked current item, and the error it owns.
+// Outlined dropdown setting with its label above, a checked current item, a hint, and the error it owns.
 package com.fghbuild.gomode.ui.settings
 
 import androidx.compose.foundation.layout.Arrangement
@@ -20,15 +20,21 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.error
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
 /** Items of an open [SettingsPicker] menu; selecting one closes it. */
 internal class SettingsPickerMenu(
@@ -78,6 +84,8 @@ internal fun SettingsPicker(
     menuTag: String,
     error: String?,
     errorTag: String,
+    /** Guidance below the field, styled like the web's hints and tagged "[tag]-hint". */
+    hint: String? = null,
     items: @Composable SettingsPickerMenu.() -> Unit,
 ) {
     // Disabling closes the menu; the menu's items close the same state object the field opens.
@@ -98,9 +106,11 @@ internal fun SettingsPicker(
                     Modifier
                         .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled)
                         .fillMaxWidth()
-                        // The visible label sits above the field, outside its semantics.
-                        .semantics { contentDescription = label }
-                        .testTag(tag),
+                        // The label, hint, and error render outside the field; its semantics carry them.
+                        .semantics {
+                            contentDescription = listOfNotNull(label, hint).joinToString(". ")
+                            error?.let { this.error(it) }
+                        }.testTag(tag),
             )
             ExposedDropdownMenu(
                 expanded = expanded,
@@ -111,13 +121,61 @@ internal fun SettingsPicker(
                 menu.items()
             }
         }
+        hint?.let {
+            Text(
+                it,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.semantics { hideFromAccessibility() }.testTag("$tag-hint"),
+            )
+        }
         error?.let {
             Text(
                 it,
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.testTag(errorTag),
+                modifier = Modifier.semantics { hideFromAccessibility() }.testTag(errorTag),
             )
         }
     }
+}
+
+/** One picker's save in progress and its failure, which shows until the next successful save. */
+internal class PickerSave(
+    private val scope: CoroutineScope,
+    private val noun: String,
+) {
+    var saving by mutableStateOf(false)
+        private set
+    var error by mutableStateOf<String?>(null)
+        private set
+
+    fun launch(write: suspend () -> Unit) {
+        scope.launch {
+            saving = true
+            error = null
+            try {
+                write()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (
+                @Suppress("TooGenericExceptionCaught") e: Exception,
+            ) {
+                // Display failed persistence.
+                error = "Unable to save $noun: ${e.message}"
+            } finally {
+                saving = false
+            }
+        }
+    }
+}
+
+/** A [PickerSave] for [noun] that starts over when [keys] change. */
+@Composable
+internal fun rememberPickerSave(
+    noun: String,
+    vararg keys: Any?,
+): PickerSave {
+    val scope = rememberCoroutineScope()
+    return remember(scope, noun, *keys) { PickerSave(scope, noun) }
 }
