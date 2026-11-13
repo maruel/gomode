@@ -11,7 +11,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/lmittmann/tint v1.2.1
 	github.com/maruel/apisdkgen v0.3.0
-	github.com/maruel/genai v0.11.1-0.20261112215426-0f4d00f0d93b
+	github.com/maruel/genai v0.11.1
 	github.com/maruel/genaipy v0.1.2
 	github.com/maruel/roundtrippers v0.5.1
 	github.com/mattn/go-colorable v0.1.16
