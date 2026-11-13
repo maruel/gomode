@@ -393,38 +393,6 @@ class CarDialInterceptionTest {
     }
 
     @Test
-    @LocalEmulatorOnly
-    fun frontendTimeoutKeepsItsSafeCauseAndReleasesCallAndMicrophoneOwnership() {
-        prepareVoice("CLOUD")
-        frontendBlocked(true)
-        val before = fixtureStats()
-        try {
-            withSecureKeyguard {
-                dial(NUMBER)
-                awaitFrontendWaiting(before)
-                assertTrue(device.wait(Until.hasObject(By.text("Frontend not ready.")), 60_000))
-                assertLockedNativeSurface()
-                assertTrue(
-                    device.takeScreenshot(File(context.getExternalFilesDir(null), "frontend-locked-timeout.png")),
-                )
-                awaitVoiceClosed()
-                assertNoTransport(before)
-                val terminal = startupTimingRecords().single { it.contains("event=finished") }
-                assertTrue(terminal, terminal.contains("outcome=TIMED_OUT stage=FRONTEND"))
-                assertTrue(terminal, terminal.contains("remaining_ms=0"))
-                frontendBlocked(false)
-                awaitFrontendPublished(before)
-                awaitVoiceClosed()
-                assertNoTransport(before)
-                assertTrue(device.hasObject(By.text("Frontend not ready.")))
-                endNativeVoice()
-            }
-        } finally {
-            frontendBlocked(false)
-        }
-    }
-
-    @Test
     fun lockedStartupShowsOnlyNativeCallControls() {
         prepareVoice("CLOUD")
         fixtureConfig(4_000)

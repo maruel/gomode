@@ -1,4 +1,4 @@
-// Tests bounded dial authority, duplicate suppression, Activity replacement, and role revocation.
+// Tests bounded dial authority, duplicate suppression, Activity replacement, role revocation, and startup deadlines.
 package com.fghbuild.gomode.voice
 
 import android.Manifest
@@ -6,6 +6,8 @@ import android.app.Application
 import android.app.role.RoleManager
 import android.content.ComponentName
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.telecom.TelecomManager
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
@@ -13,10 +15,13 @@ import com.fghbuild.gomode.data.ServiceInstance
 import com.fghbuild.gomode.data.SettingsRepository
 import com.fghbuild.gomode.service.ServiceCatalog
 import com.fghbuild.gomode.service.ServiceSettingsClient
+import com.fghbuild.gomode.ui.web.HostedWebViewCompat
+import com.fghbuild.gomode.ui.web.HostedWebViewFeatures
 import com.fghbuild.gomode.ui.web.ServiceCallStage
 import com.fghbuild.gomode.ui.web.ServiceShellKey
 import com.fghbuild.gomode.ui.web.ServiceShellOwner
 import com.fghbuild.gomode.ui.web.WebShellLoadState
+import com.fghbuild.gomode.ui.web.completeFrontendPreparation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -28,10 +33,15 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -44,8 +54,12 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
+import org.robolectric.shadow.api.Shadow
+import org.robolectric.shadows.ShadowLog
 import org.robolectric.shadows.ShadowSystemClock
 import java.time.Duration
+import java.util.concurrent.TimeUnit
 
 @RunWith(RobolectricTestRunner::class)
 class CarDialVoiceOwnerTest {
@@ -286,4 +300,80 @@ class CarDialVoiceOwnerTest {
             assertNull(owner.request(server))
             assertFalse(owner.isBusy)
         }
+
+    @Test
+    @Config(
+        shadows = [ShadowTransactionalTelecomManager::class, HostedWebViewFeatures::class, HostedWebViewCompat::class],
+    )
+    fun frontendTimeoutKeepsItsSafeCauseAndReleasesCallAndMicrophoneOwnership() =
+        runTest {
+            shadowOf(context.packageManager).setSystemFeature(PackageManager.FEATURE_TELECOM, true)
+            val manifest =
+                """{"service":"fixture","apiVersion":1,"webShell":{"bridgeVersion":3,"toolGroups":[],
+                "voiceGateway":{"required":false,"url":"/"}}}"""
+            val server = MockWebServer()
+            server.dispatcher =
+                object : Dispatcher() {
+                    override fun dispatch(request: RecordedRequest) = MockResponse().setBody(manifest)
+                }
+            server.start()
+            var identity: String? = null
+            try {
+                val id = repository.addService("Saved server", server.url("/").toString())
+                val settings = repository.settings.first { it.activeServiceId == id }
+                pages.start()
+                val key = ServiceShellKey(id, settings.activeServiceURL)
+                val page =
+                    pages.state
+                        .first { key in it.entries }
+                        .entries
+                        .getValue(key)
+                // A signed-in, loaded page whose frontend never reports preparation.
+                page.bearerStore.onNavigation(key.url)
+                assertTrue(page.bearerStore.receive(Uri.parse(key.url), true, key.url, """{"bearerToken":"fixture"}"""))
+                page.updateLoad(WebShellLoadState.Ready)
+                identity = owner.request(settings.services.single { it.id == id })
+                val activity = Any()
+                assertTrue(owner.attach(identity, activity))
+                owner.start(identity, activity)
+                // Bootstrap discovery reads the fixture on an IO thread before the catalog is ready.
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+                while (startupRecords().none { "event=stage_started stage=FRONTEND" in it }) {
+                    check(System.nanoTime() < deadline) { "Startup never waited on the frontend: ${startupRecords()}" }
+                    runCurrent()
+                    Thread.sleep(10)
+                }
+                assertEquals(CarDialStatus.PREPARING, owner.state.value.status)
+                val telecom =
+                    Shadow.extract<ShadowTransactionalTelecomManager>(
+                        context.getSystemService(TelecomManager::class.java),
+                    )
+                assertFalse(telecom.controlRequests.contains("disconnect"))
+
+                // Startup diagnostics read Android's clock; the deadline uses coroutine time.
+                ShadowSystemClock.advanceBy(Duration.ofMinutes(1))
+                advanceTimeBy(60_000)
+                runCurrent()
+                assertEquals(CarDialStatus.FAILED, owner.state.value.status)
+                assertEquals(CarDialFailure.FRONTEND, owner.state.value.failure)
+                val terminal = startupRecords().single { "event=finished" in it }
+                assertTrue(terminal, "outcome=TIMED_OUT stage=FRONTEND" in terminal && "remaining_ms=0" in terminal)
+                assertTrue("The replacement call stayed active", telecom.controlRequests.contains("disconnect"))
+                assertEquals(VoiceService::class.java.name, shadowOf(context).nextStoppedService?.component?.className)
+                assertFalse(owner.isBusy)
+
+                // A frontend that becomes ready after the deadline cannot start the abandoned attempt.
+                completeFrontendPreparation(page)
+                runCurrent()
+                assertNull(owner.session.value)
+                assertEquals(CarDialFailure.FRONTEND, owner.state.value.failure)
+            } finally {
+                // A live request keeps polling its role, which runTest's cleanup would advance forever.
+                owner.cancel(identity)
+                server.shutdown()
+            }
+        }
+
+    private fun startupRecords(): List<String> =
+        ShadowLog.getLogsForTag("GoModeVoiceStartup").map { it.msg }.filter { "source=CAR" in it }
 }
