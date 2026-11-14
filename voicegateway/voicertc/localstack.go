@@ -273,6 +273,8 @@ type localStackSession struct {
 	livePending       map[string]*liveUtterance
 	liveDraftID       string
 	liveSequence      uint64
+	// language is the session's ISO 639 base language, set once by session.setup.
+	language string
 
 	// Microphone framing and its current capture belong to the RTP owner.
 	micMu       sync.Mutex
@@ -309,6 +311,7 @@ func (s *localStackSession) acceptClientMessage(ctx context.Context, data []byte
 			s.events.Unlock()
 			return errors.New("session is already configured or closed")
 		}
+		s.language = baseLanguage(msg.Voice.Language)
 		s.conv = s.llm.newConversation(msg.Context.SystemInstruction, msg.Tools, msg.IncludeReasoning)
 		if msg.Context.Text != "" {
 			s.conv.addContext(msg.Context.Text)

@@ -431,7 +431,8 @@ export interface VoiceConfig {
    * Empty defaults to "en-US". Invalid tags fail session setup. The gateway
    * instructs the assistant to use this language and supplies recognition hints
    * where supported. Speech models determine available languages and accents;
-   * local server ASR/TTS adapters do not expose per-session language controls.
+   * streaming llama.cpp ASR receives the base language, while other local
+   * server ASR/TTS adapters do not expose per-session language controls.
    */
   language: string;
 }

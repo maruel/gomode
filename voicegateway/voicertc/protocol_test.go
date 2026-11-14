@@ -70,3 +70,12 @@ func TestAcceptGatewayRealtimeSession(t *testing.T) {
 		}
 	})
 }
+
+func TestBaseLanguage(t *testing.T) {
+	t.Parallel()
+	for tag, want := range map[string]string{"en": "en", "en-CA": "en", "zh-Hant-TW": "zh", "": "", "not a tag": ""} {
+		if got := baseLanguage(tag); got != want {
+			t.Errorf("baseLanguage(%q) = %q, want %q", tag, got, want)
+		}
+	}
+}

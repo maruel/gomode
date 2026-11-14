@@ -26,6 +26,22 @@ func (a *llamaLiveASR) transcribe(s *localStackSession, u *liveUtterance) (strin
 	if format.Type != llamacpp.AudioPCM || format.Rate != micSampleRate {
 		return "", errors.Join(fmt.Errorf("live ASR input format %s/%d is unsupported; capture is PCM16/%d Hz", format.Type, format.Rate, micSampleRate), conn.Close())
 	}
+	// The session language selects the ASR prompt on the server, so a model such
+	// as Qwen3-ASR does not guess another language on short or accented speech.
+	// llama.cpp applies session.update fields that are present; the update echoes
+	// the negotiated session and gives tools an explicit empty list because the
+	// server rejects a null one.
+	s.mu.Lock()
+	lang := s.language
+	s.mu.Unlock()
+	if lang != "" {
+		cfg := *conn.Initial.Session
+		cfg.Tools = llamacpp.ToolList{}
+		cfg.Audio.Input.Transcription = &llamacpp.Transcription{Model: cfg.Model, Language: lang}
+		if err := conn.Send(u.ctx, &llamacpp.ClientMessage{Type: llamacpp.EventSessionUpdate, Session: &cfg}); err != nil {
+			return "", errors.Join(err, conn.Close())
+		}
+	}
 	ctx, cancel := context.WithCancel(u.ctx)
 	workers, workerCtx := errgroup.WithContext(ctx)
 	var finishing atomic.Bool

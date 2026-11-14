@@ -94,6 +94,17 @@ func applySessionPolicy(msg *voicev2.SessionSetup) error {
 	return nil
 }
 
+// baseLanguage returns the ISO 639 base subtag of a validated BCP 47 tag, such
+// as "en" for "en-CA". It returns "" for a tag that applySessionPolicy rejects.
+func baseLanguage(tag string) string {
+	parsed, err := language.Parse(tag)
+	if err != nil {
+		return ""
+	}
+	base, _ := parsed.Base()
+	return base.String()
+}
+
 // gatewaySessionReady builds the session.ready message the gateway core emits
 // once a backend is ready.
 func gatewaySessionReady() []byte {

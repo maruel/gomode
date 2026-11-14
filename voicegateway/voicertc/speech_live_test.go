@@ -77,6 +77,50 @@ func nativeSpeechPeer(t *testing.T, provider string, rate int, run func(context.
 func TestLlamaLiveASR(t *testing.T) {
 	t.Parallel()
 	t.Run("transcribe", func(t *testing.T) { testNativeLiveSpeech(t, "llama") })
+	t.Run("language", func(t *testing.T) {
+		t.Parallel()
+		first := make(chan map[string]any, 1)
+		adapter := nativeSpeechPeer(t, "llama", 16000, func(ctx context.Context, ws *websocket.Conn) {
+			first <- readGeminiFixture(t, ctx, ws)
+			for msg := readGeminiFixture(t, ctx, ws); msg != nil && msg["type"] != "input_audio_buffer.commit"; msg = readGeminiFixture(t, ctx, ws) {
+			}
+			writeGeminiFixture(t, ctx, ws, `{"type":"conversation.item.input_audio_transcription.completed","item_id":"u","transcript":"Final words."}`)
+			if _, _, err := ws.Read(ctx); err == nil {
+				t.Error("unexpected replay after final")
+			}
+		})
+		sink := &captureSink{changed: make(chan struct{}, 1)}
+		s := (&localStackRuntime{liveASR: adapter}).newSession(t.Context(), "language", sink, true)
+		s.conv = &fakeConversation{}
+		s.language = "en"
+		t.Cleanup(func() {
+			if err := s.close(); err != nil {
+				t.Error(err)
+			}
+		})
+		if err := s.acceptMicPCM(t.Context(), loudPCM(200)); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.acceptMicPCM(t.Context(), silencePCM(vadSilenceHangoverMS+vadFrameMS)); err != nil {
+			t.Fatal(err)
+		}
+		waitLiveMessage(t, sink, voicev2.MessageKindTranscriptDelta, "Final words.", 1)
+		if err := s.turns.Wait(); err != nil {
+			t.Fatal(err)
+		}
+		update := <-first
+		if update["type"] != "session.update" {
+			t.Fatalf("first message type %v, want session.update", update["type"])
+		}
+		session := update["session"].(map[string]any)
+		got := session["audio"].(map[string]any)["input"].(map[string]any)["transcription"].(map[string]any)["language"]
+		if got != "en" {
+			t.Fatalf("transcription language %v, want en", got)
+		}
+		if tools, ok := session["tools"].([]any); !ok || len(tools) != 0 {
+			t.Fatalf("tools %v, want an empty list", session["tools"])
+		}
+	})
 }
 
 func TestGeminiLiveASR(t *testing.T) {
