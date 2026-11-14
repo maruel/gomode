@@ -133,22 +133,10 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.ResolvedConfig,
 	backends := make(map[string]backendConnector, count)
 	advertised := voicev2.VoiceChoicesResp{Choices: make([]voicev2.VoiceChoice, 0, count)}
 	for _, a := range cfg.Recognition {
-		id, err := a.ID()
-		if err != nil {
-			return nil, err
-		}
-		if !slices.ContainsFunc(advertised.RecognitionModels, func(m voicev2.SpeechModel) bool { return m.ID == id }) {
-			advertised.RecognitionModels = append(advertised.RecognitionModels, voicev2.SpeechModel{ID: id, Label: cmp.Or(a.Label, a.Model, string(a.Engine))})
-		}
+		advertised.RecognitionModels = append(advertised.RecognitionModels, voicev2.SpeechModel{ID: a.ID, Label: cmp.Or(a.Label, a.Model, string(a.Engine))})
 	}
-	for _, a := range cfg.Synthesis {
-		id, err := a.ID()
-		if err != nil {
-			return nil, err
-		}
-		if !slices.ContainsFunc(advertised.SynthesisModels, func(m voicev2.SpeechModel) bool { return m.ID == id }) {
-			advertised.SynthesisModels = append(advertised.SynthesisModels, voicev2.SpeechModel{ID: id, Label: cmp.Or(a.Label, a.Model, string(a.Engine))})
-		}
+	for _, t := range cfg.Synthesis {
+		advertised.SynthesisModels = append(advertised.SynthesisModels, voicev2.SpeechModel{ID: t.ID, Label: cmp.Or(t.Label, t.Model, string(t.Engine))})
 	}
 	var defaultID string
 	cleanup := func() error {
@@ -158,17 +146,14 @@ func newBridgeWithTimeout(ctx context.Context, cfg *voicegateway.ResolvedConfig,
 		}
 		return errors.Join(errs...)
 	}
-	for label, ch := range cfg.Choices() {
-		id, err := ch.ID()
-		if err != nil {
-			return nil, errors.Join(err, cleanup())
-		}
+	for name, ch := range cfg.Choices() {
+		id := name.ID
 		backend, err := backendForConfig(ch, pool)
 		if err != nil {
 			return nil, errors.Join(fmt.Errorf("initialize choice %q: %w", id, err), cleanup())
 		}
 		backends[id] = backend
-		choice, err := backendChoice(ctx, backend, id, label)
+		choice, err := backendChoice(ctx, backend, id, name.Label)
 		if err != nil {
 			return nil, errors.Join(fmt.Errorf("discover choice %q: %w", id, err), cleanup())
 		}

@@ -10,6 +10,12 @@
 #
 # At standalone startup, unavailable providers are hidden with a warning.
 #
+# Every [[realtime]], [[llm]], [[asr]], [[tts]], and [[voice]] entry needs an id:
+# 1 to 64 lowercase letters, digits, "-" or "_", starting with a letter or digit.
+# Clients save the ids of their selections, so keep an id when tuning its entry.
+# Ids are unique among [[realtime]], [[llm]], and [[voice]] together, among
+# [[asr]], and among [[tts]]; [[voice]] refers to its stages by id.
+#
 # Set effort on [[realtime]] or named [[llm]] entries:
 # Omit effort to send no effort option; "off" requests minimal thinking;
 # "low", "medium", "high", "xhigh", and "max" request increasing effort.
@@ -66,6 +72,7 @@ max_instances = 1
 # Realtime Audio models.
 
 [[realtime]]
+id = "gemini-live"
 # https://aistudio.google.com/docs/pricing#gemini-3.8-live
 # Text: $0.75/MTok in, $4.50/MTok out. Audio: $0.30/hr in, $1.08/hr out.
 label = "Gemini Live"
@@ -73,6 +80,7 @@ provider = "gemini"
 model = "gemini-3.8-live"
 
 [[realtime]]
+id = "gemini-live-thinking"
 # https://aistudio.google.com/docs/pricing#gemini-3.8-live
 # Text: $0.75/MTok in, $4.50/MTok out. Audio: $0.30/hr in, $1.08/hr out.
 label = "Gemini Live Thinking"
@@ -80,6 +88,7 @@ provider = "gemini"
 model = "gemini-3.8-live-extended-thinking"
 
 [[realtime]]
+id = "gpt-realtime-mini"
 # https://developers.openai.com/api/docs/models/gpt-realtime-2.1-mini
 # Text: $0.60/MTok in, $2.40/MTok out. Audio: ~$0.36/hr in, ~$1.44/hr out.
 label = "GPT Realtime mini"
@@ -88,6 +97,7 @@ model = "gpt-realtime-2.1-mini"
 effort = "low"
 
 [[realtime]]
+id = "gpt-realtime"
 # https://developers.openai.com/api/docs/models/gpt-realtime-2.1
 # Text: $4.00/MTok in, $24.00/MTok out. Audio: ~$1.152/hr in, ~$4.608/hr out.
 label = "GPT Realtime ($)"
@@ -98,6 +108,7 @@ effort = "low"
 # Native audio-to-audio LFM3, independent of the ASR/LLM/TTS stack.
 # llamacppsrv downloads and starts the managed llama.cpp audio server.
 [[realtime]]
+id = "lfm3-audio"
 label = "LFM3 audio"
 provider = "llamacpp"
 llamacppsrv = true
@@ -109,6 +120,7 @@ context_size = 128000
 # Single-model alternative: speech input -> text thinking/tools -> LFM3 speech.
 # Chat generation completes before synthesis, sharing one loaded model and slot.
 [[realtime]]
+id = "lfm3-audio-staged"
 label = "LFM3 audio thinking (staged)"
 provider = "llamacpp"
 llamacppsrv = true
@@ -124,7 +136,7 @@ effort = "medium"
 # voice-gateway.env.example, using genai's provider environment variables.
 
 [[llm]]
-id = "gpt_luna_codex"
+id = "gpt-luna-codex"
 label = "GPT 6 Luna (Codex)"
 # Uses the existing Codex login and subscription quota.
 provider = "openai"
@@ -133,7 +145,7 @@ model = "gpt-6-luna"
 effort = "low"
 
 [[llm]]
-id = "gpt_luna"
+id = "gpt-luna"
 label = "GPT 6 Luna (API)"
 # https://developers.openai.com/api/docs/models/gpt-6-luna
 # $0.10/MTok in, $0.50/MTok out; prompts >272K tokens: $0.20/MTok in, $0.75/MTok out.
@@ -143,7 +155,7 @@ model = "gpt-6-luna"
 effort = "low"
 
 [[llm]]
-id = "claude_haiku_5_5"
+id = "claude-haiku-5-5"
 label = "Claude Haiku 5.5"
 # https://platform.claude.com/docs/en/models/haiku-5-5/overview
 # $0.10/MTok in, $0.50/MTok out; prompts >100K tokens: $0.50/MTok in, $2.50/MTok out.
@@ -152,7 +164,7 @@ model = "claude-haiku-5-5"
 effort = "low"
 
 [[llm]]
-id = "gemini_flash_3_8"
+id = "gemini-flash-3-8"
 label = "Gemini Flash 3.8"
 # https://aistudio.google.com/docs/pricing#gemini-3.8-flash
 # $0.75/MTok in, $3.75/MTok out through 2026-12-31; then $1.50/MTok in, $7.50/MTok out.
@@ -161,7 +173,7 @@ model = "gemini-3.8-flash"
 effort = "low"
 
 [[llm]]
-id = "gemini_flash_lite"
+id = "gemini-flash-lite"
 label = "Gemini Flash Lite"
 # https://aistudio.google.com/docs/pricing#gemini-3.5-flash-lite
 # $0.30/MTok in, $2.50/MTok out.
@@ -170,7 +182,7 @@ model = "gemini-flash-lite-latest"
 effort = "low"
 
 [[llm]]
-id = "deepseek_flash"
+id = "deepseek-flash"
 label = "DeepSeek Flash"
 # https://api-docs.deepseek.com/quick_start/pricing/
 # Off-peak: $0.15/MTok in, $0.60/MTok out. Peak: $0.30/MTok in, $1.20/MTok out.
@@ -179,7 +191,7 @@ model = "deepseek-flash"
 effort = "low"
 
 [[llm]]
-id = "openrouter_minimax_m3_1_flash"
+id = "openrouter-minimax-m3-1-flash"
 label = "Openrouter Minimax M3.1 Flash"
 # https://openrouter.ai/minimax/minimax-m3.1-flash
 # From $0.1125/MTok in, $0.45/MTok out (25% promotion); list: $0.15/MTok in, $0.60/MTok out.
@@ -190,7 +202,7 @@ model = "minimax/minimax-m3.1-flash"
 openrouter_sort = "latency"
 
 [[llm]]
-id = "openrouter_mimo_v2_6_flash"
+id = "openrouter-mimo-v2-6-flash"
 label = "Openrouter MiMo-V2.6-Flash"
 # https://openrouter.ai/xiaomi/mimo-v2.6-flash
 # From $0.10/MTok in, $0.28/MTok out.
@@ -199,7 +211,7 @@ model = "xiaomi/mimo-v2.6-flash"
 openrouter_sort = "latency"
 
 [[llm]]
-id = "openrouter_ministral_3_14b"
+id = "openrouter-ministral-3-14b"
 label = "Openrouter Ministral 3 14B"
 # https://openrouter.ai/mistralai/ministral-14b-2512
 # $0.20/MTok in, $0.20/MTok out
@@ -208,7 +220,7 @@ model = "mistralai/ministral-14b-2512"
 openrouter_sort = "latency"
 
 [[llm]]
-id = "mistral_ministral_3_14b"
+id = "mistral-ministral-3-14b"
 label = "Mistral Ministral 3 14B"
 # https://docs.mistral.ai/models/ministral-3-14b-25-12
 # $0.20/MTok in, $0.20/MTok out.
@@ -216,7 +228,7 @@ provider = "mistral"
 model = "ministral-14b-2512"
 
 [[llm]]
-id = "alibaba_qwen3_8_flash"
+id = "alibaba-qwen3-8-flash"
 label = "Alibaba Qwen3.8 Flash"
 # https://www.qwencloud.com/models/qwen3.8-flash?region=us-east-1
 # Global scope: $0.113/MTok in, $0.382/MTok out. US scope: $0.15/MTok in, $0.47/MTok out.
@@ -235,7 +247,7 @@ effort = "low"
 
 # Local GGUF LLM.
 [[llm]]
-id = "gemma_4_26b"
+id = "gemma-4-26b"
 label = "Gemma 4 26B A4B"
 provider = "llamacpp"
 llamacppsrv = true
@@ -248,7 +260,7 @@ effort = "low"
 # Define each stage once and compose named choices with [[voice]].
 # Each named LLM can use independently selected gateway or browser speech.
 [[llm]]
-id = "gemma_4_e2b"
+id = "gemma-4-e2b"
 label = "Gemma 4 E2B"
 provider = "llamacpp"
 llamacppsrv = true
@@ -295,7 +307,7 @@ context_size = 32768
 streaming = true
 
 [[asr]]
-id = "gemini_live"
+id = "gemini-transcribe-live"
 label = "Gemini Live Transcribe"
 provider = "gemini"
 model = "gemini-3.5-transcribe-live"
@@ -308,13 +320,13 @@ provider = "groq"
 model = "whisper-large-v3-turbo"
 # GROQ_API_KEY authenticates recognition. whisper-large-v3 is also supported.
 [[asr]]
-id = "gemini"
+id = "gemini-transcribe"
 label = "Gemini Transcribe"
 provider = "gemini"
 model = "gemini-3.5-transcribe"
 
 [[tts]]
-id = "gemini"
+id = "gemini-tts"
 label = "Gemini TTS"
 provider = "gemini"
 model = "gemini-3.8-flash-lite-tts"
@@ -329,38 +341,44 @@ voice = "female"
 context_size = 32768
 
 [[voice]]
+id = "llamacpp-speech-luna"
 label = "llama.cpp speech with GPT 6 Luna"
 asr = "qwen"
-llm = "gpt_luna"
+llm = "gpt-luna"
 tts = "lfm3"
 
 [[voice]]
+id = "whisper-luna-local-speech"
 label = "Groq Whisper with GPT 6 Luna and local speech"
 asr = "whisper"
-llm = "gpt_luna"
+llm = "gpt-luna"
 tts = "lfm3"
 
 [[voice]]
+id = "gemini-speech-luna"
 label = "Gemini speech with GPT 6 Luna"
-asr = "gemini"
-llm = "gpt_luna"
-tts = "gemini"
+asr = "gemini-transcribe"
+llm = "gpt-luna"
+tts = "gemini-tts"
 
 [[voice]]
+id = "whisper-luna-gemini-speech"
 label = "Groq Whisper with GPT 6 Luna and Gemini speech"
 asr = "whisper"
-llm = "gpt_luna"
-tts = "gemini"
+llm = "gpt-luna"
+tts = "gemini-tts"
 
 # Choices requiring the external Parakeet server above:
 # [[voice]]
+# id = "local-stack"
 # label = "Local speech and reasoning"
 # asr = "parakeet"
-# llm = "gemma_4_e2b"
+# llm = "gemma-4-e2b"
 # tts = "kitten"
 
 # [[voice]]
+# id = "local-speech-luna"
 # label = "Local speech with GPT 6 Luna"
 # asr = "parakeet"
-# llm = "gpt_luna"
+# llm = "gpt-luna"
 # tts = "kitten"

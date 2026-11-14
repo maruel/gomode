@@ -326,6 +326,7 @@ model = "test"
 http = "invalid-listen-address"
 geo_db = "missing.mmdb"
 [[realtime]]
+id = "gemini"
 label = "Gemini"
 provider = "gemini"
 model = "gemini-3.8-live"

@@ -5,8 +5,6 @@ package voicegateway
 import (
 	"cmp"
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
@@ -37,6 +35,15 @@ import (
 // retain declaration order. Resolve validates references and produces runtime
 // configuration without changing declarations.
 //
+// Every entry has an id that clients save and send back, so it must stay the
+// same while the entry's other settings change. An id is 1 to 64 lowercase
+// ASCII letters, digits, '-' or '_', starting with a letter or digit. Ids are
+// unique within each advertised namespace: voice choices ([[realtime]],
+// [[llm]], and [[voice]] together), recognition models ([[asr]]), and
+// synthesis models ([[tts]]). Namespaces are independent, so an [[asr]] and an
+// [[llm]] entry may share an id; [[voice]] references each stage in its own
+// namespace.
+//
 // An embedding host decodes Config under its own TOML section with
 // DisallowUnknownFields, calls Resolve during configuration validation, and
 // passes the result through startup. Before creating the bridge it calls
@@ -48,36 +55,17 @@ import (
 type Config struct {
 	Runtime  RuntimeConfig    `toml:"local_stack_runtime"`
 	Realtime []RealtimeConfig `toml:"realtime"`
-	ASR      []NamedASRConfig `toml:"asr"`
-	LLM      []NamedLLMConfig `toml:"llm"`
-	TTS      []NamedTTSConfig `toml:"tts"`
-	Voice    []VoiceConfig    `toml:"voice"`
+	// ASR, LLM, and TTS entries are offered in declaration order.
+	ASR   []ASRConfig   `toml:"asr"`
+	LLM   []LLMConfig   `toml:"llm"`
+	TTS   []TTSConfig   `toml:"tts"`
+	Voice []VoiceConfig `toml:"voice"`
 }
 
-// NamedASRConfig declares one recognition stage with an ID used by presets.
-// Its position in Config.ASR determines the offered recognition order.
-type NamedASRConfig struct {
-	ID string `toml:"id"`
-	ASRConfig
-}
-
-// NamedTTSConfig declares one synthesis stage with an ID used by presets.
-// Its position in Config.TTS determines the offered synthesis order.
-type NamedTTSConfig struct {
-	ID string `toml:"id"`
-	TTSConfig
-}
-
-// NamedLLMConfig declares one language model. ID identifies preset references;
-// its position in Config.LLM determines the offered choice order.
-type NamedLLMConfig struct {
-	ID string `toml:"id"`
-	LLMConfig
-}
-
-// VoiceConfig names the stages composed into one preset. ASR and TTS are
-// optional; an omitted stage requires client-owned speech.
+// VoiceConfig names the stages composed into one preset by their ids. ASR and
+// TTS are optional; an omitted stage requires client-owned speech.
 type VoiceConfig struct {
+	ID    string `toml:"id"`
 	Label string `toml:"label"`
 	ASR   string `toml:"asr"`
 	LLM   string `toml:"llm"`
@@ -102,29 +90,34 @@ type providerProbeKey struct {
 }
 
 // Choice is a typed pipeline configuration: *RealtimeConfig, *LLMConfig, or
-// *PipelineConfig. IDs fingerprint effective settings independently of labels
-// and credentials. Resolve selects their defaults; each validates itself.
+// *PipelineConfig. Resolve selects their defaults; each validates itself.
 type Choice interface {
-	ID() (string, error)
 	validate() error
 }
 
-// Choices iterates labels and pipeline configurations in client preference order,
+// ChoiceName is the advertised identity of one choice.
+type ChoiceName struct {
+	// ID is the configured id clients save and select.
+	ID    string
+	Label string
+}
+
+// Choices iterates names and pipeline configurations in client preference order,
 // preserving entry order within each section. The configurations belong to c.
-func (c *ResolvedConfig) Choices() iter.Seq2[string, Choice] {
-	return func(yield func(string, Choice) bool) {
+func (c *ResolvedConfig) Choices() iter.Seq2[ChoiceName, Choice] {
+	return func(yield func(ChoiceName, Choice) bool) {
 		for i := range c.Realtime {
-			if !yield(c.Realtime[i].Label, &c.Realtime[i]) {
+			if !yield(ChoiceName{c.Realtime[i].ID, c.Realtime[i].Label}, &c.Realtime[i]) {
 				return
 			}
 		}
 		for i := range c.LLM {
-			if !yield(c.LLM[i].Label, &c.LLM[i]) {
+			if !yield(ChoiceName{c.LLM[i].ID, c.LLM[i].Label}, &c.LLM[i]) {
 				return
 			}
 		}
 		for i := range c.Pipelines {
-			if !yield(c.Pipelines[i].Label, &c.Pipelines[i]) {
+			if !yield(ChoiceName{c.Pipelines[i].ID, c.Pipelines[i].Label}, &c.Pipelines[i]) {
 				return
 			}
 		}
@@ -319,27 +312,27 @@ func (c *ModelConfig) usesDefaultProviderEndpoint() bool {
 // an openaicompatible endpoint.
 type ModelConfig struct {
 	// LlamaCPPServer starts a managed llama.cpp server instead of connecting to Remote.
-	LlamaCPPServer bool   `toml:"llamacppsrv" json:"llamacppsrv"`
-	Provider       string `toml:"provider" json:"provider"`
+	LlamaCPPServer bool   `toml:"llamacppsrv"`
+	Provider       string `toml:"provider"`
 	// Auth selects the existing Codex subscription when set to "codex" on
 	// openai or openairesponses. Empty preserves API-key authentication.
-	Auth openairesponses.Auth `toml:"auth" json:"auth,omitempty"`
+	Auth openairesponses.Auth `toml:"auth"`
 	// Remote is a server origin, except for openaicompatible, which requires the
 	// complete chat completions endpoint URL, including its path.
-	Remote string `toml:"remote" json:"remote"`
-	Model  string `toml:"model" json:"model"`
+	Remote string `toml:"remote"`
+	Model  string `toml:"model"`
 	// Effort selects off, low, medium, high, xhigh, or max. Empty
 	// omits the effort option, preserving provider defaults. Supported levels
 	// depend on the provider and model; off requests the lowest supported effort.
-	Effort genai.EffortLevel `toml:"effort" json:"effort,omitempty"`
+	Effort genai.EffortLevel `toml:"effort"`
 	// OpenRouterSort prioritizes OpenRouter providers by latency, price, or
 	// throughput. Empty preserves OpenRouter's default routing.
-	OpenRouterSort openrouter.ProviderSort `toml:"openrouter_sort" json:"openrouter_sort,omitempty"`
+	OpenRouterSort openrouter.ProviderSort `toml:"openrouter_sort"`
 	// APIKeyName names the environment variable containing the bearer token
 	// for an openaicompatible endpoint. The credential is never stored in TOML.
 	// A named variable must be nonempty in the gateway process environment.
 	// Authenticated requests, including redirects, are confined to Remote.
-	APIKeyName string `toml:"api_key_name" json:"-"`
+	APIKeyName string `toml:"api_key_name"`
 }
 
 // NewProvider constructs the configured client and identifies subscription
@@ -457,17 +450,13 @@ func (c *ModelConfig) validate(prefix string) error {
 // Clients may provide speech or select independently configured gateway stages.
 // Only selected gateway stages initialize their models and workers.
 type LLMConfig struct {
-	Label string `toml:"label" json:"-"`
+	ID    string `toml:"id"`
+	Label string `toml:"label"`
 	ModelConfig
 	// ContextSize is the managed llama.cpp context in tokens, 512 to 262144,
 	// and is required for a managed server. Conversation history is kept
 	// whole, so requests that outgrow it fail.
-	ContextSize int `toml:"context_size" json:"context_size,omitzero"`
-}
-
-// ID returns the fingerprint of the effective LLM settings.
-func (c *LLMConfig) ID() (string, error) {
-	return choiceID("chat", c)
+	ContextSize int `toml:"context_size"`
 }
 
 func (c *LLMConfig) validate() error {
@@ -476,17 +465,6 @@ func (c *LLMConfig) validate() error {
 
 func (c *LLMConfig) validateAs(prefix string) error {
 	return errors.Join(c.ModelConfig.validate(prefix), validateManagedContext(prefix, c.ContextSize, c.LlamaCPPServer))
-}
-
-// choiceID hashes the pipeline's canonical configuration. Labels and credential
-// environment variables are excluded by their JSON tags.
-func choiceID(pipeline string, cfg any) (string, error) {
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		return "", fmt.Errorf("encode %s identity: %w", pipeline, err)
-	}
-	sum := sha256.Sum256(data)
-	return fmt.Sprintf("%s-%x", pipeline, sum[:8]), nil
 }
 
 // configFile adds standalone listeners and issuer policy to reusable declarations.
@@ -519,7 +497,11 @@ func (c *configFile) Resolve() (ResolvedConfig, error) {
 }
 
 // Resolve validates declarations, selects omitted defaults, and expands preset
-// references into effective runtime settings. It owns its result slices and leaves declarations unchanged.
+// references into effective runtime settings. A [[voice]] entry resolves each
+// stage id in its own table; an entry without an id resolves no reference.
+// Reference errors join ResolvedConfig.Validate errors, so a missing id is
+// reported beside the reference that fails because of it.
+// It owns its result slices and leaves declarations unchanged.
 // Recognition, language, and synthesis choices retain declaration order in standalone
 // and embedded host configurations.
 func (c *Config) Resolve() (ResolvedConfig, error) {
@@ -536,60 +518,33 @@ func (c *Config) Resolve() (ResolvedConfig, error) {
 	}
 	var errs []error
 	asr := make(map[string]ASRConfig, len(c.ASR))
-	for i, d := range c.ASR {
-		a := d.ASRConfig
+	for _, a := range c.ASR {
 		if a.Engine == "" && a.Provider != "" {
 			a.Engine = ASREngineGenAI
 		}
-		if a.Label == "" {
-			a.Label = a.Model
-			if a.Label == "" {
-				a.Label = d.ID
-			}
-		}
-		if strings.TrimSpace(d.ID) == "" {
-			errs = append(errs, fmt.Errorf("asr entry %d: id is required", i+1))
-		} else {
-			if _, ok := asr[d.ID]; ok {
-				errs = append(errs, fmt.Errorf("asr entry %d: duplicate id %q", i+1, d.ID))
-			}
-			asr[d.ID] = a
+		a.Label = cmp.Or(a.Label, a.Model, a.ID)
+		if a.ID != "" {
+			asr[a.ID] = a
 		}
 		out.Recognition = append(out.Recognition, a)
 	}
 	tts := make(map[string]TTSConfig, len(c.TTS))
-	for i, d := range c.TTS {
-		a := d.TTSConfig
-		if a.Engine == "" && a.Provider != "" {
-			a.Engine = TTSEngineGenAI
+	for _, t := range c.TTS {
+		if t.Engine == "" && t.Provider != "" {
+			t.Engine = TTSEngineGenAI
 		}
-		if a.Label == "" {
-			a.Label = a.Model
-			if a.Label == "" {
-				a.Label = d.ID
-			}
+		t.Label = cmp.Or(t.Label, t.Model, t.ID)
+		if t.ID != "" {
+			tts[t.ID] = t
 		}
-		if strings.TrimSpace(d.ID) == "" {
-			errs = append(errs, fmt.Errorf("tts entry %d: id is required", i+1))
-		} else {
-			if _, ok := tts[d.ID]; ok {
-				errs = append(errs, fmt.Errorf("tts entry %d: duplicate id %q", i+1, d.ID))
-			}
-			tts[d.ID] = a
-		}
-		out.Synthesis = append(out.Synthesis, a)
+		out.Synthesis = append(out.Synthesis, t)
 	}
 	llms := make(map[string]LLMConfig, len(c.LLM))
-	for i, l := range c.LLM {
-		if strings.TrimSpace(l.ID) == "" {
-			errs = append(errs, fmt.Errorf("llm entry %d: id is required", i+1))
-		} else {
-			if _, ok := llms[l.ID]; ok {
-				errs = append(errs, fmt.Errorf("llm entry %d: duplicate id %q", i+1, l.ID))
-			}
-			llms[l.ID] = l.LLMConfig
+	for _, l := range c.LLM {
+		if l.ID != "" {
+			llms[l.ID] = l
 		}
-		out.LLM = append(out.LLM, l.LLMConfig)
+		out.LLM = append(out.LLM, l)
 	}
 	for _, v := range c.Voice {
 		a, asrOK := asr[v.ASR]
@@ -604,12 +559,9 @@ func (c *Config) Resolve() (ResolvedConfig, error) {
 		if v.TTS != "" && !ttsOK {
 			errs = append(errs, fmt.Errorf("voice %q: unknown tts %q", v.Label, v.TTS))
 		}
-		out.Pipelines = append(out.Pipelines, PipelineConfig{Label: v.Label, ASR: a, LLM: llm, TTS: t})
+		out.Pipelines = append(out.Pipelines, PipelineConfig{ID: v.ID, Label: v.Label, ASR: a, LLM: llm, TTS: t})
 	}
-	if err := errors.Join(errs...); err != nil {
-		return ResolvedConfig{}, err
-	}
-	if err := out.Validate(); err != nil {
+	if err := errors.Join(append(errs, out.Validate())...); err != nil {
 		return ResolvedConfig{}, err
 	}
 	return out, nil
@@ -693,25 +645,59 @@ func (c *ResolvedConfig) Validate() error {
 	for _, a := range c.Synthesis {
 		errs = append(errs, validateTTS(a))
 	}
-	seen := make(map[string]struct{})
-	for label, ch := range c.Choices() {
-		if strings.TrimSpace(label) == "" {
-			errs = append(errs, errors.New("choice label is required"))
+	choices, recognition, synthesis := ids{}, ids{}, ids{}
+	for i := range c.Realtime {
+		errs = append(errs, choices.add(fmt.Sprintf("realtime entry %d", i+1), c.Realtime[i].Label, c.Realtime[i].ID))
+	}
+	for i := range c.LLM {
+		errs = append(errs, choices.add(fmt.Sprintf("llm entry %d", i+1), c.LLM[i].Label, c.LLM[i].ID))
+	}
+	for i := range c.Pipelines {
+		errs = append(errs, choices.add(fmt.Sprintf("voice entry %d", i+1), c.Pipelines[i].Label, c.Pipelines[i].ID))
+	}
+	for i := range c.Recognition {
+		errs = append(errs, recognition.add(fmt.Sprintf("asr entry %d", i+1), c.Recognition[i].Label, c.Recognition[i].ID))
+	}
+	for i := range c.Synthesis {
+		errs = append(errs, synthesis.add(fmt.Sprintf("tts entry %d", i+1), c.Synthesis[i].Label, c.Synthesis[i].ID))
+	}
+	for name, ch := range c.Choices() {
+		if strings.TrimSpace(name.Label) == "" {
+			errs = append(errs, fmt.Errorf("choice %q: label is required", name.ID))
 		}
 		if err := ch.validate(); err != nil {
-			errs = append(errs, fmt.Errorf("choice %q: %w", label, err))
+			errs = append(errs, fmt.Errorf("choice %q: %w", name.ID, err))
 		}
-		id, err := ch.ID()
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			errs = append(errs, fmt.Errorf("duplicate choice %q (%s)", label, id))
-		}
-		seen[id] = struct{}{}
 	}
 	return errors.Join(errs...)
+}
+
+// ids is one namespace of advertised ids, mapped to the entry that declared each.
+type ids map[string]string
+
+// add checks the id of the entry at position, described by its label, and
+// records it. Config documents the id format.
+func (n ids) add(position, label, id string) error {
+	entry := position
+	if label != "" {
+		entry = fmt.Sprintf("%s (%q)", position, label)
+	}
+	if id == "" {
+		return fmt.Errorf("%s: id is required", entry)
+	}
+	if len(id) > 64 {
+		return fmt.Errorf("%s: id %q is longer than 64 characters", entry, id)
+	}
+	for i, r := range id {
+		if ('a' > r || r > 'z') && ('0' > r || r > '9') && (i == 0 || r != '-' && r != '_') {
+			return fmt.Errorf("%s: id %q must use lowercase letters, digits, '-' and '_', starting with a letter or digit", entry, id)
+		}
+	}
+	if previous, ok := n[id]; ok {
+		return fmt.Errorf("%s: id %q is already used by %s", entry, id, previous)
+	}
+	n[id] = entry
+	return nil
 }
 
 // DebugConfig configures standalone execution tracing.
@@ -772,25 +758,22 @@ type RuntimeConfig struct {
 // ownership; an omitted stage requires client speech. Each configured stage needs
 // explicit engine/model selection, except for the ASR engines documented below.
 type PipelineConfig struct {
-	Label string `toml:"label" json:"-"`
+	// ID is the [[voice]] id; it is empty for combinations composed per session.
+	ID    string `toml:"id"`
+	Label string `toml:"label"`
 	// TextOnly disables gateway speech processing. Clients transcribe and speak;
 	// the choice serves text sessions only and never initializes ASR or TTS.
 	// ASR and TTS settings must be omitted when TextOnly is true.
-	TextOnly bool      `toml:"text_only" json:"text_only"`
-	ASR      ASRConfig `toml:"asr" json:"asr"`
+	TextOnly bool      `toml:"text_only"`
+	ASR      ASRConfig `toml:"asr"`
 	// LLM must support function tools. Its endpoint receives transcripts, the
 	// system instruction, and service-item context, even when speech stays local.
-	LLM LLMConfig `toml:"llm" json:"llm"`
-	TTS TTSConfig `toml:"tts" json:"tts"`
+	LLM LLMConfig `toml:"llm"`
+	TTS TTSConfig `toml:"tts"`
 	// UnavailableASR and UnavailableTTS retain choice identity while filtering
 	// speech capabilities after provider availability checks.
-	UnavailableASR bool `toml:"-" json:"-"`
-	UnavailableTTS bool `toml:"-" json:"-"`
-}
-
-// ID returns the fingerprint of the effective pipeline settings.
-func (c *PipelineConfig) ID() (string, error) {
-	return choiceID("local-stack", c)
+	UnavailableASR bool `toml:"-"`
+	UnavailableTTS bool `toml:"-"`
 }
 
 func (c *PipelineConfig) validate() error {
@@ -817,21 +800,19 @@ func (c *PipelineConfig) validate() error {
 // a path; use loopback to keep speech processing local. External speech servers
 // must be started separately and warmed before a session.
 type ASRConfig struct {
-	Label string `toml:"label" json:"-"`
+	ID    string `toml:"id"`
+	Label string `toml:"label"`
 	// Streaming opens an utterance-owned live connection and displays provisional
 	// text while microphone input continues. It requires a live-ASR model.
-	Streaming bool      `toml:"streaming" json:"streaming"`
-	Engine    ASREngine `toml:"engine" json:"engine"`
-	Provider  string    `toml:"provider" json:"provider"`
-	Remote    string    `toml:"remote" json:"remote"`
-	Model     string    `toml:"model" json:"model"`
+	Streaming bool      `toml:"streaming"`
+	Engine    ASREngine `toml:"engine"`
+	Provider  string    `toml:"provider"`
+	Remote    string    `toml:"remote"`
+	Model     string    `toml:"model"`
 	// ContextSize is the managed llama.cpp context in tokens, 512 to 262144,
 	// and is required for a managed server. Each request carries one utterance.
-	ContextSize int `toml:"context_size" json:"context_size,omitzero"`
+	ContextSize int `toml:"context_size"`
 }
-
-// ID returns the fingerprint of the effective recognition settings.
-func (c *ASRConfig) ID() (string, error) { return choiceID("asr", c) }
 
 // ASREngine selects how utterances are transcribed.
 type ASREngine string
@@ -863,19 +844,17 @@ const (
 // Remote is a separately started server origin without a path; use loopback
 // for local speech processing and warm the selected model before a session.
 type TTSConfig struct {
-	Label    string    `toml:"label" json:"-"`
-	Engine   TTSEngine `toml:"engine" json:"engine"`
-	Provider string    `toml:"provider" json:"provider"`
-	Remote   string    `toml:"remote" json:"remote"`
-	Model    string    `toml:"model" json:"model"`
-	Voice    string    `toml:"voice" json:"voice"`
+	ID       string    `toml:"id"`
+	Label    string    `toml:"label"`
+	Engine   TTSEngine `toml:"engine"`
+	Provider string    `toml:"provider"`
+	Remote   string    `toml:"remote"`
+	Model    string    `toml:"model"`
+	Voice    string    `toml:"voice"`
 	// ContextSize is the managed llama.cpp context in tokens, 512 to 262144,
 	// and is required for a managed server. Each request carries one reply.
-	ContextSize int `toml:"context_size" json:"context_size,omitzero"`
+	ContextSize int `toml:"context_size"`
 }
-
-// ID returns the fingerprint of the effective synthesis settings.
-func (c *TTSConfig) ID() (string, error) { return choiceID("tts", c) }
 
 // TTSEngine selects how assistant text is synthesized.
 type TTSEngine string

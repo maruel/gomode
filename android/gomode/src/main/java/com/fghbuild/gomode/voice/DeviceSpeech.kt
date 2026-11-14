@@ -101,7 +101,8 @@ internal suspend fun installedDeviceVoices(context: Context): List<Voice> =
 /**
  * AndroidDeviceSpeech uses the on-device recognizer and text-to-speech engine, speaking with the
  * voice named [voiceName], or the engine's default for [languageTag] when empty, at [speechRate].
- * A saved voice the engine no longer offers fails speech instead of substituting another voice.
+ * A saved voice the engine no longer offers for the language, installed, falls back to that
+ * default, as the speaking voice picker shows; a listed voice the engine rejects fails speech.
  */
 internal class AndroidDeviceSpeech(
     private val context: Context,
@@ -185,14 +186,14 @@ internal class AndroidDeviceSpeech(
         if (languageStatus == TextToSpeech.LANG_MISSING_DATA || languageStatus == TextToSpeech.LANG_NOT_SUPPORTED) {
             return "Text-to-speech language $languageTag is unavailable"
         }
-        if (voiceName.isNotEmpty()) {
-            val voice =
-                tts.voices.orEmpty().firstOrNull {
-                    it.name == voiceName && deviceVoiceMatchesLanguage(it, languageTag)
-                }
-            if (voice == null || tts.setVoice(voice) != TextToSpeech.SUCCESS) {
-                return "The saved local voice is unavailable. Choose another speaking voice in Settings."
+        val voice =
+            tts.voices.orEmpty().firstOrNull {
+                it.name == voiceName &&
+                    deviceVoiceMatchesLanguage(it, languageTag) &&
+                    TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED !in it.features
             }
+        if (voice != null && tts.setVoice(voice) != TextToSpeech.SUCCESS) {
+            return "Text-to-speech could not use the local voice ${voice.name}"
         }
         tts.setSpeechRate(speechRate)
         tts.setAudioAttributes(

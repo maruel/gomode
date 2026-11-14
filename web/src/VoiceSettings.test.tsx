@@ -162,37 +162,25 @@ describe("VoiceSettings", () => {
     expect(screen.queryByRole("option", { name: "US English (en-US)" })).toBeNull();
     expect(screen.queryByRole("option", { name: "UK English (en-GB)" })).toBeNull();
     expect(screen.getByRole("option", { name: "French (fr-FR)" })).toBeInTheDocument();
-    await waitFor(() => expect(voices()).toHaveValue("english-uk"));
-    expect(screen.getByRole("option", { name: "Choose an available speaking voice" })).toBeDisabled();
+    await waitFor(() => expect(voices()).toHaveValue(""));
     await user.selectOptions(voices(), "french");
     expect(voiceSession.state.browserVoiceURI).toBe("french");
   });
 
-  it("keeps an unavailable saved browser voice visible and allows returning to the default", async () => {
-    const user = userEvent.setup();
-    voiceSession.setState((s) => ({ ...s, speechInput: "client", speechOutput: "client", browserVoiceURI: "missing" }));
-    render(() => <VoiceSettings />);
-    const select = screen.getByRole("combobox", { name: "Speaking voice" });
-    expect(select).toHaveValue("missing");
-    expect(screen.getByRole("option", { name: "Choose an available speaking voice" })).toBeDisabled();
-    await user.selectOptions(select, "");
-    expect(voiceSession.state.browserVoiceURI).toBe("");
-  });
-
-  it("shows the missing saved selection when a voice-list refresh removes the active option", async () => {
+  it("shows the browser default for a saved browser voice the browser does not offer", async () => {
     const user = userEvent.setup();
     voiceSession.selectSpeechInput("client");
     voiceSession.selectSpeechOutput("client");
     const first = { name: "First", lang: "en-US", voiceURI: "first" } as SpeechSynthesisVoice;
-    fakeSynthesis.voices = [first, { name: "Selected", lang: "en-US", voiceURI: "selected" } as SpeechSynthesisVoice];
+    const selected = { name: "Selected", lang: "en-US", voiceURI: "selected" } as SpeechSynthesisVoice;
+    fakeSynthesis.voices = [first, selected];
     render(() => <VoiceSettings />);
     const select = screen.getByRole("combobox", { name: "Speaking voice" });
     await user.selectOptions(select, "selected");
-    for (const voices of [[first], []]) {
+    for (const voices of [[first], [], [first, selected]]) {
       fakeSynthesis.voices = voices;
       fakeSynthesis.dispatchEvent(new Event("voiceschanged"));
-      await waitFor(() => expect(select).toHaveValue("selected"));
-      expect(screen.getByRole("option", { name: "Choose an available speaking voice" })).toBeDisabled();
+      await waitFor(() => expect(select).toHaveValue(voices.includes(selected) ? "selected" : ""));
       expect(voiceSession.state.browserVoiceURI).toBe("selected");
     }
   });

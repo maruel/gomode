@@ -414,6 +414,8 @@ export interface VoiceState extends AudioRouteState {
   speechModelIDs: Record<"input" | "output", string | null>;
   /** Effective gateway choice per family, null when the gateway offers none. */
   choiceIDs: Record<VoiceTransport, string | null>;
+  /** The gateway's advertised default choice per family. */
+  defaultChoiceIDs: Record<VoiceTransport, string | null>;
   choicesStatus: "idle" | "loading" | "ready" | "error";
   choicesError: string | null;
   /** Speech stage whose model resolution produced choicesError; null when the model choice or catalog owns it. */
@@ -637,18 +639,19 @@ function speechModelStorageKey(origin: string, stage: SpeechStage): string {
   return `gomode.voiceSpeechModel.${origin}.${stage}`;
 }
 
+// A recovering session keeps the selections it started with or fails with these.
+const SESSION_CHOICE_UNAVAILABLE = "Session voice choice is unavailable. Start a new voice session.";
+const SESSION_MODEL_UNAVAILABLE = "Session speech model is unavailable. Start a new voice session.";
+const SESSION_VOICE_UNAVAILABLE = "Session speaking voice is unavailable. Start a new voice session.";
+
+// A saved model the gateway no longer lists falls back to its first model.
 function resolveSpeechModel(models: SpeechModel[], selected: string | null, stage: SpeechStage): string {
-  const label = stage === "input" ? "recognition" : "speech";
-  if (selected !== null) {
-    if (!models.some((model) => model.id === selected))
-      throw new Error(`The selected ${label} model is unavailable. Choose another ${label} model.`);
-    return selected;
-  }
-  if (!models[0])
+  const model = models.find((candidate) => candidate.id === selected) ?? models[0];
+  if (!model)
     throw new Error(
-      `The gateway has no ${label} models. Choose browser ${stage === "input" ? "recognition" : "speech output"} or a native audio model.`,
+      `The gateway has no ${stage === "input" ? "recognition" : "speech"} models. Choose browser ${stage === "input" ? "recognition" : "speech output"} or a native audio model.`,
     );
-  return models[0].id;
+  return model.id;
 }
 
 function validSpeechModels(models: SpeechModel[] | undefined): boolean {
@@ -681,14 +684,11 @@ function speakingVoiceStorageKey(origin: string, choiceID: string): string {
   return `gomode.speakingVoice.${JSON.stringify([origin, choiceID])}`;
 }
 
+// A saved voice the choice no longer offers falls back to the provider default.
 function savedSpeakingVoice(origin: string, choice: VoiceChoice, output: SpeechLocation): string {
-  if (output !== "gateway" || !choice.voices?.length) return "";
-  return localStorage.getItem(speakingVoiceStorageKey(origin, choice.id)) ?? "";
-}
-
-function speakingVoiceError(choice: VoiceChoice, name: string): string | null {
-  const available = name === "" || choice.voices?.includes(name) === true;
-  return available ? null : "The saved speaking voice is unavailable. Choose another speaking voice.";
+  if (output !== "gateway") return "";
+  const name = localStorage.getItem(speakingVoiceStorageKey(origin, choice.id)) ?? "";
+  return choice.voices?.includes(name) ? name : "";
 }
 
 type ValidatedVoiceChoices = Omit<VoiceChoicesResp, "choices" | "defaults"> & {
@@ -750,23 +750,23 @@ function defaultChoiceID(metadata: ValidatedVoiceChoices, transport: VoiceTransp
   return metadata.defaults.find((fallback) => fallback.transport === transport)?.id ?? null;
 }
 
-// resolveVoiceChoice keeps a saved choice for its own family, and falls back to
-// the family default when the saved choice serves only the other family.
+// resolveVoiceChoice keeps a saved choice that serves this family, and otherwise
+// falls back to the family default: the saved choice serves only the other
+// family, or the gateway no longer offers it.
 function resolveVoiceChoice(
   metadata: ValidatedVoiceChoices,
   transport: VoiceTransport,
   selected: string | null,
   speech: SpeechSelection | null,
-): string | null {
+): ValidatedVoiceChoice | null {
   const compatible = compatibleChoices(metadata.choices, transport, speech);
-  if (selected !== null) {
-    if (!metadata.choices.some((choice) => choice.id === selected))
-      throw new Error("The selected voice choice is unavailable. Choose another voice choice.");
-    if (compatible.some((choice) => choice.id === selected)) return selected;
-  }
   const fallback = defaultChoiceID(metadata, transport);
-  const choice = compatible.find((choice) => choice.id === fallback) ?? compatible[0];
-  return choice?.id ?? null;
+  return (
+    compatible.find((choice) => choice.id === selected) ??
+    compatible.find((choice) => choice.id === fallback) ??
+    compatible[0] ??
+    null
+  );
 }
 
 // VoiceSession
@@ -856,6 +856,8 @@ export class VoiceSession {
   private _sessionComposable = false;
   private _sessionSpeechModelIDs: Record<SpeechStage, string | null> = { input: null, output: null };
   private _sessionVoiceName: string | null = null;
+  // Set once a connection resolves the session selection; recovery then requires it unchanged.
+  private _sessionPinned = false;
   private readonly _conversationID: () => string;
   private readonly _setConversationID: (value: string) => string;
 
@@ -909,6 +911,7 @@ export class VoiceSession {
       speechInput: setup?.mode === "all-in-one" ? "gateway" : (setup?.partsInput ?? savedSpeechLocation("Input")),
       speechOutput: setup?.mode === "all-in-one" ? "gateway" : (setup?.partsOutput ?? savedSpeechLocation("Output")),
       choices: [],
+      defaultChoiceIDs: { text: null, webrtc: null },
       speechModels: { input: [], output: [] },
       speechModelIDs: { input: setup?.recognitionModelID ?? null, output: setup?.synthesisModelID ?? null },
       choiceIDs: {
@@ -1054,17 +1057,17 @@ export class VoiceSession {
     let failure: string | null = null;
     let failureStage: SpeechStage | null = null;
     const compatible = compatibleChoices(choices, transport, speech);
-    if (
-      id !== null &&
-      this.state.choices.some((choice) => choice.id === id) &&
-      !choices.some((choice) => choice.id === id)
-    )
-      id = null;
-    if (id === null) id = compatible[0]?.id ?? null;
+    const ready = this.state.choicesStatus === "ready";
+    // A choice this setup does not list, including one the gateway withdrew, falls back to the
+    // advertised default, then to the first compatible choice.
+    if (ready && !choices.some((choice) => choice.id === id)) id = null;
+    if (id === null)
+      id =
+        (compatible.find((choice) => choice.id === this.state.defaultChoiceIDs[transport]) ?? compatible[0])?.id ??
+        null;
     const choice = choices.find((choice) => choice.id === id);
-    if (this.state.choicesStatus === "ready") {
-      if (id !== null && !choice) failure = "The selected voice choice is unavailable. Choose another voice choice.";
-      else if (choice && !compatible.some((candidate) => candidate.id === id))
+    if (ready) {
+      if (choice && !compatible.some((candidate) => candidate.id === id))
         failure = "This model does not support the selected recognition and speech output.";
       else if (id === null) failure = "The voice gateway has no model for this setup. Choose another setup.";
     }
@@ -1091,8 +1094,8 @@ export class VoiceSession {
     let voiceStatus: VoiceState["voiceStatus"] = "ready";
     try {
       name = choice ? savedSpeakingVoice(origin, choice, speech.output) : null;
-      voiceError = choice && name !== null && speech.output === "gateway" ? speakingVoiceError(choice, name) : null;
     } catch (error) {
+      // Storage reads can fail; the speaking voice picker reports it and offers a retry.
       if (persist) throw error;
       voiceError = error instanceof Error ? error.message : String(error);
       voiceStatus = "error";
@@ -1127,8 +1130,6 @@ export class VoiceSession {
     if (choices.length === 0) throw new Error("This voice setup is unavailable. Choose another setup.");
     const next = this._setupPreference();
     next.mode = mode;
-    const key = mode === "all-in-one" ? "nativeChoiceID" : "partsChoiceID";
-    if (next[key] === null) next[key] = choices[0]?.id ?? null;
     this._applySetup(next, true);
   }
 
@@ -1237,6 +1238,7 @@ export class VoiceSession {
           s.speechOutput =
             setup?.mode === "all-in-one" ? "gateway" : (setup?.partsOutput ?? savedSpeechLocation("Output"));
           s.choices = [];
+          s.defaultChoiceIDs = { text: null, webrtc: null };
           s.speechModels = { input: [], output: [] };
           s.speechModelIDs = speechModelIDs;
           s.choiceIDs = choiceIDs;
@@ -1254,6 +1256,7 @@ export class VoiceSession {
       }
       this._update((s) => {
         s.choices = metadata.choices;
+        s.defaultChoiceIDs = { text: defaultChoiceID(metadata, "text"), webrtc: defaultChoiceID(metadata, "webrtc") };
         s.speechModels = { input: metadata.recognitionModels ?? [], output: metadata.synthesisModels ?? [] };
         s.speechModelIDs = speechModelIDs;
         s.choicesStatus = "ready";
@@ -1269,14 +1272,14 @@ export class VoiceSession {
     }
   }
 
-  /** Restore the saved setup, retaining unavailable selections for explicit recovery. */
+  /** Restore the saved setup; withdrawn selections show their fallbacks until the next edit saves them. */
   private _resolveFamilies(origin: string, metadata: ValidatedVoiceChoices): void {
     let preference = savedSetup(origin);
     if (preference === null) {
       const selected = this.state.choiceIDs[this.transport] ?? savedVoiceChoice(origin, this.transport);
-      const initial = metadata.choices.find(
-        (choice) => choice.id === (selected ?? defaultChoiceID(metadata, this.transport)),
-      );
+      const initial =
+        metadata.choices.find((choice) => choice.id === selected) ??
+        metadata.choices.find((choice) => choice.id === defaultChoiceID(metadata, this.transport));
       const mode: VoiceSetupMode =
         initial && nativeVoiceChoice(initial)
           ? "all-in-one"
@@ -1345,6 +1348,7 @@ export class VoiceSession {
       const transport = this.transport;
       this._update((s) => {
         s.choices = metadata.choices;
+        s.defaultChoiceIDs = { text: defaultChoiceID(metadata, "text"), webrtc: defaultChoiceID(metadata, "webrtc") };
         s.speechModels = { input: metadata.recognitionModels ?? [], output: metadata.synthesisModels ?? [] };
         s.choiceIDs = { ...s.choiceIDs, [transport]: this._sessionChoiceID };
         s.speechModelIDs = { ...this._sessionSpeechModelIDs };
@@ -1353,25 +1357,41 @@ export class VoiceSession {
         s.choicesErrorStage = null;
       });
     }
-    let choiceID: string | null;
+    // A new session falls back from withdrawn selections; a recovering session keeps its own or fails.
+    const pinned = this._sessionPinned;
+    let choice: ValidatedVoiceChoice | null;
     try {
       const stored = savedSetup(snapshot.url.origin);
       const selected = metadata.choices.find(
         (choice) => choice.id === (this._sessionChoiceID ?? defaultChoiceID(metadata, this.transport)),
       );
-      if (stored === null && selected && nativeVoiceChoice(selected) && this.transport === "webrtc")
+      if (!pinned && stored === null && selected && nativeVoiceChoice(selected) && this.transport === "webrtc")
         this._update((s) => {
           s.setupMode = "all-in-one";
           s.speechInput = "gateway";
           s.speechOutput = "gateway";
         });
       const choices = setupChoices(metadata.choices, this.state.setupMode);
-      const previous =
-        metadata.choices.some((choice) => choice.id === this._sessionChoiceID) &&
-        !choices.some((choice) => choice.id === this._sessionChoiceID)
-          ? null
-          : this._sessionChoiceID;
-      choiceID = resolveVoiceChoice({ ...metadata, choices }, this.transport, previous, this.speech);
+      if (pinned) {
+        choice =
+          compatibleChoices(choices, this.transport, this.speech).find(
+            (choice) => choice.id === this._sessionChoiceID,
+          ) ?? null;
+        if (choice === null) throw new Error(SESSION_CHOICE_UNAVAILABLE);
+      } else {
+        choice = resolveVoiceChoice({ ...metadata, choices }, this.transport, this._sessionChoiceID, this.speech);
+        if (choice === null)
+          throw new Error("The voice gateway has no model for the selected recognition and speech output");
+      }
+      this._sessionChoiceID = choice.id;
+      this._sessionComposable = choice.composable === true;
+      for (const stage of ["input", "output"] as const) {
+        if (!this._sessionComposable || this.speech[stage] !== "gateway") continue;
+        const models = stage === "input" ? (metadata.recognitionModels ?? []) : (metadata.synthesisModels ?? []);
+        const id = this._sessionSpeechModelIDs[stage];
+        if (pinned && !models.some((model) => model.id === id)) throw new Error(SESSION_MODEL_UNAVAILABLE);
+        this._sessionSpeechModelIDs[stage] = resolveSpeechModel(models, id, stage);
+      }
     } catch (error) {
       if (snapshot.version === untrack(gatewayVersion))
         this._update((s) => {
@@ -1380,41 +1400,21 @@ export class VoiceSession {
         });
       throw error;
     }
-    if (choiceID === null)
-      throw new Error("The voice gateway has no model for the selected recognition and speech output");
-    this._sessionChoiceID = choiceID;
-    const choice = metadata.choices.find((choice) => choice.id === choiceID);
-    if (!choice) throw new Error("Selected voice model is no longer available");
-    this._sessionComposable = choice.composable === true;
-    for (const stage of ["input", "output"] as const) {
-      if (this._sessionComposable && this.speech[stage] === "gateway")
-        this._sessionSpeechModelIDs[stage] = resolveSpeechModel(
-          stage === "input" ? (metadata.recognitionModels ?? []) : (metadata.synthesisModels ?? []),
-          this._sessionSpeechModelIDs[stage],
-          stage,
-        );
-    }
-    if (snapshot.version === untrack(gatewayVersion))
-      this._update((s) => {
-        for (const stage of ["input", "output"] as const) {
-          if (this._sessionSpeechModelIDs[stage] !== null) s.speechModelIDs[stage] = this._sessionSpeechModelIDs[stage];
-        }
-      });
-    let voiceError: string | null = null;
+    const choiceID = choice.id;
+    const offered = choice.voices ?? [];
+    const output = this.state.speechOutput;
+    if (pinned && output === "gateway" && this._sessionVoiceName && !offered.includes(this._sessionVoiceName))
+      throw new Error(SESSION_VOICE_UNAVAILABLE);
+    // A saved voice the choice no longer offers falls back to the provider default.
+    let name: string;
     try {
-      const name =
-        this.state.speechOutput !== "gateway"
+      name =
+        output !== "gateway"
           ? ""
-          : (this._sessionVoiceName ?? savedSpeakingVoice(snapshot.url.origin, choice, this.state.speechOutput));
-      this._sessionVoiceName = name;
-      voiceError = this.state.speechOutput === "gateway" ? speakingVoiceError(choice, name) : null;
-      if (snapshot.version === untrack(gatewayVersion))
-        this._update((s) => {
-          s.choiceIDs = { ...s.choiceIDs, [this.transport]: choiceID };
-          s.voiceName = name;
-          s.voiceError = voiceError;
-          s.voiceStatus = "ready";
-        });
+          : this._sessionVoiceName !== null &&
+              (this._sessionVoiceName === "" || offered.includes(this._sessionVoiceName))
+            ? this._sessionVoiceName
+            : savedSpeakingVoice(snapshot.url.origin, choice, output);
     } catch (error) {
       if (snapshot.version === untrack(gatewayVersion))
         this._update((s) => {
@@ -1424,7 +1424,18 @@ export class VoiceSession {
         });
       throw error;
     }
-    if (voiceError !== null) throw new Error(voiceError);
+    this._sessionVoiceName = name;
+    this._sessionPinned = true;
+    if (snapshot.version === untrack(gatewayVersion))
+      this._update((s) => {
+        s.choiceIDs = { ...s.choiceIDs, [this.transport]: choiceID };
+        for (const stage of ["input", "output"] as const) {
+          if (this._sessionSpeechModelIDs[stage] !== null) s.speechModelIDs[stage] = this._sessionSpeechModelIDs[stage];
+        }
+        s.voiceName = name;
+        s.voiceError = null;
+        s.voiceStatus = "ready";
+      });
     return choiceID;
   }
 
@@ -1682,6 +1693,7 @@ export class VoiceSession {
     this._setConversationID(newConversationID());
     this._sessionGateway = gatewaySnapshot();
     this._sessionVoiceName = null;
+    this._sessionPinned = false;
     try {
       const catalogReady =
         this._choicesVersion === this._sessionGateway.version && this.state.choicesStatus === "ready";

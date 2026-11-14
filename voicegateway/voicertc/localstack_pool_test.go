@@ -787,8 +787,8 @@ func TestIndependentSpeechStages(t *testing.T) {
 		t.Cleanup(server.Close)
 		p := newLocalStackPool(voicegateway.RuntimeConfig{IdleTimeoutSeconds: 3600, MaxInstances: 1})
 		p.recognition = []voicegateway.ASRConfig{
-			{Engine: voicegateway.ASREngineOpenAIAudio, Remote: server.URL, Model: "asr-a"},
-			{Engine: voicegateway.ASREngineOpenAIAudio, Remote: server.URL, Model: "asr-b"},
+			{ID: "asr-a", Engine: voicegateway.ASREngineOpenAIAudio, Remote: server.URL, Model: "asr-a"},
+			{ID: "asr-b", Engine: voicegateway.ASREngineOpenAIAudio, Remote: server.URL, Model: "asr-b"},
 		}
 		for _, model := range []string{"llm-a", "llm-b"} {
 			b := p.llmBackend(voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: server.URL + "/chat", Model: model}})
@@ -798,16 +798,12 @@ func TestIndependentSpeechStages(t *testing.T) {
 				}
 			})
 			for _, a := range p.recognition {
-				id, err := a.ID()
-				if err != nil {
-					t.Fatal(err)
-				}
 				sink := &realtimeEventSink{events: make(chan struct{}, 1)}
 				s, err := b.connect(t.Context(), "independent", sink)
 				if err != nil {
 					t.Fatal(err)
 				}
-				setup := voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup, RecognitionModelID: id, Speech: &voicev2.SpeechConfig{Input: voicev2.SpeechLocationGateway, Output: voicev2.SpeechLocationClient}}
+				setup := voicev2.SessionSetup{Kind: voicev2.MessageKindSessionSetup, RecognitionModelID: a.ID, Speech: &voicev2.SpeechConfig{Input: voicev2.SpeechLocationGateway, Output: voicev2.SpeechLocationClient}}
 				if err := s.acceptClientMessage(t.Context(), mustJSON(t, setup)); err != nil {
 					t.Fatal(err)
 				}
@@ -922,18 +918,14 @@ func TestIndependentSpeechStages(t *testing.T) {
 		t.Parallel()
 		p := newLocalStackPool(testRuntime)
 		p.synthesis = []voicegateway.TTSConfig{
-			{Engine: voicegateway.TTSEngineOpenAIAudio, Remote: "http://localhost:1", Model: "tts-a", Voice: "a"},
-			{Engine: voicegateway.TTSEngineOpenAIAudio, Remote: "http://localhost:1", Model: "tts-b", Voice: "b"},
+			{ID: "tts-a", Engine: voicegateway.TTSEngineOpenAIAudio, Remote: "http://localhost:1", Model: "tts-a", Voice: "a"},
+			{ID: "tts-b", Engine: voicegateway.TTSEngineOpenAIAudio, Remote: "http://localhost:1", Model: "tts-b", Voice: "b"},
 		}
 		b := p.llmBackend(voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "http://localhost:1/chat", Model: "llm"}})
 		t.Cleanup(func() { _ = b.Close() })
 		speech := voicev2.SpeechConfig{Input: voicev2.SpeechLocationClient, Output: voicev2.SpeechLocationGateway}
 		for _, a := range p.synthesis {
-			id, err := a.ID()
-			if err != nil {
-				t.Fatal(err)
-			}
-			l, err := b.selectStages(speech, &voicev2.SessionSetup{SynthesisModelID: id})
+			l, err := b.selectStages(speech, &voicev2.SessionSetup{SynthesisModelID: a.ID})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -941,7 +933,7 @@ func TestIndependentSpeechStages(t *testing.T) {
 			if cfg.TTS.Model != a.Model || cfg.ASR != (voicegateway.ASRConfig{}) || cfg.LLM.Model != "llm" {
 				t.Fatalf("composed stages = %+v", cfg)
 			}
-			same, err := b.selectStages(speech, &voicev2.SessionSetup{SynthesisModelID: id})
+			same, err := b.selectStages(speech, &voicev2.SessionSetup{SynthesisModelID: a.ID})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -414,6 +414,9 @@ public struct SpeechConfig: Codable {
 
 /// VoiceChoice describes a selectable backend without exposing its credentials.
 public struct VoiceChoice: Codable {
+    /// ID is the operator-configured id. It stays the same while the choice's
+    /// settings change, so clients save it; a saved id the catalog no longer
+    /// lists falls back to the default.
     public let id: String
     public let label: String
     public let transports: [VoiceTransport]?
@@ -481,6 +484,8 @@ public struct VoiceChoiceDefault: Codable {
 
 /// SpeechModel identifies one configured speech stage without exposing endpoints or credentials.
 public struct SpeechModel: Codable {
+    /// ID is the operator-configured id; it stays the same while the stage's
+    /// settings change.
     public let id: String
     public let label: String
 

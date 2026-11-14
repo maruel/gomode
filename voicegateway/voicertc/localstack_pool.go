@@ -110,11 +110,7 @@ func (b *localStackBackend) selectStages(speech voicev2.SpeechConfig, setup *voi
 	if speech.Input == voicev2.SpeechLocationGateway {
 		found := false
 		for _, a := range c.pool.recognition {
-			id, err := a.ID()
-			if err != nil {
-				return nil, err
-			}
-			if setup.RecognitionModelID == "" || setup.RecognitionModelID == id {
+			if setup.RecognitionModelID == "" || setup.RecognitionModelID == a.ID {
 				cfg.ASR = a
 				found = true
 				break
@@ -127,11 +123,7 @@ func (b *localStackBackend) selectStages(speech voicev2.SpeechConfig, setup *voi
 	if speech.Output == voicev2.SpeechLocationGateway {
 		found := false
 		for _, a := range c.pool.synthesis {
-			id, err := a.ID()
-			if err != nil {
-				return nil, err
-			}
-			if setup.SynthesisModelID == "" || setup.SynthesisModelID == id {
+			if setup.SynthesisModelID == "" || setup.SynthesisModelID == a.ID {
 				cfg.TTS = a
 				found = true
 				break

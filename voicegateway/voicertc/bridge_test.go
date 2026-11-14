@@ -143,7 +143,7 @@ func TestNewBridge(t *testing.T) {
 	t.Setenv("GEMINI_API_KEY", "test-key")
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Run("configured choices", testBridgeConfiguredChoices)
-	cfg := &voicegateway.ResolvedConfig{Runtime: testRuntime, Realtime: []voicegateway.RealtimeConfig{{Label: "Gemini", ModelConfig: voicegateway.ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}}}}
+	cfg := &voicegateway.ResolvedConfig{Runtime: testRuntime, Realtime: []voicegateway.RealtimeConfig{{ID: "gemini", Label: "Gemini", ModelConfig: voicegateway.ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}}}}
 	t.Run("invalid listener", func(t *testing.T) {
 		t.Parallel()
 		for _, port := range []int{-2, 65536} {
@@ -1301,9 +1301,9 @@ func TestBridge(t *testing.T) {
 		t.Run("existing audio default", func(t *testing.T) {
 			t.Parallel()
 			cfg := voicegateway.ResolvedConfig{Runtime: testRuntime,
-				LLM:         []voicegateway.LLMConfig{{Label: "LLM", ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "http://localhost:1/chat", Model: "llm"}}},
-				Recognition: []voicegateway.ASRConfig{{Engine: voicegateway.ASREngineOpenAIAudio, Remote: "http://localhost:1", Model: "recognition"}},
-				Pipelines:   []voicegateway.PipelineConfig{{Label: "Preset", ASR: voicegateway.ASRConfig{Engine: voicegateway.ASREngineOpenAIAudio, Remote: "http://localhost:1", Model: "preset-recognition"}, LLM: voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "http://localhost:1/chat", Model: "preset-llm"}}}},
+				LLM:         []voicegateway.LLMConfig{{ID: "llm", Label: "LLM", ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "http://localhost:1/chat", Model: "llm"}}},
+				Recognition: []voicegateway.ASRConfig{{ID: "recognition", Engine: voicegateway.ASREngineOpenAIAudio, Remote: "http://localhost:1", Model: "recognition"}},
+				Pipelines:   []voicegateway.PipelineConfig{{ID: "preset", Label: "Preset", ASR: voicegateway.ASRConfig{Engine: voicegateway.ASREngineOpenAIAudio, Remote: "http://localhost:1", Model: "preset-recognition"}, LLM: voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "http://localhost:1/chat", Model: "preset-llm"}}}},
 			}
 			b, err := newBridgeWithTimeout(t.Context(), &cfg, 0, t.TempDir(), 5*time.Millisecond)
 			if err != nil {
@@ -1311,31 +1311,23 @@ func TestBridge(t *testing.T) {
 			}
 			t.Cleanup(func() { b.CloseAll(t.Context()) })
 			catalog := b.VoiceChoices()
-			chatID, err := cfg.LLM[0].ID()
-			if err != nil {
-				t.Fatal(err)
-			}
-			presetID, err := cfg.Pipelines[0].ID()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if catalog.DefaultChoiceID(voicev2.VoiceTransportText) != chatID || catalog.DefaultChoiceID(voicev2.VoiceTransportWebRTC) != presetID {
+			if catalog.DefaultChoiceID(voicev2.VoiceTransportText) != "llm" || catalog.DefaultChoiceID(voicev2.VoiceTransportWebRTC) != "preset" {
 				t.Fatalf("transport defaults = %+v", catalog.Defaults)
 			}
 			selected, err := b.choiceBackend("", voicev2.VoiceTransportWebRTC)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if selected != b.backends[presetID] {
+			if selected != b.backends["preset"] {
 				t.Fatal("omitted choice displaced existing audio preset")
 			}
 		})
 		t.Run("independent catalog", func(t *testing.T) {
 			t.Parallel()
 			cfg := voicegateway.ResolvedConfig{Runtime: testRuntime,
-				LLM:         []voicegateway.LLMConfig{{Label: "LLM", ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "http://localhost:1/chat", Model: "llm"}}},
-				Recognition: []voicegateway.ASRConfig{{Engine: voicegateway.ASREngineOpenAIAudio, Remote: "http://localhost:1", Model: "recognition"}},
-				Synthesis:   []voicegateway.TTSConfig{{Label: "Speech", Engine: voicegateway.TTSEngineOpenAIAudio, Remote: "http://localhost:1", Model: "speech", Voice: "speaker"}},
+				LLM:         []voicegateway.LLMConfig{{ID: "llm", Label: "LLM", ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "http://localhost:1/chat", Model: "llm"}}},
+				Recognition: []voicegateway.ASRConfig{{ID: "recognition", Engine: voicegateway.ASREngineOpenAIAudio, Remote: "http://localhost:1", Model: "recognition"}},
+				Synthesis:   []voicegateway.TTSConfig{{ID: "speech", Label: "Speech", Engine: voicegateway.TTSEngineOpenAIAudio, Remote: "http://localhost:1", Model: "speech", Voice: "speaker"}},
 			}
 			b, err := newBridgeWithTimeout(t.Context(), &cfg, 0, t.TempDir(), 5*time.Millisecond)
 			if err != nil {
@@ -1343,7 +1335,9 @@ func TestBridge(t *testing.T) {
 			}
 			t.Cleanup(func() { b.CloseAll(t.Context()) })
 			catalog := b.VoiceChoices()
-			if len(catalog.Choices) != 1 || !catalog.Choices[0].Composable || len(catalog.Choices[0].SpeechModes) != 4 || len(catalog.RecognitionModels) != 1 || len(catalog.SynthesisModels) != 1 || catalog.RecognitionModels[0].Label != "recognition" || catalog.SynthesisModels[0].Label != "Speech" {
+			if len(catalog.Choices) != 1 || catalog.Choices[0].ID != "llm" || !catalog.Choices[0].Composable || len(catalog.Choices[0].SpeechModes) != 4 ||
+				!slices.Equal(catalog.RecognitionModels, []voicev2.SpeechModel{{ID: "recognition", Label: "recognition"}}) ||
+				!slices.Equal(catalog.SynthesisModels, []voicev2.SpeechModel{{ID: "speech", Label: "Speech"}}) {
 				t.Fatalf("stage discovery = %+v", catalog)
 			}
 			recognitionID, synthesisID := catalog.RecognitionModels[0].ID, catalog.SynthesisModels[0].ID
@@ -1354,11 +1348,7 @@ func TestBridge(t *testing.T) {
 				t.Fatal("discovery mutated the bridge catalogs")
 			}
 			cfg.Recognition[0].Model = "changed"
-			id, err := cfg.LLM[0].ID()
-			if err != nil {
-				t.Fatal(err)
-			}
-			backend := b.backends[id].(*localStackBackend)
+			backend := b.backends["llm"].(*localStackBackend)
 			selected, err := backend.selectStages(voicev2.SpeechConfig{Input: voicev2.SpeechLocationGateway, Output: voicev2.SpeechLocationClient}, &voicev2.SessionSetup{RecognitionModelID: recognitionID})
 			if err != nil {
 				t.Fatalf("caller mutation changed stage selection: %v", err)
@@ -2070,7 +2060,7 @@ func TestBackendForConfigChat(t *testing.T) {
 		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: [DONE]\n\n")
 	}))
 	t.Cleanup(server.Close)
-	cfg := voicegateway.ResolvedConfig{Runtime: testRuntime, LLM: []voicegateway.LLMConfig{{Label: "Chat", ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: server.URL + "/v1/chat/completions", Model: "custom-model", APIKeyName: "CHAT_TEST_KEY"}}}} //nolint:gosec // Environment variable name, not a credential.
+	cfg := voicegateway.ResolvedConfig{Runtime: testRuntime, LLM: []voicegateway.LLMConfig{{ID: "chat", Label: "Chat", ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: server.URL + "/v1/chat/completions", Model: "custom-model", APIKeyName: "CHAT_TEST_KEY"}}}} //nolint:gosec // Environment variable name, not a credential.
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -2110,10 +2100,10 @@ func testBridgeConfiguredChoices(t *testing.T) {
 	t.Parallel()
 	cfg := voicegateway.ResolvedConfig{Runtime: testRuntime,
 		Realtime: []voicegateway.RealtimeConfig{
-			{Label: "Live", ModelConfig: voicegateway.ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}},
-			{Label: "Other live", ModelConfig: voicegateway.ModelConfig{Provider: "openai", Model: "gpt-realtime-2.1-mini"}},
+			{ID: "live", Label: "Live", ModelConfig: voicegateway.ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}},
+			{ID: "other-live", Label: "Other live", ModelConfig: voicegateway.ModelConfig{Provider: "openai", Model: "gpt-realtime-2.1-mini"}},
 		},
-		LLM: []voicegateway.LLMConfig{{Label: "Chat", ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "https://example.com/v1/chat/completions", Model: "model-a"}}},
+		LLM: []voicegateway.LLMConfig{{ID: "chat", Label: "Chat", ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: "https://example.com/v1/chat/completions", Model: "model-a"}}},
 	}
 	bridge, err := newBridgeWithTimeout(t.Context(), &cfg, 0, t.TempDir(), 5*time.Millisecond)
 	if err != nil {
@@ -2121,16 +2111,12 @@ func testBridgeConfiguredChoices(t *testing.T) {
 	}
 	t.Cleanup(func() { bridge.CloseAll(t.Context()) })
 	catalog := bridge.VoiceChoices()
-	i := 0
-	for _, ch := range cfg.Choices() {
-		id, err := ch.ID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if catalog.Choices[i].ID != id {
-			t.Fatalf("choice %d = %s, want %s", i, catalog.Choices[i].ID, id)
-		}
-		i++
+	ids := make([]string, 0, len(catalog.Choices))
+	for _, ch := range catalog.Choices {
+		ids = append(ids, ch.ID)
+	}
+	if !slices.Equal(ids, []string{"live", "other-live", "chat"}) {
+		t.Fatalf("choice ids = %v", ids)
 	}
 	for _, tc := range []struct {
 		transport voicev2.VoiceTransport
@@ -2156,7 +2142,7 @@ func testBridgeConfiguredChoices(t *testing.T) {
 		t.Fatal(err)
 	}
 	if selected != bridge.backends[catalog.Choices[1].ID] {
-		t.Fatal("generated ID selected the wrong backend")
+		t.Fatal("configured ID selected the wrong backend")
 	}
 }
 

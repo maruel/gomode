@@ -226,7 +226,9 @@ VoiceChoice describes a selectable backend without exposing its credentials.
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `id` | `string` |  | yes |
+| `id` | `string` | ID is the operator-configured id. It stays the same while the choice's
+settings change, so clients save it; a saved id the catalog no longer
+lists falls back to the default. | yes |
 | `label` | `string` |  | yes |
 | `transports` | `VoiceTransport[] \| null` |  | yes |
 | `voices` | `string[]` | Voices lists supported audio voice names. Omitted when the choice does not offer voice selection. |  |
@@ -251,7 +253,8 @@ SpeechModel identifies one configured speech stage without exposing endpoints or
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `id` | `string` |  | yes |
+| `id` | `string` | ID is the operator-configured id; it stays the same while the stage's
+settings change. | yes |
 | `label` | `string` |  | yes |
 
 ### VoiceChoicesResp

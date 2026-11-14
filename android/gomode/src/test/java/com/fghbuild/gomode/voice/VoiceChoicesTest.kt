@@ -1,4 +1,4 @@
-// Tests gateway setup resolution with the web rules, credential boundaries, removed selections, and setup ownership.
+// Tests gateway setup resolution with the web rules, credential boundaries, withdrawn selections, and setup ownership.
 package com.fghbuild.gomode.voice
 
 import android.webkit.CookieManager
@@ -213,10 +213,6 @@ class VoiceChoicesTest {
                     )
                 }
 
-                "voice" -> {
-                    assertTrue(name, result.exceptionOrNull() is VoiceSetupException)
-                }
-
                 else -> {
                     assertEquals(name, row.getValue("voice").jsonPrimitive.content, result.getOrThrow())
                 }
@@ -347,41 +343,36 @@ class VoiceChoicesTest {
             native.gateway,
         )
 
-        // A removed followed choice becomes the explicit choice, so explicit resolution reports it.
+        // A withdrawn followed choice follows the gateway's WebRTC default instead.
         val removed = composable.explicit(saved(GatewayVoiceSetup(followedChoiceID = "gone")))
-        assertEquals(VoiceSetupMode.SEPARATE_STAGES, removed.preference.mode)
-        assertEquals("gone", removed.gateway.separateStagesChoiceID)
-        val unavailable =
-            assertThrows(VoiceSetupException::class.java) {
-                composable.resolveSetup(removed.preference, removed.gateway)
-            }
-        assertEquals("Saved voice choice is unavailable. Select a voice choice in Settings.", unavailable.message)
+        assertEquals(VoiceSetupMode.ALL_IN_ONE, removed.preference.mode)
+        assertEquals("live", removed.gateway.allInOneChoiceID)
+        assertEquals("live", composable.resolveSetup(removed.preference, removed.gateway).choice.id)
 
         val explicit = SavedVoiceSetup(gatewayStages, GatewayVoiceSetup(), LocalLlmModel.GEMMA_4_E2B)
         assertEquals(explicit, composable.explicit(explicit))
     }
 
     @Test
-    fun `a removed saved choice blocks a new session but another mode's choice falls back`() {
-        for (setup in listOf(VoiceSetupPreference(), allInOne, deviceStages)) {
-            val error =
-                assertThrows(VoiceSetupException::class.java) {
-                    choices.resolve(
-                        settings.with(setup).copy(
-                            gatewayVoiceSetups =
-                                mapOf(
-                                    gateway to
-                                        GatewayVoiceSetup(
-                                            followedChoiceID = "removed",
-                                            allInOneChoiceID = "removed",
-                                            separateStagesChoiceID = "removed",
-                                        ),
+    fun `a withdrawn saved choice or another mode's choice falls back to the default`() {
+        for ((setup, expected) in listOf(
+            VoiceSetupPreference() to "live",
+            allInOne to "live",
+            deviceStages to "remote",
+        )) {
+            val withdrawn =
+                settings.with(setup).copy(
+                    gatewayVoiceSetups =
+                        mapOf(
+                            gateway to
+                                GatewayVoiceSetup(
+                                    followedChoiceID = "removed",
+                                    allInOneChoiceID = "removed",
+                                    separateStagesChoiceID = "removed",
                                 ),
                         ),
-                        pinned = null,
-                    )
-                }
-            assertEquals("Saved voice choice is unavailable. Select a voice choice in Settings.", error.message)
+                )
+            assertEquals(expected, choices.resolve(withdrawn, pinned = null).choiceID)
         }
         val otherMode =
             settings.with(deviceStages).copy(
@@ -444,11 +435,9 @@ class VoiceChoicesTest {
                 gatewayVoiceSetups =
                     mapOf(gateway to GatewayVoiceSetup(recognitionModelID = "parakeet", synthesisModelID = "removed")),
             )
-        val removed = assertThrows(VoiceSetupException::class.java) { composable.resolveSetup(saved) }
-        assertEquals(
-            "The selected speech model is unavailable. Choose another speech model in Settings.",
-            removed.message,
-        )
+        // A withdrawn saved model falls back to the first listed one.
+        val withdrawn = composable.resolveSetup(saved)
+        assertEquals("parakeet" to "kokoro", withdrawn.recognitionModelID to withdrawn.synthesisModelID)
         val unlisted =
             composable.copy(catalog = composable.catalog.copy(recognitionModels = null))
         val missing =

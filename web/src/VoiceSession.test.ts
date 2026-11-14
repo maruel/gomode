@@ -529,7 +529,7 @@ describe("VoiceSession", () => {
     }
   });
 
-  it("rejects an explicitly saved removed recognition stage before creating RTC", async () => {
+  it("uses the first recognition model for a withdrawn saved one without saving it", async () => {
     configureVoiceGateway("https://voice.example", null);
     independentSpeech = true;
     mixedSpeech = true;
@@ -537,11 +537,43 @@ describe("VoiceSession", () => {
     const session = new VoiceSession();
     try {
       await session.connect();
-      expect(session.state.error).toContain("selected recognition model is unavailable");
-      expect(offerRequests).toHaveLength(0);
+      expect(session.state.error).toBeNull();
+      const channel = FakePeerConnection.dataChannels.at(-1)!;
+      channel.onopen?.();
+      expect(JSON.parse(channel.send.mock.calls[0]![0] as string)).toMatchObject({ recognitionModelID: "asr-a" });
       expect(localStorage.getItem("gomode.voiceSpeechModel.https://voice.example.input")).toBe("removed");
     } finally {
       session.disconnect();
+    }
+  });
+
+  it("fails recovery when the gateway withdraws the session's speech model", async () => {
+    configureVoiceGateway("https://voice.example", null);
+    independentSpeech = true;
+    mixedSpeech = true;
+    const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
+    try {
+      await session.loadVoiceChoices();
+      session.selectSpeechModel("input", "asr-b");
+      await session.connect();
+      const channel = FakePeerConnection.dataChannels.at(-1)!;
+      channel.onopen?.();
+      channel.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: "session.ready" }) }));
+      const gatewayFetch = globalThis.fetch;
+      globalThis.fetch = async (input, init) => {
+        const response = await gatewayFetch(input, init);
+        if (!String(input).endsWith("/voice/choices")) return response;
+        const catalog = await response.json();
+        return new Response(JSON.stringify({ ...catalog, recognitionModels: [{ id: "asr-a", label: "ASR A" }] }));
+      };
+      vi.useFakeTimers();
+      triggerIceState("failed");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(() => expect(session.state.error).toContain("Session speech model is unavailable"));
+      expect(offerRequests).toHaveLength(1);
+    } finally {
+      session.disconnect();
+      vi.useRealTimers();
     }
   });
 
@@ -849,7 +881,7 @@ describe("VoiceSession", () => {
     }
   });
 
-  it("closes a mixed session when browser synthesis cannot use its saved voice", async () => {
+  it("speaks gateway replies with the browser default when the saved browser voice is gone", async () => {
     const restore = installBrowserSpeech("Firefox/150");
     localStorage.setItem("gomode.browserVoiceURI", "missing");
     fakeSynthesis.voices = [{ voiceURI: "other", lang: "en-US" } as SpeechSynthesisVoice];
@@ -861,8 +893,6 @@ describe("VoiceSession", () => {
     try {
       session.selectSpeechOutput("client");
       await session.connect();
-      const pc = FakePeerConnection.last!;
-      const close = vi.spyOn(pc, "close");
       const channel = FakePeerConnection.dataChannels.at(-1)!;
       channel.onopen?.();
       const message = (value: unknown) =>
@@ -870,10 +900,9 @@ describe("VoiceSession", () => {
       message({ kind: "session.ready" });
       message({ kind: "assistant.text.delta", text: "An answer." });
       message({ kind: "turn.status", state: "idle" });
-      expect(session.state.connected).toBe(false);
-      expect(session.state.error).toContain("saved browser voice is unavailable");
-      expect(close).toHaveBeenCalledOnce();
-      expect(fakeSynthesis.spoken).toHaveLength(0);
+      expect(session.state.connected).toBe(true);
+      expect(session.state.error).toBeNull();
+      expect(fakeSynthesis.spoken.map((utterance) => utterance.text)).toEqual(["An answer."]);
     } finally {
       session.disconnect();
       restore();
@@ -2902,7 +2931,7 @@ describe("VoiceSession", () => {
     session.disconnect();
   });
 
-  it("revalidates a removed selection before creating an offer", async () => {
+  it("falls back to the default for a choice withdrawn before connecting", async () => {
     const session = new VoiceSession();
     await session.loadVoiceChoices();
     session.selectChoice("gemini");
@@ -2911,17 +2940,55 @@ describe("VoiceSession", () => {
       String(input).endsWith("/voice/choices")
         ? new Response(
             JSON.stringify({
-              choices: [{ id: "local", label: "Local LLM", transports: ["webrtc"] }],
-              defaults: [{ transport: "webrtc", id: "local" }],
+              choices: [{ id: "other", label: "Other LLM", transports: ["webrtc", "text"] }],
+              defaults: [
+                { transport: "webrtc", id: "other" },
+                { transport: "text", id: "other" },
+              ],
             }),
           )
         : gatewayFetch(input, init);
+    try {
+      await session.connect();
+      expect(session.state.error).toBeNull();
+      expect(offerRequests[0]?.body).toMatchObject({ choiceID: "other" });
+      expect(session.state.choiceIDs.webrtc).toBe("other");
+    } finally {
+      session.disconnect();
+    }
+  });
+
+  it("fails recovery when the gateway withdraws the session's choice", async () => {
+    const session = new VoiceSession({ prepare: vi.fn(), playConnected: vi.fn(), playDisconnected: vi.fn() });
+    await session.loadVoiceChoices();
+    session.selectChoice("gemini");
     await session.connect();
-    expect(offerRequests).toHaveLength(0);
-    expect(session.state.choiceIDs.webrtc).toBe("gemini");
-    expect(session.state.error).toContain("selected voice choice is unavailable");
-    expect(session.state.choicesError).toContain("selected voice choice is unavailable");
-    session.disconnect();
+    const channel = FakePeerConnection.dataChannels.at(-1)!;
+    channel.onopen?.();
+    channel.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ kind: "session.ready" }) }));
+    const gatewayFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) =>
+      String(input).endsWith("/voice/choices")
+        ? new Response(
+            JSON.stringify({
+              choices: [{ id: "other", label: "Other LLM", transports: ["webrtc", "text"] }],
+              defaults: [
+                { transport: "webrtc", id: "other" },
+                { transport: "text", id: "other" },
+              ],
+            }),
+          )
+        : gatewayFetch(input, init);
+    vi.useFakeTimers();
+    try {
+      triggerIceState("failed");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(() => expect(session.state.error).toContain("Session voice choice is unavailable"));
+      expect(offerRequests).toHaveLength(1);
+    } finally {
+      session.disconnect();
+      vi.useRealTimers();
+    }
   });
 
   it("pins the selected gateway and choice through setup and reconnect", async () => {
@@ -3514,21 +3581,19 @@ describe("VoiceSession", () => {
     });
   }
 
-  it("blocks removed speaking voices until an available replacement is saved", async () => {
+  it("uses the provider default for a withdrawn saved speaking voice", async () => {
     offeredVoices = ["Aoede", "Orus"];
     const session = new VoiceSession();
     await session.loadVoiceChoices();
     session.selectSpeakingVoice("Aoede");
     offeredVoices = ["Orus"];
     await session.connect();
-    expect(offerRequests).toHaveLength(0);
-    expect(session.state.error).toContain("saved speaking voice is unavailable");
-    expect(session.state.voiceName).toBe("Aoede");
-    expect(session.state.voiceError).toContain("saved speaking voice is unavailable");
-    session.selectSpeakingVoice("Orus");
-    await session.connect();
+    expect(session.state.error).toBeNull();
+    expect(session.state.voiceName).toBe("");
     FakePeerConnection.dataChannels[0]?.onopen?.();
-    expect(JSON.parse(FakePeerConnection.dataChannels[0]?.send.mock.calls[0]?.[0] as string).voice.name).toBe("Orus");
+    expect(
+      JSON.parse(FakePeerConnection.dataChannels[0]?.send.mock.calls[0]?.[0] as string).voice?.name,
+    ).toBeUndefined();
     session.disconnect();
   });
 

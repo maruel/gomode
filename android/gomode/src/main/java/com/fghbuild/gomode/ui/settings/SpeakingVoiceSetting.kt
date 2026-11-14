@@ -1,4 +1,6 @@
-// Bounded gateway speaking-voice dropdown with a checked current voice and persistence errors.
+// Gateway speaking-voice dropdown with the effective voice checked and persistence errors.
+//
+// A saved voice the choice no longer offers shows as the provider default, which sessions use.
 package com.fghbuild.gomode.ui.settings
 
 import androidx.compose.runtime.Composable
@@ -15,21 +17,18 @@ internal fun SpeakingVoiceSetting(
     enabled: Boolean,
     save: suspend (voiceName: String) -> Unit,
 ) {
-    val catalog = runCatching { choices.speakingVoices(choice) }
-    val voices = catalog.getOrDefault(emptyList())
+    val voices = choice.voices.orEmpty()
     val saver = rememberPickerSave("speaking voice", choices.gatewayURL, choice.id)
-    val catalogError = catalog.exceptionOrNull()?.message
-    if (voices.isEmpty() && catalogError == null) return
-    val selection = runCatching { choices.speakingVoice(settings, choice) }
-    val selected = selection.getOrNull()
+    if (voices.isEmpty()) return
+    val selected = choices.speakingVoice(settings, choice)
     SettingsPicker(
         label = "Speaking voice",
-        value = selected?.ifEmpty { "Provider default" } ?: UNAVAILABLE_SPEAKING_VOICE,
-        enabled = enabled && voices.isNotEmpty() && !saver.saving && settings.loadState == SettingsLoadState.Ready,
+        value = selected.ifEmpty { "Provider default" },
+        enabled = enabled && !saver.saving && settings.loadState == SettingsLoadState.Ready,
         tag = "gomode-speaking-voice",
         menuTag = "gomode-speaking-voices",
-        error = saver.error ?: catalogError ?: selection.exceptionOrNull()?.message,
-        errorTag = if (saver.error != null) "gomode-speaking-voice-save-error" else "gomode-speaking-voice-error",
+        error = saver.error,
+        errorTag = "gomode-speaking-voice-save-error",
     ) {
         (listOf("") + voices).forEach { name ->
             Item(

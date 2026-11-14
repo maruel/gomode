@@ -15,10 +15,11 @@
 // Following the gateway shows the explicit setup it resolves to with the loaded catalog. Every
 // edit, the speaking voice and speed included, saves that explicit setup with the edit, so the
 // first pick ends following and a later gateway default no longer changes the setup or detaches a
-// speaking voice from its model. A followed choice the gateway removed shows as the explicit
-// choice, unavailable under its model picker, until a pick replaces it. Until the catalog loads, a followed setup
-// selects neither option and both are disabled, so no pick skips that resolution. Without a
-// service, a followed setup shows as separate stages on the device, which its first edit saves.
+// speaking voice from its model. A selection the gateway withdrew, followed or explicit, shows the
+// default the session uses instead; the next edit saves what is shown. Until the catalog loads, a
+// followed setup selects neither option and both are disabled, so no pick skips that resolution.
+// Without a service, a followed setup shows as separate stages on the device, which its first edit
+// saves.
 //
 // Choice discovery shows progress or its failure with a retry in place of pickers that need the
 // gateway; an on-device language model keeps its pickers and shows it below the Language model.
@@ -149,7 +150,7 @@ private class SetupEditor(
     val shown: SavedVoiceSetup,
     /** Set when a gateway language model's setup resolves against the loaded catalog. */
     val resolution: Result<ResolvedVoiceSetup>?,
-    /** The gateway choice the setup runs, even when one of its speech models is unavailable. */
+    /** The gateway choice the setup runs, even when the gateway lists no model for one of its stages. */
     val choice: VoiceChoice?,
     val enabled: Boolean,
     private val saveFailure: SaveFailure?,
@@ -565,7 +566,7 @@ private fun StagePicker(
         when (stage) {
             SpeechStage.RECOGNITION -> resolved?.recognitionModelID
             SpeechStage.SYNTHESIS -> resolved?.synthesisModelID
-        } ?: editor.shown.gateway.modelID(stage) ?: models.firstOrNull()?.id
+        } ?: (models.firstOrNull { it.id == editor.shown.gateway.modelID(stage) } ?: models.firstOrNull())?.id
     val (label, key, control) =
         when (stage) {
             SpeechStage.RECOGNITION -> Triple("Recognition", "recognition", SetupControl.RECOGNITION)

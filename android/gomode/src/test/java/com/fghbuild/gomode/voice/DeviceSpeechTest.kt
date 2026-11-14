@@ -10,6 +10,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.Voice
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -335,17 +336,19 @@ class DeviceSpeechTest {
     }
 
     @Test
-    fun `a saved local voice that disappeared fails speech instead of substituting another`() {
+    fun `a saved local voice that disappeared speaks with the engine default`() {
         ShadowTextToSpeech.addVoice(
             Voice("en-us-x-other", Locale.US, Voice.QUALITY_HIGH, Voice.LATENCY_NORMAL, false, emptySet()),
         )
         ShadowTextToSpeech.addLanguageAvailability(Locale.US)
         val speech = AndroidDeviceSpeech(RuntimeEnvironment.getApplication(), "en-US", "en-us-x-removed", 1f)
         val errors = mutableListOf<String>()
-        speech.speak("Hello", { error("Speech must not complete") }, errors::add)
+        speech.speak("Hello", {}, errors::add)
         val engine = initializeTextToSpeech()
-        assertEquals(listOf("The saved local voice is unavailable. Choose another speaking voice in Settings."), errors)
-        assertEquals(null, engine.lastSpokenText)
+        assertEquals("Hello", engine.lastSpokenText)
+        // The language default speaks; no other installed voice substitutes for the saved one.
+        assertNotEquals("en-us-x-other", engine.currentVoice?.name)
+        assertTrue(errors.isEmpty())
         speech.close()
         shadowOf(Looper.getMainLooper()).idle()
     }

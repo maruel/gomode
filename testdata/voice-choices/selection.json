@@ -6,7 +6,7 @@
     { "name": "catalog without preference", "catalog": { "voices": ["Kore", "Orus"] }, "voice": "" },
     { "name": "saved provider default", "catalog": { "voices": ["Kore", "Orus"] }, "savedVoice": "", "voice": "" },
     { "name": "saved named voice", "catalog": { "voices": ["Kore", "Orus"] }, "savedVoice": "Kore", "voice": "Kore" },
-    { "name": "removed named voice", "catalog": { "voices": ["Orus"] }, "savedVoice": "Kore", "error": "voice" },
+    { "name": "removed named voice", "catalog": { "voices": ["Orus"] }, "savedVoice": "Kore", "voice": "" },
     { "name": "omitted catalog ignores saved voice", "catalog": {}, "savedVoice": "Kore", "voice": "" },
     { "name": "empty catalog ignores saved voice", "catalog": { "voices": [] }, "savedVoice": "Kore", "voice": "" },
     { "name": "client speech ignores saved voice", "catalog": { "voices": ["Orus"] }, "savedVoice": "Kore", "mode": "text", "voice": "" },

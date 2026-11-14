@@ -168,6 +168,11 @@ export default function VoiceSettings(props: {
   const matchingBrowserVoices = createMemo(() =>
     browserVoices().filter((voice) => browserVoiceMatchesLanguage(voice, voiceSession.state.languageTag)),
   );
+  // A saved voice the browser no longer offers shows as the browser default, which speech uses.
+  const browserVoice = createMemo(() => {
+    const uri = voiceSession.state.browserVoiceURI;
+    return matchingBrowserVoices().some((voice) => voice.voiceURI === uri) ? uri : "";
+  });
   let pendingSave: ReturnType<typeof setTimeout> | null = null;
   const saveLanguage = () => {
     if (pendingSave !== null) {
@@ -346,11 +351,10 @@ export default function VoiceSettings(props: {
                       id={browserVoiceId}
                       ref={(select) => {
                         createEffect(() => {
-                          matchingBrowserVoices();
-                          const selected = voiceSession.state.browserVoiceURI;
+                          const selected = browserVoice();
                           let cancelled = false;
-                          // Removing the selected option can reset native selection
-                          // after the unavailable placeholder has already been inserted.
+                          // Replacing the voice list can reset native selection after
+                          // the selected option was inserted.
                           queueMicrotask(() => {
                             if (!cancelled) select.value = selected;
                           });
@@ -360,39 +364,24 @@ export default function VoiceSettings(props: {
                         });
                       }}
                       disabled={active()}
-                      value={voiceSession.state.browserVoiceURI}
+                      value={browserVoice()}
                       onChange={(event) => {
                         try {
                           voiceSession.selectBrowserVoice(event.currentTarget.value);
                           setBrowserVoiceError(null);
                         } catch (err) {
-                          event.currentTarget.value = voiceSession.state.browserVoiceURI;
+                          event.currentTarget.value = browserVoice();
                           setBrowserVoiceError(err instanceof Error ? err.message : String(err));
                         }
                       }}
                       aria-describedby={errorId()}
                     >
-                      <Show
-                        when={
-                          voiceSession.state.browserVoiceURI !== "" &&
-                          !matchingBrowserVoices().some(
-                            (voice) => voice.voiceURI === voiceSession.state.browserVoiceURI,
-                          )
-                        }
-                      >
-                        <option value={voiceSession.state.browserVoiceURI} selected disabled>
-                          {messages().speakingVoiceUnavailable}
-                        </option>
-                      </Show>
-                      <option value="" selected={voiceSession.state.browserVoiceURI === ""}>
+                      <option value="" selected={browserVoice() === ""}>
                         {messages().browserVoiceDefault}
                       </option>
                       <For each={matchingBrowserVoices()}>
                         {(voice) => (
-                          <option
-                            value={voice.voiceURI}
-                            selected={voiceSession.state.browserVoiceURI === voice.voiceURI}
-                          >
+                          <option value={voice.voiceURI} selected={browserVoice() === voice.voiceURI}>
                             {voice.name} ({voice.lang})
                           </option>
                         )}
@@ -469,17 +458,6 @@ export default function VoiceSettings(props: {
                   }}
                   aria-describedby={errorId()}
                 >
-                  <Show
-                    when={
-                      voiceSession.state.voiceName !== null &&
-                      voiceSession.state.voiceName !== "" &&
-                      !voiceSession.speakingVoices.includes(voiceSession.state.voiceName ?? "")
-                    }
-                  >
-                    <option value={voiceSession.state.voiceName ?? ""} disabled>
-                      {messages().speakingVoiceUnavailable}
-                    </option>
-                  </Show>
                   <option value="">{messages().speakingVoiceDefault}</option>
                   <For each={voiceSession.speakingVoices}>{(name) => <option value={name}>{name}</option>}</For>
                 </select>

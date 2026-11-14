@@ -1,10 +1,8 @@
-// Tests realtime pipeline defaults, identities, and native runtime bounds.
+// Tests realtime pipeline defaults and native runtime bounds.
 
 package voicegateway
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -24,9 +22,9 @@ func TestRealtimeConfig(t *testing.T) {
 		managed := ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}
 		t.Run("defaults", func(t *testing.T) {
 			cfg := Config{Realtime: []RealtimeConfig{
-				{Label: "Managed", ModelConfig: managed, Staged: true, ContextSize: 32768},
-				{Label: "Remote", ModelConfig: ModelConfig{Provider: "llamacpp", Remote: "http://127.0.0.1:8080", Model: "remote"}},
-				{Label: "Cloud", ModelConfig: ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}},
+				{ID: "managed", Label: "Managed", ModelConfig: managed, Staged: true, ContextSize: 32768},
+				{ID: "remote", Label: "Remote", ModelConfig: ModelConfig{Provider: "llamacpp", Remote: "http://127.0.0.1:8080", Model: "remote"}},
+				{ID: "cloud", Label: "Cloud", ModelConfig: ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}},
 			}}
 			out, err := cfg.Resolve()
 			if err != nil {
@@ -46,15 +44,6 @@ func TestRealtimeConfig(t *testing.T) {
 				t.Fatal("Resolve changed declarations")
 			}
 		})
-		t.Run("explicit defaults share identity", func(t *testing.T) {
-			cfg := Config{Realtime: []RealtimeConfig{
-				{Label: "Implicit", ModelConfig: managed, ContextSize: 65536},
-				{Label: "Explicit", ModelConfig: managed, Slots: 1, ContextSize: 65536},
-			}}
-			if _, err := cfg.Resolve(); err == nil || !strings.Contains(err.Error(), "duplicate choice") {
-				t.Fatalf("Resolve = %v", err)
-			}
-		})
 		t.Run("managed requires context size", func(t *testing.T) {
 			cfg := Config{Realtime: []RealtimeConfig{{Label: "Managed", ModelConfig: managed}}}
 			if _, err := cfg.Resolve(); err == nil || !strings.Contains(err.Error(), "realtime.context_size is required") {
@@ -65,56 +54,6 @@ func TestRealtimeConfig(t *testing.T) {
 			cfg := Config{Realtime: []RealtimeConfig{{Label: "Cloud", ModelConfig: ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}, Slots: 2}}}
 			if _, err := cfg.Resolve(); err == nil || !strings.Contains(err.Error(), "require provider llamacpp") {
 				t.Fatalf("Resolve = %v", err)
-			}
-		})
-	})
-	t.Run("ID", func(t *testing.T) {
-		t.Run("managed cache default", func(t *testing.T) {
-			cache, err := os.UserCacheDir()
-			if err != nil {
-				t.Fatal(err)
-			}
-			implicit := RealtimeConfig{Label: "Implicit", ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}, Slots: 1, ContextSize: 65536}
-			explicit := implicit
-			explicit.Label = "Explicit"
-			explicit.CacheDir = filepath.Join(cache, "gomode", "llama-realtime")
-			first, err := implicit.ID()
-			if err != nil {
-				t.Fatal(err)
-			}
-			second, err := explicit.ID()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if first != second {
-				t.Fatalf("same runtime cache changed ID: %s vs %s", first, second)
-			}
-			cfg := ResolvedConfig{Runtime: testRuntime, Realtime: []RealtimeConfig{implicit, explicit}}
-			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate choice") {
-				t.Fatalf("duplicate effective cache configuration: %v", err)
-			}
-		})
-		t.Run("settings change identity", func(t *testing.T) {
-			base := RealtimeConfig{ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: testRealtimeModel}}
-			want, err := base.ID()
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, edit := range []func(*RealtimeConfig){
-				func(c *RealtimeConfig) { c.Model = "LiquidAI/other-model" },
-				func(c *RealtimeConfig) { c.LlamaCPPServer = false; c.Remote = "http://localhost:8080" },
-				func(c *RealtimeConfig) { c.ContextSize = 32768 },
-				func(c *RealtimeConfig) { c.Slots = 2 },
-			} {
-				changed := base
-				edit(&changed)
-				got, err := changed.ID()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if got == want {
-					t.Fatalf("changed settings retained %s: %+v", got, changed)
-				}
 			}
 		})
 	})

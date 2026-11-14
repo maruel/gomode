@@ -235,6 +235,11 @@ export interface SpeechConfig {
 
 /** VoiceChoice describes a selectable backend without exposing its credentials. */
 export interface VoiceChoice {
+  /**
+   * ID is the operator-configured id. It stays the same while the choice's
+   * settings change, so clients save it; a saved id the catalog no longer
+   * lists falls back to the default.
+   */
   id: string;
   label: string;
   transports: VoiceTransport[] | null;
@@ -263,6 +268,10 @@ export interface VoiceChoiceDefault {
 
 /** SpeechModel identifies one configured speech stage without exposing endpoints or credentials. */
 export interface SpeechModel {
+  /**
+   * ID is the operator-configured id; it stays the same while the stage's
+   * settings change.
+   */
   id: string;
   label: string;
 }

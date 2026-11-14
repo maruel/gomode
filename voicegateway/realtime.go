@@ -14,35 +14,23 @@ import (
 // RealtimeConfig configures a native audio pipeline. For llama.cpp, endpoint
 // capacity is an operator-declared reservation limit, not discovery.
 type RealtimeConfig struct {
-	Label string `toml:"label" json:"-"`
+	ID    string `toml:"id"`
+	Label string `toml:"label"`
 	ModelConfig
 
 	// Staged uses llama.cpp chat generation with audio input and thinking,
 	// followed by speech synthesis on the same model instead of realtime output.
 	// Resolve selects effort "medium" when omitted.
-	Staged bool `toml:"staged" json:"staged,omitzero"`
+	Staged bool `toml:"staged"`
 
-	CacheDir string `toml:"cache_dir" json:"cache_dir"`
-	Threads  int    `toml:"threads" json:"threads"`
+	CacheDir string `toml:"cache_dir"`
+	Threads  int    `toml:"threads"`
 	// Slots is 1 to 16; Resolve selects 1 when omitted.
-	Slots int `toml:"slots" json:"slots"`
+	Slots int `toml:"slots"`
 	// ContextSize is tokens per slot, 512 to 131072, and is required for a
 	// managed server. A realtime conversation that outgrows it ends.
-	ContextSize     int   `toml:"context_size" json:"context_size"`
-	MaxOutputTokens int64 `toml:"max_output_tokens" json:"max_output_tokens"`
-}
-
-// ID returns the fingerprint of the effective realtime settings.
-func (c *RealtimeConfig) ID() (string, error) {
-	v := *c
-	if v.Provider == "llamacpp" && v.Remote == "" {
-		cache, err := v.CacheDirectory()
-		if err != nil {
-			return "", err
-		}
-		v.CacheDir = cache
-	}
-	return choiceID("realtime", &v)
+	ContextSize     int   `toml:"context_size"`
+	MaxOutputTokens int64 `toml:"max_output_tokens"`
 }
 
 // CacheDirectory returns the configured managed runtime cache or its platform default.

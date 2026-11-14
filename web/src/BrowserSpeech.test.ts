@@ -72,22 +72,17 @@ describe("BrowserSpeech", () => {
     expect(fakeSynthesis.spoken[0]?.voice).toBeNull();
   });
 
-  it("rejects a saved voice from a different base language", () => {
-    fakeSynthesis.voices = [{ voiceURI: "french", lang: "fr-FR" } as SpeechSynthesisVoice];
-    speech.close();
-    speech = new BrowserSpeech("en-US", "french", 1, callbacks);
-    speak("Hello.");
-    expect(fakeSynthesis.spoken).toHaveLength(0);
-    expect(callbacks.error).toHaveBeenCalledWith(expect.stringContaining("unavailable"));
-  });
-
-  it("reports a missing saved voice instead of silently changing it", () => {
-    fakeSynthesis.voices = [{ voiceURI: "other" } as SpeechSynthesisVoice];
-    speech.close();
-    speech = new BrowserSpeech("en-US", "missing", 1, callbacks);
-    speak("Hello.");
-    expect(fakeSynthesis.spoken).toHaveLength(0);
-    expect(callbacks.error).toHaveBeenCalledWith(expect.stringContaining("unavailable"));
+  it("speaks a saved voice the browser no longer offers in the language with the default", () => {
+    const fallback = { voiceURI: "default", lang: "en-US", default: true } as SpeechSynthesisVoice;
+    for (const saved of ["french", "missing"]) {
+      fakeSynthesis.spoken.length = 0;
+      fakeSynthesis.voices = [{ voiceURI: "french", lang: "fr-FR" } as SpeechSynthesisVoice, fallback];
+      speech.close();
+      speech = new BrowserSpeech("en-US", saved, 1, callbacks);
+      speak("Hello.");
+      expect(fakeSynthesis.spoken[0]).toMatchObject({ text: "Hello.", voice: fallback });
+    }
+    expect(callbacks.error).not.toHaveBeenCalled();
   });
 
   it("waits for the saved voice to load on a fresh page and preserves queued fragments", () => {
@@ -104,14 +99,22 @@ describe("BrowserSpeech", () => {
     expect(fakeSynthesis.spoken[1]).toMatchObject({ text: "Second.", voice: selected });
   });
 
-  it("bounds voice discovery and cancels it when speech stops", () => {
+  it("speaks with the browser default when voices never load", () => {
     vi.useFakeTimers();
     speech.close();
     speech = new BrowserSpeech("en-US", "selected", 1, callbacks);
     speak("First.");
+    expect(fakeSynthesis.spoken).toHaveLength(0);
     vi.advanceTimersByTime(5000);
-    expect(callbacks.error).toHaveBeenCalledWith(expect.stringContaining("did not load"));
-    callbacks.error.mockClear();
+    expect(fakeSynthesis.spoken.map((utterance) => utterance.text)).toEqual(["First."]);
+    expect(fakeSynthesis.spoken[0]?.voice ?? null).toBeNull();
+    expect(callbacks.error).not.toHaveBeenCalled();
+  });
+
+  it("cancels voice discovery when speech stops", () => {
+    vi.useFakeTimers();
+    speech.close();
+    speech = new BrowserSpeech("en-US", "selected", 1, callbacks);
     speak("Cancelled.");
     speech.stopSpeaking();
     fakeSynthesis.voices = [{ voiceURI: "selected", lang: "en-US" } as SpeechSynthesisVoice];

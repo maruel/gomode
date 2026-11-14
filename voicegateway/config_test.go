@@ -44,6 +44,7 @@ func TestConfig(t *testing.T) {
 			var host hostConfig
 			decoder := toml.NewDecoder(strings.NewReader(`address = "127.0.0.1:9000"
 [[voice-gateway.realtime]]
+id = "native"
 label = "Native"
 provider = "gemini"
 model = "gemini-3.8-live"
@@ -76,6 +77,7 @@ provider = "gemini"
 model = "gemini-3.8-flash-lite-tts"
 voice = "Orus"
 [[voice-gateway.voice]]
+id = "mixed-preset"
 label = "Mixed preset"
 asr = "recognition"
 llm = "zulu"
@@ -123,19 +125,8 @@ tts = "speech"
 			if host.Config.Realtime[0].Label != "Native" {
 				t.Fatal("resolved realtime slice aliases host declarations")
 			}
-			second, err := host.Config.Resolve()
-			if err != nil {
-				t.Fatal(err)
-			}
-			id, err := preset.ID()
-			if err != nil {
-				t.Fatal(err)
-			}
-			again, err := second.Pipelines[0].ID()
-			if err != nil || again != id {
-				t.Fatalf("repeat resolution identity = %q, want %q (%v)", again, id, err)
-			}
 		})
+		t.Run("ids", testConfigIDs)
 		t.Run("error", func(t *testing.T) {
 			t.Parallel()
 			for _, tc := range []struct {
@@ -143,30 +134,19 @@ tts = "speech"
 				edit func(*Config)
 				want string
 			}{
-				{"missing recognition ID", func(c *Config) { c.ASR[0].ID = " " }, "asr entry 1: id is required"},
-				{"duplicate recognition ID", func(c *Config) { c.ASR = append(c.ASR, c.ASR[0]) }, `asr entry 2: duplicate id "recognition"`},
-				{"missing synthesis ID", func(c *Config) { c.TTS[0].ID = " " }, "tts entry 1: id is required"},
-				{"duplicate synthesis ID", func(c *Config) { c.TTS = append(c.TTS, c.TTS[0]) }, `tts entry 2: duplicate id "speech"`},
-				{"missing language model ID", func(c *Config) { c.LLM[0].ID = " " }, "llm entry 1: id is required"},
-				{"duplicate language model ID", func(c *Config) { c.LLM = append(c.LLM, c.LLM[0]) }, `llm entry 2: duplicate id "reasoning"`},
 				{"unknown recognition", func(c *Config) { c.Voice[0].ASR = "missing" }, `unknown asr "missing"`},
 				{"unknown language model", func(c *Config) { c.Voice[0].LLM = "missing" }, `unknown llm "missing"`},
 				{"unknown synthesis", func(c *Config) { c.Voice[0].TTS = "missing" }, `unknown tts "missing"`},
 				{"unused invalid recognition", func(c *Config) {
-					c.ASR = append(c.ASR, NamedASRConfig{ID: "unused", ASRConfig: ASRConfig{Provider: "groq"}})
+					c.ASR = append(c.ASR, ASRConfig{ID: "unused", Provider: "groq"})
 				}, "voice.asr.model is required"},
 				{"unused invalid synthesis", func(c *Config) {
-					c.TTS = append(c.TTS, NamedTTSConfig{ID: "unused", TTSConfig: TTSConfig{Provider: "gemini"}})
+					c.TTS = append(c.TTS, TTSConfig{ID: "unused", Provider: "gemini"})
 				}, "voice.tts.model is required"},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					t.Parallel()
-					cfg := Config{
-						ASR:   []NamedASRConfig{{ID: "recognition", ASRConfig: ASRConfig{Provider: "groq", Model: "whisper-large-v3-turbo"}}},
-						LLM:   []NamedLLMConfig{{ID: "reasoning", LLMConfig: LLMConfig{Label: "Reasoning", ModelConfig: ModelConfig{Provider: "deepseek", Model: "reasoning"}}}},
-						TTS:   []NamedTTSConfig{{ID: "speech", TTSConfig: TTSConfig{Provider: "gemini", Model: "speech", Voice: "Kore"}}},
-						Voice: []VoiceConfig{{Label: "Preset", ASR: "recognition", LLM: "reasoning", TTS: "speech"}},
-					}
+					cfg := testConfig()
 					tc.edit(&cfg)
 					presets := slices.Clone(cfg.Voice)
 					_, err := cfg.Resolve()
@@ -179,6 +159,131 @@ tts = "speech"
 				})
 			}
 		})
+	})
+}
+
+// testConfig declares one entry of every kind and one preset composing them.
+func testConfig() Config {
+	return Config{
+		Realtime: []RealtimeConfig{{ID: "live", Label: "Live", ModelConfig: ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}}},
+		ASR:      []ASRConfig{{ID: "recognition", Provider: "groq", Model: "whisper-large-v3-turbo"}},
+		LLM:      []LLMConfig{{ID: "reasoning", Label: "Reasoning", ModelConfig: ModelConfig{Provider: "deepseek", Model: "reasoning"}}},
+		TTS:      []TTSConfig{{ID: "speech", Provider: "gemini", Model: "speech", Voice: "Kore"}},
+		Voice:    []VoiceConfig{{ID: "preset", Label: "Preset", ASR: "recognition", LLM: "reasoning", TTS: "speech"}},
+	}
+}
+
+// advertisedIDs lists the choice, recognition, and synthesis ids clients see.
+func advertisedIDs(c *ResolvedConfig) []string {
+	var out []string
+	for name := range c.Choices() {
+		out = append(out, name.ID)
+	}
+	for _, a := range c.Recognition {
+		out = append(out, "asr:"+a.ID)
+	}
+	for _, t := range c.Synthesis {
+		out = append(out, "tts:"+t.ID)
+	}
+	return out
+}
+
+func testConfigIDs(t *testing.T) {
+	t.Parallel()
+	t.Run("valid", func(t *testing.T) {
+		t.Parallel()
+		t.Run("advertised as configured", func(t *testing.T) {
+			t.Parallel()
+			cfg := testConfig()
+			got, err := cfg.Resolve()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ids := advertisedIDs(&got); !slices.Equal(ids, []string{"live", "reasoning", "preset", "asr:recognition", "tts:speech"}) {
+				t.Fatalf("advertised ids = %v", ids)
+			}
+		})
+		t.Run("settings changes keep ids", func(t *testing.T) {
+			t.Parallel()
+			cfg := testConfig()
+			cfg.Realtime[0] = RealtimeConfig{ID: "live", Label: "Live", ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "owner/repo"}, ContextSize: 4096}
+			cfg.LLM[0].ModelConfig = ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "reasoning"}
+			cfg.LLM[0].ContextSize = 8192
+			before, err := cfg.Resolve()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Realtime[0].ContextSize, cfg.Realtime[0].Label = 8192, "Renamed"
+			cfg.LLM[0].ContextSize, cfg.LLM[0].Effort = 16384, "low"
+			cfg.ASR[0].Model = "whisper-large-v3"
+			cfg.TTS[0].Voice = "Orus"
+			after, err := cfg.Resolve()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(advertisedIDs(&before), advertisedIDs(&after)) {
+				t.Fatalf("ids changed from %v to %v", advertisedIDs(&before), advertisedIDs(&after))
+			}
+		})
+		t.Run("namespaces are independent", func(t *testing.T) {
+			t.Parallel()
+			cfg := testConfig()
+			cfg.ASR[0].ID, cfg.TTS[0].ID, cfg.Voice[0].ASR, cfg.Voice[0].TTS = "reasoning", "reasoning", "reasoning", "reasoning"
+			got, err := cfg.Resolve()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p := got.Pipelines[0]; p.ASR.Model != "whisper-large-v3-turbo" || p.TTS.Voice != "Kore" {
+				t.Fatalf("preset stages = %+v", p)
+			}
+		})
+		t.Run("format", func(t *testing.T) {
+			t.Parallel()
+			for _, id := range []string{"a", "0", "gpt-6_luna", strings.Repeat("x", 64)} {
+				cfg := testConfig()
+				cfg.Realtime[0].ID = id
+				if _, err := cfg.Resolve(); err != nil {
+					t.Errorf("%q: %v", id, err)
+				}
+			}
+		})
+	})
+	t.Run("error", func(t *testing.T) {
+		t.Parallel()
+		const format = "must use lowercase letters, digits, '-' and '_', starting with a letter or digit"
+		for _, tc := range []struct {
+			name string
+			edit func(*Config)
+			want string
+		}{
+			{"missing realtime", func(c *Config) { c.Realtime[0].ID = "" }, `realtime entry 1 ("Live"): id is required`},
+			{"missing llm", func(c *Config) { c.LLM[0].ID = "" }, `llm entry 1 ("Reasoning"): id is required`},
+			{"missing voice", func(c *Config) { c.Voice[0].ID = "" }, `voice entry 1 ("Preset"): id is required`},
+			{"missing asr", func(c *Config) { c.ASR[0].ID = "" }, `asr entry 1 ("whisper-large-v3-turbo"): id is required`},
+			{"missing tts", func(c *Config) { c.TTS[0].ID = "" }, `tts entry 1 ("speech"): id is required`},
+			{"uppercase realtime", func(c *Config) { c.Realtime[0].ID = "Live" }, `realtime entry 1 ("Live"): id "Live" ` + format},
+			{"dotted llm", func(c *Config) { c.LLM[0].ID, c.Voice[0].LLM = "z.model", "z.model" }, `llm entry 1 ("Reasoning"): id "z.model" ` + format},
+			{"spaced voice", func(c *Config) { c.Voice[0].ID = "a preset" }, `voice entry 1 ("Preset"): id "a preset" ` + format},
+			{"leading dash asr", func(c *Config) { c.ASR[0].ID, c.Voice[0].ASR = "-asr", "-asr" }, `asr entry 1 ("whisper-large-v3-turbo"): id "-asr" ` + format},
+			{"leading underscore tts", func(c *Config) { c.TTS[0].ID, c.Voice[0].TTS = "_tts", "_tts" }, `tts entry 1 ("speech"): id "_tts" ` + format},
+			{"long", func(c *Config) { c.Realtime[0].ID = strings.Repeat("x", 65) }, "is longer than 64 characters"},
+			{"duplicate realtime", func(c *Config) {
+				c.Realtime = append(c.Realtime, RealtimeConfig{ID: "live", Label: "Other", ModelConfig: ModelConfig{Provider: "gemini", Model: "other"}})
+			}, `realtime entry 2 ("Other"): id "live" is already used by realtime entry 1 ("Live")`},
+			{"llm shares realtime id", func(c *Config) { c.LLM[0].ID, c.Voice[0].LLM = "live", "live" }, `llm entry 1 ("Reasoning"): id "live" is already used by realtime entry 1 ("Live")`},
+			{"voice shares llm id", func(c *Config) { c.Voice[0].ID = "reasoning" }, `voice entry 1 ("Preset"): id "reasoning" is already used by llm entry 1 ("Reasoning")`},
+			{"duplicate asr", func(c *Config) { c.ASR = append(c.ASR, c.ASR[0]) }, `asr entry 2 ("whisper-large-v3-turbo"): id "recognition" is already used by asr entry 1`},
+			{"duplicate tts", func(c *Config) { c.TTS = append(c.TTS, c.TTS[0]) }, `tts entry 2 ("speech"): id "speech" is already used by tts entry 1`},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				cfg := testConfig()
+				tc.edit(&cfg)
+				if _, err := cfg.Resolve(); err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("Resolve = %v, want %q", err, tc.want)
+				}
+			})
+		}
 	})
 }
 
@@ -246,15 +351,6 @@ context_size = 32768`
 		if len(cfg.Pipelines) != 0 || len(cfg.Recognition) != 1 || len(cfg.Synthesis) != 1 || cfg.Recognition[0].Label != "Recognition" || cfg.Synthesis[0].Label != "speech" {
 			t.Fatalf("unbundled config = %+v", cfg)
 		}
-		before, err := cfg.Recognition[0].ID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		cfg.Recognition[0].Label = "New label"
-		after, err := cfg.Recognition[0].ID()
-		if err != nil || before != after {
-			t.Fatal("label changed speech identity")
-		}
 		cfg.Recognition[0].Model = ""
 		if err := cfg.Validate(); err == nil {
 			t.Fatal("unused speech stage was not validated")
@@ -263,19 +359,19 @@ context_size = 32768`
 	t.Run("LLM choices in declaration order", func(t *testing.T) {
 		for _, data := range []string{
 			`[[llm]]
-id = "z.model"
+id = "zulu"
 label = "Zulu"
 provider = "deepseek"
 model = "first"
 [[llm]]
-id = "a model"
+id = "alpha"
 label = "Alpha"
 provider = "deepseek"
 model = "second"`,
 			`# [[llm]] is a comment, not a declaration.
 llm = [
-  { id = "z.model", label = "Zulu", provider = "deepseek", model = "first" },
-  { id = "a model", label = "Alpha", provider = "deepseek", model = "second" },
+  { id = "zulu", label = "Zulu", provider = "deepseek", model = "first" },
+  { id = "alpha", label = "Alpha", provider = "deepseek", model = "second" },
 ]`,
 		} {
 			path := filepath.Join(t.TempDir(), "config.toml")
@@ -290,8 +386,8 @@ llm = [
 				t.Fatal(err)
 			}
 			var labels []string
-			for label := range cfg.Choices() {
-				labels = append(labels, label)
+			for name := range cfg.Choices() {
+				labels = append(labels, name.Label)
 			}
 			if !slices.Equal(labels, []string{"Zulu", "Alpha"}) || cfg.LLM[0].Model != "first" || cfg.LLM[1].Model != "second" {
 				t.Fatalf("LLM choices = %+v, labels = %v", cfg.LLM, labels)
@@ -323,6 +419,7 @@ engine = "kittentts"
 model = "KittenML/kitten-tts-2"
 voice = "Luna"
 [[voice]]
+id = "stack-preset"
 label = "Stack"
 asr = "recognition"
 llm = "stack"
@@ -341,24 +438,6 @@ tts = "speech"
 			if model.Auth != openairesponses.AuthCodex {
 				t.Fatalf("decoded auth = %q", model.Auth)
 			}
-		}
-		for _, choice := range cfg.Choices() {
-			id, err := choice.ID()
-			if err != nil {
-				t.Fatal(err)
-			}
-			for i := range cfg.LLM {
-				cfg.LLM[i].Auth = ""
-			}
-			cfg.Pipelines[0].LLM.Auth = ""
-			apiID, err := choice.ID()
-			if err != nil || id == apiID {
-				t.Fatalf("subscription identity %q, API identity %q, error %v", id, apiID, err)
-			}
-			for i := range cfg.LLM {
-				cfg.LLM[i].Auth = openairesponses.AuthCodex
-			}
-			cfg.Pipelines[0].LLM.Auth = openairesponses.AuthCodex
 		}
 	})
 	t.Run("OpenRouter sorting", func(t *testing.T) {
@@ -383,6 +462,7 @@ engine = "kittentts"
 model = "KittenML/kitten-tts-2"
 voice = "Luna"
 [[voice]]
+id = "stack"
 label = "Stack"
 asr = "recognition"
 llm = "shared"
@@ -403,23 +483,6 @@ tts = "speech"
 							t.Fatalf("decoded sorting = %q, want %q", model.OpenRouterSort, sort)
 						}
 					}
-					for _, choice := range cfg.Choices() {
-						id, err := choice.ID()
-						if err != nil {
-							t.Fatal(err)
-						}
-						cfg.LLM[0].OpenRouterSort = ""
-						cfg.Pipelines[0].LLM.OpenRouterSort = ""
-						defaultID, err := choice.ID()
-						if err != nil {
-							t.Fatal(err)
-						}
-						if (id == defaultID) != (sort == "") {
-							t.Fatalf("sort %q identity = %s, default = %s", sort, id, defaultID)
-						}
-						cfg.LLM[0].OpenRouterSort = openrouter.ProviderSort(sort)
-						cfg.Pipelines[0].LLM.OpenRouterSort = openrouter.ProviderSort(sort)
-					}
 				})
 			}
 		})
@@ -429,7 +492,7 @@ tts = "speech"
 				{"openai", "latency", "openrouter_sort requires provider openrouter"},
 			} {
 				t.Run(tc.provider+"/"+tc.sort, func(t *testing.T) {
-					cfg := ResolvedConfig{Runtime: testRuntime, LLM: []LLMConfig{{Label: "Chat", ModelConfig: ModelConfig{
+					cfg := ResolvedConfig{Runtime: testRuntime, LLM: []LLMConfig{{ID: "chat", Label: "Chat", ModelConfig: ModelConfig{
 						Provider: tc.provider, Model: "test/model", OpenRouterSort: openrouter.ProviderSort(tc.sort),
 					}}}}
 					if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -495,6 +558,7 @@ model = "alternate-recognition"`)
 				data := strings.Replace(definitions, `provider = "llamacpp"`, `streaming = true
 provider = "`+provider+`"`, 1)
 				cfg, err := load(t, data+`[[voice]]
+id = "live-speech"
 label = "Live speech"
 asr = "recognition"
 llm = "reasoning"
@@ -541,6 +605,7 @@ provider = "llamacpp"
 model = "owner/tts"
 context_size = 16384
 [[voice]]
+id = "local-preset"
 label = "Local"
 asr = "local_asr"
 llm = "local"
@@ -593,6 +658,7 @@ tts = "local_tts"`
 context_size = 32768`)
 			data = strings.ReplaceAll(data, "voice = \"Luna\"\n", "")
 			cfg, err := load(t, data+`[[voice]]
+id = "provider-speech"
 label = "Provider speech"
 asr = "recognition"
 llm = "reasoning"
@@ -612,11 +678,13 @@ tts = "speech"`)
 		})
 		t.Run("valid", func(t *testing.T) {
 			data := definitions + `[[voice]]
+id = "gateway-speech"
 label = "Gateway speech"
 asr = "recognition"
 llm = "reasoning"
 tts = "speech"
 [[voice]]
+id = "alternative-speech"
 label = "Alternative speech"
 asr = "recognition"
 llm = "reasoning"
@@ -637,31 +705,18 @@ tts = "alternative"
 				t.Fatalf("resolved speech = %+v", stack)
 			}
 			var labels []string
-			for label := range cfg.Choices() {
-				labels = append(labels, label)
+			for name := range cfg.Choices() {
+				labels = append(labels, name.Label)
 			}
 			if !slices.Equal(labels, []string{"Client speech", "Gateway speech", "Alternative speech"}) {
 				t.Fatalf("choice order = %v", labels)
-			}
-			id, err := stack.ID()
-			if err != nil {
-				t.Fatal(err)
-			}
-			renamed, err := load(t, strings.ReplaceAll(strings.ReplaceAll(data, "reasoning", "renamed"), `model = "renamed"`, `model = "reasoning"`))
-			if err != nil {
-				t.Fatal(err)
-			}
-			renamedID, err := renamed.Pipelines[0].ID()
-			if err != nil || renamedID != id {
-				t.Fatalf("renaming reference changed identity: %s / %s (%v)", id, renamedID, err)
 			}
 			changed, err := load(t, strings.ReplaceAll(data, `model = "reasoning"`, `model = "different-model"`))
 			if err != nil {
 				t.Fatal(err)
 			}
-			changedID, err := changed.Pipelines[0].ID()
-			if err != nil || changedID == id || changed.LLM[0].Model != "different-model" {
-				t.Fatalf("model change did not affect both choices: %+v (%v)", changed, err)
+			if changed.LLM[0].Model != "different-model" || changed.Pipelines[0].LLM.Model != "different-model" {
+				t.Fatalf("model change did not affect both choices: %+v", changed)
 			}
 			t.Setenv("GOMODE_NAMED_STAGE_TEST_KEY", "")
 			available := cfg.Available(t.Context())
@@ -672,21 +727,25 @@ tts = "alternative"
 		t.Run("error", func(t *testing.T) {
 			for _, tc := range []struct{ name, data, want string }{
 				{"unknown ASR", `[[voice]]
+id = "voice"
 label = "Voice"
 asr = "missing"
 llm = "reasoning"
 tts = "speech"`, `unknown asr "missing"`},
 				{"unknown LLM", `[[voice]]
+id = "voice"
 label = "Voice"
 asr = "recognition"
 llm = "missing"
 tts = "speech"`, `unknown llm "missing"`},
 				{"unknown TTS", `[[voice]]
+id = "voice"
 label = "Voice"
 asr = "recognition"
 llm = "reasoning"
 tts = "missing"`, `unknown tts "missing"`},
 				{"missing stages", `[[voice]]
+id = "voice"
 label = "Voice"`, `unknown llm ""`},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
@@ -697,25 +756,13 @@ label = "Voice"`, `unknown llm ""`},
 			}
 			t.Run("invalid stage", func(t *testing.T) {
 				_, err := load(t, strings.ReplaceAll(definitions, `engine = "kittentts"`, `engine = "unsupported"`)+`[[voice]]
+id = "voice"
 label = "Voice"
 asr = "recognition"
 llm = "reasoning"
 tts = "speech"`)
 				if err == nil || !strings.Contains(err.Error(), "voice.tts.engine") {
 					t.Fatalf("invalid stage validation = %v", err)
-				}
-			})
-			t.Run("duplicate effective choices", func(t *testing.T) {
-				_, err := load(t, definitions+`[[llm]]
-id = "duplicate"
-label = "Same settings"
-provider = "openaicompatible"
-remote = "https://llm.example/v1/chat/completions"
-model = "reasoning"
-api_key_name = "GOMODE_NAMED_STAGE_TEST_KEY"
-effort = "low"`)
-				if err == nil || !strings.Contains(err.Error(), "duplicate choice") {
-					t.Fatalf("duplicate validation = %v", err)
 				}
 			})
 		})
@@ -739,10 +786,12 @@ provider = "gemini"
 model = "gemini-3.8-flash-lite-tts"
 voice = "Kore"
 [[voice]]
+id = "gateway-recognition"
 label = "Gateway recognition"
 asr = "recognition"
 llm = "reasoning"
 [[voice]]
+id = "gateway-synthesis"
 label = "Gateway synthesis"
 llm = "reasoning"
 tts = "speech"
@@ -837,6 +886,7 @@ webrtc_udp_port = 4445
 [debug]
 trace = "gateway.trace"
 [[realtime]]
+id = "gemini"
 label = "Gemini"
 provider = "gemini"
 model = "gemini-live-test"
@@ -942,7 +992,7 @@ public_key = %q
 
 func TestRuntimeConfig(t *testing.T) {
 	t.Parallel()
-	llm := []NamedLLMConfig{{ID: "test", LLMConfig: LLMConfig{Label: "test", ModelConfig: ModelConfig{Provider: "openaicompatible", Remote: "http://localhost/completions", Model: "test"}}}}
+	llm := []LLMConfig{{ID: "test", Label: "test", ModelConfig: ModelConfig{Provider: "openaicompatible", Remote: "http://localhost/completions", Model: "test"}}}
 	cfg := Config{LLM: llm}
 	out, err := cfg.Resolve()
 	if err != nil {
@@ -967,6 +1017,7 @@ func testAudioEngines(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "audio.toml")
 	content := `[[voice]]
+id = "local"
 label = "Local"
 asr = "recognition"
 llm = "reasoning"
@@ -1052,12 +1103,12 @@ func TestResolvedConfig(t *testing.T) {
 		t.Run("independent speech catalogs filter unavailable providers", func(t *testing.T) {
 			t.Setenv("GEMINI_API_KEY", "")
 			cfg := ResolvedConfig{Runtime: testRuntime,
-				LLM: []LLMConfig{{Label: "LLM", ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "llm"}, ContextSize: 65536}},
+				LLM: []LLMConfig{{ID: "llm", Label: "LLM", ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "llm"}, ContextSize: 65536}},
 				Recognition: []ASRConfig{
-					{Engine: ASREngineGenAI, Provider: "gemini", Model: "transcribe"},
-					{Engine: ASREngineGenAI, Provider: "llamacpp", Model: "asr", ContextSize: 32768},
+					{ID: "transcribe", Engine: ASREngineGenAI, Provider: "gemini", Model: "transcribe"},
+					{ID: "asr", Engine: ASREngineGenAI, Provider: "llamacpp", Model: "asr", ContextSize: 32768},
 				},
-				Synthesis: []TTSConfig{{Engine: TTSEngineGenAI, Provider: "gemini", Model: "tts", Voice: "Kore"}},
+				Synthesis: []TTSConfig{{ID: "tts", Engine: TTSEngineGenAI, Provider: "gemini", Model: "tts", Voice: "Kore"}},
 			}
 			got := cfg.Available(t.Context())
 			if len(got.LLM) != 1 || len(got.Recognition) != 1 || got.Recognition[0].Provider != "llamacpp" || len(got.Synthesis) != 0 {
@@ -1074,18 +1125,10 @@ func TestResolvedConfig(t *testing.T) {
 				return &availabilityProbe{}, nil
 			}}
 			t.Cleanup(func() { providers.All["groq"] = previous })
-			cfg := ResolvedConfig{Runtime: testRuntime, Pipelines: []PipelineConfig{{Label: "Mixed", LLM: LLMConfig{ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "reasoning"}, ContextSize: 65536}, ASR: ASRConfig{Engine: ASREngineGenAI, Provider: "groq", Model: "whisper-large-v3-turbo"}, TTS: TTSConfig{Engine: TTSEngineGenAI, Provider: "gemini", Model: "gemini-3.8-flash-lite-tts", Voice: "Kore"}}}}
-			before, err := cfg.Pipelines[0].ID()
-			if err != nil {
-				t.Fatal(err)
-			}
+			cfg := ResolvedConfig{Runtime: testRuntime, Pipelines: []PipelineConfig{{ID: "mixed", Label: "Mixed", LLM: LLMConfig{ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "reasoning"}, ContextSize: 65536}, ASR: ASRConfig{Engine: ASREngineGenAI, Provider: "groq", Model: "whisper-large-v3-turbo"}, TTS: TTSConfig{Engine: TTSEngineGenAI, Provider: "gemini", Model: "gemini-3.8-flash-lite-tts", Voice: "Kore"}}}}
 			available := cfg.Available(t.Context())
 			if len(available.Pipelines) != 1 || available.Pipelines[0].UnavailableASR || !available.Pipelines[0].UnavailableTTS {
 				t.Fatalf("available speech = %+v", available.Pipelines)
-			}
-			after, err := available.Pipelines[0].ID()
-			if err != nil || before != after {
-				t.Fatalf("availability changed identity: %s / %s (%v)", before, after, err)
 			}
 		})
 
@@ -1105,8 +1148,8 @@ func TestResolvedConfig(t *testing.T) {
 					t.Cleanup(func() { delete(providers.All, "gomode-stalled") })
 					t.Cleanup(func() { delete(providers.All, "gomode-healthy") })
 					cfg := ResolvedConfig{Runtime: testRuntime, LLM: []LLMConfig{
-						{Label: "Stalled", ModelConfig: ModelConfig{Provider: "gomode-stalled", Model: "model"}},
-						{Label: "Healthy", ModelConfig: ModelConfig{Provider: "gomode-healthy", Model: "model"}},
+						{ID: "stalled", Label: "Stalled", ModelConfig: ModelConfig{Provider: "gomode-stalled", Model: "model"}},
+						{ID: "healthy", Label: "Healthy", ModelConfig: ModelConfig{Provider: "gomode-healthy", Model: "model"}},
 					}}
 					if err := cfg.Validate(); err != nil {
 						t.Fatal(err)
@@ -1504,6 +1547,7 @@ func testKittenTTSConfiguration(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "kitten.toml")
 	content := `[[voice]]
+id = "local"
 label = "Local"
 asr = "recognition"
 llm = "reasoning"
@@ -1563,24 +1607,17 @@ func testValidateASR(t *testing.T) {
 func testResolvedConfigChoices(t *testing.T) {
 	t.Parallel()
 	cfg := ResolvedConfig{Runtime: testRuntime,
-		Realtime: []RealtimeConfig{{Label: "Gemini Live", ModelConfig: ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}}},
+		Realtime: []RealtimeConfig{{ID: "live", Label: "Gemini Live", ModelConfig: ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}}},
 		LLM: []LLMConfig{
-			{Label: "Remote LLM", ModelConfig: ModelConfig{Provider: "openaicompatible", Remote: "https://example.com/v1/chat/completions", APIKeyName: "REMOTE_KEY", Model: "chat-model"}},
-			{Label: "Local LLM", ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "chat-model"}, ContextSize: 65536},
+			{ID: "remote", Label: "Remote LLM", ModelConfig: ModelConfig{Provider: "openaicompatible", Remote: "https://example.com/v1/chat/completions", APIKeyName: "REMOTE_KEY", Model: "chat-model"}},
+			{ID: "local", Label: "Local LLM", ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "chat-model"}, ContextSize: 65536},
 		},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	duplicate := cfg.Realtime[0]
-	duplicate.Label = "Same backend, renamed"
-	cfg.Realtime = append(cfg.Realtime, duplicate)
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate choice") {
-		t.Fatalf("duplicate configuration validation = %v", err)
-	}
-	cfg.Realtime = cfg.Realtime[:1]
 	cfg.LLM[1].Label = " "
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "choice label is required") {
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), `choice "local": label is required`) {
 		t.Fatalf("empty label validation = %v", err)
 	}
 	cfg.LLM[1].Label = "Local"
@@ -1597,37 +1634,6 @@ func testResolvedConfigChoices(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("early exit visited %d choices", count)
 	}
-}
-
-func TestLLMConfig(t *testing.T) {
-	t.Parallel()
-	t.Run("ID", func(t *testing.T) {
-		cfg := ResolvedConfig{Runtime: testRuntime, LLM: []LLMConfig{
-			{Label: "First", ModelConfig: ModelConfig{Provider: "openaicompatible", Remote: "https://example.com/chat", Model: "model-a", APIKeyName: "KEY_A"}},
-			{Label: "Second", ModelConfig: ModelConfig{Provider: "deepseek", Model: "deepseek-flash"}},
-		}}
-		want, err := cfg.LLM[0].ID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		cfg.LLM[0].Label, cfg.LLM[0].APIKeyName = "Renamed", "KEY_B"
-		cfg.LLM[0], cfg.LLM[1] = cfg.LLM[1], cfg.LLM[0]
-		got, err := cfg.LLM[1].ID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got != want {
-			t.Fatalf("identity changed from %s to %s", want, got)
-		}
-		cfg.LLM[1].Model = "model-b"
-		changed, err := cfg.LLM[1].ID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if changed == got {
-			t.Fatal("model change retained identity")
-		}
-	})
 }
 
 func TestPipelineConfig(t *testing.T) {
@@ -1659,42 +1665,18 @@ func TestPipelineConfig(t *testing.T) {
 			})
 		}
 	})
-
-	t.Run("ID", func(t *testing.T) {
-		cfg := testPipelineConfig()
-		renamed := cfg
-		renamed.Label = "Renamed"
-		first, err := cfg.ID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		second, err := renamed.ID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if first != second {
-			t.Fatalf("renaming changed identity: %s vs %s", first, second)
-		}
-		renamed.TTS.Voice = "Luna"
-		changed, err := renamed.ID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if changed == first {
-			t.Fatal("voice change retained identity")
-		}
-	})
 }
 
 // testGatewayConfig supplies an explicitly selected model for configuration tests.
 func testGatewayConfig() ResolvedConfig {
 	cfg := ResolvedConfig{Runtime: testRuntime}
-	cfg.Realtime = []RealtimeConfig{{Label: "Gemini", ModelConfig: ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}}}
+	cfg.Realtime = []RealtimeConfig{{ID: "gemini", Label: "Gemini", ModelConfig: ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}}}
 	return cfg
 }
 
 func testPipelineConfig() PipelineConfig {
 	return PipelineConfig{
+		ID:    "local",
 		Label: "Local",
 		ASR:   ASRConfig{Engine: ASREngineGenAI, Provider: "llamacpp", Model: "ggml-org/Qwen3-ASR-0.6B-GGUF:Q8_0", ContextSize: 32768},
 		LLM:   LLMConfig{ModelConfig: ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "unsloth/gemma-4-E2B-it-GGUF:UD-Q4_K_XL"}, ContextSize: 65536},
@@ -1844,7 +1826,7 @@ func TestConfigFile(t *testing.T) {
 
 func testStandaloneConfig() configFile {
 	return configFile{
-		Config: Config{Realtime: []RealtimeConfig{{Label: "Gemini", ModelConfig: ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}}}},
+		Config: Config{Realtime: []RealtimeConfig{{ID: "gemini", Label: "Gemini", ModelConfig: ModelConfig{Provider: "gemini", Model: "gemini-3.8-live"}}}},
 		Server: ServerConfig{HTTP: ":3479"},
 	}
 }

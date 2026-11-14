@@ -274,20 +274,21 @@ describe("voice choices", () => {
     expect(screen.getByRole("radio", { name: "All-in-one" })).toBeDisabled();
   });
 
-  it("retains missing saved stages and restores a selection when persistence fails", async () => {
+  it("shows the first model for a withdrawn saved stage and restores a selection when persistence fails", async () => {
     localStorage.setItem("gomode.voiceSpeechModel.https://voice.example.input", "removed");
     globalThis.fetch = async () => new Response(JSON.stringify(independent));
     render(() => <VoiceSettings />);
     await readySelect();
     const select = screen.getByRole("combobox", { name: "Recognition" });
-    expect(select).toHaveProperty("value", "model:removed");
-    expect(select).toHaveAccessibleDescription(/selected recognition model is unavailable/);
+    expect(select).toHaveValue("model:asr-a");
+    expect(select).not.toHaveAttribute("aria-describedby");
+    expect(screen.queryByRole("option", { name: "Choose an available model" })).toBeNull();
     const save = vi.spyOn(window.Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("Storage unavailable");
     });
     try {
       await userEvent.setup().selectOptions(select, "model:asr-b");
-      expect(select).toHaveProperty("value", "model:removed");
+      expect(select).toHaveValue("model:asr-a");
       expect(select).toHaveAccessibleDescription("Storage unavailable");
     } finally {
       save.mockRestore();
@@ -298,13 +299,12 @@ describe("voice choices", () => {
   });
 
   it("places each failure under the control that owns it", async () => {
-    localStorage.setItem("gomode.voiceSpeechModel.https://voice.example.output", "removed");
-    globalThis.fetch = async () => new Response(JSON.stringify(independent));
+    globalThis.fetch = async () => new Response(JSON.stringify({ ...independent, synthesisModels: [] }));
     render(() => <VoiceSettings />);
     const model = await readySelect();
     const recognition = screen.getByRole("combobox", { name: "Recognition" });
     const speech = screen.getByRole("combobox", { name: "Speech" });
-    expect(speech).toHaveAccessibleDescription(/selected speech model is unavailable/);
+    expect(speech).toHaveAccessibleDescription(/no speech models/);
     expect(recognition).not.toHaveAttribute("aria-describedby");
     expect(model).not.toHaveAttribute("aria-describedby");
     const save = vi.spyOn(window.Storage.prototype, "setItem").mockImplementation(() => {
@@ -316,10 +316,11 @@ describe("voice choices", () => {
       save.mockRestore();
     }
     expect(recognition).toHaveAccessibleDescription("Storage unavailable");
-    expect(speech).toHaveAccessibleDescription(/selected speech model is unavailable/);
+    expect(speech).toHaveAccessibleDescription(/no speech models/);
     expect(model).not.toHaveAttribute("aria-describedby");
     expect(screen.getAllByRole("alert")).toHaveLength(2);
-    await userEvent.setup().selectOptions(speech, "model:tts-b");
+    await userEvent.setup().selectOptions(speech, "browser");
+    await userEvent.setup().selectOptions(recognition, "model:asr-b");
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -412,7 +413,7 @@ describe("voice choices", () => {
       savedVoice?: string;
       mode?: "text";
       voice?: string;
-      error?: "catalog" | "voice";
+      error?: "catalog";
     }>;
   };
   for (const row of fixtures.selection) {
@@ -434,12 +435,8 @@ describe("voice choices", () => {
       await voiceSession.loadVoiceChoices();
       expect(voiceSession.state.choicesStatus).toBe(row.error === "catalog" ? "error" : "ready");
       if (row.error === "catalog") return;
-      if (row.error === "voice") {
-        expect(voiceSession.state.voiceError).toContain("speaking voice is unavailable");
-      } else {
-        expect(voiceSession.state.voiceError).toBeNull();
-        expect(voiceSession.state.voiceName).toBe(row.voice);
-      }
+      expect(voiceSession.state.voiceError).toBeNull();
+      expect(voiceSession.state.voiceName).toBe(row.voice);
     });
   }
 
@@ -586,7 +583,7 @@ describe("voice choices", () => {
     restored.disconnect();
   });
 
-  it("recovers failed speaking-voice reads without replacing a removed saved voice", async () => {
+  it("recovers failed speaking-voice reads and shows the default for a withdrawn saved voice", async () => {
     const key = 'gomode.speakingVoice.["https://voice.example","gemini"]';
     localStorage.setItem(key, "Retired");
     const read = window.Storage.prototype.getItem;
@@ -611,8 +608,8 @@ describe("voice choices", () => {
       await userEvent.setup().click(screen.getByRole("button", { name: "Retry loading voice choices" }));
       await waitFor(() => expect(screen.getByRole("combobox", { name: "Speaking voice" })).toBeEnabled());
       const speaking = screen.getByRole("combobox", { name: "Speaking voice" });
-      expect(speaking).toHaveValue("Retired");
-      expect(speaking).toHaveAccessibleDescription(/saved speaking voice is unavailable/);
+      expect(speaking).toHaveValue("");
+      expect(speaking).not.toHaveAttribute("aria-describedby");
       expect(localStorage.getItem(key)).toBe("Retired");
       await userEvent.setup().selectOptions(speaking, "Aoede");
       expect(speaking).toHaveValue("Aoede");
@@ -680,19 +677,16 @@ describe("voice choices", () => {
     }
   });
 
-  it("retains a removed inactive parts choice until the user repairs it", async () => {
+  it("shows the default for a withdrawn inactive parts choice without saving it", async () => {
     localStorage.setItem("gomode.voiceChoice.https://voice.example.text", "removed");
     const user = userEvent.setup();
     render(() => <VoiceSettings />);
     expect(await readySelect()).toHaveValue("gemini");
     await user.click(screen.getByRole("radio", { name: "Separate stages" }));
-    expect(await readySelect()).toHaveProperty("value", "removed");
-    expect(screen.getByRole("combobox", { name: "Language model" })).toHaveAccessibleDescription(
-      /selected voice choice is unavailable/,
-    );
-    expect(localStorage.getItem("gomode.voiceChoice.https://voice.example.text")).toBe("removed");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Language model" }), "remote");
+    expect(await readySelect()).toHaveValue("remote");
     expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("option", { name: "Choose an available model" })).toBeNull();
+    expect(localStorage.getItem("gomode.voiceChoice.https://voice.example.text")).toBe("removed");
   });
 
   it("shows pending discovery, reports failure, and retries", async () => {
@@ -750,7 +744,7 @@ describe("voice choices", () => {
     expect(localStorage.getItem("gomode.voiceChoice.https://new.example.webrtc")).toBeNull();
   });
 
-  it("retries a failed preference read without switching a removed saved choice", async () => {
+  it("retries a failed preference read and shows the default for a withdrawn saved choice", async () => {
     localStorage.setItem("gomode.voiceChoice.https://voice.example.text", "removed");
     localStorage.setItem("gomode.voiceMode", "browser");
     const prepare = vi.spyOn(voiceSession, "prepareAudio").mockImplementation(() => {});
@@ -772,15 +766,9 @@ describe("voice choices", () => {
       load.mockRestore();
       await userEvent.setup().click(screen.getByRole("button", { name: "Retry loading voice choices" }));
       const select = await readySelect();
-      expect(select).toHaveProperty("value", "removed");
-      expect(select).toHaveAccessibleDescription(/selected voice choice is unavailable/);
-      await voiceSession.connect();
-      expect(voiceSession.state.connected).toBe(false);
-      expect(voiceSession.state.error).toContain("selected voice choice is unavailable");
-      expect(localStorage.getItem("gomode.voiceChoice.https://voice.example.text")).toBe("removed");
-      await userEvent.setup().selectOptions(select, "local");
-      expect(select).toHaveValue("local");
+      expect(select).toHaveValue("remote");
       expect(screen.queryByRole("alert")).toBeNull();
+      expect(localStorage.getItem("gomode.voiceChoice.https://voice.example.text")).toBe("removed");
     } finally {
       load.mockRestore();
       prepare.mockRestore();

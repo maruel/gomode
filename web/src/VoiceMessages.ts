@@ -18,7 +18,6 @@ export const defaultVoiceSettingsMessages = {
   speakingSpeedNormal: "1× (Normal)",
   speakingVoiceDefault: "Provider default",
   browserVoiceDefault: "Browser default",
-  speakingVoiceUnavailable: "Choose an available speaking voice",
   choicesLoading: "Loading voice choices…",
   choicesRetry: "Retry loading voice choices",
   choiceUnavailable: "Choose an available model",

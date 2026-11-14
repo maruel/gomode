@@ -397,9 +397,11 @@ class VoiceSettingsTest {
         composeRule.onNodeWithTag("gomode-device-speaking-voice-default").assertIsNotSelected()
         composeRule.onNodeWithTag("gomode-device-speaking-voice-en-us-x-one").performClick()
 
-        // A voice outside the voice language is unavailable until a pick replaces it.
+        // A voice outside the voice language shows as the default speech uses; the saved name stays.
         runBlocking { repository.updateVoiceLanguageTag("fr-CA") }
-        picker.performScrollTo().assertTextContains("Choose an available speaking voice").performClick()
+        picker.performScrollTo().assertTextContains("Local default").performClick()
+        assertEquals("en-us-x-one", repository.settings.value.voiceSetup.deviceSpeechVoice)
+        composeRule.onNodeWithTag("gomode-device-speaking-voice-default").assertIsSelected()
         composeRule.onNodeWithTag("gomode-device-speaking-voice-fr-fr-x-three").assertIsNotSelected().performClick()
         composeRule.waitUntil { repository.settings.value.voiceSetup.deviceSpeechVoice == "fr-fr-x-three" }
 

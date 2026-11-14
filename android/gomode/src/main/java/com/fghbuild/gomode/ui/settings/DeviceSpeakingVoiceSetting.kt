@@ -3,8 +3,8 @@
 // Mirrors the web's browser speaking-voice picker in web/src/VoiceSettings.tsx: "Local default"
 // leaves the choice to the TextToSpeech engine; other items list the installed voices whose
 // language matches the voice language, in any region. A saved voice that is no longer installed,
-// or that no longer matches the language, shows as unavailable until a pick replaces it;
-// AndroidDeviceSpeech refuses to speak with it rather than substituting another voice.
+// or that no longer matches the language, shows as "Local default", which AndroidDeviceSpeech
+// uses; the saved name stays until a pick replaces it.
 package com.fghbuild.gomode.ui.settings
 
 import android.speech.tts.Voice
@@ -17,8 +17,6 @@ import com.fghbuild.gomode.voice.installedDeviceVoices
 
 private const val LOCAL_DEFAULT = "Local default"
 
-internal const val UNAVAILABLE_SPEAKING_VOICE = "Choose an available speaking voice"
-
 @Composable
 internal fun DeviceSpeakingVoiceSetting(
     voiceName: String,
@@ -30,14 +28,16 @@ internal fun DeviceSpeakingVoiceSetting(
     // Null until the engine lists its voices.
     val installed by produceState<List<Voice>?>(null, context) { value = installedDeviceVoices(context) }
     val voices = installed?.filter { deviceVoiceMatchesLanguage(it, languageTag) }
+    // Until the engine lists its voices, the saved name stands for itself.
+    val effective = if (voices == null) voiceName else voices.firstOrNull { it.name == voiceName }?.name.orEmpty()
     val saver = rememberPickerSave("speaking voice")
     SettingsPicker(
         label = "Speaking voice",
         value =
             when {
-                voiceName.isEmpty() -> LOCAL_DEFAULT
+                effective.isEmpty() -> LOCAL_DEFAULT
                 voices == null -> voiceName
-                else -> voices.firstOrNull { it.name == voiceName }?.let(::voiceLabel) ?: UNAVAILABLE_SPEAKING_VOICE
+                else -> voices.first { it.name == effective }.let(::voiceLabel)
             },
         enabled = enabled && voices != null && !saver.saving,
         tag = "gomode-device-speaking-voice",
@@ -45,13 +45,13 @@ internal fun DeviceSpeakingVoiceSetting(
         error = saver.error,
         errorTag = "gomode-device-speaking-voice-error",
     ) {
-        Item(LOCAL_DEFAULT, selected = voiceName.isEmpty(), tag = "gomode-device-speaking-voice-default") {
+        Item(LOCAL_DEFAULT, selected = effective.isEmpty(), tag = "gomode-device-speaking-voice-default") {
             saver.launch { save("") }
         }
         voices.orEmpty().forEach { voice ->
             Item(
                 voiceLabel(voice),
-                selected = voice.name == voiceName,
+                selected = voice.name == effective,
                 tag = "gomode-device-speaking-voice-${voice.name}",
             ) {
                 saver.launch { save(voice.name) }

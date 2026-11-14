@@ -33,7 +33,6 @@ import com.fghbuild.gomode.data.VoiceSetupPreference
 import com.fghbuild.gomode.ui.settings.SettingsScreen
 import com.fghbuild.gomode.ui.settings.rememberSettingsEdits
 import com.fghbuild.gomode.voice.GatewayVoiceChoices
-import com.fghbuild.gomode.voice.VoiceSetupException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -45,7 +44,6 @@ import kotlinx.serialization.json.Json
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertThrows
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -322,7 +320,7 @@ class VoiceChoicesSettingsTest {
         }
 
     @Test
-    fun aRemovedFollowedChoiceShowsUnderTheLanguageModelUntilAPick() =
+    fun aWithdrawnFollowedChoiceShowsTheDefaultTheSessionUses() =
         runTest {
             MockWebServer().use { server ->
                 server.start()
@@ -330,27 +328,23 @@ class VoiceChoicesSettingsTest {
                 val repository = SettingsRepository(MemoryPreferences())
                 repository.addService("Choices fixture", base)
                 repository.settings.first { it.activeServiceURL == base }
-                val removed = GatewayVoiceSetup(followedChoiceID = "gone")
-                repository.updateSavedVoiceSetup(base) { it.copy(gateway = removed) }
+                val withdrawn = GatewayVoiceSetup(followedChoiceID = "gone")
+                repository.updateSavedVoiceSetup(base) { it.copy(gateway = withdrawn) }
                 val gateway = GatewayVoiceChoices(base, Json { ignoreUnknownKeys = true }.decodeFromString(catalog))
-                val blocked =
-                    assertThrows(VoiceSetupException::class.java) { gateway.resolveSetup(repository.settings.value) }
+                assertEquals("live", gateway.resolveSetup(repository.settings.value).choice.id)
                 server.enqueue(MockResponse().setBody(manifest))
                 server.enqueue(MockResponse().setBody(catalog))
                 show(repository)
-                waitForTag("gomode-language-model")
+                waitForTag("gomode-voice-model")
 
-                // Settings shows the failure a session reports, and nothing is checked.
-                composeRule.onNodeWithTag("gomode-voice-setup-separate-stages").assertIsSelected()
-                stage("gomode-language-model-error").assertTextContains(checkNotNull(blocked.message))
-                stage("gomode-language-model").assertTextContains("Choose an available model").performClick()
-                composeRule.onNodeWithTag("gomode-voice-choice-llm").assertIsNotSelected().performClick()
-                composeRule.waitUntil {
-                    composeRule.onAllNodes(hasTestTag("gomode-language-model-error")).fetchSemanticsNodes().isEmpty()
-                }
-                stage("gomode-language-model").assertTextContains("Gateway LLM")
-                assertEquals(VoiceSetupMode.SEPARATE_STAGES, repository.settings.value.voiceSetup.mode)
-                assertEquals("llm", gateway.resolveSetup(repository.settings.value).choice.id)
+                // Settings shows the WebRTC default a session uses, without an error, and saves nothing.
+                composeRule.onNodeWithTag("gomode-voice-setup-all-in-one").assertIsSelected()
+                stage("gomode-voice-model").assertTextContains("Gemini Live")
+                composeRule.onNodeWithTag("gomode-voice-model-error").assertDoesNotExist()
+                assertEquals("gone", gateway.savedSetup(repository.settings.value).followedChoiceID)
+                pick("gomode-voice-model", "gomode-voice-choice-mini")
+                composeRule.waitUntil { gateway.resolveSetup(repository.settings.value).choice.id == "mini" }
+                assertEquals(VoiceSetupMode.ALL_IN_ONE, repository.settings.value.voiceSetup.mode)
             }
         }
 
@@ -387,27 +381,22 @@ class VoiceChoicesSettingsTest {
                 composeRule.onNodeWithTag("gomode-voice-choices-retry").performScrollTo().performClick()
                 waitForTag("gomode-language-model")
 
-                // A removed speech model belongs to the Speech picker.
+                // Withdrawn selections show the defaults sessions use, without an error.
+                pick("gomode-speech", "gomode-speech-model-piper")
+                stage("gomode-speech").assertTextContains("Piper")
+                pick("gomode-language-model", "gomode-voice-choice-other")
+                stage("gomode-language-model").assertTextContains("Other LLM")
                 repository.updateSpeechModel(base, SpeechStage.SYNTHESIS, "removed") { it }
-                waitForTag("gomode-speech-error")
-                stage("gomode-speech-error").assertTextContains("speech model is unavailable", substring = true)
-                stage("gomode-speech").assertTextContains("Choose an available model")
-                stage("gomode-language-model").assertTextContains("Gateway LLM")
-                composeRule.onNodeWithTag("gomode-language-model-error").assertDoesNotExist()
-                composeRule.onNodeWithTag("gomode-recognition-error").assertDoesNotExist()
-                pick("gomode-speech", "gomode-speech-model-kokoro")
-                composeRule.waitUntil {
-                    composeRule.onAllNodes(hasTestTag("gomode-speech-error")).fetchSemanticsNodes().isEmpty()
-                }
-
-                // A removed language model belongs to the Language model picker.
                 repository.updateVoiceChoice(base, "gone") { it }
-                waitForTag("gomode-language-model-error")
-                stage("gomode-language-model").assertTextContains("Choose an available model")
-                composeRule.onNodeWithTag("gomode-speech-error").assertDoesNotExist()
-                pick("gomode-language-model", "gomode-voice-choice-llm")
                 composeRule.waitUntil {
-                    composeRule.onAllNodes(hasTestTag("gomode-language-model-error")).fetchSemanticsNodes().isEmpty()
+                    repository.settings.value.gatewayVoiceSetups.values.any {
+                        it.synthesisModelID == "removed" && it.separateStagesChoiceID == "gone"
+                    }
+                }
+                stage("gomode-speech").assertTextContains("Kokoro")
+                stage("gomode-language-model").assertTextContains("Gateway LLM")
+                listOf("gomode-speech-error", "gomode-language-model-error", "gomode-recognition-error").forEach {
+                    composeRule.onNodeWithTag(it).assertDoesNotExist()
                 }
 
                 // A failed save stays under its control until a later save succeeds.

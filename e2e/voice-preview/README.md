@@ -123,8 +123,8 @@ stages orders recognition, language model, and speech; each speech picker
 includes Browser alongside the configured models. Switching setups retains each
 one. Add `choices=loading` or `choices=error` for pending or failed discovery,
 and use `?state=locked` for a session started after discovery. Seed a removed
-saved stage, such as `gomode.voiceSpeechModel.<origin>.input`, to place an error
-under its picker.
+saved stage, such as `gomode.voiceSpeechModel.<origin>.input`, to check that its
+picker shows the first listed model without an error.
 
 Add `theme=dark` for the host's dark tokens and `lang=de`, `es`, or `fr` for a
 shipped translation; at 360 CSS px the longest segment labels wrap beside the

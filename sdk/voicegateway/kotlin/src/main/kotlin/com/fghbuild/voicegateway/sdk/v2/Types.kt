@@ -692,6 +692,11 @@ data class SpeechConfig(@kotlinx.serialization.EncodeDefault(kotlinx.serializati
 /** VoiceChoice describes a selectable backend without exposing its credentials. */
 @Serializable
 data class VoiceChoice(
+    /**
+     * ID is the operator-configured id. It stays the same while the choice's
+     * settings change, so clients save it; a saved id the catalog no longer
+     * lists falls back to the default.
+     */
     val id: String,
     val label: String,
     val transports: List<VoiceTransport>?,
@@ -721,7 +726,14 @@ data class VoiceChoiceDefault(
 
 /** SpeechModel identifies one configured speech stage without exposing endpoints or credentials. */
 @Serializable
-data class SpeechModel(val id: String, val label: String)
+data class SpeechModel(
+    /**
+     * ID is the operator-configured id; it stays the same while the stage's
+     * settings change.
+     */
+    val id: String,
+    val label: String,
+)
 
 /**
  * VoiceChoicesResp advertises the available voice choices and one default per

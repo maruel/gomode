@@ -1467,6 +1467,7 @@ func TestLocalStackGeminiSpeech(t *testing.T) { //nolint:paralleltest // Replace
 	}
 	providers.All["gemini"] = configured
 	cfg := voicegateway.PipelineConfig{
+		ID:    "gemini-speech",
 		Label: "Gemini speech with local reasoning",
 		ASR:   voicegateway.ASRConfig{Engine: voicegateway.ASREngineGenAI, Provider: "gemini", Model: "gemini-3.5-transcribe"},
 		LLM:   voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "llamacpp", LlamaCPPServer: true, Model: "owner/chat"}, ContextSize: 65536},
@@ -1589,6 +1590,7 @@ data: [DONE]
 	config := voicegateway.ResolvedConfig{Runtime: testRuntime}
 	config.Realtime = nil
 	config.Pipelines = []voicegateway.PipelineConfig{{
+		ID:       "local",
 		Label:    "Local",
 		TextOnly: true,
 		LLM:      voicegateway.LLMConfig{ModelConfig: voicegateway.ModelConfig{Provider: "openaicompatible", Remote: llmServer.URL + "/v1/chat/completions", Model: "test-model"}},

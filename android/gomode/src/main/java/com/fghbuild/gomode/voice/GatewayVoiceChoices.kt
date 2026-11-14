@@ -5,19 +5,20 @@
 // stages list composable choices, or text choices when the gateway offers no composable one. The
 // transport is text only when the device owns both recognition and speech; otherwise it is WebRTC.
 // A choice supports the stage owners its speechModes list, or, without them, client speech over
-// text and gateway speech over WebRTC. A saved choice that this mode does not list falls back to
-// the transport's advertised default, then the first compatible choice; a removed saved choice, a
-// choice without the selected stage owners, or a removed saved speech model blocks connecting until
-// the user picks another. Composable choices resolve each gateway stage's model, the first listed
-// by default. SettingsRepository documents the mode that follows the gateway's choice; explicit
-// shows it as the setup it resolves to, which settings save on the first explicit edit.
+// text and gateway speech over WebRTC. A saved choice that this mode does not list, including one
+// the gateway withdrew, falls back to the transport's advertised default, then the first compatible
+// choice; a listed choice without the selected stage owners blocks connecting until the user picks
+// another. Composable choices resolve each gateway stage's model: the saved one while listed,
+// otherwise the first listed. Fallbacks are not saved: settings show them, and the next edit saves
+// them. SettingsRepository documents the mode that follows the gateway's choice; explicit shows it
+// as the setup it resolves to, which settings save on the first explicit edit.
 //
-// Connecting pins the resolved choice, stage owners, and speech models per session; recovery keeps
-// them and fails when the gateway withdrew one. Speaking voices are saved per
-// gateway and choice when the gateway owns speech and the choice advertises voices; the advertised
-// default applies until then, and a removed saved voice blocks connecting. External gateway
-// metadata requests carry no hosted-service credentials; embedded gateways use the service
-// credentials.
+// Connecting pins the resolved choice, stage owners, speech models, and speaking voice per
+// session; recovery keeps them and fails when the gateway withdrew one. Speaking voices are saved
+// per gateway and choice when the gateway owns speech and the choice advertises voices; the
+// provider default applies until then and when the choice no longer offers the saved voice.
+// External gateway metadata requests carry no hosted-service credentials; embedded gateways use
+// the service credentials.
 package com.fghbuild.gomode.voice
 
 import com.fghbuild.gomode.data.GatewayVoiceSetup
@@ -145,6 +146,10 @@ internal data class GatewayVoiceChoices(
     val gatewayURL: String,
     val catalog: VoiceChoicesResp,
 ) {
+    init {
+        validateVoiceChoices(catalog)
+    }
+
     private val choices: List<VoiceChoice> get() = catalog.choices.orEmpty()
 
     /** Native audio models for all-in-one, or independently selectable language models. */
@@ -178,26 +183,14 @@ internal data class GatewayVoiceChoices(
         }
     }
 
+    /** The saved speaking voice while [choice] offers it; empty selects the provider default. */
     fun speakingVoice(
         settings: SettingsState,
         choice: VoiceChoice,
     ): String {
         if (settings.voiceSetup.effectiveSpeech != SpeechStageLocation.GATEWAY) return ""
-        val voices = speakingVoices(choice)
-        if (voices.isEmpty()) return ""
-        val saved = settings.speakingVoices[gatewayURL]?.get(choice.id)
-        if (!saved.isNullOrEmpty() && saved !in voices) {
-            throw VoiceSetupException("Saved speaking voice is unavailable. Select a speaking voice in Settings.")
-        }
-        return saved.orEmpty()
-    }
-
-    fun speakingVoices(choice: VoiceChoice): List<String> {
-        val voices = choice.voices.orEmpty()
-        if (voices.any { it.isBlank() } || voices.toSet().size != voices.size) {
-            throw VoiceSetupException("Gateway returned invalid speaking voices")
-        }
-        return voices
+        val saved = settings.speakingVoices[gatewayURL]?.get(choice.id).orEmpty()
+        return saved.takeIf { it in choice.voices.orEmpty() }.orEmpty()
     }
 
     /** Resolves the session selection, or checks that a pinned one is still available. */
@@ -235,7 +228,7 @@ internal data class GatewayVoiceChoices(
         if (removedModel) {
             throw VoiceSetupException("Session speech model is unavailable. Start a new voice session.")
         }
-        val voices = if (pinned.speech == SpeechStageLocation.GATEWAY) speakingVoices(choice) else emptyList()
+        val voices = if (pinned.speech == SpeechStageLocation.GATEWAY) choice.voices.orEmpty() else emptyList()
         if (pinned.voiceName.isNotEmpty() && pinned.voiceName !in voices) {
             throw VoiceSetupException("Session speaking voice is unavailable. Start a new voice session.")
         }
@@ -300,17 +293,14 @@ internal data class GatewayVoiceChoices(
         val listed = setupChoices(kind)
         val compatible = compatibleChoices(kind, recognition, speech)
         val advertised = defaultChoiceID(transportFor(recognition, speech))
-        // A choice another kind lists keeps its own mode's selection; this mode uses its default.
-        val id =
-            savedID?.takeUnless { id -> choices.any { it.id == id } && listed.none { it.id == id } }
-                ?: compatible.firstOrNull { it.id == advertised }?.id
-                ?: compatible.firstOrNull()?.id
+        // A saved choice this mode does not list, such as a withdrawn one, falls back to the default.
+        val choice =
+            listed.firstOrNull { it.id == savedID }
+                ?: compatible.firstOrNull { it.id == advertised }
+                ?: compatible.firstOrNull()
                 ?: throw VoiceSetupException(
                     "The voice gateway has no model for this setup. Choose another setup in Settings.",
                 )
-        val choice =
-            listed.firstOrNull { it.id == id }
-                ?: throw VoiceSetupException("Saved voice choice is unavailable. Select a voice choice in Settings.")
         if (choice !in compatible) {
             throw VoiceSetupException(
                 "This model does not support the selected recognition and speech. Choose another in Settings.",
@@ -356,10 +346,12 @@ internal data class GatewayVoiceChoices(
         )
     }
 
-    // The followed choice selects the kind it belongs to; without language models, all-in-one applies.
+    // The followed choice, or the default when the gateway withdrew it, selects the kind it belongs
+    // to; without language models, all-in-one applies.
     private fun followedKind(saved: GatewayVoiceSetup): VoiceSetupKind {
-        val choiceID = saved.followedChoiceID ?: defaultChoiceID(VoiceTransport.WebRTC)
-        val candidate = choices.firstOrNull { it.id == choiceID }
+        val candidate =
+            choices.firstOrNull { it.id == saved.followedChoiceID }
+                ?: choices.firstOrNull { it.id == defaultChoiceID(VoiceTransport.WebRTC) }
         return if ((candidate != null && nativeVoiceChoice(candidate)) ||
             setupChoices(VoiceSetupKind.SEPARATE_STAGES).isEmpty()
         ) {
@@ -413,24 +405,14 @@ internal fun wireLocation(location: SpeechStageLocation): SpeechLocation =
         SpeechStageLocation.GATEWAY -> SpeechLocation.Gateway
     }
 
-/** A saved model must still be listed; otherwise the first listed model applies. */
+/** The saved model while listed; otherwise the first listed model. */
 internal fun resolveSpeechModel(
     models: List<SpeechModel>,
     saved: GatewayVoiceSetup,
     stage: SpeechStage,
 ): String {
     val label = if (stage == SpeechStage.RECOGNITION) "recognition" else "speech"
-    val selected = saved.modelID(stage)
-    if (selected != null) {
-        if (models.none { it.id == selected }) {
-            throw VoiceSetupException(
-                "The selected $label model is unavailable. Choose another $label model in Settings.",
-                stage,
-            )
-        }
-        return selected
-    }
-    return models.firstOrNull()?.id
+    return (models.firstOrNull { it.id == saved.modelID(stage) } ?: models.firstOrNull())?.id
         ?: throw VoiceSetupException(
             "The gateway has no $label models. Choose Local for $label, or an all-in-one model in Settings.",
             stage,
@@ -456,6 +438,11 @@ internal suspend fun discoverVoiceChoices(
             emptyMap()
         }
     val catalog = ApiClient(gatewayURL, httpClient = voiceGatewayHTTPClient).voiceChoices(headers)
+    return GatewayVoiceChoices(gatewayURL, catalog)
+}
+
+/** Rejects a catalog whose ids, defaults, models, speaking voices, or speech modes are inconsistent. */
+private fun validateVoiceChoices(catalog: VoiceChoicesResp) {
     // Each family advertises one default that must name a choice offering it.
     val invalidDefaults =
         catalog.defaults.orEmpty().any { advertised ->
@@ -472,6 +459,11 @@ internal suspend fun discoverVoiceChoices(
     val invalidModels =
         listOf(catalog.recognitionModels.orEmpty(), catalog.synthesisModels.orEmpty()).any { models ->
             models.any { it.id.isBlank() || it.label.isBlank() } || models.map { it.id }.toSet().size != models.size
+        }
+    val invalidVoices =
+        catalog.choices.orEmpty().any { choice ->
+            val voices = choice.voices.orEmpty()
+            voices.any { it.isBlank() } || voices.toSet().size != voices.size
         }
     val invalidSpeechModes =
         catalog.choices.orEmpty().any { choice ->
@@ -492,11 +484,11 @@ internal suspend fun discoverVoiceChoices(
             .size != catalog.choices.orEmpty().size ||
         invalidDefaults ||
         invalidModels ||
+        invalidVoices ||
         invalidSpeechModes
     ) {
         throw VoiceSetupException("Gateway returned invalid voice choices")
     }
-    return GatewayVoiceChoices(gatewayURL, catalog)
 }
 
 internal fun requireLoadedVoiceSettings(settings: SettingsState) {

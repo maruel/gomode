@@ -78,7 +78,7 @@ export class BrowserSpeech {
 
   constructor(
     private readonly languageTag: string,
-    private readonly voiceURI: string,
+    private voiceURI: string,
     private readonly rate: number,
     private readonly callbacks: SpeechCallbacks,
   ) {}
@@ -136,7 +136,8 @@ export class BrowserSpeech {
       const voices = window.speechSynthesis.getVoices();
       if (this.voiceURI !== "" && voices.length === 0) {
         // Chrome loads voices asynchronously on a fresh page. Keep the first
-        // fragment queued until discovery completes, with bounded recovery.
+        // fragment queued until discovery completes, then speak with the
+        // browser default when the voices never load.
         if (this.voicesCleanup !== null) return;
         const ready = () => {
           if (window.speechSynthesis.getVoices().length === 0) return;
@@ -145,8 +146,10 @@ export class BrowserSpeech {
           this.startSpeaking();
         };
         const timer = setTimeout(() => {
-          this.stopSpeaking();
-          this.callbacks.error("Browser voices did not load. Retry or choose another speaking voice in settings.");
+          this.voicesCleanup?.();
+          this.voicesCleanup = null;
+          this.voiceURI = "";
+          this.startSpeaking();
         }, 5000);
         window.speechSynthesis.addEventListener("voiceschanged", ready);
         this.voicesCleanup = () => {
@@ -157,16 +160,15 @@ export class BrowserSpeech {
         return;
       }
       // macOS includes novelty voices. Enumeration order and localService do
-      // not indicate quality; honor the user's selection or browser default.
+      // not indicate quality; honor the user's selection, or the browser
+      // default when the browser no longer offers it.
       const voice =
-        this.voiceURI === ""
-          ? voices.find((candidate) => candidate.default && browserVoiceMatchesLanguage(candidate, this.languageTag))
-          : voices.find(
-              (candidate) =>
-                candidate.voiceURI === this.voiceURI && browserVoiceMatchesLanguage(candidate, this.languageTag),
-            );
-      if (this.voiceURI !== "" && !voice)
-        throw new Error("The saved browser voice is unavailable. Choose another speaking voice in settings.");
+        voices.find(
+          (candidate) =>
+            this.voiceURI !== "" &&
+            candidate.voiceURI === this.voiceURI &&
+            browserVoiceMatchesLanguage(candidate, this.languageTag),
+        ) ?? voices.find((candidate) => candidate.default && browserVoiceMatchesLanguage(candidate, this.languageTag));
       if (voice) utterance.voice = voice;
       this.pendingSpeech = null;
       this.utterance = utterance;
