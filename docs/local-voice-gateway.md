@@ -2,7 +2,7 @@
 
 Candidates for keeping speech on the gateway host, and the path to a first
 accepted turn on the M5 Pro. Configuration and adapter limits are owned by
-[contrib/config.toml](../contrib/config.toml) and
+[voice-choices.toml](../voicegateway/voice-choices.toml) and
 [smoke_test.go](../voicegateway/voicertc/smoke_test.go); the shipped adapters are
 [localstack.go](../voicegateway/voicertc/localstack.go) and
 [localstack_genai.go](../voicegateway/voicertc/localstack_genai.go).

@@ -33,4 +33,6 @@ User and integration guides are at [docs.gomode.dev](https://docs.gomode.dev):
   shell.
 
 Go package documentation is on [pkg.go.dev](https://pkg.go.dev/github.com/maruel/gomode).
-[contrib/config.toml](contrib/config.toml) documents every gateway setting.
+[contrib/config.toml](contrib/config.toml) documents the standalone gateway settings, and
+[voicegateway/voice-choices.toml](voicegateway/voice-choices.toml) the default voice choices and stages
+that the gateway and its hosts embed.

@@ -72,7 +72,7 @@ New capabilities that this adapter does not use yet, recorded for future work:
   session is idle.
 - `interimInputTranscription`, low-latency text while the user is speaking.
 
-Keep the configured model examples in `contrib/config.toml` covered by the
+Keep the configured model examples in `voicegateway/voice-choices.toml` covered by the
 provider setup rules above.
 
 ## OpenAI Realtime Protocol

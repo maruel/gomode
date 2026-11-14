@@ -848,8 +848,8 @@ openrouter_sort = "latency"
 			t.Fatalf("syntax error = %v", err)
 		}
 	})
-	t.Run("contributed choices", func(t *testing.T) {
-		cfg, err := loadResolvedConfig("../contrib/config.toml")
+	t.Run("embedded choices", func(t *testing.T) {
+		cfg, err := loadResolvedConfig(ConfigFileName)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -866,17 +866,18 @@ openrouter_sort = "latency"
 			}
 		}
 		if !found {
-			t.Fatal("contributed Gemma choice missing")
+			t.Fatal("embedded Gemma choice missing")
 		}
 	})
 	t.Run("file required", func(t *testing.T) {
-		_, err := loadResolvedConfig(filepath.Join(t.TempDir(), "config.toml"))
+		_, err := LoadConfig(filepath.Join(t.TempDir(), "config.toml"))
 		if !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("missing file = %v", err)
 		}
 	})
-	t.Run("server and realtime", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "config.toml")
+	t.Run("server and voice files", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.toml")
 		data := fmt.Sprintf(`[server]
 http = ":4444"
 external_url = "https://voice.example"
@@ -885,17 +886,16 @@ debug_frontend = true
 webrtc_udp_port = 4445
 [debug]
 trace = "gateway.trace"
-[[realtime]]
-id = "gemini"
-label = "Gemini"
-provider = "gemini"
-model = "gemini-live-test"
 [[trusted_issuers]]
 service = "example"
 issuer = "https://service.example.com"
 public_key = %q
 `, newTestPublicKey(t))
 		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		voice := "[[realtime]]\nid = \"gemini\"\nlabel = \"Gemini\"\nprovider = \"gemini\"\nmodel = \"gemini-live-test\"\n"
+		if err := os.WriteFile(filepath.Join(dir, ConfigFileName), []byte(voice), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		cfg, err := LoadConfig(path)
@@ -905,7 +905,7 @@ public_key = %q
 		if _, err := cfg.Resolve(); err != nil {
 			t.Fatal(err)
 		}
-		if (cfg.Server.HTTP != ":4444" || cfg.Server.WebRTCUDPPort != 4445 || cfg.Server.ExternalURL != "https://voice.example" || !cfg.Server.DebugFrontend || len(cfg.Server.TrustedProxies) != 1 || cfg.Debug.Trace != "gateway.trace") || cfg.Realtime[0].Model != "gemini-live-test" || cfg.TrustedIssuers[0].Service != "example" {
+		if (cfg.Server.HTTP != ":4444" || cfg.Server.WebRTCUDPPort != 4445 || cfg.Server.ExternalURL != "https://voice.example" || !cfg.Server.DebugFrontend || len(cfg.Server.TrustedProxies) != 1 || cfg.Debug.Trace != "gateway.trace") || len(cfg.Config.Realtime) != 1 || cfg.Config.Realtime[0].Model != "gemini-live-test" || cfg.TrustedIssuers[0].Service != "example" {
 			t.Fatalf("config = %+v", cfg)
 		}
 	})
@@ -978,7 +978,8 @@ public_key = %q
 		})
 	})
 	t.Run("unknown fields", func(t *testing.T) {
-		for _, data := range []string{"bogus = 1", "[[llm]]\nslots = 2", "[[asr]]\nunknown = true", "[[tts]]\nunknown = true", "[[voice]]\nunknown = true"} {
+		// Voice tables belong in ConfigFileName, not in config.toml.
+		for _, data := range []string{"bogus = 1", "[[realtime]]\nid = \"live\""} {
 			path := filepath.Join(t.TempDir(), "config.toml")
 			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 				t.Fatal(err)
@@ -986,6 +987,57 @@ public_key = %q
 			if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "missing in the target struct") {
 				t.Fatalf("unknown field: %v", err)
 			}
+		}
+		for _, data := range []string{"bogus = 1", "[[llm]]\nslots = 2", "[[asr]]\nunknown = true", "[[tts]]\nunknown = true", "[[voice]]\nunknown = true"} {
+			dir := t.TempDir()
+			path := filepath.Join(dir, ConfigFileName)
+			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ReadConfig(dir); err == nil || !strings.HasPrefix(err.Error(), "parse "+path+":") || !strings.Contains(err.Error(), "missing in the target struct") {
+				t.Fatalf("unknown field: %v", err)
+			}
+		}
+	})
+}
+
+func TestReadConfig(t *testing.T) {
+	t.Run("valid", func(t *testing.T) {
+		t.Run("embedded default", func(t *testing.T) {
+			cfg, err := ReadConfig(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := cfg.Resolve()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(resolved.Realtime) == 0 || len(resolved.LLM) == 0 || len(resolved.Pipelines) == 0 {
+				t.Fatalf("embedded choices = %d realtime, %d llm, %d voice", len(resolved.Realtime), len(resolved.LLM), len(resolved.Pipelines))
+			}
+		})
+		t.Run("file replaces default", func(t *testing.T) {
+			dir := t.TempDir()
+			data := "[[realtime]]\nid = \"live\"\nlabel = \"Live\"\nprovider = \"gemini\"\nmodel = \"gemini-live-test\"\n"
+			if err := os.WriteFile(filepath.Join(dir, ConfigFileName), []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := ReadConfig(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cfg.Realtime) != 1 || cfg.Realtime[0].ID != "live" || len(cfg.LLM)+len(cfg.ASR)+len(cfg.TTS)+len(cfg.Voice) != 0 {
+				t.Fatalf("config = %+v", cfg)
+			}
+		})
+	})
+	t.Run("error", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, ConfigFileName), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadConfig(dir); err == nil || !strings.HasPrefix(err.Error(), "read voice config: ") {
+			t.Fatalf("unreadable file = %v", err)
 		}
 	})
 }
@@ -1505,7 +1557,7 @@ func testResolvedConfigAvailableAuthentication(t *testing.T) {
 			previousLogger := slog.Default()
 			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
 			t.Cleanup(func() { slog.SetDefault(previousLogger) })
-			cfg, err := loadResolvedConfig("../contrib/config.toml")
+			cfg, err := loadResolvedConfig(ConfigFileName)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1831,10 +1883,15 @@ func testStandaloneConfig() configFile {
 	}
 }
 
+// loadResolvedConfig parses and resolves the voice declarations in path.
 func loadResolvedConfig(path string) (ResolvedConfig, error) {
-	cfg, err := LoadConfig(path)
+	data, err := os.ReadFile(path) //nolint:gosec // Tests pass fixture paths they own.
 	if err != nil {
 		return ResolvedConfig{}, err
 	}
-	return cfg.Config.Resolve()
+	cfg, err := parseConfig(data, path)
+	if err != nil {
+		return ResolvedConfig{}, err
+	}
+	return cfg.Resolve()
 }

@@ -19,24 +19,33 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/maruel/gomode/voicegateway"
 )
 
 func TestStartRestartWatch(t *testing.T) {
 	t.Parallel()
-	for _, replace := range []bool{false, true} {
-		name := "config write"
-		if replace {
-			name = "config replacement"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		file    string
+		replace bool
+	}{
+		{"config write", "config.toml", false},
+		{"config replacement", "config.toml", true},
+		{"voice config creation", voicegateway.ConfigFileName, false},
+		{"voice config replacement", voicegateway.ConfigFileName, true},
+	} {
+		replace := tc.replace
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			cfg := filepath.Join(dir, "config.toml")
-			if err := os.WriteFile(cfg, []byte("old config"), 0o600); err != nil {
+			path := filepath.Join(dir, "config.toml")
+			if err := os.WriteFile(path, []byte("old config"), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			cfg := filepath.Join(dir, tc.file)
 			ctx, cancel := context.WithCancelCause(t.Context())
-			w, err := startRestartWatch(ctx, cfg, cancel)
+			w, err := startRestartWatch(ctx, path, cancel)
 			if err != nil {
 				cancel(nil)
 				t.Fatal(err)
@@ -265,7 +274,7 @@ func TestMainImpl(t *testing.T) {
 	// Each invocation owns the process-wide named Windows shutdown event.
 	t.Run("rejects disabled webrtc port", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "config.toml")
-		if err := os.WriteFile(path, []byte("[server]\nwebrtc_udp_port = -1\n[[realtime]]\nlabel = 'Native'\nprovider = 'gemini'\nmodel = 'gemini-3.8-live'\n"), 0o600); err != nil {
+		if err := os.WriteFile(path, []byte("[server]\nwebrtc_udp_port = -1\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		err := mainImpl([]string{
@@ -296,16 +305,11 @@ http = "invalid-listen-address"
 geo_db = %q
 [debug]
 trace = %q
-[[llm]]
-id = "test"
-label = "Test"
-provider = "openaicompatible"
-remote = "http://127.0.0.1:1/v1/chat/completions"
-model = "test"
 `, filepath.ToSlash(dbPath), filepath.ToSlash(tracePath))
 		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 			t.Fatal(err)
 		}
+		writeTestVoiceConfig(t, dir)
 		if err := mainImpl([]string{"-config", path}); err == nil || !strings.Contains(err.Error(), "missing port") {
 			t.Fatalf("startup error: %v", err)
 		}
@@ -321,19 +325,16 @@ model = "test"
 		}
 	})
 	t.Run("database failure precedes provider startup", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "config.toml")
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.toml")
 		raw := `[server]
 http = "invalid-listen-address"
 geo_db = "missing.mmdb"
-[[realtime]]
-id = "gemini"
-label = "Gemini"
-provider = "gemini"
-model = "gemini-3.8-live"
 `
 		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
 			t.Fatal(err)
 		}
+		writeTestVoiceConfig(t, dir)
 		if err := mainImpl([]string{"-config", path}); err == nil || !strings.HasPrefix(err.Error(), "server.geo_db:") || !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("startup failure=%v", err)
 		}
@@ -357,16 +358,11 @@ allow_origins = ["192.0.2.0/24"]
 debug_frontend = true
 webrtc_udp_port = 0
 log_level = "debug"
-[[llm]]
-id = "test"
-label = "Test"
-provider = "openaicompatible"
-remote = "http://127.0.0.1:1/v1/chat/completions"
-model = "test"
 `, addr)
 		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
 			t.Fatal(err)
 		}
+		writeTestVoiceConfig(t, dir)
 		exe, err := os.Executable()
 		if err != nil {
 			t.Fatal(err)
@@ -552,5 +548,20 @@ func TestServeHTTP(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// writeTestVoiceConfig declares one unreachable language model in dir, so
+// startup never probes the embedded default providers.
+func writeTestVoiceConfig(t *testing.T, dir string) {
+	data := `[[llm]]
+id = "test"
+label = "Test"
+provider = "openaicompatible"
+remote = "http://127.0.0.1:1/v1/chat/completions"
+model = "test"
+`
+	if err := os.WriteFile(filepath.Join(dir, voicegateway.ConfigFileName), []byte(data), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

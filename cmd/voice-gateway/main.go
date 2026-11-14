@@ -116,7 +116,7 @@ func mainImpl(args []string) (err error) {
 	}
 	resolved, err := cfg.Resolve()
 	if err != nil {
-		return fmt.Errorf("resolve %s: %w", *configPath, err)
+		return fmt.Errorf("resolve configuration in %s: %w", filepath.Dir(*configPath), err)
 	}
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {
@@ -352,6 +352,9 @@ func startRestartWatch(ctx context.Context, path string, cancel context.CancelCa
 		return nil, errors.Join(fmt.Errorf("watch executable: %w", err), w.Close())
 	}
 	configTarget := absPath
+	// The voice declarations are optional, so watch their name whether or not
+	// the file exists.
+	voiceTarget := filepath.Join(filepath.Dir(absPath), voicegateway.ConfigFileName)
 	for dir := filepath.Dir(absPath); ; dir = filepath.Dir(dir) {
 		if err := w.Add(dir); err != nil {
 			if !errors.Is(err, os.ErrNotExist) || dir == filepath.Dir(dir) {
@@ -396,7 +399,7 @@ func startRestartWatch(ctx context.Context, path string, cancel context.CancelCa
 						}
 					}
 					reason = "executable modified"
-				case configTarget:
+				case configTarget, voiceTarget:
 					if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Remove|fsnotify.Rename) == 0 {
 						continue
 					}

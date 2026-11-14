@@ -3,10 +3,13 @@
 package voicegateway
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"iter"
 	"log/slog"
 	"net/http"
@@ -30,8 +33,8 @@ import (
 	"github.com/maruel/gomode/httpserver/geoip"
 )
 
-// Config declares reusable voice stages and presets. Hosts may embed it in their
-// own configuration and decode it with an ordinary TOML decoder. Stage entries
+// Config declares reusable voice stages and presets. ReadConfig loads it from
+// ConfigFileName or the defaults embedded in this module. Stage entries
 // retain declaration order. Resolve validates references and produces runtime
 // configuration without changing declarations.
 //
@@ -44,9 +47,10 @@ import (
 // [[llm]] entry may share an id; [[voice]] references each stage in its own
 // namespace.
 //
-// An embedding host decodes Config under its own TOML section with
-// DisallowUnknownFields, calls Resolve during configuration validation, and
-// passes the result through startup. Before creating the bridge it calls
+// An embedding host calls ReadConfig with its configuration directory and
+// Resolve during configuration validation, and passes the result through
+// startup. It restarts or reloads when ConfigFileName appears, changes, or
+// disappears. Before creating the bridge it calls
 // Available, checks caller cancellation, and validates the filtered result; an
 // empty catalog prevents startup. It passes the resolved configuration and its
 // own UDP port, validated with ServerConfig.Validate, to voicertc.NewBridge. The
@@ -467,9 +471,10 @@ func (c *LLMConfig) validateAs(prefix string) error {
 	return errors.Join(c.ModelConfig.validate(prefix), validateManagedContext(prefix, c.ContextSize, c.LlamaCPPServer))
 }
 
-// configFile adds standalone listeners and issuer policy to reusable declarations.
+// configFile holds standalone listeners and issuer policy beside the voice
+// declarations that LoadConfig reads with ReadConfig.
 type configFile struct {
-	Config
+	Config         Config                `toml:"-"`
 	AutoUpdate     string                `toml:"auto_update"`
 	Server         ServerConfig          `toml:"server"`
 	TrustedIssuers []TrustedIssuerConfig `toml:"trusted_issuers"`
@@ -567,10 +572,10 @@ func (c *Config) Resolve() (ResolvedConfig, error) {
 	return out, nil
 }
 
-// LoadConfig reads standalone gateway settings with listener defaults. Its result
-// embeds Config and adds Server and TrustedIssuers; call Resolve before startup.
-// Relative geo_db paths resolve beside this file; leading ~ expands to home.
-// Hosts should embed Config in their own schema and call Config.Resolve instead.
+// LoadConfig reads standalone gateway settings with listener defaults, and the
+// voice declarations from ReadConfig in the same directory; call Resolve
+// before startup. Relative geo_db paths resolve beside this file; leading ~
+// expands to home. Hosts call ReadConfig and Config.Resolve instead.
 func LoadConfig(path string) (configFile, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // config path is selected by the operator.
 	if err != nil {
@@ -613,6 +618,48 @@ func LoadConfig(path string) (configFile, error) {
 		if _, err := autoupdate.ParseSchedule(cfg.AutoUpdate); err != nil {
 			return configFile{}, fmt.Errorf("auto_update: %w", err)
 		}
+	}
+	if cfg.Config, err = ReadConfig(filepath.Dir(path)); err != nil {
+		return configFile{}, err
+	}
+	return cfg, nil
+}
+
+// ConfigFileName is the name of the voice declarations file in a gateway or
+// host configuration directory.
+const ConfigFileName = "voice-choices.toml"
+
+// ReadConfig reads dir/ConfigFileName, or the declarations embedded in this
+// module when that file does not exist. A present file replaces the defaults
+// entirely. Unknown keys are errors that name the file and position.
+func ReadConfig(dir string) (Config, error) {
+	path := filepath.Join(dir, ConfigFileName)
+	data, err := os.ReadFile(path) //nolint:gosec // config directory is selected by the operator.
+	if errors.Is(err, fs.ErrNotExist) {
+		return parseConfig(defaultConfig, "embedded "+ConfigFileName)
+	}
+	if err != nil {
+		return Config{}, fmt.Errorf("read voice config: %w", err)
+	}
+	return parseConfig(data, path)
+}
+
+// defaultConfig is the declarations ReadConfig uses without a file.
+//
+//go:embed voice-choices.toml
+var defaultConfig []byte
+
+// parseConfig decodes declarations from data; name identifies its source in errors.
+func parseConfig(data []byte, name string) (Config, error) {
+	var cfg Config
+	dec := toml.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cfg); err != nil {
+		if e, ok := errors.AsType[*toml.DecodeError](err); ok {
+			line, column := e.Position()
+			return Config{}, fmt.Errorf("parse %s:%d:%d: %w", name, line, column, err)
+		}
+		return Config{}, fmt.Errorf("parse %s: %w", name, err)
 	}
 	return cfg, nil
 }
