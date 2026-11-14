@@ -47,7 +47,9 @@ private val nativeTools =
         ),
         ToolDescriptor(
             name = MUTE_TOOL_NAME,
-            description = "Call when the user requests to mute themselves.",
+            description =
+                "Mute the user's microphone until your reply ends. Call it when the user asks to mute " +
+                    "themselves, then answer the rest of their request in that same reply.",
             inputSchema =
                 buildJsonObject {
                     put("type", "object")
